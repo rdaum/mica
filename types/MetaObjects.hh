@@ -47,8 +47,8 @@ namespace mica {
     static void cleanup();    // Clear all the references to NONE  
 
     static var_vector delegates_for( Type::Identifier type_id );
-  };
 
+  };
 }
 
 #endif

@@ -222,17 +222,17 @@ struct hashing_visitor {
 struct serializing_visitor { 
 
   template<typename X>
-  inline rope_string operator()( const X &y ) const {
-    rope_string x;
+  inline mica_string operator()( const X &y ) const {
+    mica_string x;
     Pack( x, y );
     return x;
   }
 
-  inline rope_string operator()( const Symbol &y ) const {
+  inline mica_string operator()( const Symbol &y ) const {
     return y.serialize();
   }
 
-  inline rope_string operator()( Data *x ) const {
+  inline mica_string operator()( Data *x ) const {
     return x->serialize();
   }
 };
@@ -241,54 +241,54 @@ struct serializing_visitor {
  */
 struct tostring_visitor { 
   template< typename X >
-  inline rope_string operator()( const X &y ) const {
+  inline mica_string operator()( const X &y ) const {
     std::ostringstream dstr;
     dstr << y;
 #ifndef OSTRSTREAM_APPENDS_NULLS
     dstr << std::ends;
 #endif
-    return rope_string(dstr.str().c_str());
+    return mica_string(dstr.str().c_str());
   }
-  inline rope_string operator()( const Symbol &y ) const {
+  inline mica_string operator()( const Symbol &y ) const {
     return y.tostring();
   }
-  inline rope_string operator()( const Op &op ) const {
+  inline mica_string operator()( const Op &op ) const {
     return operator()( op.code );
   }
-  inline rope_string operator()( Data *x ) const {
+  inline mica_string operator()( Data *x ) const {
     return x->tostring();
   }
 };
 
 struct rep_visitor { 
 
-  inline rope_string operator()( const Op &op ) const {
+  inline mica_string operator()( const Op &op ) const {
     std::ostringstream dstr;
     dstr << 'O' << op.code;
 #ifndef OSTRSTREAM_APPENDS_NULLS
     dstr << std::ends;
 #endif
-    return rope_string(dstr.str().c_str());
+    return mica_string(dstr.str().c_str());
   }
-  inline rope_string operator()( const Symbol &sym ) const {
+  inline mica_string operator()( const Symbol &sym ) const {
     std::ostringstream dstr;
     dstr << '#' << sym.tostring();
 #ifndef OSTRSTREAM_APPENDS_NULLS
     dstr << std::ends;
 #endif
-    return rope_string(dstr.str().c_str());
+    return mica_string(dstr.str().c_str());
   }
 
-  inline rope_string operator()( const char &ch ) const {
+  inline mica_string operator()( const char &ch ) const {
     std::ostringstream dstr;
     dstr << '\'' << ch << '\'';
 #ifndef OSTRSTREAM_APPENDS_NULLS
     dstr << std::ends;
 #endif
-    return rope_string(dstr.str().c_str());
+    return mica_string(dstr.str().c_str());
   }
 
-  inline rope_string operator()( const bool &bl ) const {
+  inline mica_string operator()( const bool &bl ) const {
     std::ostringstream dstr;
     if (bl)
       dstr << "true";
@@ -298,20 +298,20 @@ struct rep_visitor {
 #ifndef OSTRSTREAM_APPENDS_NULLS
     dstr << std::ends;
 #endif
-    return rope_string(dstr.str().c_str());
+    return mica_string(dstr.str().c_str());
   }
 
   template< typename X >
-  inline rope_string operator()( const X &y ) const {
+  inline mica_string operator()( const X &y ) const {
     std::ostringstream dstr;
     dstr << y;
 #ifndef OSTRSTREAM_APPENDS_NULLS
     dstr << std::ends;
 #endif
-    return rope_string(dstr.str().c_str());
+    return mica_string(dstr.str().c_str());
   }
 
-  inline rope_string operator()( Data *x ) const {
+  inline mica_string operator()( Data *x ) const {
     return x->rep();
   }
 };
@@ -1061,25 +1061,25 @@ std::ostream &Var::append( std::ostream &lhs ) const
 }
 
 
-rope_string Var::tostring() const
+mica_string Var::tostring() const
 {
-  return apply_visitor<rope_string>( tostring_v );
+  return apply_visitor<mica_string>( tostring_v );
 }
 
-rope_string Var::rep() const
+mica_string Var::rep() const
 {
-  return apply_visitor<rope_string>( rep_v );
+  return apply_visitor<mica_string>( rep_v );
 }
 
-rope_string Var::serialize() const
+mica_string Var::serialize() const
 {
-  rope_string s;
+  mica_string s;
   
   /** Push the type.
    */
   Pack( s, type_identifier() );
   
-  s.append( apply_visitor<rope_string>( serializer ) );
+  s.append( apply_visitor<mica_string>( serializer ) );
   
   return s;
   

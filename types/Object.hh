@@ -8,6 +8,7 @@
 
 #include "Environment.hh"
 #include "Scalar.hh"
+#include "ArgumentMask.hh"
 
 namespace mica {
 
@@ -27,6 +28,7 @@ namespace mica {
      */
     PID pid;
     OID oid;
+    ArgumentMask arg_mask;
 
   protected:
     friend class Pool;
@@ -106,9 +108,9 @@ namespace mica {
     Var perform( const Ref<Task> &caller, const Var &args );
 
   public:
-    rope_string rep() const;
+    mica_string rep() const;
 
-    rope_string serialize() const;
+    mica_string serialize() const;
 
   public:
     bool operator==( const Object &obj ) const;
@@ -143,7 +145,7 @@ namespace mica {
 
     bool isNumeric() const;
 
-    rope_string tostring() const;
+    mica_string tostring() const;
 
     void finalize_paged_object();
 

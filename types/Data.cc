@@ -84,7 +84,7 @@ Var Data::perform( const Ref<Task> &caller,  const Var &args )
   throw unimplemented("perform operation not implemented for this type");
 }
 
-void mica::writeString( rope_string &s_form, const rope_string &istr )
+void mica::writeString( mica_string &s_form, const mica_string &istr )
 {
   size_t len = istr.size();
   Pack( s_form, len );

@@ -35,7 +35,9 @@ namespace mica {
     VerbDef( const VerbDef &x );
     virtual ~VerbDef() {};
 
-    bool operator==( const VerbDef &x );
+    bool operator==( const VerbDef &x ) const;
+    bool operator<( const VerbDef &x ) const;
+
     VerbDef &operator=( const VerbDef &x );
     
   };
@@ -62,7 +64,7 @@ namespace mica {
     bool removeLocal( const Var &accessor, const Symbol &name );
 
 
-    rope_string serialize() const;
+    mica_string serialize() const;
 
     Var slots() const;
 
@@ -73,14 +75,12 @@ namespace mica {
     /** Carries a list of slots hashed by name
      */
     typedef STD_EXT_NS::hash_map< Symbol,
-				  Var,
- 				  hash_symbol > SlotList;
+				  Var, hash_symbol > SlotList;
 
 
     /** Map accessor -> slotlist
      */
-    typedef STD_EXT_NS::hash_map< Var, SlotList,
-				  hash_var > SlotMap;
+    typedef STD_EXT_NS::hash_map< Var, SlotList, hash_var > SlotMap;
 
     SlotMap mSlots;    
 

@@ -464,11 +464,11 @@ namespace mica
 
     /** Return a string conversion of the inside of the Var
      */
-    rope_string tostring() const;
+    mica_string tostring() const;
 
     /** Return a printable representation of the inside of the Var
      */
-    rope_string rep() const;
+    mica_string rep() const;
 
     /** Append as a string to an ostream.  Used by operator<<(ostream).
      */
@@ -477,7 +477,7 @@ namespace mica
   public:
     /** @return serialized form suitable for storage
      */
-    rope_string serialize() const;
+    mica_string serialize() const;
 
     /** Return all pointers to reference counted objects
      *  held inside the contents of this Var.
@@ -525,13 +525,13 @@ namespace mica
    *  the passed-in string.
    */
   template<class T>
-  inline void Pack( mica::rope_string &S, const T &N ) {
+  inline void Pack( mica::mica_string &S, const T &N ) {
     S.append( (char*)&N, sizeof(T) );
   }
 
   /** For serializing a var vector
    */
-  inline void SerializeVV( mica::rope_string &S, const var_vector &vv ) {
+  inline void SerializeVV( mica::mica_string &S, const var_vector &vv ) {
     Pack( S, vv.size() );
     for (var_vector::const_iterator vi = vv.begin(); vi != vv.end(); vi++) {
       S.append( vi->serialize() );

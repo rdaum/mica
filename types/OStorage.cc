@@ -28,9 +28,13 @@ VerbDef::VerbDef( const VerbDef &x )
 {
 }
 
-bool VerbDef::operator==( const VerbDef &x ) {
+bool VerbDef::operator==( const VerbDef &x ) const {
   return definer == x.definer && argument_template == x.argument_template &&
     method == x.method;
+}
+
+bool VerbDef::operator<( const VerbDef &x ) const {
+  return definer < x.definer || argument_template < x.argument_template || method < x.method;
 }
 
 VerbDef &VerbDef::operator=( const VerbDef &x ) {
@@ -47,9 +51,7 @@ VerbDef &VerbDef::operator=( const VerbDef &x ) {
 
 Environment::Environment()
 {
-#ifndef JUDY
-  mSlots.clear();
-#endif
+
   delegates_iterator = mSlots.end();
 }
 
@@ -63,6 +65,7 @@ void Environment::add_delegate( const Object *from,
 }
 
 var_vector Environment::delegates() {
+
   if (delegates_iterator == mSlots.end())
     delegates_iterator = mSlots.find( Var(DELEGATE_SYM) );
   
@@ -72,7 +75,7 @@ var_vector Environment::delegates() {
 	 sl_i != delegates_iterator->second.end(); sl_i++) {
       delegates_vec.push_back( sl_i->second );
     }
-  }    
+  }
 
   return delegates_vec;
 }
@@ -119,7 +122,6 @@ bool Environment::removeLocal( const Var &accessor,
 
 Var Environment::slots() const
 {
-
   var_vector slots;
 
   for (SlotMap::const_iterator am_i = mSlots.begin();
@@ -134,8 +136,7 @@ Var Environment::slots() const
     }
   }
 
-  return List::from_vector
-(slots);
+  return List::from_vector(slots);
 
 }
 
@@ -188,9 +189,9 @@ bool Environment::replaceLocal( const Var &accessor,
 
 
 
-rope_string Environment::serialize() const
+mica_string Environment::serialize() const
 {
-  rope_string s_form;
+  mica_string s_form;
 
   unsigned int count = 1;
   for (SlotMap::const_iterator am_i = mSlots.begin();
@@ -242,12 +243,11 @@ rope_string Environment::serialize() const
 child_set Environment::child_pointers() {
   child_set children;
 
-
   for (SlotMap::const_iterator am_i = mSlots.begin();
        am_i != mSlots.end(); am_i++) {
     for (SlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
-      children << sl_i->second;
+      children << am_i->first << sl_i->second;
     }
   }
   for (VerbParasiteMap::const_iterator am_i = verb_parasites.begin();

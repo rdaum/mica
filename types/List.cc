@@ -453,9 +453,9 @@ var_vector List::for_in( unsigned int var_no,
 
 
 
-rope_string List::rep() const
+mica_string List::rep() const
 {
-  rope_string output = "[";
+  mica_string output = "[";
   var_vector::const_iterator si;
   for (si = begin(); si != end();) {
     output.append( (*si).rep() );
@@ -471,8 +471,8 @@ rope_string List::rep() const
 }
 
 
-rope_string List::serialize() const {
-  rope_string s_form;
+mica_string List::serialize() const {
+  mica_string s_form;
 
   Pack( s_form, type_identifier() );
 
@@ -527,7 +527,7 @@ Var List::neg() const
   throw invalid_type("invalid operand");
 }
 
-rope_string List::tostring() const
+mica_string List::tostring() const
 {
   throw invalid_type("cannot convert collection to string");
 }

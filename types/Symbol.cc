@@ -17,15 +17,15 @@
 using namespace std;
 using namespace mica;
 
-typedef STD_EXT_NS::hash_map<rope_string, unsigned int,
+typedef STD_EXT_NS::hash_map<mica_string, unsigned int,
 			     str_hash > SymbolMap;
 static SymbolMap symbol_map;
-std::vector<rope_string> symbols;
+std::vector<mica_string> symbols;
 
 Symbol Symbol::create( const char *c_str ) {
   Symbol sym;
 
-  rope_string str(c_str);
+  mica_string str(c_str);
 
   SymbolMap::iterator sym_i = symbol_map.find( str );
   if (sym_i == symbol_map.end()) {
@@ -42,12 +42,12 @@ Symbol Symbol::create( const char *c_str ) {
   return sym;
 }
 
-rope_string Symbol::tostring() const {
+mica_string Symbol::tostring() const {
   return symbols[idx];
 }
 
-rope_string Symbol::serialize() const {
-  rope_string s_form;
+mica_string Symbol::serialize() const {
+  mica_string s_form;
   Pack( s_form, Type::SYMBOL );
   s_form.append( symbols[idx] );
 

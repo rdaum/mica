@@ -13,7 +13,7 @@ namespace mica {
   class String 
     : public Data, 
       virtual sequence_protocol,
-      private rope_string
+      private mica_string
   {
   public:
     Type::Identifier type_identifier() const { return Type::STRING; }
@@ -21,7 +21,7 @@ namespace mica {
   protected:
     String();
 
-    String( const rope_string &from );
+    String( const mica_string &from );
 
     String( const char *c_str );
 
@@ -52,7 +52,7 @@ namespace mica {
      *  we use empty(), instead.  This makes room for memoization
      *  or hash flattening in the future.
      */
-    static Var from_rope( const rope_string &from );
+    static Var from_rope( const mica_string &from );
 
     /** As above, but from a C-style null-terminated string
      */
@@ -61,7 +61,7 @@ namespace mica {
     /** To get access to this as a rope, you have to make a copy
      *  first.  This is to protect it from mutation.
      */
-    rope_string as_rope() const;
+    mica_string as_rope() const;
 
     /** add a new element to the front/left of a sequence
      *  @param N element to add
@@ -244,11 +244,11 @@ namespace mica {
     Var unzipTriple() const;
 
   public:
-    rope_string tostring() const;
+    mica_string tostring() const;
 
-    rope_string rep() const ;
+    mica_string rep() const ;
 
-    rope_string serialize() const;
+    mica_string serialize() const;
 
     var_vector flatten() const;
 

@@ -58,9 +58,9 @@ namespace mica {
       return STD_EXT_NS::hash<int>()(idx);
     }
 
-    rope_string tostring() const;
+    mica_string tostring() const;
 
-    rope_string serialize() const;
+    mica_string serialize() const;
 
   };
 }

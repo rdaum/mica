@@ -273,9 +273,9 @@ namespace mica {
     Var unzipTriple() const;
 
   public:
-    rope_string rep() const;
+    mica_string rep() const;
 
-    rope_string serialize() const;
+    mica_string serialize() const;
 
   public:
     var_vector for_in( unsigned int var_index,
@@ -296,7 +296,7 @@ namespace mica {
     float tofloat() const;
     Var mod( const Var &rhs ) const; 
     Var neg() const;
-    rope_string tostring() const;
+    mica_string tostring() const;
     
   };
 }

@@ -58,11 +58,11 @@ namespace mica
     int toint() const;
     float tofloat() const;
 
-    rope_string tostring() const;
+    mica_string tostring() const;
 
-    rope_string rep() const;
+    mica_string rep() const;
 
-    rope_string serialize() const;
+    mica_string serialize() const;
 
     bool isNumeric() const;
 

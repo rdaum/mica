@@ -171,14 +171,14 @@ bool Object::operator==( const Var &rhs ) const
 }
 
 
-rope_string Object::rep() const
+mica_string Object::rep() const
 {
   pair<bool, Var> 
     result( environment()->getLocal( Var(const_cast<Object*>(this)), 
 				     TITLE_SYM ) );
 
   if (result.first) {
-    rope_string dstr;
+    mica_string dstr;
     dstr.append("<object (.name: ");
     dstr.append( result.second.rep() );
     dstr.append( ") >");
@@ -204,9 +204,9 @@ Var Object::perform( const Ref<Task> &caller, const Var &args )
 /** this should only serialize the object and not the environment --
  *  that should be left to the Pool to do
  */
-rope_string Object::serialize() const
+mica_string Object::serialize() const
 {
-  rope_string s_form;
+  mica_string s_form;
 
   Pack( s_form, type_identifier() );
 
@@ -298,7 +298,7 @@ bool Object::isNumeric() const
   return false;
 }
 
-rope_string Object::tostring() const
+mica_string Object::tostring() const
 {
   throw invalid_type("cannot convert Object to string");
 }

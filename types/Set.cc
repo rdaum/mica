@@ -191,8 +191,8 @@ bool Set::subset( const Var &N ) const {
 }
 
 
-rope_string Set::rep() const {
-  rope_string output = "%[";
+mica_string Set::rep() const {
+  mica_string output = "%[";
   var_set::const_iterator si;
   for (si = begin(); si != end();) {
     output.append( (*si).rep() );
@@ -228,16 +228,16 @@ Var Set::neg() const {
   throw invalid_type("invalid operand");
 }
 
-rope_string Set::tostring() const {
+mica_string Set::tostring() const {
   throw invalid_type("invalid operand");
 }
 
 
 
 
-rope_string Set::serialize() const
+mica_string Set::serialize() const
 {
-  rope_string s_form;
+  mica_string s_form;
 
   /** append type name
    */

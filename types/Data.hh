@@ -200,7 +200,7 @@ namespace mica {
     virtual unsigned int hash() const;
   };
 
-  void writeString( rope_string &s_form, const rope_string &istr );
+  void writeString( mica_string &s_form, const mica_string &istr );
 
   typedef void (Data::*data_member_pointer)();
 

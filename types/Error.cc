@@ -114,14 +114,14 @@ bool Error::isNumeric() const
   return false;
 }
 
-rope_string Error::tostring() const
+mica_string Error::tostring() const
 {
   throw invalid_type("cannot convert Error to string");
 }
 
-rope_string Error::rep() const
+mica_string Error::rep() const
 {
-  rope_string dstr("~");
+  mica_string dstr("~");
   dstr.append( err_sym.tostring() );
   if ((String*)desc) {
     dstr.push_back('(');
@@ -132,9 +132,9 @@ rope_string Error::rep() const
   return dstr;
 }
 
-rope_string Error::serialize() const
+mica_string Error::serialize() const
 {
-  rope_string s_form;
+  mica_string s_form;
 
   Pack( s_form, type_identifier() );
 

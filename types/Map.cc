@@ -173,13 +173,13 @@ Var Map::lookup_withDefault( const Var &n, const Var &d ) const {
 }
  
 
-rope_string Map::tostring() const {
+mica_string Map::tostring() const {
   throw invalid_type("invalid operand");
 }
 
-rope_string Map::rep() const
+mica_string Map::rep() const
 {
-  rope_string dstr("#[");
+  mica_string dstr("#[");
 
   var_map::const_iterator si;
   for (si = begin(); si != end(); ) {
@@ -200,9 +200,9 @@ rope_string Map::rep() const
 }
 
 
-rope_string Map::serialize() const
+mica_string Map::serialize() const
 {
-  rope_string s_form;
+  mica_string s_form;
 
   /** append type name
    */

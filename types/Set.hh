@@ -197,9 +197,9 @@ namespace mica {
     bool subset( const Var &a ) const;
 
   public:
-    rope_string rep() const;
+    mica_string rep() const;
     
-    rope_string serialize() const;
+    mica_string serialize() const;
 
     var_vector flatten() const;
    
@@ -220,7 +220,7 @@ namespace mica {
     Var mod( const Var &rhs ) const;
     Var neg() const;
     Var subseq( int idx, int length ) const;
-    rope_string tostring() const;
+    mica_string tostring() const;
 
 
   };

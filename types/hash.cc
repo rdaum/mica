@@ -28,7 +28,7 @@ unsigned int hash_symbol::operator()( const Symbol &sym ) const {
 }
 
 
-unsigned int str_hash::operator ()( const rope_string &str ) const
+unsigned int str_hash::operator ()( const mica_string &str ) const
 {
   STD_EXT_NS::hash<const char *> hasher;
   return hasher(str.c_str());

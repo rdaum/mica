@@ -104,6 +104,26 @@ void MetaObjects::initialize( const Var &lobby ) {
   meta_delegates[Type::SET].push_back( SetMeta  );
   meta_delegates[Type::STRING].push_back( StringMeta );
 }
+
+child_set mica::global_roots() {
+  child_set roots;
+
+  roots << 
+    MetaObjects::TypeMeta << 
+    MetaObjects::ScalarMeta << 
+    MetaObjects::SequenceMeta << 
+    MetaObjects::ListMeta << 
+    MetaObjects::StringMeta << 
+    MetaObjects::MapMeta << 
+    MetaObjects::SetMeta << 
+    MetaObjects::SymbolMeta << 
+    MetaObjects::ErrorMeta << 
+    MetaObjects::SystemMeta << 
+    MetaObjects::Lobby << 
+    MetaObjects::AnyMeta;
+
+  return roots;
+}
   
 var_vector MetaObjects::delegates_for( Type::Identifier type_id ) {
   MetadelegatesMap::iterator fi = meta_delegates.find( (unsigned int)type_id );

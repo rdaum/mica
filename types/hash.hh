@@ -68,14 +68,14 @@ namespace mica {
     }
   };
 
-  /** hashes on rope_string
+  /** hashes on mica_string
    */
   struct str_hash
   {
     static const unsigned int bucket_size = 4;
     static const unsigned int min_buckets = 16;
 
-    unsigned int operator()( const rope_string &str ) const;
+    unsigned int operator()( const mica_string &str ) const;
   };
 
   class Symbol;
