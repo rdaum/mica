@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <set>
 
 #include "reference_counted.hh"
 
@@ -55,31 +56,50 @@ inline bool reference_counted::paging() const {
  */
 static child_set Roots;
 
-/** Used to free objects.  Just calls C++ delete, but could be made to
- *  use something else if necessary.  We use this to avoid having deletes
- *  scattered all over the source.
+/** Objects that are garbage, to delete
+ */
+static vector<reference_counted*> GarbageList;
+
+/** Add the object in question to the garbage list, to be freed later.
  */
 static void Free( reference_counted *who )
 {
-  /** Do not free paged objects while PAGING is in effect
-   */
-  if (who->paging())
-    return;
+  if (!who->garbaged) {
+    who->garbaged = true;
+    GarbageList.push_back( who );
+  }
+}
+
+/** Take out the trash.
+ */
+static void free_garbage() {
 
   /** Engage lock
    */
   FREEING = true;
 
-  who->finalize_object();
+  for (vector<reference_counted*>::iterator x = GarbageList.begin();
+       x != GarbageList.end(); x++) {
 
-  if (who->paged)
-    who->finalize_paged_object();
+    reference_counted *who = *x;
 
-  delete who;
+    /** Do not free paged objects while PAGING is in effect
+     */
+    if (!who->paging()) {
 
+      who->finalize_object();
+    
+      if (who->paged)
+	who->finalize_paged_object();
+      
+      delete who;
+    }   
+  }
   /** Remove lock
    */
   FREEING = false;
+
+  GarbageList.clear();
 }
 
 /** We initialize everything with an initial reference count of 0 and
@@ -89,6 +109,7 @@ reference_counted::reference_counted()
   : refcnt(0),
     buffered(false),
     paged(false),
+    garbaged(false),
     colour(BLACK)
 {}
 
@@ -99,31 +120,33 @@ reference_counted::~reference_counted() {}
  */
 void reference_counted::mark_roots() {
 
- for (child_set::iterator x = Roots.begin();
+  for (child_set::iterator x = Roots.begin();
        x != Roots.end();) {
+   
     reference_counted *S = *x;
+ 
     child_set::iterator next = x;
     next++;
-    
+   
     if (S) { // Only visit non-NULL nodes, just in case garbage
-             // gets in here
+      // gets in here
 
       if (S->colour == reference_counted::PURPLE) {
-
+       
 	S->mark_gray();
-
+       
       } else {
-
+       
 	Roots.erase( x );
 
 	S->buffered = false;
 	if (S->colour == reference_counted::BLACK && (S->refcnt == 0)) {
 	  Free(S);
 	}
-	
+       
       }
     }
-    
+   
     x = next;
 
   }
@@ -189,6 +212,9 @@ void reference_counted::collect_cycles() {
 
   // Collect cyclic garbage
   collect_roots(); 
+
+  // Do actual free
+  free_garbage();
 
   /** Unlock the cycle collector now.
    */
@@ -364,7 +390,7 @@ void reference_counted::collect_white() {
     /** Recursion.
      */
     for_each( children.begin(), children.end(),
-	    mem_fun( &reference_counted::collect_white ) );
+	      mem_fun( &reference_counted::collect_white ) );
 
     Free(this);       // Bye bye, cycle!
   }

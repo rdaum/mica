@@ -68,8 +68,9 @@ namespace mica {
     int refcnt        : 27;
     bool buffered     : 1;
     bool paged        : 1;
+    bool garbaged     : 1;
     Colouring colour  : 3;
-    
+   
     
   public:
     reference_counted();
