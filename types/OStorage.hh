@@ -126,7 +126,7 @@ namespace mica {
     friend class Object;
     friend class PersistentPool;
 
-    /** Cached parents_slot entry
+    /** Cached delegates slot entry
      */
     OptSlotMap::iterator delegates_iterator;
 

@@ -127,7 +127,7 @@ void Block::serialize_to( serialize_buffer &s_form ) const {
 
   /** Write source.
    */
-  writeString( s_form, source );
+  serialize_string( s_form, source );
 
   /** Write statement sizes
    */

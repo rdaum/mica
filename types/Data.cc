@@ -84,12 +84,6 @@ var_vector Data::perform( const Ref<Frame> &caller,  const Var &args )
   throw unimplemented("perform operation not implemented for this type");
 }
 
-void mica::writeString( mica_string &s_form, const mica_string &istr )
-{
-  size_t len = istr.size();
-  Pack( s_form, len );
-  s_form.append( istr );
-}
 
 void mica::append_data( child_set &list, const Var &var )
 {

@@ -25,21 +25,21 @@ using namespace std;
 using namespace mica;
 
 
-pair<PID, Var> Pool::open( const Symbol &name, 
-			   const Ref<Object> &parent_lobby )
+boost::tuple<PID, Var> Pool::open( const Symbol &name, 
+				   const Ref<Object> &parent_lobby )
 {
   Pool *pool = new (aligned) Pool( name );
   pool->pid = Pools::instance.add( name, pool );
   
-  Var lobby;
+  Var lobby_v;
   if ((Object*)parent_lobby)
-    lobby = Object::create( pool->pid, parent_lobby );
+    lobby_v = Object::create( pool->pid, parent_lobby );
   else
-    lobby = Object::create( pool->pid );
+    lobby_v = Object::create( pool->pid );
 
-  pool->lobby = lobby->asRef<Object>();
+  pool->lobby = lobby_v->asRef<Object>();
 
-  return make_pair( pool->pid, lobby );
+  return boost::tuple<PID,Var>( pool->pid, lobby_v );
 }
 
 Pool::Pool( const Symbol &name )

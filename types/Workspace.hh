@@ -3,6 +3,8 @@
 #ifndef POOL_HH
 #define POOL_HH
 
+#include <boost/tuple/tuple.hpp>
+
 #include <vector>
 
 
@@ -40,11 +42,11 @@ namespace mica {
      *  @param name the name (a Symbol) that identifies this pool
      *  @param parent_lobby a parent lobby that the lobby for this pool
      *                      should inherit from (or NONE)
-     *  @return returns a pair of: < pool id of the pool,
-     *                               lobby (namespace) object for the pool >
+     *  @return returns a tuple of: < pool id of the pool,
+     *                                lobby (namespace) object for the pool >
      */
-    static std::pair<PID, Var> open( const Symbol &name, 
-				     const Ref<Object> &parent_lobby = Ref<Object>(0) );
+    static boost::tuple<PID, Var> open( const Symbol &name, 
+			   	        const Ref<Object> &parent_lobby = Ref<Object>(0) );
 
     /** Blank virtual destructor here to satisfy the compiler
      */

@@ -209,13 +209,17 @@ int main( int argc, char *argv[] )
     initSymbols();
     
     logger.infoStream() << "opening builtin pool" << log4cpp::CategoryStream::ENDLINE;   
-    pair<PID, Var> pool_return = Pool::open( Symbol::create("builtin") ); 
-    Pools::instance.setDefault( pool_return.first );
+    
+    PID pid;
+    Var lobby;
+
+    boost::tie( pid, lobby ) = Pool::open( Symbol::create("builtin") ); 
+    Pools::instance.setDefault( pid );
 
     logger.infoStream() << "initializing builtins" << log4cpp::CategoryStream::ENDLINE;
-    MetaObjects::initialize( pool_return.second );
+    MetaObjects::initialize( lobby );
 
-    default_pool = Pools::instance.get(pool_return.first);
+    default_pool = Pools::instance.get( pid );
 
     //    initNatives();
 
@@ -234,10 +238,13 @@ int main( int argc, char *argv[] )
     try {
       logger.infoStream() << "opening pool:" << pool_name << log4cpp::CategoryStream::ENDLINE;
 
-      pair<PID, Var> p_pool_return( PersistentPool::open( Symbol::create(pool_name), MetaObjects::Lobby->asRef<Object>() ) );
+      PID pid;
+      Var lobby;
+
+      boost::tie(pid, lobby) = PersistentPool::open( Symbol::create(pool_name), MetaObjects::Lobby->asRef<Object>() );
       
-      Pools::instance.setDefault( p_pool_return.first );
-      default_pool = Pools::instance.get( p_pool_return.first );
+      Pools::instance.setDefault( pid );
+      default_pool = Pools::instance.get( pid );
     } catch (Ref<Error> e) {
       logger.infoStream() << "unable to open pool:" << pool_name << log4cpp::CategoryStream::ENDLINE;
     }

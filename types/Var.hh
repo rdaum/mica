@@ -616,15 +616,6 @@ namespace mica
 
   std::ostream& operator << (std::ostream &, const mica::Var &);
 
-  /** For serializing the contents of simple types
-   *  This append the literal binary form of the type to
-   *  the passed-in string.
-   */
-  template<class T>
-  inline void Pack( mica::mica_string &S, const T &N ) {
-    S.append( (char*)&N, sizeof(T) );
-  }
-
   /** For serializing a var vector
    */
   inline void SerializeVV( mica::serialize_buffer &S, const var_vector &vv ) {

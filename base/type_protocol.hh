@@ -17,8 +17,6 @@
 
 namespace mica {
   
-  typedef mica_string serialize_buffer;
-
   /** Forward declaration of the variant storage object.
    */
   class Var;
@@ -260,10 +258,6 @@ namespace mica {
     /** return a string representation
      */
     virtual mica_string rep() const = 0;
-
-    /** return a serialization
-     */
-    virtual void serialize_to( serialize_buffer &s_form ) const = 0;
 
     /** is this a numeric type?
      */

@@ -3,6 +3,7 @@
 #ifndef PERSPOOL_HH
 #define PERSPOOL_HH
 
+#include <boost/tuple/tuple.hpp>
 #include <db_cxx.h>
 
 namespace mica {
@@ -22,9 +23,9 @@ namespace mica {
   public:
     /** Open a new persistent pool.
      */
-    static std::pair<PID, Var> open( const Symbol &name, 
-				     const Ref<Object> &parent_lobby =
-				     Ref<Object>(0) );
+    static boost::tuple<PID, Var> open( const Symbol &name, 
+					const Ref<Object> &parent_lobby =
+					Ref<Object>(0) );
     void sync();
 
     void close();

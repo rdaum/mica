@@ -13,6 +13,7 @@
 
 #include <stdexcept>
 
+#include "serializable.hh"
 #include "reference_counted.hh"
 #include "type_protocol.hh"
 #include "aligned_allocator.hh"
@@ -37,7 +38,8 @@ namespace mica {
    *         functions for outputting to iostreams, appending to lists, etc.
    */
   class Data 
-    : public reference_counted, public type_protocol
+    : public reference_counted, public type_protocol,
+      public serializable
   {
   public:
     unsigned int guard;
@@ -199,8 +201,6 @@ namespace mica {
 
     virtual unsigned int hash() const;
   };
-
-  void writeString( mica_string &s_form, const mica_string &istr );
 
   typedef void (Data::*data_member_pointer)();
 

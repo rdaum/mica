@@ -37,8 +37,8 @@ using namespace std;
 #define CACHE_WIDTH 64
 #define CACHE_GROW_WINDOW 32
 
-pair<PID, Var> PersistentPool::open( const Symbol &name, 
-				     const Ref<Object> &parent_lobby )
+boost::tuple<PID, Var> PersistentPool::open( const Symbol &name, 
+					     const Ref<Object> &parent_lobby )
 {
   PersistentPool *pool = new (aligned) PersistentPool( name );
   pool->pid = Pools::instance.add( name, pool );
@@ -62,7 +62,7 @@ pair<PID, Var> PersistentPool::open( const Symbol &name,
   }
 
 
-  return make_pair( pool->pid, pool->lobby );
+  return boost::tuple<PID, Var>( pool->pid, Var(pool->lobby) );
 }
 
 PersistentPool::PersistentPool( const Symbol &poolName )

@@ -819,7 +819,6 @@ Var &Var::operator%=( const Var &rhs ) {
     throw divzero_error("division by zero in divmod");
   }
   return *this;
-
 }
 
 
@@ -959,11 +958,9 @@ var_vector Var::delegates() const {
 
 template<typename T>
 struct conversion {
-
   inline T operator()( const T& x ) const {
     return x;
   }
-
   template<typename X>  
   inline T operator()( const X & ) const {
     throw invalid_type("cannot convert value");
