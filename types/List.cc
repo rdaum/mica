@@ -504,11 +504,7 @@ size_t List::hash() const
 
 child_set List::child_pointers()
 {
-  child_set children;
-  for (var_vector::const_iterator x = begin(); x != end(); x++)
-    children << *x;
-  return children;
-
+  return data_list( flatten() );
 }
 
 int List::toint() const

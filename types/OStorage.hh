@@ -46,9 +46,11 @@ namespace mica {
 
     VerbDef();
     VerbDef( const VerbDef &x );
+    virtual ~VerbDef() {};
+
     bool operator==( const VerbDef &x );
     VerbDef &operator=( const VerbDef &x );
-
+    
   };
   typedef std::vector< Ref<VerbDef> > VerbList;
 

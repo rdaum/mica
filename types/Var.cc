@@ -253,7 +253,7 @@ struct tostring_visitor {
     return y.tostring();
   }
   inline rope_string operator()( const Op &op ) const {
-    operator()( op.code );
+    return operator()( op.code );
   }
   inline rope_string operator()( Data *x ) const {
     return x->tostring();
@@ -391,6 +391,7 @@ Var::~Var() {
 // Default constructor -- return None instance
 Var::Var()
 {
+  v.value = 0;
   memcpy( this, &NONE, sizeof(Var) );
 }
 

@@ -36,6 +36,8 @@ var_vector Scalar::flatten() const
 {
   var_vector ops;
   ops.push_back( Var(this) );
+
+  return ops;
 }
 
 child_set Scalar::child_pointers() {

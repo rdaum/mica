@@ -28,25 +28,21 @@ using namespace std;
 String::String() 
   : Data(), rope_string() 
 {
-  colour = reference_counted::GREEN;
 }
 
 String::String( const String &from )
   : Data(), rope_string( from )
 {
-  colour = reference_counted::GREEN;
 }
 
 String::String( const rope_string &from )
   : Data(), rope_string( from )
 {
-  colour = reference_counted::GREEN;
 }
 
 String::String( const char *from )
   : Data(), rope_string( from )
 {
-  colour = reference_counted::GREEN;
 }
 
 Ref<String> String::create( const char *from ) {

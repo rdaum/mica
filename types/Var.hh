@@ -70,7 +70,11 @@ namespace mica
 	  return Type::BOOL;
 	case Atoms::SYMBOL:
 	  return Type::SYMBOL;
+	case Atoms::UNUSED:
+	  assert(0);
 	}
+      assert(0);
+      exit(-1);
     }
 
     template<typename R, typename T>
@@ -89,8 +93,11 @@ namespace mica
 	  return x.operator()( (bool)v.atom.value );
 	case Atoms::SYMBOL:
 	  return x.operator()( as_symbol() );
+	case Atoms::UNUSED:
+	  assert(0);
 	}
-      
+      assert(0);
+      exit(-1);
     }
 
     template<typename R, typename T>
@@ -380,7 +387,7 @@ namespace mica
     /** is the object storing heap-allocated Data?
      */
     inline bool isData() const {
-      return !v.ptr.is_integer && v.ptr.is_pointer;
+      return !v.atom.is_integer && v.atom.is_pointer;
     }
 
     /** is the type atomic?

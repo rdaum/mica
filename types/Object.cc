@@ -46,7 +46,7 @@ Object::Object( OID i_pid, PID i_oid )
   paged = true;;
 }
 
-Var Object::create( int pool_id,  const Ref<Object> &parent )
+Var Object::create( int pool_id, const Ref<Object> &parent )
 {
   PID pid;
   if (pool_id == -1)
@@ -57,15 +57,17 @@ Var Object::create( int pool_id,  const Ref<Object> &parent )
   Pool *pool = Pools::instance.get(pid);
   Object *self = pool->new_object();
 
-  if ((Object*)parent) 
+  if ((Object*)parent) {
+    Var parent_v(parent);
     self->environment()->add_delegate( self, PARENT_SYM,
-				       Var(parent) );
+				       parent_v );
+  }
 
   /** This young object is dirty! (spank spank)
    */
   self->write();
 
-  return self; 
+  return Var(self); 
 }
 
 

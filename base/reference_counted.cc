@@ -7,6 +7,7 @@
 #include <typeinfo>
 #include <algorithm>
 #include <functional>
+#include <iostream>
 
 #include "reference_counted.hh"
 
@@ -71,6 +72,7 @@ static void Free( reference_counted *who )
   if (who->paged)
     who->finalize_paged_object();
 
+  cerr << "Deleting: " << who << " ( " << typeid(*who).name() << " )" << endl;
   delete who;
 
   FREEING = false;

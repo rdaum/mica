@@ -350,7 +350,7 @@ child_set Task::child_pointers() {
 rope_string Task::rep() const {
   rope_string dstr("<task pid: ");
   char identstr[80];
-  snprintf( identstr, 80, "pid: %d %tid: %d msg_id %d",
+  snprintf( identstr, 80, "pid: %d tid: %d msg_id %d",
 	    pid, tid, msg_id );
   dstr.append(identstr);
   dstr.push_back('>');

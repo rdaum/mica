@@ -1299,7 +1299,7 @@ void Closure::op_scatter( unsigned int param )
 
   /** Position in the range
    */
-  int pos = 0;
+  unsigned int pos = 0;
 
   /** Retrieve # of required scope
    */

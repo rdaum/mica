@@ -110,11 +110,7 @@ namespace mica {
 inline void *operator new( size_t size ) 
   throw (std::bad_alloc)
 {
-  void *addr = malloc(size);
-  if (!addr)
-    throw std::bad_alloc();
-  
-  return addr;
+  return do_alloc( size );
 }
 
 

@@ -12,9 +12,10 @@ namespace mica {
   class Closure;
   class Task;
   class Message;
+
   /** Just a simple bitmask set so we can tell when a method argument
    *  has been visited.  By using int, we are limiting ourselves to
-   *  64 (on a 32-bit machine) possible arguments.  This doesn't
+   *  32 (on a 32-bit machine) possible arguments.  This doesn't
    *  seem unreasonable, however, does it?
    */
   struct ArgumentMask {
