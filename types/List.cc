@@ -33,7 +33,7 @@ List::List( const var_vector &from )
 Var List::from_vector( const var_vector &from )
 {
   if (from.empty())
-    return empty();
+    return List::empty();
   else {
     return new (aligned) List(from);
   } 
@@ -146,13 +146,13 @@ Var List::append( const Var &seq ) const {
 
 Var List::lview() const {
   if (null())
-    return empty();
+    return List::empty();
 
-  var_vector viewr;
-  if (size() > 1)
-    viewr.insert(viewr.end(), (begin() + 1), end() );
+  var_vector viewr( size() > 1 ? (begin() + 1) : begin(), 
+		    end() );
 
-  return List::tuple( List::single( front() ), List::from_vector(viewr) );
+  return List::tuple( List::single( front() ), 
+		      List::from_vector(viewr) );
 }
 
 Var List::lhead() const {
@@ -175,8 +175,8 @@ Var List::rview() const {
   if (null())
     return empty();
 
-  var_vector viewr( *this );
-  viewr.pop_back();
+  var_vector viewr( begin(), 
+		    size() > 1 ? (end() - 1) : end() );
     
   return List::tuple( List::single( back() ),
 		      List::from_vector(viewr) );
@@ -389,7 +389,7 @@ var_vector List::map( const Var &expr ) const
 {
   /** Finished iterating.  No-op
    */
-  if (this->var_vector::empty())
+  if (null())
     return var_vector();
 
   /** Push cdr then push the rest of the expr
@@ -423,7 +423,7 @@ var_vector List::for_in( unsigned int var_no,
 {
   /** Finished iterating.  No-op
    */
-  if (this->var_vector::empty())
+  if (null())
     return var_vector();
 
   /** Assign cdr into variable @ var_index, execute block

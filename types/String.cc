@@ -98,7 +98,11 @@ Var String::add( const Var &v2 ) const
 {
   //  mica_string x = *this + v2;
   mica_string x(*this);
-  x.push_back( v2.tochar() );
+
+  if (v2.type_identifier() == Type::CHAR)
+    x.push_back( v2.tochar() );
+  else
+    x.append( v2.tostring() );
 
   return new (aligned) String(x);
 }
