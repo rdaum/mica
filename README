@@ -1,0 +1,27 @@
+To compile, you need:
+
+   * Sleepycat DB (aka Berkeley DB)
+	http://www.sleepycat.com/
+
+   * Boost
+        http://www.boost.org/
+
+   * readline (should come with your distribution)
+
+   * log4cpp
+	http://log4cpp.sourceforge.net/	
+
+   * Dolphin/Whale lexer/parser generator
+	http://hirvi.cs.queensu.ca/whale/
+
+   * autoconf 2.5.3
+
+To actually build the project, do:
+
+./bootstrap
+./configure
+make
+
+For other information on poe see http://darksleep.com/twiki/bin/view/Main/Poe
+
+Ryan Daum

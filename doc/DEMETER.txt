@@ -1,0 +1,18 @@
+From http://cpptips.hyperformix.com/cpptips/demeter
+
+The strong form of the law restricts access to instance variables to only
+those variables defined in the class in which the method appears.  Access
+to instance variables from superclasses must be mediated through the use of
+accessor functions.
+
+Law of Demeter (strong form).  Inside a method it is only permitted to
+access or send messages to the following objects:
+1. The arguments associated with the methods being executed (including the
+   self [or this] object).
+2. Instance variables defined in the class containing the method being
+   executed. *
+3. Global variables.
+4. Temporary variables created inside the method.
+
+
+[ * In the case of Mica, "class containing the method" should read "object containing the method being executed" ]

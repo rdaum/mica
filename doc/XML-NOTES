@@ -1,0 +1,74 @@
+INHERITANCE AND ATTRIBUTES
+==========================
+
+An element in an XML document is an object whose content is defined by the attributes it carries and elements that it contains. 
+
+We will model XML containment as inheritance, but in reverse: the innermost element of a document becomes a parent of the element which contains it.  As such the outtermost element of a document contains the ensemble of attributes and behaviours of all the elements in the document.
+
+For example, let's say we have a document about a customer.  In our example, a customer tag contains the name, address, and phone number of the customer.
+
+<customer id="ryan">  
+  <name>Ryan W. Daum</name>
+  <address>
+    <street>204 Dunn</street>
+    <city>Toronto</city>
+  </address>
+  <phone number="416-535-6998">
+</customer>
+
+In Mica, we could model this relationship as:  CUSTOMER with id 'ryan inherits from ADDRESS, which inherits from STREET and a CITY.  (Caps are merely for emphasis.)
+
+Remember, in Mica, objects are Slot -> Value mappings, plus a built-in 'parent slot which allows delegation of behaviours.  However, Slot key names in Mica are not identified only by name, but _also_ by the object which the method that created the slot was defined on.  Thus a Slots' true name is actually [definer, name].  It is necessary to use this true name to get access to the Slot.
+
+This model maps well to nested XML attributes, if the elements which contain them are either parent or self.  For each attribute the key to access it is [element, name]. 
+
+Thus, in the example above, the following C++ calls to a Mica Object would return what is on the right hand side of the "=>":
+
+  CUSTOMER->get( CUSTOMER, "id" ) => 'ryan
+  CUSTOMER->get( NAME, "cdata" ) => "Ryan W. Daum"
+  CUSTOMER->get( PHONE, "number" ) => "416-535-6998"
+  CUSTOMER->get( STREET, "cdata" ) => "204 Dunn"
+
+Whereas:
+
+  CUSTOMER->get( CUSTOMER, "number" ) will fail, as PHONE defined 'number, not customer.
+
+This facility also prevents attribute-name conflicts for nested tags.   For example, should our XML actually look like:
+
+<customer id="ryan" number="32">  
+  ...
+  <phone number="416-535-6998">
+</customer>
+
+  CUSTOMER->get( CUSTOMER, 'number ) now returns 32, whereas
+  CUSTOMER->get( PHONE, 'number) still returns "416-535-6998" as before.
+  
+
+ADDING BEHAVIOURS
+=================
+
+As an OO language Mica also allows the easy addition of complex programmed behaviours to objects.  Any object can have a method attached to it.  Unlike a typical class-based OO language, where the class contains the methods and the instance carries variable values, Mica objects actually carry both the methods and the instance variables.
+
+Unlike instance variable slots (which we are using for XML attributes, as described above) whose real names are defined by both definer and name, the definer for _methods_ does not matter.  No matter where a method is defined in the inheritance chain, its name is the same and thus it can be overloaded by any child.
+
+We can use this facility for adding behavioural abilities on top of the document model itself.
+
+To do this, we would add an extra parent (a prototype) to each element node that we wanted to have extra behaviours -- these extra behaviours would expose attributes of the components that are of importance to us.
+
+Thus, in our example, ADDRESS would actually be not only a child of STREET and ADDRESS, but also of a prototypical address object, which we will call $Address.  Similarily, CUSTOMER would be a child of $Customer.
+
+This would allow us to add more complex behaviours, allowing us to evaluate the following Mica expressions, as an example.
+
+  var CUSTOMER = CUSTOMER_LIST:findCustomer( "Ryan*" );
+  var fullAddress = CUSTOMER:getAddressAsText();
+
+
+SUMMARY
+=======
+
+I believe from this sketch that this is a conceptually much simpler model than DOM, and certainly easier to work with.  It takes advantage of the unique way objects' namespaces work in Mica (similar to one of its ancestor's, ColdMUD, by Greg Hudson).  
+
+It is also roughly compatible with XPath in the sense that it ought to be possible to write an XPath parser that could utilize this model fairly easily.
+
+In order to make it workable, a set of root prototypes for all elements and documents would be needed to allow for arbitrary walks and visits through the tree -- this could in fact end up looking a lot like DOM, in that it would provide methods for accessing a list of child nodes, attributes, siblings, etc.  This would be necessary because Mica's instance variable slots (our attributes) are completely private and readable and mutable only by self.  
+

@@ -1,0 +1,116 @@
+This is a nutshell version of using the nana macros.
+
+Get nana from ftp://ftp.cs.ntu.edu/pub/nana/nana-2.5.tar.gz
+% ./configure && make all && make check
+% make install
+
+% info nana
+... read read read ...
+
+
+Using nana
+==========
+#include <nana.h>  (for Mica: #include "common/contract.h")
+link with -lnana   (poe's autoconf will take care of it)
+
+add a bool invariant() method to any class that defines an invariant
+
+Mica Wrapper Macros
+==================
+ASSERT(expr)      
+  asserts that expr is true
+
+ASSERT_NOT(expr)  
+  asserts that expr is false
+
+TRUE_FOR_*
+  for name in container, apply predicate.  see below for definitions
+
+TRUE_FOR_ALL(name, container, predicate)
+  true iff predicate is true for all items in the container
+
+TRUE_FOR_ANY(name, container, predicate)
+  true iff predicate is true for any item in the container
+
+TRUE_FOR_ONE(name, container, predicate)
+  true iff predicate is true for exactly one item in the container
+
+PRECONDITION(expr)
+  asserts class invariant and expr
+
+POSTCONDITION(expr)
+  asserts class invariant and expr
+
+
+Basic macros
+============
+
+I(expr) 
+  "invariant".  essentially the same as assert
+
+N(expr) 
+  "never".  expr should never be true.  looks nicer than I(!(expr))
+
+ID(typename var = value)
+  declare and store value into var (when var is only ever used in nana macros)
+
+IS(var = value)
+  store value into var (when var is only ever used in nana macros)
+  
+ISG(var = value, guardexpr)
+  store value into var only if guardexpr is true
+
+Logging
+=======
+
+  not documented here
+
+STL Container Predicates
+========================
+
+AO(name, container, predicate)
+EO(name, container, predicate)
+E1O(name, container, predicate)
+CO(name, container, predicate)
+
+  applies <predicate> to each <name> in <container>
+
+  AO  - true iff predicate is true for all
+  EO  - true iff predicate is true for any
+  E10 - true iff predicate is true for only one
+
+SO(name, container, expr)
+  sum of <expr> applied to each <name> in <container>
+
+PO(name, container, predicate)
+  product of <expr> applied to each <name> in <container>
+  
+
+Using debugger macros
+=====================
+DI(expr) - same as I, can use debugger vars
+DN(expr) - same as N, can use debugger vars
+
+DS($var = value) 
+DSG($var = $value, guardexpr)
+  same as IS/ISG, except using debugger var (no DD needed)
+
+DI_MAKE_VALID_BREAKPOINT(expr)
+  insert a breakpoint
+
+use same preprocessor flags to nana as you do with gcc
+
+% gcc -DQUUX -g foo.c -o foo
+% nana -DQUUX foo.c > foo.gdb
+% gdb foo
+(gdb) source foo.gdb
+
+Useful nana commands
+====================
+
+% nana-run foo -x foo.gdb	# runs foo with nana enabled
+% nana-clg -O3 -DFOO foo.c	# compiles foo.c
+% nana-c++lg -O3 foo.cc		# compiles foo.cc in c++
+% nana-trace foo		# line-by-line trace of foo
+% nana-trace -x cmds.gdb foo	# same w/ commands in cmds.gdb for each line
+

@@ -1,0 +1,50 @@
+BUGS:
+
+  thrown errors during interpretation causing fatal segmentation fault!  
+  scatter assign appears to be broken
+  fix map operator to work with all binary operators, not just arithmetic
+      involves rewriting how binary expressions are parsed
+  break + continue for the new for_range? (and possibly for a new while & other new iter loops)
+     - options: BREAK clears exec stack?  (can't guarantee no bad side-effects...?)
+  some tasks won't like to be persistent.  i.e. special tasks like network + eval loop.  how to handle references to them so they won't persist?  If we don't fix this, it will crash.
+  
+For mica 0.9 
+============
+
+- floats / bignums support :
+      - a) using GMP or some sort of C++ wrapper on it
+      - b) Add another type to Var: bignum, with bignum_offset holding an
+           offset into a special mmapped region of bignums.  this region
+           would be optimized for ultra-fast creation/destruction, and the
+           objects in it would not be refcounted -- a new bignum would be
+           created for every bignum Var, assigned an index .. 
+           the actual bignum region would be a vector of bignums/bigfloats
+
+- finish new iterator and operator model:
+     - filter / fold, fold_left, fold_right (crazy)
+
+- slot-name-expressions for verb selectors+prepositions
+
+- db <-> text dump format utilities
+
+- fix timeout/timing/ticking on tasks
+
+
+For mica 0.9.x => 1.0
+=====================
+
+- optimizations and bug fixes
+
+For mica 1.0.x => 1.1
+=====================
+
+- const vars
+- lazy evaluation
+- FFI, Extra utilities objects, bug fixes.  Regular expressions!
+- clean up the VM suspension model
+- suspendable/resumable/can-dispatch-from native methods.  Using makecontext/setcontext for native-code "fibres".  
+- both syntax and compilation nodes become a kind fully persistent values, decompilation from syntax nodes
+- call/cc operator
+- clean up Pool/Pools interface in general
+
+

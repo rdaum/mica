@@ -1,0 +1,279 @@
+/** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
+*/
+
+#include <unistd.h>
+#include <iostream>
+#include <fstream>
+#include <stdio.h>
+#include <dirent.h>
+
+#ifdef _WIN32
+#include <sys/types.h>
+#include <sys/timeb.h>
+#endif
+
+#include "Data.hh"
+#include "Var.hh"
+#include "Scalar.hh"
+#include "Exceptions.hh"
+#include "Scheduler.hh"
+#include "Task.hh"
+#include "Symbol.hh"
+#include "Message.hh"
+#include "Block.hh"
+#include "List.hh"
+#include "NativeBind.hh"
+#include "OpCodes.hh"
+#include "MetaObjects.hh"
+#include "GlobalSymbols.hh"
+#include "Error.hh"
+#include "Symbol.hh"
+#include "OpCodes.hh"
+
+#include "Object.hh"
+
+#include "Pool.hh"
+#include "Pools.hh"
+#include "PersistentPool.hh"
+
+#include "compile.hh"
+
+using namespace mica;
+using namespace std;
+
+var_vector objects;
+
+Task *compile_task;
+
+class CompileTask
+  : public Task
+{
+public:
+  CompileTask()
+    : Task(0,0) {};
+
+  Var notify( const Var &argument ) {
+    cerr << "NOTIFY: " << argument << endl;
+    return Var();
+  }
+
+  child_set child_pointers() {
+    return this->Task::child_pointers();
+  }
+
+  void handle_message( const Ref<Message> &reply_message )
+  {
+    if (reply_message->isRaise()) {
+      rope_string traceback = reply_message->args[1].tostring();
+      traceback.push_back('\n');
+
+      cerr << traceback;
+
+    } else if (reply_message->isHalt()) {
+      cerr << "Halted." << endl;
+    } else if (reply_message->isExecutable()) {
+      cerr << "Top level closure cannot execute opcodes.";
+    }
+  }
+
+};
+
+
+vector<rope_string> loadDirectory( rope_string path ) {
+  // look for the path
+  struct dirent **namelist;
+  int ret = scandir( path.c_str(), &namelist, 0, alphasort );
+	   
+  if (ret < 0) {
+    char errstr[80];
+    snprintf( errstr, 80, "unable to load from path (%s)", path.c_str() );
+    throw internal_error(errstr);
+  }
+
+  vector<rope_string> files;
+  int count = 0;
+  while (count < ret) {
+    if (strcmp(namelist[count]->d_name, "..") && 
+	strcmp(namelist[count]->d_name, ".") &&
+	strcmp(namelist[count]->d_name, "CVS"))
+      files.push_back( namelist[count]->d_name );
+    count++;
+  }
+  free( namelist );
+
+  return files;
+}
+
+void doDefinition( const Var &obj, const rope_string path )
+{
+  rope_string filename = path;
+  filename.append("/DEFINITION");
+  std::ifstream file(filename.c_str());
+
+  rope_string source;
+  char c;
+  while (file.get(c)) {
+    source.push_back(c);
+  }
+
+  objects.push_back(obj);
+
+  Ref<Block> def_tmp(compile(source ));
+  obj->declare( Var(VERB_SYM), 
+		Symbol::create("DEFINITION_TMP"), Var(def_tmp) );
+
+  var_vector args;
+  compile_task->send( MetaObjects::SystemMeta, 
+		      MetaObjects::SystemMeta,
+		      obj, obj,
+		      Symbol::create("DEFINITION_TMP"),
+		      args ).perform( compile_task, List::from_vector(args) );
+  
+}
+
+
+void loadObject( rope_string path) {  
+  Var obj = Object::create();
+
+  vector<rope_string> toclear;
+
+  vector<rope_string> dir = loadDirectory( path );
+
+  vector<rope_string>::iterator dirfile = find( dir.begin(),
+						dir.end(),
+						rope_string("DEFINITION") );
+
+  if (dirfile == dir.end())
+    throw internal_error("missing DEFINITION file");
+
+  doDefinition( obj, path );
+
+  dir.erase(dirfile);
+  
+  for (vector<rope_string>::iterator x = dir.begin(); x != dir.end();
+       x++) {
+    rope_string fname = path;
+    fname.push_back('/');
+    fname.append(*x);
+    std::ifstream file(fname.c_str());
+    cerr << fname << endl;
+    rope_string source;
+    char c;
+    while (file.get(c)) {
+      source.push_back(c);
+    }
+    file.close();
+    try {
+      Var block(compile( source ));
+      obj->declare( Var(VERB_SYM), 
+		    Symbol::create(x->c_str()), block );
+    } catch (Ref<Error> e) {
+      cerr << e << endl;
+    }
+  }
+
+}
+
+void loadAll( rope_string path ) {
+  vector<rope_string> dir = loadDirectory(path);
+
+  for (vector<rope_string>::iterator di = dir.begin(); di != dir.end(); di++) {
+    rope_string o_path = path;
+    o_path.push_back('/');
+    o_path.append(*di);
+    loadObject(o_path);
+  }
+
+}
+
+
+
+void loop() {
+  Scheduler::instance->start();
+
+  while (Scheduler::instance->run()) {
+    usleep(0);
+  }
+
+  Scheduler::instance->shutdown();
+
+}
+
+int main( int argc, char *argv[] )
+{
+  Scheduler::initialize();
+  initializeOpcodes();
+
+  if (argc != 3) {
+    cerr << "Usage: " << argv[0] << " DIRECTORY DATABASE" << endl;
+    exit(-1);
+  }
+
+
+
+  try {
+    initSymbols();
+    
+    pair<PID, Var> pool_return = Pool::open( Symbol::create("builtin") ); 
+    Pools::instance.setDefault( pool_return.first );
+    
+    MetaObjects::initialize( pool_return.second );
+
+    initNatives();
+
+    char *directory = argv[1];
+    char *dbname = argv[2];
+
+    pair<PID, Var> p_pool_return( PersistentPool::open( Symbol::create(dbname),
+							pool_return.second->asRef<Object>() ) );
+
+    Pools::instance.setDefault( p_pool_return.first );
+
+    compile_task = new CompileTask();
+    Scheduler::instance->event_add( compile_task );
+
+    cerr << "Compiling methods" << endl;
+
+    loadAll(directory);
+
+    cerr << "Queueing initialize methods" << endl;
+
+    for (var_vector::iterator x = objects.begin(); 
+	 x != objects.end();  x++) {
+      Var obj = *x;
+      var_vector args;
+
+      Var msg = compile_task->send( MetaObjects::SystemMeta, 
+				    MetaObjects::SystemMeta,
+				    obj, obj,
+				    Symbol::create("core_initialize"),
+				    args );
+
+      msg.perform( compile_task, List::from_vector(args) );
+    }
+
+    cerr << "Running VM" << endl;
+
+    loop();
+  
+    cerr << "Removing temporary methods" << endl;
+
+    for (var_vector::iterator x = objects.begin(); x != objects.end();
+	 x++) {
+      x->remove( Var(VERB_SYM), Symbol::create("DEFINITION_TMP") );
+    }
+
+    cerr << "Done" << endl;
+
+    Pools::instance.close();
+
+
+  } catch (Ref<Error> err) {
+    cerr << err << endl;
+  }
+
+
+  //  unloadDLLs();
+
+}
+

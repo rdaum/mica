@@ -1,0 +1,38 @@
+INCLUDES = -I.. -I../types -I../compiler -I../native -I../network -I../persistence -I../vm
+SHELL = @SHELL@
+CXX = @CXX@
+CXXFLAGS = @CXXFLAGS@ -Wall
+AR = ar
+RANLIB = @RANLIB@
+DEFS = @DEFS@
+CPPFLAGS = @CPPFLAGS@
+LDFLAGS = @LDFLAGS@
+LIBS = @LIBS@
+
+# XXX WARNING GNU-isms!
+SRCS = $(wildcard *.cc)
+OBJS = $(patsubst %.cc,%.o, $(SRCS))
+
+CXXCOMPILE = $(CXX) $(DEFS) $(INCLUDES) $(CPPFLAGS) $(CXXFLAGS)
+CXXLD = $(CXX)
+
+.DEFAULT: all
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	-rm -f $(TARGET)
+	$(AR) cru $(TARGET) $(OBJS) 
+	$(RANLIB) $(TARGET)
+
+.SUFFIXES:
+.SUFFIXES: .cc .o 
+
+.cc.o:
+	$(CXXCOMPILE) -c $<
+
+clean:
+	rm -f *.o $(TARGET) *~
+
+.PHONY: clean
+

@@ -1,0 +1,274 @@
+lexical_analyzer_file="lexer.h";
+default_member_name_is_nothing=true;
+generate_verbose_prints=true;
+method=LALR1;
+
+code_in_h_after_all={
+    class lex_error {
+      public:
+	lex_error(int initLine, int initColumn) {
+	    line = initLine; column = initColumn;
+	}
+      public:	
+	int line;
+	int column;
+    };
+    class parse_error {
+      public:
+	parse_error(int initLine, int initColumn) {
+	    line = initLine; column = initColumn;
+	}
+      public:
+	int line;
+	int column;
+    };
+};
+error_handler={
+    if (typeid(*input_symbol) == typeid(TerminalError))
+	throw lex_error(input_symbol->line, input_symbol->column);
+    else
+	throw parse_error(input_symbol->line, input_symbol->column);
+};
+
+// ******* TERMINALS *******
+terminal id;
+
+// Literals
+terminal symbolId, errorId, integerLiteral, floatLiteral, 
+   	 stringLiteral, charLiteral;
+
+// Unary operators
+terminal "!", "@", "++" (TerminalDoublePlus), "--" (TerminalDoubleMinus),
+	 "$" (TerminalDollar);
+
+// Binary operators
+terminal "+", "-", "*", "/", "%",
+         "&", "|" (TerminalPipe), "^" (TerminalCaret),
+         "&&" (TerminalDoubleAmpersand), "||" (TerminalDoublePipe),
+	 "=>" (TerminalThickRightArrow),
+	 "<<" (TerminalDoubleLessThan),
+	 ">>" (TerminalDoubleGreaterThan),
+	 ":=" (TerminalColonEquals),
+	 "+=" (TerminalPlusEquals), "-=" (TerminalMinusEquals),
+	 "*=" (TerminalAsteriskEquals), "/=" (TerminalSlashEquals),
+	 "<<=" (TerminalDoubleLessEquals), ">>=" (TerminalDoubleGreaterEquals),
+	 "&=" (TerminalAmpersandEquals), "|=" (TerminalPipeEquals),
+	 "^=" (TerminalCaretEquals), "%=" (TerminalPercentEquals);
+
+// Relations
+terminal "<", ">", "=", "<=" (TerminalLessEqual), 
+	 "isA" (TerminalIsA),
+         ">=" (TerminalGreaterEqual), "!="(TerminalNotEqual);
+
+// Syntactical marks
+terminal "(", ")", "{", "}", ":", ";", ".", ",", 
+         "[", "]", "?",
+	 "#[" (TerminalHashBracket),
+         "%[" (TerminalSetBracket);
+
+// Keywords
+terminal "break", "catch", "continue", "do", "new", "delegate",
+	 "else", "for", "if", "in", "lambda", "method", "name", 
+	 "my", "like", "remove", "return", "slots", "self", "throw", 
+	 "notify", "detach", "selector", "source", "caller", "args",
+         "try", "verb", "while", "object", "true", "false", "map";
+
+// ****** Precedence and Associativity ******
+
+precedence
+// Level 1 - Lowest - comma
+","(left)
+<
+// Level 2 - Assignments
+":="(right)  = "+="(right)  = "-="(right) = "*="(right) = "/="(right) = "%="(right) =
+"<<="(right) = ">>="(right) = "&="(right) = "|="(right) = "^="(right)
+<
+// Level 4 & 5 - || and &&
+"&&"(left) < "||"(left)
+<
+// Level 6, 7, 8 - Bitwise operators |, ^, &
+"|"(left) < "^"(left) < "&"(left)
+<
+// Level 9 - Equal/not equal
+"="(left) = "!="(left)
+<
+// Level 10 - isA
+"isA"(left)
+<
+// Level 11 - Inequality
+"<"(left) = "<="(left) = ">"(left) = ">="(left)
+<
+// Level 12 - Shift operators
+"<<"(left) = ">>"(left)
+<
+// Level 13 & 14 - Arithmetic operators
+"+"(left) = "-"(left) < "*"(left) = "/"(left) = "%"(left)
+<
+// Level 15 - Unary operators
+"!"(right) = "++"(right) = "--"(right) = unary_minus(right) = "@"(right)
+<
+// Level 16 - we want !$Blah:foo() to be !(($Blah:foo)()), and !a[2]=!(a[2])
+"(" = "["
+<
+"like"(left)
+;
+
+// ****** RULES ******
+
+
+program -> (statement=statementList)*;
+
+statement ->
+              expr=sideEffectExpr ";"// Evaluate this expr just for side effect
+           | ";" // Empty statement
+	   | "{" (statement=statementList)* "}"  // Compound statement
+
+	   | "if" "(" expr=testExpr ")" statement=ifStatement ["else" statement=elseStatement]
+	   | "while"=isWhileLoop "(" expr=testExpr ")" statement=body
+	   | "do"=isDoWhileLoop statement=body "while" "(" expr=testExpr ")" ";"
+	   | "for" var=iterator "in" expr=container "do" statement=body
+           | "try" statement=tryBody (catchStatement=catchList)+
+           | "throw" errorValue=throwError ";"
+	   | "notify" "(" expr=notifyExpr ")" ";"
+	   | "detach"=isDetach "(" ")" ";"
+           // Scatter assign
+           | expr=scatterSource "=>" ["new"]=declaringVars
+                      "(" argDeclList=args ")" ";"
+
+           | "remove" (remove=removeList / ",") ";"
+           | "new" (decl=declList / ",") ";" // Declarations
+	   | "return" expr=returnValue ";" // Return statement
+	   | "continue"=isContinue ";"     // Continue statement
+	   | "break"=isBreak ";"           // Break statement
+           | var=isAssign ":=" expr=value ";"	
+	   ;
+
+catchStatement -> "catch" "(" id=var errorId=error ")" statement=body;
+
+expr ->  binaryExpr=binaryExpr
+      | "-"=op expr=unaryArg   precedence(unary_minus)
+      | "!"=op expr=unaryArg
+      | "(" expr=parenthesizedExpr ")"
+// Containers
+      | "["=isList [(listItem=listItemList / ",")] "]"
+      | "#["=isMap [(mapEntry=mapEntryList / ",")] "]"
+      | "%["=isSet [(listItem=setItemList / ",")] "]"
+      | expr=containerExpr "[" expr=index [ ":" [expr=end ] ] "]"
+  
+// Closures
+      | "method"=isMethod closure=closure
+      | "lambda"=isLambda closure=closure
+
+
+// Object constructor
+      | object_construct=isObjectConstruct
+
+// Literals
+      | integerLiteral=integerLiteral
+      | floatLiteral=floatLiteral
+      | (stringLiteral=stringLiteralList)+ // auto-concat
+      | charLiteral=charLiteral
+      | symbolId=symbol
+
+// Builtins
+      | ("self" | "selector" | "source"| "caller" | 
+         "args" | "slots")=builtin
+
+// Atomic pieces
+      | var=var
+      | "true"=boolT
+      | "false"=boolF
+      | errorValue=error
+      ;
+
+
+binaryExpr->
+ 	 expr=leftArg "+"  =op expr=rightArg 
+      | expr=leftArg "-"  =op expr=rightArg
+      | expr=leftArg "*"  =op expr=rightArg
+      | expr=leftArg "/"  =op expr=rightArg
+      | expr=leftArg "%"  =op expr=rightArg
+      | expr=leftArg "&"  =op expr=rightArg
+      | expr=leftArg "|"  =op expr=rightArg
+      | expr=leftArg "^"  =op expr=rightArg
+      | expr=leftArg "<<" =op expr=rightArg
+      | expr=leftArg ">>" =op expr=rightArg
+      | expr=leftArg "+=" =op expr=rightArg
+      | expr=leftArg "-=" =op expr=rightArg
+      | expr=leftArg "*=" =op expr=rightArg
+      | expr=leftArg "/=" =op expr=rightArg
+      | expr=leftArg "%=" =op expr=rightArg
+      | expr=leftArg "&=" =op expr=rightArg
+      | expr=leftArg "|=" =op expr=rightArg
+      | expr=leftArg "^=" =op expr=rightArg
+      | expr=leftArg "<<="=op expr=rightArg
+      | expr=leftArg ">>="=op expr=rightArg
+      | expr=leftArg "&&" =op expr=rightArg
+      | expr=leftArg "||" =op expr=rightArg
+      | expr=leftArg "="  =op expr=rightArg
+      | expr=leftArg "isA"=op expr=rightArg
+      | expr=leftArg "!=" =op expr=rightArg
+      | expr=leftArg "<"  =op expr=rightArg
+      | expr=leftArg "<=" =op expr=rightArg
+      | expr=leftArg ">"  =op expr=rightArg
+      | expr=leftArg ">=" =op expr=rightArg
+
+// Function calls and message sends
+      | expr=leftArg "(" [(listItem=argList / ",")] ")"
+      | "(" expr=leftArg ( message=messageExpr ) ")"	
+	
+	;
+
+errorValue -> errorId=errorSymbol
+              [ "(" stringLiteral=errorArgumentString ")" ];
+
+object_construct -> "object" "{" (statement=statementList)* "}";
+
+
+	
+closure  -> [ argsDecl=argslist ] "{" (statement=statementList)* "}"=endpos;
+argsDecl -> "<" argDeclList=args ">";
+listItem -> expr=expr | ("@" expr=unaryArg) | ("map" binaryExpr=comp) ;
+mapEntry -> expr=key "=>" expr=value;
+argDeclList -> [(id=mandatoryVarList / ",")] ("," "?" id=optionalVarList)* ["," "@" id=remainderVar];
+
+
+message    -> [qualifier=qualifier] msgArgs=verbT;
+
+verbTemplt -> (id=rootSel [([":" verbArg=rootArg] (id=moreSels ":" verbArg=args )*)] );
+verbArg    -> expr=argexpr | "*"=wildcard ;
+
+msgArgs    -> (id=rootSel [([":" expr=rootArg] (id=moreSels ":" expr=args )*)] );
+
+selector   -> (id=slotName) ("[" expr=slotNameExpr "]") ;
+qualifier  -> "like" expr=asObj;
+
+// Can read or assign to a var or a slot
+var        -> slot=slot | id=id;
+
+// Can remove either var or slot
+remove     -> var=var;
+
+// Can new a var or a slot
+decl       -> varDecl=varDecl | slotDecl=slotDecl;
+
+slotDecl   -> slot=slot [":=" expr=initialValue];
+varDecl    -> id=id [":=" expr=initialValue];
+
+slot       ->   verbSlot=verbSlot | privateSlot=privateSlot
+              | delegateSlot=delegateSlot | nameSlot=nameSlot;
+
+// Slot types
+verbSlot   -> "verb" "(" verbTemplt=verbT ")" ;
+
+	         
+privateSlot-> ( ("my" | ".") id=slotName) | ("my" | ".")
+	                    "(" expr=slotNameExpr ")";
+nameSlot   -> ( ("name" | "$") id=slotName) | ("name" | "$") 
+                            "(" expr=slotNameExpr ")";
+delegateSlot
+           -> ("delegate" id=slotName) | "delegate" "(" expr=slotNameExpr ")";
+
+
+
+

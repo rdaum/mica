@@ -1,0 +1,138 @@
+Sequence (List or String) type
+==============================
+
+<sequence> size
+- return length
+
+<sequence> empty
+- return true if empty
+
+<sequence> at: X
+- retrieve what's at X
+
+<sequence> from: X range: Y
+- retrieve Y elements starting at X
+
+<sequence> from: X to: Y
+- retrieve from X to Y
+
+<sequence> without: X
+- return without what's in position X
+
+<sequence> without: X range: Z
+- return without what starts at position X and is Z long
+
+<sequence> plus: X
+- return with X added
+
+<sequence> joinedWith: <sequence> X
+- return with all elements of X merged at tail
+
+<sequence> with: X at: Y
+- return with X at Y
+
+<sequence> with: X at: Y range: Z
+- return with Z elements of X at Y
+
+<sequence> with: X insertedAt: Y
+- return with X inserted at Y
+
+<sequence> with: X insertedAt: Y range: Z
+- return with X inserted at Y, but Z long
+
+<sequence> reversed
+- return reversed
+
+Set type
+========
+<set> size
+- return number of elements
+
+<set> empty
+- return whether the set was empty
+
+<set> has: X
+- return true if has key
+
+<set> with: X
+- return set with X added
+
+<set> without: X
+- return set without X
+
+<set> asList
+- return as a list
+
+<set> joinedWith: <set> X
+- return merge of two sets
+
+Mapping (Map) type
+==================
+<map> size
+- return size
+
+<map> empty
+- return true if empty
+
+<map> at: X
+- return what is associated with key X
+
+<map> with: X at: Y
+- return with Y associated with key X
+
+<map> without: X
+- return without key X
+
+<map> joinedWith: <map> X
+- return the merger of two maps
+
+<map> keys
+- return a List of all keys
+
+<map> values
+- return a List of all values
+
+<map> inverted
+- invert the keys and values
+
+---
+
+System
+======
+
+$System open pool: <symbol> X
+- open and return transient pool named X
+
+$System open persistentPool: <symbol> X
+- open and return persistent pool X
+
+$System get pool: <symbol> X
+- return the object for pool named X
+
+$System tasks
+- return a list of all scheduled tasks
+
+Pool
+====
+
+$Pool close
+- close the pool
+
+$Pool size
+- return the number of objects in the pool
+
+$PersistentPool flush
+- flush the cache
+
+$PersistentPool sync
+- make sure the pool is synced to disk
+
+Task
+====
+
+$Task terminate
+- terminate/unschedule a task
+
+$Task definer/self/selector withKey: <AdminKey>
+- return internal values of a task, must have admin key
+

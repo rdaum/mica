@@ -1,0 +1,320 @@
+/* This is a lexical scanner, written for Dolphin 0.2.9,
+   available now from http://hirvi.cs.queensu.ca/dolphin/
+   It identifies tokens while discarding whitespace and
+   comments; however, it does not translate string escape
+   codes, merely passes them on verbatim.
+*/
+
+// These are states the lexer may be in in the middle of lexing
+start_conditions MAIN, IN_C_COMMENT;
+
+whale=true;
+whale_file="parser.h";
+// If true, this generates helpful debug info about what the lexer is doing.
+generate_verbose_prints=false;
+
+/* Keyword Hash-Map implementation
+
+   Because it has huge cost to match keywords directly
+   in the DFA, we instead, everytime we match an identifier,
+   look up the matched word in a map. If we find it, its
+   value is a function object that produces the correct
+   token. To add a new keyword, follow these instructions:
+
+   1. Add a KEYWORD_HEADER() and KEYWORD_BODY() entry like
+      the others below, grouped with the others.
+
+   2. In the code-in-constructor section, add a line to
+      add it to the map, in analogy to the other lines.
+*/
+   
+code_in_h = {
+#include "common/mica.h"
+#include "config.h"
+
+#ifdef HAVE_EXT_HASH_MAP
+#include <ext/hash_map>
+#else
+#include <hash_map>
+#endif
+
+#include "parser.h"
+
+struct stringEqual
+{
+    bool operator()(const char* s1, const char*s2) const
+    {
+	return strcmp(s1,s2) == 0;
+    }
+};
+
+struct TokenMaker
+{
+    Whale::Terminal* operator()(int line, int column, const char* text)
+    {
+	Whale::Terminal *t=newTerminal();
+	t->line=line;
+	t->column=column;
+	t->text=const_cast<char *>(text);
+	return t;
+    }
+
+    virtual Whale::Terminal* newTerminal() = 0;
+};
+
+#define KEYWORD_HEADER(x) \
+   struct x##TokenMaker : TokenMaker { \
+       Whale::Terminal* newTerminal(); \
+   }
+
+#define KEYWORD_BODY(x) \
+       Whale::Terminal* x##TokenMaker::newTerminal() { \
+           return new Whale::Terminal##x; \
+       } \
+
+KEYWORD_HEADER(Args);
+KEYWORD_HEADER(Break);
+KEYWORD_HEADER(Caller);
+KEYWORD_HEADER(Catch);
+KEYWORD_HEADER(Continue);
+KEYWORD_HEADER(New);
+KEYWORD_HEADER(Delegate);
+KEYWORD_HEADER(Detach);
+KEYWORD_HEADER(Do);
+KEYWORD_HEADER(Else);
+KEYWORD_HEADER(False);
+KEYWORD_HEADER(For);
+KEYWORD_HEADER(If);
+KEYWORD_HEADER(In);
+KEYWORD_HEADER(IsA);
+KEYWORD_HEADER(Lambda);
+KEYWORD_HEADER(Like);
+KEYWORD_HEADER(Map);
+KEYWORD_HEADER(Method);
+KEYWORD_HEADER(Name);
+KEYWORD_HEADER(Notify);
+KEYWORD_HEADER(Object);
+KEYWORD_HEADER(My);
+KEYWORD_HEADER(Remove);
+KEYWORD_HEADER(Return);
+KEYWORD_HEADER(Selector);
+KEYWORD_HEADER(Self);
+KEYWORD_HEADER(Slots);
+KEYWORD_HEADER(Source);
+KEYWORD_HEADER(Throw);
+KEYWORD_HEADER(True);
+KEYWORD_HEADER(Try);
+KEYWORD_HEADER(Verb);
+KEYWORD_HEADER(While);
+};
+
+code_in_cpp = {
+
+STD_EXT_NS::hash_map<const char*,TokenMaker*,STD_EXT_NS::hash<const char *>,stringEqual> DolphinLexicalAnalyzer::keywordMap;
+
+KEYWORD_BODY(Args);
+KEYWORD_BODY(Break);
+KEYWORD_BODY(Caller);
+KEYWORD_BODY(Catch);
+KEYWORD_BODY(Continue);
+KEYWORD_BODY(New);
+KEYWORD_BODY(Delegate);
+KEYWORD_BODY(Detach);
+KEYWORD_BODY(Do);
+KEYWORD_BODY(Else);
+KEYWORD_BODY(False);
+KEYWORD_BODY(For);
+KEYWORD_BODY(If);
+KEYWORD_BODY(In);
+KEYWORD_BODY(IsA);
+KEYWORD_BODY(Lambda);
+KEYWORD_BODY(Like);
+KEYWORD_BODY(Method);
+KEYWORD_BODY(Map);
+KEYWORD_BODY(My);
+KEYWORD_BODY(Name);
+KEYWORD_BODY(Notify);
+KEYWORD_BODY(Object);
+KEYWORD_BODY(Remove);
+KEYWORD_BODY(Return);
+KEYWORD_BODY(Selector);
+KEYWORD_BODY(Self);
+KEYWORD_BODY(Slots);
+KEYWORD_BODY(Source);
+KEYWORD_BODY(Throw);
+KEYWORD_BODY(True);
+KEYWORD_BODY(Try);
+
+KEYWORD_BODY(Verb);
+KEYWORD_BODY(While);
+};
+
+code_in_class = {
+
+int commentNestCount; // Counts how many nested comment levels we're in
+static STD_EXT_NS::hash_map<const char*,TokenMaker*,STD_EXT_NS::hash<const char *>,stringEqual> keywordMap;
+
+};
+
+code_in_constructor = 
+{
+    // Lazy-initialize keyword map
+    if (keywordMap.empty())
+    {
+	keywordMap["args"]     = new ArgsTokenMaker();
+	keywordMap["break"]    = new BreakTokenMaker();
+	keywordMap["caller"]   = new ArgsTokenMaker();
+	keywordMap["catch"]    = new CatchTokenMaker();
+	keywordMap["continue"] = new ContinueTokenMaker();
+	keywordMap["new"]      = new NewTokenMaker();
+	keywordMap["delegate"] = new DelegateTokenMaker();
+	keywordMap["detach"]   = new DetachTokenMaker();
+	keywordMap["do"]       = new DoTokenMaker();
+	keywordMap["else"]     = new ElseTokenMaker();
+	keywordMap["false"]    = new FalseTokenMaker();
+	keywordMap["for"]      = new ForTokenMaker();
+	keywordMap["if"]       = new IfTokenMaker();
+	keywordMap["in"]       = new InTokenMaker();
+	keywordMap["isA"]      = new IsATokenMaker();
+	keywordMap["lambda"]   = new LambdaTokenMaker();
+	keywordMap["like"]     = new LikeTokenMaker();
+	keywordMap["map"]      = new MapTokenMaker();
+	keywordMap["method"]   = new MethodTokenMaker();
+	keywordMap["my"]       = new MyTokenMaker();
+	keywordMap["name"]     = new NameTokenMaker();
+	keywordMap["notify"]   = new NotifyTokenMaker();
+	keywordMap["object"]   = new ObjectTokenMaker();
+	keywordMap["remove"]   = new RemoveTokenMaker();
+	keywordMap["return"]   = new ReturnTokenMaker();
+	keywordMap["selector"] = new SelectorTokenMaker();
+	keywordMap["self"]     = new SelfTokenMaker();
+	keywordMap["slots"]    = new SlotsTokenMaker();
+	keywordMap["source"]   = new SourceTokenMaker();
+	keywordMap["throw"]    = new ThrowTokenMaker();
+        keywordMap["true"]     = new TrueTokenMaker();
+	keywordMap["try"]      = new TryTokenMaker();
+	keywordMap["verb"]     = new VerbTokenMaker();
+	keywordMap["while"]    = new WhileTokenMaker();
+    }
+};
+
+// Character classes
+digit -> '0'..'9';
+hexdigit -> digit | "A".."F" | "a".."f";
+alpha -> "A".."Z" | "a".."z" | '_';
+alphanum -> alpha | digit;
+printable -> condition(c>=' ');
+
+// C++-style comment handling
+"//" (condition(c!='\n'))+ <MAIN> ==> { }
+
+// C-style comment handling, except allows nested comments
+"/*" <MAIN> ==> {
+    set_start_condition(IN_C_COMMENT);
+    commentNestCount=1;
+}
+
+(condition(c!='*' & c!='/'))+ <IN_C_COMMENT> ==> { }
+
+"/*" <IN_C_COMMENT> ==> {
+    commentNestCount++;
+}
+"*/" <IN_C_COMMENT> ==> {
+    commentNestCount--;
+    if (commentNestCount==0)
+	set_start_condition(MAIN);
+}
+('*' | '/') <IN_C_COMMENT> ==> { }
+
+// Strings
+
+string-char -> condition(c in printable & c != '\"') | "\\\"" | "\\\n";
+char-char -> condition(c in printable & c != '\'') | "\\'";
+'"' string-char* '"' <MAIN> ==> TerminalStringLiteral;
+'\'' char-char* '\'' <MAIN> ==> TerminalCharLiteral;
+
+// Operators and Syntactic Characters
+"=>" <MAIN> ==> TerminalThickRightArrow;
+"!=" <MAIN> ==> TerminalNotEqual;
+"<=" <MAIN> ==> TerminalLessEqual;
+">=" <MAIN> ==> TerminalGreaterEqual;
+"&&" <MAIN> ==> TerminalDoubleAmpersand;
+"||" <MAIN> ==> TerminalDoublePipe;
+"#[" <MAIN> ==> TerminalHashBracket;
+"%[" <MAIN> ==> TerminalSetBracket;
+"<<" <MAIN> ==> TerminalDoubleLessThan;
+">>" <MAIN> ==> TerminalDoubleGreaterThan;
+"++" <MAIN> ==> TerminalDoublePlus;
+"--" <MAIN> ==> TerminalDoubleMinus;
+":=" <MAIN> ==> TerminalColonEquals;
+"+=" <MAIN> ==> TerminalPlusEquals;
+"-=" <MAIN> ==> TerminalMinusEquals;
+"*=" <MAIN> ==> TerminalAsteriskEquals;
+"/=" <MAIN> ==> TerminalSlashEquals;
+"<<=" <MAIN> ==> TerminalDoubleLessEquals;
+">>=" <MAIN> ==> TerminalDoubleGreaterEquals;
+"&=" <MAIN> ==> TerminalAmpersandEquals;
+"|=" <MAIN> ==> TerminalPipeEquals;
+"^=" <MAIN> ==> TerminalCaretEquals;
+"%=" <MAIN> ==> TerminalPercentEquals;
+
+"!" <MAIN> ==> TerminalExclamationMark;
+"=" <MAIN> ==> TerminalEqual;
+"+" <MAIN> ==> TerminalPlus;
+"$" <MAIN> ==> TerminalDollar;
+"-" <MAIN> ==> TerminalMinus;
+"*" <MAIN> ==> TerminalAsterisk;
+"/" <MAIN> ==> TerminalSlash;
+"<" <MAIN> ==> TerminalLessThan;
+">" <MAIN> ==> TerminalGreaterThan;
+"(" <MAIN> ==> TerminalLeftParenthesis;
+")" <MAIN> ==> TerminalRightParenthesis;
+"[" <MAIN> ==> TerminalLeftBracket;
+"]" <MAIN> ==> TerminalRightBracket;
+"{" <MAIN> ==> TerminalLeftBrace;
+"}" <MAIN> ==> TerminalRightBrace;
+":" <MAIN> ==> TerminalColon;
+";" <MAIN> ==> TerminalSemicolon;
+"," <MAIN> ==> TerminalComma;
+"@" <MAIN> ==> TerminalCommercialAt;
+"." <MAIN> ==> TerminalPeriod;
+"&" <MAIN> ==> TerminalAmpersand;
+"|" <MAIN> ==> TerminalPipe;
+"^" <MAIN> ==> TerminalCaret;
+"%" <MAIN> ==> TerminalPercent;
+"?" <MAIN> ==> TerminalQuestionMark;
+
+// Numeric literals
+digit+ <MAIN> ==> TerminalIntegerLiteral;
+digit+ "." digit+ <MAIN> ==> TerminalFloatLiteral;
+
+// Error/EOF handling
+error ==> TerminalError;
+eof <IN_C_COMMENT> ==> { return make_token<Whale::TerminalError>(); }
+eof <MAIN>         ==> { return make_token<Whale::TerminalEOF>(); }
+
+// Identifiers/Keywords
+ident        -> alpha alphanum*;
+
+'#' ident <MAIN> ==> TerminalSymbolId;
+'~' ident <MAIN> ==> TerminalErrorId;
+
+ident <MAIN> ==> 
+{{
+    // Check if it is a keyword, and return the right thing
+    STD_EXT_NS::hash_map<const char*,TokenMaker*,STD_EXT_NS::hash<const char *>,stringEqual>::iterator iter =
+        keywordMap.find(lexeme);
+    if (iter==keywordMap.end())
+        return make_token<Whale::TerminalId>();
+    else
+    {
+	// Must get line/col before capture_lexeme(), which kills them
+	int cur_line = line();
+	int cur_column = column();
+        return (*(*iter).second)(cur_line, cur_column, capture_lexeme());
+    }
+}}
+
+// Eat whitespace
+
+(' ' | '\t' | '\n' | '\r')+ <MAIN> ==> { };

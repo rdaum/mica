@@ -1,0 +1,26 @@
+Image-based vs. "blueprint" system
+
+Mica does not store its "source" in files, but rather stores live objects in ongoing persistent image(s) ("pools").  This is because Mica is designed for applications which maintain long-running state and involve large groups of programmers: collaborative software, online games, etc.
+
+
+Prototypes vs. classes:
+
+Mica is made for long-term persistent and mutating applications.  Prototypes map nicely to such applications, whereas classes fit better with a blueprint scenario.
+
+
+Reference counting vs. tracing GC:
+
+1) Mica is an orthogonally persistent system and each persistent object pool is made to look like a large persistent "address space", even though only some (the working/cached set) of objects are paged in at a time.  Tracing GC requires a full trace through all live objects in order to find out what is garbage and what is not.  This would require a periodic page-in of all objects.  Reference counting requires no such expensive trace.  In the occasion of a cyclic reference, a small trace is done on the objects involved in the cycle only.
+
+2) Reference counting distributes cost of collection in a relatively linear fashion through all operations. 
+
+3) Reference counting is relatively simple to implement.
+
+
+Algol-descendent-like syntax vs. Lisp or Smalltalk style syntax:
+
+More programmers are used to it.
+
+In Mica, the VM interprets control-structures (if, while, etc.) through special opcodes rather than as message sends or function evaluations like Smalltalk/Self, or Lisp/Scheme.  While less flexible, the VM can execute them fairly quickly and efficiently.  Control flow constructs using messages and function objects can still be done.
+
+

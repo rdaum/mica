@@ -1,0 +1,12 @@
+The core/ directory is for the core types and objects which make up Mica.
+
+It is a homomorphic class hierarchy with a reference counting smart pointer (Var) pointing to instances of the children of Data -- List, Map, String, Object, etc.
+
+It is homomorphic in the sense that every child of Data provides the same interface (with some exceptions that require special casting) so that common data operations are polymorphic and type independent.  It allows for all containers, variables, and composites to be completely dynamically typed -- the values hold the type, not the variables which store the values.
+
+Future areas of work:
+
+  * Very radical: embrace the prototype model further -- get rid of Data and instead every core type becomes a child of Object, with the slots being filled with functions that implement the correct native functions.  Var then does the necessary dispatching to the correct slot for C++ methods.  Disadvantage is speed, advantage is garbage collection and introspection become much easier -- just iterate slots.  
+
+  * Move to a scavenging GC, easier when done in concert with the above approach.
+
