@@ -234,11 +234,11 @@ Var Unserializer::parseSet()
 }
 
 
-Environment *Unserializer::parseEnvironment()
+OStorage *Unserializer::parseOStorage()
 {
   /** An environment (physical storage of an object's slots)
    */
-  Environment *env = new (aligned) Environment();
+  OStorage *env = new (aligned) OStorage();
 
   while (1) {
     bool more;

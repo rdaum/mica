@@ -32,7 +32,7 @@ namespace mica {
 
     Object *new_object();
 
-    Environment *get_environment( OID object_id );
+    OStorage *get_environment( OID object_id );
 
   protected:
     Ref<Object> resolve( OID index );

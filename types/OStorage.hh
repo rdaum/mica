@@ -48,13 +48,13 @@ namespace mica {
 			     unsigned int > &p ) const;
   };
 
-  class Environment
+  class OStorage
   {
 
   public:
-    Environment();
+    OStorage();
 
-    ~Environment();
+    ~OStorage();
 
   public:
     std::pair<bool, Var> getLocal( const Var &accessor, 

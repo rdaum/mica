@@ -6,7 +6,7 @@
 #include "common/mica.h"
 #include "config.h"
 
-#include "Environment.hh"
+#include "OStorage.hh"
 #include "Scalar.hh"
 #include "ArgumentMask.hh"
 
@@ -153,7 +153,7 @@ namespace mica {
     child_set child_pointers();    
 
   public:
-    Environment *environment() const;
+    OStorage *environment() const;
 
     void write();
   };

@@ -19,7 +19,7 @@
 #include "Symbol.hh"
 #include "Exceptions.hh"
 #include "GlobalSymbols.hh"
-#include "Environment.hh"
+#include "OStorage.hh"
 
 
 #include "logging.hh"
@@ -80,7 +80,7 @@ var_vector Object::delegates() const {
   return environment()->delegates();
 }
 
-Environment *Object::environment() const {
+OStorage *Object::environment() const {
 
   return Pools::instance.get(pid)->get_environment( oid );
 }

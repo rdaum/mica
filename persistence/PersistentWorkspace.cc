@@ -381,7 +381,7 @@ void PersistentPool::flush_cache() {
 
 }
 
-Environment *PersistentPool::get_environment( OID object_id ) {
+OStorage *PersistentPool::get_environment( OID object_id ) {
 
   /** CACHE HIT
    */
@@ -419,7 +419,7 @@ Environment *PersistentPool::get_environment( OID object_id ) {
   // DO NOT REFCOUNT OBJECTS WHILE PAGING IN THE NEW ENVIRONMENT
   notify_start_paging();
 
-  Environment *result = unserializer.parseEnvironment();
+  OStorage *result = unserializer.parseOStorage();
 
 
   objects[object_id]->environment = result;

@@ -13,7 +13,7 @@
 #include "List.hh"
 #include "String.hh"
 #include "GlobalSymbols.hh"
-#include "Environment.hh"
+#include "OStorage.hh"
 #include "Object.hh"
 #include "Symbol.hh"
 
@@ -77,7 +77,7 @@ Object *Pool::new_object() {
   unsigned int id = new_in( objects, free_object_list );
 
   ObjectEntry *new_entry = new (aligned) ObjectEntry( new (aligned) Object( pid, id ),
-						      new (aligned) Environment() );
+						      new (aligned) OStorage() );
   objects[id] = new_entry;
 
 
@@ -86,7 +86,7 @@ Object *Pool::new_object() {
   return new_entry->object;
 }
 
-Environment *Pool::get_environment( OID object_id ) {
+OStorage *Pool::get_environment( OID object_id ) {
   assert(object_id < objects.size() );
   assert(objects[object_id]);
 

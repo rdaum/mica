@@ -1,7 +1,7 @@
 #include "Data.hh"
 #include "Var.hh"
 #include "Object.hh"
-#include "Environment.hh"
+#include "OStorage.hh"
 #include "Symbol.hh"
 #include "List.hh"
 #include "Exceptions.hh"
@@ -54,13 +54,13 @@ unsigned int hash_verb_pair::operator()( const pair< Symbol, unsigned int > &p )
 }
 
 
-Environment::Environment()
+OStorage::OStorage()
 {
 
   delegates_iterator = mSlots.end();
 }
 
-void Environment::add_delegate( const Object *from, 
+void OStorage::add_delegate( const Object *from, 
 				const Symbol &name,
 				const Var &delegate )
 {
@@ -69,7 +69,7 @@ void Environment::add_delegate( const Object *from,
   delegates_iterator = mSlots.find(Var(DELEGATE_SYM));
 }
 
-var_vector Environment::delegates() {
+var_vector OStorage::delegates() {
 
   if (delegates_iterator == mSlots.end())
     delegates_iterator = mSlots.find( Var(DELEGATE_SYM) );
@@ -85,12 +85,12 @@ var_vector Environment::delegates() {
   return delegates_vec;
 }
 
-Environment::~Environment()
+OStorage::~OStorage()
 {
   mSlots.clear();
 }
 
-pair<bool, Var> Environment::getLocal( const Var &accessor, 
+pair<bool, Var> OStorage::getLocal( const Var &accessor, 
 				       const Symbol &name ) const 
 {
   // Find by accessor.
@@ -109,7 +109,7 @@ pair<bool, Var> Environment::getLocal( const Var &accessor,
 }
 
 
-bool Environment::removeLocal( const Var &accessor, 
+bool OStorage::removeLocal( const Var &accessor, 
 			       const Symbol &name ) {
   // Find by accessor.
   SlotMap::iterator am_i = mSlots.find( accessor );
@@ -125,7 +125,7 @@ bool Environment::removeLocal( const Var &accessor,
   return false;
 }
 
-Var Environment::slots() const
+Var OStorage::slots() const
 {
   var_vector slots;
 
@@ -145,7 +145,7 @@ Var Environment::slots() const
 
 }
 
-bool Environment::addLocal( const Var &accessor, 
+bool OStorage::addLocal( const Var &accessor, 
 			    const Symbol &name, const Var &value )
 {
   // Find the accessor.
@@ -168,7 +168,7 @@ bool Environment::addLocal( const Var &accessor,
   return true;
 }
 
-bool Environment::replaceLocal( const Var &accessor, 
+bool OStorage::replaceLocal( const Var &accessor, 
 				const Symbol &name, const Var &value )
 {
   // Find the accessor.
@@ -194,7 +194,7 @@ bool Environment::replaceLocal( const Var &accessor,
 
 
 
-mica_string Environment::serialize() const
+mica_string OStorage::serialize() const
 {
   mica_string s_form;
 
@@ -245,7 +245,7 @@ mica_string Environment::serialize() const
   return s_form;
 }
 
-child_set Environment::child_pointers() {
+child_set OStorage::child_pointers() {
   child_set children;
 
   for (SlotMap::const_iterator am_i = mSlots.begin();
@@ -265,7 +265,7 @@ child_set Environment::child_pointers() {
   return children;
 }
 
-void Environment::set_verb_parasite( const Symbol &name,
+void OStorage::set_verb_parasite( const Symbol &name,
 				     unsigned int pos,
 				     const var_vector &argument_template,
 				     const Var &definer,
@@ -294,7 +294,7 @@ void Environment::set_verb_parasite( const Symbol &name,
   
 }
 
-void Environment::rm_verb_parasite( const Symbol &name,
+void OStorage::rm_verb_parasite( const Symbol &name,
 				    unsigned int pos,
 				    const var_vector &argument_template ) {
 
@@ -313,7 +313,7 @@ void Environment::rm_verb_parasite( const Symbol &name,
   assert(0);
 }
 
-VerbList Environment::get_verb_parasites( const Symbol &name,
+VerbList OStorage::get_verb_parasites( const Symbol &name,
 					 unsigned int pos ) const {
   VerbList results;
 

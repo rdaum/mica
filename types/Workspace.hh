@@ -21,7 +21,7 @@ namespace mica {
   typedef unsigned int OID;
   typedef unsigned int TID;
 
-  class Environment;
+  class OStorage;
   class Object;
   class Task;
 
@@ -78,7 +78,7 @@ namespace mica {
      *  @param object_id the OID of the object in question
      *  @return a pointer to the environment for the object requested
      */
-    virtual Environment *get_environment( OID object_id );
+    virtual OStorage *get_environment( OID object_id );
 
     /** Write updates to an environment 
      *  @param object_id the oid of the object to update
@@ -104,14 +104,14 @@ namespace mica {
     
     struct ObjectEntry {
       Object *object;
-      Environment *environment;
+      OStorage *environment;
 
       int cache_id; /** Location in the cache vector -- used
 		     *  by persistent pool only
 		     */
 
       // A constructor for ease of use
-      ObjectEntry( Object *entry_for, Environment *the_environment )
+      ObjectEntry( Object *entry_for, OStorage *the_environment )
 	: object(entry_for),
 	  environment(the_environment),
 	  cache_id(-1) {}

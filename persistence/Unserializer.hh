@@ -10,7 +10,7 @@
 namespace mica {
 
   class Block;
-  class Environment;
+  class OStorage;
 
   class Closure;
   class NativeClosure;
@@ -21,7 +21,7 @@ namespace mica {
   {
   public:
     Unserializer( const mica_string &rep );
-    Environment* parseEnvironment();
+    OStorage* parseOStorage();
 
     Var parse();
     Var parseData();
