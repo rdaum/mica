@@ -9,6 +9,7 @@
 #include "List.hh"
 #include "Atom.hh"
 #include "Symbol.hh"
+#include "GlobalSymbols.hh"
 
 #include "Block.hh"
 
@@ -232,29 +233,27 @@ var_vector lambdaNode::compile( Ref<Block> block, Binding &binding ) const {
 var_vector objectConstructorNode::compile( Ref<Block> block, 
 					   Binding &binding ) const {
 
-  /** Create a new (aligned) block containing the instructions
+  /** Create a new block containing the instructions
    */
   Ref<Block> object_block = new (aligned) Block("");
 
-  /** Start a new (aligned) block in the binding.
+  /** Start a new block in the binding.
    */
   binding.startBlock();
 
   /** Declare the `creator' variable
    */
-  unsigned int c_ps = binding.define( Var(Symbol::create("creator")) );
+  unsigned int c_ps = binding.define( Var(CREATOR_SYM) );
   
   /** Compile the operations with new block as guidance
    */
   object_block->code = stmt->compile( object_block, binding );
-
   object_block->add_scope = binding.finishBlock();
 
-  /** Push a "return self" at the end of the block just in case that block
+  /** Push a "self" at the end of the block just in case that block
    *  never returns anything.
    */
   object_block->code.push_back( Var(Op::SELF ));
-  object_block->code.push_back( Var(Op::RETURN ));
 
   /** Push the object construction block into the stack
    */
