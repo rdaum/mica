@@ -1290,76 +1290,80 @@ void Frame::op_detach( unsigned int param_1, unsigned int param_2 )
 
 void Frame::op_scatter( unsigned int param_1, unsigned int param_2 )
 {
- //  unsigned int i;
+  unsigned int i;
 
-//   /** Pop the range
-//    */
-//   Var range(pop());
+  /** Number of required Vars 
+   */
+  unsigned required_vars = param_1;
 
-//   /** Position in the range
-//    */
-//   unsigned int pos = 0;
+  /** Number of optional vars = param_2 >> 1
+   */
+  unsigned optional_vars = param_2 >> 1;
 
-//   /** Retrieve # of required scope
-//    */
-//   unsigned int nscope = next().toint();
+  /** Remainder flag = param_2 & 0x01
+   */
+  bool has_remainders = param_2 & 0x01;
 
-//   var_vector arg_v( range.flatten() );
-//   unsigned int arg_length = arg_v.size();
-//   if (nscope > arg_length)
-//     throw arguments_err("insufficient arguments");
+  /** Pop the range
+   */
+  Var range(pop());
 
-//   for (i = 0; i < nscope; i++) {
-//     /** Now set each of them
-//      */
-//     unsigned int var = next().toint();
+  /** Position in the range
+   */
+  unsigned int pos = 0;
 
-//     /** assign it
-//      */
-//     scope.set( var, arg_v[pos] ) ;
+  var_vector arg_v( range.flatten() );
+  unsigned int arg_length = arg_v.size();
+  if (required_vars > arg_length)
+    throw arguments_err("insufficient arguments");
 
-//     pos++;
-//   }
+  for (i = 0; i < required_vars; i++) {
+    /** Now set each of them
+     */
+    unsigned int var = next().toint();
 
-//   /** Retrieve # of opt scope
-//    */
-//   nscope = next().toint();
+    /** assign it
+     */
+    scope.set( var, arg_v[pos] ) ;
 
-//   for (i = 0; i < nscope; i++) {
-//     /** Now set each of them
-//      */
-//     unsigned int var = (unsigned int) next().toint();
+    pos++;
+  }
 
-//     /** If there's nothing more in the range,
-//      *  we're finished.
-//      */
-//     if (pos == arg_length)
-//       break;
-//     else {
-//       /** assign it
-//        */
-//       scope.set( var, arg_v[pos] );
+  for (i = 0; i < optional_vars; i++) {
+
+    /** Now set each of them
+     */
+    unsigned int var = (unsigned int) next().toint();
+
+    /** If there's nothing more in the range,
+     *  we're finished.
+     */
+    if (pos == arg_length)
+      break;
+    else {
+      /** assign it
+       */
+      scope.set( var, arg_v[pos] );
       
-//       pos++;
-//     } 
-//   }
+      pos++;
+    } 
+  }
 
-//   /** Get the remainder variable if any
-//    */
-//   Var remainder_var = next();
-//   if (remainder_var != Var(false)) {
-//     int var = next().toint();
+  /** Get the remainder variable if any
+   */
+  if (has_remainders) {
+    int var = next().toint();
     
-//     /** If there's anything to give, give it.  Otherwise leave as is.
-//      */
-//     if (pos < arg_length ) {
-//       var_vector remain( arg_v.begin() + pos, arg_v.end() );
-//       Var ret_rem = List::from_vector( remain );
-//       scope.set( var, ret_rem );
-//     }
-//   } else
-//     if (pos != arg_length)
-//       throw arguments_err("too many arguments");
+    /** If there's anything to give, give it.  Otherwise leave as is.
+     */
+    if (pos < arg_length ) {
+      var_vector remain( arg_v.begin() + pos, arg_v.end() );
+      Var ret_rem = List::from_vector( remain );
+      scope.set( var, ret_rem );
+    }
+  } else
+    if (pos != arg_length)
+      throw arguments_err("too many arguments");
   
-//   push( range );
+  push( range );
 }

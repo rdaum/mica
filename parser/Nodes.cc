@@ -575,10 +575,15 @@ var_vector assignNode::compile( Ref<Block> block, Binding &binding ) const {
 
 var_vector scatterAssignNode::compile( Ref<Block> block, 
 				       Binding &binding ) const {
-  // do we have to declare everything?  If so, do so now.
 
+  // do we have to declare everything?  If so, do so now.
   var_vector::const_iterator x;
   bool has_remainder = (remainder != Var(false));
+
+  unsigned int opt_plus_remain = (optional.size() << 1);
+  if (has_remainder) 
+    opt_plus_remain |= 0x01;
+
   if (declare) {
 
     for (x = required.begin();
@@ -596,42 +601,31 @@ var_vector scatterAssignNode::compile( Ref<Block> block,
       binding.define(remainder);
   }
   
+
   /** First we compile the range!
    */
   var_vector ops = lhs->compile( block, binding);
  
-  //   /** Push the SCATTER ops
-  //    */
-  //   ops.push_back( Var(Op::SCATTER ));
+    /** Push the SCATTER ops
+     */
+    ops.push_back( Var(Op(Op::SCATTER, required.size(), opt_plus_remain )));
 
-  //   /** Push the # of required vars
-  //    */
-  //   //  ops.push_back( Var( (int)required.size()) );
-
-  //   /** Now push each of their ids
-  //    */
-  //   for (x = required.begin(); x != required.end();
-  //        x++)
-  //     //    ops.push_back( Var((int)binding.lookup( *x )) );
+    /** Push each required var id
+     */
+    for (x = required.begin(); x != required.end();
+         x++)
+      ops.push_back( Var((int)binding.lookup( *x )) );
   
-  //   /** Push the # of optional vars
-  //    */
-  //     //  ops.push_back( Var( (int)optional.size()) );
-
-  //   /** Now push each of their ids
-  //    */
-  //   for (x = optional.begin(); x != optional.end();
-  //        x++) 
-  //     ops.push_back( Var( (int)binding.lookup( *x )) );
+    /** Now push each of the optional ids
+     */
+    for (x = optional.begin(); x != optional.end();
+         x++) 
+      ops.push_back( Var( (int)binding.lookup( *x )) );
   
-  //   /** If there's a remainder, let the vm know...
-  //    */
-  //   ops.push_back( Var(has_remainder) );
-
-  //   if (has_remainder) {
-  //     // Now the remainder
-  //     //    ops.push_back( Var( (int)binding.lookup( remainder )) );
-  //   }
+    if (has_remainder) {
+      // Now push the remainder id
+      ops.push_back( Var( (int)binding.lookup( remainder )) );
+    }
 
   return ops;
 }
