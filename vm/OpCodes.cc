@@ -1347,8 +1347,8 @@ void Closure::op_scatter( unsigned int param )
 
   /** Get the remainder variable if any
    */
-  int remainder = next().toint();
-  if (remainder) {
+  Var remainder_var = next();
+  if (remainder_var != Var(false)) {
     int var = next().toint();
     
     /** If there's anything to give, give it.  Otherwise leave as is.
@@ -1361,6 +1361,6 @@ void Closure::op_scatter( unsigned int param )
   } else
     if (pos != arg_length)
       throw arguments_err("too many arguments");
-
+  
   push( range );
 }

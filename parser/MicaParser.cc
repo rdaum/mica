@@ -132,7 +132,6 @@ NPtr micaParser::translateStatement(NonterminalStatement* statement)
     return new (aligned) throwNode( err );
   } else if (statement->scatterSource) {
     bool declare = (statement->declaringVars ? true : false);
-    cerr << declare << endl;
     return translateArgDeclList( statement->args,
 				 translateExpr(statement->scatterSource),
 				 declare );
@@ -213,13 +212,13 @@ NPtr micaParser::translateArgDeclList( NonterminalArgDeclList *args,
 				 args->optionalVarList.end(),
 				 member_pointer(&micaParser::translateId) ));
 
-  Var remainder(NONE);
+  Var remainder(false);
   if (args->remainderVar)
     remainder = translateId(args->remainderVar);
 
   return new (aligned) scatterAssignNode( source,
-				mandatory, optional, remainder,
-				declare );
+					  mandatory, optional, remainder,
+					  declare );
 }
 
 struct operator_info {

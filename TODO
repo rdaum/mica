@@ -1,6 +1,6 @@
 BUGS:
 
-  scatter assign appears to be broken
+  bugs in the various unserializers
   fix map operator to work with all binary operators, not just arithmetic
       involves rewriting how binary expressions are parsed
   break + continue for the new for_range? (and possibly for a new while & other new iter loops)

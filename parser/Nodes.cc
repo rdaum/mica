@@ -548,27 +548,28 @@ var_vector assignNode::compile( Ref<Block> block, Binding &binding ) const {
 
 
 var_vector scatterAssignNode::compile( Ref<Block> block, 
-					Binding &binding ) const {
+				       Binding &binding ) const {
   // do we have to declare everything?  If so, do so now.
 
   var_vector::const_iterator x;
+  bool has_remainder = (remainder != Var(false));
   if (declare) {
+
     for (x = required.begin();
 	 x != required.end(); x++) {
       // Declare the name in the binding.
       binding.define( *x );
     }
-    
+
     for (x = optional.begin();
 	 x != optional.end(); x++) {
       // Declare the name in the binding.
       binding.define( *x );
     }
-    
-    if (remainder != NONE)
+    if (has_remainder)
       binding.define(remainder);
   }
-
+  
   /** First we compile the range!
    */
   var_vector ops = lhs->compile( block, binding);
@@ -587,7 +588,6 @@ var_vector scatterAssignNode::compile( Ref<Block> block,
        x++)
     ops.push_back( Var((int)binding.lookup( *x )) );
   
-
   /** Push the # of optional vars
    */
   ops.push_back( Var( (int)optional.size()) );
@@ -598,12 +598,11 @@ var_vector scatterAssignNode::compile( Ref<Block> block,
        x++) 
     ops.push_back( Var( (int)binding.lookup( *x )) );
   
-
   /** If there's a remainder, let the vm know...
    */
-  ops.push_back( Var(remainder->truth()) );
+  ops.push_back( Var(has_remainder) );
 
-  if (remainder != NONE) {
+  if (has_remainder) {
     // Now the remainder
     ops.push_back( Var( (int)binding.lookup( remainder )) );
   }
