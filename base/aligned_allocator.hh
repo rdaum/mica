@@ -8,6 +8,7 @@
 #include <iostream>
 #include <stdlib.h>
 
+
 inline void *mica_memalign( size_t align, size_t size, void **ptr ) {
 #ifdef HAVE_POSIX_MEMALIGN
   return ( !posix_memalign( ptr, align, size ) ? *(ptr) : NULL );

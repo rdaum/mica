@@ -10,10 +10,8 @@
 using namespace mica;
 using namespace std;
 
-int main() {
+extern void compile_it();
 
-  Var x( String::create("test") );
-  cerr << (void*)(x.v.value >> 2 << 2) << endl;
-  cerr << (void*)(x.v.value ^ 0x02) << endl;
-  cerr << x << endl;
+int main() {
+  compile_it();
 }

@@ -1,14 +1,25 @@
 // #define BOOST_SPIRIT_DEBUG
 
+#include <boost/lexical_cast.hpp>
 #include <boost/spirit/core.hpp>
 #include <boost/spirit/utility.hpp>
 #include <boost/spirit/symbols.hpp>
 #include <boost/spirit/tree/parse_tree.hpp>
 #include <boost/spirit/tree/ast.hpp>
+#include <boost/spirit/tree/tree_to_xml.hpp>
+#include <boost/spirit/utility/functor_parser.hpp>
+#include <boost/spirit/attribute.hpp>
+#include <boost/spirit/symbols.hpp>
+#include <boost/spirit/iterator/position_iterator.hpp>
+
+#include <boost/spirit/phoenix/primitives.hpp>
+#include <boost/spirit/phoenix/casts.hpp>
+#include <boost/spirit/phoenix/binders.hpp>
 
 #include <iostream>
 #include <string>
-
+#include <fstream>
+#include <wchar.h>
 #include "Var.hh"
 #include "hash.hh"
 #include "Symbol.hh"
@@ -24,60 +35,286 @@
 
 using namespace std;
 using namespace boost::spirit;
+using namespace mica;
 
-struct mica_grammar : public grammar<mica_grammar>
+
+
+/** Here's some convenient typedefs
+ */
+typedef char const*                              iterator_t;
+typedef node_val_data_factory<Var> factory_t;
+typedef tree_node<factory_t> tree_node_t;
+typedef tree_match<iterator_t, factory_t> match_t;
+typedef ast_match_policy<iterator_t, factory_t> match_policy_t;
+typedef scanner<iterator_t, scanner_policies<iter_policy_t, match_policy_t> > scanner_t;
+typedef match_t::tree_iterator iter_t;
+typedef match_t::const_tree_iterator const_iter_t;
+
+#define RULE( x ) rule<scanner_t, parser_context, parser_tag< parser_ids:: x > > x
+
+struct parser_ids {
+  typedef enum {
+    list_expression,
+    primary_expression,
+    map_expression,
+    map_item,
+    statement,
+    if_expression,
+    compound_statement,
+    lambda_expression,
+    assignment,
+    declare,
+    message,
+    while_loop,
+    do_loop,
+    for_range,
+    try_catch,
+    catch_block,
+    loop_statement,
+    control_statement,
+    slot_or_var,
+    argument_mask,
+    argument_declaration,
+    method,
+    object,
+    literals,
+
+    mandatory,
+    optional,
+    remainder,
+
+    postfix_expression,
+    multiplicative_expression,
+    additive_expression,
+    shift_expression,
+    relational_expression,
+    equality_expression,
+    and_expression,
+    exclusive_or_expression,
+    inclusive_or_expression,
+    logical_and_expression,
+    logical_or_expression,
+    assignment_expression,
+    argument_expression_list,
+    assignment_operator,
+    expression,
+    program,
+
+    NUMBER,
+    HEX,
+    FLOAT,
+    IDENTIFIER,
+    STRING_LITERAL,
+    SYMBOL_LITERAL,
+    ERROR_LITERAL,
+
+    IF,
+    ELSE,
+    LAMBDA,
+    NEW,
+    RETURN,
+    TRY,
+    CATCH,
+    WHILE,
+    DO,
+    IN,
+    BREAK,
+    CONTINUE,
+    FOR,
+    NAME,
+    MY,
+    VERB,
+    DELEGATE,
+    OBJECT,
+    METHOD,
+    SELF,
+    SELECTOR,
+    SOURCE,
+    CALLER,
+    ARGS,
+    TRUE,
+    FALSE,
+    NOTIFY,
+    DETACH,
+    PASS,
+    REMOVE,
+    THROW
+
+  } parser_ids_enum;
+};
+
+/** Converts a string literal into a mica String
+ */
+struct assign_string
 {
-  template <typename ScannerT>
-  struct definition
-  {
-    rule<ScannerT> list_expression, primary_expression, 
-                   map_expression, map_item, statement, if_expression,
-                   compound_statement, lambda_expression, assignment,
-                   declare, message, while_loop, do_loop, for_range, 
-                   try_catch, catch_block, loop_statement, control_statement,
-                   slot_or_var, argument_mask, argument_declaration,
-                   method, object, literals;
+  void operator()( tree_node<node_val_data<const char*, mica::Var> >& n, 
+		   const char*& b, const char* const& e) const {
 
-    rule<ScannerT> mandatory, optional, remainder;
+    size_t length = e - b - 1;  // (chop off quotes)
+    mica_string r;
+    for (unsigned int i = 1; i < length; i++) {
+      char c;
+      parse( b + i, c_escape_ch_p[assign(c)]);
+      if ( b[i] == '\\')
+	b++;
 
-    rule<ScannerT>
-           postfix_expression, postfix_expression_helper,
-           multiplicative_expression, multiplicative_expression_helper,
-           additive_expression, additive_expression_helper,
-           shift_expression, shift_expression_helper,
-           relational_expression, relational_expression_helper,
-           equality_expression, equality_expression_helper,
-           and_expression, and_expression_helper,
-           exclusive_or_expression, exclusive_or_expression_helper,
-           inclusive_or_expression, inclusive_or_expression_helper,
-           logical_and_expression, logical_and_expression_helper,
-           logical_or_expression, logical_or_expression_helper,
-           assignment_expression, argument_expression_list, 
-           assignment_operator, expression, expression_helper;
+      r.push_back(c);
+    }
+    n.value.value( Var(String::from_rope(r)) );
+  }
+
+};
+
+
+struct assign_integer
+{
+  void operator()( tree_node<node_val_data<const char*, mica::Var> >& n, 
+		   const char*& b, const char* const& e) const {
+    int number;
+    parse( b, int_p[assign(number)]);    
+    cerr << "INT: " << number << " " << typeid(number).name() << endl;
+    n.value.value( Var(number) );
+  }
+};
+
+struct assign_float
+{
+  void operator()( tree_node<node_val_data<const char*, mica::Var> >& n, 
+		   const char*& b, const char* const& e) const {
+    float number;
+    parse( b, real_p[assign(number)]);    
+    cerr << "FLOAT: " << number << " " << typeid(number).name() << endl;
+    n.value.value( Var(number) );
+  }
+};
+
+struct assign_hex
+{
+  void operator()( tree_node<node_val_data<const char*, mica::Var> >& n, 
+		   const char*& b, const char* const& e) const {
+    int number;
+    parse( b, hex_p[assign(number)]);    
+    cerr << "HEX: " << number << " " << typeid(number).name() << endl;
+    n.value.value( Var(number) );
+  }
+};
+
+struct assign_symbol
+{
+  void operator()( tree_node<node_val_data<const char*, mica::Var> >& n, 
+		   const char*& b, const char* const& e) const {
+
+    mica_string x(b+1, e); // +1 to eliminate # at beginning
+
+    cerr << "sym: " << x << endl;
+    n.value.value( Var(Symbol::create( x )) );
+  }
+
+};
+
+struct mica_grammar
+{
+    /** All of these get declared in global scope so that we can use parse_id
+     *  on them during compilation
+     */
+    RULE( list_expression );
+    RULE( primary_expression );
+    RULE( map_expression );
+    RULE( map_item );
+    RULE( statement );
+    RULE( if_expression );
+    RULE( compound_statement );
+    RULE( lambda_expression );
+    RULE( assignment );
+    RULE( declare );
+    RULE( message );
+    RULE( while_loop );
+    RULE( do_loop );
+    RULE( for_range );
+    RULE( try_catch );
+    RULE( catch_block );
+    RULE( loop_statement );
+    RULE( control_statement );
+    RULE( slot_or_var );
+    RULE( argument_mask );
+    RULE( argument_declaration );
+    RULE( method );
+    RULE( object );
+    RULE( literals );
+
+    RULE( mandatory );
+    RULE( optional );
+    RULE( remainder );
+
+    RULE( postfix_expression );
+    RULE( multiplicative_expression );
+    RULE( additive_expression );
+    RULE( shift_expression );
+    RULE( relational_expression );
+    RULE( equality_expression );
+    RULE( and_expression );
+    RULE( exclusive_or_expression );
+    RULE( inclusive_or_expression );
+    RULE( logical_and_expression );
+    RULE( logical_or_expression );
+    RULE( assignment_expression );
+    RULE( argument_expression_list );
+    RULE( assignment_operator );
+    RULE( expression );
+    RULE( program );
+
+    RULE( NUMBER );
+    RULE( HEX );
+    RULE( FLOAT );
+    RULE( IDENTIFIER );
+    RULE( STRING_LITERAL );
+    RULE( SYMBOL_LITERAL );
+    RULE( ERROR_LITERAL );
+
+    RULE( IF );
+    RULE( ELSE );
+    RULE( LAMBDA );
+    RULE( NEW );
+    RULE( RETURN );
+    RULE( TRY );
+    RULE( CATCH );
+    RULE( WHILE );
+    RULE( DO );
+    RULE( IN );
+    RULE( BREAK );
+    RULE( CONTINUE );
+    RULE( FOR );
+    RULE( NAME );
+    RULE( MY );
+    RULE( VERB );
+    RULE( DELEGATE );
+    RULE( OBJECT );
+    RULE( METHOD );
+    RULE( SELF );
+    RULE( SELECTOR );
+    RULE( SOURCE );
+    RULE( CALLER );
+    RULE( ARGS );
+    RULE( TRUE );
+    RULE( FALSE );
+    RULE( NOTIFY );
+    RULE( DETACH );
+    RULE( PASS );
+    RULE( REMOVE );
+    RULE( THROW );
 
     symbols<> keywords;
-    
+
     strlit<> RIGHT_OP, LEFT_OP, INC_OP, DEC_OP, PTR_OP, AND_OP,
-             OR_OP, LE_OP, GE_OP, ASSIGN, NE_OP, MAP_START, LEFT_ASSOC,
-             RIGHT_ASSOC;
-
-    chlit<>  SEMICOLON, COMMA, COLON, EQ_OP, LEFT_PAREN, RIGHT_PAREN,
-             DOT, ADDROF, BANG, TILDE, MINUS, PLUS, STAR, SLASH, PERCENT,
-             LT_OP, GT_OP, XOR, OR, QUEST, LEFT_BRACKET, RIGHT_BRACKET,
-      LEFT_BRACE, RIGHT_BRACE, HASH, AT, DOLLAR;
-
-    rule<ScannerT> STRING_LITERAL_PART, STRING_LITERAL, INT_CONSTANT_HEX, 
-                   INT_CONSTANT, INT_CONSTANT_OCT, INT_CONSTANT_DEC, 
-                   INT_CONSTANT_CHAR, FLOAT_CONSTANT, FLOAT_CONSTANT_1, 
-                   FLOAT_CONSTANT_2, FLOAT_CONSTANT_3, CONSTANT, IDENTIFIER,
-                   SYMBOL_LITERAL, ERROR_LITERAL;
-
-    rule<ScannerT> IF, ELSE, LAMBDA, NEW, RETURN, TRY, CATCH, WHILE, DO, IN,
-      BREAK, CONTINUE, FOR, NAME, MY, VERB, DELEGATE, OBJECT, METHOD,
-      SELF, SELECTOR, SOURCE, CALLER, ARGS, TRUE, FALSE, NOTIFY, DETACH, PASS,
-      REMOVE, THROW;
+      OR_OP, LE_OP, GE_OP, ASSIGN, NE_OP, MAP_START, LEFT_ASSOC,
+      RIGHT_ASSOC;
     
-    definition(mica_grammar const& self) :
+    chlit<>  SEMICOLON, COMMA, COLON, EQ_OP, LEFT_PAREN, RIGHT_PAREN,
+      DOT, ADDROF, BANG, TILDE, MINUS, PLUS, STAR, SLASH, PERCENT,
+      LT_OP, GT_OP, XOR, OR, QUEST, LEFT_BRACKET, RIGHT_BRACKET,
+      LEFT_BRACE, RIGHT_BRACE, HASH, AT, DOLLAR, QUOTE;
+
+    mica_grammar() :
       RIGHT_OP(">>"), LEFT_OP("<<"), INC_OP("++"), DEC_OP("--"), 
       PTR_OP("->"), AND_OP("&&"), OR_OP("||"), LE_OP("<="), GE_OP(">="), 
       ASSIGN(":="), NE_OP("!="), MAP_START("#["), LEFT_ASSOC("<="), 
@@ -86,7 +323,7 @@ struct mica_grammar : public grammar<mica_grammar>
       TILDE('~'), MINUS('-'), PLUS('+'), STAR('*'), SLASH('/'), 
       PERCENT('%'), LT_OP('<'), GT_OP('>'), XOR('^'), OR('|'), QUEST('?'),
       LEFT_BRACKET('['), RIGHT_BRACKET(']'), LEFT_BRACE('{'), RIGHT_BRACE('}'),
-      HASH('#'), AT('@'), DOLLAR('$')
+      HASH('#'), AT('@'), DOLLAR('$'), QUOTE('"')
     {
       keywords = "if", "else", "lambda", "new", "return", "new", "verb",
 	"delegate", "my", "while", "try", "catch", "break", "continue", "name",
@@ -127,134 +364,48 @@ struct mica_grammar : public grammar<mica_grammar>
       NOTIFY = strlit<>("notify");
       DETACH = strlit<>("detach");
 
-      // identifiers
-      IDENTIFIER =
-	lexeme_d[
-		 ((alpha_p | '_' | '$') >> *(alnum_p | '_' | '$'))
-		 - (keywords >> anychar_p - (alnum_p | '_' | '$'))
-	]
-	;
+      // string
+      STRING_LITERAL = inner_node_d[confix_p('"', (*c_escape_ch_p), '"')];
 
+      // identifer
+      IDENTIFIER = lexeme_d[
+			    (alpha_p >> *(alnum_p | '_'))
+			    - (keywords >> anychar_p - (alnum_p | '_'))];
+	;
+      
       // symbol
-      SYMBOL_LITERAL =
-	HASH >> IDENTIFIER;
+      SYMBOL_LITERAL = access_node_d[HASH >> IDENTIFIER][assign_symbol()];
 
       // error
       ERROR_LITERAL =
-	TILDE >> IDENTIFIER >> !(LEFT_PAREN >> STRING_LITERAL >> RIGHT_PAREN);
+	discard_node_d[TILDE] >> access_node_d[IDENTIFIER][assign_symbol()] >> 
+	!(inner_node_d[LEFT_PAREN >> STRING_LITERAL >> RIGHT_PAREN]);
 
-      // string literals
-      STRING_LITERAL_PART =
-	lexeme_d[
-		 !chlit<>('L') >> chlit<>('\"') >>
-		 *( strlit<>("\\\"") | anychar_p - chlit<>('\"') ) >>
-		 chlit<>('\"')
-	]
-	;
 
-      STRING_LITERAL = +STRING_LITERAL_PART;
+      NUMBER = access_node_d[int_p][assign_integer()];
 
-      // integer constants
-      INT_CONSTANT_HEX
-	= lexeme_d[
-		   chlit<>('0')
-		   >> as_lower_d[chlit<>('x')]
-		   >> +xdigit_p
-		   >> !as_lower_d[chlit<>('l') | chlit<>('u')]
-	]
-	;
+      HEX = strlit<>("0x") >> access_node_d[hex_p][assign_hex()];
 
-      INT_CONSTANT_OCT
-	= lexeme_d[
-		   chlit<>('0')
-		   >> +range<>('0', '7')
-		   >> !as_lower_d[chlit<>('l') | chlit<>('u')]
-	]
-	;
-
-      INT_CONSTANT_DEC
-	= lexeme_d[
-		   +digit_p
-		   >> !as_lower_d[chlit<>('l') | chlit<>('u')]
-	]
-	;
-
-      INT_CONSTANT_CHAR
-	= lexeme_d[
-		   !chlit<>('L') >> chlit<>('\'') >>
-		   longest_d[
-			     anychar_p
-			     |   (   chlit<>('\\')
-				     >> chlit<>('0')
-				     >> repeat_p(0, 2)[range<>('0', '7')]
-				     )
-			     |   (chlit<>('\\') >> anychar_p)
-		   ] >>
-		   chlit<>('\'')
-	]
-	;
-
-      INT_CONSTANT =
-	INT_CONSTANT_HEX
-	|   INT_CONSTANT_OCT
-	|   INT_CONSTANT_DEC
-	|   INT_CONSTANT_CHAR
-	;
-
-      // float constants
-      FLOAT_CONSTANT_1    // 12345[eE][+-]123[lLfF]?
-	= lexeme_d[
-		   +digit_p
-		   >> (chlit<>('e') | chlit<>('E'))
-		   >> !(chlit<>('+') | chlit<>('-'))
-		   >> +digit_p
-		   >> !as_lower_d[chlit<>('l') | chlit<>('f')]
-	]
-	;
-
-      FLOAT_CONSTANT_2    // .123([[eE][+-]123)?[lLfF]?
-	= lexeme_d[
-		   *digit_p
-		   >> chlit<>('.')
-		   >> +digit_p
-		   >> !(   (chlit<>('e') | chlit<>('E'))
-			   >> !(chlit<>('+') | chlit<>('-'))
-			   >> +digit_p
-			   )
-		   >> !as_lower_d[chlit<>('l') | chlit<>('f')]
-	]
-	;
-
-      FLOAT_CONSTANT_3    // 12345.([[eE][+-]123)?[lLfF]?
-	= lexeme_d[
-		   +digit_p
-		   >> chlit<>('.')
-		   >> *digit_p
-		   >> !(   (chlit<>('e') | chlit<>('E'))
-			   >> !(chlit<>('+') | chlit<>('-'))
-			   >> +digit_p
-			   )
-		   >> !as_lower_d[chlit<>('l') | chlit<>('f')]
-	]
-	;
-
-      FLOAT_CONSTANT
-	= FLOAT_CONSTANT_1
-	| FLOAT_CONSTANT_2
-	| FLOAT_CONSTANT_3
-	;
-
-      CONSTANT = longest_d[FLOAT_CONSTANT | INT_CONSTANT];
+      FLOAT = access_node_d[real_p][assign_float()];
 
       literals 
 	= SELF | SELECTOR | SOURCE | CALLER | ARGS | TRUE | FALSE;
 
+      assignment_expression
+	= slot_or_var >> *(  ( root_node_d[ASSIGN] >> expression) |
+			     ( primary_expression >> root_node_d[RIGHT_ASSOC] 
+			       >> !(NEW) >> inner_node_d[LEFT_PAREN >> argument_mask >> RIGHT_PAREN] )
+			     )
+	;
+
       primary_expression 
-	= CONSTANT
-	| STRING_LITERAL
+	= longest_d[NUMBER | FLOAT]
+	| HEX
+	| access_node_d[STRING_LITERAL][assign_string()]
 	| SYMBOL_LITERAL
 	| ERROR_LITERAL
-	| literals
+	| assignment_expression
+	| leaf_node_d[literals]
 	| list_expression
 	| map_expression
 	| lambda_expression
@@ -263,157 +414,82 @@ struct mica_grammar : public grammar<mica_grammar>
 	| message
 	| declare
 	| control_statement
-	| slot_or_var
-	| LEFT_PAREN >> expression >> RIGHT_PAREN
+	| inner_node_d[LEFT_PAREN >> expression >> RIGHT_PAREN]
 	;
-
+      
       postfix_expression
-	= primary_expression >> postfix_expression_helper
-	;
-
-      postfix_expression_helper
-	=   (   (LEFT_BRACKET >> expression >> RIGHT_BRACKET)
-		|  LEFT_PAREN >> !argument_expression_list >> RIGHT_PAREN)
-			      >> postfix_expression_helper
-	| epsilon_p
+	= primary_expression >> *( (LEFT_BRACKET >> expression >> discard_node_d[RIGHT_BRACKET]) |
+				   (inner_node_d[LEFT_PAREN >> !argument_expression_list >> RIGHT_PAREN]) )
 	;
 
       argument_expression_list
-	= assignment_expression >> *(COMMA >> assignment_expression)
+	= infix_node_d[expression >> *(COMMA >> expression)]
 	;
       
       multiplicative_expression
-	= postfix_expression >> multiplicative_expression_helper
-	;
-
-      multiplicative_expression_helper
-	=   (   SLASH >> postfix_expression
-	      | PERCENT >> postfix_expression
-	     ) >> multiplicative_expression_helper
-	| epsilon_p
+	= postfix_expression >> 
+	*( (  root_node_d[SLASH] >> postfix_expression)
+	   | (root_node_d[PERCENT] >> postfix_expression)
+	   | (root_node_d[STAR] >> postfix_expression ) )
 	;
 
       additive_expression
-	= multiplicative_expression >> additive_expression_helper
-	;
-
-      additive_expression_helper
-	=   (  PLUS >> multiplicative_expression
-	     | MINUS >> multiplicative_expression ) >>
-	additive_expression_helper
-	| epsilon_p
+	= multiplicative_expression >> 
+	*( ( root_node_d[PLUS] >> multiplicative_expression)
+	   | root_node_d[MINUS] >> multiplicative_expression )
 	;
 
       shift_expression
-	= additive_expression >> shift_expression_helper
-	;
-
-      shift_expression_helper
-	=   (
-	     LEFT_OP >> additive_expression
-	     |   RIGHT_OP >> additive_expression
-	     ) >> shift_expression_helper
-	| epsilon_p
+	= additive_expression >> *( (root_node_d[LEFT_OP] >> additive_expression) |
+				    (root_node_d[RIGHT_OP] >> additive_expression))
 	;
 
       relational_expression
-	= shift_expression >> relational_expression_helper
+	= shift_expression >>   *( (root_node_d[LT_OP] >> shift_expression) |
+				   (root_node_d[GT_OP] >> shift_expression) |
+				   (root_node_d[LE_OP] >> shift_expression) |
+				   (root_node_d[GE_OP] >> shift_expression) )
 	;
-
-      relational_expression_helper
-	=   (
-	     LT_OP >> shift_expression
-	     |   GT_OP >> shift_expression
-	     |   LE_OP >> shift_expression
-	     |   GE_OP >> shift_expression
-	     ) >> relational_expression_helper
-	| epsilon_p
-	;
-
+    
       equality_expression
-	= relational_expression >> equality_expression_helper
-	;
-
-      equality_expression_helper
-	=   (  EQ_OP >> relational_expression
-	     | NE_OP >> relational_expression ) >>
-	equality_expression_helper
-	| epsilon_p
+	= relational_expression >> *( (root_node_d[EQ_OP] >> relational_expression) | (root_node_d[NE_OP] >> relational_expression) )
 	;
 
       and_expression
-	= equality_expression >> and_expression_helper
-	;
-
-      and_expression_helper
-	= ADDROF >> equality_expression >> and_expression_helper
-	| epsilon_p
+	= equality_expression >> *(root_node_d[ADDROF] >> equality_expression)
 	;
 
       exclusive_or_expression
-	= and_expression >> exclusive_or_expression_helper
-	;
-
-      exclusive_or_expression_helper
-	= XOR >> and_expression >> exclusive_or_expression_helper
-	| epsilon_p
+	= and_expression >> *(root_node_d[XOR] >> and_expression )
 	;
 
       inclusive_or_expression
-	= exclusive_or_expression >> inclusive_or_expression_helper
-	;
-
-      inclusive_or_expression_helper
-	= OR >> exclusive_or_expression >> inclusive_or_expression_helper
-	| epsilon_p
+	= exclusive_or_expression >> *(root_node_d[OR] >> exclusive_or_expression)
 	;
 
       logical_and_expression
-	= inclusive_or_expression >> logical_and_expression_helper
-	;
-
-      logical_and_expression_helper
-	= AND_OP >> inclusive_or_expression >> logical_and_expression_helper
-	| epsilon_p
+	= inclusive_or_expression >> *(root_node_d[AND_OP] >> inclusive_or_expression)
 	;
 
       logical_or_expression
-	= logical_and_expression >> logical_or_expression_helper
+	= logical_and_expression >> *(root_node_d[OR_OP] >> logical_and_expression)
 	;
 
-      logical_or_expression_helper
-	= OR_OP >> logical_and_expression >> logical_or_expression_helper
-	| epsilon_p
-	;
 
-      assignment_expression
-	= postfix_expression >> ASSIGN >> assignment_expression
-	| postfix_expression >> RIGHT_ASSOC
-			     >> !(NEW) >> LEFT_PAREN >> argument_mask >> RIGHT_PAREN
-	| logical_or_expression
-	;
+      expression = logical_or_expression  ;
 
-      expression = 
-	assignment_expression >> expression_helper
-	;
+      do_loop = root_node_d[DO] >> loop_statement >> 
+	discard_node_d[WHILE] >> inner_node_d[LEFT_PAREN >> expression >> RIGHT_PAREN];
 
-      expression_helper
-	= SEMICOLON >> assignment_expression >> expression_helper
-	| epsilon_p
-	;
-
-      do_loop = DO >> loop_statement >> 
-	WHILE >> LEFT_PAREN >> expression >> RIGHT_PAREN;
-
-      for_range = FOR >> IDENTIFIER >> IN >> expression >> DO >> 
+      for_range = root_node_d[FOR] >> IDENTIFIER >> discard_node_d[IN] >> expression >> discard_node_d[DO] >> 
 	loop_statement;
 
-      while_loop = WHILE >> LEFT_PAREN >> expression >> RIGHT_PAREN >>
+      while_loop = WHILE >> inner_node_d[LEFT_PAREN >> expression >> RIGHT_PAREN] >>
 	loop_statement;
 
-      catch_block = CATCH >> LEFT_PAREN >>
-	IDENTIFIER >> ASSIGN >> ERROR_LITERAL >> 
-	RIGHT_PAREN >> statement;
+      catch_block = root_node_d[CATCH] >> inner_node_d[LEFT_PAREN >>
+						       IDENTIFIER >> discard_node_d[ASSIGN] >> ERROR_LITERAL >> 
+						       RIGHT_PAREN] >> statement;
 
       try_catch =
 	TRY >> statement >> +(catch_block);
@@ -422,24 +498,25 @@ struct mica_grammar : public grammar<mica_grammar>
 	+(IDENTIFIER >> COLON >> statement);
 
       list_expression =
-	LEFT_BRACKET >> *(list_p( expression, COMMA)) >> RIGHT_BRACKET;
+	inner_node_d[LEFT_BRACKET
+	  >> infix_node_d[*(list_p( expression, COMMA))] >> RIGHT_BRACKET];
 
       map_item =
-	expression >> RIGHT_ASSOC >> expression;
-     
-      argument_declaration = LT_OP >> argument_mask >> GT_OP;
-
-      mandatory = list_p( slot_or_var, COMMA );
-      optional  = list_p( QUEST >> slot_or_var, COMMA );
-      remainder = list_p( AT >> slot_or_var, COMMA );
-
-      argument_mask 
-	=  !(             mandatory) 
-	>> !( !(COMMA) >> optional)
-	>> !( !(COMMA) >> remainder);
+	expression >> discard_node_d[RIGHT_ASSOC] >> expression;
 
       map_expression =
-	MAP_START >> *(list_p( map_item, COMMA)) >> RIGHT_BRACKET;
+	inner_node_d[MAP_START >> *(list_p( map_item, COMMA)) >> RIGHT_BRACKET];
+     
+      argument_declaration = inner_node_d[LT_OP >> argument_mask >> GT_OP];
+
+      mandatory = infix_node_d[list_p( slot_or_var, COMMA )];
+      optional  = infix_node_d[( QUEST >> slot_or_var, COMMA )];
+      remainder = infix_node_d[( AT >> slot_or_var, COMMA )];
+
+      argument_mask  = 
+	!( mandatory) >>
+	!( !(COMMA) >> optional) >>
+	!( !(COMMA) >> remainder);
 
       declare = 
 	NEW >> slot_or_var >> !(ASSIGN >> expression);
@@ -466,59 +543,97 @@ struct mica_grammar : public grammar<mica_grammar>
 	OBJECT >> compound_statement;
 
       compound_statement =
-	LEFT_BRACE >> +statement >> RIGHT_BRACE;
+	inner_node_d[LEFT_BRACE >> +statement >> RIGHT_BRACE];
 
       if_expression =
-	IF >> LEFT_PAREN >> expression >> RIGHT_PAREN >> 
-	statement >> !(ELSE >> statement);
+	root_node_d[IF] >> inner_node_d[LEFT_PAREN >> expression >> RIGHT_PAREN] 
+			>> statement >> !(root_node_d[ELSE] >> statement);
 
       control_statement
-	= root_node_d[if_expression]
-	| root_node_d[try_catch]
-	| root_node_d[while_loop]
-	| root_node_d[do_loop]
-	| root_node_d[for_range]
-	| root_node_d[compound_statement];
+	= if_expression
+	| try_catch
+	| while_loop
+	| do_loop
+	| for_range
+	| compound_statement;
 
       statement 
-	= expression >> !(SEMICOLON)
-	| root_node_d[RETURN >> expression] >> SEMICOLON
-	| root_node_d[NOTIFY >> LEFT_PAREN >> expression >> RIGHT_PAREN] >> SEMICOLON
-	| root_node_d[DETACH >> LEFT_PAREN >> RIGHT_PAREN] >> SEMICOLON
-	| root_node_d[THROW >> ERROR_LITERAL] >> SEMICOLON
-	| root_node_d[REMOVE >> list_p( slot_or_var, COMMA )] >> SEMICOLON;
+	= expression >> !SEMICOLON
+	| root_node_d[RETURN] >> expression >> SEMICOLON
+	| root_node_d[NOTIFY] >> LEFT_PAREN >> expression >> RIGHT_PAREN >> SEMICOLON
+	| root_node_d[DETACH] >> LEFT_PAREN >> RIGHT_PAREN >> SEMICOLON
+	| root_node_d[THROW] >> ERROR_LITERAL >> SEMICOLON
+	| root_node_d[REMOVE] >> list_p( slot_or_var, COMMA ) >> SEMICOLON;
 
+      program = (*statement);
     }
 
-    rule<ScannerT> const start() const { return statement; }
 
-  };
+
+  match_t parse( const std::string &str ) {
+      const char* first = str.c_str();
+      const char* last = first + str.size();
+      
+      scanner_t scan = scanner_t(first, last);
+      match_t info = program.parse(scan);
+
+      return info;
+  }
+
+ 
+  
 };
 
-void compile_nodes( const tree_parse_info<> &info ) {
+NPtr compile_statement( iter_t &i ) {
+  NPtr result;
+   
+  /** handle literals
+   */
+  if (i->value.id() == parser_ids::SYMBOL_LITERAL ) {
+    cerr << "FOUND SYMBOL: " << i->children.begin()->value.value() << endl;
+  } else if (i->value.id() == parser_ids::STRING_LITERAL ) {
+    cerr << "FOUND STRING: " << i->value.value() << endl;
+  } else if (i->value.id() == parser_ids::FLOAT)  { 
+    cerr << "FOUND FLOAT: " << i->value.value() << endl;
+  } else if (i->value.id() == parser_ids::NUMBER)  { 
+    cerr << "FOUND INTEGER: " << i->value.value() << endl;
+  } else {
+    for (iter_t j = i->children.begin(); j != i->children.end(); j++)
+      compile_statement( j );
+  }
+  return result;
 }
+
+void compile_nodes( const match_t &info ) {
+  tree_to_xml( cout, info.trees );
+  
+  std::vector<NPtr> block;
+  for (iter_t i = info.trees.begin(); i != info.trees.end(); i++)
+    block.push_back( compile_statement( i ) );
+}
+
 
 void compile_it()
 {
   mica_grammar grammar;
-
-  string str;
+  
+  std::string str;
   while (getline(cin, str)) {
     try {
-      tree_parse_info<> info = pt_parse( str.c_str(), grammar, space_p);
 
-      if (info.full) {
-	cout << "parsing succeeded\n";
-
+      match_t info = grammar.parse( str );
+     
+      //      if (info.full) {
+      //	cout << "parsing succeeded\n";
+	
 	compile_nodes( info );
-      } else {
-	cout << "parsing failed\n";
-      }
+	//      } else {
+	//	cout << "parsing failed\n";
+	//      }
     } catch (...) {
       cout << "error during parse" << endl;
     }
   }
-
 }
 
-
+  
