@@ -29,7 +29,6 @@
 #include "Message.hh"
 #include "Pools.hh"
 #include "GlobalSymbols.hh"
-#include "NoReturn.hh"
 #include "Exceptions.hh"
 #include "Slots.hh"
 #include "OpCodes.hh"

@@ -9,7 +9,6 @@
 
 #include "Data.hh"
 #include "Var.hh"
-#include "NoReturn.hh"
 #include "Task.hh"
 #include "Data.hh"
 #include "Error.hh"

@@ -6,7 +6,6 @@
 
 #include "Frame.hh"
 #include "Closure.hh"
-#include "NoReturn.hh"
 
 
 using namespace mica;

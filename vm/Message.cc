@@ -5,7 +5,6 @@
 #include "Data.hh"
 #include "Var.hh"
 #include "Atom.hh"
-#include "NoReturn.hh"
 #include "Task.hh"
 #include "Frame.hh"
 #include "Symbol.hh"

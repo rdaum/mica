@@ -10,8 +10,6 @@
 #include <boost/operators.hpp>
 #include <boost/cast.hpp>
 
-#include <gmp.h>
-
 #include "Data.hh"
 #include "Ref.hh"
 #include "Atoms.hh"
