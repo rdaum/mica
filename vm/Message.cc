@@ -248,14 +248,24 @@ RaiseMessage::RaiseMessage( Ref<Task> parent_task,
 			    const Var &caller, const Var &to, const Var &on, 
 			    const Symbol &selector, 
 			    const Ref<Error> &error, 
-			    const rope_string &traceback )
+			    rope_string traceback )
   : Message( parent_task, id, age, ticks, source, caller, to, on, 
-	     selector, var_vector() ) 
+	     selector, var_vector() ),
+    trace_str( traceback ), err(error)
 {    
-  args.push_back( Var(error) );
-  args.push_back( String::from_rope(traceback) );
 }; 
 
+child_set RaiseMessage::child_pointers() {
+  child_set children( this->Message::child_pointers() );
+  if ((Error*)err)
+    children.push_back( (Error*)err );
+
+  return children;
+}
+
+RaiseMessage::RaiseMessage() 
+  : Message(),
+    err(Ref<Error>(0)) {}
 
 int mica::msg_count()
 {

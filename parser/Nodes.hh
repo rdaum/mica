@@ -255,8 +255,8 @@ namespace mica {
     : public Node {
   public:
     NPtr selector;
-    NPtr value;
     NPtr arg_template;
+    NPtr value;
 
     setVerbNode( const NPtr &in_selector, const NPtr &in_arg_template, 
 		 const NPtr &in_value )
@@ -273,8 +273,8 @@ namespace mica {
     : public Node {
   public:
     NPtr selector;
-    NPtr value;
     NPtr arg_template;
+    NPtr value;
 
     declVerbNode( const NPtr &in_selector, const NPtr &in_arg_template, 
 		  const NPtr &in_value )

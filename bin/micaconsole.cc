@@ -138,8 +138,7 @@ public:
       cout << "=> " << reply_message->args[0] << endl;
     } else if (reply_message->isRaise()) {
 
-      rope_string traceback = reply_message->args[1].tostring();
-      cout << traceback << endl ;
+      cerr<< reply_message->asRef<RaiseMessage>()->traceback() << endl;
       
     } else if (reply_message->isHalt()) {
       cout << "Halted." << endl;

@@ -14,7 +14,7 @@ namespace mica {
      *  which is good, because we use some lower bits for
      *  storing goodies
      */
-    void *addr = malloc( size_of + 8 );
+    void *addr = malloc( size_of );
     if (addr == 0) {
       throw std::bad_alloc();
     }

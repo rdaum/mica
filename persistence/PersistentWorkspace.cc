@@ -424,7 +424,7 @@ Environment *PersistentPool::get_environment( OID object_id ) {
 
   objects[object_id]->environment = result;
 
-  Object *object = resolve(object_id);
+  resolve(object_id);
 
   notify_end_paging();
   // START REFCOUNTING OBJECTS AGAIN
@@ -480,7 +480,8 @@ void PersistentPool::write_object( OID id )
   /** Just the refcnt
    */
   Dbt value;
-  value.set_data( &objects[id]->object->refcnt );
+  int refcnt = objects[id]->object->refcnt;
+  value.set_data( &refcnt );
   value.set_size( sizeof(int) );
   value.set_ulen( sizeof(int) );
 
@@ -530,7 +531,9 @@ Ref<Object> PersistentPool::resolve( OID id )
     if ((ret = databases[OID_DB]->get( NULL, &key, &value, 0)) != 0) 
       throw internal_error("unable to retrieve object refcount from db");
     
-    memcpy( &objects[id]->object->refcnt, value.get_data(), sizeof(int) );
+    int refcnt;
+    memcpy( &refcnt, value.get_data(), sizeof(int) );
+    objects[id]->object->refcnt = refcnt;
   } 
 
   return objects[id]->object;

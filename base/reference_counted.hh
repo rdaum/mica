@@ -28,9 +28,9 @@ namespace mica {
    *  In generic reference count memory management, objects must maintain
    *  a tree (rather than a graph) layout.
    *
-   *  Cycle detection allows for full graph linkages.  It typically performs
-   *  badly.  However, this class incorporates a cycle detection algorithm
-   *  described by David F. Bacon and V.T.Rajan at:
+   *  Cycle detection allows for full graph linkages.  This particular class
+   *  incorporates a cycle detection algorithm described by David F. Bacon
+   *  and V.T.Rajan at:
    *
    *  http://www.research.ibm.com/people/d/dfb/papers/Bacon01Concurrent.pdf
    * 
@@ -51,23 +51,24 @@ namespace mica {
 		   GREEN     // Acyclic
 
 		   /** Unimplemented (for concurrent version of
-		       algorithm ) */
-//		   RED,      // Candidate cycle undergoing computation
-//		   ORANGE    // Candidate cycle awaiting epoch boundary
+		       algorithm ) 
+		       RED,      // Candidate cycle undergoing computation
+		       ORANGE    // Candidate cycle awaiting epoch boundary
+		   */
 
     } Colouring;
     
     /** storage of the reference count for a piece of Data
      */
-    int refcnt;
-    bool buffered;
-
-    bool paged;
-
-    Colouring colour;
-
+    int refcnt        : 27;
+    bool buffered     : 1;
+    bool paged        : 1;
+    Colouring colour  : 3;
+    
+    
   public:
     reference_counted();
+    virtual ~reference_counted();
 
   public:
     // EXTERNAL REFERENCE COUNT METHODS

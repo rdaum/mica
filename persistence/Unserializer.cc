@@ -425,7 +425,9 @@ Ref<Task> Unserializer::parseTaskReal()
 
   /** Read the refcnt
    */
-  UnPack( task->refcnt );
+  int refcnt;
+  UnPack( refcnt );
+  task->refcnt = refcnt;
 
   /** Read the pool name and index.
    */

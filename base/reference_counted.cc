@@ -20,7 +20,7 @@ using namespace std;
 
 /** Global COLLECTING flag -- set during cycle collection to notify the
  *  cache that it shouldn't do any page outs during cycle collections.
- *  This is absolutely not thread safe.
+ *  This is _absolutely_ not thread safe.
  */
 static bool COLLECTING = false;
 bool mica::cycle_collecting() {
@@ -38,12 +38,10 @@ static bool FREEING = false;
 static bool PAGING = false;
 
 void mica::notify_start_paging() {
-  assert( !PAGING );
   PAGING = true;
 }
     
 void mica::notify_end_paging() {
-  assert( PAGING );
   PAGING = false;
 }
 
@@ -52,7 +50,8 @@ inline bool reference_counted::paging() const {
   return PAGING && this->paged;
 }
 
-/** This is the list of roots.  It's a vector.
+/** This is the list of roots.  It's a linked list, for quick inplace
+ *  insertions / removals.
  */
 static child_set Roots;
 
@@ -62,9 +61,13 @@ static child_set Roots;
  */
 static void Free( reference_counted *who )
 {
+  /** Do not free paged objects while PAGING is in effect
+   */
   if (who->paging())
     return;
 
+  /** Engage lock
+   */
   FREEING = true;
 
   who->finalize_object();
@@ -72,9 +75,10 @@ static void Free( reference_counted *who )
   if (who->paged)
     who->finalize_paged_object();
 
-  cerr << "Deleting: " << who << " ( " << typeid(*who).name() << " )" << endl;
   delete who;
 
+  /** Remove lock
+   */
   FREEING = false;
 }
 
@@ -86,10 +90,9 @@ reference_counted::reference_counted()
     buffered(false),
     paged(false),
     colour(BLACK)
-{
-}
+{}
 
-//reference_counted::~reference_counted() {}
+reference_counted::~reference_counted() {}
 
 
 /** SEE DOCUMENTATION IN PAPER FOR ALGORITHM AND FUNCTION DESCRIPTIONS
@@ -156,7 +159,8 @@ void reference_counted::collect_roots() {
 
 void reference_counted::collect_cycles() {
 
-  logger.debugStream() << "collecting cycles" << log4cpp::CategoryStream::ENDLINE;
+  logger.debugStream() << "collecting cycles" << 
+    log4cpp::CategoryStream::ENDLINE;
 
   /** Set collecting flag.  This is here so that the cache algorithm will not
    *  attempt to page out objects while a collection cycle is in process.
@@ -166,7 +170,7 @@ void reference_counted::collect_cycles() {
   /** Lock this for protection.  Can't have people calling us while
    *  we're already invoked.
    */
-  static bool locked;
+  static bool locked = false;
 
   if (!locked)
     locked = true;
@@ -198,7 +202,7 @@ void reference_counted::upcount() {
    */
   refcnt++;
 
-  /**  GREEN (guaranteed non-cyclic) nodes from blackening!
+  /**  Keep GREEN (guaranteed non-cyclic) nodes from blackening!
    */
   if (colour != GREEN)
     colour = BLACK;

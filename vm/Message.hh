@@ -105,7 +105,7 @@ namespace mica {
      */
     bool operator==( const Message &v2 ) const;
 
-    child_set child_pointers();
+    virtual child_set child_pointers();
 
     void finalize_object();
 
@@ -158,11 +158,6 @@ namespace mica {
     {
     };
 
-    ReturnMessage( const Message &caller )
-      : Message( caller ) 
-    {
-    };
-
     ReturnMessage( Ref<Task> parent_task, 
 		   unsigned int id,
 		   unsigned int age, 
@@ -193,14 +188,14 @@ namespace mica {
     Type::Identifier type_identifier() const { return Type::RAISEMESSAGE; }
 
   public:
-    RaiseMessage() :
-      Message() 
-    {};
+    rope_string trace_str;
+    Ref<Error> err;
 
-    RaiseMessage( const Message &caller )
-      : Message( caller ) 
-    {};
+  protected:
+    friend class Unserializer;
+    RaiseMessage() ;
 
+  public:
     RaiseMessage( Ref<Task> parent_task, 
 		  unsigned int id,
 		  unsigned int age, unsigned int ticks, 
@@ -208,19 +203,21 @@ namespace mica {
 		  const Var &caller, const Var &to, const Var &on, 
 		  const Symbol &selector, 
 		  const Ref<Error> &error, 
-		  const rope_string &traceback );
+		  rope_string traceback );
 
     rope_string traceback() const {
-      return args[1].tostring();
+      return trace_str;
     }
 
     Ref<Error> error() const {
-      return args[0]->asRef<Error>();
+      return err;
     }
 
     bool isRaise() const {
       return true;
     }; 
+
+    child_set child_pointers();
 
     rope_string typeName() const { return "RaiseMessage"; }
   };
@@ -234,10 +231,6 @@ namespace mica {
   public:
     HaltMessage() :
       Message() 
-    {};
-
-    HaltMessage( const Message &caller )
-      : Message( caller ) 
     {};
 
     HaltMessage( Ref<Task> parent_task, 
