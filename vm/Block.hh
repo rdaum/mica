@@ -4,11 +4,11 @@
 #define BLOCK_HH
 
 #include "AbstractBlock.hh"
-#include "VariableStorage.hh"
+#include "Environment.hh"
 
 namespace mica {
   
-  class Closure;
+  class Frame;
 
 
   class Block
@@ -49,7 +49,7 @@ namespace mica {
     mica_string dump() const;
 
   public:
-    Ref<Task> make_closure( const Ref<Message> &msg, const Var &definer );
+    Ref<Task> make_frame( const Ref<Message> &msg, const Var &definer );
 
   public:
 

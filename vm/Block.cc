@@ -12,10 +12,10 @@
 #include "Exceptions.hh"
 #include "Object.hh"
 #include "Symbol.hh"
-#include "Closure.hh"
+#include "Frame.hh"
 #include "Scheduler.hh"
 #include "OpCodes.hh"
-#include "ExecutionContext.hh"
+#include "Control.hh"
 
 #include "Block.hh"
 
@@ -108,16 +108,16 @@ int Block::pc_to_line( int pc ) const
 
 
 
-Ref<Task> Block::make_closure( const Ref<Message> &msg, const Var &definer )
+Ref<Task> Block::make_frame( const Ref<Message> &msg, const Var &definer )
 {
-  /** mica blocks get a Closure.  We create a new one with all the
+  /** mica blocks get a Frame.  We create a new one with all the
    *  right values copied from the message.
    */
-  Ref<Closure> new_closure(new (aligned) Closure( msg, definer, this ));
+  Ref<Frame> new_frame(new (aligned) Frame( msg, definer, this ));
 
   /** Return it for scheduling.
    */
-  return Ref<Task>((Task*)new_closure);
+  return Ref<Task>((Task*)new_frame);
 }
 
 mica_string Block::serCommon( const mica_string &typen ) const
@@ -176,7 +176,19 @@ mica_string Block::tostring() const
 
 mica_string Block::rep() const
 {
-  return "<code block>";
+  std::ostringstream out;
+  opcode_rep printer( out );
+  out << "(";
+  var_vector::const_iterator x;
+  for (x = code.begin(); x != code.end(); x++) {
+    x->apply_visitor<void>( printer );
+    out << " ";
+  }
+  out << ")";
+
+  out << std::ends;
+  return mica_string(out.str().c_str());
+
 }
 
 child_set Block::child_pointers() 

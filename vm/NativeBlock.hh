@@ -8,7 +8,7 @@
 namespace mica {
 
   class Block;
-  class NativeClosure;
+  class NativeFrame;
 
   class NativeBlock
     : public AbstractBlock
@@ -18,11 +18,11 @@ namespace mica {
 
   protected:
     friend class Unserializer;
-    friend class NativeClosure;
+    friend class NativeFrame;
 
     /** The actual function pointer
      */
-    Var (*function)( const Ref<NativeClosure> &closure);
+    Var (*function)( const Ref<NativeFrame> &frame);
 
     /** We need these so we can serialize and unserialize the NativeBlock
      *  libraryName is the name of the DLL that holds the symbols.
@@ -32,13 +32,13 @@ namespace mica {
     mica_string symbolName;
 
   public:
-    NativeBlock( Var (*function)( const Ref<NativeClosure> &closure),
+    NativeBlock( Var (*function)( const Ref<NativeFrame> &frame),
 		 const mica_string &libraryName,
 		 const mica_string &symbolName );
 
     virtual ~NativeBlock() {};
 
-    Ref<Task> make_closure( const Ref<Message> &msg, const Var &definer );
+    Ref<Task> make_frame( const Ref<Message> &msg, const Var &definer );
    
     mica_string serialize() const;
 

@@ -7,7 +7,7 @@
 #include "Scalar.hh"
 #include "NoReturn.hh"
 #include "Task.hh"
-#include "Closure.hh"
+#include "Frame.hh"
 #include "Symbol.hh"
 
 #include "Block.hh"
@@ -161,22 +161,22 @@ void Message::finalize_object()
   msg_counter--;
 }
 
-Var Message::perform( const Ref<Task> &parent, const Var &args )
+Var Message::perform( const Ref<Frame> &parent, const Var &args )
 {
   /** Resolve the selector on the object.
    */
-  SlotResult slot_result( Slots::match_verb( on, selector, this->args ) );
+  Slot slot_result( Slots::match_verb( on, selector, this->args ) );
 
   /** Make sure it's a block
    */
   if (!slot_result.value.isBlock())
     throw invalid_type("invalid block for message send");
 
-  /** Ask the block for a task (a closure of some sort) for executing
+  /** Ask the block for a task (a frame of some sort) for executing
    *  this method.
    */
   Ref<AbstractBlock> block(slot_result.value->asRef<AbstractBlock>());
-  Ref<Task> task(block->make_closure( Ref<Message>(this), 
+  Ref<Task> task(block->make_frame( Ref<Message>(this), 
 				      slot_result.definer ));
 
   /** Schedule the task

@@ -14,8 +14,8 @@ namespace mica {
   class Message;
 
   /** A Message is a send from one object to another which is turned
-   *  into a closure by the scheduler at send time.  Note that messages
-   *  are also used to encapsulate replies from one task/closure to
+   *  into a frame by the scheduler at send time.  Note that messages
+   *  are also used to encapsulate replies from one task/frame to
    *  another.
    */
   class Message 
@@ -27,11 +27,11 @@ namespace mica {
     }
 
   public:
-    /** Parent_Closure - the closure that spawned me.  NULL if top-message.
+    /** Parent_Frame - the frame that spawned me.  NULL if top-message.
      */
     Ref<Task> parent_task;
 
-    /** Index into the children list on the closure that spawned us.
+    /** Index into the children list on the frame that spawned us.
      */
     unsigned int msg_id;
 
@@ -67,7 +67,7 @@ namespace mica {
     Message();
 
     /** construct a message with values filled in
-     *  @param parent_closure the courses we tide from
+     *  @param parent_frame the courses we tide from
      *  @param age age of the message
      *  @param ticks number of ticks of the message
      *  @param source source attached to the message
@@ -112,7 +112,7 @@ namespace mica {
   public:
     /** Dispatch the message!
      */
-    Var perform( const Ref<Task> &parent, const Var &args );
+    Var perform( const Ref<Frame> &parent, const Var &args );
 
   public:
     bool isLocal() const;

@@ -11,9 +11,9 @@
 
 namespace mica {
 
-  class Closure;
+  class Frame;
  
-  typedef void (Closure::*PFV)(unsigned int, unsigned int);
+  typedef void (Frame::*PFV)(unsigned int, unsigned int);
   
   struct OpInfo {
     int code;                       // opcode index

@@ -7,7 +7,7 @@
 
 namespace mica {
 
-  /** NoReturn is returned from Closure and Message's perform
+  /** NoReturn is returned from Frame and Message's perform
    *  in order to indicate that the returned value will come through
    *  the stack, and not via the normal return value.  A Hack,
    *  should be replaced soon.

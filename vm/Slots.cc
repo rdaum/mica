@@ -8,9 +8,10 @@
 #else
 #include <hash_set>
 #endif
+
 /** For MAXINT
  */
-#include <values.h>
+#include <boost/cstdint.hpp>
 
 #include "Data.hh"
 #include "Var.hh"
@@ -38,7 +39,7 @@ using namespace std;
  */
 static int generation = 0;
 inline void increment_generation() {
-  if (generation == MAXINT) generation = 0;
+  if (generation == UINT_MAX) generation = 0;
   else generation++;
 }
 
@@ -51,25 +52,17 @@ inline void increment_generation() {
  */
 typedef STD_EXT_NS::hash_set<Var, hash_var> VisitedMap;
 
-SlotResult Slots::get_slot( const Var &self,
+Slot Slots::get_slot( const Var &self,
 			    const Var &accessor, 
 			    const Symbol &name ) 
 {
   VisitedMap visited;
 
   /** Attempt to actually get the value locally.  
-   *  Perhaps we should make .get( ) return a false value for 
-   *  failed lookups, instead of throwing all the time, since it's
-   *  really slow to be throwing ignored exceptions like this.
    */
-  try {
-    return self.get( accessor, name );
-  } catch (const Ref<Error> &err) {
-
-    if (err != E_SLOTNF)
-      throw;
-    
-  }
+  OptSlot res(self.get( accessor, name ));
+  if (res)
+    return *res;
      
   /** If we have no delegates, we can fail immediately.
    */
@@ -85,13 +78,11 @@ SlotResult Slots::get_slot( const Var &self,
      */
     if (visited.find(parent) == visited.end()) {
       visited.insert( parent );
-    
-      try {
-	return parent.get( accessor, name );
-      } catch (const Ref<Error> &err) {
-	if (err != E_SLOTNF)
-	  throw;
-      }
+
+      res = parent.get( accessor, name );
+      if (res)
+	return *res;
+
       var_vector copy_vec(parent.delegates());
       size_t old = delegates_vector.size();
       delegates_vector.insert( delegates_vector.end(), copy_vec.rbegin(),
@@ -104,12 +95,12 @@ SlotResult Slots::get_slot( const Var &self,
 }
 
 
-SlotResult Slots::get_name( const Var &self,
+Slot Slots::get_name( const Var &self,
 			    const Symbol &name ) {
   return get_slot( self, Var(NAME_SYM), name );
 }
 
-SlotResult Slots::match_verb( const Var &self,
+Slot Slots::match_verb( const Var &self,
 			      const Symbol &name,
 			      const var_vector &arguments ) {
 
@@ -175,7 +166,7 @@ SlotResult Slots::match_verb( const Var &self,
 	    /** It's all matched -- return the method
 	     */
 	    if (method->arg_mask.marked_all_of( num_args ) ) 
-	      return SlotResult( (*Co)->definer, (*Co)->method );
+	      return Slot( (*Co)->definer, (*Co)->method );
 
 	  }
 	}
@@ -253,10 +244,14 @@ SlotResult Slots::match_verb( const Var &self,
   throw E_SLOTNF;
 }
 
-SlotResult Slots::get_verb( const Var &self,
-			    const Symbol &selector,
-			    const var_vector &argument_template ) {
-  return self.get( List::from_vector(argument_template), selector );
+Slot Slots::get_verb( const Var &self,
+		      const Symbol &selector,
+		      const var_vector &argument_template ) {
+  OptSlot res(self.get( List::from_vector(argument_template), selector ));
+  if (res)
+    return *res;
+  else
+    throw E_SLOTNF;
 }
 
 vector< Ref<Object> > build_arguments( const Var &self,
@@ -367,7 +362,7 @@ void Slots::remove_verb( Var &self,
   }
 }
 
-SlotResult Slots::get_delegate( const Var &self,
+Slot Slots::get_delegate( const Var &self,
 				const Symbol &name ) {
   return get_slot( self, Var(DELEGATE_SYM), name );
 }

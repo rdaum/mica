@@ -21,7 +21,7 @@
 
 #include "Task.hh"
 #include "Message.hh"
-#include "Closure.hh"
+#include "Frame.hh"
 #include "Pools.hh"
 
 #include "Scheduler.hh"
@@ -217,7 +217,7 @@ void Scheduler::send_nonblock( size_t age, size_t ticks, const Var &source,
 
   /** Dispatch the message now.
    */
-  msg.perform( ((Ref<Task>)0), NONE );
+  msg.perform( ((Ref<Frame>)0), NONE );
 }
 
 /*

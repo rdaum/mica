@@ -8,21 +8,21 @@ namespace mica {
    */
   struct Slots {
     
-    static SlotResult get_slot( const Var &self,
-				const Var &accessor, 
-				const Symbol &name );
-
-    static SlotResult get_name( const Var &self,
+    static Slot get_slot( const Var &self,
+			  const Var &accessor, 
+			  const Symbol &name );
+    
+    static Slot get_name( const Var &self,
 				const Symbol &name );
     
-    static SlotResult get_delegate( const Var &self,
+    static Slot get_delegate( const Var &self,
 				    const Symbol &name );
 
-    static SlotResult match_verb( const Var &self,
+    static Slot match_verb( const Var &self,
 				  const Symbol &name,
 				  const var_vector &arguments );
   
-    static SlotResult get_verb( const Var &self,
+    static Slot get_verb( const Var &self,
 				const Symbol &name,
 				const var_vector &arg_template );
 

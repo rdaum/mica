@@ -51,7 +51,7 @@ namespace mica {
     // is a constructor.  It's a "clone" method, really.  But its 
     // behaviour must vary in each descendant.  Using a virtual method
     // would mean the return type would have to be the same for each
-    // child.  Otherwise we'd need a clone_task, clone_closure, clone_etc
+    // child.  Otherwise we'd need a clone_task, clone_frame, clone_etc
     // scheme, which seems as messy.  So for now, it stays. -- RWD
     Task( Ref<Task> from );
    
@@ -139,7 +139,7 @@ namespace mica {
      */
     bool activate();
     
-    /** Process incoming (network, etc.) events for this closure.
+    /** Process incoming (network, etc.) events for this frame.
      */
     virtual void spool();
     

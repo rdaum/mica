@@ -18,7 +18,7 @@
 #include "Symbol.hh"
 #include "Exceptions.hh"
 
-#include "Closure.hh"
+#include "Frame.hh"
 
 #include "Scheduler.hh"
 #include "Message.hh"
@@ -41,7 +41,6 @@ Task::Task()
   task_counter++;
 
   expire_timer.reset();
-
 }
 
 Task::Task( Ref<Task> parent, size_t msgid, int pool_id )
@@ -131,8 +130,7 @@ void Task::reply( const Ref<Message> &message ) {
      */
     parent_task = 0;
 
-  }
-  else {
+  } else {
     logger.errorStream() << "attempt to send a reply from top-level task.  pid: " << pid << " tid: " << tid << log4cpp::CategoryStream::ENDLINE;
   }
 }

@@ -3,14 +3,14 @@
 #ifndef ABSBLOCK_HH
 #define ABSBLOCK_HH
 
-#include "ExecutionContext.hh"
+#include "Control.hh"
 #include "generic_vm_entity.hh"
 #include "Ref.hh"
 #include "ArgumentMask.hh"
 
 namespace mica {
 
-  class Closure;
+  class Frame;
   class Task;
   class Message;
 
@@ -19,7 +19,7 @@ namespace mica {
     : public generic_vm_entity
   {
   public:
-    virtual Ref<Task> make_closure( const Ref<Message> &message, 
+    virtual Ref<Task> make_frame( const Ref<Message> &message, 
 				  const Var &definer ) = 0;
 
   public:

@@ -7,10 +7,10 @@
 #include "Scalar.hh"
 #include "Task.hh"
 #include "Block.hh"
-#include "Closure.hh"
+#include "Frame.hh"
 #include "Symbol.hh"
 #include "Block.hh"
-#include "NativeClosure.hh"
+#include "NativeFrame.hh"
 
 #include "Exceptions.hh"
 
@@ -18,7 +18,7 @@
 
 using namespace mica;
 
-NativeBlock::NativeBlock(  Var (*ifunction)( const Ref<NativeClosure> &closure),
+NativeBlock::NativeBlock(  Var (*ifunction)( const Ref<NativeFrame> &frame),
 			   const mica_string &iLibraryName,
 			   const mica_string &iSymbolName )
   : function(ifunction),
@@ -38,17 +38,17 @@ mica_string NativeBlock::tostring() const
 }
 
 
-Ref<Task> NativeBlock::make_closure( const Ref<Message> &msg, 
+Ref<Task> NativeBlock::make_frame( const Ref<Message> &msg, 
 				     const Var &definer )
 {
-  /** mica blocks get a Closure.  We create a new one with all the
+  /** mica blocks get a Frame.  We create a new one with all the
    *  right values copied from the message.
    */
-  Ref<NativeClosure>new_closure = new (aligned) NativeClosure( msg, definer, this );
+  Ref<NativeFrame>new_frame = new (aligned) NativeFrame( msg, definer, this );
 
   /** Return it for scheduling.
    */
-  return (Task*)new_closure;
+  return (Task*)new_frame;
 }
 
 
