@@ -324,9 +324,9 @@ void Object::set_verb_parasite( const Symbol &name,
   write();
 }
 
-VerbList Object::get_verb_parasite( const Symbol &name,
+VerbList Object::get_verb_parasites( const Symbol &name,
 				    unsigned int pos ) const {
-  return environment()->get_verb_parasite(name, pos);
+  return environment()->get_verb_parasites(name, pos);
 }
 
 

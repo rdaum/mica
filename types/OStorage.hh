@@ -19,14 +19,14 @@
 namespace mica {
 
   class Object;
-
+  typedef var_vector VerbArgTemplate;
 
   #define END_OF_ARGS_MARKER 65535
   class VerbDef:
     public reference_counted {
   public:
     Var definer;
-    var_vector argument_template;
+    VerbArgTemplate argument_template;
     Var method;
 
     child_set child_pointers();
@@ -42,6 +42,11 @@ namespace mica {
     
   };
   typedef std::vector< Ref<VerbDef> > VerbList;
+
+  struct hash_verb_pair {
+    unsigned int operator()( const std::pair< Symbol, 
+			     unsigned int > &p ) const;
+  };
 
   class Environment
   {
@@ -86,10 +91,11 @@ namespace mica {
 
 
   public:
-    typedef std::map< var_vector, Ref<VerbDef> > VerbTemplatesMap;
+    typedef std::list< Ref<VerbDef> > VerbTemplatesMap;
 
-    typedef std::map< std::pair< Symbol, unsigned int >,
-		      VerbTemplatesMap > VerbParasiteMap;
+    typedef STD_EXT_NS::hash_map< std::pair< Symbol, unsigned int >,
+				  VerbTemplatesMap,
+				  hash_verb_pair > VerbParasiteMap;
 
     VerbParasiteMap verb_parasites;
 
@@ -106,7 +112,7 @@ namespace mica {
 			   unsigned int pos,
 			   const var_vector &argument_template ) ;
     
-    VerbList get_verb_parasite( const Symbol &name,
+    VerbList get_verb_parasites( const Symbol &name,
 				unsigned int pos ) const;
 
 

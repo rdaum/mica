@@ -156,7 +156,7 @@ SlotResult Slots::match_verb( const Var &self,
 	/** Get all parasites for this verb in this position on
 	 *  this argument
 	 */
-	VerbList candidates( rA->get_verb_parasite( name, pos ) );
+	VerbList candidates( rA->get_verb_parasites( name, pos ) );
 	for (VerbList::iterator Co = candidates.begin();
 	     Co != candidates.end(); Co++) {
 	

@@ -90,7 +90,7 @@ namespace mica {
 			    const Var &definer,
 			    const Var &method ) ;
     
-    VerbList get_verb_parasite( const Symbol &name,
+    VerbList get_verb_parasites( const Symbol &name,
 				unsigned int pos ) const;
 
     void rm_verb_parasite( const Symbol &name,

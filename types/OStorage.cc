@@ -49,6 +49,11 @@ VerbDef &VerbDef::operator=( const VerbDef &x ) {
 }
 
 
+unsigned int hash_verb_pair::operator()( const pair< Symbol, unsigned int > &p ) const {
+  return (p.first.idx << 16) + p.second;
+}
+
+
 Environment::Environment()
 {
 
@@ -227,9 +232,9 @@ mica_string Environment::serialize() const
 
 	/** Now pack the members of the verbdef
 	 */
-	s_form.append( tl_i->second->definer.serialize() );
-	SerializeVV( s_form, tl_i->second->argument_template );
-	s_form.append( tl_i->second->method.serialize() );
+	s_form.append( (*tl_i)->definer.serialize() );
+	SerializeVV( s_form, (*tl_i)->argument_template );
+	s_form.append( (*tl_i)->method.serialize() );
       }
   }
   /** End of verbdef list marker (it's not possible to have
@@ -254,8 +259,7 @@ child_set Environment::child_pointers() {
        am_i != verb_parasites.end(); am_i++) {
     for (VerbTemplatesMap::const_iterator tl_i = am_i->second.begin();
 	 tl_i != am_i->second.end(); tl_i++) {
-      children << tl_i->second->definer << tl_i->second->method;
-      append_datas( children, tl_i->second->argument_template );
+      children.push_back( (VerbDef*)(*tl_i) );
     }
   }
   return children;
@@ -271,24 +275,23 @@ void Environment::set_verb_parasite( const Symbol &name,
   vd->argument_template = argument_template;
   vd->method = method;
 
-  pair< var_vector, Ref<VerbDef> > entry(argument_template, vd );
-
   VerbParasiteMap::iterator nm_i = 
     verb_parasites.find( make_pair( name, pos ) );
   if ( nm_i == verb_parasites.end() ) {
     VerbTemplatesMap tmpl;
-    tmpl.insert( entry );
+    tmpl.push_back( vd );
     verb_parasites.insert( make_pair( make_pair( name, pos ), tmpl ) );
+    return;
   } else {
-    VerbTemplatesMap::iterator at_i =
-      nm_i->second.find( argument_template );
-    if (at_i != nm_i->second.end()) {
-      at_i->second = vd;
-    } else {
-      nm_i->second.insert( entry );
-    }
+    for (VerbTemplatesMap::iterator tm_i = nm_i->second.begin();
+	 tm_i != nm_i->second.end(); tm_i++) 
+      if ( (*tm_i)->argument_template == argument_template ) {
+	*tm_i = vd;
+	return;
+      }
+    nm_i->second.push_back( vd );
   }
-
+  
 }
 
 void Environment::rm_verb_parasite( const Symbol &name,
@@ -300,14 +303,17 @@ void Environment::rm_verb_parasite( const Symbol &name,
   
   assert( nm_i != verb_parasites.end() );
 
-  VerbTemplatesMap::iterator tm_i = nm_i->second.find( argument_template );
+  for (VerbTemplatesMap::iterator tm_i = nm_i->second.begin();
+       tm_i != nm_i->second.end(); tm_i++) 
+    if ( (*tm_i)->argument_template == argument_template ) {
+      nm_i->second.erase( tm_i );
+      return;
+    }
 
-  assert( tm_i != nm_i->second.end() );
-
-  nm_i->second.erase( tm_i );
+  assert(0);
 }
 
-VerbList Environment::get_verb_parasite( const Symbol &name,
+VerbList Environment::get_verb_parasites( const Symbol &name,
 					 unsigned int pos ) const {
   VerbList results;
 
@@ -317,7 +323,7 @@ VerbList Environment::get_verb_parasite( const Symbol &name,
     return results;
   for (VerbTemplatesMap::const_iterator it = nm_i->second.begin();
        it != nm_i->second.end(); it++) {
-    results.push_back( it->second );
+    results.push_back( *it );
   }
 
   return results;
