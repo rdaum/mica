@@ -33,6 +33,9 @@
 using namespace mica;
 using namespace std;
 
+#define CLEAR_BITS(x,mask) (( (x) & ~(mask)))
+#define TO_POINTER(x) CLEAR_BITS(x, 3)
+
 /** For divzero protection
  */
 jmp_buf env;
@@ -381,7 +384,7 @@ void Var::set_data( Data *data ) {
 
 inline Data *Var::get_data() const {
   PRECONDITION(isData());
-  return reinterpret_cast<Data*>( (v.value ^ 0x02) ) ;
+  return reinterpret_cast<Data*>( TO_POINTER(v.value) );
 }
 
 Var::~Var() {

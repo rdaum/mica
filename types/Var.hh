@@ -81,9 +81,10 @@ namespace mica
     R apply_visitor( const T &x ) const {
       if (v.numeric.is_integer) 
         return x.operator()( boost::numeric_cast<int>(v.numeric.integer) );
-      else if (v.atom.is_pointer)
+      else if (v.atom.is_pointer) {
+
 	return x.operator()( get_data() );
-      else
+      }  else
 	switch (v.atom.type) {
 	case Atoms::CHAR:
 	  return x.operator()( (char)v.atom.value );
