@@ -198,7 +198,6 @@ mica_string OStorage::serialize() const
 {
   mica_string s_form;
 
-  unsigned int count = 1;
   for (OptSlotMap::const_iterator am_i = mOptSlots.begin();
        am_i != mOptSlots.end(); am_i++) {
     for (OptSlotList::const_iterator sl_i = am_i->second.begin();
@@ -219,23 +218,20 @@ mica_string OStorage::serialize() const
 
   for (VerbParasiteMap::const_iterator am_i = verb_parasites.begin();
        am_i != verb_parasites.end(); am_i++) {
-      for (VerbTemplatesMap::const_iterator tl_i = am_i->second.begin();
-	   tl_i != am_i->second.end(); tl_i++) {
 
-	/** First pack the position
-	 */
-	Pack( s_form, am_i->first.second );
-
-	/** Pack the name
-	 */
-	s_form.append( am_i->first.first.serialize() );
-
-	/** Now pack the members of the verbdef
-	 */
-	s_form.append( (*tl_i)->definer.serialize() );
-	SerializeVV( s_form, (*tl_i)->argument_template );
-	s_form.append( (*tl_i)->method.serialize() );
-      }
+    /** First pack the position
+     */
+    Pack( s_form, am_i->first.second );
+    
+    /** Pack the name
+     */
+    s_form.append( am_i->first.first.serialize() );
+    
+    /** Now pack the members of the verbdef
+     */
+    s_form.append( am_i->second->definer.serialize() );
+    SerializeVV( s_form, am_i->second->argument_template );
+    s_form.append( am_i->second->method.serialize() );
   }
   /** End of verbdef list marker (it's not possible to have
    *  an arg-pos this high, so this can suffice as a marker
@@ -255,10 +251,7 @@ void OStorage::append_child_pointers( child_set &children ) {
   }
   for (VerbParasiteMap::const_iterator am_i = verb_parasites.begin();
        am_i != verb_parasites.end(); am_i++) {
-    for (VerbTemplatesMap::const_iterator tl_i = am_i->second.begin();
-	 tl_i != am_i->second.end(); tl_i++) {
-      children.push_back( (VerbDef*)(*tl_i) );
-    }
+    children.push_back( (VerbDef*)am_i->second );
   }
 }
 
@@ -272,38 +265,32 @@ void OStorage::set_verb_parasite( const Symbol &name,
   vd->argument_template = argument_template;
   vd->method = method;
 
-  VerbParasiteMap::iterator nm_i = 
-    verb_parasites.find( make_pair( name, pos ) );
-  if ( nm_i == verb_parasites.end() ) {
-    VerbTemplatesMap tmpl;
-    tmpl.push_back( vd );
-    verb_parasites.insert( make_pair( make_pair( name, pos ), tmpl ) );
-    return;
-  } else {
-    for (VerbTemplatesMap::iterator tm_i = nm_i->second.begin();
-	 tm_i != nm_i->second.end(); tm_i++) 
-      if ( (*tm_i)->argument_template == argument_template ) {
-	*tm_i = vd;
+  pair< VerbParasiteMap::iterator, VerbParasiteMap::iterator > nm_i;
+  nm_i = verb_parasites.equal_range( make_pair( name, pos ) );
+  if (nm_i.first != verb_parasites.end() ) {
+    for (VerbParasiteMap::iterator tm_i = nm_i.first; tm_i != nm_i.second;
+	 tm_i++) 
+      if ( tm_i->second->argument_template == argument_template ) {
+	tm_i->second = vd;
 	return;
       }
-    nm_i->second.push_back( vd );
   }
-  
+  verb_parasites.insert( make_pair( make_pair( name, pos ), vd ) );  
 }
 
 void OStorage::rm_verb_parasite( const Symbol &name,
 				    unsigned int pos,
 				    const var_vector &argument_template ) {
 
-  VerbParasiteMap::iterator nm_i = 
-    verb_parasites.find( make_pair( name, pos ) );
-  
-  assert( nm_i != verb_parasites.end() );
 
-  for (VerbTemplatesMap::iterator tm_i = nm_i->second.begin();
-       tm_i != nm_i->second.end(); tm_i++) 
-    if ( (*tm_i)->argument_template == argument_template ) {
-      nm_i->second.erase( tm_i );
+  pair< VerbParasiteMap::iterator, VerbParasiteMap::iterator > nm_i;
+  nm_i = verb_parasites.equal_range( make_pair( name, pos ) );
+  assert( nm_i.first != verb_parasites.end() );
+
+  for ( VerbParasiteMap::iterator tm_i = nm_i.first; tm_i != nm_i.second;
+	tm_i++)  
+    if ( tm_i->second->argument_template == argument_template ) {
+      verb_parasites.erase( tm_i );
       return;
     }
 
@@ -314,14 +301,16 @@ VerbList OStorage::get_verb_parasites( const Symbol &name,
 					 unsigned int pos ) const {
   VerbList results;
 
-  VerbParasiteMap::const_iterator nm_i = 
-    verb_parasites.find( make_pair( name, pos ) );
-  if (nm_i == verb_parasites.end())
+  pair< VerbParasiteMap::const_iterator, 
+    VerbParasiteMap::const_iterator > nm_i;
+  nm_i = verb_parasites.equal_range( make_pair( name, pos ) );
+
+  if (nm_i.first == verb_parasites.end())
     return results;
-  for (VerbTemplatesMap::const_iterator it = nm_i->second.begin();
-       it != nm_i->second.end(); it++) {
-    results.push_back( *it );
-  }
+
+  for ( VerbParasiteMap::const_iterator tm_i = nm_i.first; 
+	tm_i != nm_i.second; tm_i++) 
+    results.push_back( tm_i->second );
 
   return results;
 }

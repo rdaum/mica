@@ -97,14 +97,11 @@ namespace mica {
 
 
   public:
-    typedef std::list< Ref<VerbDef>, 
-		       boost::pool_allocator< Ref<VerbDef> > > VerbTemplatesMap;
-
-    typedef STD_EXT_NS::hash_map< std::pair< Symbol, unsigned int >,
-				  VerbTemplatesMap,
-				  hash_verb_pair,
-				  std::equal_to<std::pair< Symbol, unsigned int > >,
-				  boost::pool_allocator< std::pair< Symbol, unsigned int > > > VerbParasiteMap;
+    typedef STD_EXT_NS::hash_multimap< std::pair< Symbol, unsigned int >,
+				       Ref<VerbDef>,
+				       hash_verb_pair,
+				       std::equal_to<std::pair< Symbol, unsigned int > >,
+				       boost::pool_allocator< std::pair< Symbol, unsigned int > > > VerbParasiteMap;
 
     VerbParasiteMap verb_parasites;
 
