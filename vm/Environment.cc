@@ -61,11 +61,17 @@ Var Environment::get( unsigned int i )
   return *(env->begin() + i);
 }
 
-mica_string Environment::serialize() const
-{
-  mica_string s_form;
+void Environment::serialize_to( serialize_buffer &s_form ) const {
+  // pack widths
+  Pack( s_form, widths.size() );
+  for (std::vector<unsigned int>::const_iterator x = widths.begin();
+       x != widths.end(); x++)
+    Pack( s_form, *x );
 
-  return s_form;
+  // pack variables
+  Pack( s_form, env->size() );
+  for (GCVector::const_iterator x = env->begin(); x != env->end(); x++) 
+    x->serialize_to( s_form );
 }
 
 void Environment::append_child_pointers( child_set &child_list ) {

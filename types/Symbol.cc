@@ -48,8 +48,9 @@ mica_string Symbol::tostring() const {
   return symbols[idx];
 }
 
-mica_string Symbol::serialize() const {
-  mica_string s_form;
+serialize_buffer Symbol::serialize() const {
+  serialize_buffer s_form;
+
   Pack( s_form, Type::SYMBOL );
   s_form.append( symbols[idx] );
 

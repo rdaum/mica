@@ -20,7 +20,7 @@ namespace mica {
     Type::Identifier type_identifier() const { return Type::BLOCK; }
 
   public:
-    var_vector code;   // The code storage of the block.   
+    var_vector code;            // The code storage of the block.   
 
     std::vector<int> statements;// Encoding of PC positions to statement
                                 // #.
@@ -55,7 +55,7 @@ namespace mica {
 
   public:
 
-    virtual mica_string serialize() const;
+    virtual void serialize_to( serialize_buffer &s_form ) const;
 
     virtual mica_string tostring() const;
 
@@ -65,11 +65,7 @@ namespace mica {
 
   public:
     void append_child_pointers( child_set &child_list ) ;
-    
-  protected:
-
-    virtual mica_string serCommon( const mica_string &type ) const;
-
+   
   };
 
 

@@ -30,8 +30,22 @@ Closure::Closure( const var_vector &i_stack,
 
 Closure::~Closure() {}
 
-mica_string Closure::serialize() const {
-  return mica_string();
+void Closure::serialize_to( serialize_buffer &s_form ) const {
+  SerializeVV( s_form, stack );
+  scope.serialize_to( s_form );
+  control.serialize_to( s_form );
+
+  // serialize exceptions
+  Pack( s_form, exceptions.size() );
+  for (ExceptionMap::const_iterator x = exceptions.begin(); 
+       x != exceptions.end(); x++) {
+    x->first->serialize_to( s_form );
+    x->second.serialize_to( s_form );
+  }
+  Pack( s_form, tag );
+
+  self.serialize_to( s_form );
+  definer.serialize_to( s_form );
 }
 
 void Closure::append_child_pointers( child_set &child_list ) {

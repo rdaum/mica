@@ -244,13 +244,7 @@ mica_string Set::tostring() const {
   throw invalid_type("invalid operand");
 }
 
-
-
-
-mica_string Set::serialize() const
-{
-  mica_string s_form;
-
+void Set::serialize_to( serialize_buffer &s_form ) const {
   /** append type name
    */
   Pack( s_form, type_identifier() );
@@ -261,11 +255,9 @@ mica_string Set::serialize() const
   Pack( s_form, len );
 
   var_set::const_iterator x;
-  for (x = begin(); x != end(); x++) {
-    s_form.append( x->serialize() );
-  }
+  for (x = begin(); x != end(); x++)
+    x->serialize_to( s_form );
 
-  return s_form;
 }
 
 

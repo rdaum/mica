@@ -250,7 +250,7 @@ namespace mica {
 
     mica_string rep() const ;
 
-    mica_string serialize() const;
+    void serialize_to( serialize_buffer &s_form ) const;
 
     var_vector flatten() const;
 

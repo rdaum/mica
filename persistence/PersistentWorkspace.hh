@@ -24,7 +24,7 @@ namespace mica {
      */
     static std::pair<PID, Var> open( const Symbol &name, 
 				     const Ref<Object> &parent_lobby =
-				        Ref<Object>(0) );
+				     Ref<Object>(0) );
     void sync();
 
     void close();

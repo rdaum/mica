@@ -20,7 +20,7 @@
 #include "Ref.hh"
 
 namespace mica {
- 
+
   /** Used to point to a binary function
    */
   typedef boost::function<Var (const Var &, const Var &)> BinOpFunc;

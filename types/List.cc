@@ -439,9 +439,7 @@ mica_string List::rep() const
 }
 
 
-mica_string List::serialize() const {
-  mica_string s_form;
-
+void List::serialize_to( serialize_buffer &s_form ) const {
   Pack( s_form, type_identifier() );
 
   /** Append list size
@@ -454,9 +452,8 @@ mica_string List::serialize() const {
    */
   var_vector::const_iterator x;
   for (x = this->begin(); x != this->end(); x++)
-    s_form.append( (*x).serialize() );
+    x->serialize_to( s_form );
 
-  return s_form;
 }
 
 size_t List::hash() const

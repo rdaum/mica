@@ -206,10 +206,7 @@ mica_string Message::rep() const
   return rep;
 }
 
-mica_string Message::serialize() const
-{
-  mica_string s_form;
-
+void Message::serialize_to( serialize_buffer &s_form ) const {
   Pack( s_form, type_identifier() );
 
   /** Serialize the task (this serializes a reference to the task,
@@ -218,16 +215,15 @@ mica_string Message::serialize() const
   bool exists = (Task*)parent_task;
   Pack( s_form, exists );
   if (exists)
-    s_form.append( parent_task->serialize() );
+    parent_task->serialize_to( s_form );
 
   Pack( s_form, msg_id );
   Pack( s_form, age );
   Pack( s_form, ticks );
 
-  s_form.append( source.serialize() );
-  s_form.append( caller.serialize() );
-  s_form.append( self.serialize() );
-  s_form.append( on.serialize() );
+  source.serialize_to( s_form );
+  caller.serialize_to( s_form );
+  self.serialize_to( s_form );
 
   s_form.append( selector.serialize() );
 
@@ -235,9 +231,7 @@ mica_string Message::serialize() const
 
   var_vector::const_iterator x;
   for (x = args.begin(); x != args.end(); x++)
-    s_form.append( x->serialize() );
-
-  return s_form;
+    x->serialize_to( s_form );
 }
 
 RaiseMessage::RaiseMessage( Ref<Task> parent_task, 

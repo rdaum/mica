@@ -53,7 +53,7 @@ namespace mica {
     Var definer;
 
   public:
-    mica_string serialize() const;
+    void serialize_to( serialize_buffer &s_form ) const;
 
     void append_child_pointers( child_set &child_list );
 

@@ -283,8 +283,8 @@ void PersistentPool::save_tasks() {
     if (*ti) {
       Task *task = (*ti)->task;
       
-
-      mica_string buffer( task->serialize_full() );
+      serialize_buffer buffer;
+      task->serialize_full_to( buffer );
 
       /** Write size first.
        */
@@ -448,7 +448,8 @@ void PersistentPool::write( OID id )
   key.set_size( sizeof(OID) );
   key.set_ulen( sizeof(OID) );
 
-  mica_string serialized_form = objects[id]->environment->serialize();
+  serialize_buffer serialized_form;
+  objects[id]->environment->serialize_to( serialized_form );
 
   Dbt value;
   value.set_data( (void*)serialized_form.c_str() );

@@ -166,25 +166,7 @@ struct hashing_visitor {
   }
 };
 
-/** Visitor to obtain a serialization of the contents of a Var
- */
-struct serializing_visitor { 
 
-  template<typename X>
-  inline mica_string operator()( const X &y ) const {
-    mica_string x;
-    Pack( x, y );
-    return x;
-  }
-
-  inline mica_string operator()( const Symbol &y ) const {
-    return y.serialize();
-  }
-
-  inline mica_string operator()( Data *x ) const {
-    return x->serialize();
-  }
-};
 
 /** Return a string conversion of the held item
  */
@@ -284,7 +266,6 @@ static delegates_visitor delegate_v;
 static truth_visitor truth_v;
 static neg_visitor neg_v;
 static hashing_visitor hasher;
-static serializing_visitor serializer;
 static tostring_visitor tostring_v;
 static rep_visitor rep_v;
 static flatten_visitor flatten_v;
@@ -1075,18 +1056,41 @@ mica_string Var::rep() const
   return apply_visitor<mica_string>( rep_v );
 }
 
-mica_string Var::serialize() const
+
+/** Visitor to obtain a serialization of the contents of a Var
+ */
+struct serializing_visitor { 
+
+  template<typename X>
+  inline mica_string operator()( const X &y ) const {
+    mica_string x;
+    Pack( x, y );
+    return x;
+  }
+
+  inline mica_string operator()( const Symbol &y ) const {
+    return y.serialize();
+  }
+
+  inline mica_string operator()( Data *x ) const {
+    assert(0);
+  }
+};
+static serializing_visitor serializer;
+
+
+void Var::serialize_to( serialize_buffer &s_form ) const 
 {
   mica_string s;
   
   /** Push the type.
    */
   Pack( s, type_identifier() );
-  
-  s.append( apply_visitor<mica_string>( serializer ) );
-  
-  return s;
-  
+
+  if (isData()) 
+    get_data()->serialize_to( s_form );
+  else
+    s_form.append( apply_visitor<mica_string>( serializer ) );
 }
 
 Var Var::subseq( int start, int length ) const {

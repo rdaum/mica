@@ -195,10 +195,7 @@ var_vector Object::perform( const Ref<Frame> &caller, const Var &args )
 /** this should only serialize the object and not the environment --
  *  that should be left to the Pool to do
  */
-mica_string Object::serialize() const
-{
-  mica_string s_form;
-
+void Object::serialize_to( serialize_buffer &s_form ) const {
   Pack( s_form, type_identifier() );
 
   /** Serialize the handle information
@@ -206,9 +203,6 @@ mica_string Object::serialize() const
   s_form.append( Pools::instance.get(pid)->poolName.serialize() );
 
   Pack( s_form, oid );
-
-
-  return s_form;
 }
 
 

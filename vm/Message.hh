@@ -143,7 +143,7 @@ namespace mica {
 
     mica_string rep() const;
 
-    virtual mica_string serialize() const;
+    virtual void serialize_to( serialize_buffer &s_form ) const;
   };
   
   class ReturnMessage

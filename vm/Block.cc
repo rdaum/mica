@@ -118,19 +118,12 @@ Ref<Task> Block::make_frame( const Ref<Message> &msg, const Var &definer )
   return Ref<Task>((Task*)new_frame);
 }
 
-mica_string Block::serCommon( const mica_string &typen ) const
-{
-  mica_string s_form;
-
+void Block::serialize_to( serialize_buffer &s_form ) const {
   Pack( s_form, type_identifier() );
 
   /** Write opcodes
    */
-  size_t x = code.size();
-  Pack( s_form, x );
-  for (var_vector::const_iterator ni = code.begin(); ni != code.end(); ni++) {
-    s_form.append( ni->serialize() );
-  }
+  SerializeVV( s_form, code );
 
   /** Write source.
    */
@@ -138,34 +131,22 @@ mica_string Block::serCommon( const mica_string &typen ) const
 
   /** Write statement sizes
    */
-  x = statements.size();
-  Pack( s_form, x );
+  Pack( s_form, statements.size() );
   std::vector<int>::const_iterator inti;
-  for (inti = statements.begin(); inti != statements.end(); inti++) {
-    int val = *inti;
-    Pack( s_form, val );
-  }
+  for (inti = statements.begin(); inti != statements.end(); inti++) 
+    Pack( s_form, *inti );
 
   /** Write line #s
    */
-  x = line_nos.size();
-  Pack( s_form, x );
-  for (inti = line_nos.begin(); inti != line_nos.end(); inti++) {
-    int val = *inti;
-    Pack( s_form, val );
-  }
+  Pack( s_form, line_nos.size() );
+  for (inti = line_nos.begin(); inti != line_nos.end(); inti++)
+    Pack( s_form, *inti );
 
   /** Write add_scope
    */
   Pack( s_form, add_scope );
-
-  return s_form;
 }
 
-mica_string Block::serialize() const
-{
-  return serCommon("Block");
-}
 
 mica_string Block::tostring() const
 {

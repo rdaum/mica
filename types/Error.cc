@@ -136,9 +136,7 @@ unsigned int Error::hash() const {
   return err_sym.hash() + 1543;
 }
 
-mica_string Error::serialize() const
-{
-  mica_string s_form;
+void Error::serialize_to( serialize_buffer &s_form ) const {
 
   Pack( s_form, type_identifier() );
 
@@ -151,9 +149,8 @@ mica_string Error::serialize() const
   bool has_desc = (String*)desc;
   Pack( s_form, has_desc ); 
   if (has_desc) 
-    s_form.append( desc->serialize() );
+    desc->serialize_to( s_form );
 
-  return s_form;
 }
 
 bool Error::truth() const

@@ -55,6 +55,11 @@ bool ExceptionHandler::operator==( const ExceptionHandler &rhs ) const {
 			     var_idx == rhs.var_idx );
 }
 
+void ExceptionHandler::serialize_to( serialize_buffer &s_form ) const {
+  Pack( s_form, var_idx );
+  handler->serialize_to( s_form );
+}
+
 
 /** Construction, destruction
  *
@@ -523,40 +528,45 @@ mica_string Frame::traceback() const
 }
 
 
+void Frame::serialize_full_to( serialize_buffer &s_form ) const {
+  this->Task::serialize_full_to( s_form );
 
-mica_string Frame::serialize_full() const {
-  mica_string s_form( this->Task::serialize_full() );
-
-  s_form.append( source.serialize() );
-  s_form.append( caller.serialize() );
-  s_form.append( self.serialize() );
-  s_form.append( on.serialize() );
+  source.serialize_to( s_form );
+  caller.serialize_to( s_form );
+  self.serialize_to( s_form );
+  on.serialize_to( s_form );
 
   s_form.append( selector.serialize() );
 
-  s_form.append( definer.serialize() );
+  definer.serialize_to( s_form );
 
   Pack( s_form, args.size() );
 
-  var_vector::const_iterator x;
-  for (x = args.begin(); x != args.end(); x++)
-    s_form.append( x->serialize() );
+  SerializeVV( s_form, args );
 
-  s_form.append( control.serialize() );
+  // STACK
+  SerializeVV( s_form, stack );
 
-  Pack( s_form, stack.size() );
-  for (var_vector::const_iterator x = stack.begin();
-       x != stack.end(); x++) {
-    s_form.append( x->serialize() );
+  // SCOPE
+  scope.serialize_to( s_form );
+
+  // EXCEPTIONS
+  Pack( s_form, exceptions.size() );
+  for (ExceptionMap::const_iterator x = exceptions.begin(); 
+       x != exceptions.end(); x++) {
+    x->first->serialize_to( s_form );
+    x->second.serialize_to( s_form );
   }
+  // CONTROL
+  control.serialize_to( s_form );
 
-  s_form.append( scope.serialize() );
-
+  // DUMP
+  Pack( s_form, dump.size() );
+  for (std::vector< Ref<Closure> >::const_iterator x = dump.begin();
+       x != dump.end(); x++) 
+    (*x)->serialize_to( s_form );
 
   Pack( s_form, ex_state );
-  
-  return s_form;
-
 }
 
 void Frame::reply_return( const Var &value )

@@ -193,19 +193,15 @@ bool OStorage::replaceLocal( const Var &accessor,
 
 
 
-
-mica_string OStorage::serialize() const
-{
-  mica_string s_form;
-
+void OStorage::serialize_to( serialize_buffer &s_form ) const {
   for (OptSlotMap::const_iterator am_i = mOptSlots.begin();
        am_i != mOptSlots.end(); am_i++) {
     for (OptSlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
       Pack( s_form, true );
-      s_form.append( sl_i->first.serialize() );       //name
-      s_form.append( am_i->first.serialize() );       //accessor
-      s_form.append( sl_i->second.serialize() );      //value
+      s_form.append( sl_i->first.serialize() );
+      am_i->first.serialize_to( s_form );  // accessor
+      sl_i->second.serialize_to( s_form ); // value
     }
   }
   Pack( s_form, false );
@@ -229,16 +225,14 @@ mica_string OStorage::serialize() const
     
     /** Now pack the members of the verbdef
      */
-    s_form.append( am_i->second->definer.serialize() );
+    am_i->second->definer.serialize_to( s_form );
     SerializeVV( s_form, am_i->second->argument_template );
-    s_form.append( am_i->second->method.serialize() );
+    am_i->second->method.serialize_to( s_form );
   }
   /** End of verbdef list marker (it's not possible to have
    *  an arg-pos this high, so this can suffice as a marker
    */
   Pack( s_form, END_OF_ARGS_MARKER );
-
-  return s_form;
 }
 
 void OStorage::append_child_pointers( child_set &children ) {

@@ -39,7 +39,8 @@ namespace mica
     ExceptionHandler( const ExceptionHandler &xc );
     ExceptionHandler &operator=( const ExceptionHandler &rhs );   
     bool operator==( const ExceptionHandler &rhs ) const;
-    
+    void serialize_to( serialize_buffer &buffer ) const;
+
   };
 
   typedef
@@ -103,8 +104,8 @@ namespace mica
      */
     void append_child_pointers( child_set &child_list );
 
-    mica_string serialize_full() const;
-
+    void serialize_full_to( serialize_buffer &s_form ) const;
+ 
     mica_string rep() const;
 
   public:

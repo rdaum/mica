@@ -63,7 +63,7 @@ namespace mica {
 
     mica_string tostring() const;
 
-    mica_string serialize() const;
+    serialize_buffer serialize() const;
 
   };
 }

@@ -52,7 +52,7 @@ namespace mica {
     int current_line() const;
 
   public:
-    mica_string serialize() const;
+    void serialize_to( serialize_buffer &s_form ) const;
 
 
   public:

@@ -71,7 +71,7 @@ namespace mica {
     bool removeLocal( const Var &accessor, const Symbol &name );
 
 
-    mica_string serialize() const;
+    void serialize_to( serialize_buffer &s_form ) const;
 
     Var slots() const;
 

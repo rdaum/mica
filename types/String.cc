@@ -402,9 +402,7 @@ mica_string String::rep() const
   return x;
 }
 
-mica_string String::serialize() const
-{
-  mica_string s_form;
+void String::serialize_to( serialize_buffer &s_form ) const {
   Pack( s_form, type_identifier() );
 
   size_t len = size();
@@ -413,7 +411,6 @@ mica_string String::serialize() const
 
   s_form.append( *this );
 
-  return s_form;
 }
 
 

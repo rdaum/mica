@@ -17,15 +17,10 @@
 using namespace mica;
 using namespace std;
 
-
-mica_string Control::serialize() const {
-  mica_string s_form;
-  
+void Control::serialize_to( serialize_buffer &s_form ) const {
   Pack( s_form, _pc );
 
-  s_form.append( block->serialize() );
- 
-  return s_form;
+  block->serialize_to( s_form );
 }
 
 void Control::append_child_pointers( child_set &child_list ) {

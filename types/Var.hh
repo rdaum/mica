@@ -558,7 +558,7 @@ namespace mica
   public:
     /** @return serialized form suitable for storage
      */
-    mica_string serialize() const;
+    void serialize_to( serialize_buffer &s_form ) const;
 
     /** Return all pointers to reference counted objects
      *  held inside the contents of this Var.
@@ -627,10 +627,10 @@ namespace mica
 
   /** For serializing a var vector
    */
-  inline void SerializeVV( mica::mica_string &S, const var_vector &vv ) {
+  inline void SerializeVV( mica::serialize_buffer &S, const var_vector &vv ) {
     Pack( S, vv.size() );
     for (var_vector::const_iterator vi = vv.begin(); vi != vv.end(); vi++) {
-      S.append( vi->serialize() );
+      vi->serialize_to( S );
     }
   }
 

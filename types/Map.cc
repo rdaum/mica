@@ -211,11 +211,7 @@ mica_string Map::rep() const
 
 }
 
-
-mica_string Map::serialize() const
-{
-  mica_string s_form;
-
+void Map::serialize_to( serialize_buffer &s_form ) const {
   /** append type name
    */
   Pack( s_form, type_identifier() );
@@ -227,11 +223,9 @@ mica_string Map::serialize() const
 
   var_map::const_iterator x;
   for (x = begin(); x != end(); x++) {
-    s_form.append( x->first.serialize() );
-    s_form.append( x->second.serialize() );
+    x->first.serialize_to( s_form );
+    x->second.serialize_to( s_form );
   }
-
-  return s_form;
 }
 
 var_vector Map::flatten() const

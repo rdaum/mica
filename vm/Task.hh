@@ -154,9 +154,9 @@ namespace mica {
 
     virtual mica_string rep() const;
       
-    mica_string serialize() const;
+    void serialize_to( serialize_buffer &s_form ) const;
 
-    virtual mica_string serialize_full() const;
+    void serialize_full_to( serialize_buffer &s_form ) const;
 
   public:
     friend class Message;

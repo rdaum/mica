@@ -275,7 +275,7 @@ namespace mica {
   public:
     mica_string rep() const;
 
-    mica_string serialize() const;
+    void serialize_to( serialize_buffer &s_form ) const;
 
   public:
     var_vector map( const Var &expr ) const;

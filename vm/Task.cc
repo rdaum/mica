@@ -349,9 +349,7 @@ mica_string Task::rep() const {
  *  task, not the actual task.  For that, you need serialize_full,
  *  and only PersistentPool can call that.
  */
-mica_string Task::serialize() const {
-  mica_string s_form;
-
+void Task::serialize_to( serialize_buffer &s_form ) const {
   Pack( s_form, Type::TASK_HANDLE );  // It's not really a task, so don't lie.
   
   /** Serialize the handle information
@@ -360,14 +358,11 @@ mica_string Task::serialize() const {
 
   Pack( s_form, tid );
 
-  return s_form;
 }
 
 /** Full serialize method, invoked by the PersistentPool only.
  */
-mica_string Task::serialize_full() const {
-  mica_string s_form;
-
+void Task::serialize_full_to( serialize_buffer &s_form ) const {
   Pack( s_form, type_identifier() );
 
   /** Serialize the reference count
@@ -385,8 +380,7 @@ mica_string Task::serialize_full() const {
   bool exists( (Task*)parent_task );
   Pack( s_form, exists );
   if (exists)
-    s_form.append( parent_task->serialize() );
-
+    parent_task->serialize_to( s_form );
 
   Pack( s_form, msg_id );
   Pack( s_form, age );
@@ -398,8 +392,6 @@ mica_string Task::serialize_full() const {
   Pack( s_form, children.size() );
   for (vector<Ref<Message> >::const_iterator x = children.begin();
        x != children.end(); x++) {
-    s_form.append( (*x)->serialize() );
+    (*x)->serialize_to( s_form );
   }
-
-  return s_form;
 }
