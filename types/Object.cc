@@ -179,7 +179,7 @@ mica_string Object::rep() const
 }
 
 
-Var Object::perform( const Ref<Frame> &caller, const Var &args )
+var_vector Object::perform( const Ref<Frame> &caller, const Var &args )
 {
   OptVar 
     result( environment()->getLocal( Var(VERB_SYM),

@@ -8,7 +8,10 @@
 #include "Frame.hh"
 
 namespace mica {
-  
+
+  /** Closure is a snapshot (closure around) state in a Frame, and represents
+   *  the current state of a function
+   */
   class Closure
     : public generic_vm_entity
   {
@@ -25,6 +28,14 @@ namespace mica {
     virtual ~Closure();
 
   public:
+    /** Apply the closure (with arguments) into a running frame
+     *  @param frame the running frame in which to apply the closure
+     *  @param args arguments to set
+     *  @return return value is ignored
+     */
+    var_vector perform( const Ref<Frame> &frame, const Var &args );
+
+  public:
     var_vector stack;
 
     Environment scope;
@@ -35,11 +46,12 @@ namespace mica {
 
     ClosureTag tag;
 
-    virtual Var perform( const Ref<Frame> &parent, const Var &args );
 
   public:
     mica_string serialize() const;
+
     child_set child_pointers();
+
     mica_string rep() const;
   };
 

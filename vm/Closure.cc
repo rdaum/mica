@@ -56,10 +56,10 @@ mica_string Closure::rep() const {
   return "<closure>";
 }
 
-Var Closure::perform( const Ref<Frame> &parent, const Var &args ) {
+var_vector Closure::perform( const Ref<Frame> &parent, const Var &args ) {
   
   parent->apply_closure( this, args );
 
-  return NoReturn::instance;
+  return var_vector();
 }
 

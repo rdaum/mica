@@ -161,7 +161,7 @@ void Message::finalize_object()
   msg_counter--;
 }
 
-Var Message::perform( const Ref<Frame> &parent, const Var &args )
+var_vector Message::perform( const Ref<Frame> &parent, const Var &args )
 {
   /** Resolve the selector on the object.
    */
@@ -183,7 +183,7 @@ Var Message::perform( const Ref<Frame> &parent, const Var &args )
    */
   Scheduler::instance->event_add( task );
 
-  return NoReturn::instance;
+  return var_vector();
 }
 
 

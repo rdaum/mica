@@ -105,7 +105,7 @@ namespace mica {
   public:
     /** Forwards to :perform
      */
-    Var perform( const Ref<Frame> &caller, const Var &args );
+    var_vector perform( const Ref<Frame> &caller, const Var &args );
 
   public:
     mica_string rep() const;

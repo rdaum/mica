@@ -109,12 +109,6 @@ namespace mica
 
     bool is_terminated() ;
 
-    /** Reset and re-schedule this frame, if it is not already scheduled.
-     *  The args value is replaced by the new value, and the parent task
-     *  is told to blocked on the new value.
-     */
-    virtual Var perform( const Ref<Frame> &parent, const Var &args );
-
   public:
     /** Execute opcodes
      */

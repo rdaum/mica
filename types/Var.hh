@@ -467,7 +467,7 @@ namespace mica
     var_vector delegates() const;
 
   public:
-    Var perform( const Ref<Frame> &caller, const Var &args );
+    var_vector perform( const Ref<Frame> &caller, const Var &args );
 
   public:
     /** Extract a subsequence from a sequence.  

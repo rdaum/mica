@@ -284,7 +284,7 @@ namespace mica {
 
     /** Invoke this object with arguments.
      */
-    virtual Var perform( const Ref<Frame> &caller, const Var &args ) = 0;
+    virtual var_vector perform( const Ref<Frame> &caller, const Var &args ) = 0;
 
   public:
   

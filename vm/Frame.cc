@@ -516,49 +516,6 @@ mica_string Frame::traceback() const
 }
 
 
-Var Frame::perform( const Ref<Frame> &parent, const Var &new_args ) {
-
-  /** If the existing parent isn't null, then this task can't be
-   *  manipulated.  Note that objects should have their parent_task
-   *  set to NULL after sending their replies to their parent_task
-   */
-  if ((Task*)parent_task != 0 && (Task*)parent_task != (Task*)parent)
-    throw permission_error("blocked");
-
-  /** Make sure the scheduler doesn't already have this task.  If it does,
-   *  if it does, it's not finished yet.
-   */
-  if (Scheduler::instance->has_task( this ))
-    throw permission_error("already scheduled");
-
-  if ((Task*)parent != (Task*)parent_task)
-    parent_task = parent;
-
-  /** Block the parent on it.
-   */
-  Ref<Message> invoking_msg( parent->spawn() );
-
-  /** Set the msg_id
-   */
-  msg_id = invoking_msg->msg_id;
-
-  /** Assign the arguments
-   */
-  args = new_args.flatten();
-
-  /** This is a frame, not a continuation -- restart it from the beginning
-   *  each time.  That means resetting the execution context's PC and toggling
-   *  terminated to false.
-   */
-  terminated = false;
-  control._pc = -1;
-
-  /** Add to the scheduler for performance.
-   */
-  Scheduler::instance->event_add( this );
-
-  return NoReturn::instance;
-}
 
 mica_string Frame::serialize_full() const {
   mica_string s_form( this->Task::serialize_full() );

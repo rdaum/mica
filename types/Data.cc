@@ -79,7 +79,7 @@ Var Data::rshift( const Var &rhs ) const
   throw unimplemented("bitwise right shift unimplemented on non-numeric types");
 }
 
-Var Data::perform( const Ref<Frame> &caller,  const Var &args )
+var_vector Data::perform( const Ref<Frame> &caller,  const Var &args )
 {
   throw unimplemented("perform operation not implemented for this type");
 }

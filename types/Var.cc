@@ -1136,10 +1136,10 @@ var_vector Var::flatten() const
 }
 
  
-Var Var::perform( const Ref<Frame> &caller, const Var &args )
+var_vector Var::perform( const Ref<Frame> &caller, const Var &args )
 {
   if (!isData())
-    throw unimplemented("call unimplemented on scalar type");
+    throw unimplemented("perform unimplemented on scalar type");
 
   return get_data()->perform( caller, args );
 }

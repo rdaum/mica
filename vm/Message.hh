@@ -112,7 +112,7 @@ namespace mica {
   public:
     /** Dispatch the message!
      */
-    Var perform( const Ref<Frame> &parent, const Var &args );
+    var_vector perform( const Ref<Frame> &parent, const Var &args );
 
   public:
     bool isLocal() const;

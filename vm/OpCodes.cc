@@ -498,17 +498,13 @@ void Frame::op_perform( unsigned int param_1, unsigned int param_2 )
 
   cerr << lhs << " (" << args << ")" << endl;
 
-   Var result(lhs.perform( this, args ));
-
-  /** If it's NoReturn, don't push the result to the stack,
-   *  instead, block... 
+  var_vector result(lhs.perform( this, args ));
+  
+  /** Append the return results to the exec_stack.  Allows for 
+   *  the return of continuations. 
    */
-  if ( result == NoReturn::instance )
-    ex_state = BLOCKED;
-  else {
-    push( result ); 
-  } 
-
+  control.exec_stack.insert( control.exec_stack.end(), 
+			     result.begin(), result.end() );
 }
 
 
