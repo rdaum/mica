@@ -91,13 +91,6 @@ void Object::write() {
   Pools::instance.get(pid)->write( oid );
 }
 
-inline SlotResult make_result( const Object *from, const Var &value ) {
-  SlotResult result;
-  result.definer = Var(from);
-  result.value = value;
-
-  return result;
-}
 
 SlotResult Object::get( const Var &accessor, const Symbol &name ) const 
 {
@@ -106,7 +99,7 @@ SlotResult Object::get( const Var &accessor, const Symbol &name ) const
   pair<bool, Var> result = environment()->getLocal( accessor, name );
 
   if (result.first) 
-    return make_result( this, result.second );
+    return SlotResult( this, result.second );
   else
     throw E_SLOTNF;
 }

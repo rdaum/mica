@@ -59,10 +59,6 @@ namespace mica {
 
     void finalize_paged_object();
 
-    bool operator==( const Task *who ) {
-      return this == who;
-    }
-
   protected:
     friend class Scheduler;
 
@@ -84,7 +80,7 @@ namespace mica {
     
     /** Receive an error from self or child
      */
-    virtual bool receive_exception( const Var &err );
+    virtual bool receive_exception( const Ref<Error> &err );
     
   public:
     /** A notification of an event particular to this task, i.e. a

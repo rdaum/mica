@@ -243,12 +243,18 @@ Environment *Unserializer::parseEnvironment()
   size_t num_slots;
   UnPack(num_slots);
 
-  while (num_slots--) {
-    Symbol name( parseSymbol() );
-    Var accessor(parseVar());
-    Var value(parseVar());
-
-    env->addLocal( accessor, name, value );
+  while (1) {
+    bool more;
+    UnPack( more );
+    if ( more ) {
+      Symbol name( parseSymbol() );
+      Var accessor(parseVar());
+      Var value(parseVar());
+      
+      env->addLocal( accessor, name, value );
+    } else {
+      break;
+    }
   }
 
   while (1) {

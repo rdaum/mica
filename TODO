@@ -1,5 +1,6 @@
 BUGS:
 
+  strings and errors not being GCd.  god knows why.
   bugs in the various unserializers
   fix map operator to work with all binary operators, not just arithmetic
       involves rewriting how binary expressions are parsed

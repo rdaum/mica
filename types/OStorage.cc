@@ -203,13 +203,14 @@ mica_string Environment::serialize() const
        am_i != mSlots.end(); am_i++) {
     for (SlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
-      s_form.append( Var(sl_i->first).serialize() );  //name
+      Pack( s_form, true );
+      s_form.append( sl_i->first.serialize() );       //name
       s_form.append( Var(am_i->first).serialize() );  //accessor
-      s_form.append( sl_i->second.serialize() ); //value
+      s_form.append( sl_i->second.serialize() );      //value
       count++;
     }
   }
-  Pack( s_form, END_OF_ARGS_MARKER );
+  Pack( s_form, false );
 
   /** Now store the verbs.  We do this a bit differently.
    *  We pack them all and then paste a special position arg at the end

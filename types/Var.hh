@@ -512,6 +512,21 @@ namespace mica
   struct SlotResult {
     Var definer;
     Var value;
+
+    SlotResult( const Var &idefiner, const Var &ivalue )
+      : definer(idefiner), value(ivalue) {}
+
+    bool operator==( const SlotResult &cmp ) const {
+      return definer == cmp.definer && value == cmp.value;
+    }
+
+    SlotResult &operator=( const SlotResult &rhs ) {
+      if (&rhs != this) {
+	definer = rhs.definer;
+	value = rhs.value;
+      }
+      return *this;
+    }
   };
 
   /** Easy reference to a #none symbol.  

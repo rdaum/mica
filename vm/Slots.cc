@@ -122,10 +122,6 @@ SlotResult Slots::match_verb( const Var &self,
   if (arguments.empty())
     return get_slot( self, List::empty(), name );
 
-  /** Marks delegates as visited.
-   */
-  VisitedMap delegates_visited;
-
   var_vector args;
   args.push_back( self );
   args.insert( args.end(), arguments.begin(), arguments.end() );
@@ -135,11 +131,9 @@ SlotResult Slots::match_verb( const Var &self,
     delegations[pos].clear();
   }
  
-  bool delegated;
+  bool delegated = false;
+  ArgumentMask triedAny;
 
-  bool triedAny[num_args];
-  for (unsigned int i = 0; i < num_args; ++i)
-    triedAny[i] = false;
 
   do {
     delegated = false;
@@ -163,30 +157,26 @@ SlotResult Slots::match_verb( const Var &self,
 	  /** Argument template for the verbdef must match the
 	   *  length of our in-arguments
 	   */
-	  if ( (*Co)->argument_template.size() != (num_args - 1))
-	    continue;
+	  if ( (*Co)->argument_template.size() == (num_args - 1)) {
 
-	  Ref<AbstractBlock> method( (*Co)->method->asRef<AbstractBlock>() );
+	    Ref<AbstractBlock> method( (*Co)->method->asRef<AbstractBlock>() );
+	    
+	    /** Mark this method as searched within this generation
+	     */
+	    if (method->arg_mask.dispatch_generation != generation) {
+	      method->arg_mask.clear();
+	      method->arg_mask.dispatch_generation = generation;
+	    }
+	    
+	    /** Mark the argument position as visited
+	     */
+	    method->arg_mask.mark_argument( pos );
+	    
+	    /** It's all matched -- return the method
+	     */
+	    if (method->arg_mask.marked_all_of( num_args ) ) 
+	      return SlotResult( (*Co)->definer, (*Co)->method );
 
-	  /** Mark this method as searched within this generation
-	   */
-	  if (method->arg_mask.dispatch_generation != generation) {
-	    method->arg_mask.clear();
-	    method->arg_mask.dispatch_generation = generation;
-	  }
-
-	  /** Mark the argument position as visited
-	   */
-	  method->arg_mask.mark_argument( pos );
-	  
-	  /** It's all matched -- invoke
-	   */
-	  if (method->arg_mask.marked_all_of( num_args ) ) {
-	    SlotResult res;
-	    res.definer = (*Co)->definer;
-	    res.value = (*Co)->method;
-
-	    return res;
 	  }
 	}
       }
@@ -245,9 +235,9 @@ SlotResult Slots::match_verb( const Var &self,
 	  // No more delegates to try, a dead-end.  Try Any.
 	  // O
 	  if (pos // Only try for non-self argument positions
-	      && !triedAny[pos]) {
+	      && !triedAny.marked_argument(pos)) {
 	    *A = MetaObjects::AnyMeta;
-	    triedAny[pos] = true;
+	    triedAny.mark_argument(pos);
 	    delegated = true;
 	  } else {
 	    delegated = false;

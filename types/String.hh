@@ -21,6 +21,8 @@ namespace mica {
   protected:
     String();
 
+    virtual ~String() {};
+
     String( const mica_string &from );
 
     String( const char *c_str );

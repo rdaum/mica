@@ -198,7 +198,7 @@ void Task::receive( const Ref<Message> &msg ) {
 
 }
 
-bool Task::receive_exception( const Var &err ) {
+bool Task::receive_exception( const Ref<Error> &err ) {
   return false;
 }
 

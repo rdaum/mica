@@ -231,6 +231,8 @@ void reference_counted::upcount() {
    */
   refcnt++;
 
+  //  refcnt++;
+
   /**  Keep GREEN (guaranteed non-cyclic) nodes from blackening!
    */
   if (colour != GREEN)

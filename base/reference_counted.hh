@@ -5,6 +5,7 @@
 
 #include "common/mica.h"
 #include "config.h"
+#include <stdint.h>
 
 #include <list>
 
@@ -65,12 +66,14 @@ namespace mica {
     
     /** storage of the reference count for a piece of Data
      */
-    int refcnt        : 27;
+    int16_t refcnt;
+
     bool buffered     : 1;
     bool paged        : 1;
     bool garbaged     : 1;
-    Colouring colour  : 3;
-   
+    Colouring colour  : 5; 
+    uint16_t unused;       
+
     
   public:
     reference_counted();
@@ -84,7 +87,7 @@ namespace mica {
      *  TODO: immediately reclaim acyclic (green) objects.
      */
     void dncount();
-
+    
     /** Increase the reference count.  CAlled by reference counting smart
      *  pointers when a reference to an object is acquired by assignment
      *  or copy.
@@ -171,6 +174,9 @@ namespace mica {
   public:
     bool paging() const;
 
+  private:
+    inline void _dncount();
+    inline void _upcount();
   };
 
   /** When paging objects in and out of cache, all reference counting to
