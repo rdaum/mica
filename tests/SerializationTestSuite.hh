@@ -19,7 +19,7 @@ class SerializationTest
   CPPUNIT_TEST( testMap );
   CPPUNIT_TEST( testObject );
   CPPUNIT_TEST( testIterator );
-  CPPUNIT_TEST( testSlot );
+  CPPUNIT_TEST( testOptSlot );
   CPPUNIT_TEST( testBlock );
   CPPUNIT_TEST_SUITE_END();
  
@@ -200,7 +200,7 @@ protected:
   };
 
 
-  void testSlot() {
+  void testOptSlot() {
     Var object = Object::create();
     Symbol test_symbol(Symbol::create("test_symbol"));
     object.declare( object, 

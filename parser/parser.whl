@@ -155,9 +155,9 @@ expr ->  binaryExpr=binaryExpr
       | "%["=isSet [(listItem=setItemList / ",")] "]"
       | expr=containerExpr "[" expr=index [ ":" [expr=end ] ] "]"
   
-// Closures
-      | "method"=isMethod closure=closure
-      | "lambda"=isLambda closure=closure
+// Frames
+      | "method"=isMethod frame=frame
+      | "lambda"=isLambda frame=frame
 
 
 // Object constructor
@@ -214,7 +214,7 @@ binaryExpr->
       | expr=leftArg ">=" =op expr=rightArg
 
 // Function calls and message sends
-      | expr=leftArg "(" [(listItem=argList / ",")] ")"
+      | expr=leftArg "("=func_apply [(listItem=argList / ",")] ")"
       | "(" expr=leftArg ( message=messageExpr ) ")"	
 	
 	;
@@ -226,7 +226,7 @@ object_construct -> "object" "{" (statement=statementList)* "}";
 
 
 	
-closure  -> [ argsDecl=argslist ] "{" (statement=statementList)* "}"=endpos;
+frame  -> [ argsDecl=argslist ] "{" (statement=statementList)* "}"=endpos;
 argsDecl -> "<" argDeclList=args ">";
 listItem -> expr=expr | ("@" expr=unaryArg) | ("map" binaryExpr=comp) ;
 mapEntry -> expr=key "=>" expr=value;

@@ -4,17 +4,15 @@
 #define UNSERIALIZER_HH
 
 #include "Task.hh"
-#include "VariableStorage.hh"
-#include "BlockContext.hh"
 
 namespace mica {
 
   class Block;
   class OStorage;
 
-  class Closure;
-  class NativeClosure;
-  class AbstractClosure;
+  class Frame;
+  class NativeFrame;
+  class AbstractFrame;
   class Message;
 
   class Unserializer
@@ -31,9 +29,9 @@ namespace mica {
     Ref<Task> parseTaskReal() ;
 
   private:
-    void fillInAbstractClosure( Task *task );
-    void fillInClosure( Task *task );
-    void fillInNativeClosure( Task *task );
+    void fillInAbstractFrame( Task *task );
+    void fillInFrame( Task *task );
+    void fillInNativeFrame( Task *task );
 
     Ref<Message> parseMessage();
 
@@ -62,10 +60,6 @@ namespace mica {
     Block* parseBlockCommon( Block *block );
 
     Var parseNativeBlock();
-
-    BlockContext parseBlockContext();
-    VariableStorage parseVariableStorage();
-
 
 
     std::vector<int> readIntVector();

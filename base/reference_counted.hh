@@ -5,7 +5,8 @@
 
 #include "common/mica.h"
 #include "config.h"
-#include <stdint.h>
+
+#include <boost/cstdint.hpp>
 
 #include <list>
 

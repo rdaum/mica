@@ -79,7 +79,7 @@ Var Data::rshift( const Var &rhs ) const
   throw unimplemented("bitwise right shift unimplemented on non-numeric types");
 }
 
-Var Data::perform( const Ref<Task> &caller,  const Var &args )
+Var Data::perform( const Ref<Frame> &caller,  const Var &args )
 {
   throw unimplemented("perform operation not implemented for this type");
 }
@@ -162,9 +162,9 @@ Var Data::declare( const Var &accessor, const Symbol &name,
   throw E_PERM;
 }
 
-SlotResult Data::get( const Var &accessor, const Symbol &name ) const {
+OptSlot Data::get( const Var &accessor, const Symbol &name ) const {
 
-  throw E_SLOTNF;
+  return OptSlot();
 }
 
 Var Data::assign( const Var &accessor, const Symbol &name,

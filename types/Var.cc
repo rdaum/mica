@@ -391,11 +391,10 @@ Var::~Var() {
   dncount();
 }
 
-// Default constructor -- return None instance
+// Default constructor -- return NONE instance
 Var::Var()
 {
-  v.value = 0;
-  memcpy( this, &NONE, sizeof(Var) );
+  v.value = NONE.v.value;
 }
 
 // Copy constructor
@@ -1103,6 +1102,27 @@ Var Var::lookup( const Var &index ) const {
   return get_data()->lookup( index );
 }
 
+Var Var::cons( const Var &el ) const {
+  if (!isData())
+    return List::tuple( *this, el );
+  else
+    return get_data()->cons( el );
+}
+
+Var Var::ltail() const {
+  if (!isData())
+    throw invalid_type("ltail on invalid type");
+  else
+    return get_data()->ltail();
+}
+
+Var Var::lhead() const {
+  if (!isData())
+    throw invalid_type("lhead on invalid type");
+  else
+    return get_data()->lhead();
+}
+
 var_vector Var::for_in( unsigned int var_no, const Var &block ) const
 {
   if (!isData())
@@ -1125,7 +1145,7 @@ var_vector Var::flatten() const
 }
 
  
-Var Var::perform( const Ref<Task> &caller, const Var &args )
+Var Var::perform( const Ref<Frame> &caller, const Var &args )
 {
   if (!isData())
     throw unimplemented("call unimplemented on scalar type");
@@ -1144,12 +1164,12 @@ Var Var::declare( const Var &accessor, const Symbol &name,
   
 }
 
-SlotResult Var::get( const Var &accessor, const Symbol &name ) const
+OptSlot Var::get( const Var &accessor, const Symbol &name ) const
 {
   if (isData())
     return get_data()->get( accessor, name );
   else 
-    throw E_SLOTNF;
+    return OptSlot();
   
 }
 

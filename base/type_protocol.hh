@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <boost/operators.hpp>
+#include <boost/optional.hpp>
 
 #include "aligned_allocator.hh"
 #include "rope_string.hh"
@@ -25,9 +26,17 @@ namespace mica {
    */
   typedef std::vector<Var> var_vector;
 
-  struct SlotResult;
+  struct Slot;
 
-  class Task;
+  /** An optional Var
+   */
+  typedef boost::optional<Var> OptVar;
+
+  /** An optional OptSlot
+   */
+  typedef boost::optional<Slot> OptSlot;
+
+  class Frame;
   class Symbol;
 
   class type_protocol
@@ -156,6 +165,28 @@ namespace mica {
     virtual Var lookup( const Var &i ) const = 0;
 
   public:
+ 
+    /** add a new element to the front/left of a sequence
+     *  if value is not a sequence, create a sequence of 
+     *  the two values.
+     *  @param N element to add
+     *  @return sequence containing the new element at the front
+     */
+    virtual Var cons( const Var &el ) const = 0;
+
+    /** @return return the first element of the sequence. (car)
+     *  @throws invalid_type on non-sequences
+     *  @throws out_of_range if the sequence is empty
+     */
+    virtual Var lhead() const = 0;
+    
+    /** @return sequence minus the first element.  (Cdr) 
+     *  returns empty() if the sequence is already empty
+     *  @throws invalid_type on non-sequences
+     */
+    virtual Var ltail() const = 0;
+
+  public:
     // TRAMPOLINES
   
     /** Return result of applying an expression for each element contained
@@ -189,7 +220,7 @@ namespace mica {
     /** Declare a slot on an object
      *  @param the accessor of the slot, or None if public
      *  @param name the symbol to create
-     *  @return the Slot value
+     *  @return the OptSlot value
      */
     virtual Var declare( const Var &accessor, const Symbol &name,
 			 const Var &value ) = 0;
@@ -200,8 +231,8 @@ namespace mica {
      *  @return copy of value
      *  @throws slot_not_found
      */
-    virtual SlotResult get( const Var &accessor,
-			    const Symbol &name ) const = 0;
+    virtual OptSlot get( const Var &accessor, 
+		      const Symbol &name ) const = 0;
 
     /** assign a value to a slot
      *  @param accessor the accessor of the slot, or None if public
@@ -264,7 +295,7 @@ namespace mica {
 
     /** Invoke this object with arguments.
      */
-    virtual Var perform( const Ref<Task> &caller, const Var &args ) = 0;
+    virtual Var perform( const Ref<Frame> &caller, const Var &args ) = 0;
 
   public:
   

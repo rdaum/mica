@@ -75,6 +75,18 @@ Var Map::subseq(int,int) const {
   throw invalid_type("cannot extract subsequence from association");
 }
 
+Var Map::cons( const Var &el ) const {
+  return List::tuple( Var(this), el );
+}
+                                                                                
+Var Map::lhead() const {
+  throw invalid_type("lhead on non-sequence");
+}
+                                                                                
+Var Map::ltail() const {
+  throw invalid_type("ltail on non-sequence");
+}
+
 int Map::toint() const {
   throw invalid_type("invalid operand");
 }

@@ -33,6 +33,7 @@
 #include "MicaParser.hh"
 #include "Slots.hh"
 
+#include "Frame.hh"
 
 #include "Pool.hh"
 #include "Pools.hh"
@@ -56,27 +57,27 @@ std::vector<mica_string> stringStack;
 
 static int verbose;
 
-#include "NativeClosure.hh"
+#include "NativeFrame.hh"
 #include "NativeBlock.hh"
 
 #define WRAP_NO_ARG( TYPE, METHOD ) \
-Var invoke_## METHOD ( const Ref<NativeClosure> &closure ) { \
-  return closure->self->asRef< TYPE >()-> METHOD(); \
+Var invoke_## METHOD ( const Ref<NativeFrame> &frame ) { \
+  return frame->self->asRef< TYPE >()-> METHOD(); \
 }
 
 #define WRAP_ONE_ARG( TYPE, METHOD ) \
-Var invoke_## METHOD ( const Ref<NativeClosure> &closure ) { \
-  return closure->self->asRef< TYPE >()-> METHOD( closure->args[0] ); \
+Var invoke_## METHOD ( const Ref<NativeFrame> &frame ) { \
+  return frame->self->asRef< TYPE >()-> METHOD( frame->args[0] ); \
 }
 
 #define WRAP_TWO_ARG( TYPE, METHOD ) \
-Var invoke_## METHOD ( const Ref<NativeClosure> &closure ) { \
-  return closure->self->asRef< TYPE >()-> METHOD( closure->args[0], closure->args[1] ); \
+Var invoke_## METHOD ( const Ref<NativeFrame> &frame ) { \
+  return frame->self->asRef< TYPE >()-> METHOD( frame->args[0], frame->args[1] ); \
 }
 
 #define WRAP_THREE_ARG( TYPE, METHOD ) \
-Var invoke_## METHOD ( const Ref<NativeClosure> &closure ) { \
-  return closure->self->asRef< TYPE >()-> METHOD( closure->args[0], closure->args[1], closure->args[2] ); \
+Var invoke_## METHOD ( const Ref<NativeFrame> &frame ) { \
+  return frame->self->asRef< TYPE >()-> METHOD( frame->args[0], frame->args[1], frame->args[2] ); \
 }
 
 #define DEFINE_ONE_ARG( TYPE, METHOD ) \
@@ -184,9 +185,9 @@ public:
       var_vector args;
       
       Ref<Block> block( mica::compile(code) );
-      
+
 #ifdef DEBUG_OPCODES
-      cout << block->dump() << endl;
+      cout << block->rep() << endl;
 #endif
       
       Slots::assign_verb( eval_obj, EVAL_TMP_SYM, var_vector(), Var(block) );
@@ -194,7 +195,7 @@ public:
       Var msg = send( MetaObjects::SystemMeta, MetaObjects::SystemMeta,
 		      eval_obj, eval_obj, 
 		      EVAL_TMP_SYM, args );
-      msg.perform( this, NONE );
+      msg.perform( Ref<Frame>(0), NONE );
   };
   
 
@@ -236,7 +237,7 @@ public:
 void evalLoop( const Var &eval_obj ) {
   Scheduler::instance->start();
 
-  /** Build a top-level closure for our session.  Schedule it, then
+  /** Build a top-level frame for our session.  Schedule it, then
    *  we can send messages from it.
    */
   Task *eval_task = new (aligned) EvalLoopTask( eval_obj );

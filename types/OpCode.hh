@@ -51,34 +51,40 @@ namespace mica {
       // Binary ops
       LSHIFT, RSHIFT, SLICE, AND, XOR, OR, ADD, SUB, MUL, DIV, MOD, 
       EQUAL, NEQUAL, LESST, GREATERT, LESSTE, GREATERTE, BAND, BOR,
-      ISA,
+      ISA, CDR, CAR, CONS, 
 
       // More-than-binary ops,
       GETRANGE,
 
-      // Block context handling
-      BBEGIN, BEND,
-
-      // Get current closure
+      // Make current closure as value
       CLOSURE,
 
-      // Blocks, closures
-      EVAL, MAKE_LAMBDA, 
+      // Replace current closure with another.
+      J,
+
+      // Evaluate an expression on the stack in a sub-branch
+      EVAL,
+
+      // As above, but replace current branch
+      TRAMPOLINE,
+
+      // Restore from the branch stack
+      JOIN,
+
+      // Make a lambda expression
+      MAKE_LAMBDA, 
 
       // Iteration
       FOR_RANGE, MAP, 
 
       // Looping
-      START_LOOP, END_LOOP, BREAK, CONTINUE, WHILE,
-
-      // PC
-      JMP,
+      BREAK, CONTINUE, LOOP,
 
       // Error
       CATCH, THROW,
 
       // If/else
-      IFELSE
+      IF, IFELSE
 
     } Code;
 

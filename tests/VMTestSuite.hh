@@ -53,7 +53,7 @@ public:
   
   VMTest()
     : CppUnit::TestFixture(),
-      closure(0)
+      frame(0)
   {
   }
 
@@ -64,7 +64,7 @@ public:
     self = Object::create();
 
     /** Create a message that represents the invocation for our
-     *  closure
+     *  frame
      */
     var_vector args;
     msg = new Message( (Task*)0, 0, 0, 0,
@@ -73,7 +73,7 @@ public:
 		       args );
 
     Ref<Message> x( msg->asRef<Message>() );
-    closure = new Closure( x, self, 0 );
+    frame = new Frame( x, self, 0 );
   }
 
  
@@ -82,237 +82,237 @@ public:
   }
 
 private:
-  Ref<Closure> closure;
+  Ref<Frame> frame;
   Var self;
   Var msg;
 
 protected:
 
   void testPushPop() {
-    closure->push( 5 );
-    closure->push( "test string" );
-    closure->push( Symbol::create( "symbol" ) );
+    frame->push( 5 );
+    frame->push( "test string" );
+    frame->push( Symbol::create( "symbol" ) );
     
-    CPPUNIT_ASSERT( closure->stack.size() == 3 );
-    CPPUNIT_ASSERT( closure->pop() == Symbol::create("symbol") );
-    CPPUNIT_ASSERT( closure->pop() == Var("test string") );
-    CPPUNIT_ASSERT( closure->pop() == Var(5) );
-    CPPUNIT_ASSERT( closure->stack.size() == 0 );
+    CPPUNIT_ASSERT( frame->stack.size() == 3 );
+    CPPUNIT_ASSERT( frame->pop() == Symbol::create("symbol") );
+    CPPUNIT_ASSERT( frame->pop() == Var("test string") );
+    CPPUNIT_ASSERT( frame->pop() == Var(5) );
+    CPPUNIT_ASSERT( frame->stack.size() == 0 );
   };
 
   void testRunHaltStopBlock() {
-    closure->run();
-    CPPUNIT_ASSERT( closure->ex_state == Closure::RUNNING );
-    closure->halt();
-    CPPUNIT_ASSERT( closure->ex_state == Closure::HALTED );
-    closure->stop();
-    CPPUNIT_ASSERT( closure->ex_state == Closure::STOPPED );
-    closure->block();
-    CPPUNIT_ASSERT( closure->ex_state == Closure::BLOCKED );
-    closure->run();
-    CPPUNIT_ASSERT( closure->ex_state == Closure::RUNNING );
+    frame->run();
+    CPPUNIT_ASSERT( frame->ex_state == Frame::RUNNING );
+    frame->halt();
+    CPPUNIT_ASSERT( frame->ex_state == Frame::HALTED );
+    frame->stop();
+    CPPUNIT_ASSERT( frame->ex_state == Frame::STOPPED );
+    frame->block();
+    CPPUNIT_ASSERT( frame->ex_state == Frame::BLOCKED );
+    frame->run();
+    CPPUNIT_ASSERT( frame->ex_state == Frame::RUNNING );
   }
 
   void testOpNeg() {
-    closure->push( 5 );
-    closure->op_neg();
-    CPPUNIT_ASSERT( closure->pop() == Var(-5) );
+    frame->push( 5 );
+    frame->op_neg();
+    CPPUNIT_ASSERT( frame->pop() == Var(-5) );
   }
 
   void testOpAdd() {
-    closure->push( 5 );
-    closure->push( 5 );
-    closure->op_add();
-    CPPUNIT_ASSERT( closure->pop() == Var(10) );
+    frame->push( 5 );
+    frame->push( 5 );
+    frame->op_add();
+    CPPUNIT_ASSERT( frame->pop() == Var(10) );
   }
 
   void testOpSub() {
-    closure->push( 5 );
-    closure->push( 5 );
-    closure->op_sub();
-    CPPUNIT_ASSERT( closure->pop() == Var(00) );
+    frame->push( 5 );
+    frame->push( 5 );
+    frame->op_sub();
+    CPPUNIT_ASSERT( frame->pop() == Var(00) );
   }
 
   void testOpMul() {
-    closure->push( 5 );
-    closure->push( 5 );
-    closure->op_mul();
-    CPPUNIT_ASSERT( closure->pop() == Var(25) );
+    frame->push( 5 );
+    frame->push( 5 );
+    frame->op_mul();
+    CPPUNIT_ASSERT( frame->pop() == Var(25) );
   }
 
   void testOpDiv() {
-    closure->push( 5 );
-    closure->push( 5 );
-    closure->op_div();
-    CPPUNIT_ASSERT( closure->pop() == Var(1) );
+    frame->push( 5 );
+    frame->push( 5 );
+    frame->op_div();
+    CPPUNIT_ASSERT( frame->pop() == Var(1) );
   }
 
   void testOpMod() {
-    closure->push( 5 );
-    closure->push( 3 );
-    closure->op_mod();
-    CPPUNIT_ASSERT( closure->pop() == Var(2) );
+    frame->push( 5 );
+    frame->push( 3 );
+    frame->op_mod();
+    CPPUNIT_ASSERT( frame->pop() == Var(2) );
   }
 
   void testOpIsA() {
-    closure->push( 5 );
-    closure->push( 5 );
-    closure->op_isa();
-    CPPUNIT_ASSERT( closure->pop() == true );
-    closure->push( Var("test") );
-    closure->push( 5 );
-    closure->op_isa();
-    CPPUNIT_ASSERT( closure->pop() == false );
+    frame->push( 5 );
+    frame->push( 5 );
+    frame->op_isa();
+    CPPUNIT_ASSERT( frame->pop() == true );
+    frame->push( Var("test") );
+    frame->push( 5 );
+    frame->op_isa();
+    CPPUNIT_ASSERT( frame->pop() == false );
   }
 
   void testOpEqual() {
-    closure->push( 5 );
-    closure->push( 5 );
-    closure->op_equal();
-    CPPUNIT_ASSERT( closure->pop() == true );
-    closure->push( 5 );
-    closure->push( 4 );
-    closure->op_equal();
-    CPPUNIT_ASSERT( closure->pop() == false );
+    frame->push( 5 );
+    frame->push( 5 );
+    frame->op_equal();
+    CPPUNIT_ASSERT( frame->pop() == true );
+    frame->push( 5 );
+    frame->push( 4 );
+    frame->op_equal();
+    CPPUNIT_ASSERT( frame->pop() == false );
   }
 
   void testOpNequal() {
-    closure->push( 5 );
-    closure->push( 5 );
-    closure->op_nequal();
-    CPPUNIT_ASSERT( closure->pop() == false );
-    closure->push( 5 );
-    closure->push( 4 );
-    closure->op_nequal();
-    CPPUNIT_ASSERT( closure->pop() == true );
+    frame->push( 5 );
+    frame->push( 5 );
+    frame->op_nequal();
+    CPPUNIT_ASSERT( frame->pop() == false );
+    frame->push( 5 );
+    frame->push( 4 );
+    frame->op_nequal();
+    CPPUNIT_ASSERT( frame->pop() == true );
   }
 
   void testOpLessT() {
-    closure->push( 4 );
-    closure->push( 5 );
-    closure->op_lesst();
-    CPPUNIT_ASSERT( closure->pop() == true );
-    closure->push( 5 );
-    closure->push( 4 );
-    closure->op_lesst();
-    CPPUNIT_ASSERT( closure->pop() == false );
+    frame->push( 4 );
+    frame->push( 5 );
+    frame->op_lesst();
+    CPPUNIT_ASSERT( frame->pop() == true );
+    frame->push( 5 );
+    frame->push( 4 );
+    frame->op_lesst();
+    CPPUNIT_ASSERT( frame->pop() == false );
   }
 
   void testOpGreaterT() {
-    closure->push( 4 );
-    closure->push( 5 );
-    closure->op_greatert();
-    CPPUNIT_ASSERT( closure->pop() == false );
-    closure->push( 5 );
-    closure->push( 4 );
-    closure->op_greatert();
-    CPPUNIT_ASSERT( closure->pop() == true );
+    frame->push( 4 );
+    frame->push( 5 );
+    frame->op_greatert();
+    CPPUNIT_ASSERT( frame->pop() == false );
+    frame->push( 5 );
+    frame->push( 4 );
+    frame->op_greatert();
+    CPPUNIT_ASSERT( frame->pop() == true );
   }
 
   void testOpLessTE() {
-    closure->push( 4 );
-    closure->push( 5 );
-    closure->op_lesste();
-    CPPUNIT_ASSERT( closure->pop() == true );
-    closure->push( 5 );
-    closure->push( 4 );
-    closure->op_lesste();
-    CPPUNIT_ASSERT( closure->pop() == false );
+    frame->push( 4 );
+    frame->push( 5 );
+    frame->op_lesste();
+    CPPUNIT_ASSERT( frame->pop() == true );
+    frame->push( 5 );
+    frame->push( 4 );
+    frame->op_lesste();
+    CPPUNIT_ASSERT( frame->pop() == false );
   }
 
   void testOpGreaterTE() {
-    closure->push( 4 );
-    closure->push( 5 );
-    closure->op_greaterte();
-    CPPUNIT_ASSERT( closure->pop() == false );
-    closure->push( 5 );
-    closure->push( 4 );
-    closure->op_greaterte();
-    CPPUNIT_ASSERT( closure->pop() == true );
+    frame->push( 4 );
+    frame->push( 5 );
+    frame->op_greaterte();
+    CPPUNIT_ASSERT( frame->pop() == false );
+    frame->push( 5 );
+    frame->push( 4 );
+    frame->op_greaterte();
+    CPPUNIT_ASSERT( frame->pop() == true );
   }
 
   void testOpAnd() {
-    closure->push( 1 );
-    closure->push( 0 );
-    closure->op_and();
-    CPPUNIT_ASSERT( closure->pop() == Var(0) );
+    frame->push( 1 );
+    frame->push( 0 );
+    frame->op_and();
+    CPPUNIT_ASSERT( frame->pop() == Var(0) );
   }
 
   void testOpOr() {
-    closure->push( 1 );
-    closure->push( 0 );
-    closure->op_or();
-    CPPUNIT_ASSERT( closure->pop() == Var(1) );
+    frame->push( 1 );
+    frame->push( 0 );
+    frame->op_or();
+    CPPUNIT_ASSERT( frame->pop() == Var(1) );
   }
 
   void testOpXor() {
-    closure->push( 2 );
-    closure->push( 1 );
-    closure->op_xor();
-    CPPUNIT_ASSERT( closure->pop() == Var(3) );
+    frame->push( 2 );
+    frame->push( 1 );
+    frame->op_xor();
+    CPPUNIT_ASSERT( frame->pop() == Var(3) );
   }
 
   void testOpLshift() {
-    closure->push( 6 );
-    closure->push( 2 );
-    closure->op_lshift();
-    CPPUNIT_ASSERT( closure->pop() == Var(24) );
+    frame->push( 6 );
+    frame->push( 2 );
+    frame->op_lshift();
+    CPPUNIT_ASSERT( frame->pop() == Var(24) );
   }
 
   void testOpRshift() {
-    closure->push( 32 );
-    closure->push( 2 );
-    closure->op_rshift();
-    CPPUNIT_ASSERT( closure->pop() == Var(8) );
+    frame->push( 32 );
+    frame->push( 2 );
+    frame->op_rshift();
+    CPPUNIT_ASSERT( frame->pop() == Var(8) );
   }
 
   void testOpBand() {
-    closure->push( 34 );
-    closure->push( 2 );
-    closure->op_band();
-    CPPUNIT_ASSERT( closure->pop() == Var(2) );
+    frame->push( 34 );
+    frame->push( 2 );
+    frame->op_band();
+    CPPUNIT_ASSERT( frame->pop() == Var(2) );
   }
 
   void testOpBor() {
-    closure->push( 34 );
-    closure->push( 6 );
-    closure->op_bor();
-    CPPUNIT_ASSERT( closure->pop() == Var(38) );
+    frame->push( 34 );
+    frame->push( 6 );
+    frame->op_bor();
+    CPPUNIT_ASSERT( frame->pop() == Var(38) );
   }
 
   void testOpNot() {
-    closure->push( 1 );
-    closure->op_not();
-    CPPUNIT_ASSERT( closure->pop() == false );
-    closure->push( 0 );
-    closure->op_not();
-    CPPUNIT_ASSERT( closure->pop() == true );
+    frame->push( 1 );
+    frame->op_not();
+    CPPUNIT_ASSERT( frame->pop() == false );
+    frame->push( 0 );
+    frame->op_not();
+    CPPUNIT_ASSERT( frame->pop() == true );
   }
 
   void testOpSelf() {
-    closure->op_self();
-    CPPUNIT_ASSERT( closure->pop() == closure->self );
+    frame->op_self();
+    CPPUNIT_ASSERT( frame->pop() == frame->self );
   }
 
   void testOpCaller() {
-    closure->op_caller();
-    CPPUNIT_ASSERT( closure->pop() == closure->caller );
+    frame->op_caller();
+    CPPUNIT_ASSERT( frame->pop() == frame->caller );
   }
 
   void testOpSource() {
-    closure->op_source();
-    CPPUNIT_ASSERT( closure->pop() == closure->source );
+    frame->op_source();
+    CPPUNIT_ASSERT( frame->pop() == frame->source );
   }
 
   void testOpSelector() {
-    closure->op_selector();
-    CPPUNIT_ASSERT( closure->pop() == closure->selector );
+    frame->op_selector();
+    CPPUNIT_ASSERT( frame->pop() == frame->selector );
   }
 
   void testOpArgs() {
-    closure->op_args();
-    CPPUNIT_ASSERT( closure->pop() == Var(List::from_vector
-( closure->args )) );
+    frame->op_args();
+    CPPUNIT_ASSERT( frame->pop() == Var(List::from_vector
+( frame->args )) );
   }
 
 

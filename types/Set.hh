@@ -220,6 +220,10 @@ namespace mica {
     Var mod( const Var &rhs ) const;
     Var neg() const;
     Var subseq( int idx, int length ) const;
+    Var cons( const Var &el ) const;
+    Var lhead() const;
+    Var ltail() const;
+    
     mica_string tostring() const;
 
 

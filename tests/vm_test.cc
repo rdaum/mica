@@ -29,7 +29,7 @@
 #include "Ref.hh"
 #include "Task.hh"
 #include "Message.hh"
-#include "Closure.hh"
+#include "Frame.hh"
 
 
 using namespace std;

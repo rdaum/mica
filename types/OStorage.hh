@@ -1,5 +1,5 @@
-#ifndef MICA_ENVIRONMENT_HH
-#define MICA_ENVIRONMENT_HH
+#ifndef MICA_OSTORAGE_HH
+#define MICA_OSTORAGE_HH
 
 #include "common/mica.h"
 #include "config.h"
@@ -57,8 +57,8 @@ namespace mica {
     ~OStorage();
 
   public:
-    std::pair<bool, Var> getLocal( const Var &accessor, 
-				   const Symbol &name ) const;
+    OptVar getLocal( const Var &accessor, 
+		     const Symbol &name ) const;
 
     bool addLocal( const Var &accessor,
 		   const Symbol &name, const Var &value );
@@ -80,14 +80,14 @@ namespace mica {
     /** Carries a list of slots hashed by name
      */
     typedef STD_EXT_NS::hash_map< Symbol,
-				  Var, hash_symbol > SlotList;
+				  Var, hash_symbol > OptSlotList;
 
 
     /** Map accessor -> slotlist
      */
-    typedef STD_EXT_NS::hash_map< Var, SlotList, hash_var > SlotMap;
+    typedef STD_EXT_NS::hash_map< Var, OptSlotList, hash_var > OptSlotMap;
 
-    SlotMap mSlots;    
+    OptSlotMap mOptSlots;    
 
 
   public:
@@ -122,7 +122,7 @@ namespace mica {
 
     /** Cached parents_slot entry
      */
-    SlotMap::iterator delegates_iterator;
+    OptSlotMap::iterator delegates_iterator;
 
     /** Define a delegate.
      */

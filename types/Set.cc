@@ -7,7 +7,7 @@
 
 #include "Var.hh"
 #include "Set.hh"
-
+#include "List.hh"
 #include "Exceptions.hh"
 
 using namespace mica;
@@ -212,6 +212,18 @@ Var Set::subseq(int, int) const {
   throw invalid_type("invalid operand");
 }
     
+Var Set::cons( const Var &el ) const {
+  return List::tuple( Var(this), el );
+}
+                                                                                
+Var Set::lhead() const {
+  throw invalid_type("lhead on non-sequence");
+}
+                                                                                
+Var Set::ltail() const {
+  throw invalid_type("ltail on non-sequence");
+}
+ 
 int Set::toint() const {
   throw invalid_type("invalid operand");
 }

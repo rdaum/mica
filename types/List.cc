@@ -217,6 +217,9 @@ Var List::concat() const {
 }
 
 Var List::reverse() const {
+  if (this->var_vector::empty())
+    return List::empty();
+
   var_vector result(*this);
   std::reverse( result.begin(), result.end() );
   return List::from_vector( result );

@@ -20,6 +20,10 @@ namespace mica {
 
     Var lookup( const Var &i ) const;
 
+    Var cons( const Var &el ) const;
+    Var lhead() const;
+    Var ltail() const;
+
     inline bool isScalar() const {
       return true;
     }

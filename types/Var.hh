@@ -5,8 +5,8 @@
 
 #include <iostream>
 #include <typeinfo>
-#include <stdint.h>
 
+#include <boost/cstdint.hpp>
 #include <boost/operators.hpp>
 #include <boost/cast.hpp>
 
@@ -23,7 +23,6 @@ namespace mica
   /** Forward defined, but never used in core/.  Here so that 
    *  closures etc. can know their parent task.
    */
-  class Task;
   class Data;
   class Symbol;
 
@@ -182,8 +181,7 @@ namespace mica
     ~Var();
 
   public:
-    /** Return the true value of this Var.  Usually
-     *  this just returns "this", except for Iterators or Slots
+    /** Return the true value of this Var.
      *  which return the value they are currently pointing to.
      *  @return inner value of a Var
      */
@@ -420,7 +418,7 @@ namespace mica
     var_vector delegates() const;
 
   public:
-    Var perform( const Ref<Task> &caller, const Var &args );
+    Var perform( const Ref<Frame> &caller, const Var &args );
 
   public:
     /** Extract a subsequence from a sequence.  
@@ -437,6 +435,27 @@ namespace mica
      */
     Var lookup( const Var &i ) const;
 
+    /** add a new element to the front/left of a sequence
+     *  if value is not a sequence, create a sequence of
+     *  the two values.
+     *  @param N element to add
+     *  @return sequence containing the new element at the front
+     */
+    Var cons( const Var &el ) const;
+
+    /** @return return the first element of the sequence. (car)
+     *  @throws invalid_type on non-sequences
+     *  @throws out_of_range if the sequence is empty
+     */
+    Var lhead() const;
+     
+    /** @return sequence minus the first element.  (Cdr)
+     *  returns empty() if the sequence is already empty
+     *  @throws invalid_type on non-sequences
+     */
+    Var ltail() const;
+    
+    
   public:
     /** Return operations for iteration of a range
      */
@@ -492,7 +511,7 @@ namespace mica
     Var declare( const Var &accessor, const Symbol &name,
 		 const Var &value );
 
-    SlotResult get( const Var &accessor, const Symbol &name ) const;
+    OptSlot get( const Var &accessor, const Symbol &name ) const;
 
     Var assign( const Var &accessor, const Symbol &name, const Var &value );
     
@@ -507,20 +526,20 @@ namespace mica
 
   } __attribute__ ((packed)); ;
 
-  /** Slot results from slot get are a pair of definer, value
+  /** OptSlot results from slot get are a pair of definer, value
    */
-  struct SlotResult {
+  struct Slot {
     Var definer;
     Var value;
 
-    SlotResult( const Var &idefiner, const Var &ivalue )
+    Slot( const Var &idefiner, const Var &ivalue )
       : definer(idefiner), value(ivalue) {}
 
-    bool operator==( const SlotResult &cmp ) const {
+    bool operator==( const Slot &cmp ) const {
       return definer == cmp.definer && value == cmp.value;
     }
 
-    SlotResult &operator=( const SlotResult &rhs ) {
+    Slot &operator=( const Slot &rhs ) {
       if (&rhs != this) {
 	definer = rhs.definer;
 	value = rhs.value;

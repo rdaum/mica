@@ -92,18 +92,16 @@ void Object::write() {
 }
 
 
-SlotResult Object::get( const Var &accessor, const Symbol &name ) const 
+OptSlot Object::get( const Var &accessor, const Symbol &name ) const 
 {
   /** Attempt to actually get the value.
    */
-  pair<bool, Var> result = environment()->getLocal( accessor, name );
-
-  if (result.first) 
-    return SlotResult( this, result.second );
+  OptVar result(environment()->getLocal( accessor, name ));
+  if (result)
+    return OptSlot(Slot(this, *result));
   else
-    throw E_SLOTNF;
+    return OptSlot();
 }
-
 
 
 Var Object::declare( const Var &accessor, const Symbol &name, 
@@ -166,14 +164,14 @@ bool Object::operator==( const Var &rhs ) const
 
 mica_string Object::rep() const
 {
-  pair<bool, Var> 
+  OptVar
     result( environment()->getLocal( Var(const_cast<Object*>(this)), 
 				     TITLE_SYM ) );
 
-  if (result.first) {
+  if (result) {
     mica_string dstr;
     dstr.append("<object (.name: ");
-    dstr.append( result.second.rep() );
+    dstr.append( result->rep() );
     dstr.append( ") >");
     return dstr;
   } else
@@ -181,14 +179,14 @@ mica_string Object::rep() const
 }
 
 
-Var Object::perform( const Ref<Task> &caller, const Var &args )
+Var Object::perform( const Ref<Frame> &caller, const Var &args )
 {
-  pair<bool, Var>
+  OptVar 
     result( environment()->getLocal( Var(VERB_SYM),
 				     PERFORM_SYM ) );
 
-  if (result.first)
-    return result.second.perform( caller, args );
+  if (result)
+    return result->perform( caller, args );
   else
     throw E_SLOTNF;
 

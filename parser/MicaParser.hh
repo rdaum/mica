@@ -70,8 +70,8 @@ namespace mica {
 			       bool declare );
 
     pair<NPtr, std::string>
-    translateClosure( pair<int,int> start_pos,
-		      Whale::NonterminalClosure *closure ); 
+    translateFrame( pair<int,int> start_pos,
+		      Whale::NonterminalFrame *frame ); 
 
     Var translateId( Whale::TerminalId* id );
 

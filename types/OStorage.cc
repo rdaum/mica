@@ -57,7 +57,7 @@ unsigned int hash_verb_pair::operator()( const pair< Symbol, unsigned int > &p )
 OStorage::OStorage()
 {
 
-  delegates_iterator = mSlots.end();
+  delegates_iterator = mOptSlots.end();
 }
 
 void OStorage::add_delegate( const Object *from, 
@@ -66,17 +66,17 @@ void OStorage::add_delegate( const Object *from,
 {
   addLocal( Var(DELEGATE_SYM), name, delegate );
 
-  delegates_iterator = mSlots.find(Var(DELEGATE_SYM));
+  delegates_iterator = mOptSlots.find(Var(DELEGATE_SYM));
 }
 
 var_vector OStorage::delegates() {
 
-  if (delegates_iterator == mSlots.end())
-    delegates_iterator = mSlots.find( Var(DELEGATE_SYM) );
+  if (delegates_iterator == mOptSlots.end())
+    delegates_iterator = mOptSlots.find( Var(DELEGATE_SYM) );
   
   var_vector delegates_vec;
-  if (delegates_iterator != mSlots.end()) {
-    for (SlotList::const_iterator sl_i = delegates_iterator->second.begin();
+  if (delegates_iterator != mOptSlots.end()) {
+    for (OptSlotList::const_iterator sl_i = delegates_iterator->second.begin();
 	 sl_i != delegates_iterator->second.end(); sl_i++) {
       delegates_vec.push_back( sl_i->second );
     }
@@ -87,36 +87,36 @@ var_vector OStorage::delegates() {
 
 OStorage::~OStorage()
 {
-  mSlots.clear();
+  mOptSlots.clear();
 }
 
-pair<bool, Var> OStorage::getLocal( const Var &accessor, 
-				       const Symbol &name ) const 
+OptVar OStorage::getLocal( const Var &accessor, 
+			   const Symbol &name ) const 
 {
   // Find by accessor.
-  SlotMap::const_iterator am_i = mSlots.find( accessor );
+  OptSlotMap::const_iterator am_i = mOptSlots.find( accessor );
 
-  // Scan the SlotList for an accessor match
-  if (am_i != mSlots.end()) {
+  // Scan the OptSlotList for an accessor match
+  if (am_i != mOptSlots.end()) {
 
     // Found, look for the name
-    SlotList::const_iterator sl_i = am_i->second.find( name );
+    OptSlotList::const_iterator sl_i = am_i->second.find( name );
     if (sl_i != am_i->second.end()) {
-      return make_pair( true, sl_i->second );
+      return OptVar( sl_i->second );
     }
   }
-  return make_pair( false, NONE );
+  return OptVar();
 }
 
 
 bool OStorage::removeLocal( const Var &accessor, 
 			       const Symbol &name ) {
   // Find by accessor.
-  SlotMap::iterator am_i = mSlots.find( accessor );
+  OptSlotMap::iterator am_i = mOptSlots.find( accessor );
 
-  if (am_i != mSlots.end()) {
-    // Scan the SlotList for name match
-    SlotList::iterator sl_i = am_i->second.find( name );
+  if (am_i != mOptSlots.end()) {
+    // Scan the OptSlotList for name match
+    OptSlotList::iterator sl_i = am_i->second.find( name );
     if (sl_i != am_i->second.end()) {
       am_i->second.erase( sl_i );
       return true;
@@ -129,9 +129,9 @@ Var OStorage::slots() const
 {
   var_vector slots;
 
-  for (SlotMap::const_iterator am_i = mSlots.begin();
-       am_i != mSlots.end(); am_i++) {
-    for (SlotList::const_iterator sl_i = am_i->second.begin();
+  for (OptSlotMap::const_iterator am_i = mOptSlots.begin();
+       am_i != mOptSlots.end(); am_i++) {
+    for (OptSlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
       var_vector slot_pair;
       slot_pair.push_back( am_i->first );
@@ -149,12 +149,12 @@ bool OStorage::addLocal( const Var &accessor,
 			    const Symbol &name, const Var &value )
 {
   // Find the accessor.
-  SlotMap::iterator am_i = mSlots.find( accessor );
+  OptSlotMap::iterator am_i = mOptSlots.find( accessor );
 
   // Found - look for name
-  if (am_i != mSlots.end()) {
+  if (am_i != mOptSlots.end()) {
 
-    SlotList::iterator sl_i = am_i->second.find( name );
+    OptSlotList::iterator sl_i = am_i->second.find( name );
     if (sl_i != am_i->second.end()) {
 
       // Already there, don't add.
@@ -163,7 +163,7 @@ bool OStorage::addLocal( const Var &accessor,
 
   }
 
-  mSlots[accessor][name] = value;
+  mOptSlots[accessor][name] = value;
 
   return true;
 }
@@ -172,13 +172,13 @@ bool OStorage::replaceLocal( const Var &accessor,
 				const Symbol &name, const Var &value )
 {
   // Find the accessor.
-  SlotMap::iterator am_i = mSlots.find( accessor );
+  OptSlotMap::iterator am_i = mOptSlots.find( accessor );
 
   // Found - now find name
-  if (am_i != mSlots.end()) {
+  if (am_i != mOptSlots.end()) {
 
     // Found, look for the name
-    SlotList::iterator sl_i = am_i->second.find( name );
+    OptSlotList::iterator sl_i = am_i->second.find( name );
     if (sl_i != am_i->second.end()) {
       
       // Replace
@@ -199,9 +199,9 @@ mica_string OStorage::serialize() const
   mica_string s_form;
 
   unsigned int count = 1;
-  for (SlotMap::const_iterator am_i = mSlots.begin();
-       am_i != mSlots.end(); am_i++) {
-    for (SlotList::const_iterator sl_i = am_i->second.begin();
+  for (OptSlotMap::const_iterator am_i = mOptSlots.begin();
+       am_i != mOptSlots.end(); am_i++) {
+    for (OptSlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
       Pack( s_form, true );
       s_form.append( sl_i->first.serialize() );       //name
@@ -248,9 +248,9 @@ mica_string OStorage::serialize() const
 child_set OStorage::child_pointers() {
   child_set children;
 
-  for (SlotMap::const_iterator am_i = mSlots.begin();
-       am_i != mSlots.end(); am_i++) {
-    for (SlotList::const_iterator sl_i = am_i->second.begin();
+  for (OptSlotMap::const_iterator am_i = mOptSlots.begin();
+       am_i != mOptSlots.end(); am_i++) {
+    for (OptSlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
       children << am_i->first << sl_i->second;
     }

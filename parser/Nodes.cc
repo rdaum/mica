@@ -18,15 +18,60 @@
 using namespace std;
 using namespace mica;
 
+vector<NPtr> mica::nblk( const NPtr &one ) {
+  vector<NPtr> x;
+  x.push_back( one );
+  return x;
+}
+
+vector<NPtr> mica::nblk( const NPtr &one, const NPtr &two )  {
+  vector<NPtr> x;
+  x.push_back( one );
+  x.push_back( two );
+  return x;
+}
+
+vector<NPtr> mica::nblk( const NPtr &one, const NPtr &two,
+			 const NPtr &three )  {
+  vector<NPtr> x;
+  x.push_back( one );
+  x.push_back( two );
+  x.push_back( three );
+  return x;
+}
+
+vector<NPtr> mica::nblk( const NPtr &one, const NPtr &two, 
+			 const NPtr &three, const NPtr &four )  {
+  vector<NPtr> x;
+  x.push_back( one );
+  x.push_back( two );
+  x.push_back( three );
+  x.push_back( four );
+  return x;
+}
+
+vector<NPtr> mica::nblk( const NPtr &one, const NPtr &two, 
+			 const NPtr &three, const NPtr &four, 
+			 const NPtr &five )  {
+  vector<NPtr> x;
+  x.push_back( one );
+  x.push_back( two );
+  x.push_back( three );
+  x.push_back( four );
+  x.push_back( five );
+  return x;
+}
+
+
 void mica::append_node( child_set &children, 
-		    const NPtr &node ) {
+			const NPtr &node ) {
   children.push_back( ((Node*)node) );
 }
 
 void mica::append_nodes( child_set &children,
-		   const vector<NPtr> &nodes ) {
+			 const vector<NPtr> &nodes ) {
   for (vector<NPtr>::const_iterator x = nodes.begin();
-	 x != nodes.end(); x++ ) {
+       x != nodes.end(); x++ ) {
     children.push_back( ((Node*)*x) );
   }
 }
@@ -44,7 +89,7 @@ child_set mica::node_single( const NPtr &one ) {
 }
 
 child_set mica::node_pair( const NPtr &left,
-				    const NPtr &right ) {
+			   const NPtr &right ) {
   child_set children;
   append_node( children, left );
   append_node( children, right );
@@ -53,8 +98,8 @@ child_set mica::node_pair( const NPtr &left,
 }
 
 child_set mica::node_triple( const NPtr &one,
-					   const NPtr &two,
-					   const NPtr &three ) {
+			     const NPtr &two,
+			     const NPtr &three ) {
   child_set children;
   append_node( children, one );
   append_node( children, two );
@@ -75,6 +120,25 @@ child_set Node::child_pointers() {
   return child_set();
 }
 
+Ref<Block> Node::compile_to_expr( Binding &binding, const char *source ) {
+
+  mica_string source_str = "";
+  if (source)
+    source_str = source;
+
+  Ref<Block> expr = new Block( source_str );
+  binding.startBlock();
+
+  var_vector ops = compile( expr, binding );
+
+  expr->code = ops;
+  expr->add_scope = binding.finishBlock();
+
+  return expr;
+  
+}
+
+
 // COMMENT NODE
 var_vector commentNode::compile( Ref<Block> block, Binding &binding ) const {
   var_vector ops;
@@ -85,8 +149,6 @@ var_vector commentNode::compile( Ref<Block> block, Binding &binding ) const {
 var_vector blockNode::compile( Ref<Block> block, Binding &binding ) const {
   var_vector ops;
   
-  ops.push_back( Var(Op::BBEGIN ));
-
   binding.startBlock();
 
   /** Compile all statments
@@ -101,22 +163,12 @@ var_vector blockNode::compile( Ref<Block> block, Binding &binding ) const {
 
   }
 
-  /** Append the # of local vars for the block
-   */
-  ops.push_back( Var( (int)binding.finishBlock()) );
+  Ref<Block> block_o( new Block("") );
+  block_o->code = n_ops;
+  block_o->add_scope = binding.finishBlock();
 
-  unsigned int size_pos = ops.size() ;
-  ops.push_back( Var(0) );
-
-  /** Append the statements
-   */
-  ops.insert( ops.end(), n_ops.begin(), n_ops.end() );
-
-  /** Finish the block
-   */
-  ops.push_back( Var(Op::BEND ));
-
-  ops[size_pos] = Var( (int)ops.size() );
+  ops.push_back( Var(block_o) );
+  ops.push_back( Var(Op::EVAL) );
 
   return ops;
 }
@@ -140,6 +192,7 @@ var_vector quoteNode::compile( Ref<Block> block, Binding &binding ) const {
   q_block->code = n_ops;
 
   ops.push_back( Var(q_block) );
+  ops.push_back( Var(Op::EVAL) );
 
   return ops;
 }
@@ -163,28 +216,11 @@ var_vector stmtListNode::compile( Ref<Block> block, Binding &binding ) const {
 }
 
 var_vector lambdaNode::compile( Ref<Block> block, Binding &binding ) const {
-
-  /** Create a new (aligned) block, just for counting line #s, etc.
-   */
-  Ref<Block> lambda = new (aligned) Block(source);
-
-  /** Start a new (aligned) block in the binding.
-   */
-  binding.startBlock();
-
-  /** Compile the operations with new (aligned) block as guidance
-   */
-  var_vector code_ops = stmt->compile( lambda, binding );
-
-  /** Grab how many additional vars there are
-   */
-  unsigned int add_vars = binding.finishBlock();
-  lambda->add_scope = add_vars;
-  lambda->code = code_ops;
-
-  /** Push the lambda code into the code section of current block
-   */
   var_vector ops;
+
+  /** Create the block object.
+   */
+  Ref<Block> lambda = stmt->compile_to_expr( binding, source.c_str() );
   ops.push_back( Var(lambda) );
 
   /** Push MAKE_LAMBDA
@@ -209,10 +245,9 @@ var_vector objectConstructorNode::compile( Ref<Block> block,
 
   /** Declare the `creator' variable
    */
-  unsigned int c_pos = 0;
-  binding.define( Var(Symbol::create("creator")) );
+  unsigned int c_ps = binding.define( Var(Symbol::create("creator")) );
   
-  /** Compile the operations with new (aligned) block as guidance
+  /** Compile the operations with new block as guidance
    */
   object_block->code = stmt->compile( object_block, binding );
 
@@ -231,7 +266,7 @@ var_vector objectConstructorNode::compile( Ref<Block> block,
 
   /** Push MAKE_OBJECT followed by the var# of the "creator" var.
    */
-  ops.push_back( Var( Op( Op::MAKE_OBJECT, c_pos )));
+  ops.push_back( Var( Op( Op::MAKE_OBJECT, c_ps ) ) );
   
   ops.push_back( List::empty() );
 
@@ -242,37 +277,15 @@ var_vector objectConstructorNode::compile( Ref<Block> block,
 
 
 var_vector methodNode::compile( Ref<Block> block, Binding &binding ) const {
-
-  /** Create a new (aligned) block
-   */
-  Ref<Block> new_block(new (aligned) Block(source));
-
-  /** Start a new (aligned) binding here, and compile into the new (aligned) block
-   */
-  Binding new_binding;
-  binding.startBlock();
-  var_vector code_ops = stmt->compile( new_block, new_binding) ;
-  binding.finishBlock();
-
-  /** Set the block's code to compile of the statements.
-   */
-  new_block->code = code_ops;
-
-  /** Push the block object itself into the code section of current block
-   */
   var_vector ops;
-  ops.push_back( Var(new_block) );
+  Ref<Block> method_block = stmt->compile_to_expr( binding, source.c_str() );
+  ops.push_back( Var(method_block) );
 
   return ops;
 }
 
 var_vector expressionStmtNode::compile( Ref<Block> block, Binding &binding ) const {
   var_vector ops = expr->compile( block, binding);
-
-  /** Don't pop anything if the expression didn't _do_ anything.
-   */
-  if (ops.size())
-    ops.push_back( Var(Op::POP ));
 
   return ops;
 }
@@ -370,6 +383,19 @@ var_vector declVerbNode::compile( Ref<Block> block, Binding &binding ) const {
   /** decl the slot
    */
   ops.push_back( Var(Op::DECLVERB ));
+
+  return ops;
+}
+
+var_vector functionApplyNode::compile( Ref<Block> block, Binding &binding ) const {
+  var_vector ops;
+  ops = function->compile( block, binding );
+
+  var_vector arg_ops = arguments->compile( block, binding );
+
+  ops.insert( ops.end(), arg_ops.begin(), arg_ops.end() );
+
+  ops.push_back( Var(Op::PERFORM ));
 
   return ops;
 }
@@ -536,7 +562,7 @@ var_vector assignNode::compile( Ref<Block> block, Binding &binding ) const {
 
   /** Look the name up in the block
    */
-  int id = binding.lookup( name );
+  unsigned int id = binding.lookup( name );
 
 
   /** Now push a SETVAR for it
@@ -574,38 +600,38 @@ var_vector scatterAssignNode::compile( Ref<Block> block,
    */
   var_vector ops = lhs->compile( block, binding);
  
-  /** Push the SCATTER ops
-   */
-  ops.push_back( Var(Op::SCATTER ));
+  //   /** Push the SCATTER ops
+  //    */
+  //   ops.push_back( Var(Op::SCATTER ));
 
-  /** Push the # of required vars
-   */
-  ops.push_back( Var( (int)required.size()) );
+  //   /** Push the # of required vars
+  //    */
+  //   //  ops.push_back( Var( (int)required.size()) );
 
-  /** Now push each of their ids
-   */
-  for (x = required.begin(); x != required.end();
-       x++)
-    ops.push_back( Var((int)binding.lookup( *x )) );
+  //   /** Now push each of their ids
+  //    */
+  //   for (x = required.begin(); x != required.end();
+  //        x++)
+  //     //    ops.push_back( Var((int)binding.lookup( *x )) );
   
-  /** Push the # of optional vars
-   */
-  ops.push_back( Var( (int)optional.size()) );
+  //   /** Push the # of optional vars
+  //    */
+  //     //  ops.push_back( Var( (int)optional.size()) );
 
-  /** Now push each of their ids
-   */
-  for (x = optional.begin(); x != optional.end();
-       x++) 
-    ops.push_back( Var( (int)binding.lookup( *x )) );
+  //   /** Now push each of their ids
+  //    */
+  //   for (x = optional.begin(); x != optional.end();
+  //        x++) 
+  //     ops.push_back( Var( (int)binding.lookup( *x )) );
   
-  /** If there's a remainder, let the vm know...
-   */
-  ops.push_back( Var(has_remainder) );
+  //   /** If there's a remainder, let the vm know...
+  //    */
+  //   ops.push_back( Var(has_remainder) );
 
-  if (has_remainder) {
-    // Now the remainder
-    ops.push_back( Var( (int)binding.lookup( remainder )) );
-  }
+  //   if (has_remainder) {
+  //     // Now the remainder
+  //     //    ops.push_back( Var( (int)binding.lookup( remainder )) );
+  //   }
 
   return ops;
 }
@@ -614,8 +640,7 @@ var_vector varDeclNode::compile( Ref<Block> block, Binding &binding ) const {
 
   /** Declare the name in the binding.
    */
-  binding.define( name );
-  int id = binding.lookup( name );
+  unsigned int id = binding.define( name );
 
   var_vector ops;
   /** If there is a value, then we insert the assignment for it
@@ -624,10 +649,6 @@ var_vector varDeclNode::compile( Ref<Block> block, Binding &binding ) const {
     ops = value->compile( block, binding );
 
     ops.push_back( Var( Op( Op::SETVAR, id ) ) );
-
-    /** can't leave anything on stack
-     */
-    ops.push_back( Var(Op::POP ));
 
   }
 
@@ -639,11 +660,11 @@ var_vector identNode::compile( Ref<Block> block, Binding &binding ) const {
 
   /** Look the name up in the block
    */
-  size_t id = binding.lookup( name );
+  unsigned int id = binding.lookup( name );
 
   /** Now push a GETVAR for it
    */
-  ops.push_back( Var( Op( Op::GETVAR, id) ) );
+  ops.push_back( Var( Op( Op::GETVAR, id ) ) );
 
   return ops;
 }
@@ -723,28 +744,91 @@ var_vector trinaryNode::compile( Ref<Block> block, Binding &binding ) const {
 
 var_vector forNode::compile( Ref<Block> block, Binding &binding ) const {
 
-  /** compile the sequence expr (pushes the IN value to stack
-   */
-  var_vector ops( rangeExpr->compile( block, binding ) );
+  /** Rewritten to:
 
-  /** compile and append the block to execute
-   */
-  var_vector block_ops( branch->compile( block, binding ) );
-  Ref<Block> our_block = new (aligned) Block("");
-  our_block->code = block_ops;
-  ops.push_back( Var(our_block) );
+     new for_loop_var := rangeExpr;
+     loop {
+       if (for_loop_var) {
+         name := car for_loop_var;
+         branch();
+	 for_loop_var = cdr for_loop_var;
+         if (for_loop_var)
+            continue;
+	 else
+            break;
+       } else {
+         break;
+       }
+     }
 
+  **/
+ 
+         
+  Var vname = Var(Symbol::create( "for_loop_var"));
+
+  NPtr on_range = new 
+    blockNode(nblk( 
+		   
+		   /** name = car vname
+		    */
+		   new                      
+		   assignNode( name,
+			       new 
+			       unaryNode( new identNode( vname ), Var(Op::CAR) ) ),
+		   
+		   /** branch()
+		    */
+		   branch, 
+
+		   new assignNode( vname, new 
+				   unaryNode( new 
+					      identNode( vname ), Var(Op::CDR) ) ), 
+		   
+		   /** if (vname) { vname = cdr vname; continue; } else break; **/
+		   new
+		   ifElseNode( new
+			       identNode( vname ),
+			       
+			       new
+			       blockNode( nblk( new 
+						literalNode( Var(Op::CONTINUE) ) ) ),
+			       
+			       new 
+			       blockNode( nblk( new
+						literalNode( Var(Op::BREAK) ) ) ) 
+			       ) 
+		   ) 
+	      );
   
+  NPtr on_done = new 
+    blockNode( nblk( new
+		     literalNode( Var(Op::BREAK) ) ) );
 
-  /** Cast the name from Node to identNode, grab the name symbol
-   *  from it, and use its value.  NASTY UGLY CAST.
-   */
-  identNode *ident = ((identNode*)(Node*)name);
-  Var name_val = ident->name;
+  NPtr select_node = new 
+    ifElseNode( new 
+		identNode( vname ),
+		on_range, on_done );
 
-  /** Now push the FOR_RANGE
+  NPtr loop_node = new 
+    loopNode( new
+	      blockNode( nblk( select_node ) ) );
+  
+  NPtr forEach = new 
+    blockNode( nblk( new 
+		     varDeclNode( vname, rangeExpr ),
+		     loop_node ) );
+					   
+  return forEach->compile( block, binding );
+}
+
+var_vector loopNode::compile( Ref<Block> block, Binding &binding ) const {
+
+		 
+  /** Loop on block
    */
-  ops.push_back( Var( Op( Op::FOR_RANGE, binding.lookup( name_val ) ) ) );
+  var_vector ops;
+  ops.push_back( Var(branch->compile_to_expr( binding ) ) );
+  ops.push_back( Var(Op::LOOP) );
 
 
   return ops;
@@ -752,59 +836,47 @@ var_vector forNode::compile( Ref<Block> block, Binding &binding ) const {
 
 var_vector whileNode::compile( Ref<Block> block, Binding &binding ) const {
 
-  /** Compile the branch
-   */
-  var_vector tb_ops = trueBranch->compile( block, binding );
+  NPtr while_node = new 
+    loopNode( new
+	      blockNode( nblk( new
+			       ifElseNode( testExpr, 
+					   new 
+					   blockNode( nblk( trueBranch,
+							    new literalNode( Var(Op::CONTINUE) ) ) ),
+					   new
+					   blockNode( nblk( new literalNode( Var(Op::BREAK) ) ) ) ) ) ) );
+  
+  return while_node->compile( block, binding );
 
-  /** Compile the truth test
-   */
-  var_vector while_chunk( testExpr->compile(block,binding ) );
+//   /** Build the if-else block
+//    */
+//   var_vector select( testExpr->compile( block, binding ) );
+//   Ref<Block> succ = trueBranch->compile_to_expr( binding );
+//   succ->code.push_back( Var(Op::CONTINUE) );  
+//   select.push_back( Var(succ) );
+//   select.push_back( Var(Op::IF) );
+//   select.push_back( Var(Op::BREAK ) );
+ 
+//   /** Put it in a block
+//    */
+//   Ref<Block> loop_expr = new Block("");
+//   loop_expr->code = select;
+//   loop_expr->add_scope = 0;
 
-  /** Add the while, and then the branch
-   */
-  while_chunk.push_back( Var(Op::WHILE ));
-  while_chunk.insert( while_chunk.end(), tb_ops.begin(), tb_ops.end() );
-  while_chunk.push_back( Var(Op::CONTINUE) );
+//   /** Loop on it
+//    */
+//   var_vector ops;
+//   ops.push_back( Var(loop_expr) );
+//   ops.push_back( Var(Op::LOOP) );
 
-  var_vector ops;
-  ops.push_back( Var( Op( Op::START_LOOP, while_chunk.size() + 1 ) ) );
 
-  /** Push the operations
-   */
-  ops.insert( ops.end(), while_chunk.begin(), while_chunk.end() );
-
-  return ops;
+//  return ops;
 }
 
 
 var_vector doWhileNode::compile( Ref<Block> block, Binding &binding ) const {
 
-  /** Compile the branch
-   */
-  var_vector tb_ops = trueBranch->compile( block, binding );
-
-  /** Compile truth test as an if else with continue + break
-   */
-
-  NPtr if_else = new (aligned) ifNode( new (aligned) unaryNode(testExpr, Var(Op::NOT)),
-				       new (aligned) literalNode( Var(Op::BREAK ) ));
-
-  var_vector if_else_ops( if_else->compile( block, binding ) );
-  if_else_ops.push_back( Var(Op::CONTINUE ));
-
-  /** The whole thing as a chunk
-   */
-  var_vector chunk(tb_ops);
-  chunk.insert( chunk.end(), if_else_ops.begin(), if_else_ops.end() );
-
-  var_vector ops;
-  ops.push_back( Var( Op( Op::START_LOOP, chunk.size() + 1 ) ) );
-
-  /** Push the operations
-   */
-  ops.insert( ops.end(), chunk.begin(), chunk.end() );
-
-  return ops;
+  return var_vector();
 }
 
 var_vector throwNode::compile( Ref<Block> block, Binding &binding ) const {
@@ -823,54 +895,6 @@ var_vector throwNode::compile( Ref<Block> block, Binding &binding ) const {
 var_vector tryCatchNode::compile( Ref<Block> block, Binding &binding ) const {
   var_vector ops;
 
-  /** Wrap it up in a binding.
-   */
-  ops.push_back( Var(Op::BBEGIN ));
-  ops.push_back( Var(0) );
-
-  unsigned int size_pos = ops.size();
-  ops.push_back( Var(0) );
-
-  /** Compile the if-it-doesn't-throw-ops
-   */
-  var_vector pass_ops = do_branch->compile( block, binding );
-    
-  /** Compile what will fail
-   */
-  unsigned int total_size = pass_ops.size();
-  vector< var_vector > catch_blocks;
-  for (vector<Catch>::const_iterator x = catchers.begin();
-       x != catchers.end(); x++) {
-    var_vector catcher_ops = x->branch->compile( block, binding );
-    catcher_ops.push_back( Var(Op::JMP ));
-    catcher_ops.push_back( Var(0) );
-
-    var_vector catcher;
-    catcher.push_back( x->err );
-    catcher.push_back( Var(Op::CATCH ));
-    catcher.push_back( Var( (int)binding.lookup( x->ident )) );
-    catcher.push_back( Var( (int)catcher_ops.size() ) );
-    catcher.insert( catcher.end(), catcher_ops.begin(), catcher_ops.end() );
-    
-    catch_blocks.push_back(catcher);
-    total_size += catcher.size();
-  }
-
-  unsigned int jmp_count = total_size;
-  for (vector<var_vector>::iterator x = catch_blocks.begin();
-       x != catch_blocks.end(); x++) {
-    jmp_count -= x->size();
-    
-    (x->begin() + x->size() - 1)->operator=((int)jmp_count);
-
-    ops.insert( ops.end(), x->begin(), x->end() );
-  }
-
-  ops.insert( ops.end(), pass_ops.begin(), pass_ops.end() );
-
-  ops.push_back( Var(Op::BEND ));
-
-  ops[size_pos] = Var( (int)ops.size() );
 
   return ops;
 }
@@ -884,16 +908,12 @@ var_vector ifNode::compile( Ref<Block> block, Binding &binding ) const {
     
   /** Push the the success branch
    */
-  var_vector tb_ops = trueBranch->compile( block, binding );
-  ops.push_back( List::from_vector( tb_ops ) );
+  Ref<Block> succ = trueBranch->compile_to_expr( binding );
+  ops.push_back( Var(succ) );
 
-  /** Push the fail branch (empty)
+  /** Push IF opcode
    */
-  ops.push_back( List::empty() );
-
-  /** Push IFELSE opcode
-   */
-  ops.push_back( Var(Op::IFELSE ));
+  ops.push_back( Var(Op::IF ));
 
   return ops;
 }
@@ -905,24 +925,21 @@ var_vector ifElseNode::compile( Ref<Block> block, Binding &binding ) const {
    */
   var_vector ops = testExpr->compile( block, binding );
     
-  /** Push the success branch
+  /** Push the the success branch
    */
-  var_vector tb_ops = trueBranch->compile( block, binding );
-  ops.push_back( List::from_vector( tb_ops ) );
-  
-  /** Push the fail branch
+  Ref<Block> succ = trueBranch->compile_to_expr( binding );
+  ops.push_back( Var(succ) );
+
+  /** Push the fail branch 
    */
-  var_vector else_ops = elseBranch->compile( block, binding );
-  ops.push_back( List::from_vector( else_ops ) );
+  Ref<Block> fail = elseBranch->compile_to_expr( binding );
+  ops.push_back( Var(fail) );
 
   /** Push IFELSE opcode
    */
   ops.push_back( Var(Op::IFELSE ));
-
   return ops;
 }
-
-
 
 
 

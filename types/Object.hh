@@ -48,7 +48,7 @@ namespace mica {
     /** Declare a slot on an object
      *  @param the accessor of the slot, or None if public
      *  @param name the symbol to create
-     *  @return the Slot value
+     *  @return the slot value
      */
     Var declare( const Var &accessor, const Symbol &name, 
 		 const Var &value ) ;
@@ -59,7 +59,7 @@ namespace mica {
      *  @return copy of value
      *  @throws not_found
      */
-    SlotResult get( const Var &accessor, const Symbol &name ) const;
+    OptSlot get( const Var &accessor, const Symbol &name ) const;
 
     /** assign a value to a slot
      *  @param accessor the accessor of the slot, or None if public
@@ -105,7 +105,7 @@ namespace mica {
   public:
     /** Forwards to :perform
      */
-    Var perform( const Ref<Task> &caller, const Var &args );
+    Var perform( const Ref<Frame> &caller, const Var &args );
 
   public:
     mica_string rep() const;

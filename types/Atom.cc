@@ -7,6 +7,7 @@
 #include "Scalar.hh"
 #include "Var.hh"
 #include "Exceptions.hh"
+#include "List.hh"
 
 #include "MetaObjects.hh"
 
@@ -20,6 +21,17 @@ Var Scalar::lookup( const Var &i ) const {
   throw invalid_type("attempt to lookup item inside scalar operand");
 }
 
+Var Scalar::cons( const Var &el ) const {
+  return List::tuple( Var(this), el );
+}
+
+Var Scalar::lhead() const {
+  throw invalid_type("lhead on non-sequence");
+}
+
+Var Scalar::ltail() const {
+  throw invalid_type("ltail on non-sequence");
+}
 
 var_vector Scalar::for_in( unsigned int var_index,
 			   const Var &block ) const

@@ -23,16 +23,15 @@
 
 #include "Error.hh"
 #include "NativeBind.hh"
-#include "VariableStorage.hh"
 #include "GlobalSymbols.hh"
 
 #include "Unserializer.hh"
 #include "Timer.hh"
 #include "Message.hh"
-#include "AbstractClosure.hh"
-#include "NativeClosure.hh"
-#include "Closure.hh"
-#include "VariableStorage.hh"
+#include "AbstractFrame.hh"
+#include "NativeFrame.hh"
+#include "Frame.hh"
+
 #include "NativeBlock.hh"
 
 using namespace mica;
@@ -354,37 +353,6 @@ Var Unserializer::parseError()
 }
 
 
-BlockContext Unserializer::parseBlockContext()
-{
-  BlockContext block_context;
-  UnPack( block_context.scope_width );
-  UnPack( block_context.opcodes );
-
-  unsigned int numhandlers;
-  UnPack( numhandlers );
-  while (numhandlers--) {
-    unsigned int jmp;
-    unsigned int var;
-    
-    UnPack( jmp );
-    UnPack( var );
-
-    BlockContext::handler_entry handler( parseSymbol(),
-					 jmp, var );
-    block_context.handlers.push_back( handler );
-  }
-
-  return block_context;
-}
-
-VariableStorage Unserializer::parseVariableStorage()
-{
-  VariableStorage res;
-
-  res.values = readVarVector();
-
-  return res;
-}
 
 Var Unserializer::parseTaskHandle() {
   /** Read the pool name and index.
@@ -417,11 +385,11 @@ Ref<Task> Unserializer::parseTaskReal()
   case Type::TASK:
     task = new (aligned) Task();
     break;
-  case Type::CLOSURE:
-    task = new (aligned) Closure();
+  case Type::FRAME:
+    task = new (aligned) Frame();
     break;
-  case Type::NATIVECLOSURE:
-    task = new (aligned) NativeClosure();
+  case Type::NATIVEFRAME:
+    task = new (aligned) NativeFrame();
     break;
   default:
     cerr << type_id << endl;
@@ -465,16 +433,16 @@ Ref<Task> Unserializer::parseTaskReal()
     task->children.push_back( parseMessage() );
   }
 
-  if (type_id == Type::CLOSURE)
-    fillInClosure(task);
-  else if (type_id == Type::NATIVECLOSURE)
-    fillInNativeClosure(task);
+  if (type_id == Type::FRAME)
+    fillInFrame(task);
+  else if (type_id == Type::NATIVEFRAME)
+    fillInNativeFrame(task);
 
   return task;
 }
 
-void Unserializer::fillInAbstractClosure( Task *task ) {
-  AbstractClosure *ac = dynamic_cast<AbstractClosure*>(task);
+void Unserializer::fillInAbstractFrame( Task *task ) {
+  AbstractFrame *ac = dynamic_cast<AbstractFrame*>(task);
 
   ac->source = parseVar();
   ac->caller = parseVar();
@@ -494,51 +462,30 @@ void Unserializer::fillInAbstractClosure( Task *task ) {
 
 }
 
-void Unserializer::fillInClosure( Task *task ) {
-  fillInAbstractClosure( task );
+void Unserializer::fillInFrame( Task *task ) {
+  fillInAbstractFrame( task );
 
-  Closure *closure = dynamic_cast<Closure*>(task);
+  Frame *frame = dynamic_cast<Frame*>(task);
 
-  UnPack(closure->_pc);
+  UnPack(frame->control._pc);
 
-  size_t ls_size;
-  UnPack( ls_size );
-  while (ls_size--) {
-    pair<unsigned int, unsigned int> loop_pair;
-    UnPack( loop_pair.first );
-    UnPack( loop_pair.second );
-    closure->loop_stack.push_back( loop_pair );
-  }
 
-  closure->set_block( parseData()->asRef<Block>() );
+  frame->control.set_block( parseData()->asRef<Block>() );
 
   size_t stack_size;
   UnPack( stack_size );
   while (stack_size--) {
-    closure->stack.push_back( parseVar() );
+    frame->stack.push_back( parseVar() );
   }
 
-  size_t e_stack_size;
-  UnPack( e_stack_size );
-  while (e_stack_size--) {
-    closure->exec_stack.push_back( parseVar() );
-  }
-
-  closure->scope = parseVariableStorage();
-
-  size_t bs_size;
-  UnPack( bs_size );
-  while ( bs_size-- ) {
-    closure->bstck.push_back( parseBlockContext() );
-  }
-    
-  UnPack( closure->ex_state );
+   
+  UnPack( frame->ex_state );
 }
 
-void Unserializer::fillInNativeClosure( Task *task ) {
-  fillInAbstractClosure( task );
+void Unserializer::fillInNativeFrame( Task *task ) {
+  fillInAbstractFrame( task );
 
-  dynamic_cast<NativeClosure*>(task)->native_block = parseData()->asRef<NativeBlock>();
+  dynamic_cast<NativeFrame*>(task)->native_block = parseData()->asRef<NativeBlock>();
 }
 
 Ref<Message> Unserializer::parseMessage() {

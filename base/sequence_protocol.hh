@@ -27,11 +27,13 @@ namespace mica {
   public:
     // CONSTRUCTIONS
 
-    /** add a new element to the front/left of a sequence
-     *  @param N element to add
-     *  @return sequence containing the new element at the front
-     */
-    virtual Var cons( const Var &el ) const = 0;
+    // THIS FUNCTION NOW AVAILABLE VIA type_protocol
+
+    //     /** add a new element to the front/left of a sequence
+    //      *  @param N element to add
+    //      *  @return sequence containing the new element at the front
+    //      */
+    //     virtual Var cons( const Var &el ) const = 0;
 
     /** add a new element to the right/read of a sequence
      *  @param N element to add
@@ -53,15 +55,17 @@ namespace mica {
      */
     virtual Var lview() const = 0;
 
-    /** @return the first element of the sequence.
-     *  @throws out_of_range if sequence is empty
-     */
-    virtual Var lhead() const = 0;
+    // THESE TWO FUNCTIONS NOW HANDLED ON type_protocol
 
-    /** @return sequence minus the first element.  returns empty() if the
-     *          sequence is already empty
-     */
-    virtual Var ltail() const = 0;
+    //     /** @return the first element of the sequence.
+    //      *  @throws out_of_range if sequence is empty
+    //      */
+    //     virtual Var lhead() const = 0;
+    
+    //     /** @return sequence minus the first element.  returns empty() if the
+    //      *          sequence is already empty
+    //      */
+    //     virtual Var ltail() const = 0;
 
     /** @return sequence separated into its last element and the reamining
      *          sequence.  Returns None if the sequence is empty

@@ -529,7 +529,7 @@ int main( int argc, char *argv[] )
 
 
   try {
-    connection_proto = Slots::get_name( Var(default_pool->lobby),
+    connection_proto = OptSlots::get_name( Var(default_pool->lobby),
 					Symbol::create("connection") ).value ;
   } catch (Ref<Error> e) {
     if (e == E_SLOTNF) {

@@ -14,7 +14,6 @@
 #include "Var.hh"
 #include "hash.hh"
 #include "Symbol.hh"
-#include "MicaParser.hh"
 #include "parser.h"
 #include "List.hh"
 #include "OpCode.hh"
@@ -24,6 +23,7 @@
 #include "Error.hh"
 #include "Exceptions.hh"
 
+#include "MicaParser.hh"
 
 #if 1
 #define DEBUG(x) x
@@ -108,11 +108,14 @@ NPtr micaParser::translateStatement(NonterminalStatement* statement)
     NPtr trueBranch( translateStatement(statement->body) );
     return new (aligned) doWhileNode( testExpr, trueBranch );
   } else if (statement->iterator) {
-    NPtr forVar( translateVar(statement->iterator) );
+    
+    Var ident = translateId(statement->iterator->id);
+
     NPtr rangeExpr( translateExpr(statement->container) );
     NPtr doStmt(  translateStatement(statement->body) );
 
-    return new (aligned) forNode( forVar, rangeExpr, doStmt );
+    return new (aligned) forNode( ident, rangeExpr, doStmt );
+
   } else if (statement->tryBody) {
     NPtr body( translateStatement( statement->tryBody) );
     
@@ -362,8 +365,8 @@ NPtr micaParser::translateExpr(NonterminalExpr* expr)
   
 
     pair<NPtr, std::string> 
-      result( translateClosure( start_pos,
-				expr->closure ) );
+      result( translateFrame( start_pos,
+				expr->frame ) );
     return new (aligned) methodNode( result.first, result.second.c_str() );
   } else if (expr->isLambda) {
     pair<int,int> 
@@ -372,8 +375,8 @@ NPtr micaParser::translateExpr(NonterminalExpr* expr)
   
 
     pair<NPtr, std::string> 
-      result( translateClosure( start_pos,
-				expr->closure ) );
+      result( translateFrame( start_pos,
+			      expr->frame ) );
     return new (aligned) lambdaNode( result.first, result.second.c_str() );
   } else if (expr->isObjectConstruct) {
     NonterminalObjectConstruct *block = expr->isObjectConstruct;
@@ -414,26 +417,28 @@ NPtr micaParser::translateBinaryExpr( const NPtr &left, NonterminalBinaryExpr* e
     return new (aligned) binaryNode( translateExpr(expr->rightArg),
 				     left,
 				     opcode );
-  } else if (!expr->argList.empty()) {
+  } else if (expr->func_apply) {
     NPtr arguments = new (aligned) listNode( map_to_vec( expr->argList.begin(),
 							 expr->argList.end(),
 							 member_pointer(&micaParser::translateListItem) ));
     
-    return new (aligned) binaryNode( left, arguments, Var(Op::PERFORM) );
+    return new (aligned) functionApplyNode( left, arguments );
+
   } else if (expr->messageExpr) {
     return translateMessage( expr->messageExpr,
 			     left );
   } 
+  assert(0);
 
 }
 
 pair<NPtr, std::string> 
-micaParser::translateClosure( pair<int,int> start_pos,
-			     NonterminalClosure *closure ) {
+micaParser::translateFrame( pair<int,int> start_pos,
+			     NonterminalFrame *frame ) {
   vector<NPtr> statements;
   
-  if (closure->argslist && closure->argslist->args) {
-    NPtr args_declare = translateArgDeclList( closure->argslist->args,
+  if (frame->argslist && frame->argslist->args) {
+    NPtr args_declare = translateArgDeclList( frame->argslist->args,
 					      new (aligned) literalNode(Var(Op::ARGS)),
 					      true );
 
@@ -441,14 +446,14 @@ micaParser::translateClosure( pair<int,int> start_pos,
   }
     
   NPtr stmts = new (aligned)
-    stmtListNode( map_to_vec( closure->statementList.begin(),
-			      closure->statementList.end(), 
+    stmtListNode( map_to_vec( frame->statementList.begin(),
+			      frame->statementList.end(), 
 			      member_pointer(&micaParser::translateStatement)));
 
   statements.push_back( stmts );
 
-  pair<int,int> end_pos( make_pair( closure->endpos->line - 1,
-				    closure->endpos->column ) );
+  pair<int,int> end_pos( make_pair( frame->endpos->line - 1,
+				    frame->endpos->column ) );
     
 
   std::string program( get_range( start_pos, end_pos ) );

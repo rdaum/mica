@@ -35,7 +35,12 @@ namespace mica {
     Node() : reference_counted() {};
     virtual ~Node() {};
 
-    virtual var_vector compile( Ref<Block>block, Binding &binding ) const = 0;
+    virtual var_vector compile( Ref<Block> block,
+				Binding &binding ) const = 0;
+
+    virtual Ref<Block> compile_to_expr( Binding &binding,
+					const char *source = 0 );
+
     virtual child_set child_pointers();
   };
 
@@ -59,18 +64,33 @@ namespace mica {
 			    const vector<NPtr> &nodes );
 
   extern child_set node_list( const vector<NPtr>
-					     &nodes );
-
+			      &nodes );
+  
 
   extern child_set node_single( const NPtr &first );
 
   extern child_set node_pair( const NPtr &left,
-					     const NPtr &right );
+			      const NPtr &right );
   
   extern child_set node_triple( const NPtr &one,
-					       const NPtr &two,
-					       const NPtr &three );
+				const NPtr &two,
+				const NPtr &three );
   
+  /** Functions to conveniently build vectors of NPtrs from indiv
+   *  nptrs
+   */
+  extern vector<NPtr> nblk( const NPtr &one );
+  extern vector<NPtr> nblk( const NPtr &one, const NPtr &two );
+  extern vector<NPtr> nblk( const NPtr &one, const NPtr &two, 
+			    const NPtr &three );
+  extern vector<NPtr> nblk( const NPtr &one, const NPtr &two, 
+			    const NPtr &three, const NPtr &four );
+  extern vector<NPtr> nblk( const NPtr &one, const NPtr &two, 
+			    const NPtr &three, const NPtr &four, 
+			    const NPtr &five );
+
+
+
   /** Represents a code block
    */
   class blockNode
@@ -284,6 +304,25 @@ namespace mica {
     var_vector compile( Ref<Block>block, Binding &binding ) const;    
     child_set child_pointers() {
       return node_triple(selector, arg_template, value);
+    }
+  };
+
+  /** Message send
+   */
+  class functionApplyNode
+    : public Node
+  {
+  public:
+    NPtr function;
+    NPtr arguments;
+
+    functionApplyNode( const NPtr &i_function, const NPtr &i_arguments)
+      : Node(), function(i_function), arguments(i_arguments)
+    {};
+
+    var_vector compile( Ref<Block>block, Binding &binding ) const;
+    child_set child_pointers() {
+      return node_pair(function, arguments);
     }
   };
 
@@ -602,21 +641,35 @@ namespace mica {
     : public Node 
   {
   public:
-    NPtr name;
+    Var  name;
     NPtr rangeExpr;
     NPtr branch;
     
-    forNode( const NPtr &ivar, const NPtr &irangeExpr, 
+    forNode( const Var &ivar, const NPtr &irangeExpr, 
 	     const NPtr &iBranch)
       : Node(), name(ivar), rangeExpr(irangeExpr),
 	branch(iBranch) {};
   
     var_vector compile( Ref<Block>block, Binding &binding ) const;
     child_set child_pointers() {
-      return node_triple( name, rangeExpr, branch );
+      return node_pair( rangeExpr, branch );
     }
   };
 
+
+  class loopNode
+    : public Node
+  {
+  public:
+    NPtr branch;
+    loopNode( const NPtr &i_branch )
+      : branch(i_branch) {}
+
+    var_vector compile( Ref<Block>block, Binding &binding ) const;
+    child_set child_pointers() {
+      return node_single( branch );
+    }
+  };
 
   class whileNode
     : public Node

@@ -4,7 +4,7 @@
 #define METAOBJECTS_HH
 
 /** Defines a global list of pointers to objects which are "meta-delegates"
- *  for the each of the builtin types.  Slots defined on these objects
+ *  for the each of the builtin types.  OptSlots defined on these objects
  *  are bound via delegation to builtin-types.
  */
 namespace mica {

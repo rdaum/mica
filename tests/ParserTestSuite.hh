@@ -65,10 +65,10 @@ class ParserTest
 
 
   CPPUNIT_TEST( testIndexExpression);
-  CPPUNIT_TEST( testPrivateSlotExpression);
-  CPPUNIT_TEST( testPrivateSlotExpression2);
-  CPPUNIT_TEST( testSelfPublicSlotExpression);
-  CPPUNIT_TEST( testSelfPublicSlotExpression2);
+  CPPUNIT_TEST( testPrivateOptSlotExpression);
+  CPPUNIT_TEST( testPrivateOptSlotExpression2);
+  CPPUNIT_TEST( testSelfPublicOptSlotExpression);
+  CPPUNIT_TEST( testSelfPublicOptSlotExpression2);
 
   CPPUNIT_TEST( testRemovePrivate );
   CPPUNIT_TEST( testRemovePublic );
@@ -159,10 +159,10 @@ protected:
 
   TEST_METHOD( IndexExpression, "args[54];");
 
-  TEST_METHOD( PrivateSlotExpression, ".buddy = 5;");
-  TEST_METHOD( PrivateSlotExpression2, ".(#buddy) = 5;");
-  TEST_METHOD( SelfPublicSlotExpression, ":test;");
-  TEST_METHOD( SelfPublicSlotExpression2, ":(#test);");
+  TEST_METHOD( PrivateOptSlotExpression, ".buddy = 5;");
+  TEST_METHOD( PrivateOptSlotExpression2, ".(#buddy) = 5;");
+  TEST_METHOD( SelfPublicOptSlotExpression, ":test;");
+  TEST_METHOD( SelfPublicOptSlotExpression2, ":(#test);");
   TEST_METHOD( MessageSend, "source:test();");
   TEST_METHOD( MessageSend2, "source:(#test)();");
   TEST_METHOD( MessageSendArgs, "source:test(1,2,3);");

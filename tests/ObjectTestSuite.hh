@@ -12,7 +12,7 @@ class ObjectTest
   CPPUNIT_TEST( testObjectDeclare );
   CPPUNIT_TEST( testObjectAssign );
   CPPUNIT_TEST( testObjectGet );
-  CPPUNIT_TEST( testObjectSlots );
+  CPPUNIT_TEST( testObjectOptSlots );
   CPPUNIT_TEST( testObjectClone );
   CPPUNIT_TEST( testObjectInherit );
   CPPUNIT_TEST( testObjectMoreInherit );
@@ -55,7 +55,7 @@ protected:
 
   };
 
-  void testObjectSlots() {
+  void testObjectOptSlots() {
     Var x = Object::create();
     x->declare( x, Symbol::create("test"), 5);
     x->declare( x, Symbol::create("test2"), "woah");

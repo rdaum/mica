@@ -153,7 +153,7 @@ namespace mica {
     /** Declare a slot on an object
      *  @param the accessor of the slot (object, #METHOD, or #NAME)
      *  @param name of the slot to declare
-     *  @return the Slot value
+     *  @return the OptSlot value
      */
     virtual Var declare( const Var &accessor, const Symbol &name,
                                const Var &value );
@@ -164,7 +164,7 @@ namespace mica {
      *  @return copy of value
      *  @throws slot_not_found
      */
-    virtual SlotResult get( const Var &accessor, 
+    virtual OptSlot get( const Var &accessor, 
 			    const Symbol &name ) const;
 
     /** assign a value to a slot
@@ -193,7 +193,7 @@ namespace mica {
 
     /** Invoke this object with arguments.  
      */
-    virtual Var perform( const Ref<Task> &caller, const Var &args );
+    virtual Var perform( const Ref<Frame> &caller, const Var &args );
 
   public:
 

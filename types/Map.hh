@@ -190,6 +190,10 @@ namespace mica {
   public:
     // INVALID OPERATIONS FOR MAPS
     Var subseq( int, int ) const;
+    Var cons( const Var &el ) const;
+    Var lhead() const;
+    Var ltail() const;
+
     int toint() const;
     float tofloat() const;
     Var mod( const Var &rhs ) const;

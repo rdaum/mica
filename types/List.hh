@@ -97,25 +97,25 @@ namespace mica {
   public:
     /** @return false if the list is empty
      */
-    inline bool truth() const {
-      return null();
+    bool truth() const {
+      return !null();
     }
 
     /** @return false
      */
-    inline bool isScalar() const {
+    bool isScalar() const {
       return false;
     }
 
     /** @return false
      */
-    inline bool isNumeric() const {
+    bool isNumeric() const {
       return false;
     }
 
     /** @return true
      */
-    inline bool isSequence() const {
+    bool isSequence() const {
       return true;
     }
 
