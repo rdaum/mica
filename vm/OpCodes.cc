@@ -167,21 +167,21 @@ void mica::initializeOpcodes()
   }
 }
 
-void Closure::op_fail( unsigned int param )
+void Closure::op_fail( unsigned int param_1, unsigned int param_2 )
 {
   // Should never get here.
 
   assert(0);
 }
 
-void Closure::op_neg( unsigned int param )
+void Closure::op_neg( unsigned int param_1, unsigned int param_2 )
 {
   Var val(pop());
 
   push( (-val) );
 }
 
-void Closure::op_add( unsigned int param )
+void Closure::op_add( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -189,7 +189,7 @@ void Closure::op_add( unsigned int param )
   push( left + right );
 }
 
-void Closure::op_sub( unsigned int param )
+void Closure::op_sub( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -197,7 +197,7 @@ void Closure::op_sub( unsigned int param )
   push( left - right );
 }
 
-void Closure::op_mul( unsigned int param )
+void Closure::op_mul( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -205,7 +205,7 @@ void Closure::op_mul( unsigned int param )
   push( left * right );
 }
 
-void Closure::op_div( unsigned int param )
+void Closure::op_div( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -213,7 +213,7 @@ void Closure::op_div( unsigned int param )
   push( left / right );
 }
 
-void Closure::op_mod( unsigned int param )
+void Closure::op_mod( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -221,7 +221,7 @@ void Closure::op_mod( unsigned int param )
   push( left % right );
 }
 
-void Closure::op_isa( unsigned int param )
+void Closure::op_isa( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -229,7 +229,7 @@ void Closure::op_isa( unsigned int param )
   push( Var( Slots::isA( left, right) ) );
 }
 
-void Closure::op_equal( unsigned int param )
+void Closure::op_equal( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -237,7 +237,7 @@ void Closure::op_equal( unsigned int param )
   push( Var( left == right ) );
 }
 
-void Closure::op_nequal( unsigned int param )
+void Closure::op_nequal( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -245,7 +245,7 @@ void Closure::op_nequal( unsigned int param )
   push( Var( left != right ));
 }
 
-void Closure::op_lesst( unsigned int param )
+void Closure::op_lesst( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -253,7 +253,7 @@ void Closure::op_lesst( unsigned int param )
   push( Var( left < right ));
 }
 
-void Closure::op_greatert( unsigned int param )
+void Closure::op_greatert( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -261,7 +261,7 @@ void Closure::op_greatert( unsigned int param )
   push( Var( left > right ));
 }
 
-void Closure::op_greaterte( unsigned int param )
+void Closure::op_greaterte( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -269,7 +269,7 @@ void Closure::op_greaterte( unsigned int param )
   push( Var( left >= right ) );
 }
 
-void Closure::op_lesste( unsigned int param )
+void Closure::op_lesste( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -277,7 +277,7 @@ void Closure::op_lesste( unsigned int param )
   push( Var( left <= right ) );
 }
 
-void Closure::op_and( unsigned int param ) 
+void Closure::op_and( unsigned int param_1, unsigned int param_2 ) 
 {
   Var left(pop());
   Var right(pop());
@@ -285,7 +285,7 @@ void Closure::op_and( unsigned int param )
   push( left && right );
 }
 
-void Closure::op_or( unsigned int param ) 
+void Closure::op_or( unsigned int param_1, unsigned int param_2 ) 
 {
   Var left(pop());
   Var right(pop());
@@ -293,7 +293,7 @@ void Closure::op_or( unsigned int param )
   push( left || right );
 }
 
-void Closure::op_xor( unsigned int param )
+void Closure::op_xor( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -301,7 +301,7 @@ void Closure::op_xor( unsigned int param )
   push( left ^ right );
 }
 
-void Closure::op_lshift( unsigned int param )
+void Closure::op_lshift( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -309,7 +309,7 @@ void Closure::op_lshift( unsigned int param )
   push( left << right );
 }
 
-void Closure::op_rshift( unsigned int param )
+void Closure::op_rshift( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -317,7 +317,7 @@ void Closure::op_rshift( unsigned int param )
   push( left >> right );
 }
   
-void Closure::op_band( unsigned int param )
+void Closure::op_band( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -325,7 +325,7 @@ void Closure::op_band( unsigned int param )
   push( left & right );
 }
 
-void Closure::op_bor( unsigned int param )
+void Closure::op_bor( unsigned int param_1, unsigned int param_2 )
 {
   Var left(pop());
   Var right(pop());
@@ -333,14 +333,14 @@ void Closure::op_bor( unsigned int param )
   push( left | right );
 }
 
-void Closure::op_not( unsigned int param ) 
+void Closure::op_not( unsigned int param_1, unsigned int param_2 ) 
 {
   Var val(pop());
   
   push( Var( !val ) );
 }
 
-void Closure::op_return( unsigned int param )
+void Closure::op_return( unsigned int param_1, unsigned int param_2 )
 {
   reply_return( pop() );
 
@@ -349,7 +349,7 @@ void Closure::op_return( unsigned int param )
   ex_state = STOPPED; 
 }
 
-void Closure::op_eval( unsigned int param )
+void Closure::op_eval( unsigned int param_1, unsigned int param_2 )
 {
   /** Pop the block from the stack
    */
@@ -370,14 +370,14 @@ void Closure::op_eval( unsigned int param )
     
 }
 
-void Closure::op_closure( unsigned int param )
+void Closure::op_closure( unsigned int param_1, unsigned int param_2 )
 {
   /** Quite simple.
    */
   push(Var(this));
 }
 
-void Closure::op_make_lambda( unsigned int param )
+void Closure::op_make_lambda( unsigned int param_1, unsigned int param_2 )
 {
   /** Pop the block
    */
@@ -405,7 +405,7 @@ void Closure::op_make_lambda( unsigned int param )
   push( Var(new_closure) );
 }
 
-void Closure::op_make_object( unsigned int param )
+void Closure::op_make_object( unsigned int param_1, unsigned int param_2 )
 {
   /** Pop the constructor block
    */
@@ -422,7 +422,7 @@ void Closure::op_make_object( unsigned int param )
 
   /** Set that variable to current self
    */
-  new_closure->scope.set( param, self );
+  new_closure->scope.set( param_1, self );
 
   /** Now create an object and put it on self + definer on the new closure
    */
@@ -437,7 +437,7 @@ void Closure::op_make_object( unsigned int param )
   push( Var(new_closure) );
 }
 
-void Closure::op_bbegin( unsigned int param )
+void Closure::op_bbegin( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab the number of local scope to add
    */
@@ -456,7 +456,7 @@ void Closure::op_bbegin( unsigned int param )
   bstck.back().enter( this );
 }
 
-void Closure::op_bend( unsigned int param )
+void Closure::op_bend( unsigned int param_1, unsigned int param_2 )
 {
   /** Signal exit notification
    */
@@ -467,7 +467,7 @@ void Closure::op_bend( unsigned int param )
   bstck.pop_back();
 }
 
-void Closure::op_catch( unsigned int param )
+void Closure::op_catch( unsigned int param_1, unsigned int param_2 )
 {
   /** Pop the error we're catching from the stack
    */
@@ -495,7 +495,7 @@ void Closure::op_catch( unsigned int param )
 
 
 
-void Closure::op_perform( unsigned int param )
+void Closure::op_perform( unsigned int param_1, unsigned int param_2 )
 {
   Var args(pop()), lhs(pop());
 
@@ -515,13 +515,13 @@ void Closure::op_perform( unsigned int param )
 
 
 void
-Closure::op_self( unsigned int param )
+Closure::op_self( unsigned int param_1, unsigned int param_2 )
 {
   push(Var(self));
 }
 
 void
-Closure::op_jmp( unsigned int param )
+Closure::op_jmp( unsigned int param_1, unsigned int param_2 )
 {
   /** grab PC offset
    */
@@ -532,22 +532,22 @@ Closure::op_jmp( unsigned int param )
   jump(skip);
 }
 
-void Closure::op_start_loop( unsigned int param )
+void Closure::op_start_loop( unsigned int param_1, unsigned int param_2 )
 {
-  start_loop( param );
+  start_loop( param_1 );
 }
 
-void Closure::op_continue( unsigned int param )
+void Closure::op_continue( unsigned int param_1, unsigned int param_2 )
 {
   do_continue();
 }
 
-void Closure::op_break( unsigned int param )
+void Closure::op_break( unsigned int param_1, unsigned int param_2 )
 {
   do_break();
 }
 
-void Closure::op_while( unsigned int param )
+void Closure::op_while( unsigned int param_1, unsigned int param_2 )
 {
   /** Pop the truth expr
    */
@@ -562,7 +562,7 @@ void Closure::op_while( unsigned int param )
    */
 }
 
-void Closure::op_for_range( unsigned int param )
+void Closure::op_for_range( unsigned int param_1, unsigned int param_2 )
 {
  /** pop the block
    */
@@ -574,7 +574,7 @@ void Closure::op_for_range( unsigned int param )
 
   /** Build the instructions for iteration..
    */
-  var_vector ops( sequence.for_in( param, block ) );
+  var_vector ops( sequence.for_in( param_1, block ) );
 
   /** Schedule them for execution.
    */
@@ -585,7 +585,7 @@ void Closure::op_for_range( unsigned int param )
 
 }
  
-void Closure::op_map( unsigned int param )
+void Closure::op_map( unsigned int param_1, unsigned int param_2 )
 {
   /** pop the expr
    */
@@ -609,7 +609,7 @@ void Closure::op_map( unsigned int param )
 }
 
 void
-Closure::op_ifelse( unsigned int param )
+Closure::op_ifelse( unsigned int param_1, unsigned int param_2 )
 {
   /** Pop fail branch
    */
@@ -645,7 +645,7 @@ Closure::op_ifelse( unsigned int param )
 }
 
 void
-Closure::op_throw( unsigned int param )
+Closure::op_throw( unsigned int param_1, unsigned int param_2 )
 {
   /** Pop error
    */
@@ -660,7 +660,7 @@ Closure::op_throw( unsigned int param )
 
 }
 
-void Closure::op_pop_list( unsigned int param )
+void Closure::op_pop_list( unsigned int param_1, unsigned int param_2 )
 {
   var_vector lst;
 
@@ -678,7 +678,7 @@ void Closure::op_pop_list( unsigned int param )
 }
 
 
-void Closure::op_pop_set( unsigned int param )
+void Closure::op_pop_set( unsigned int param_1, unsigned int param_2 )
 {
   var_set new_set;
 
@@ -695,7 +695,7 @@ void Closure::op_pop_set( unsigned int param )
   
 }
 
-void Closure::op_pop_map( unsigned int param )
+void Closure::op_pop_map( unsigned int param_1, unsigned int param_2 )
 {
   Var left, right;
   var_map x;
@@ -713,12 +713,12 @@ void Closure::op_pop_map( unsigned int param )
   push( Map::from_map(x) );
 }
 
-void Closure::op_pop( unsigned int param )
+void Closure::op_pop( unsigned int param_1, unsigned int param_2 )
 {
   pop();
 }
 
-void Closure::op_flatten( unsigned int param )
+void Closure::op_flatten( unsigned int param_1, unsigned int param_2 )
 {
   Var x = pop();
 
@@ -729,31 +729,31 @@ void Closure::op_flatten( unsigned int param )
 }
 
 
-void Closure::op_ticks( unsigned int param )
+void Closure::op_ticks( unsigned int param_1, unsigned int param_2 )
 {
   push( Var( (int)ticks ) );
 }
 
-void Closure::op_caller( unsigned int param )
+void Closure::op_caller( unsigned int param_1, unsigned int param_2 )
 {
   push( caller );
 }
 
-void Closure::op_source( unsigned int param )
+void Closure::op_source( unsigned int param_1, unsigned int param_2 )
 {
   push( source );
 }
 
-void Closure::op_selector( unsigned int param )
+void Closure::op_selector( unsigned int param_1, unsigned int param_2 )
 {
   push( Var(selector) );
 }
 
-void Closure::op_args( unsigned int param )
+void Closure::op_args( unsigned int param_1, unsigned int param_2 )
 {
   push( List::from_vector( args ) );
 }
-void Closure::op_slice( unsigned int param )
+void Closure::op_slice( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab index from stack
    */
@@ -766,7 +766,7 @@ void Closure::op_slice( unsigned int param )
   push( val.lookup(idx) );
 }
 
-void Closure::op_getrange( unsigned int param )
+void Closure::op_getrange( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab length from stack
    */
@@ -783,7 +783,7 @@ void Closure::op_getrange( unsigned int param )
   push( val.subseq(idx.toint(), eng.toint()) );
 }
 
-void Closure::op_setvar( unsigned int param )
+void Closure::op_setvar( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab new  value from stack
    */
@@ -791,19 +791,19 @@ void Closure::op_setvar( unsigned int param )
 
   /** assign it
    */
-  scope.set( param, val );
+  scope.set( param_1, val );
 
   push( val );
 }
 
-void Closure::op_getvar( unsigned int param )
+void Closure::op_getvar( unsigned int param_1, unsigned int param_2 )
 {
   /** return value
    */
-  push( scope.get( param ) );
+  push( scope.get( param_1 ) );
 }
 
-void Closure::op_getprivate( unsigned int param )
+void Closure::op_getprivate( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -819,7 +819,7 @@ void Closure::op_getprivate( unsigned int param )
   push( Slots::get_slot( self, definer, slot_sym ).value );
 }
 
-void Closure::op_declprivate( unsigned int param )
+void Closure::op_declprivate( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -838,7 +838,7 @@ void Closure::op_declprivate( unsigned int param )
 }
 
 
-void Closure::op_setprivate( unsigned int param )
+void Closure::op_setprivate( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -866,13 +866,13 @@ void Closure::op_setprivate( unsigned int param )
   push( Var() );
 }
 
-void Closure::op_slots( unsigned int param )
+void Closure::op_slots( unsigned int param_1, unsigned int param_2 )
 {
   push( self.slots() );
 }
 
 
-void Closure::op_rmprivate( unsigned int param )
+void Closure::op_rmprivate( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -890,7 +890,7 @@ void Closure::op_rmprivate( unsigned int param )
   push(Var());
 }
 
-void Closure::op_getverb( unsigned int param )
+void Closure::op_getverb( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab the arg mask
    */
@@ -913,7 +913,7 @@ void Closure::op_getverb( unsigned int param )
 }
 
 
-void Closure::op_declverb( unsigned int param )
+void Closure::op_declverb( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -938,7 +938,7 @@ void Closure::op_declverb( unsigned int param )
   push( Slots::declare_verb( self, slot_sym, argm.flatten(), val ) );
 }
 
-void Closure::op_setverb( unsigned int param )
+void Closure::op_setverb( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -966,7 +966,7 @@ void Closure::op_setverb( unsigned int param )
 
 
 
-void Closure::op_rmverb( unsigned int param )
+void Closure::op_rmverb( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab the arg mask
    */
@@ -988,7 +988,7 @@ void Closure::op_rmverb( unsigned int param )
   push(NONE);
 }
 
-void Closure::op_getdelegate( unsigned int param )
+void Closure::op_getdelegate( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -1007,7 +1007,7 @@ void Closure::op_getdelegate( unsigned int param )
 }
 
 
-void Closure::op_decldelegate( unsigned int param )
+void Closure::op_decldelegate( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -1025,7 +1025,7 @@ void Closure::op_decldelegate( unsigned int param )
   push( Var(self.declare( Var(DELEGATE_SYM), slot_sym, val )) );
 }
 
-void Closure::op_setdelegate( unsigned int param )
+void Closure::op_setdelegate( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -1045,7 +1045,7 @@ void Closure::op_setdelegate( unsigned int param )
 
 
 
-void Closure::op_rmdelegate( unsigned int param )
+void Closure::op_rmdelegate( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab symbol from stack
    */
@@ -1063,7 +1063,7 @@ void Closure::op_rmdelegate( unsigned int param )
   push(Var());
 }
 
-void Closure::op_declname( unsigned int param )
+void Closure::op_declname( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab name from stack
    */
@@ -1091,7 +1091,7 @@ void Closure::op_declname( unsigned int param )
   push(object);
 }
 
-void Closure::op_rmname( unsigned int param )
+void Closure::op_rmname( unsigned int param_1, unsigned int param_2 )
 {
   Var name(pop());
 
@@ -1107,7 +1107,7 @@ void Closure::op_rmname( unsigned int param )
   push(NONE);
 }
 
-void Closure::op_setname( unsigned int param )
+void Closure::op_setname( unsigned int param_1, unsigned int param_2 )
 {
   Var name(pop());
   
@@ -1124,7 +1124,7 @@ void Closure::op_setname( unsigned int param )
 }
 
 
-void Closure::op_getname( unsigned int param )
+void Closure::op_getname( unsigned int param_1, unsigned int param_2 )
 {
   Var name = pop();
 
@@ -1143,7 +1143,7 @@ void Closure::op_getname( unsigned int param )
 }
 
 
-void Closure::op_destroy( unsigned int param )
+void Closure::op_destroy( unsigned int param_1, unsigned int param_2 )
 {
   /** Remove the object from Names and the HandleFactory.  
    *  Garbage collection should take care of the rest.
@@ -1155,7 +1155,7 @@ void Closure::op_destroy( unsigned int param )
 
 
 
-void Closure::op_send( unsigned int param )
+void Closure::op_send( unsigned int param_1, unsigned int param_2 )
 {
   /** Grab destination from stack
    */
@@ -1185,7 +1185,7 @@ void Closure::op_send( unsigned int param )
  );
 }
 
-void Closure::op_send_like( unsigned int param )
+void Closure::op_send_like( unsigned int param_1, unsigned int param_2 )
 {
 
   /** Grab destination from stack
@@ -1225,7 +1225,7 @@ void Closure::op_send_like( unsigned int param )
  );
 }
  
-void Closure::op_pass( unsigned int param ) 
+void Closure::op_pass( unsigned int param_1, unsigned int param_2 ) 
 {
   /** Pop destination
    */
@@ -1276,20 +1276,20 @@ void Closure::op_pass( unsigned int param )
 }  
 
 
-void Closure::op_notify( unsigned int param )
+void Closure::op_notify( unsigned int param_1, unsigned int param_2 )
 {
   Var arg(pop());
 
   push( Scheduler::instance->notify( self, arg ) );
 }
 
-void Closure::op_detach( unsigned int param )
+void Closure::op_detach( unsigned int param_1, unsigned int param_2 )
 {
   Scheduler::instance->detach( self );
   push( Var() );
 }
 
-void Closure::op_scatter( unsigned int param )
+void Closure::op_scatter( unsigned int param_1, unsigned int param_2 )
 {
   unsigned int i;
 

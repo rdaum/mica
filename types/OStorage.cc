@@ -205,9 +205,8 @@ mica_string Environment::serialize() const
 	 sl_i != am_i->second.end(); sl_i++) {
       Pack( s_form, true );
       s_form.append( sl_i->first.serialize() );       //name
-      s_form.append( Var(am_i->first).serialize() );  //accessor
+      s_form.append( am_i->first.serialize() );       //accessor
       s_form.append( sl_i->second.serialize() );      //value
-      count++;
     }
   }
   Pack( s_form, false );

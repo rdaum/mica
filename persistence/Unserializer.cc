@@ -240,17 +240,17 @@ Environment *Unserializer::parseEnvironment()
    */
   Environment *env = new (aligned) Environment();
 
-  size_t num_slots;
-  UnPack(num_slots);
-
   while (1) {
     bool more;
     UnPack( more );
     if ( more ) {
       Symbol name( parseSymbol() );
+      cerr << name.tostring() << endl;
       Var accessor(parseVar());
       Var value(parseVar());
       
+
+
       env->addLocal( accessor, name, value );
     } else {
       break;
@@ -262,7 +262,6 @@ Environment *Unserializer::parseEnvironment()
     UnPack( position );
     if (position == END_OF_ARGS_MARKER)
       break;
-
 
     Symbol selector( parseSymbol() );
     Var definer( parseVar() );

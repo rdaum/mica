@@ -86,19 +86,21 @@ namespace mica {
     bool         is_pointer : 1;
     Atoms::types type       : 3;
     Code         code       : 8;
-    unsigned int param      : 19;
+    unsigned int param_1    : 10;
+    unsigned int param_2    : 9;
 
     Op() 
       : is_integer(false), is_pointer(false), type(Atoms::OPCODE),
-	code(IFELSE), param(0) {};
+	code(IFELSE), param_1(0), param_2(0) {};
 
-    Op( const Code &operation_code, unsigned int parameter = 0 ) :
+    Op( const Code &operation_code, unsigned int parameter_1 = 0, 
+	unsigned int parameter_2 = 0 ) :
       is_integer(false), is_pointer(false), type(Atoms::OPCODE),
-      code(operation_code), param(parameter) {};
+      code(operation_code), param_1(parameter_1), param_2(parameter_2) {};
 
     Op( const Op &opcode ) :
       is_integer(false), is_pointer(false), type(Atoms::OPCODE),
-      code(opcode.code), param(opcode.param) {};
+      code(opcode.code), param_1(opcode.param_1), param_2(opcode.param_2) {};
 
     Op( const _Atom &atom_conversion )
     {

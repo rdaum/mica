@@ -204,7 +204,7 @@ struct hashing_visitor {
       STD_EXT_NS::hash<unsigned long>()(boost::numeric_cast<unsigned long>(y));
   }
   inline unsigned int operator()( const Op &y ) const {
-    return STD_EXT_NS::hash<int>()( (y.code * 8) + y.param );
+    return STD_EXT_NS::hash<int>()( (int)((Var)y).v.value );
   }
   inline unsigned int operator()( const Symbol &y ) const {
     return y.hash();

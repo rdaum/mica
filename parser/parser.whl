@@ -183,7 +183,7 @@ expr ->  binaryExpr=binaryExpr
 
 
 binaryExpr->
- 	 expr=leftArg "+"  =op expr=rightArg 
+	expr=leftArg "+"  =op expr=rightArg 
       | expr=leftArg "-"  =op expr=rightArg
       | expr=leftArg "*"  =op expr=rightArg
       | expr=leftArg "/"  =op expr=rightArg
