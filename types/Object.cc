@@ -91,69 +91,59 @@ void Object::write() {
   Pools::instance.get(pid)->write( oid );
 }
 
-inline SlotResult make_result( const Object *from, 
-			       const SlotEntry *slot_result ) {
+inline SlotResult make_result( const Object *from, const Var &value ) {
   SlotResult result;
   result.definer = Var(from);
-  result.value = Var(slot_result->value);
+  result.value = value;
 
   return result;
 }
-
-SlotEntry *Object::getLocal( const Var &accessor, 
-			     const Symbol &name ) const {
-  return environment()->getLocal( accessor, name );
-} 
 
 SlotResult Object::get( const Var &accessor, const Symbol &name ) const 
 {
   /** Attempt to actually get the value.
    */
-  SlotEntry *slot_result = getLocal( accessor, name );
+  pair<bool, Var> result = environment()->getLocal( accessor, name );
 
-  if (slot_result) 
-    return make_result( this, slot_result );
+  if (result.first) 
+    return make_result( this, result.second );
   else
     throw E_SLOTNF;
 }
 
 
 
-Var Object::declare( const Var &accessor, const Symbol &name, const Var &value )
+Var Object::declare( const Var &accessor, const Symbol &name, 
+		     const Var &value )
 {
-  if (environment()->getLocal( accessor, name))
+  if (environment()->addLocal( accessor, name, value ))
+    /** Write it to the pool
+     */
+    write();
+  else
     throw E_SLOTOVLD;
 
-  Var slot(environment()->addLocal( accessor, name, value )->value);
-
-  /** Write it to the pool
-   */
-  write();
-
-  return slot;
+  return value;
 }
 
 Var Object::assign( const Var &accessor, const Symbol &name, 
 		    const Var &value )
 {
-  SlotEntry *local_slot = environment()->getLocal( accessor, name );
-  if (local_slot) 
-    local_slot->value = value;
+  if (environment()->replaceLocal( accessor, name, value ))
+    /** I'm dirty now
+     */
+    write();
   else
     throw E_SLOTNF;
-
-  /** I'm dirty now
-   */
-  write();
-
+  
   return value;
 }
-
-
 
 void Object::remove( const Var &accessor, const Symbol &name )
 {
   if (environment()->removeLocal(accessor, name))
+    /** I'm dirty now
+     */
     write();
   else
     throw E_SLOTNF;
@@ -183,12 +173,14 @@ bool Object::operator==( const Var &rhs ) const
 
 rope_string Object::rep() const
 {
-  SlotEntry *slot_result = getLocal( Var(const_cast<Object*>(this)), 
-				     Symbol::create("title") );
-  if (slot_result) {
+  pair<bool, Var> 
+    result( environment()->getLocal( Var(const_cast<Object*>(this)), 
+				     TITLE_SYM ) );
+
+  if (result.first) {
     rope_string dstr;
     dstr.append("<object (.name: ");
-    dstr.append( slot_result->value.rep() );
+    dstr.append( result.second.rep() );
     dstr.append( ") >");
     return dstr;
   } else
@@ -198,10 +190,12 @@ rope_string Object::rep() const
 
 Var Object::perform( const Ref<Task> &caller, const Var &args )
 {
-  SlotEntry *slot_entry = environment()->getLocal( Var(VERB_SYM),
-						   PERFORM_SYM );
-  if (slot_entry)
-    return slot_entry->value.perform( caller, args );
+  pair<bool, Var>
+    result( environment()->getLocal( Var(VERB_SYM),
+				     PERFORM_SYM ) );
+
+  if (result.first)
+    return result.second.perform( caller, args );
   else
     throw E_SLOTNF;
 

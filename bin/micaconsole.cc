@@ -95,22 +95,20 @@ public:
       rope_string code(stringStack.back());
       stringStack.pop_back();
 
-      if ( code.size() ) {      
-	var_vector args;
-	
-	Ref<Block> block( mica::compile(code) );
-	
+      var_vector args;
+      
+      Ref<Block> block( mica::compile(code) );
+      
 #ifdef DEBUG_OPCODES
-	cout << block->dump() << endl;
+      cout << block->dump() << endl;
 #endif
-	
-	Slots::assign_verb( eval_obj, EVAL_TMP_SYM, var_vector(), Var(block) );
-	
-	Var msg = send( MetaObjects::SystemMeta, MetaObjects::SystemMeta,
-			eval_obj, eval_obj, 
-			EVAL_TMP_SYM, args );
-	msg.perform( this, NONE );
-      }
+      
+      Slots::assign_verb( eval_obj, EVAL_TMP_SYM, var_vector(), Var(block) );
+      
+      Var msg = send( MetaObjects::SystemMeta, MetaObjects::SystemMeta,
+		      eval_obj, eval_obj, 
+		      EVAL_TMP_SYM, args );
+      msg.perform( this, NONE );
   };
   
 

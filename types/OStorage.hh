@@ -20,19 +20,6 @@ namespace mica {
 
   class Object;
 
-  /** Each slot is defined by its name, accessor, and value
-   */
-  struct SlotEntry {
-    Symbol name;
-    Var accessor;
-    Var value;
-
-    SlotEntry( const Symbol &i_name, const Var &i_accessor, 
-	       const Var &i_value )
-      : name(i_name), accessor(i_accessor), value(i_value)
-    {}
-    
-  };
 
   #define END_OF_ARGS_MARKER 65535
   class VerbDef:
@@ -63,13 +50,17 @@ namespace mica {
     ~Environment();
 
   public:
-    SlotEntry *getLocal( const Var &accessor, 
-			 const Symbol &name ) const;
+    std::pair<bool, Var> getLocal( const Var &accessor, 
+				   const Symbol &name ) const;
 
-    SlotEntry *addLocal( const Var &accessor,
-			 const Symbol &name, const Var &value );
+    bool addLocal( const Var &accessor,
+		   const Symbol &name, const Var &value );
+
+    bool replaceLocal( const Var &accessor, const Symbol &name,
+		       const Var &value );
 
     bool removeLocal( const Var &accessor, const Symbol &name );
+
 
     rope_string serialize() const;
 
@@ -82,14 +73,14 @@ namespace mica {
     /** Carries a list of slots hashed by name
      */
     typedef STD_EXT_NS::hash_map< Symbol,
- 				  SlotEntry*,
+				  Var,
  				  hash_symbol > SlotList;
 
 
     /** Map accessor -> slotlist
      */
     typedef STD_EXT_NS::hash_map< Var, SlotList,
- 				  hash_var > SlotMap;
+				  hash_var > SlotMap;
 
     SlotMap mSlots;    
 

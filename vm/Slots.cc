@@ -1,4 +1,4 @@
- /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
+/** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
  */
 #include "common/mica.h"
 #include "config.h"
@@ -105,7 +105,7 @@ SlotResult Slots::get_slot( const Var &self,
 
 
 SlotResult Slots::get_name( const Var &self,
-			  const Symbol &name ) {
+			    const Symbol &name ) {
   return get_slot( self, Var(NAME_SYM), name );
 }
 
@@ -122,11 +122,6 @@ SlotResult Slots::match_verb( const Var &self,
   if (arguments.empty())
     return get_slot( self, List::empty(), name );
 
-  /** Maps argument positions to a stack of delegates
-   */
-  typedef STD_EXT_NS::hash_map<unsigned int, var_vector> DelegatesStack;
-  DelegatesStack delegates_stack;
-
   /** Argument masks for delegates
    */
   typedef STD_EXT_NS::hash_map<Var, 
@@ -141,12 +136,16 @@ SlotResult Slots::match_verb( const Var &self,
   args.push_back( self );
   args.insert( args.end(), arguments.begin(), arguments.end() );
 
-  for (unsigned int pos = 0; pos < args.size(); ++pos) {
+  unsigned int num_args = args.size();
+  for (unsigned int pos = 0; pos < num_args; ++pos) {
     delegations[pos].clear();
   }
  
   bool delegated;
-  bool triedAny = false;
+
+  bool triedAny[num_args];
+  for (unsigned int i = 0; i < num_args; ++i)
+    triedAny[i] = false;
 
   do {
     delegated = false;
@@ -164,7 +163,6 @@ SlotResult Slots::match_verb( const Var &self,
 	 *  this argument
 	 */
 	VerbList candidates( rA->get_verb_parasite( name, pos ) );
-
 	for (VerbList::iterator Co = candidates.begin();
 	     Co != candidates.end(); Co++) {
 	
@@ -185,7 +183,7 @@ SlotResult Slots::match_verb( const Var &self,
 
 	  /** Mark the argument position as visited
 	   */
-	  method->arg_mask.mark_argument(pos);
+	  method->arg_mask.mark_argument( pos );
 	  
 	  /** It's all matched -- invoke
 	   */
@@ -200,70 +198,68 @@ SlotResult Slots::match_verb( const Var &self,
 	  
 	}
       }
-      
 
-      if (!triedAny) {
-	*A = MetaObjects::AnyMeta;
-	triedAny = true;
-	continue;
-      }
 
       /** There was no dispatch, so try with some delegates
        */
       var_vector Delegates( A->delegates() );
-      Delegates.push_back( MetaObjects::AnyMeta );
 
       if (!Delegates.empty()) {
 
-        for (var_vector::iterator Do = Delegates.begin();
-             Do != Delegates.end(); Do++) {
-          Var D = *Do;
+	for (var_vector::iterator Do = Delegates.begin();
+	     Do != Delegates.end(); Do++) {
+	  Var D = *Do;
 
-          if (Do == Delegates.begin()) {
+	  if (Do == Delegates.begin()) {
 
-            // Retry dispatch on the Delegate
-            *A = D;
-            delegated = true;
+	    // Retry dispatch on the Delegate
+	    *A = D;
+	    delegated = true;
 
-          } else {
+	  } else {
 
-            /** If this object hasn't been visited in this dispatch
-             *  then we need to set the generation and clear its
-             *  arg mask
-             */
-	    if (delegates_mask[D].marked_argument(pos)) {
+	    /** If this object hasn't been visited in this dispatch
+	     *  then we need to set the generation and clear its
+	     *  arg mask
+	     */
+	    if (delegates_mask[D].marked_argument( pos )) {
 	      
-              // the object has already been visited as this
-              // argument position, skip it
-              continue;
-            }
-	    delegates_mask[D].mark_argument(pos);
-            delegations[pos].push_back( D );
-          }
-        }
+	      // the object has already been visited as this
+	      // argument position, skip it
+	      continue;
+	    }
+	    delegates_mask[D].mark_argument( pos );
+	    delegations[pos].push_back( D );
+	  }
+	}
 
       } else {
 
-        if (!delegations[pos].empty()) {
-          Var X = delegations[pos].back();
-          delegations[pos].pop_back();
+	if (!delegations[pos].empty()) {
 
-          // Retry dispatch with X
-          *A = X;
-          delegated = true;
+	  Var X = delegations[pos].back();
+	  delegations[pos].pop_back();
 
-        } else {
+	  // Retry dispatch with X
+	  *A = X;
+	  delegated = true;
 
-          // No more delegates to try, a dead-end.
-          // We should make sure there are no attempts to follow
-	  // the same dead-end again
+	} else {
 
-	  //          *A = 0;
 
-          delegated = false;
-        }
+	  // No more delegates to try, a dead-end.  Try Any.
+
+	  if (!triedAny[pos]) {
+	    cerr << "Trying ANY" << endl;
+	    *A = MetaObjects::AnyMeta;
+	    triedAny[pos] = true;
+	    delegated = true;
+	  } else {
+	    delegated = false;
+	  }
+
+	}
       }
-
     
       A++;
     }
@@ -310,9 +306,9 @@ void assign_arguments( const Var &self,
 }
 
 Var Slots::declare_verb( Var &self,
-		       const Symbol &selector,
-		       const var_vector &argument_template,
-		       const Var &method ) {
+			 const Symbol &selector,
+			 const var_vector &argument_template,
+			 const Var &method ) {
 
   /** copy args and verify that all items in the template are objects
    */
@@ -337,9 +333,9 @@ Var Slots::declare_verb( Var &self,
 
 
 Var Slots::assign_verb( Var &self,
-		      const Symbol &selector,
-		      const var_vector &argument_template,
-		      const Var &method ) {
+			const Symbol &selector,
+			const var_vector &argument_template,
+			const Var &method ) {
   
   /** If this fails, it wasn't declared.
    */
@@ -362,8 +358,8 @@ Var Slots::assign_verb( Var &self,
 }
 
 void Slots::remove_verb( Var &self,
-		       const Symbol &selector,
-		       const var_vector &argument_template ) {
+			 const Symbol &selector,
+			 const var_vector &argument_template ) {
 
   /** If this fails, it wasn't declared.
    */
@@ -387,7 +383,7 @@ void Slots::remove_verb( Var &self,
 }
 
 SlotResult Slots::get_delegate( const Var &self,
-			      const Symbol &name ) {
+				const Symbol &name ) {
   return get_slot( self, Var(DELEGATE_SYM), name );
 }
 

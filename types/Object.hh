@@ -59,15 +59,6 @@ namespace mica {
      */
     SlotResult get( const Var &accessor, const Symbol &name ) const;
 
-    /** Search for a slot locally only (do not search the inheritance
-     *  graph.)  Used by get (see above).
-     *  @param accessor the accessor object used for use during the search
-     *  @param name the symbol to search for
-     *  @return a pointer to a SlotEntry or NULL if not found
-     */
-    SlotEntry *getLocal( const Var &accessor, 
-			 const Symbol &name ) const;
-
     /** assign a value to a slot
      *  @param accessor the accessor of the slot, or None if public
      *  @param name the symbol to set

@@ -70,7 +70,7 @@ var_vector Environment::delegates() {
   if (delegates_iterator != mSlots.end()) {
     for (SlotList::const_iterator sl_i = delegates_iterator->second.begin();
 	 sl_i != delegates_iterator->second.end(); sl_i++) {
-      delegates_vec.push_back( sl_i->second->value );
+      delegates_vec.push_back( sl_i->second );
     }
   }    
 
@@ -79,18 +79,11 @@ var_vector Environment::delegates() {
 
 Environment::~Environment()
 {
-  for (SlotMap::const_iterator nm_i = mSlots.begin();
-       nm_i != mSlots.end(); nm_i++) {
-    for (SlotList::const_iterator sl_i = nm_i->second.begin();
-	 sl_i != nm_i->second.end(); sl_i++) {
-      delete sl_i->second;
-    }
-  }
   mSlots.clear();
 }
 
-SlotEntry *Environment::getLocal( const Var &accessor, 
-				  const Symbol &name ) const 
+pair<bool, Var> Environment::getLocal( const Var &accessor, 
+				       const Symbol &name ) const 
 {
   // Find by accessor.
   SlotMap::const_iterator am_i = mSlots.find( accessor );
@@ -101,12 +94,10 @@ SlotEntry *Environment::getLocal( const Var &accessor,
     // Found, look for the name
     SlotList::const_iterator sl_i = am_i->second.find( name );
     if (sl_i != am_i->second.end()) {
-      SlotEntry *slot_entry = sl_i->second;
-      if (slot_entry->accessor == accessor)
-	return slot_entry;
+      return make_pair( true, sl_i->second );
     }
   }
-  return (SlotEntry*)0;
+  return make_pair( false, NONE );
 }
 
 
@@ -119,7 +110,6 @@ bool Environment::removeLocal( const Var &accessor,
     // Scan the SlotList for name match
     SlotList::iterator sl_i = am_i->second.find( name );
     if (sl_i != am_i->second.end()) {
-      delete sl_i->second;
       am_i->second.erase( sl_i );
       return true;
     }
@@ -136,13 +126,11 @@ Var Environment::slots() const
        am_i != mSlots.end(); am_i++) {
     for (SlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
-      SlotEntry *slot_entry = sl_i->second;
       var_vector slot_pair;
-      slot_pair.push_back( slot_entry->accessor );
-      slot_pair.push_back( Var(slot_entry->name) );
+      slot_pair.push_back( am_i->first );
+      slot_pair.push_back( sl_i->second );
 
-      slots.push_back( List::from_vector
-(slot_pair) );
+      slots.push_back( List::from_vector(slot_pair) );
     }
   }
 
@@ -151,27 +139,50 @@ Var Environment::slots() const
 
 }
 
-SlotEntry *Environment::addLocal( const Var &accessor, 
-				  const Symbol &name, const Var &value )
+bool Environment::addLocal( const Var &accessor, 
+			    const Symbol &name, const Var &value )
 {
   // Find the accessor.
   SlotMap::iterator am_i = mSlots.find( accessor );
 
-  // Not found - begin the SlotLIst and return the slot
+  // Found - look for name
+  if (am_i != mSlots.end()) {
+
+    SlotList::iterator sl_i = am_i->second.find( name );
+    if (sl_i != am_i->second.end()) {
+
+      // Already there, don't add.
+      return false;
+    }    
+
+  }
+
+  mSlots[accessor][name] = value;
+
+  return true;
+}
+
+bool Environment::replaceLocal( const Var &accessor, 
+				const Symbol &name, const Var &value )
+{
+  // Find the accessor.
+  SlotMap::iterator am_i = mSlots.find( accessor );
+
+  // Found - now find name
   if (am_i != mSlots.end()) {
 
     // Found, look for the name
     SlotList::iterator sl_i = am_i->second.find( name );
-    if (sl_i != am_i->second.end())
-      return sl_i->second;
-    
+    if (sl_i != am_i->second.end()) {
+      
+      // Replace
+      sl_i->second = value;
+      return true;
+    }
   }
 
-  // Not found, insert the slot
-  SlotEntry *new_slot_entry = new (aligned) SlotEntry( name, accessor, value );
-  mSlots[accessor][name] = new_slot_entry;
+  return false;
 
-  return new_slot_entry;
 }
 
 
@@ -181,28 +192,19 @@ rope_string Environment::serialize() const
 {
   rope_string s_form;
 
-  /** Append every single slot - flatten the entire hash->list
-   *  to a vector and then write that
-   */
-  vector<SlotEntry*> slots;
-
+  unsigned int count = 1;
   for (SlotMap::const_iterator am_i = mSlots.begin();
        am_i != mSlots.end(); am_i++) {
     for (SlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
-      slots.push_back( sl_i->second );
+      s_form.append( Var(sl_i->first).serialize() );  //name
+      s_form.append( Var(am_i->first).serialize() );  //accessor
+      s_form.append( sl_i->second.serialize() ); //value
+      count++;
     }
   }
-  
-  Pack( s_form, slots.size() );
-  for (vector<SlotEntry*>::iterator x = slots.begin();
-       x != slots.end(); x++) {
-    SlotEntry *slot_entry = *x;
-    s_form.append( slot_entry->name.serialize() );
-    s_form.append( slot_entry->accessor.serialize() );
-    s_form.append( slot_entry->value.serialize() );
-  }
-  
+  Pack( s_form, END_OF_ARGS_MARKER );
+
   /** Now store the verbs.  We do this a bit differently.
    *  We pack them all and then paste a special position arg at the end
    *  to indiciate the end of the list.  So we don't have to
@@ -245,8 +247,7 @@ child_set Environment::child_pointers() {
        am_i != mSlots.end(); am_i++) {
     for (SlotList::const_iterator sl_i = am_i->second.begin();
 	 sl_i != am_i->second.end(); sl_i++) {
-      SlotEntry *slot_entry = sl_i->second;
-      children << slot_entry->value << slot_entry->accessor;
+      children << sl_i->second;
     }
   }
   for (VerbParasiteMap::const_iterator am_i = verb_parasites.begin();

@@ -569,6 +569,15 @@ template<typename T> struct NAME { \
     return value OP x; \
   } \
 }; \
+struct NAME <Data*> { \
+  const Data *value; \
+  explicit NAME ( const Data *i_value ) \
+    : value(i_value) {} \
+  template<typename X> \
+  bool operator()( const X &x ) const { \
+      return (*value) OP ( Var(x) ); \
+  } \
+}; \
 struct NAME ##_visitor { \
   const Var &lhs; \
   explicit NAME ##_visitor( const Var &i_lhs ) \
