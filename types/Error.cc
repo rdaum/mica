@@ -133,7 +133,7 @@ mica_string Error::rep() const
 }
 
 unsigned int Error::hash() const {
-  return err_sym.hash() + ((String*)desc ? desc->hash() : 0); 
+  return err_sym.hash() + 1543;
 }
 
 mica_string Error::serialize() const
