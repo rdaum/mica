@@ -25,7 +25,7 @@ int main() {
   Pools::instance.setDefault( pool_return.first );
 
   MetaObjects::initialize( pool_return.second );
-  rope_string program("remove .x;\n");
+  mica_string program("remove .x;\n");
   micaParser parser(program);
   NPtr nodes;
   try {

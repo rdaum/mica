@@ -64,7 +64,7 @@ public:
   void handle_message( const Ref<Message> &reply_message )
   {
     if (reply_message->isRaise()) {
-      rope_string traceback = reply_message->args[1].tostring();
+      mica_string traceback = reply_message->args[1].tostring();
       traceback.push_back('\n');
 
       cerr << traceback;
@@ -77,7 +77,7 @@ public:
 };
 
 
-vector<rope_string> loadDirectory( rope_string path ) {
+vector<mica_string> loadDirectory( mica_string path ) {
   // look for the path
   struct dirent **namelist;
   int ret = scandir( path.c_str(), &namelist, 0, alphasort );
@@ -88,7 +88,7 @@ vector<rope_string> loadDirectory( rope_string path ) {
     throw internal_error(errstr);
   }
 
-  vector<rope_string> files;
+  vector<mica_string> files;
   int count = 0;
   while (count < ret) {
     if (strcmp(namelist[count]->d_name, "..") && 
@@ -102,13 +102,13 @@ vector<rope_string> loadDirectory( rope_string path ) {
   return files;
 }
 
-void doDefinition( const Var &obj, const rope_string path )
+void doDefinition( const Var &obj, const mica_string path )
 {
-  rope_string filename = path;
+  mica_string filename = path;
   filename.append("/DEFINITION");
   std::ifstream file(filename.c_str());
 
-  rope_string source;
+  mica_string source;
   char c;
   while (file.get(c)) {
     source.push_back(c);
@@ -130,16 +130,16 @@ void doDefinition( const Var &obj, const rope_string path )
 }
 
 
-void loadObject( rope_string path) {  
+void loadObject( mica_string path) {  
   Var obj = Object::create();
 
-  vector<rope_string> toclear;
+  vector<mica_string> toclear;
 
-  vector<rope_string> dir = loadDirectory( path );
+  vector<mica_string> dir = loadDirectory( path );
 
-  vector<rope_string>::iterator dirfile = find( dir.begin(),
+  vector<mica_string>::iterator dirfile = find( dir.begin(),
 						dir.end(),
-						rope_string("DEFINITION") );
+						mica_string("DEFINITION") );
 
   if (dirfile == dir.end())
     throw internal_error("missing DEFINITION file");
@@ -148,14 +148,14 @@ void loadObject( rope_string path) {
 
   dir.erase(dirfile);
   
-  for (vector<rope_string>::iterator x = dir.begin(); x != dir.end();
+  for (vector<mica_string>::iterator x = dir.begin(); x != dir.end();
        x++) {
-    rope_string fname = path;
+    mica_string fname = path;
     fname.push_back('/');
     fname.append(*x);
     std::ifstream file(fname.c_str());
     cerr << fname << endl;
-    rope_string source;
+    mica_string source;
     char c;
     while (file.get(c)) {
       source.push_back(c);
@@ -172,11 +172,11 @@ void loadObject( rope_string path) {
 
 }
 
-void loadAll( rope_string path ) {
-  vector<rope_string> dir = loadDirectory(path);
+void loadAll( mica_string path ) {
+  vector<mica_string> dir = loadDirectory(path);
 
-  for (vector<rope_string>::iterator di = dir.begin(); di != dir.end(); di++) {
-    rope_string o_path = path;
+  for (vector<mica_string>::iterator di = dir.begin(); di != dir.end(); di++) {
+    mica_string o_path = path;
     o_path.push_back('/');
     o_path.append(*di);
     loadObject(o_path);

@@ -51,7 +51,7 @@
 using namespace mica;
 using namespace std;
 
-std::vector<rope_string> stringStack;
+std::vector<mica_string> stringStack;
 
 static int verbose;
 
@@ -92,7 +92,7 @@ public:
 
       /** Compile it to 'eval'
        */
-      rope_string code(stringStack.back());
+      mica_string code(stringStack.back());
       stringStack.pop_back();
 
       var_vector args;
@@ -117,7 +117,7 @@ public:
     return Var();
   }
 
-  rope_string rep() const
+  mica_string rep() const
   {
     std::ostringstream dstr;
     

@@ -20,7 +20,7 @@ namespace mica {
   class Unserializer
   {
   public:
-    Unserializer( const rope_string &rep );
+    Unserializer( const mica_string &rep );
     Environment* parseEnvironment();
 
     Var parse();
@@ -38,14 +38,14 @@ namespace mica {
     Ref<Message> parseMessage();
 
   private:
-    rope_string rep;
+    mica_string rep;
     size_t pos;
 
   private:
     template<class T>
     void UnPack( T &N );
 
-    rope_string readString();
+    mica_string readString();
 
     Var parseVar();
     

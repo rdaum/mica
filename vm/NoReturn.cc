@@ -11,15 +11,15 @@ using namespace mica;
 
 Var NoReturn::instance(new (aligned) NoReturn());
 
-rope_string NoReturn::tostring() const {
+mica_string NoReturn::tostring() const {
   throw internal_error("tostring() called on NoReturn");
 }
 
-rope_string NoReturn::rep() const {
+mica_string NoReturn::rep() const {
   throw internal_error("rep() called on NoReturn");
 }
 
-rope_string NoReturn::serialize() const {
+mica_string NoReturn::serialize() const {
   throw internal_error("serialize() called on NoReturn");
 }
 

@@ -1,6 +1,5 @@
 BUGS:
 
-  thrown errors during interpretation causing fatal segmentation fault!  
   scatter assign appears to be broken
   fix map operator to work with all binary operators, not just arithmetic
       involves rewriting how binary expressions are parsed
@@ -12,13 +11,8 @@ For mica 0.9
 ============
 
 - floats / bignums support :
-      - a) using GMP or some sort of C++ wrapper on it
-      - b) Add another type to Var: bignum, with bignum_offset holding an
-           offset into a special mmapped region of bignums.  this region
-           would be optimized for ultra-fast creation/destruction, and the
-           objects in it would not be refcounted -- a new bignum would be
-           created for every bignum Var, assigned an index .. 
-           the actual bignum region would be a vector of bignums/bigfloats
+     - as an indexed boxed type (similar to Symbol that way)
+     - reference counting?   (unlike symbols, people may create large data sets of floats)
 
 - finish new iterator and operator model:
      - filter / fold, fold_left, fold_right (crazy)

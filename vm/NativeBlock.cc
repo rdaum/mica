@@ -19,20 +19,20 @@
 using namespace mica;
 
 NativeBlock::NativeBlock(  Var (*ifunction)( const Ref<NativeClosure> &closure),
-			   const rope_string &iLibraryName,
-			   const rope_string &iSymbolName )
+			   const mica_string &iLibraryName,
+			   const mica_string &iSymbolName )
   : function(ifunction),
     libraryName(iLibraryName),
     symbolName(iSymbolName)
 {}
 
 
-rope_string NativeBlock::rep() const
+mica_string NativeBlock::rep() const
 {
   return "{NativeBlock}";
 }
 
-rope_string NativeBlock::tostring() const
+mica_string NativeBlock::tostring() const
 {
   throw invalid_type("cannot convert native block code to string");
 }
@@ -52,9 +52,9 @@ Ref<Task> NativeBlock::make_closure( const Ref<Message> &msg,
 }
 
 
-rope_string NativeBlock::serialize() const
+mica_string NativeBlock::serialize() const
 {
-  rope_string s_form;
+  mica_string s_form;
 
   Pack( s_form, type_identifier() );
 

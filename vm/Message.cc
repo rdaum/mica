@@ -187,9 +187,9 @@ Var Message::perform( const Ref<Task> &parent, const Var &args )
 }
 
 
-rope_string Message::rep() const
+mica_string Message::rep() const
 {
-  rope_string rep = self.rep();
+  mica_string rep = self.rep();
   rep.push_back( ':' );
   rep.append( selector.tostring() );
   rep.append( "( " );
@@ -207,9 +207,9 @@ rope_string Message::rep() const
   return rep;
 }
 
-rope_string Message::serialize() const
+mica_string Message::serialize() const
 {
-  rope_string s_form;
+  mica_string s_form;
 
   Pack( s_form, type_identifier() );
 
@@ -248,7 +248,7 @@ RaiseMessage::RaiseMessage( Ref<Task> parent_task,
 			    const Var &caller, const Var &to, const Var &on, 
 			    const Symbol &selector, 
 			    const Ref<Error> &error, 
-			    rope_string traceback )
+			    mica_string traceback )
   : Message( parent_task, id, age, ticks, source, caller, to, on, 
 	     selector, var_vector() ),
     trace_str( traceback ), err(error)

@@ -575,7 +575,7 @@ NPtr micaParser::translateVerbArg(NonterminalVerbArg* varg)
 
 pair<NPtr, NPtr> micaParser::translateVerbTemplt( NonterminalVerbTemplt *vs ) {
 
-  rope_string selector_name;
+  mica_string selector_name;
 
   if (vs->rootSel->text)
     selector_name = vs->rootSel->text;
@@ -606,7 +606,7 @@ pair<NPtr, NPtr> micaParser::translateVerbTemplt( NonterminalVerbTemplt *vs ) {
 
 pair<NPtr, NPtr> micaParser::translateMsgArgs( NonterminalMsgArgs *vs ) {
 
-  rope_string selector_name;
+  mica_string selector_name;
 
   if (vs->rootSel->text)
     selector_name = vs->rootSel->text;

@@ -139,11 +139,11 @@ namespace mica {
     virtual bool isReplyTo( const Ref<Task> &e ) const;
 
   public:
-    virtual rope_string typeName() const { return "Message"; }
+    virtual mica_string typeName() const { return "Message"; }
 
-    rope_string rep() const;
+    mica_string rep() const;
 
-    virtual rope_string serialize() const;
+    virtual mica_string serialize() const;
   };
   
   class ReturnMessage
@@ -177,7 +177,7 @@ namespace mica {
       return true;
     }; 
 
-    rope_string typeName() const { return "ReturnMessage"; }
+    mica_string typeName() const { return "ReturnMessage"; }
   };
 
 
@@ -188,7 +188,7 @@ namespace mica {
     Type::Identifier type_identifier() const { return Type::RAISEMESSAGE; }
 
   public:
-    rope_string trace_str;
+    mica_string trace_str;
     Ref<Error> err;
 
   protected:
@@ -203,9 +203,9 @@ namespace mica {
 		  const Var &caller, const Var &to, const Var &on, 
 		  const Symbol &selector, 
 		  const Ref<Error> &error, 
-		  rope_string traceback );
+		  mica_string traceback );
 
-    rope_string traceback() const {
+    mica_string traceback() const {
       return trace_str;
     }
 
@@ -219,7 +219,7 @@ namespace mica {
 
     child_set child_pointers();
 
-    rope_string typeName() const { return "RaiseMessage"; }
+    mica_string typeName() const { return "RaiseMessage"; }
   };
 
   class HaltMessage
@@ -248,7 +248,7 @@ namespace mica {
       return true;
     }; 
 
-    rope_string typeName() const { return "HaltMessage"; }
+    mica_string typeName() const { return "HaltMessage"; }
   };
 
   extern int msg_count();

@@ -20,7 +20,7 @@
 
 using namespace mica;
 
-Ref<Block> mica::compile( rope_string source ) 
+Ref<Block> mica::compile( mica_string source ) 
 {
   micaParser parser(source.c_str());
 

@@ -21,7 +21,7 @@
 
 using namespace mica;
 
-Block::Block( const rope_string &isource )
+Block::Block( const mica_string &isource )
   : AbstractBlock() ,
     source(isource), add_scope(0)   
 {
@@ -60,7 +60,7 @@ struct opcode_rep {
   }
 };
 
-rope_string Block::dump() const
+mica_string Block::dump() const
 {
   std::ostringstream out;
   opcode_rep printer( out );
@@ -70,7 +70,7 @@ rope_string Block::dump() const
     out << " ";
   }
   out << std::ends;
-  return rope_string(out.str().c_str());
+  return mica_string(out.str().c_str());
 
 }
 
@@ -120,9 +120,9 @@ Ref<Task> Block::make_closure( const Ref<Message> &msg, const Var &definer )
   return Ref<Task>((Task*)new_closure);
 }
 
-rope_string Block::serCommon( const rope_string &typen ) const
+mica_string Block::serCommon( const mica_string &typen ) const
 {
-  rope_string s_form;
+  mica_string s_form;
 
   Pack( s_form, type_identifier() );
 
@@ -164,17 +164,17 @@ rope_string Block::serCommon( const rope_string &typen ) const
   return s_form;
 }
 
-rope_string Block::serialize() const
+mica_string Block::serialize() const
 {
   return serCommon("Block");
 }
 
-rope_string Block::tostring() const
+mica_string Block::tostring() const
 {
   return source;
 }
 
-rope_string Block::rep() const
+mica_string Block::rep() const
 {
   return "<code block>";
 }

@@ -68,8 +68,8 @@ class ConnectionTask
 {
 public:
   Var connection;
-  rope_string incoming_buffer;
-  rope_string outgoing_buffer;
+  mica_string incoming_buffer;
+  mica_string outgoing_buffer;
   int socket;
   bool disconnected;
 
@@ -134,7 +134,7 @@ public:
     while (!terminated && !disconnected) {
       
       // Is there a complete line ready for send?
-      rope_string::iterator r_f;
+      mica_string::iterator r_f;
       r_f = std::find( incoming_buffer.mutable_begin(),
 		       incoming_buffer.mutable_end(),
 		       '\n' );
@@ -144,11 +144,11 @@ public:
       if (r_f == incoming_buffer.mutable_end())
 	break;
       
-      rope_string line;
+      mica_string line;
       if ( (*(r_f-1)) == '\r')
-	line = rope_string( incoming_buffer.mutable_begin(), r_f - 1 );
+	line = mica_string( incoming_buffer.mutable_begin(), r_f - 1 );
       else
-	line = rope_string( incoming_buffer.mutable_begin(), r_f );
+	line = mica_string( incoming_buffer.mutable_begin(), r_f );
       
       incoming_buffer.erase( incoming_buffer.mutable_begin(), r_f + 1);
       
@@ -167,7 +167,7 @@ public:
   }
 
 
-  rope_string rep() const
+  mica_string rep() const
   {
     std::ostringstream dstr;
     
@@ -185,7 +185,7 @@ public:
     if (reply_message->isReturn()) {
       cout << "=> " << reply_message->args[0] << endl;
     } else if (reply_message->isRaise()) {
-      rope_string traceback = reply_message->args[1].tostring();
+      mica_string traceback = reply_message->args[1].tostring();
 
       logger.errorStream() << "traceback on connection: " << reply_message->args[1].tostring() << log4cpp::CategoryStream::ENDLINE;
       
@@ -292,7 +292,7 @@ bool read_from_socket( ConnectionMap::iterator c_it ) {
   actually_read = read( c_it->first, buffer, 512 );
 
   if (actually_read > 0) {
-    rope_string full_buffer( buffer, actually_read );
+    mica_string full_buffer( buffer, actually_read );
     
     c_it->second->incoming_buffer.append( full_buffer );
 

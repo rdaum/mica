@@ -25,14 +25,14 @@ namespace mica {
     std::vector<int> line_nos;  // Statement -> source line # mapping.
                              // is index in the stack.
 
-    rope_string source;      // the source of the method.
+    mica_string source;      // the source of the method.
 
     unsigned int add_scope;  // How many variables the block adds to scope
 
 
     
   public:
-    Block( const rope_string &source );
+    Block( const mica_string &source );
 
     Block( const Ref<Block> &from );
 
@@ -46,25 +46,25 @@ namespace mica {
     virtual int pc_to_line( int pc ) const;
 
   public:
-    rope_string dump() const;
+    mica_string dump() const;
 
   public:
     Ref<Task> make_closure( const Ref<Message> &msg, const Var &definer );
 
   public:
 
-    virtual rope_string serialize() const;
+    virtual mica_string serialize() const;
 
-    virtual rope_string tostring() const;
+    virtual mica_string tostring() const;
 
-    virtual rope_string rep() const;
+    virtual mica_string rep() const;
 
   public:
     child_set child_pointers() ;
     
   protected:
 
-    virtual rope_string serCommon( const rope_string &type ) const;
+    virtual mica_string serCommon( const mica_string &type ) const;
 
   };
 

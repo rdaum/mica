@@ -347,8 +347,8 @@ child_set Task::child_pointers() {
 }
 
 
-rope_string Task::rep() const {
-  rope_string dstr("<task pid: ");
+mica_string Task::rep() const {
+  mica_string dstr("<task pid: ");
   char identstr[80];
   snprintf( identstr, 80, "pid: %d tid: %d msg_id %d",
 	    pid, tid, msg_id );
@@ -362,8 +362,8 @@ rope_string Task::rep() const {
  *  task, not the actual task.  For that, you need serialize_full,
  *  and only PersistentPool can call that.
  */
-rope_string Task::serialize() const {
-  rope_string s_form;
+mica_string Task::serialize() const {
+  mica_string s_form;
 
   Pack( s_form, Type::TASK_HANDLE );  // It's not really a task, so don't lie.
   
@@ -378,8 +378,8 @@ rope_string Task::serialize() const {
 
 /** Full serialize method, invoked by the PersistentPool only.
  */
-rope_string Task::serialize_full() const {
-  rope_string s_form;
+mica_string Task::serialize_full() const {
+  mica_string s_form;
 
   Pack( s_form, type_identifier() );
 

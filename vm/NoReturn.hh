@@ -21,12 +21,12 @@ namespace mica {
   public:
     static Var instance;
 
-    rope_string tostring() const;
+    mica_string tostring() const;
 
-    rope_string rep() const;
+    mica_string rep() const;
 
   public:
-    rope_string serialize() const;
+    mica_string serialize() const;
   };
 
 

@@ -28,23 +28,23 @@ namespace mica {
      *  libraryName is the name of the DLL that holds the symbols.
      *  symbolName is the mangled name of the function inside the DLL.
      */
-    rope_string libraryName;
-    rope_string symbolName;
+    mica_string libraryName;
+    mica_string symbolName;
 
   public:
     NativeBlock( Var (*function)( const Ref<NativeClosure> &closure),
-		 const rope_string &libraryName,
-		 const rope_string &symbolName );
+		 const mica_string &libraryName,
+		 const mica_string &symbolName );
 
     virtual ~NativeBlock() {};
 
     Ref<Task> make_closure( const Ref<Message> &msg, const Var &definer );
    
-    rope_string serialize() const;
+    mica_string serialize() const;
 
-    rope_string rep() const;
+    mica_string rep() const;
 
-    rope_string tostring() const;
+    mica_string tostring() const;
 
   };
 

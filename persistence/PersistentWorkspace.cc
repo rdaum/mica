@@ -89,7 +89,7 @@ void PersistentPool::initialize()
 {
   /** Set name for each DB
    */
-  rope_string basename = poolName.tostring();
+  mica_string basename = poolName.tostring();
   for (int i = 0 ; i < NUM_DBS; i++)
     names[i] = basename;
 
@@ -213,7 +213,7 @@ void PersistentPool::load_tasks() {
 
   /** Open the task file - read only.
    */
-  rope_string task_fname( poolName.tostring() );
+  mica_string task_fname( poolName.tostring() );
   task_fname.append( ".tsk" );
   int flags = O_RDONLY;
   int task_fd = ::open( task_fname.c_str(), flags, S_IRWXU );
@@ -237,7 +237,7 @@ void PersistentPool::load_tasks() {
       file_error();
     }
     
-    rope_string buffer_string( buffer, serialized_size );
+    mica_string buffer_string( buffer, serialized_size );
     Unserializer unserializer(buffer_string);
     
     Ref<Task> task( unserializer.parseTaskReal() );
@@ -272,7 +272,7 @@ void PersistentPool::save_tasks() {
 
   /** Open the task file - write, truncate.
    */
-  rope_string task_fname( poolName.tostring() );
+  mica_string task_fname( poolName.tostring() );
   task_fname.append( ".tsk" );
   int flags = O_WRONLY | O_CREAT | O_TRUNC;
   int task_fd = ::open( task_fname.c_str(), flags, S_IRWXU );
@@ -286,7 +286,7 @@ void PersistentPool::save_tasks() {
       
       logger.debugStream() << "pool " << pid << " serializing: " << task << " tid: " << task->tid << " msgid: " << task->msg_id << " refcnt: " << task->refcnt << log4cpp::CategoryStream::ENDLINE;
 
-      rope_string buffer( task->serialize_full() );
+      mica_string buffer( task->serialize_full() );
 
       /** Write size first.
        */
@@ -412,7 +412,7 @@ Environment *PersistentPool::get_environment( OID object_id ) {
   if ((ret = databases[ENV_DB]->get( NULL, &key, &value, 0)) != 0) 
     throw internal_error("unable to retrieve environment from store");
 
-  rope_string buffer( (char*)value.get_data(), value.get_size() );
+  mica_string buffer( (char*)value.get_data(), value.get_size() );
 
   Unserializer unserializer(buffer);
 
@@ -450,7 +450,7 @@ void PersistentPool::write( OID id )
   key.set_size( sizeof(OID) );
   key.set_ulen( sizeof(OID) );
 
-  rope_string serialized_form = objects[id]->environment->serialize();
+  mica_string serialized_form = objects[id]->environment->serialize();
 
   Dbt value;
   value.set_data( (void*)serialized_form.c_str() );

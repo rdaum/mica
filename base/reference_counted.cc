@@ -99,7 +99,7 @@ reference_counted::~reference_counted() {}
  */
 void reference_counted::mark_roots() {
 
-  for (child_set::iterator x = Roots.begin();
+ for (child_set::iterator x = Roots.begin();
        x != Roots.end();) {
     reference_counted *S = *x;
     child_set::iterator next = x;
@@ -154,7 +154,9 @@ void reference_counted::collect_roots() {
     S->buffered = false;     // Unbuffer it.
     S->collect_white();
   }  
-  Roots.clear();
+
+  Roots = global_roots();
+
 }
 
 void reference_counted::collect_cycles() {
@@ -177,6 +179,7 @@ void reference_counted::collect_cycles() {
   else {
     return;
   }
+
 
   // Remove internal reference counts
   mark_roots();

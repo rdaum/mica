@@ -233,15 +233,15 @@ namespace mica {
 
     /** return a string conversion
      */
-    virtual rope_string tostring() const = 0;
+    virtual mica_string tostring() const = 0;
 
     /** return a string representation
      */
-    virtual rope_string rep() const = 0;
+    virtual mica_string rep() const = 0;
 
     /** return a serialization
      */
-    virtual rope_string serialize() const = 0;
+    virtual mica_string serialize() const = 0;
 
     /** is this a numeric type?
      */

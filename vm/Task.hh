@@ -159,12 +159,12 @@ namespace mica {
   public:
     virtual child_set child_pointers();
 
-    virtual rope_string typeName() const { return "Message"; }
+    virtual mica_string typeName() const { return "Message"; }
 
-    virtual rope_string rep() const;
+    virtual mica_string rep() const;
       
-    rope_string serialize() const;
-    virtual rope_string serialize_full() const;
+    mica_string serialize() const;
+    virtual mica_string serialize_full() const;
 
   public:
     friend class Message;

@@ -115,18 +115,12 @@ SlotResult Slots::match_verb( const Var &self,
 
   increment_generation();
 
-  var_vector delegations[64]; // the delegation dispatch stacks
+  vector< Ref<Object> > delegations[64]; // the delegation dispatch stacks
  
   /** If the arguments are zilch, then just attempt immediate dispatch
    */
   if (arguments.empty())
     return get_slot( self, List::empty(), name );
-
-  /** Argument masks for delegates
-   */
-  typedef STD_EXT_NS::hash_map<Var, 
-    ArgumentMask, hash_var> DelegatesMask;
-  DelegatesMask delegates_mask;
 
   /** Marks delegates as visited.
    */
@@ -208,36 +202,39 @@ SlotResult Slots::match_verb( const Var &self,
 
 	for (var_vector::iterator Do = Delegates.begin();
 	     Do != Delegates.end(); Do++) {
-	  Var D = *Do;
+
+	  Ref<Object> D( (*Do)->asRef<Object>() );
 
 	  if (Do == Delegates.begin()) {
 
 	    // Retry dispatch on the Delegate
-	    *A = D;
+	    *A = *Do;
 	    delegated = true;
 
 	  } else {
 
-	    /** If this object hasn't been visited in this dispatch
-	     *  then we need to set the generation and clear its
-	     *  arg mask
-	     */
-	    if (delegates_mask[D].marked_argument( pos )) {
-	      
-	      // the object has already been visited as this
-	      // argument position, skip it
-	      continue;
-	    }
-	    delegates_mask[D].mark_argument( pos );
 	    delegations[pos].push_back( D );
+	    D->arg_mask.clear();
 	  }
+
+	  /** If this object hasn't been visited in this dispatch
+	   *  then we need to set the generation and clear its
+	   *  arg mask
+	   */
+	  if (D->arg_mask.marked_argument( pos )) {
+	    
+	    // the object has already been visited as this
+	    // argument position, skip it
+	    continue;
+	  }
+	  D->arg_mask.mark_argument( pos );
 	}
 
       } else {
 
 	if (!delegations[pos].empty()) {
 
-	  Var X = delegations[pos].back();
+	  Var X = Var(delegations[pos].back());
 	  delegations[pos].pop_back();
 
 	  // Retry dispatch with X
@@ -248,9 +245,9 @@ SlotResult Slots::match_verb( const Var &self,
 
 
 	  // No more delegates to try, a dead-end.  Try Any.
-
-	  if (!triedAny[pos]) {
-	    cerr << "Trying ANY" << endl;
+	  // O
+	  if (pos // Only try for non-self argument positions
+	      && !triedAny[pos]) {
 	    *A = MetaObjects::AnyMeta;
 	    triedAny[pos] = true;
 	    delegated = true;

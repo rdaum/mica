@@ -9,7 +9,7 @@ namespace mica {
    *  object
    */
   class Block;
-  extern Ref<Block> compile( rope_string source );
+  extern Ref<Block> compile( mica_string source );
 
 }
 

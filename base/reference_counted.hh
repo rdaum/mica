@@ -14,6 +14,11 @@ namespace mica {
   class reference_counted;
   typedef std::list<reference_counted*> child_set;
 
+  /** Application must provide a function to retrieve all the global
+   *  roots
+   */
+  extern child_set global_roots();
+
   /** Base class for reference counted garbage collection.
    *  Use in conjunction with a smart pointer (@see Ref<> and @see Var)
    *  to provide automatic memory reclamation for unused objects.

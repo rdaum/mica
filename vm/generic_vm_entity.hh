@@ -78,7 +78,7 @@ namespace mica {
 
     virtual bool truth() const { return true; };
 
-    virtual rope_string tostring() const
+    virtual mica_string tostring() const
     {
       throw invalid_type("cannot convert to string");
     }

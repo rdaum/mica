@@ -27,7 +27,7 @@ protected:
   void testInt() {
     Var x = 5;
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -38,7 +38,7 @@ protected:
   void testChar() {
     Var x = 't';
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -49,7 +49,7 @@ protected:
   void testFloat() {
     Var x = 4.2;
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -60,7 +60,7 @@ protected:
   void testOpCode() {
     Var x = mica::SEND;
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -70,7 +70,7 @@ protected:
   void testString() {
     Var x = "a string test";
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -80,7 +80,7 @@ protected:
   void testSymbol() {
     Var x(Symbol::create("a string test"));
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -90,7 +90,7 @@ protected:
   void testNone() {
     Var x;
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -100,7 +100,7 @@ protected:
   void testList() {
     Var x = new  List();
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -124,7 +124,7 @@ protected:
   void testMap() {
     Var x = new  Map();
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -146,7 +146,7 @@ protected:
 
 
  void testObject() {
-   rope_string s_form; 
+   mica_string s_form; 
 
    /** We stick this in a block so that the refcount for x goes down,
     *   allowing us to recreate an object with that same ID.
@@ -174,7 +174,7 @@ protected:
     Var p = "testString";
     Var x = p.begin();
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 
@@ -209,7 +209,7 @@ protected:
 
     Var test_slot( object.get( object, test_symbol ) );
 
-    rope_string s_form = test_slot.serialize();
+    mica_string s_form = test_slot.serialize();
     Unserializer unserializer(s_form);
 
     Var unserialized_test_slot(unserializer.parse());
@@ -224,7 +224,7 @@ protected:
     Var x = new  Block("test");
     x->asType<Block*>()->code.push_back(mica::RETURN);
 
-    rope_string s_form = x.serialize();
+    mica_string s_form = x.serialize();
 
     Unserializer y(s_form);
 

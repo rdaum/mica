@@ -131,9 +131,9 @@ namespace mica {
   {
   public:
     NPtr stmt;
-    rope_string source;
+    mica_string source;
 
-    lambdaNode( const NPtr istmt, const rope_string &in_source ) 
+    lambdaNode( const NPtr istmt, const mica_string &in_source ) 
       : Node(), stmt(istmt), source(in_source) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
@@ -149,9 +149,9 @@ namespace mica {
   {
   public:
     NPtr stmt;
-    rope_string source;
+    mica_string source;
 
-    methodNode( const NPtr istmt, const rope_string &isource ) 
+    methodNode( const NPtr istmt, const mica_string &isource ) 
       : Node(), stmt(istmt), source(isource) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;

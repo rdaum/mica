@@ -163,13 +163,13 @@ namespace mica
   public:
     /** Convert to string.
      */
-    rope_string tostring() const {
+    mica_string tostring() const {
       return data->tostring();
     }
     
     /** A printable representation
      */
-    rope_string rep() const {
+    mica_string rep() const {
       return data->rep();
     }
 

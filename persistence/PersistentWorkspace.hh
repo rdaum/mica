@@ -95,7 +95,7 @@ namespace mica {
     enum { ENV_DB, OID_DB } dbs;
     #define NUM_DBS (OID_DB + 1)
     Db *databases[NUM_DBS];
-    rope_string names[NUM_DBS];
+    mica_string names[NUM_DBS];
     
   };
 

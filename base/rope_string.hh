@@ -8,7 +8,7 @@
 
 namespace mica {
   
-  typedef STD_EXT_NS::rope<char> rope_string;
+  typedef STD_EXT_NS::rope<char> mica_string;
 }
 
 #endif /** MICA_ROPE_STRING **/

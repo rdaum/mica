@@ -53,7 +53,7 @@ void Unserializer::UnPack(T &N) {
 
 #endif
 
-rope_string Unserializer::readString()
+mica_string Unserializer::readString()
 {
   /** Get string size.
    */
@@ -64,14 +64,14 @@ rope_string Unserializer::readString()
 
   /** Get string characters.
    */
-  rope_string res(rep.begin()+pos, rep.begin()+pos+x);
+  mica_string res(rep.begin()+pos, rep.begin()+pos+x);
 
   pos += x;
 
   return res;
 }
 
-Unserializer::Unserializer( const rope_string &irep)
+Unserializer::Unserializer( const mica_string &irep)
   : rep(irep), pos(0)
 {}
 
@@ -396,8 +396,8 @@ Var Unserializer::parseTaskHandle() {
 
 Var Unserializer::parseNativeBlock()
 {
-  rope_string library = readString();
-  rope_string symbol = readString();
+  mica_string library = readString();
+  mica_string symbol = readString();
 
   return loadNative( library, symbol )->asType<Data*>();
 }
