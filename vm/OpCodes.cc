@@ -468,7 +468,27 @@ void Frame::op_make_object( unsigned int param_1, unsigned int param_2 )
 
 void Frame::op_catch( unsigned int param_1, unsigned int param_2 )
 {
+  /** Pop error
+   */
+  Var err(pop());
 
+  /** Pop block
+   */
+  Ref<Block> block_obj(pop()->asRef<Block>());
+
+  /** Make the closure for the block
+   */
+  Ref<Closure> handler = new Closure( var_vector(),       // Empty stack
+				      scope,              // Inherit the scope
+				      Control(block_obj), // The block
+				      ExceptionMap(),     // New exception map
+				      CLOSURE );
+
+  cerr << "Inserting handler for " << err << " => " << Var(block_obj) << endl;
+  exceptions.insert( make_pair( err->asRef<Error>(),
+				ExceptionHandler( param_1,
+						  handler ) ) );
+  
 }
 
 

@@ -66,6 +66,8 @@ namespace mica
 
     bool isNumeric() const;
 
+    unsigned int hash() const;
+
   public:
     child_set child_pointers();
   };

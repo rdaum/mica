@@ -29,7 +29,18 @@ namespace mica
     BRANCH
   } ClosureTag;
 
-  typedef STD_EXT_NS::hash_map< Ref<Error>, Ref<Closure>,
+  struct ExceptionHandler {
+    uint16_t var_idx;
+    Ref<Closure> handler;
+
+    ExceptionHandler( uint16_t i_var_idx, const Ref<Closure> &i_handler );
+    ExceptionHandler( const ExceptionHandler &xc );
+    ExceptionHandler &operator=( const ExceptionHandler &rhs );   
+    bool operator==( const ExceptionHandler &rhs ) const;
+    
+  };
+
+  typedef STD_EXT_NS::hash_map< Ref<Error>, ExceptionHandler,
 				hash_ref > ExceptionMap;
 
   typedef enum {
@@ -152,7 +163,7 @@ namespace mica
     Var next();
 
   public:
-    bool receive_exception( const Ref<Error> &err );
+    bool handle_exception( const Ref<Error> &err );
 
     /** Continue after an exception from a child.
      */

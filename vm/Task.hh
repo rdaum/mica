@@ -78,10 +78,6 @@ namespace mica {
      */
     void receive( const Ref<Message> &reply_message );
     
-    /** Receive an error from self or child
-     */
-    virtual bool receive_exception( const Ref<Error> &err );
-    
   public:
     /** A notification of an event particular to this task, i.e. a
      *  network event -- typically destined only for the top task

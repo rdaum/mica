@@ -36,6 +36,27 @@ using namespace std;
 #define cMF(object,ptrToMember)  ((object).*(ptrToMember))
 
 
+ExceptionHandler::ExceptionHandler( uint16_t i_var_idx, 
+				    const Ref<Closure> &i_handler )
+  : var_idx(i_var_idx), handler(i_handler) {}
+
+ExceptionHandler::ExceptionHandler( const ExceptionHandler &xc )
+  : var_idx(xc.var_idx), handler(xc.handler) {}
+
+ExceptionHandler &ExceptionHandler::operator=( const ExceptionHandler &rhs ) {
+  if (&rhs != this) {
+    var_idx = rhs.var_idx;
+    handler = rhs.handler;
+  }
+  return *this;
+}
+
+bool ExceptionHandler::operator==( const ExceptionHandler &rhs ) const {
+  return (&rhs == this) || ( handler == rhs.handler && 
+			     var_idx == rhs.var_idx );
+}
+
+
 /** Construction, destruction
  *
  */
@@ -50,8 +71,8 @@ Frame::Frame( const Ref<Message> &msg, const Var &definer_scope,
 
 Frame::Frame()
   : AbstractFrame(), 
-    control(Ref<Block>(0)),
-    executor(execution_visitor(this))
+    executor(execution_visitor(this)),
+    control(Ref<Block>(0))
 {}
 
 Frame::Frame( const Ref<Frame> &from )
@@ -86,7 +107,7 @@ child_set Frame::child_pointers() {
   // eXCEPTION
   for (ExceptionMap::iterator x = exceptions.begin(); x != exceptions.end();
        x++) {
-    child_p.push_back( (Closure*)x->second );
+    child_p.push_back( (Closure*)x->second.handler );
   }  
 
   // DUMP
@@ -217,7 +238,7 @@ void Frame::apply_closure( const Ref<Closure> &closure,
   args = arguments.flatten();
 }
 
-bool Frame::receive_exception( const Ref<Error> &error )
+bool Frame::handle_exception( const Ref<Error> &error )
 {
   /** Need to walk back the dump and look for exception handlers
    *  in the closures there that match the error.  Upon finding
@@ -225,6 +246,19 @@ bool Frame::receive_exception( const Ref<Error> &error )
    *  stack.  If we don't find one, we return false, and the
    *  error propagates up to the calling frame.
    */
+  
+  while (!dump.empty()) {
+    Ref<Closure> backup = dump.back(); 
+    dump.pop_back();
+    ExceptionMap::iterator exc = backup->exceptions.find( error );
+
+    if (exc != backup->exceptions.end()) {
+
+      load_closure( exc->second.handler );
+      scope.set( exc->second.var_idx, Var(error) );
+      return true;
+    }
+  }
   return false;
 }
 
@@ -372,7 +406,7 @@ void Frame::resume_raise( const Ref<Error> &error, mica_string trace_str )
   /** Check to see if this frame can handle the error.
    *  If it can't, we add to the traceback and pass it upwards.
    */
-  if (!receive_exception( error )) {
+  if (!handle_exception( error )) {
 
     /** Add our information to the traceback itself.
      */
@@ -404,7 +438,7 @@ void Frame::raise( const Ref<Error> &err )
 {
   push( Var(err) );
 
-  if (!receive_exception( err )) {
+  if (!handle_exception( err )) {
     
     /** Construct traceback.
      */

@@ -893,10 +893,30 @@ var_vector throwNode::compile( Ref<Block> block, Binding &binding ) const {
 
 
 var_vector tryCatchNode::compile( Ref<Block> block, Binding &binding ) const {
+  
+  var_vector mops;
   var_vector ops;
+  Ref<Block> tryb = new Block( "" );
+  binding.startBlock();
 
+  for (vector<Catch>::const_iterator x = catchers.begin(); 
+       x != catchers.end(); x++) {
 
-  return ops;
+    /** Block Error CATCH<var_no>
+     */
+    ops.push_back( Var(x->branch->compile_to_expr( binding )) );
+    ops.push_back( x->err );
+    
+    ops.push_back( Var( Op( Op::CATCH, binding.lookup( x->ident ) ) ) );
+  }
+  var_vector bops = do_branch->compile( tryb, binding );
+  ops.insert( ops.end(), bops.begin(), bops.end() );
+  tryb->code = ops;
+  tryb->add_scope = binding.finishBlock();
+
+  mops.push_back( Var(tryb) );
+  mops.push_back( Var(Op::EVAL) );
+  return mops;
 }
 
 var_vector ifNode::compile( Ref<Block> block, Binding &binding ) const {

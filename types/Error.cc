@@ -132,6 +132,10 @@ mica_string Error::rep() const
   return dstr;
 }
 
+unsigned int Error::hash() const {
+  return err_sym.hash() + ((String*)desc ? desc->hash() : 0); 
+}
+
 mica_string Error::serialize() const
 {
   mica_string s_form;

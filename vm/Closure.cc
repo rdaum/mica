@@ -46,7 +46,7 @@ child_set Closure::child_pointers() {
   // Exceptions
   for (ExceptionMap::iterator x = exceptions.begin(); x != exceptions.end();
        x++) {
-    children.push_back( (Closure*)x->second );
+    children.push_back( (Closure*)x->second.handler );
   }
 
   return children;

@@ -196,10 +196,6 @@ void Task::receive( const Ref<Message> &msg ) {
 
 }
 
-bool Task::receive_exception( const Ref<Error> &err ) {
-  return false;
-}
-
 Var Task::notify( const Var &argument ) {
   return NONE;
 }
