@@ -17,15 +17,11 @@ TARGETS ?= $(error TARGET or TARGETS must be defined before including executable
 
 endif
 
-STATICS =  ../parser/mica_parser.a  ../persistence/mica_persistence.a   ../native/mica_nativebind.a ../vm/mica_vm.a ../types/mica_types.a ../base/mica_base.a 
-
-ifeq "$(OPT_ENABLE_DSO_BUILTINS)" "true"
-NATIVELIB = "-llibmicanativevar"
-endif
+STATICS =  ../parser/mica_parser.a  ../persistence/mica_persistence.a ../vm/mica_vm.a ../types/mica_types.a ../base/mica_base.a 
 
 # the order of these is very specific.  yes they are repeated.  
 # do not rearrange them or Ryan will spank you.
-EXE_LDARGS = ../parser/mica_parser.a   ../persistence/mica_persistence.a   ../native/mica_nativebind.a ../vm/mica_vm.a ../types/mica_types.a $(NATIVELIB) ../persistence/mica_persistence.a ../native/mica_nativebind.a ../parser/mica_parser.a ../vm/mica_vm.a ../base/mica_base.a  ../types/mica_types.a -llog4cpp 
+EXE_LDARGS = ../parser/mica_parser.a   ../persistence/mica_persistence.a    ../vm/mica_vm.a ../types/mica_types.a ../persistence/mica_persistence.a ../parser/mica_parser.a ../vm/mica_vm.a ../base/mica_base.a  ../types/mica_types.a -llog4cpp 
 
 include ../mk/common.mk
 

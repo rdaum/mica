@@ -3,16 +3,18 @@
 #ifndef BLOCK_HH
 #define BLOCK_HH
 
-#include "AbstractBlock.hh"
 #include "Environment.hh"
+#include "generic_vm_entity.hh"
+#include "ArgumentMask.hh"
 
 namespace mica {
   
   class Frame;
-
+  class Task;
+  class Message;
 
   class Block
-    : public AbstractBlock
+    : public generic_vm_entity 
   {
   public:
     Type::Identifier type_identifier() const { return Type::BLOCK; }
@@ -29,7 +31,7 @@ namespace mica {
 
     unsigned int add_scope;  // How many variables the block adds to scope
 
-
+    ArgumentMask arg_mask;   // Used for marking during dispatch
     
   public:
     Block( const mica_string &source );
@@ -58,6 +60,8 @@ namespace mica {
     virtual mica_string tostring() const;
 
     virtual mica_string rep() const;
+
+    virtual bool isBlock() const ;
 
   public:
     child_set child_pointers() ;

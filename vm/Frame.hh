@@ -9,7 +9,7 @@
 #include <hash_map>
 #endif
 
-#include "AbstractFrame.hh"
+#include "Task.hh"
 
 #include "Control.hh"
 #include "OpCode.hh"
@@ -57,7 +57,7 @@ namespace mica
    *  VM opcodes.
    */
   class Frame 
-    : public AbstractFrame
+    : public Task
   {
   public:
     Type::Identifier type_identifier() const { return Type::FRAME; }
@@ -99,6 +99,8 @@ namespace mica
     child_set child_pointers();
 
     mica_string serialize_full() const;
+
+    mica_string rep() const;
 
   public:
     /** Handle an incoming message
@@ -174,13 +176,17 @@ namespace mica
     void raise( const Ref<Error> &err );
 
   public:
-    mica_string rep() const;
+    void reply_return( const Var &value );
+
+    void reply_raise( const Ref<Error> &error, 
+		      mica_string traceback );
+
+  public:
 
   private:
     Ref<Closure> make_closure( ClosureTag tag = CLOSURE ) const;
 
-    void load_closure( const Ref<Closure> &closure, 
-		       bool mutable_scope = true );
+    void load_closure( const Ref<Closure> &closure );
 
     /** push an entry to the dump stack
      */
@@ -207,6 +213,11 @@ namespace mica
      */
     void loop_continue();
 
+  protected:
+
+    /** Prepare this frame with this message
+     */
+    void prepare( const Ref<Message> &msg );
 
   public:
 
@@ -214,8 +225,33 @@ namespace mica
      */
     void apply_closure( const Ref<Closure> &closure, const Var &args );
 
+  public:
+    /** Source, caller, and to are the ultimate source,
+     *  last caller, and the destination of the message.
+     *  On is where to get the method from, usually self,
+     *  except in case of pass.
+     */
+    Var source;
+    Var caller;
+    Var self;
+    Var on;
 
-  public:  
+    /** The selector is always Symbol representing the
+     *  name of the method to invoke.
+     */
+    Symbol selector;
+
+    /** Definer is usually set to the definer of the currently running
+     *  method.  This is used for view filtering on slots.
+     */
+    Var definer;
+
+    /** Arguments is the list of arguments to
+     *  pass to the method.
+     */
+    var_vector args;
+  
+  public:
     const execution_visitor executor;  // visitor used to handle opcodes
 
     //////////////////////////////////////////////////////////////
@@ -297,7 +333,6 @@ namespace mica
       op_lesste( unsigned int, unsigned int ),
       op_greatert( unsigned int, unsigned int ),
       op_greaterte( unsigned int, unsigned int ),
-      op_for_range( unsigned int, unsigned int ),
       op_map( unsigned int, unsigned int ),
       op_join( unsigned int, unsigned int ),
       op_if( unsigned int, unsigned int ),

@@ -4,7 +4,7 @@
 
 #include <sstream>
 
-#include "Scalar.hh"
+#include "Atom.hh"
 
 #include "Var.hh"
 #include "MetaObjects.hh"

@@ -335,8 +335,7 @@ NPtr micaParser::translateExpr(NonterminalExpr* expr)
   } else if (expr->floatLiteral) {
     float number_value = 
       boost::lexical_cast<float>(expr->floatLiteral->text);
-    assert(0);
-    //    return new (aligned) literalNode( Var(number_value) );
+    return new (aligned) literalNode( Var(number_value) );
   } else if (expr->charLiteral) {
     return new (aligned) literalNode( Var(expr->charLiteral->text[1]) );
   } else if (!expr->stringLiteralList.empty()) {
@@ -521,7 +520,7 @@ NPtr micaParser::translateRemove( NonterminalRemove *remove ) {
 }
 
 NPtr micaParser::translateSlotRm( NonterminalSlot* slot ) {
-  Var opcode;
+  Op::Code opcode;
   NPtr slot_name;
 
   if (slot->verbSlot) {
@@ -541,7 +540,7 @@ NPtr micaParser::translateSlotRm( NonterminalSlot* slot ) {
     slot_name = get_slot_name( slot->nameSlot );
   }
 
-  return new (aligned) unaryNode( slot_name, opcode );  
+  return new (aligned) unaryNode( slot_name, Var(opcode) );  
 }
 
 

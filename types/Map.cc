@@ -244,49 +244,6 @@ var_vector Map::flatten() const
   return ops;
 }
 
-var_vector Map::for_in( unsigned int var_no,
-			 const Var &block ) const
-
-{
-  /** Finished iterating.  No-op
-   */
-  if (this->var_map::empty())
-    return var_vector();
-
-  /** Assign cdr into variable @ var_index, execute block
-   *  continue by iterating the car
-   */
-  var_vector ops;
-
-  var_map car(*this);
-  var_map::iterator cdr_it = car.begin();
-
-  var_vector pair;
-  pair.push_back( cdr_it->first );
-  pair.push_back( cdr_it->second );
-
-  ops.push_back( List::from_vector( pair ) ); // cdr
-
-  car.erase(cdr_it);
-
-  ops.push_back( Var( Op( Op::SETVAR, var_no ) ) );
-
-  ops.push_back( block );
-  ops.push_back( Var(Op::EVAL) );
-
-  if (size() > 1) {
-    /** car
-     */
-    ops.push_back( new (aligned) Map( car ) );
-
-    ops.push_back( block );
-
-    ops.push_back( Var( Op( Op::FOR_RANGE, var_no ) ) );
-  }
-  
-  return ops;
-}
-
 var_vector Map::map( const Var &expr ) const
 {
   /** Finished iterating.  No-op

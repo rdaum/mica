@@ -305,43 +305,6 @@ var_vector Set::flatten() const
   return ops;
 }
 
-
-var_vector Set::for_in( unsigned int var_no,
-			 const Var &block ) const
-
-{
-  /** Finished iterating.  No-op
-   */
-  if (this->var_set::empty())
-    return var_vector();
-
-  /** Assign cdr into variable @ var_index, execute block
-   *  continue by iterating the car
-   */
-  var_vector ops;
-
-  var_set car(*this);
-  var_set::iterator cdr_it = car.begin();
-  ops.push_back( *cdr_it ); // cdr
-  car.erase(cdr_it);
-
-  ops.push_back( Var( Op( Op::SETVAR, var_no ) ) );
-  ops.push_back( block );
-  ops.push_back( Var(Op::EVAL) );
-
-  if (size() > 1) {
-    /** car
-     */
-    ops.push_back( new (aligned) Set( car ) );
-
-    ops.push_back( block );
-
-    ops.push_back( Var( Op( Op::FOR_RANGE, var_no ) ) );
-  }
-  
-  return ops;
-}
-
 var_vector Set::map( const Var &expr ) const
 
 {

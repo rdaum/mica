@@ -4,7 +4,7 @@
 /** To identify non-numeric atom types
  */
 struct Atoms {
-  typedef enum { CHAR, SYMBOL, OPCODE, BOOLEAN, UNUSED } types;
+  typedef enum { CHAR, SYMBOL, OPCODE, BOOLEAN, FLOAT } types;
 };
 struct _Atom {
   bool            is_integer : 1;

@@ -21,7 +21,7 @@ namespace mica {
      *  redirected to these Objects by the classes' get/assign/slots
      *  methods.  Methods on them are filled in by native methods.
      */
-    static Var ScalarMeta;
+    static Var AtomMeta;
     static Var SequenceMeta;
     static Var ListMeta;
     static Var StringMeta;

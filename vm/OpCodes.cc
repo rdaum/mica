@@ -11,7 +11,7 @@
 
 #include "Data.hh"
 #include "Var.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "List.hh"
 #include "Map.hh"
 #include "Set.hh"
@@ -131,7 +131,6 @@ OpInfo opcode_info[] = {
    */
   { Op::BREAK,      "BREAK",        &Frame::op_break, 0 },
   { Op::CONTINUE,	"CONTINUE",	&Frame::op_continue, 0 },
-  { Op::FOR_RANGE, 	"FOR_RANGE",    &Frame::op_for_range, 2 },
   { Op::MAP, 	"MAP",          &Frame::op_map, 0 },
 
   { Op::LOOP,      "LOOP",        &Frame::op_loop, 1 },
@@ -426,7 +425,7 @@ void Frame::op_make_lambda( unsigned int param_1, unsigned int param_2 )
   /** Now create a closure for it
    */
   Ref<Closure> lambda = new Closure( var_vector(),       // Empty stack
-				     scope,              // Inherit the scope
+				     scope.copy(),       // Inherit the scope
 				     Control(block_obj), // The block
 				     ExceptionMap(),     // New exception map
 				     CLOSURE );
@@ -531,29 +530,6 @@ void Frame::op_break( unsigned int param_1, unsigned int param_2 )
   loop_break();
 }
 
-
-void Frame::op_for_range( unsigned int param_1, unsigned int param_2 )
-{
-  /** pop the block
-   */
-  Var block( pop() );
-
-  /** pop the sequence
-   */
-  Var sequence( pop() );
-
-  /** Build the instructions for iteration..
-   */
-  var_vector ops( sequence.for_in( param_1, block ) );
-
-  /** Schedule them for execution.
-   */
-  for (var_vector::reverse_iterator x = ops.rbegin();
-       x != ops.rend(); x++) {
-    push_exec( *x );
-  }
-
-}
  
 void Frame::op_map( unsigned int param_1, unsigned int param_2 )
 {

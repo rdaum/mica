@@ -18,7 +18,7 @@
 #include "Object.hh"
 #include "Exceptions.hh"
 #include "GlobalSymbols.hh"
-#include "AbstractBlock.hh"
+#include "Block.hh"
 #include "List.hh"
 #include "MetaObjects.hh"
 #include "Slots.hh"
@@ -39,7 +39,7 @@ using namespace std;
  */
 static int generation = 0;
 inline void increment_generation() {
-  if (generation == UINT_MAX) generation = 0;
+  if (generation == INT_MAX) generation = 0;
   else generation++;
 }
 
@@ -150,7 +150,7 @@ Slot Slots::match_verb( const Var &self,
 	   */
 	  if ( (*Co)->argument_template.size() == (num_args - 1)) {
 
-	    Ref<AbstractBlock> method( (*Co)->method->asRef<AbstractBlock>() );
+	    Ref<Block> method( (*Co)->method->asRef<Block>() );
 	    
 	    /** Mark this method as searched within this generation
 	     */

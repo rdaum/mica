@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <signal.h>
 #include <setjmp.h>
+#include <malloc.h>
 
 #define BOOST_NO_LIMITS_COMPILE_TIME_CONSTANTS
 #include <boost/type_traits/is_const.hpp>
@@ -35,6 +36,7 @@ using namespace std;
 
 #define CLEAR_BITS(x,mask) (( (x) & ~(mask)))
 #define TO_POINTER(x) CLEAR_BITS(x, 3)
+#define TO_FLOAT_POINTER(x) CLEAR_BITS(x, 20)
 
 /** For divzero protection
  */
@@ -51,40 +53,7 @@ Symbol Var::as_symbol() const {
   return Symbol(v.atom);
 }
 
-/** Visitor to obtain a conversion to a raw Data * ptr
- *  from a Var
- */
-struct data_cast_visitor {
-  template<typename T>
-  inline Data *operator()( const T&  ) const {
-    assert(0);
-  }
-    
-  inline Data *operator()( Data *t ) const {
-    return (Data*)t;
-  }
-};
 
-
-/** Visitor to obtain a type-id from a Var
- */
-struct type_ident_visitor {
-  typedef Type::Identifier tid;
-    
-  inline tid operator()(const int &) const { return Type::INTEGER; }
-  inline tid operator()(const float &) const { return Type::FLOAT; }
-  inline tid operator()(const char &) const { return Type::CHAR; }
-  inline tid operator()(const Op &) const { return Type::OPCODE; }
-  inline tid operator()(const bool &) const { return Type::BOOL; }
-  inline tid operator()(const Symbol &) const { return Type::SYMBOL; }
-  inline tid operator()(Data *t) const { return t->type_identifier(); }
-    
-  template<typename T>
-  inline tid operator()(const T& t) const
-  {
-    assert(0); // Invalid type
-  }
-};
 
 /** Get child pointers from what's in a Var
  */
@@ -127,18 +96,6 @@ struct delegates_visitor {
   inline var_vector operator()(const T& t) const
   {
     assert(0);
-  }
-};
-
-/** Visitor that returns true if the Var is Data
- */
-struct is_data_visitor {   
-  inline bool operator()(Data *t) const { return true; }
-
-  template<typename T>
-  inline bool operator()(const T& t) const
-  {
-    return false;
   }
 };
 
@@ -334,13 +291,10 @@ struct flatten_visitor {
   }
 };
 
-static data_cast_visitor data_cast;
-static type_ident_visitor type_ident;
 static child_pointers_visitor child_pointers_v;
 static delegates_visitor delegate_v;
 static truth_visitor truth_v;
 static neg_visitor neg_v;
-static is_data_visitor is_data_v;
 static hashing_visitor hasher;
 static serializing_visitor serializer;
 static tostring_visitor tostring_v;
@@ -377,9 +331,37 @@ void Var::set_data( Data *data ) {
 
   v.value = reinterpret_cast<uint32_t>(data) | 0x02;
   
+  v.atom.is_integer = false;
+  v.atom.is_pointer = true;
+
   assert( get_data() == data );
 
   upcount();
+}
+
+float Var::as_float() const {
+  return get_float()->value;
+}
+
+Var::float_store* Var::get_float() const {
+  return reinterpret_cast<float_store*>( TO_FLOAT_POINTER(v.value) );
+}
+
+void Var::set_float( float val ) {
+  dncount();
+
+  float_store *float_val =
+    (float_store*)memalign( 0x20, sizeof(float_store) );
+
+  float_val->refcnt = 1;
+  float_val->value = val;
+
+  v.value = reinterpret_cast<uint32_t>(float_val) | 0x05;
+  v.atom.is_integer = false;
+  v.atom.is_pointer = false;
+  v.atom.type = Atoms::FLOAT;
+
+  assert( as_float() == val );
 }
 
 inline Data *Var::get_data() const {
@@ -411,8 +393,8 @@ Var::Var( const Var &from )
 
 Var::Var( int initial )
 { 
-  v.numeric.is_integer = true;
-  v.numeric.integer = initial;
+  v.integer.is_integer = true;
+  v.integer.integer = initial;
 }
 
 Var::Var( bool initial )
@@ -429,6 +411,11 @@ Var::Var( char initial )
   v.atom.is_pointer = false;
   v.atom.type = Atoms::CHAR;
   v.atom.value = initial;
+}
+
+Var::Var( float initial )
+{ 
+  set_float(initial);
 }
 
 Var::Var( const Symbol &sym )
@@ -509,8 +496,8 @@ Var &Var::operator=( Data *rhs )
 Var &Var::operator=( int from ) {
   dncount();
 
-  v.numeric.is_integer = true;
-  v.numeric.integer = from;
+  v.integer.is_integer = true;
+  v.integer.integer = from;
 
   return *this;
 }
@@ -698,15 +685,21 @@ struct NAME ##_op<float> { \
   const float &lhs; \
   explicit NAME ##_op( const float &i_lhs ) \
     : lhs(i_lhs) {}; \
-  template<typename LHT> \
-  inline Var operator()( const LHT &rhs ) const { \
-    return Var(lhs OP boost::numeric_cast<float>(rhs)); \
-  } \
   inline Var operator()( const bool &rhs ) const { \
+    throw invalid_type("invalid operands"); \
+  } \
+  inline Var operator()( const Symbol &rhs ) const { \
+    throw invalid_type("invalid operands"); \
+  } \
+  inline Var operator()( const Op &rhs ) const { \
     throw invalid_type("invalid operands"); \
   } \
   inline Var operator()( Data *rhs ) const { \
     throw invalid_type("invalid operands"); \
+  } \
+  template<typename LHT> \
+  inline Var operator()( const LHT &rhs ) const { \
+    return Var(lhs OP boost::numeric_cast<float>(rhs)); \
   } \
 }; \
 struct NAME ##_op<Op> { \
@@ -814,6 +807,12 @@ struct mod_op<float> {
     throw invalid_type("invalid operands"); 
   } 
   inline Var operator()( Data *rhs ) const { 
+    throw invalid_type("invalid operands"); 
+  } 
+  inline Var operator()( const Symbol &rhs ) const { 
+    throw invalid_type("invalid operands"); 
+  } 
+  inline Var operator()( const Op &rhs ) const { 
     throw invalid_type("invalid operands"); 
   } 
 }; 
@@ -942,17 +941,17 @@ Var Var::operator-() const
   return apply_visitor<Var>( neg_v );
 }
 
-bool Var::isScalar() const
+bool Var::isAtom() const
 {
   if (isData())
-    return get_data()->isScalar();
+    return get_data()->isAtom();
   else
     return true;
 }
 
 bool Var::isSequence() const
 {
-  return !isScalar();
+  return !isAtom();
 }
 
 bool Var::isObject() const
@@ -1123,14 +1122,6 @@ Var Var::lhead() const {
     return get_data()->lhead();
 }
 
-var_vector Var::for_in( unsigned int var_no, const Var &block ) const
-{
-  if (!isData())
-    throw invalid_type("attempt to iterate on non-sequence type");
-
-  return get_data()->for_in( var_no, block );
-}
-
 var_vector Var::map( const Var &expr ) const
 {
   if (!isData())
@@ -1160,7 +1151,7 @@ Var Var::declare( const Var &accessor, const Symbol &name,
   if (isData())
     return get_data()->declare( accessor, name, value );
   else 
-    return MetaObjects::ScalarMeta.declare( accessor, name, value );
+    return MetaObjects::AtomMeta.declare( accessor, name, value );
   
 }
 

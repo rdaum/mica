@@ -4,16 +4,15 @@ BUGS:
   bugs in the various unserializers
   fix map operator to work with all binary operators, not just arithmetic
       involves rewriting how binary expressions are parsed
-  break + continue for the new for_range? (and possibly for a new while & other new iter loops)
-     - options: BREAK clears exec stack?  (can't guarantee no bad side-effects...?)
+
   some tasks won't like to be persistent.  i.e. special tasks like network + eval loop.  how to handle references to them so they won't persist?  If we don't fix this, it will crash.
   
 For mica 0.9 
 ============
 
-- floats / bignums support back in:
-     - as an indexed boxed type (similar to Symbol that way)
-     - reference counting?   (unlike symbols, people may create large data sets of floats)
+- native blocks + wrappers for all internal types
+
+- Unicode characters in Var
 
 - slot-name-expressions for verb selectors+prepositions
 

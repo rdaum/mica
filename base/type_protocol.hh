@@ -197,17 +197,6 @@ namespace mica {
      */
     virtual var_vector map( const Var &expr ) const = 0;
 
-    /** Return result of iterating each element contained in this item
-     *  and assigning them to a variable, then executing a block
-     *  @param var var stack index of variable to assign into
-     *  @param block block to execute on each iteration
-     *  @throw invalid_type for non-iteratable types
-     *  @return trampoline of opcodes for pushing to the VM
-     */
-    virtual var_vector for_in( unsigned int var, 
-			       const Var &block ) const = 0;
-
-
     /** Return operations for flattening this object into 
      *  a surrounding stack.
      *  @return trampoline of opcodes for pushing to the VM
@@ -280,7 +269,7 @@ namespace mica {
 
     /** is this an atomic type?
      */
-    virtual bool isScalar() const = 0;
+    virtual bool isAtom() const = 0;
 
     /** is this a method?
      */

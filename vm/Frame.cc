@@ -21,7 +21,7 @@
 #include "Message.hh"
 #include "Block.hh"
 #include "OpCodes.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "Scheduler.hh"
 #include "String.hh"
 #include "Var.hh"
@@ -62,21 +62,32 @@ bool ExceptionHandler::operator==( const ExceptionHandler &rhs ) const {
  */
 Frame::Frame( const Ref<Message> &msg, const Var &definer_scope,
 	      const Ref<Block> program, int pool_id ) 
-  : AbstractFrame(msg, definer_scope, pool_id), 
+  : Task( msg->parent_task, msg->msg_id, pool_id ),
+    selector(NONE_SYM), definer(definer_scope),
     executor(execution_visitor(this)), control(program)
 {
+  prepare( msg );
+
   ex_state = RUNNING;
   scope.enter( program->add_scope );
 }
 
+
 Frame::Frame()
-  : AbstractFrame(), 
+  : Task(), selector(),
     executor(execution_visitor(this)),
     control(Ref<Block>(0))
 {}
 
 Frame::Frame( const Ref<Frame> &from )
-  : AbstractFrame( (AbstractFrame*)from ), 
+  : Task( (Task*)from ),
+    source( from->source ),
+    caller( from->caller ),
+    self( from->self ),
+    on( from->on ),
+    selector( from->selector ),
+    definer( from->definer ),
+    args( from->args ),
     executor(execution_visitor(this)),
     stack(from->stack),
     scope(from->scope),
@@ -86,12 +97,26 @@ Frame::Frame( const Ref<Frame> &from )
     
 {
 }
+void Frame::prepare( const Ref<Message> &msg )
+{
+  /** Copy all the context from the message.
+   */
+  age = msg->age;
+  source = msg->source;
+  caller = msg->caller;
+  self = msg->self;
+  selector = msg->selector;
+  args = msg->args;
+
+}
 
 
 child_set Frame::child_pointers() {
+  child_set child_p;
 
-  // What we inherit from an abstract frame
-  child_set   child_p( this->AbstractFrame::child_pointers()  );
+  child_p << self << caller << source << definer << on;
+
+  append_datas( child_p, args );
 
   // STACK
   append_datas( child_p, stack );
@@ -159,17 +184,12 @@ Ref<Closure> Frame::make_closure( ClosureTag tag ) const {
   return new Closure( stack, scope, control, exceptions, tag );
 }
 
-void Frame::load_closure( const Ref<Closure> &closure, bool mutable_scope ) {
+void Frame::load_closure( const Ref<Closure> &closure ) {
 
   /** Restore a closure
    */
   stack = closure->stack;
-
-  if (!mutable_scope)         // Closure cannot mutate parent's environment
-    scope = closure->scope;  
-  else                        // We use the same environment, just resized
-    scope.env.resize( closure->scope.env.size() );
-
+  scope = closure->scope;  
   control = closure->control;
   exceptions = closure->exceptions;
 }
@@ -233,7 +253,7 @@ void Frame::apply_closure( const Ref<Closure> &closure,
   
   push_dump( make_closure() );
 
-  load_closure( closure, false );
+  load_closure( closure );
 
   args = arguments.flatten();
 }
@@ -541,7 +561,22 @@ Var Frame::perform( const Ref<Frame> &parent, const Var &new_args ) {
 }
 
 mica_string Frame::serialize_full() const {
-  mica_string s_form( this->AbstractFrame::serialize_full() );
+  mica_string s_form( this->Task::serialize_full() );
+
+  s_form.append( source.serialize() );
+  s_form.append( caller.serialize() );
+  s_form.append( self.serialize() );
+  s_form.append( on.serialize() );
+
+  s_form.append( selector.serialize() );
+
+  s_form.append( definer.serialize() );
+
+  Pack( s_form, args.size() );
+
+  var_vector::const_iterator x;
+  for (x = args.begin(); x != args.end(); x++)
+    s_form.append( x->serialize() );
 
   s_form.append( control.serialize() );
 
@@ -558,4 +593,19 @@ mica_string Frame::serialize_full() const {
   
   return s_form;
 
+}
+
+void Frame::reply_return( const Var &value )
+{
+  var_vector arguments;
+  arguments.push_back(value);
+  reply( new (aligned) ReturnMessage( this, msg_id, age, ticks, source, caller,
+				      self, on, selector, arguments ) );
+
+}
+
+void Frame::reply_raise( const Ref<Error> &error, 
+				   mica_string traceback ) {
+  reply( new (aligned) RaiseMessage( this, msg_id, age, ticks, source, caller,
+				     self, on, selector, error, traceback ) );
 }

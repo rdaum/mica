@@ -1,6 +1,6 @@
 include mk/defs.mk
 
-DIRS = base types vm  parser persistence native  bin
+DIRS = base types vm  parser persistence bin
 DIRSDEPEND = $(patsubst %,%-depend,$(DIRS))
 DIRSCLEAN = $(patsubst %,%-clean,$(DIRS))
 

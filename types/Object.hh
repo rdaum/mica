@@ -7,7 +7,7 @@
 #include "config.h"
 
 #include "OStorage.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "ArgumentMask.hh"
 
 namespace mica {
@@ -18,7 +18,7 @@ namespace mica {
   /** Holds an environment and provides inheritance.
    */
   class Object 
-    : public Scalar
+    : public Atom
   {
   public:   
     Type::Identifier type_identifier() const { return Type::OBJECT; }

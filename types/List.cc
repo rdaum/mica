@@ -420,41 +420,6 @@ var_vector List::map( const Var &expr ) const
   return ops;
 }
 
-var_vector List::for_in( unsigned int var_no,
-			 const Var &block ) const
-
-{
-  /** Finished iterating.  No-op
-   */
-  if (null())
-    return var_vector();
-
-  /** Assign cdr into variable @ var_index, execute block
-   *  continue by iterating the car
-   */
-  var_vector ops;
-
-  ops.push_back( front() ); // cdr
-  ops.push_back( Var( Op( Op::SETVAR, var_no ) ) );
-
-  ops.push_back( block );
-  ops.push_back( Var(Op::EVAL) );
-
-  if (size() > 1) {
-    /** car
-     */
-    ops.push_back( new (aligned) List(var_vector( (this->var_vector::begin() + 1), 
-					this->var_vector::end() ) ));
-
-    ops.push_back( block );
-
-    ops.push_back( Var( Op( Op::FOR_RANGE, var_no ) ) );
-  }
-  
-  return ops;
-}
-
-
 
 mica_string List::rep() const
 {

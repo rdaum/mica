@@ -9,12 +9,29 @@ namespace mica {
   typedef unsigned int VarIndex;
   using std::vector;
 
+  class GCVector 
+    : public reference_counted,
+      public var_vector
+  {
+  public:
+    GCVector()
+      : reference_counted(), var_vector() {};
+
+    GCVector( const GCVector &from )
+      : var_vector(from) {}
+
+    child_set child_pointers() {
+      return data_list(*this);
+    }
+  };
+
   class Environment
   {
   protected:
     friend class Frame;
 
-    var_vector env;
+    Ref<GCVector> env;
+
     std::vector<unsigned int> widths;
 
   public:
@@ -30,6 +47,8 @@ namespace mica {
     ~Environment();
 
   public:
+    Environment copy() const;
+
     void enter( unsigned int W );
 
     void exit();

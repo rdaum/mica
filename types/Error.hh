@@ -3,7 +3,7 @@
 #ifndef MICA_ERROR_HH
 #define MICA_ERROR_HH
 
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "Var.hh"
 #include "Symbol.hh"
 #include "String.hh"
@@ -14,7 +14,7 @@ namespace mica
    *  around as values.
    */
   class Error
-    : public Scalar
+    : public Atom
   {
   public:
     Type::Identifier type_identifier() const { return Type::ERROR; }

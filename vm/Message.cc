@@ -4,7 +4,7 @@
 
 #include "Data.hh"
 #include "Var.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "NoReturn.hh"
 #include "Task.hh"
 #include "Frame.hh"
@@ -175,9 +175,9 @@ Var Message::perform( const Ref<Frame> &parent, const Var &args )
   /** Ask the block for a task (a frame of some sort) for executing
    *  this method.
    */
-  Ref<AbstractBlock> block(slot_result.value->asRef<AbstractBlock>());
+  Ref<Block> block(slot_result.value->asRef<Block>());
   Ref<Task> task(block->make_frame( Ref<Message>(this), 
-				      slot_result.definer ));
+				    slot_result.definer ));
 
   /** Schedule the task
    */

@@ -29,7 +29,7 @@ typedef STD_EXT_NS::hash_map<unsigned int, var_vector> MetadelegatesMap;
 static MetadelegatesMap meta_delegates;
 
 Var MetaObjects::TypeMeta;
-Var MetaObjects::ScalarMeta;
+Var MetaObjects::AtomMeta;
 Var MetaObjects::SymbolMeta;
 Var MetaObjects::SequenceMeta;
 Var MetaObjects::StringMeta;
@@ -53,7 +53,7 @@ Var MetaObjects::AnyMeta;
 
 void MetaObjects::cleanup() {
   TypeMeta = NONE;
-  ScalarMeta = NONE;
+  AtomMeta = NONE;
   SymbolMeta = NONE;
   SequenceMeta = NONE;
   StringMeta = NONE;
@@ -75,11 +75,11 @@ void MetaObjects::initialize( const Var &lobby ) {
 
   INIT_META(Any);
 
-  INIT_META_CLONE(Scalar, Type);
+  INIT_META_CLONE(Atom, Type);
 
-  INIT_META_CLONE(Symbol, Scalar);
+  INIT_META_CLONE(Symbol, Atom);
 
-  INIT_META_CLONE(Error, Scalar);
+  INIT_META_CLONE(Error, Atom);
 
   INIT_META_CLONE(Sequence, Type);
 
@@ -91,11 +91,11 @@ void MetaObjects::initialize( const Var &lobby ) {
 
   INIT_META_CLONE(String, Sequence);
 
-  meta_delegates[Type::INTEGER].push_back( ScalarMeta );
-  meta_delegates[Type::FLOAT].push_back( ScalarMeta );
-  meta_delegates[Type::CHAR].push_back( ScalarMeta );
-  meta_delegates[Type::OPCODE].push_back( ScalarMeta );
-  meta_delegates[Type::BOOL].push_back( ScalarMeta );
+  meta_delegates[Type::INTEGER].push_back( AtomMeta );
+  meta_delegates[Type::FLOAT].push_back( AtomMeta );
+  meta_delegates[Type::CHAR].push_back( AtomMeta );
+  meta_delegates[Type::OPCODE].push_back( AtomMeta );
+  meta_delegates[Type::BOOL].push_back( AtomMeta );
 
   meta_delegates[Type::SYMBOL].push_back( SymbolMeta );
   meta_delegates[Type::ERROR].push_back( ErrorMeta );
@@ -110,7 +110,7 @@ child_set mica::global_roots() {
 
   roots << 
     MetaObjects::TypeMeta << 
-    MetaObjects::ScalarMeta << 
+    MetaObjects::AtomMeta << 
     MetaObjects::SequenceMeta << 
     MetaObjects::ListMeta << 
     MetaObjects::StringMeta << 

@@ -22,16 +22,14 @@
 using namespace mica;
 
 Block::Block( const mica_string &isource )
-  : AbstractBlock() ,
-    source(isource), add_scope(0)   
+  : source(isource), add_scope(0)   
 {
   code.clear();
 
 }
 
 Block::Block( const Ref<Block> &from )
-  : AbstractBlock(),
-    code(from->code),
+  : code(from->code),
     source(from->source),
     add_scope(from->add_scope)
 {}
@@ -200,3 +198,5 @@ child_set Block::child_pointers()
    */
   return data_list( code );
 }
+
+bool Block::isBlock() const { return true; }

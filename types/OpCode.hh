@@ -75,7 +75,7 @@ namespace mica {
       MAKE_LAMBDA, 
 
       // Iteration
-      FOR_RANGE, MAP, 
+      MAP, 
 
       // Looping
       BREAK, CONTINUE, LOOP,

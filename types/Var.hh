@@ -10,6 +10,8 @@
 #include <boost/operators.hpp>
 #include <boost/cast.hpp>
 
+#include <gmp.h>
+
 #include "Data.hh"
 #include "Ref.hh"
 #include "Atoms.hh"
@@ -25,6 +27,7 @@ namespace mica
    */
   class Data;
   class Symbol;
+
 
   /** Reference counting Smart pointer and dynamically-typed union.  
    *  Fits in 32-bits.
@@ -42,20 +45,26 @@ namespace mica
       bool            is_integer : 1;
       int                integer : 31;
     };
-    
+
+    struct float_store
+    {
+      float           value;
+      unsigned int    refcnt;
+    };
+
   public:
     /** Union/variant-type or reference to an object
      */
     union {
       uint32_t	      value;
-      _Integer        numeric;
-      _Atom           atom;   
+      _Integer        integer;
+      _Atom           atom;
     } v;
 
     
-  public:
+  public: 
     inline Type::Identifier type_identifier() const {
-      if (v.numeric.is_integer) 
+      if (v.integer.is_integer) 
 	return Type::INTEGER;
       else if (v.atom.is_pointer)
 	return get_data()->type_identifier();
@@ -63,15 +72,21 @@ namespace mica
 	switch (v.atom.type) {
 	case Atoms::CHAR:
 	  return Type::CHAR;
+	  break;
 	case Atoms::OPCODE:
 	  return Type::OPCODE;
+	  break;
 	case Atoms::BOOLEAN:
 	  return Type::BOOL;
+	  break;
 	case Atoms::SYMBOL:
 	  return Type::SYMBOL;
-	case Atoms::UNUSED:
+	  break;
+	case Atoms::FLOAT:
+	  return Type::FLOAT; // Shouldn't get here
+	  break;
+	default:
 	  assert(0);
-	  return Type::ABSTRACT; // Shouldn't get here
 	}
       assert(0);
       return Type::ABSTRACT;     // Shouldn't get here
@@ -79,8 +94,8 @@ namespace mica
 
     template<typename R, typename T>
     R apply_visitor( const T &x ) const {
-      if (v.numeric.is_integer) 
-        return x.operator()( boost::numeric_cast<int>(v.numeric.integer) );
+      if (v.integer.is_integer) 
+        return x.operator()( boost::numeric_cast<int>(v.integer.integer) );
       else if (v.atom.is_pointer) {
 
 	return x.operator()( get_data() );
@@ -88,14 +103,22 @@ namespace mica
 	switch (v.atom.type) {
 	case Atoms::CHAR:
 	  return x.operator()( (char)v.atom.value );
+	  break;
 	case Atoms::OPCODE:
 	  return x.operator()( Op(v.atom) );
+	  break;
 	case Atoms::BOOLEAN:
 	  return x.operator()( (bool)v.atom.value );
+	  break;
 	case Atoms::SYMBOL:
 	  return x.operator()( as_symbol() );
-	case Atoms::UNUSED:
+	  break;
+	case Atoms::FLOAT:
+	  return x.operator()( as_float() );
+	  break;
+	default:
 	  assert(0);
+	  break;
 	}
       assert(0);
       exit(-1);
@@ -160,6 +183,11 @@ namespace mica
      */
     explicit Var( const char initial );
 
+    /** construct a float Var
+     *  @param float value of the float
+     */
+    explicit Var( const float initial );
+
     /** pass around a Symbol
      *  @param intial symbol object
      */
@@ -203,23 +231,44 @@ namespace mica
      */
     Symbol as_symbol() const;
 
+    /**
+     */
+    float as_float() const;
+
   private:
 
     void set_data( Data * );
+    void set_float( float val );
 
     Data *get_data() const;
+
+    inline bool is_float() const {
+      return !v.atom.is_integer && !v.atom.is_pointer && !v.atom.type == Atoms::FLOAT;
+    }
 
     inline void upcount() {
       if (isData()) {
 	Data *data = get_data();
 	if (data) data->upcount();
-      }
+      } else if (is_float())
+	get_float()->refcnt++;
+
+	
     }
+    
+    float_store *get_float() const;
 
     inline void dncount() {
       if (isData()) {
 	Data *data = get_data();
 	if (data) data->dncount();
+      } else if (is_float()) {
+	float_store *fl = get_float();
+	if (fl) {
+	  fl->refcnt--;
+	  if (!fl->refcnt)
+	    free(fl);
+	}
       }
     }
 
@@ -393,7 +442,7 @@ namespace mica
     /** is the type atomic?
      *  @return true if not aggregate
      */
-    bool isScalar() const;
+    bool isAtom() const;
 
     /** is the type aggregate
      *  @return true if type can contain other types
@@ -403,7 +452,7 @@ namespace mica
     /** is the type numeric
      */
     bool isNumeric() const {
-      return v.numeric.is_integer;
+      return v.integer.is_integer;
     }
 
     /** is this a method?
@@ -457,11 +506,6 @@ namespace mica
     
     
   public:
-    /** Return operations for iteration of a range
-     */
-    var_vector for_in( unsigned int var_no,
-		       const Var &block ) const;
-
     /** Return operations for application over a range
      */
     var_vector map( const Var &expr ) const ;

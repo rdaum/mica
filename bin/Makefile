@@ -1,4 +1,4 @@
-INCLUDES += -I../types  -I../vm -I../native -I../persistence -I../network -I../parser
+INCLUDES += -I../types  -I../vm -I../persistence -I../network -I../parser
 
 all: mica_console qt mica_daemon mica_makedb
 

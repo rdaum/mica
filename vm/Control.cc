@@ -7,7 +7,7 @@
 #include "Data.hh"
 #include "Exceptions.hh"
 #include "Var.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "Task.hh"
 #include "Block.hh"
 

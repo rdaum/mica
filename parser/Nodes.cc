@@ -7,7 +7,7 @@
 #include "Task.hh"
 #include "Object.hh"
 #include "List.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "Symbol.hh"
 
 #include "Block.hh"
@@ -769,16 +769,16 @@ var_vector forNode::compile( Ref<Block> block, Binding &binding ) const {
 		   assignNode( name,
 			       new 
 			       unaryNode( new identNode( vname ), Var(Op::CAR) ) ),
-		   
-		   /** branch()
-		    */
-		   branch, 
+		   // vname = cdr vname; 
 
 		   new assignNode( vname, new 
 				   unaryNode( new 
 					      identNode( vname ), Var(Op::CDR) ) ), 
-		   
-		   /** if (vname) { vname = cdr vname; continue; } else break; **/
+		   /** branch()
+		    */
+		   branch, 
+  
+		   /** if (vname) continue; else break; **/
 		   new
 		   ifElseNode( new
 			       identNode( vname ),

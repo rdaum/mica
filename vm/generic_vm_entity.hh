@@ -11,7 +11,7 @@ namespace mica {
    *  so we don't have lots of replicated code.
    */
   class generic_vm_entity
-    : public Scalar
+    : public Atom
   {
   public:
     virtual bool operator==( const Var &rhs ) const {

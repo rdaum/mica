@@ -17,7 +17,7 @@
 #include "Var.hh"
 #include "Symbol.hh"
 #include "Pools.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "Error.hh"
 #include "Exceptions.hh"
 

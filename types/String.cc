@@ -386,37 +386,6 @@ var_vector String::map( const Var &expr ) const
   return ops;
 }
 
-var_vector String::for_in( unsigned int var_no,
-			 const Var &block ) const
-
-{
-  /** Finished iterating.  No-op
-   */
-  if (this->mica_string::empty())
-    return var_vector();
-
-  /** Assign cdr into variable @ var_index, execute block
-   *  continue by iterating the car
-   */
-  var_vector ops;
-
-  ops.push_back( lhead() ); // cdr
-  ops.push_back( Var( Op(Op::SETVAR, var_no) ) );
-
-  ops.push_back( block );
-  ops.push_back( Var(Op::EVAL) );
-
-  if (size() > 1) {
-    /** car
-     */
-    ops.push_back( ltail() );
-    ops.push_back( block );
-    ops.push_back( Var( Op( Op::FOR_RANGE, var_no ) ) );
-  }
-  
-  return ops;
-}
-
 mica_string String::tostring() const
 {
   return *this;;

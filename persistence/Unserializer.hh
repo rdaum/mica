@@ -11,8 +11,6 @@ namespace mica {
   class OStorage;
 
   class Frame;
-  class NativeFrame;
-  class AbstractFrame;
   class Message;
 
   class Unserializer
@@ -29,9 +27,7 @@ namespace mica {
     Ref<Task> parseTaskReal() ;
 
   private:
-    void fillInAbstractFrame( Task *task );
     void fillInFrame( Task *task );
-    void fillInNativeFrame( Task *task );
 
     Ref<Message> parseMessage();
 
@@ -59,7 +55,6 @@ namespace mica {
     Var parseTaskHandle();
     Block* parseBlockCommon( Block *block );
 
-    Var parseNativeBlock();
 
 
     std::vector<int> readIntVector();

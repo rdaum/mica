@@ -22,17 +22,12 @@
 #include "Block.hh"
 
 #include "Error.hh"
-#include "NativeBind.hh"
 #include "GlobalSymbols.hh"
 
 #include "Unserializer.hh"
 #include "Timer.hh"
 #include "Message.hh"
-#include "AbstractFrame.hh"
-#include "NativeFrame.hh"
 #include "Frame.hh"
-
-#include "NativeBlock.hh"
 
 using namespace mica;
 using namespace std;
@@ -146,8 +141,6 @@ Var Unserializer::parseData()
     return parseList();
   case Type::BLOCK:
     return parseBlock();
-  case Type::NATIVEBLOCK:
-    return parseNativeBlock();
   case Type::OBJECT:
     return parseObject();
   case Type::SYMBOL:
@@ -367,13 +360,6 @@ Var Unserializer::parseTaskHandle() {
   return Pools::instance.find_pool_by_name(poolName)->retrieve_task(tid);
 }
 
-Var Unserializer::parseNativeBlock()
-{
-  mica_string library = readString();
-  mica_string symbol = readString();
-
-  return loadNative( library, symbol )->asType<Data*>();
-}
 
 Ref<Task> Unserializer::parseTaskReal()
 {
@@ -387,9 +373,6 @@ Ref<Task> Unserializer::parseTaskReal()
     break;
   case Type::FRAME:
     task = new (aligned) Frame();
-    break;
-  case Type::NATIVEFRAME:
-    task = new (aligned) NativeFrame();
     break;
   default:
     cerr << type_id << endl;
@@ -435,40 +418,32 @@ Ref<Task> Unserializer::parseTaskReal()
 
   if (type_id == Type::FRAME)
     fillInFrame(task);
-  else if (type_id == Type::NATIVEFRAME)
-    fillInNativeFrame(task);
 
   return task;
 }
 
-void Unserializer::fillInAbstractFrame( Task *task ) {
-  AbstractFrame *ac = dynamic_cast<AbstractFrame*>(task);
 
-  ac->source = parseVar();
-  ac->caller = parseVar();
-  ac->self = parseVar();
-  ac->on = parseVar();
+void Unserializer::fillInFrame( Task *task ) {
+  Frame *frame = dynamic_cast<Frame*>(task);
 
-  ac->selector = parseSymbol();
+  frame->source = parseVar();
+  frame->caller = parseVar();
+  frame->self = parseVar();
+  frame->on = parseVar();
 
-  ac->definer = parseVar();
+  frame->selector = parseSymbol();
+
+  frame->definer = parseVar();
 
   size_t args_size;
   UnPack( args_size );
 
   while (args_size--) {
-    ac->args.push_back( parseVar() );
+    frame->args.push_back( parseVar() );
   }
 
-}
-
-void Unserializer::fillInFrame( Task *task ) {
-  fillInAbstractFrame( task );
-
-  Frame *frame = dynamic_cast<Frame*>(task);
 
   UnPack(frame->control._pc);
-
 
   frame->control.set_block( parseData()->asRef<Block>() );
 
@@ -482,11 +457,6 @@ void Unserializer::fillInFrame( Task *task ) {
   UnPack( frame->ex_state );
 }
 
-void Unserializer::fillInNativeFrame( Task *task ) {
-  fillInAbstractFrame( task );
-
-  dynamic_cast<NativeFrame*>(task)->native_block = parseData()->asRef<NativeBlock>();
-}
 
 Ref<Message> Unserializer::parseMessage() {
   Type::Identifier type_id;

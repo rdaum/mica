@@ -13,7 +13,7 @@
 
 #include "Data.hh"
 #include "Var.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "Error.hh"
 #include "Symbol.hh"
 #include "Exceptions.hh"

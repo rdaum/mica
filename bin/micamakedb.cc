@@ -14,7 +14,7 @@
 
 #include "Data.hh"
 #include "Var.hh"
-#include "Scalar.hh"
+#include "Atom.hh"
 #include "Exceptions.hh"
 #include "Scheduler.hh"
 #include "Task.hh"

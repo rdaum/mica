@@ -10,7 +10,7 @@ namespace mica {
  */
 struct Type {
   typedef enum { 
-    // SCALARS (HELD IN VAR)
+    // ATOMS (HELD IN VAR)
     INTEGER, FLOAT, CHAR, OPCODE, BOOL,
     
     // BASE TYPES

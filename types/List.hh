@@ -84,7 +84,7 @@ namespace mica {
 
 
   public:
-    // SCALAR ARITHMETIC PROTOCOL
+    // ATOM ARITHMETIC PROTOCOL
 
     Var add( const Var &rhs ) const;
 
@@ -103,7 +103,7 @@ namespace mica {
 
     /** @return false
      */
-    bool isScalar() const {
+    bool isAtom() const {
       return false;
     }
 
@@ -278,9 +278,6 @@ namespace mica {
     mica_string serialize() const;
 
   public:
-    var_vector for_in( unsigned int var_index,
-		       const Var &block ) const;
-
     var_vector map( const Var &expr ) const;
  
     var_vector flatten() const;
