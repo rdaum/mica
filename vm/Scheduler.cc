@@ -131,10 +131,13 @@ bool Scheduler::run()
    *  events and messages that can be processed.
    */
   static int processed = 0;
+  bool first = true;
 
   while (running) {
     int old_processed = processed;
     processed = processTasks();
+    if (processed && first)
+      first = false;
     
     /** Every time we have processed no events but have processed
      *  some recently (i.e. there's a "pause") we can invoke the
@@ -147,15 +150,11 @@ bool Scheduler::run()
      *
      *  Todo: sync pools every X seconds
      */
-    if (processed == 0 && old_processed != 0) {
+    if (processed == 0 && old_processed == 0 && !first) {
       reference_counted::collect_cycles();
-    }
-
-    /** If we haven't processed anything, we can go away
-     */
-    if (processed == 0 && old_processed == 0) {
       break;
     }
+
   } 
 
   return running;

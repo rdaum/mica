@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <typeinfo>
+#include <stdint.h>
 
 #include <boost/operators.hpp>
 #include <boost/cast.hpp>
@@ -42,18 +43,13 @@ namespace mica
       bool            is_integer : 1;
       int                integer : 31;
     };
-    struct _Pointer {
-      bool            is_integer : 1;
-      bool            is_pointer : 1;
-      unsigned int           ptr : 30;
-    };
     
-  private:
+  public:
     /** Union/variant-type or reference to an object
      */
     union {
+      uint32_t	      value;
       _Integer        numeric;
-      _Pointer        ptr; 
       _Atom           atom;   
     } v;
 
@@ -62,8 +58,8 @@ namespace mica
     inline Type::Identifier type_identifier() const {
       if (v.numeric.is_integer) 
 	return Type::INTEGER;
-      else if (v.ptr.is_pointer)
-	return reinterpret_cast<Data*>(v.ptr.ptr)->type_identifier();
+      else if (v.atom.is_pointer)
+	return get_data()->type_identifier();
       else
 	switch (v.atom.type) {
 	case Atoms::CHAR:
@@ -81,8 +77,8 @@ namespace mica
     R apply_visitor( const T &x ) const {
       if (v.numeric.is_integer) 
         return x.operator()( boost::numeric_cast<int>(v.numeric.integer) );
-      else if (v.ptr.is_pointer)
-	return x.operator()( reinterpret_cast<Data*>(v.ptr.ptr) );
+      else if (v.atom.is_pointer)
+	return x.operator()( get_data() );
       else
 	switch (v.atom.type) {
 	case Atoms::CHAR:

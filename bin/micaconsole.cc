@@ -90,31 +90,29 @@ public:
     if (!stringStack.size())
       return;
 
-    /** Compile it to 'eval'
-     */
-    rope_string code(stringStack.back());
-    stringStack.pop_back();
+      /** Compile it to 'eval'
+       */
+      rope_string code(stringStack.back());
+      stringStack.pop_back();
 
-    var_vector args;
-
-    Ref<Block> block(mica::compile(code ));
-
+      if ( code.size() ) {      
+	var_vector args;
+	
+	Ref<Block> block( mica::compile(code) );
+	
 #ifdef DEBUG_OPCODES
-    cout << block->dump() << endl;
+	cout << block->dump() << endl;
 #endif
-
-    Slots::assign_verb( eval_obj, EVAL_TMP_SYM, var_vector(), Var(block) );
-
-    Var msg = send( MetaObjects::SystemMeta, MetaObjects::SystemMeta,
-		    eval_obj, eval_obj, 
-		    EVAL_TMP_SYM, args );
-    msg.perform( this, NONE );
-
-
-
-
+	
+	Slots::assign_verb( eval_obj, EVAL_TMP_SYM, var_vector(), Var(block) );
+	
+	Var msg = send( MetaObjects::SystemMeta, MetaObjects::SystemMeta,
+			eval_obj, eval_obj, 
+			EVAL_TMP_SYM, args );
+	msg.perform( this, NONE );
+      }
   };
-
+  
 
   Var notify( const Var &argument ) {
     cout << "NOTIFY: " << argument << endl;
@@ -139,15 +137,13 @@ public:
     if (reply_message->isReturn()) {
       cout << "=> " << reply_message->args[0] << endl;
     } else if (reply_message->isRaise()) {
-      rope_string traceback = reply_message->args[1].tostring();
 
+      rope_string traceback = reply_message->args[1].tostring();
       cout << traceback << endl ;
       
     } else if (reply_message->isHalt()) {
       cout << "Halted." << endl;
-    } else if (reply_message->isExecutable()) {
-      logger.errorStream() << "top level closure cannot execute opcodes" << log4cpp::CategoryStream::ENDLINE;
-    }
+    } 
 
   }
 };
@@ -160,7 +156,7 @@ void evalLoop( const Var &eval_obj ) {
   /** Build a top-level closure for our session.  Schedule it, then
    *  we can send messages from it.
    */
-  Task *eval_task = new EvalLoopTask( eval_obj );
+  Task *eval_task = new (aligned) EvalLoopTask( eval_obj );
 
   Scheduler::instance->event_add( eval_task );
   
@@ -182,14 +178,13 @@ void evalLoop( const Var &eval_obj ) {
 	     << " column #" << le.column << endl;      
 	goto read;
       } catch (const Ref<Error> &err) {
-	cout << Var(err) << endl;
+	cout << "Caught: " << Var(err) << endl;
 	goto read;
       }
 
     } else {
       Scheduler::instance->stop();
     }
-    delete line;
   } while (Scheduler::instance->run());
 
   Scheduler::instance->detach( Ref<Task>(eval_task) );
@@ -264,9 +259,10 @@ int main( int argc, char *argv[] )
   try {
     evalLoop( default_lobby );
 
-  } catch (Ref<Error> e) {
-    cout << e << endl;
+  } catch (const Ref<Error> &e) {
+    cout << "outer level: " << Var(e) << endl;
   }
+		
 
   /** Remove :eval_tmp slot 
    */

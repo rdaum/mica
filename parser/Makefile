@@ -8,9 +8,6 @@ CLEAN = lexer.cpp lexer.h parser.cpp  parser.h \
         lexer.o parser.o ParseDriver.o parser.conflicts \
 	test
 
-base/MicaParser.o: base/MicaParser.cc base/MicaParser.hh parser.h lexer.h lexer.o parser.o 
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c base/MicaParser.cc -o base/MicaParser.o
-
 lexer.o: lexer.cpp lexer.h parser.h
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -O2 -c lexer.cpp -o lexer.o
 
@@ -26,3 +23,7 @@ parser.o: parser.cpp parser.h lexer.h
 
 parser.cpp parser.h: parser.whl
 	$(WHALE) parser.whl
+
+base/MicaParser.o: base/MicaParser.cc base/MicaParser.hh parser.h lexer.h lexer.o parser.o 
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c base/MicaParser.cc -o base/MicaParser.o
+

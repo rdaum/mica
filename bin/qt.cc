@@ -12,13 +12,9 @@ using namespace std;
 
 int main() {
 
-  Var y( List::empty());
-
-
-  size_t x = 1<<12;
-  while (x--)
-    y = y + Var((int)x);
-
-  reference_counted::collect_cycles();
-
+  Var x( String::create("test") );
+  cerr << (void*)(x.v.value >> 2 << 2) << endl;
+  cerr << (void*)(x.v.value ^ 0x02) << endl;
+  cerr << (void*)(x.v.ptr.ptr << 2) << endl;
+  cerr << x << endl;
 }

@@ -345,11 +345,9 @@ static rep_visitor rep_v;
 static flatten_visitor flatten_v;
 
 
-/** This is annoyingly slow.
- */
 Data *Var::operator->() const {
   PRECONDITION(isData());
-  return reinterpret_cast<Data*>(v.ptr.ptr);
+  return get_data();
 };
     
 // normally this would be after the constructors 
@@ -362,7 +360,7 @@ bool Var::invariant() const
   // behavior.  The guard check isn't much good, but it's better
   // than nothing.
   if (isData()) 
-    return reinterpret_cast<Data*>(v.ptr.ptr);
+    return get_data();
 
   // checking refcnt here was wrong because odd things can happen to the
   // reference counts when the cyclic detector is playing with them.
@@ -374,15 +372,16 @@ bool Var::invariant() const
 void Var::set_data( Data *data ) {
   dncount();
 
-  v.ptr.is_integer = false;
-  v.ptr.is_pointer = true;
-  v.ptr.ptr = reinterpret_cast<unsigned int>(data);
+  v.value = reinterpret_cast<uint32_t>(data) | 0x02;
+  
+  assert( get_data() == data );
 
   upcount();
 }
 
 inline Data *Var::get_data() const {
-  return reinterpret_cast<Data*>(v.ptr.ptr);
+  PRECONDITION(isData());
+  return reinterpret_cast<Data*>( (v.value ^ 0x02) ) ;
 }
 
 Var::~Var() {

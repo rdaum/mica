@@ -160,7 +160,7 @@ TID Pool::manage_task( Task *task ) {
    */
   unsigned int id = new_in( managed_tasks, free_task_list );
 
-  TaskEntry *new_entry = new (aligned) TaskEntry( task, id );
+  TaskEntry *new_entry = new TaskEntry( task, id );
   managed_tasks[id] = new_entry;
 
   return id;
@@ -171,7 +171,9 @@ Task *Pool::retrieve_task( TID task_id ) const {
 }
 
 void Pool::unmanage_task( TID task_id ) {
+
   delete managed_tasks[task_id];
+  
   managed_tasks[task_id] = 0;
   free_task_list.push_back(task_id);
 }

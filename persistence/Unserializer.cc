@@ -552,9 +552,6 @@ Ref<Message> Unserializer::parseMessage() {
   case Type::HALTMESSAGE:
     msg = new (aligned) HaltMessage();
     break;
-  case Type::EXECUTABLEMESSAGE:
-    msg = new (aligned) ExecutableMessage();
-    break;
   default:
     throw internal_error("invalid type_id in Unserializer::parseMessage");
   }
@@ -582,13 +579,5 @@ Ref<Message> Unserializer::parseMessage() {
     msg->args.push_back( parseVar() );
   }
   
-  if (type_id == Type::EXECUTABLEMESSAGE) {
-    size_t opcodes_size;
-    UnPack( opcodes_size );
-    while (opcodes_size--) {
-      dynamic_cast<ExecutableMessage*>(msg)->opcodes.push_back( parseVar() );
-    }
-  }
-
   return msg;
 }

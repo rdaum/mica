@@ -109,14 +109,6 @@ SlotResult Slots::get_name( const Var &self,
   return get_slot( self, Var(NAME_SYM), name );
 }
 
-/** How to implement wild-card arguments:
- *
- *  Add an "Any" global object to the system.  declare_verb
- *  will add parasites to it; delegates retrieval in match_verb 
- *  always appends it.
- */
-
-
 SlotResult Slots::match_verb( const Var &self,
 			      const Symbol &name,
 			      const var_vector &arguments ) {
@@ -281,8 +273,8 @@ SlotResult Slots::match_verb( const Var &self,
 }
 
 SlotResult Slots::get_verb( const Var &self,
-			  const Symbol &selector,
-			  const var_vector &argument_template ) {
+			    const Symbol &selector,
+			    const var_vector &argument_template ) {
   return self.get( List::from_vector(argument_template), selector );
 }
 
@@ -366,8 +358,6 @@ Var Slots::assign_verb( Var &self,
   assign_arguments( self, arguments, selector, argument_template,
 		    method );
   
-
-
   return method;
 }
 

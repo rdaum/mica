@@ -19,8 +19,8 @@ namespace mica {
   public:
     bool         is_integer : 1;
     bool         is_pointer : 1;
-    Atoms::types type       : 2;
-    unsigned int idx        : 28;
+    Atoms::types type       : 3;
+    unsigned int idx        : 27;
 
    
    

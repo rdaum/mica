@@ -108,7 +108,7 @@ bool Message::operator==( const Message &v2 ) const
  */
 bool Message::isReply() const
 {
-   return ( isReturn() || isRaise() || isHalt() || isExecutable() );
+   return ( isReturn() || isRaise() || isHalt() );
 }
 
 /** is this a return?
@@ -126,10 +126,6 @@ bool Message::isRaise() const
   return false;
 }
 
-bool Message::isExecutable() const
-{
-  return false;
-}
 
 /** is this a halt?
  */
@@ -260,17 +256,6 @@ RaiseMessage::RaiseMessage( Ref<Task> parent_task,
   args.push_back( String::from_rope(traceback) );
 }; 
 
-rope_string ExecutableMessage::serialize() const {
-  rope_string s_form( this->Message::serialize() );
-
-  Pack( s_form, opcodes.size() );
-
-  var_vector::const_iterator x;
-  for (x = opcodes.begin(); x != opcodes.end(); x++)
-    s_form.append( x->serialize() );
-
-  return s_form;
-}
 
 int mica::msg_count()
 {

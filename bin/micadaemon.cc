@@ -191,10 +191,7 @@ public:
       
     } else if (reply_message->isHalt()) {
       logger.errorStream() << "child task of connection halted" << log4cpp::CategoryStream::ENDLINE;
-    } else if (reply_message->isExecutable()) {
-      logger.errorStream() << "attempt to send executable message to top-level network task" << log4cpp::CategoryStream::ENDLINE;
-
-    }
+    } 
 
   }
 };

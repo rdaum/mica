@@ -71,9 +71,7 @@ public:
 
     } else if (reply_message->isHalt()) {
       cerr << "Halted." << endl;
-    } else if (reply_message->isExecutable()) {
-      cerr << "Top level closure cannot execute opcodes.";
-    }
+    } 
   }
 
 };

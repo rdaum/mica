@@ -134,11 +134,6 @@ namespace mica {
      */
     virtual bool isReply() const;
 
-    /** is this an executable reply?  (contains opcodes to be
-     * executed by virtual machine)
-     */
-    virtual bool isExecutable() const;
-
     /** is this a reply to this event?
      */
     virtual bool isReplyTo( const Ref<Task> &e ) const;
@@ -261,44 +256,6 @@ namespace mica {
     }; 
 
     rope_string typeName() const { return "HaltMessage"; }
-  };
-
-
-  class ExecutableMessage
-    : public Message
-  {
-  public:
-    Type::Identifier type_identifier() const { 
-      return Type::EXECUTABLEMESSAGE; 
-    }
-
-  public:
-    var_vector opcodes;
-
-    ExecutableMessage() :
-      Message() 
-    {};
-
-    ExecutableMessage( const Message &caller )
-      : Message( caller ) 
-    {};
-
-    ExecutableMessage( Ref<Task> parent_task, 
-		       unsigned int id,   
-		       const var_vector &OpCodes )
-      : Message(), opcodes(OpCodes)
-    {
-      parent_task = parent_task;
-      msg_id = id;
-    }; 
- 
-    bool isExecutable() const {
-      return true;
-    }; 
-
-    rope_string serialize() const;
-
-    rope_string typeName() const { return "ExecutableMessage"; }
   };
 
   extern int msg_count();

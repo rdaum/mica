@@ -132,10 +132,6 @@ namespace mica {
 	      const Var &on, const Symbol &selector,
 	      const var_vector &args );
     
-    /** Queue the execution of a block of opcodes.
-     */
-    Var send_execute( const var_vector &args );
-    
     /** Return a blank, blocking message for the purpose of spawning
      *  some immediate child of this task (i.e. for a lambda call)
      */

@@ -84,9 +84,9 @@ namespace mica {
 
     bool         is_integer : 1;
     bool         is_pointer : 1;
-    Atoms::types type       : 2;
+    Atoms::types type       : 3;
     Code         code       : 8;
-    unsigned int param      : 20;
+    unsigned int param      : 19;
 
     Op() 
       : is_integer(false), is_pointer(false), type(Atoms::OPCODE),

@@ -38,7 +38,6 @@ bool Error::operator==( const Var &rhs ) const
   if ( rhs.type_identifier() != Type::ERROR )
     return false;
 
-   
   Error *x = (rhs->asType<Error *>());
 
   return *this == *x;
@@ -46,7 +45,6 @@ bool Error::operator==( const Var &rhs ) const
 
 bool Error::operator<( const Var &rhs ) const
 {
-
   if ( rhs.type_identifier() != Type::ERROR )
     return false;
 

@@ -99,9 +99,11 @@ Task::~Task() {}
 
 void Task::finalize_paged_object() {
   task_counter--;
+  cerr << "Collecting task: " << tid << endl;
 
   Pool *pool = Pools::instance.get(pid);  
   pool->unmanage_task( tid );
+
 }
 
 int mica::task_count()
@@ -117,16 +119,19 @@ void Task::tick() {
 }
 
 void Task::reply( const Ref<Message> &message ) {
+
   // Make sure that the replying message is marked with the correct
   // message id.
   assert( message->msg_id == msg_id );
 
   if ((Task*)parent_task != 0) {
+
     parent_task->receive( message );
 
     /** Break the link with the parent, so that we can be collected
      */
     parent_task = 0;
+
   }
   else {
     logger.errorStream() << "attempt to send a reply from top-level task.  pid: " << pid << " tid: " << tid << log4cpp::CategoryStream::ENDLINE;
@@ -238,13 +243,6 @@ Var Task::send( const Var &source, const Var &from, const Var &to,
   return Var(msg);  
 }
 
-Var Task::send_execute( const var_vector &opcodes ) {
-  Ref<Message> msg = new (aligned) ExecutableMessage( this, children.size(), opcodes );
-
-  children.push_back( msg );
-
-  return Var(msg);  
-}
 
 Ref<Message> Task::spawn() {
   /** Put a dummy message for blocking in here
@@ -269,7 +267,7 @@ bool Task::activate() {
     return true;
 
   /** Reset the expire timer
-   */
+   */ 
   if (!expire_timer.started)
     expire_timer.reset();
 

@@ -9,11 +9,13 @@ namespace mica {
 
 
   inline void* do_alloc( size_t size_of ) {
-    void *addr;
-    int result = posix_memalign( &addr, 4, size_of );
-    
-    if (result != 0) {
-      assert(result == 0);
+
+    /** This is _supposed_ to be aligned on 8-byte blocks
+     *  which is good, because we use some lower bits for
+     *  storing goodies
+     */
+    void *addr = malloc( size_of );
+    if (addr == 0) {
       throw std::bad_alloc();
     }
     return addr;
