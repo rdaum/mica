@@ -9,6 +9,7 @@
 #include <functional>
 #include <iostream>
 #include <set>
+#include <vector>
 
 #include "reference_counted.hh"
 

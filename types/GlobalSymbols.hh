@@ -57,6 +57,7 @@ namespace mica {
   extern Symbol TITLE_SYM;
   extern Symbol DELEGATE_SYM;
   extern Symbol VERB_SYM;
+  extern Symbol CREATOR_SYM;
 }
 
 #endif

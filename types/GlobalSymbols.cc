@@ -114,3 +114,4 @@ Symbol mica::TITLE_SYM;
 Symbol mica::NAME_SYM;
 Symbol mica::DELEGATE_SYM;
 Symbol mica::VERB_SYM;
+Symbol mica::CREATOR_SYM;
