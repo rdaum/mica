@@ -437,30 +437,29 @@ void Frame::op_make_object( unsigned int param_1, unsigned int param_2 )
    */
   Ref<Block> c_block( pop()->asRef<Block>() );
   
-  /** Create a frame for it
+  /** Build a closure for it
    */
-  Ref<Frame> new_frame( new (aligned) Frame(this) );
-  new_frame->control.set_block( c_block );
-  
+  Ref<Closure> cl = new Closure( var_vector(),       // Empty stack
+				 scope.copy(),       // Inherit the scope
+				 Control(c_block),   // The block
+				 ExceptionMap(),     // New exception map
+				 CLOSURE );
+
   /** Expand its variable scope by 1, to make room for "creator"
    */
-  new_frame->scope.enter( 1 );
+  cl->scope.enter( 1 );
 
   /** Set that variable to current self
    */
-  new_frame->scope.set( param_1, self );
+  cl->scope.set( param_1, self );
 
   /** Now create an object and put it on self + definer on the new frame
    */
   Var new_object( Object::create() );
-  new_frame->self = new_object;
-  new_frame->definer = new_object;
+  cl->self = new_object;
+  cl->definer = new_object;
 
-  /** Clear its parent_task
-   */
-  new_frame->parent_task = 0;
-
-  push( Var(new_frame) );
+  push( Var(cl) );
 }
 
 

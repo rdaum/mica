@@ -15,12 +15,16 @@ Closure::Closure( const var_vector &i_stack,
 		  const Environment &i_scope,
 		  const Control &i_control,
 		  const ExceptionMap &i_exceptions,
-		  ClosureTag i_tag )
+		  ClosureTag i_tag, 
+		  const Var &i_self, 
+		  const Var &i_definer )
   : stack(i_stack),
     scope(i_scope),
     control(i_control), 
     exceptions(i_exceptions),
-    tag(i_tag)
+    tag(i_tag),
+    self(i_self),
+    definer(i_definer)
 {
 }
 
@@ -47,6 +51,8 @@ child_set Closure::child_pointers() {
        x++) {
     children.push_back( (Closure*)x->second.handler );
   }
+
+  children << self << definer;
 
   return children;
 }

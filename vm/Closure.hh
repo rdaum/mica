@@ -23,7 +23,9 @@ namespace mica {
 	     const Environment &i_scope,
 	     const Control &control,
 	     const ExceptionMap &i_exceptions,
-	     ClosureTag i_tag );
+	     ClosureTag i_tag,
+	     const Var &self = NONE,
+	     const Var &definer = NONE );
 
     virtual ~Closure();
 
@@ -45,7 +47,10 @@ namespace mica {
     ExceptionMap exceptions;
 
     ClosureTag tag;
+    
+    Var self;
 
+    Var definer;
 
   public:
     mica_string serialize() const;

@@ -180,7 +180,7 @@ void Frame::push_dump( const Ref<Closure> &closure ) {
 }
 
 Ref<Closure> Frame::make_closure( ClosureTag tag ) const {
-  return new Closure( stack, scope, control, exceptions, tag );
+  return new Closure( stack, scope, control, exceptions, tag, self, definer );
 }
 
 void Frame::load_closure( const Ref<Closure> &closure ) {
@@ -191,6 +191,20 @@ void Frame::load_closure( const Ref<Closure> &closure ) {
   scope = closure->scope;  
   control = closure->control;
   exceptions = closure->exceptions;
+
+  /** If the closure stores self and definer, load them.
+   *  Note that anonymous functions are always created with NONE
+   *  values for self + definer, thus they are always executed with 
+   *  the self+definer value of the person applying them, not the
+   *  creator of them.
+   */
+
+  if (closure->self != NONE)
+    self = closure->self;
+
+  if (closure->definer != NONE)
+    definer = closure->definer;
+
 }
 
 void Frame::switch_branch( const Ref<Block> &switch_to ) {
