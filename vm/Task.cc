@@ -99,7 +99,6 @@ Task::~Task() {}
 
 void Task::finalize_paged_object() {
   task_counter--;
-  cerr << "Collecting task: " << tid << endl;
 
   Pool *pool = Pools::instance.get(pid);  
   pool->unmanage_task( tid );
@@ -231,8 +230,8 @@ Var Task::send( const Var &source, const Var &from, const Var &to,
 
   unsigned int msg_id = children.size();
 
-  Ref<Message> msg(new (aligned) Message( this, msg_id, age + 1, ticks,
-				source, from, to, on, selector, args ));
+  Ref<Message> msg( new (aligned) Message( this, msg_id, age + 1, ticks,
+					   source, from, to, on, selector, args ));
 
   children.push_back( msg );
 

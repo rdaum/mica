@@ -33,6 +33,7 @@
 #include "MicaParser.hh"
 #include "Slots.hh"
 
+
 #include "Pool.hh"
 #include "Pools.hh"
 #include "PersistentPool.hh"
@@ -54,6 +55,91 @@ using namespace std;
 std::vector<mica_string> stringStack;
 
 static int verbose;
+
+#include "NativeClosure.hh"
+#include "NativeBlock.hh"
+
+#define WRAP_NO_ARG( TYPE, METHOD ) \
+Var invoke_## METHOD ( const Ref<NativeClosure> &closure ) { \
+  return closure->self->asRef< TYPE >()-> METHOD(); \
+}
+
+#define WRAP_ONE_ARG( TYPE, METHOD ) \
+Var invoke_## METHOD ( const Ref<NativeClosure> &closure ) { \
+  return closure->self->asRef< TYPE >()-> METHOD( closure->args[0] ); \
+}
+
+#define WRAP_TWO_ARG( TYPE, METHOD ) \
+Var invoke_## METHOD ( const Ref<NativeClosure> &closure ) { \
+  return closure->self->asRef< TYPE >()-> METHOD( closure->args[0], closure->args[1] ); \
+}
+
+#define WRAP_THREE_ARG( TYPE, METHOD ) \
+Var invoke_## METHOD ( const Ref<NativeClosure> &closure ) { \
+  return closure->self->asRef< TYPE >()-> METHOD( closure->args[0], closure->args[1], closure->args[2] ); \
+}
+
+#define DEFINE_ONE_ARG( TYPE, METHOD ) \
+Slots::declare_verb( MetaObjects:: TYPE ##Meta, \
+                     Symbol::create( # METHOD ), \
+                     OneAnyArgs, \
+                     new NativeBlock( invoke_## METHOD, \
+				      "", # METHOD ) );
+
+#define DEFINE_ONE_TYPED_ARG( TYPE, METHOD, ARG_TYPE ) { \
+var_vector arglist; \
+arglist.push_back( MetaObjects:: ARG_TYPE ##Meta ); \
+Slots::declare_verb( MetaObjects:: TYPE ##Meta, \
+                     Symbol::create( # METHOD ), \
+                     arglist, \
+                     new NativeBlock( invoke_## METHOD, \
+				      "", # METHOD ) ); }
+
+#define DEFINE_NO_ARG( TYPE, METHOD ) \
+Slots::declare_verb( MetaObjects:: TYPE ##Meta, \
+                     Symbol::create( # METHOD ), \
+                     var_vector(), \
+                     new NativeBlock( invoke_## METHOD, \
+				      "", # METHOD ) );
+
+
+
+WRAP_NO_ARG( List, lview );
+WRAP_NO_ARG( List, lhead );
+WRAP_NO_ARG( List, ltail );
+WRAP_NO_ARG( List, rview );
+WRAP_NO_ARG( List, rhead );
+WRAP_NO_ARG( List, rtail );
+WRAP_NO_ARG( List, concat );
+WRAP_NO_ARG( List, reverse );
+WRAP_NO_ARG( List, unzip );
+
+WRAP_ONE_ARG( List, cons );
+WRAP_ONE_ARG( List, snoc );
+WRAP_ONE_ARG( List, zip );
+WRAP_ONE_ARG( List, append );
+
+void populate_list_meta() {
+  var_vector OneAnyArgs;
+  OneAnyArgs.push_back( MetaObjects::AnyMeta );
+
+  DEFINE_NO_ARG( List, lview );
+  DEFINE_NO_ARG( List, lhead );
+  DEFINE_NO_ARG( List, ltail );
+  DEFINE_NO_ARG( List, rview );
+  DEFINE_NO_ARG( List, rhead );
+  DEFINE_NO_ARG( List, rtail );
+  DEFINE_NO_ARG( List, reverse );
+  DEFINE_NO_ARG( List, unzip ); 
+  DEFINE_NO_ARG( List, concat ); 
+
+  DEFINE_ONE_ARG( List, cons );
+  DEFINE_ONE_ARG( List, snoc );
+
+  DEFINE_ONE_TYPED_ARG( List, append, List );
+  DEFINE_ONE_TYPED_ARG( List, zip, List );
+
+}
 
 class EvalLoopTask
   : public Task
@@ -250,6 +336,7 @@ int main( int argc, char *argv[] )
 
   logger.infoStream() << "evaluating on object: " << default_lobby << log4cpp::CategoryStream::ENDLINE;
 
+  populate_list_meta();
 
   /** Now start evaluating.
    */

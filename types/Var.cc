@@ -504,6 +504,7 @@ Var &Var::operator=( const Var &from )
 Var &Var::operator=( Data *rhs )
 {
   set_data( rhs );
+  return *this;
 }
 
 Var &Var::operator=( int from ) {

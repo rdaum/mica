@@ -95,6 +95,9 @@ AC_HEADER_STDC
 AC_CHECK_HEADER(nana.h)
 AC_CHECK_HEADERS([hash_map ext/hash_map map], break)
 AC_CHECK_HEADERS([hash_set ext/hash_set set], break)
+AC_CHECK_HEADERS([rope ext/rope], break)
+
+
 
 
 # Checks for typedefs, structures, and compiler characteristics.

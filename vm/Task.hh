@@ -179,7 +179,7 @@ namespace mica {
     unsigned long time_to_live;
 
     Timer expire_timer;    // When timer exceeds time_to_live, terminate
-                           // this task.
+                            // this task.
 
     bool terminated;
     unsigned int blocked;  // bitmask of what we're blocked on.

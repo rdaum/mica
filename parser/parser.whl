@@ -235,10 +235,10 @@ argDeclList -> [(id=mandatoryVarList / ",")] ("," "?" id=optionalVarList)* ["," 
 
 message    -> [qualifier=qualifier] msgArgs=verbT;
 
-verbTemplt -> (id=rootSel [([":" verbArg=rootArg] (id=moreSels ":" verbArg=args )*)] );
+verbTemplt -> (id=rootSel [([ [":"] verbArg=rootArg] (id=moreSels ":" verbArg=args )*)] );
 verbArg    -> expr=argexpr | "*"=wildcard ;
 
-msgArgs    -> (id=rootSel [([":" expr=rootArg] (id=moreSels ":" expr=args )*)] );
+msgArgs    -> (id=rootSel [( [ [":"] expr=rootArg] (id=moreSels ":" expr=args )*)] );
 
 selector   -> (id=slotName) ("[" expr=slotNameExpr "]") ;
 qualifier  -> "like" expr=asObj;
@@ -252,7 +252,7 @@ remove     -> var=var;
 // Can new a var or a slot
 decl       -> varDecl=varDecl | slotDecl=slotDecl;
 
-slotDecl   -> slot=slot [":=" expr=initialValue];
+slotDecl   -> slot=slot ":=" expr=initialValue;
 varDecl    -> id=id [":=" expr=initialValue];
 
 slot       ->   verbSlot=verbSlot | privateSlot=privateSlot

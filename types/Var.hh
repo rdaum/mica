@@ -72,9 +72,10 @@ namespace mica
 	  return Type::SYMBOL;
 	case Atoms::UNUSED:
 	  assert(0);
+	  return Type::ABSTRACT; // Shouldn't get here
 	}
       assert(0);
-      exit(-1);
+      return Type::ABSTRACT;     // Shouldn't get here
     }
 
     template<typename R, typename T>
@@ -208,7 +209,7 @@ namespace mica
 
     void set_data( Data * );
 
-    inline Data *get_data() const;
+    Data *get_data() const;
 
     inline void upcount() {
       if (isData()) {

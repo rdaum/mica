@@ -10,12 +10,9 @@ BUGS:
 For mica 0.9 
 ============
 
-- floats / bignums support :
+- floats / bignums support back in:
      - as an indexed boxed type (similar to Symbol that way)
      - reference counting?   (unlike symbols, people may create large data sets of floats)
-
-- finish new iterator and operator model:
-     - filter / fold, fold_left, fold_right (crazy)
 
 - slot-name-expressions for verb selectors+prepositions
 

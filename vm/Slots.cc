@@ -163,7 +163,7 @@ SlotResult Slots::match_verb( const Var &self,
 	  /** Argument template for the verbdef must match the
 	   *  length of our in-arguments
 	   */
-	  if ( (*Co)->argument_template.size() != arguments.size() )
+	  if ( (*Co)->argument_template.size() != (num_args - 1))
 	    continue;
 
 	  Ref<AbstractBlock> method( (*Co)->method->asRef<AbstractBlock>() );
@@ -181,15 +181,13 @@ SlotResult Slots::match_verb( const Var &self,
 	  
 	  /** It's all matched -- invoke
 	   */
-	  if (method->arg_mask.marked_all_of( args.size() ) ) {
+	  if (method->arg_mask.marked_all_of( num_args ) ) {
+	    SlotResult res;
+	    res.definer = (*Co)->definer;
+	    res.value = (*Co)->method;
 
-	    SlotResult result;
-	    result.definer = (*Co)->definer;
-	    result.value = (*Co)->method;
-
-	    return result;
+	    return res;
 	  }
-	  
 	}
       }
 

@@ -11,6 +11,9 @@
 /* Define to 1 if you have the <ext/hash_set> header file. */
 #undef HAVE_EXT_HASH_SET
 
+/* Define to 1 if you have the <ext/rope> header file. */
+#undef HAVE_EXT_ROPE
+
 /* Define to 1 if you have the `getpwuid' function. */
 #undef HAVE_GETPWUID
 
@@ -34,6 +37,9 @@
 
 /* Define to 1 if you have the `posix_memalign' function. */
 #undef HAVE_POSIX_MEMALIGN
+
+/* Define to 1 if you have the <rope> header file. */
+#undef HAVE_ROPE
 
 /* Define to 1 if you have the `select' function. */
 #undef HAVE_SELECT
