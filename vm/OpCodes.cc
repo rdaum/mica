@@ -88,6 +88,7 @@ OpInfo opcode_info[] = {
   { Op::TICKS,	"TICKS",	&Frame::op_ticks, 0 },
   { Op::CALLER,	"CALLER",	&Frame::op_caller, 0 },
   { Op::SELF,	"SELF",		&Frame::op_self, 0 },
+  { Op::SUSPEND,"SUSPEND",      &Frame::op_suspend, 0 },
   { Op::SOURCE,	"SOURCE",	&Frame::op_source, 0 },
   { Op::SELECTOR,	"SELECTOR",	&Frame::op_selector, 0 },
   { Op::ARGS,	"ARGS",		&Frame::op_args, 0 },
@@ -493,8 +494,6 @@ void Frame::op_catch( unsigned int param_1, unsigned int param_2 )
 void Frame::op_perform( unsigned int param_1, unsigned int param_2 )
 {
   Var args(pop()), lhs(pop());
-
-  cerr << lhs << " (" << args << ")" << endl;
 
   var_vector result(lhs.perform( this, args ));
   
@@ -1123,6 +1122,10 @@ void Frame::op_destroy( unsigned int param_1, unsigned int param_2 )
 }
 
 
+void Frame::op_suspend( unsigned int param_1, unsigned int param_2 ) 
+{
+  ex_state = SUSPENDED;
+}
 
 void Frame::op_send( unsigned int param_1, unsigned int param_2 )
 {

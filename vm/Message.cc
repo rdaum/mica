@@ -180,7 +180,9 @@ var_vector Message::perform( const Ref<Frame> &parent, const Var &args )
    */
   Scheduler::instance->event_add( task );
 
-  return var_vector();
+  var_vector tramp;
+  tramp.push_back( Var(Op::SUSPEND) );
+  return tramp;
 }
 
 
