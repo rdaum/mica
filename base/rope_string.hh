@@ -5,7 +5,7 @@
 #include "config.h"
 
 
-#ifdef HAVE_EXT_HASH_MAP
+#ifdef HAVE_EXT_ROPE
 #include <ext/rope>
 #else
 #include <rope>

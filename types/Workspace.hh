@@ -99,7 +99,7 @@ namespace mica {
   protected:
     virtual void del( OID object_id );
 
-  protected:
+  public:
     typedef std::vector<unsigned int> FreeList;
     
     struct ObjectEntry {

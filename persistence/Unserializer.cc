@@ -25,7 +25,6 @@
 #include "GlobalSymbols.hh"
 
 #include "Unserializer.hh"
-#include "Timer.hh"
 #include "Message.hh"
 #include "Frame.hh"
 
@@ -381,10 +380,8 @@ Ref<Task> Unserializer::parseTaskReal()
 
   /** Read the refcnt
    */
-  int refcnt;
-  UnPack( refcnt );
-  task->refcnt = refcnt;
-
+  UnPack( task->refcnt );
+ 
   /** Read the pool name and index.
    */
   Symbol poolName(parseSymbol());

@@ -120,14 +120,18 @@ reference_counted::~reference_counted() {}
  */
 void reference_counted::mark_roots() {
 
+
+  uint32_t cnt = 0;
+
   for (child_set::iterator x = Roots.begin();
        x != Roots.end();) {
    
+    cnt++;
     reference_counted *S = *x;
  
     child_set::iterator next = x;
     next++;
-   
+
     if (S) { // Only visit non-NULL nodes, just in case garbage
       // gets in here
 
@@ -298,6 +302,7 @@ void reference_counted::possible_root() {
 
       /** This is a root.  Maybe.
        */
+
       Roots.push_back( this );
     }
   }

@@ -44,10 +44,13 @@ namespace mica
       int                integer : 31;
     };
 
+  public:
     struct float_store
     {
       float           value;
       unsigned int    refcnt;
+
+      static void free( float_store *ptr );
     };
 
   public:
@@ -64,6 +67,8 @@ namespace mica
     inline Type::Identifier type_identifier() const {
       if (v.integer.is_integer) 
 	return Type::INTEGER;
+      else if (v.atom.is_float)
+	return Type::FLOAT;
       else if (v.atom.is_pointer)
 	return get_data()->type_identifier();
       else
@@ -80,9 +85,6 @@ namespace mica
 	case Atoms::SYMBOL:
 	  return Type::SYMBOL;
 	  break;
-	case Atoms::FLOAT:
-	  return Type::FLOAT; // Shouldn't get here
-	  break;
 	default:
 	  assert(0);
 	}
@@ -94,8 +96,9 @@ namespace mica
     R apply_visitor( const T &x ) const {
       if (v.integer.is_integer) 
         return x.operator()( boost::numeric_cast<int>(v.integer.integer) );
+      else if (v.atom.is_float)
+	return x.operator()( as_float() );
       else if (v.atom.is_pointer) {
-
 	return x.operator()( get_data() );
       }  else
 	switch (v.atom.type) {
@@ -110,9 +113,6 @@ namespace mica
 	  break;
 	case Atoms::SYMBOL:
 	  return x.operator()( as_symbol() );
-	  break;
-	case Atoms::FLOAT:
-	  return x.operator()( as_float() );
 	  break;
 	default:
 	  assert(0);
@@ -168,6 +168,7 @@ namespace mica
      */
     template<class T>
     explicit Var( const Ref<T> &from ) { 
+      v.value = 0; 
       set_data( dynamic_cast<Data*>( (T*)(from) ) );
     }
 
@@ -241,7 +242,7 @@ namespace mica
     Data *get_data() const;
 
     inline bool is_float() const {
-      return !v.atom.is_integer && !v.atom.is_pointer && !v.atom.type == Atoms::FLOAT;
+      return !v.atom.is_integer && v.atom.is_float;
     }
 
     inline void upcount() {
@@ -265,7 +266,7 @@ namespace mica
 	if (fl) {
 	  fl->refcnt--;
 	  if (!fl->refcnt)
-	    free(fl);
+	    float_store::free( fl );
 	}
       }
     }
@@ -434,7 +435,7 @@ namespace mica
     /** is the object storing heap-allocated Data?
      */
     inline bool isData() const {
-      return !v.atom.is_integer && v.atom.is_pointer;
+      return (!v.atom.is_integer && !v.atom.is_float) && v.atom.is_pointer;
     }
 
     /** is the type atomic?

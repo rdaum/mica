@@ -248,7 +248,7 @@ namespace mica
   public:
     const execution_visitor executor;  // visitor used to handle opcodes
 
-    //////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////
     var_vector stack;        	       // S - value stack
 
     Environment scope;	               // E - the variable environment
@@ -258,7 +258,7 @@ namespace mica
     Control control;		       // C - control
 
     std::vector< Ref<Closure> > dump;  // D - the closure stack
-    //////////////////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////////////
 
     ExecState ex_state;
 

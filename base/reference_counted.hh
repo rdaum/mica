@@ -55,6 +55,9 @@ namespace mica {
   class reference_counted
   {
   public:
+    typedef uint16_t refcount_type;
+
+  public:
     typedef enum { BLACK,    // In use or free
 		   GRAY,     // Possible member of cycle
 		   WHITE,    // Member of garbage cycle
@@ -71,7 +74,7 @@ namespace mica {
     
     /** storage of the reference count for a piece of Data
      */
-    int16_t refcnt;
+    refcount_type refcnt;
 
     bool buffered     : 1;
     bool paged        : 1;
@@ -79,7 +82,7 @@ namespace mica {
     Colouring colour  : 5; 
     uint16_t unused;       
 
-    
+
   public:
     reference_counted();
     virtual ~reference_counted();

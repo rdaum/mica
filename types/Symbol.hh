@@ -19,9 +19,10 @@ namespace mica {
 
   public:
     bool         is_integer : 1;
+    bool         is_float   : 1;
     bool         is_pointer : 1;
     Atoms::types type       : 3;
-    unsigned int idx        : 27;
+    unsigned int idx        : 26;
 
    
    
@@ -33,12 +34,13 @@ namespace mica {
 
   public:
     Symbol() 
-      : is_integer(false), is_pointer(false), type(Atoms::SYMBOL),
+      : is_integer(false),  is_float(false),is_pointer(false),
+	type(Atoms::SYMBOL),
 	idx(0) {}
 
     Symbol( const Symbol &symbol ) :
-      is_integer(false), is_pointer(false), type(Atoms::SYMBOL),
-      idx(symbol.idx) {}
+      is_integer(false), is_float(false), is_pointer(false), 
+      type(Atoms::SYMBOL), idx(symbol.idx) {}
 
     Symbol &operator=( const Symbol &symbol ) {
       if (&symbol != this) {

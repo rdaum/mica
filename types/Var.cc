@@ -15,7 +15,7 @@
 #define BOOST_NO_LIMITS_COMPILE_TIME_CONSTANTS
 #include <boost/type_traits/is_const.hpp>
 #include <boost/lexical_cast.hpp>
-
+#include <boost/pool/object_pool.hpp>
 
 #include "OpCode.hh"
 #include "Data.hh"
@@ -35,8 +35,13 @@ using namespace mica;
 using namespace std;
 
 #define CLEAR_BITS(x,mask) (( (x) & ~(mask)))
-#define TO_POINTER(x) CLEAR_BITS(x, 3)
-#define TO_FLOAT_POINTER(x) CLEAR_BITS(x, 20)
+#define TO_POINTER(x) CLEAR_BITS(x,4)
+#define TO_FLOAT_POINTER(x) CLEAR_BITS(x,3)
+
+static boost::object_pool<Var::float_store> float_pool;
+void Var::float_store::free( Var::float_store *ptr ) {
+  float_pool.destroy( ptr );
+}
 
 /** For divzero protection
  */
@@ -327,16 +332,27 @@ bool Var::invariant() const
 } 
 
 void Var::set_data( Data *data ) {
+  /** Avoid toggling the refcount -- cost of a comparison, but worth it
+   */
+  if (isData() && (data == get_data()))
+    return;
+
   dncount();
 
-  v.value = reinterpret_cast<uint32_t>(data) | 0x02;
+  v.value = reinterpret_cast<uint32_t>(data);
   
   v.atom.is_integer = false;
+  v.atom.is_float   = false;
   v.atom.is_pointer = true;
 
   assert( get_data() == data );
 
   upcount();
+}
+
+Data *Var::get_data() const {
+  PRECONDITION(isData());
+  return reinterpret_cast<Data*>( TO_POINTER(v.value) );
 }
 
 float Var::as_float() const {
@@ -350,26 +366,18 @@ Var::float_store* Var::get_float() const {
 void Var::set_float( float val ) {
   dncount();
 
-  float_store *float_val = 
-    reinterpret_cast<float_store*>
-    ( mica_memalign( 0x20, sizeof(float_store), 
-		     &reinterpret_cast<void*>(float_val )));
+  float_store *float_val = float_pool.construct();
   
   float_val->refcnt = 1;
   float_val->value = val;
 
-  v.value = reinterpret_cast<uint32_t>(float_val) | 0x05;
+  v.value = reinterpret_cast<uint32_t>(float_val);
   v.atom.is_integer = false;
-  v.atom.is_pointer = false;
-  v.atom.type = Atoms::FLOAT;
+  v.atom.is_float   = true;
 
   assert( as_float() == val );
 }
 
-inline Data *Var::get_data() const {
-  PRECONDITION(isData());
-  return reinterpret_cast<Data*>( TO_POINTER(v.value) );
-}
 
 Var::~Var() {
   dncount();
@@ -379,6 +387,8 @@ Var::~Var() {
 Var::Var()
 {
   v.value = NONE.v.value;
+  assert(!v.atom.is_float);
+  assert(!v.atom.is_pointer);
 }
 
 // Copy constructor
@@ -402,6 +412,7 @@ Var::Var( int initial )
 Var::Var( bool initial )
 {
   v.atom.is_integer = false;
+  v.atom.is_float   = false;
   v.atom.is_pointer = false;
   v.atom.type = Atoms::BOOLEAN;
   v.atom.value = initial;
@@ -410,6 +421,7 @@ Var::Var( bool initial )
 Var::Var( char initial )
 { 
   v.atom.is_integer = false;
+  v.atom.is_float   = false;
   v.atom.is_pointer = false;
   v.atom.type = Atoms::CHAR;
   v.atom.value = initial;
@@ -439,11 +451,13 @@ Var::Var( const Op::Code &code )
 
 Var::Var( const char *from )
 {
+  v.value = 0;
   operator=(String::from_cstr(from));
 }
 
 Var::Var( Data *initial )
 {
+  v.value = 0;
   // constructor, can't use PRECONDITION
   ASSERT(Data::static_invariant(initial));
   set_data( initial );
@@ -451,6 +465,7 @@ Var::Var( Data *initial )
 
 Var::Var( const Data *initial )
 {
+  v.value = 0;
   // constructor, can't use PRECONDITION
   ASSERT(Data::static_invariant(initial));
   set_data( const_cast<Data*>(initial) );
@@ -516,6 +531,7 @@ Var &Var::operator=( char from ) {
   dncount();
 
   v.atom.is_integer = false;
+  v.atom.is_float   = false;
   v.atom.is_pointer = false;
   v.atom.type = Atoms::CHAR;
   v.atom.value = from;
@@ -527,6 +543,7 @@ Var &Var::operator=( bool from ) {
   dncount();
 
   v.atom.is_integer = false;
+  v.atom.is_float   = false;
   v.atom.is_pointer = false;
   v.atom.type = Atoms::BOOLEAN;
   v.atom.value = from;

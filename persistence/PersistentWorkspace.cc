@@ -242,7 +242,6 @@ void PersistentPool::load_tasks() {
     
     Ref<Task> task( unserializer.parseTaskReal() );
 
-    logger.debugStream() << "pool " << pid << " retrieved task " << (Task*)task << " tid: " << task->tid << " msgid: " << task->msg_id << " refcnt: " << task->refcnt << log4cpp::CategoryStream::ENDLINE;
 
     if (task->tid >= managed_tasks.size());
       managed_tasks.resize( task->tid + 64 );
@@ -284,7 +283,6 @@ void PersistentPool::save_tasks() {
     if (*ti) {
       Task *task = (*ti)->task;
       
-      logger.debugStream() << "pool " << pid << " serializing: " << task << " tid: " << task->tid << " msgid: " << task->msg_id << " refcnt: " << task->refcnt << log4cpp::CategoryStream::ENDLINE;
 
       mica_string buffer( task->serialize_full() );
 
@@ -480,10 +478,11 @@ void PersistentPool::write_object( OID id )
   /** Just the refcnt
    */
   Dbt value;
-  int refcnt = objects[id]->object->refcnt;
+  
+  reference_counted::refcount_type refcnt = objects[id]->object->refcnt;
   value.set_data( &refcnt );
-  value.set_size( sizeof(int) );
-  value.set_ulen( sizeof(int) );
+  value.set_size( sizeof(reference_counted::refcount_type) );
+  value.set_ulen( sizeof(reference_counted::refcount_type) );
 
   int ret;
   if ((ret = databases[OID_DB]->put( NULL, &key, &value, 0)) != 0) 
@@ -531,8 +530,8 @@ Ref<Object> PersistentPool::resolve( OID id )
     if ((ret = databases[OID_DB]->get( NULL, &key, &value, 0)) != 0) 
       throw internal_error("unable to retrieve object refcount from db");
     
-    int refcnt;
-    memcpy( &refcnt, value.get_data(), sizeof(int) );
+    reference_counted::refcount_type refcnt;
+    memcpy( &refcnt, value.get_data(), sizeof(reference_counted::refcount_type) );
     objects[id]->object->refcnt = refcnt;
   } 
 

@@ -1,17 +1,19 @@
 #ifndef MMAP_ALLOC
 #define MMAP_ALLOC
 
+#include "config.h"
+
 #include <memory>
 #include <iostream>
 #include <stdlib.h>
 
 inline void *mica_memalign( size_t align, size_t size, void **ptr ) {
 #ifdef HAVE_POSIX_MEMALIGN
-  return ( !posix_memalign( ptr, align, size ) ? *(pp_orig) : NULL );
+  return ( !posix_memalign( ptr, align, size ) ? *(ptr) : NULL );
 #elif defined( HAVE_MEMALIGN )
   return ( *(ptr) = memalign( align, size ) );
 #else /* We don't have any choice but to align manually */
-  (( *(ptr) = malloc( size + align - 1 )) \
+  return (( *(ptr) = malloc( size + align - 1 )) \
    ? (void *)( (((unsigned long)*(ptr)) + (unsigned long)(align-1) ) \
 	       & (~(unsigned long)(align-1)) ) \
    : NULL );

@@ -152,11 +152,10 @@ namespace mica {
   public:
     virtual child_set child_pointers();
 
-    virtual mica_string typeName() const { return "Message"; }
-
     virtual mica_string rep() const;
       
     mica_string serialize() const;
+
     virtual mica_string serialize_full() const;
 
   public:

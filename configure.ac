@@ -8,24 +8,33 @@ AC_LANG(C++)
 # Checks for programs.
 AC_PROG_CXX
 AC_PROG_RANLIB
+AC_HEADER_STDC
+AC_CHECK_FUNCS(memalign posix_memalign)
 
-test "x$GXX" = "xyes" && LDFLAGS="$LDFLAGS -Wl,-export-dynamic"
+################
+dnl Check for system libs needed
+AC_CHECK_FUNCS(select getpwuid)
+
 
 # save the old value of CXXFLAGS since we want to break out INCLUDES
 OLD_CXXFLAGS=$CXXFLAGS
 
+                         
 
 ################
-# --enable-dso-native
-AC_ARG_ENABLE(dso-builtins,
-  AC_HELP_STRING([--enable-dso-builtins], 
-                 [put bootstrap methods in a DLL (EXPERIMENTAL)]))
 
-if test "x$enableval" = xyes; then
-    OPT_ENABLE_DSO_BUILTINS=true
-else
-    OPT_ENABLE_DSO_BUILTINS=false
-fi
+AC_CHECK_LIB(dl,dlopen, [LIBS="$LIBS -ldl"])
+AC_CHECK_LIB(nana, nana_error, [LIBS="$LIBS -lnana"])
+
+################
+# Checks for header files.
+AC_HEADER_STDC
+
+AC_CHECK_HEADER(nana.h)
+AC_CHECK_HEADERS([hash_map ext/hash_map map], break)
+AC_CHECK_HEADERS([hash_set ext/hash_set set], break)
+AC_CHECK_HEADERS([rope ext/rope], break)
+
 
 ################
 # --with-bdb=
@@ -78,25 +87,19 @@ else
   echo "no"    
 fi
 
-################
-dnl Check for system libs needed
-AC_CHECK_FUNCS(select getpwuid memalign posix_memalign)
-                         
+test "x$GXX" = "xyes" && LDFLAGS="$LDFLAGS -Wl,-export-dynamic"
 
 ################
+# --enable-dso-native
+AC_ARG_ENABLE(dso-builtins,
+  AC_HELP_STRING([--enable-dso-builtins], 
+                 [put bootstrap methods in a DLL (EXPERIMENTAL)]))
 
-AC_CHECK_LIB(dl,dlopen, [LIBS="$LIBS -ldl"])
-AC_CHECK_LIB(nana, nana_error, [LIBS="$LIBS -lnana"])
-
-################
-# Checks for header files.
-AC_HEADER_STDC
-
-AC_CHECK_HEADER(nana.h)
-AC_CHECK_HEADERS([hash_map ext/hash_map map], break)
-AC_CHECK_HEADERS([hash_set ext/hash_set set], break)
-AC_CHECK_HEADERS([rope ext/rope], break)
-
+if test "x$enableval" = xyes; then
+    OPT_ENABLE_DSO_BUILTINS=true
+else
+    OPT_ENABLE_DSO_BUILTINS=false
+fi
 
 
 

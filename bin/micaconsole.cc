@@ -244,7 +244,7 @@ int main( int argc, char *argv[] )
     }
   }
 
-  Var default_lobby = Var(default_pool->lobby);
+  Var default_lobby(default_pool->lobby);
   
   /** Create :eval_tmp slot for later writing
    */
