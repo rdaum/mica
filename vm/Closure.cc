@@ -34,27 +34,24 @@ mica_string Closure::serialize() const {
   return mica_string();
 }
 
-child_set Closure::child_pointers() {
+void Closure::append_child_pointers( child_set &child_list ) {
 
   // Control
-  child_set children( control.child_pointers() );
+  control.append_child_pointers( child_list );
 
   // Stack
-  append_datas( children, stack );
+  append_datas( child_list, stack );
 
   // Environment
-  child_set env_childs( scope.child_pointers() );
-  children.insert( children.end(), env_childs.begin(), env_childs.end() );
+  scope.append_child_pointers( child_list );
 
   // Exceptions
   for (ExceptionMap::iterator x = exceptions.begin(); x != exceptions.end();
        x++) {
-    children.push_back( (Closure*)x->second.handler );
+    child_list.push_back( (Closure*)x->second.handler );
   }
 
-  children << self << definer;
-
-  return children;
+  child_list << self << definer;
 }
 
 mica_string Closure::rep() const {

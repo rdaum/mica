@@ -4,7 +4,7 @@
 #include <boost/spirit/utility.hpp>
 #include <boost/spirit/symbols.hpp>
 #include <boost/spirit/tree/parse_tree.hpp>
-
+#include <boost/spirit/tree/ast.hpp>
 
 #include <iostream>
 #include <string>
@@ -473,20 +473,20 @@ struct mica_grammar : public grammar<mica_grammar>
 	statement >> !(ELSE >> statement);
 
       control_statement
-	= if_expression
-	| try_catch
-	| while_loop
-	| do_loop
-	| for_range
-	| compound_statement;
+	= root_node_d[if_expression]
+	| root_node_d[try_catch]
+	| root_node_d[while_loop]
+	| root_node_d[do_loop]
+	| root_node_d[for_range]
+	| root_node_d[compound_statement];
 
       statement 
 	= expression >> !(SEMICOLON)
-	| RETURN >> expression >> SEMICOLON
-	| NOTIFY >> LEFT_PAREN >> expression >> RIGHT_PAREN >> SEMICOLON
-	| DETACH >> LEFT_PAREN >> RIGHT_PAREN >> SEMICOLON
-	| THROW >> ERROR_LITERAL >> SEMICOLON
-	| REMOVE >> list_p( slot_or_var, COMMA ) >> SEMICOLON;
+	| root_node_d[RETURN >> expression] >> SEMICOLON
+	| root_node_d[NOTIFY >> LEFT_PAREN >> expression >> RIGHT_PAREN] >> SEMICOLON
+	| root_node_d[DETACH >> LEFT_PAREN >> RIGHT_PAREN] >> SEMICOLON
+	| root_node_d[THROW >> ERROR_LITERAL] >> SEMICOLON
+	| root_node_d[REMOVE >> list_p( slot_or_var, COMMA )] >> SEMICOLON;
 
     }
 
@@ -495,10 +495,7 @@ struct mica_grammar : public grammar<mica_grammar>
   };
 };
 
-namespace mica {
-  NPtr compile_nodes( const tree_parse_info<> &info ) {
-    
-  }
+void compile_nodes( const tree_parse_info<> &info ) {
 }
 
 void compile_it()
@@ -513,7 +510,7 @@ void compile_it()
       if (info.full) {
 	cout << "parsing succeeded\n";
 
-	mica::compile_nodes( info );
+	compile_nodes( info );
       } else {
 	cout << "parsing failed\n";
       }

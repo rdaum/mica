@@ -162,10 +162,7 @@ bool Error::truth() const
 }
 
 
-child_set Error::child_pointers()
-{
-  child_set children;
+void Error::append_child_pointers( child_set &child_list ) {
   if ((String*)desc)
-    children.push_back( (String*)desc );
-  return children;
+    child_list.push_back( (String*)desc );
 }

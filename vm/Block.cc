@@ -189,14 +189,8 @@ mica_string Block::rep() const
 
 }
 
-child_set Block::child_pointers() 
-{
-  return child_set();
-
-  /** Hm, this is cause barfage in the realm of the cycle detection
-   *  (putting bullshit values in the roots list)
-   */
-  return data_list( code );
+void Block::append_child_pointers( child_set &child_list ) {
+  // append code?
 }
 
 bool Block::isBlock() const { return true; }

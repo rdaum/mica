@@ -101,7 +101,7 @@ namespace mica
   public:
     /** Return the internal set of object pointers for cycle detection
      */
-    child_set child_pointers();
+    void append_child_pointers( child_set &child_list );
 
     mica_string serialize_full() const;
 

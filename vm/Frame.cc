@@ -110,37 +110,31 @@ void Frame::prepare( const Ref<Message> &msg )
 }
 
 
-child_set Frame::child_pointers() {
-  child_set child_p;
+void Frame::append_child_pointers( child_set &child_list ) {
+  child_list << self << caller << source << definer << on;
 
-  child_p << self << caller << source << definer << on;
-
-  append_datas( child_p, args );
+  append_datas( child_list, args );
 
   // STACK
-  append_datas( child_p, stack );
+  append_datas( child_list, stack );
 
   // ENVIRONMENT
-  child_set e_child_p( scope.child_pointers() );
-  child_p.insert( child_p.end(), e_child_p.begin(), e_child_p.end() );
+  scope.append_child_pointers( child_list );
 
   // CONTROL
-  child_set c_child_p( control.child_pointers() );
-  child_p.insert( child_p.end(), c_child_p.begin(), c_child_p.end() );
+  control.append_child_pointers( child_list );
 
   // eXCEPTION
   for (ExceptionMap::iterator x = exceptions.begin(); x != exceptions.end();
        x++) {
-    child_p.push_back( (Closure*)x->second.handler );
+    child_list.push_back( (Closure*)x->second.handler );
   }  
 
   // DUMP
   for (vector<Ref<Closure> >::iterator x = dump.begin(); x != dump.end();
        x++) {
-    child_p.push_back( (Closure*)(*x) );
+    child_list.push_back( (Closure*)(*x) );
   }  
-
-  return child_p;
 }
 
 /** Stack related methods

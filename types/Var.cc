@@ -56,20 +56,6 @@ Symbol Var::as_symbol() const {
   return Symbol(v.atom);
 }
 
-
-
-/** Get child pointers from what's in a Var
- */
-struct child_pointers_visitor {
-  template<typename T>
-  inline child_set operator()( const T&  ) const {
-    return child_set();
-  }   
-  inline child_set operator()( Data *t ) const {
-    return t->child_pointers();
-  }
-};
-
 /** Get the delegates for what's in Var.
  */
 struct delegates_visitor {
@@ -294,7 +280,6 @@ struct flatten_visitor {
   }
 };
 
-static child_pointers_visitor child_pointers_v;
 static delegates_visitor delegate_v;
 static truth_visitor truth_v;
 static neg_visitor neg_v;
@@ -1203,8 +1188,10 @@ Var Var::slots() const {
     return List::empty();
 }
 
-child_set Var::child_pointers() {
-  return apply_visitor<child_set>( child_pointers_v );
+
+void Var::append_child_pointers( child_set &child_list ) {
+  if (isData())
+    return get_data()->append_child_pointers( child_list );
 }
 
 

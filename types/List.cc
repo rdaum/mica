@@ -470,9 +470,8 @@ size_t List::hash() const
   return start;
 }
 
-child_set List::child_pointers()
-{
-  return data_list( flatten() );
+void List::append_child_pointers( child_set &child_list ) {
+  append_datas( child_list, flatten() );
 }
 
 int List::toint() const

@@ -285,7 +285,7 @@ namespace mica {
   public:
     size_t hash() const;
 
-    child_set child_pointers();
+    void append_child_pointers( child_set &child_list );
 
   public:
     // INVALID OPERATIONS FOR SEQUENCES

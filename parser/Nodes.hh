@@ -41,7 +41,7 @@ namespace mica {
     virtual Ref<Block> compile_to_expr( Binding &binding,
 					const mica_string &source = "" );
 
-    virtual child_set child_pointers();
+    virtual void append_child_pointers( child_set &child_list );
   };
 
   class NPtr : public Ref<Node> 
@@ -60,21 +60,16 @@ namespace mica {
    */
   extern void append_node( child_set &children, 
 			   const NPtr &node );
+  extern void append_node_tuple( child_set &children, 
+				 const NPtr &node,
+				 const NPtr &node2 );
+  extern void append_node_tuple( child_set &children, 
+				 const NPtr &node,
+				 const NPtr &node2,
+				 const NPtr &node3 );
   extern void append_nodes( child_set &children, 
 			    const vector<NPtr> &nodes );
 
-  extern child_set node_list( const vector<NPtr>
-			      &nodes );
-  
-
-  extern child_set node_single( const NPtr &first );
-
-  extern child_set node_pair( const NPtr &left,
-			      const NPtr &right );
-  
-  extern child_set node_triple( const NPtr &one,
-				const NPtr &two,
-				const NPtr &three );
   
   /** Functions to conveniently build vectors of NPtrs from indiv
    *  nptrs
@@ -103,8 +98,8 @@ namespace mica {
       : Node(), statements(stmts) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_list(statements);
+    void append_child_pointers( child_set &child_list ) {
+      append_nodes( child_list, statements );
     }
 
   };
@@ -121,8 +116,8 @@ namespace mica {
       : Node(), statements(stmts) {};
 
     var_vector compile( Ref<Block> block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_list(statements);
+    void append_child_pointers( child_set &child_list ) {
+      append_nodes( child_list, statements);
     }
 
   };
@@ -139,8 +134,8 @@ namespace mica {
       : Node(), statements(stmts) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_list(statements);
+    void append_child_pointers( child_set &child_list ) {
+      append_nodes( child_list, statements);
     }
   };
 
@@ -157,8 +152,8 @@ namespace mica {
       : Node(), stmt(istmt), source(in_source) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single(stmt);
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, stmt );
     } 
   };
 
@@ -175,8 +170,8 @@ namespace mica {
       : Node(), stmt(istmt), source(isource) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single(stmt);
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, stmt);
     }
 
   };
@@ -193,8 +188,8 @@ namespace mica {
       : Node(), stmt(istmt) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single(stmt);
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, stmt);
     } 
   };
 
@@ -211,8 +206,8 @@ namespace mica {
       : Node(), expr(iexpr), line_no(line_number) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single(expr);
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, expr);
     }
   };
 
@@ -228,8 +223,8 @@ namespace mica {
       : Node(), expr(iexpr) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single(expr);
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, expr);
     }
   };
 
@@ -251,8 +246,8 @@ namespace mica {
       : selector(in_selector), arg_template(in_arg_template) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;    
-    child_set child_pointers() {
-      return node_pair(selector, arg_template);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, selector, arg_template);
     }
   };
 
@@ -266,8 +261,8 @@ namespace mica {
       : selector(in_selector), arg_template(in_arg_template) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;    
-    child_set child_pointers() {
-      return node_pair(selector, arg_template);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, selector, arg_template);
     }
   };
 
@@ -284,8 +279,8 @@ namespace mica {
 	value(in_value) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;    
-    child_set child_pointers() {
-      return node_triple(selector, arg_template, value);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, selector, arg_template, value);
     }
   };
 
@@ -302,8 +297,8 @@ namespace mica {
 	value(in_value) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;    
-    child_set child_pointers() {
-      return node_triple(selector, arg_template, value);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, selector, arg_template, value);
     }
   };
 
@@ -321,8 +316,8 @@ namespace mica {
     {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_pair(function, arguments);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, function, arguments);
     }
   };
 
@@ -343,8 +338,8 @@ namespace mica {
 	arguments(arg) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_triple(object, selector, arguments);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, object, selector, arguments);
     }
   };
 
@@ -361,10 +356,8 @@ namespace mica {
       : messageNode( obj, sel, arg ), like(qualifier) {}
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      child_set children(this->messageNode::child_pointers());
-      append_node( children, like );
-      return children;
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, like );
     }
   };
 
@@ -379,8 +372,8 @@ namespace mica {
       : Node(), args(iargs), dest(idest) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_pair( args, dest );
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list,  args, dest );
     }
   };
 
@@ -396,8 +389,8 @@ namespace mica {
       : Node(), values(iValues) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_list(values);
+    void append_child_pointers( child_set &child_list ) {
+      append_nodes( child_list, values);
     }
   };
 
@@ -412,8 +405,8 @@ namespace mica {
       : Node(), values(iValues) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_list(values);
+    void append_child_pointers( child_set &child_list ) {
+      append_nodes( child_list, values);
     }
   };
 
@@ -429,8 +422,8 @@ namespace mica {
       : Node(), pairs(iPairs) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_list(pairs);
+    void append_child_pointers( child_set &child_list ) {
+      append_nodes( child_list, pairs);
     }
   };
 
@@ -444,10 +437,8 @@ namespace mica {
       : Node(), value(iValue) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() { 
-      child_set children;
-      append_data( children, value );
-      return children;
+    void append_child_pointers( child_set &child_list ) { 
+      child_list << value;
     }
   };
 
@@ -463,11 +454,9 @@ namespace mica {
       : Node(), sym(isym), desc(description) {};
    
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() { 
-      child_set children;
+    void append_child_pointers( child_set &child_list ) { 
       if ( (String*)desc )
-	children.push_back( (reference_counted*)(String*)desc );
-      return children;
+	child_list.push_back( (reference_counted*)(String*)desc );
     }
   };
 
@@ -483,11 +472,9 @@ namespace mica {
       : Node(), name(iName), value(i_value)  {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() { 
-      child_set children;
-      append_data( children, name );
-      append_node( children, value );
-      return children;
+    void append_child_pointers( child_set &child_list ) { 
+      append_node( child_list, value );
+      child_list << name;
     }
   };
 
@@ -501,10 +488,8 @@ namespace mica {
       : Node(), name(iName) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() { 
-      child_set children;
-      append_data( children, name );
-      return children;
+    void append_child_pointers( child_set &child_list ) { 
+      child_list << name;
     }
   };
 
@@ -519,10 +504,9 @@ namespace mica {
       : Node(), name(iName), value(val) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      child_set children(node_single(value));
-      children << name;
-      return children;
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, value );
+      child_list << name;
     }
   };
 
@@ -546,8 +530,7 @@ namespace mica {
 	remainder(iremainder), declare(ideclare) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      child_set children;
+    void append_child_pointers( child_set &children ) {
       append_node( children, lhs );
       append_data( children, remainder );
       var_vector::iterator x;
@@ -555,7 +538,6 @@ namespace mica {
 	append_data( children, *x );
       for (x = optional.begin(); x != optional.end(); x++) 
 	append_data( children, *x );
-      return children;
     }
 
   };
@@ -574,11 +556,9 @@ namespace mica {
 	opcode(iOpcode) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() { 
-      child_set children;
-      append_data( children, opcode );
-      append_node( children, value );
-      return children;
+    void append_child_pointers( child_set &child_list ) { 
+      append_data( child_list, opcode );
+      append_node( child_list, value );
     }
 
   };
@@ -594,8 +574,8 @@ namespace mica {
       : Node(), value(iValue) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single(value);
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, value);
     }
   };
 
@@ -612,8 +592,8 @@ namespace mica {
       : Node(), lhs(iLhs), rhs(iRhs), opcode(op) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_pair(lhs, rhs);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, lhs, rhs);
     }
   };
 
@@ -632,8 +612,8 @@ namespace mica {
       : Node(), lhs(iLhs), mid(iMid), rhs(iRhs), opcode(op) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_triple(lhs, mid, rhs);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, lhs, mid, rhs);
     }
   };
 
@@ -651,8 +631,8 @@ namespace mica {
 	branch(iBranch) {};
   
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_pair( rangeExpr, branch );
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list,  rangeExpr, branch );
     }
   };
 
@@ -666,8 +646,8 @@ namespace mica {
       : branch(i_branch) {}
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single( branch );
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list,  branch );
     }
   };
 
@@ -683,8 +663,8 @@ namespace mica {
 	trueBranch( iTrueBranch ) {};
   
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_pair( testExpr, trueBranch );
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list,  testExpr, trueBranch );
     }
   };
 
@@ -700,8 +680,8 @@ namespace mica {
 	trueBranch( iTrueBranch ) {};
   
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_pair( testExpr, trueBranch );
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list,  testExpr, trueBranch );
     }
   };
 
@@ -716,8 +696,8 @@ namespace mica {
       : Node(), err(ierr) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single(err);
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, err);
     }
   };
 
@@ -737,16 +717,15 @@ namespace mica {
       : Node(), catchers(icatchers), do_branch(idoBranch) {}
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      child_set children;
-      append_node( children, do_branch );
+    void append_child_pointers( child_set &child_list ) {
+
+      append_node( child_list, do_branch );
       for (vector<Catch>::iterator x = catchers.begin();
 	   x != catchers.end(); x++) {
-	append_node( children, x->branch );
-	append_data( children, x->ident );
-	append_data( children, x->err );
+	append_node( child_list, x->branch );
+	append_data( child_list, x->ident );
+	append_data( child_list, x->err );
       }
-      return children;
     }
   };
 
@@ -763,8 +742,8 @@ namespace mica {
 	trueBranch( iTrueBranch ) {};
   
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_pair(testExpr, trueBranch);
+    void append_child_pointers( child_set &child_list ) {
+      append_node_tuple( child_list, testExpr, trueBranch);
     }
   };
 
@@ -780,8 +759,8 @@ namespace mica {
 	elseBranch(iElseBranch) {};
 
     var_vector compile( Ref<Block>block, Binding &binding ) const;
-    child_set child_pointers() {
-      return node_single(elseBranch);
+    void append_child_pointers( child_set &child_list ) {
+      append_node( child_list, elseBranch);
     }
   };
 

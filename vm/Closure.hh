@@ -55,7 +55,7 @@ namespace mica {
   public:
     mica_string serialize() const;
 
-    child_set child_pointers();
+    void append_child_pointers( child_set &child_list );
 
     mica_string rep() const;
   };

@@ -75,10 +75,9 @@ public:
   };
   
 
-  child_set child_pointers() {
-    child_set child_p(this->Task::child_pointers());
-    child_p << eval_obj;
-    return child_p;
+  void append_child_pointers( child_set &child_list ) {   
+    this->Task::append_child_pointers( child_list );
+    child_list << eval_obj;
   }
 
   void finalize_object() {

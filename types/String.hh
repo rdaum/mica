@@ -257,7 +257,7 @@ namespace mica {
     var_vector map( const Var &expr ) const;
 
   public:
-    child_set child_pointers() { return child_set(); } 
+    void append_child_pointers( child_set &child_list ) { };
 
     size_t hash() const;
 

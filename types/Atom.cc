@@ -45,7 +45,5 @@ var_vector Atom::flatten() const
   return ops;
 }
 
-child_set Atom::child_pointers() {
-  child_set none;
-  return none;
+void Atom::append_child_pointers( child_set &child_list ) {
 }

@@ -138,16 +138,14 @@ bool Message::isReplyTo( const Ref<Task> &e ) const
   return ((Task*)parent_task == (Task*)e);
 }
 
-child_set Message::child_pointers() {
+void Message::append_child_pointers( child_set &child_list ) {
 
-  child_set children(data_list(args));
+  append_datas( child_list, args );
 
-  children << source << caller << self << on;
+  child_list << source << caller << self << on;
 
   if ((Task*)parent_task != 0)    
-    children.push_back( (Task*)parent_task );
-
-  return children; 
+    child_list.push_back( (Task*)parent_task );
 }
 
 bool Message::isLocal() const
@@ -254,12 +252,10 @@ RaiseMessage::RaiseMessage( Ref<Task> parent_task,
 {    
 }; 
 
-child_set RaiseMessage::child_pointers() {
-  child_set children( this->Message::child_pointers() );
+void RaiseMessage::append_child_pointers( child_set &child_list ) {
+  this->Message::append_child_pointers( child_list );
   if ((Error*)err)
-    children.push_back( (Error*)err );
-
-  return children;
+    child_list.push_back( (Error*)err );
 }
 
 RaiseMessage::RaiseMessage() 

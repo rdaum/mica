@@ -28,13 +28,11 @@ mica_string Control::serialize() const {
   return s_form;
 }
 
-child_set Control::child_pointers() {
-  child_set child_p;
-  child_p.push_back( (Block*)block );
+void Control::append_child_pointers( child_set &child_list ) {
 
-  append_datas( child_p, exec_stack );
+  child_list.push_back( (Block*)block );
 
-  return child_p;
+  append_datas( child_list, exec_stack );
 }
 
 Control::Control( const Ref<Block> &iBlock )

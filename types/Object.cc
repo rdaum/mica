@@ -299,10 +299,10 @@ bool Object::isObject() const
   return true;
 }
 
-child_set Object::child_pointers()
-{
-  return environment()->child_pointers();
+void Object::append_child_pointers( child_set &child_list ) {
+  environment()->append_child_pointers( child_list );
 }
+
 void Object::set_verb_parasite( const Symbol &name,
 				unsigned int pos,
 				const var_vector &argument_template,

@@ -284,17 +284,12 @@ size_t Set::hash() const
   return start;
 }
 
-child_set Set::child_pointers()
-{
-  child_set children;
-
+void Set::append_child_pointers( child_set &child_list ) {
   // add each member
   var_set::iterator x;
   for (x = begin(); x != end(); x++) {
-    append_data( children, *x );
+    append_data( child_list, *x );
   }
-
-  return children;
 }
 
 var_vector Set::flatten() const

@@ -563,7 +563,7 @@ namespace mica
     /** Return all pointers to reference counted objects
      *  held inside the contents of this Var.
      */
-    child_set child_pointers();
+    void append_child_pointers( child_set &child_list );
 
   public:
     /** Slot operations

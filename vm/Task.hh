@@ -150,7 +150,7 @@ namespace mica {
 
 
   public:
-    virtual child_set child_pointers();
+    virtual void append_child_pointers( child_set &child_list );
 
     virtual mica_string rep() const;
       

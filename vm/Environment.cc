@@ -68,8 +68,8 @@ mica_string Environment::serialize() const
   return s_form;
 }
 
-child_set Environment::child_pointers() {
-  child_set children;
-  children.push_back( (GCVector*)env );
-  return children;
+void Environment::append_child_pointers( child_set &child_list ) {
+
+  child_list.push_back( (GCVector*)env );
+
 }

@@ -20,8 +20,8 @@ namespace mica {
     GCVector( const GCVector &from )
       : var_vector(from) {}
 
-    child_set child_pointers() {
-      return data_list(*this);
+    void append_child_pointers( child_set &child_list ) {
+      append_datas( child_list, *this );
     }
   };
 
@@ -67,7 +67,7 @@ namespace mica {
   public:
     mica_string serialize() const;
 
-    child_set child_pointers();
+    void append_child_pointers( child_set &child_list );
 
   };
 

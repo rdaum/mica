@@ -298,15 +298,10 @@ size_t Map::hash() const
   return start;
 }
 
-child_set Map::child_pointers()
-{
-  child_set children;
-
+void Map::append_child_pointers( child_set &child_list ) {
   var_map::iterator x;
   for (x = begin(); x != end(); x++) {
-    append_data( children, x->first );
-    append_data( children, x->second );
+    append_data( child_list, x->first );
+    append_data( child_list, x->second );
   }
-
-  return children;
 }

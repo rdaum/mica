@@ -320,21 +320,17 @@ void Task::finish_receive() {
 
 }
 
-
-child_set Task::child_pointers() {
-  child_set child_p;
+void Task::append_child_pointers( child_set &child_list ) {
 
   for (vector<Ref<Message> >::iterator x = children.begin(); 
        x != children.end(); x++) {
     Message *msg = (Message*)*x;
-    child_p.push_back(msg);
+    child_list.push_back(msg);
   }
   
   if ((Task*)parent_task != 0) {
-    child_p.push_back( (Task*)parent_task );
+    child_list.push_back( (Task*)parent_task );
   }
-
-  return child_p;
 }
 
 

@@ -157,9 +157,10 @@ namespace mica {
     void collect_white();
 
   public:
+
     /** Return a list of child pointers from this object
      */
-    virtual child_set child_pointers() = 0;
+    virtual void append_child_pointers( child_set &child_list ) = 0;
 
   public:
     /** Called right before an object is physically freed

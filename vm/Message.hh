@@ -105,7 +105,7 @@ namespace mica {
      */
     bool operator==( const Message &v2 ) const;
 
-    virtual child_set child_pointers();
+    virtual void append_child_pointers( child_set &child_list );
 
     void finalize_object();
 
@@ -217,7 +217,7 @@ namespace mica {
       return true;
     }; 
 
-    child_set child_pointers();
+    void append_child_pointers( child_set &child_list );
 
     mica_string typeName() const { return "RaiseMessage"; }
   };

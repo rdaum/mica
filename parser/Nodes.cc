@@ -69,6 +69,21 @@ void mica::append_node( child_set &children,
   children.push_back( ((Node*)node) );
 }
 
+
+void mica::append_node_tuple( child_set &children, 
+			     const NPtr &node, const NPtr &node2 ) {
+  children.push_back( ((Node*)node) );
+  children.push_back( ((Node*)node2) );
+}
+
+void mica::append_node_tuple( child_set &children, 
+			      const NPtr &node, const NPtr &node2,
+			      const NPtr &node3 ) {
+  children.push_back( ((Node*)node) );
+  children.push_back( ((Node*)node2) );
+  children.push_back( ((Node*)node3) );
+}
+
 void mica::append_nodes( child_set &children,
 			 const vector<NPtr> &nodes ) {
   for (vector<NPtr>::const_iterator x = nodes.begin();
@@ -77,37 +92,6 @@ void mica::append_nodes( child_set &children,
   }
 }
 
-child_set mica::node_list( const vector<NPtr> &nodes ) {
-  child_set children;
-  append_nodes( children, nodes );
-  return children;
-}
-
-child_set mica::node_single( const NPtr &one ) {
-  child_set children;
-  append_node( children, one );
-  return children;
-}
-
-child_set mica::node_pair( const NPtr &left,
-			   const NPtr &right ) {
-  child_set children;
-  append_node( children, left );
-  append_node( children, right );
-
-  return children;
-}
-
-child_set mica::node_triple( const NPtr &one,
-			     const NPtr &two,
-			     const NPtr &three ) {
-  child_set children;
-  append_node( children, one );
-  append_node( children, two );
-  append_node( children, three );
-
-  return children;
-}
 
 // EMPTY NODE
 var_vector Node::compile( Ref<Block> block, Binding &binding ) const {
@@ -117,8 +101,7 @@ var_vector Node::compile( Ref<Block> block, Binding &binding ) const {
   return ops;
 }
 
-child_set Node::child_pointers() {
-  return child_set();
+void Node::append_child_pointers( child_set &child_list ) {
 }
 
 Ref<Block> Node::compile_to_expr( Binding &binding, 

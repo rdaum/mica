@@ -56,7 +56,7 @@ namespace mica {
 
 
   public:
-    child_set child_pointers();
+    void append_child_pointers( child_set &child_list );
 
     friend class Unserializer;
 

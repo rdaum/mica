@@ -10,10 +10,10 @@
 using namespace std;
 using namespace mica;
 
-child_set VerbDef::child_pointers() {
-  child_set children(data_pair( definer, method ));
-  append_datas( children, argument_template );
-  return children;
+void VerbDef::append_child_pointers( child_set &child_list ) {
+  child_list << definer << method;
+
+  append_datas( child_list, argument_template );
 }
 
 
@@ -245,9 +245,7 @@ mica_string OStorage::serialize() const
   return s_form;
 }
 
-child_set OStorage::child_pointers() {
-  child_set children;
-
+void OStorage::append_child_pointers( child_set &children ) {
   for (OptSlotMap::const_iterator am_i = mOptSlots.begin();
        am_i != mOptSlots.end(); am_i++) {
     for (OptSlotList::const_iterator sl_i = am_i->second.begin();
@@ -262,7 +260,6 @@ child_set OStorage::child_pointers() {
       children.push_back( (VerbDef*)(*tl_i) );
     }
   }
-  return children;
 }
 
 void OStorage::set_verb_parasite( const Symbol &name,

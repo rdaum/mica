@@ -57,8 +57,8 @@ public:
     return Var();
   }
 
-  child_set child_pointers() {
-    return this->Task::child_pointers();
+  void append_child_pointers( child_set &child_list ) {
+    this->Task::append_child_pointers( child_list );
   }
 
   void handle_message( const Ref<Message> &reply_message )

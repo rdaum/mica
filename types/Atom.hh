@@ -35,7 +35,7 @@ namespace mica {
   public:
     /** Default implementation returns empty set
      */
-    virtual child_set child_pointers();
+    virtual void append_child_pointers( child_set &child_list );
   };
 
 

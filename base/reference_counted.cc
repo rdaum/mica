@@ -272,7 +272,8 @@ void reference_counted::release() {
 
   /** Decrement children
    */
-  child_set children(child_pointers());
+  child_set children;
+  append_child_pointers( children );
   for (child_set::iterator x = children.begin();
        x != children.end(); x++) {
     reference_counted *S = *x;
@@ -325,7 +326,8 @@ void reference_counted::scan() {
       /** RECURSION.  Would be nice if we could roll this out into (TODO) 
        *  something iterative.
        */
-      child_set children(child_pointers());
+      child_set children;
+      append_child_pointers(children);
       for (child_set::iterator x = children.begin();
 	   x != children.end(); x++) {
 	(*x)->scan();
@@ -351,7 +353,10 @@ void reference_counted::scan_black() {
 
   colour = BLACK;
 
-  child_set children(child_pointers());
+  
+  child_set children;
+  append_child_pointers( children );
+
   for (child_set::iterator x = children.begin();
        x != children.end(); x++) {
     reference_counted *S = *x;
@@ -374,7 +379,8 @@ void reference_counted::mark_gray() {
   if (colour != GRAY && colour != GREEN) {
     colour = GRAY;
 
-    child_set children(child_pointers());
+    child_set children;
+    append_child_pointers( children );
     for (child_set::iterator x = children.begin();
 	 x != children.end(); x++) {
       reference_counted *S = *x;
@@ -393,7 +399,9 @@ void reference_counted::collect_white() {
 
   if (colour == WHITE && !buffered) {
     colour = BLACK;
-    child_set children(child_pointers());
+    
+    child_set children;
+    append_child_pointers( children );
 
     /** Recursion.
      */
