@@ -11,7 +11,7 @@ AR       = @AR@
 RANLIB   = @RANLIB@
 CPPFLAGS += @CPPFLAGS@
 CXXFLAGS += @CXXFLAGS@ 
-INCLUDES += @INCLUDES@ -I.. -I../base -I/usr/local/include
+INCLUDES += @INCLUDES@ -I.. -I../base
 LDFLAGS  += @LDFLAGS@
 LIBS     += @LIBS@
 
