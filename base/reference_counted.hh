@@ -8,6 +8,10 @@
 
 #include <boost/cstdint.hpp>
 
+using boost::int16_t;
+using boost::uint16_t;
+using boost::uint32_t;
+
 #include <list>
 
 namespace mica {

@@ -1,6 +1,8 @@
 #ifndef MICA_TYPES_HH
 #define MICA_TYPES_HH
 
+#undef ERROR
+
 #include "rope_string.hh"
 
 namespace mica {

@@ -17,8 +17,6 @@
 
 #include "hash.hh"
 
-#include "Timer.hh"
-
 
 namespace mica {
 

@@ -39,7 +39,7 @@ namespace mica {
 				Binding &binding ) const = 0;
 
     virtual Ref<Block> compile_to_expr( Binding &binding,
-					const char *source = 0 );
+					const mica_string &source = "" );
 
     virtual child_set child_pointers();
   };

@@ -588,7 +588,8 @@ pair<NPtr, NPtr> micaParser::translateVerbTemplt( NonterminalVerbTemplt *vs ) {
     selector_name.push_back('_');
     selector_name.append( (*x)->text );
   }
-  NPtr selector = new (aligned) literalNode( Var(Symbol::create( selector_name.c_str() )) );
+  NPtr selector = new (aligned) 
+    literalNode( Var(Symbol::create( selector_name )) );
   
   vector<NPtr> args_vec;
   if (vs->rootArg)
@@ -619,7 +620,7 @@ pair<NPtr, NPtr> micaParser::translateMsgArgs( NonterminalMsgArgs *vs ) {
     selector_name.push_back('_');
     selector_name.append( (*x)->text );
   }
-  NPtr selector = new (aligned) literalNode( Var(Symbol::create( selector_name.c_str() )) );
+  NPtr selector = new (aligned) literalNode( Var(Symbol::create( selector_name )) );
   
   vector<NPtr> args_vec;
   if (vs->rootArg)

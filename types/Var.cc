@@ -350,9 +350,11 @@ Var::float_store* Var::get_float() const {
 void Var::set_float( float val ) {
   dncount();
 
-  float_store *float_val =
-    (float_store*)memalign( 0x20, sizeof(float_store) );
-
+  float_store *float_val = 
+    reinterpret_cast<float_store*>
+    ( mica_memalign( 0x20, sizeof(float_store), 
+		     &reinterpret_cast<void*>(float_val )));
+  
   float_val->refcnt = 1;
   float_val->value = val;
 

@@ -1,9 +1,10 @@
 #ifndef TASK_HH
 #define TASK_HH
 
+#include <boost/timer.hpp>
+
 #include <vector>
 
-#include "Timer.hh"               // timeval
 #include "Var.hh"
 #include "generic_vm_entity.hh"
 #include "Ref.hh"
@@ -168,10 +169,10 @@ namespace mica {
     unsigned int age;      // task age
     unsigned int ticks;    // task ticks
 
-    unsigned long time_to_live;
+    double time_to_live;
 
-    Timer expire_timer;    // When timer exceeds time_to_live, terminate
-                            // this task.
+    boost::timer expire_timer;    // When timer exceeds time_to_live, terminate
+                                  // this task.
 
     bool terminated;
     unsigned int blocked;  // bitmask of what we're blocked on.

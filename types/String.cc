@@ -418,8 +418,8 @@ mica_string String::serialize() const
 
 
 size_t String::hash() const {
-  STD_EXT_NS::hash<const char*> hasher;
-  return hasher( c_str() );
+  STD_EXT_NS::hash<mica_string> hasher;
+  return hasher( *this );
 }
 
 

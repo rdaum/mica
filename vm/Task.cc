@@ -25,7 +25,6 @@
 #include "Task.hh"
 #include "Pools.hh"
 
-#include "Timer.hh"
 
 #include "logging.hh"
 
@@ -40,7 +39,7 @@ Task::Task()
   paged = true;
   task_counter++;
 
-  expire_timer.reset();
+  expire_timer.restart();
 }
 
 Task::Task( Ref<Task> parent, size_t msgid, int pool_id )
@@ -52,7 +51,7 @@ Task::Task( Ref<Task> parent, size_t msgid, int pool_id )
   task_counter++;
   paged = true;
 
-  expire_timer.reset();
+  expire_timer.restart();
 
   terminated = false;
   blocked = 0;
@@ -91,7 +90,7 @@ Task::Task( Ref<Task>from )
   Pool *pool = Pools::instance.get(pid);
   tid = pool->manage_task( this );
 
-  expire_timer.reset();
+  expire_timer.restart();
 }
 
 Task::~Task() {}
@@ -261,8 +260,7 @@ bool Task::activate() {
 
   /** Reset the expire timer
    */ 
-  if (!expire_timer.started)
-    expire_timer.reset();
+  expire_timer.restart();
 
   /** Receive any incoming new messages.
    */
@@ -398,7 +396,6 @@ mica_string Task::serialize_full() const {
   Pack( s_form, age );
   Pack( s_form, ticks );
   Pack( s_form, time_to_live );
-  Pack( s_form, expire_timer );
   Pack( s_form, terminated );
   Pack( s_form, blocked );
   

@@ -99,7 +99,7 @@ size_t Scheduler::processTasks()
 	 *  raise an error to its parent.
 	 */
 	if (cur_task->time_to_live && 
-	    (cur_task->expire_timer.status() > cur_task->time_to_live )) {
+	    (cur_task->expire_timer.elapsed() > cur_task->time_to_live )) {
 	  cur_task->terminate();
 	}
 

@@ -23,9 +23,11 @@ static SymbolMap symbol_map;
 std::vector<mica_string> symbols;
 
 Symbol Symbol::create( const char *c_str ) {
-  Symbol sym;
+  return Symbol::create(mica_string(c_str));
+}
 
-  mica_string str(c_str);
+Symbol Symbol::create( const mica_string &str ) {
+  Symbol sym;
 
   SymbolMap::iterator sym_i = symbol_map.find( str );
   if (sym_i == symbol_map.end()) {

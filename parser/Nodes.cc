@@ -120,11 +120,8 @@ child_set Node::child_pointers() {
   return child_set();
 }
 
-Ref<Block> Node::compile_to_expr( Binding &binding, const char *source ) {
-
-  mica_string source_str = "";
-  if (source)
-    source_str = source;
+Ref<Block> Node::compile_to_expr( Binding &binding, 
+				  const mica_string &source_str ) {
 
   Ref<Block> expr = new Block( source_str );
   binding.startBlock();
@@ -220,7 +217,7 @@ var_vector lambdaNode::compile( Ref<Block> block, Binding &binding ) const {
 
   /** Create the block object.
    */
-  Ref<Block> lambda = stmt->compile_to_expr( binding, source.c_str() );
+  Ref<Block> lambda = stmt->compile_to_expr( binding, source );
   ops.push_back( Var(lambda) );
 
   /** Push MAKE_LAMBDA
@@ -278,7 +275,7 @@ var_vector objectConstructorNode::compile( Ref<Block> block,
 
 var_vector methodNode::compile( Ref<Block> block, Binding &binding ) const {
   var_vector ops;
-  Ref<Block> method_block = stmt->compile_to_expr( binding, source.c_str() );
+  Ref<Block> method_block = stmt->compile_to_expr( binding, source );
   ops.push_back( Var(method_block) );
 
   return ops;

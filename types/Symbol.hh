@@ -15,6 +15,7 @@ namespace mica {
   class Symbol {
   public:    
     static Symbol create( const char *str );
+    static Symbol create( const mica_string &str );
 
   public:
     bool         is_integer : 1;
