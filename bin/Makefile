@@ -10,7 +10,7 @@ mica_makedb: micamakedb.o compile.o $(STATICS)
 	$(CXX) micamakedb.o compile.o $(LDFLAGS) $(EXE_LDARGS) $(LIBS) -o $@
 
 mica_console: micaconsole.o compile.o $(STATICS)
-	$(CXX) micaconsole.o compile.o $(LDFLAGS)   $(EXE_LDARGS) $(LIBS) -lreadline -o $@ 
+	$(CXX) micaconsole.o compile.o $(LDFLAGS)   $(EXE_LDARGS) $(LIBS) -lreadline -lncurses -o $@ 
 
 mica_daemon: micadaemon.o $(STATICS) 
 	$(CXX) micadaemon.o $(LDFLAGS)   $(EXE_LDARGS) $(LIBS) -o $@ 
