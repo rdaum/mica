@@ -9,6 +9,8 @@
 #include <hash_map>
 #endif
 
+#include <boost/pool/pool_alloc.hpp>
+
 #include "Task.hh"
 
 #include "Control.hh"
@@ -40,9 +42,12 @@ namespace mica
     
   };
 
-  typedef STD_EXT_NS::hash_map< Ref<Error>, ExceptionHandler,
-				hash_ref > ExceptionMap;
-
+  typedef
+  STD_EXT_NS::hash_map< Ref<Error>, ExceptionHandler,
+			hash_ref, 
+			std::equal_to< Ref<Error> >,
+			boost::pool_allocator< Ref<Error> > > ExceptionMap;
+  
   typedef enum {
       RUNNING,	  // program is running 
       STOPPED,	  // program stopped by return or end of code 

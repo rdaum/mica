@@ -18,7 +18,10 @@
 
 #include "compile.hh"
 
+#include <boost/spirit.hpp>
+
 using namespace mica;
+
 
 Ref<Block> mica::compile( mica_string source ) 
 {

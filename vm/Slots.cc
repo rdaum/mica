@@ -45,16 +45,12 @@ inline void increment_generation() {
 
 
 /** For keeping track of visits so we don't visit the same object twice
- *  We hash only on the "unique id" which is really a literal memcpy
- *  from memory of the Var -- objects with the same type and pointer
- *  will compare as the same; thus, fast pointer identity, not value-identity,
- *  which is really what we want in this case.
  */
 typedef STD_EXT_NS::hash_set<Var, hash_var> VisitedMap;
 
 Slot Slots::get_slot( const Var &self,
-			    const Var &accessor, 
-			    const Symbol &name ) 
+		      const Var &accessor, 
+		      const Symbol &name ) 
 {
   VisitedMap visited;
 

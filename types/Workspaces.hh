@@ -4,6 +4,7 @@
 #define POOLS_HH
 
 #include <vector>
+#include <boost/pool/pool_alloc.hpp>
 
 #include "config.h"
 #include "common/mica.h"
@@ -70,7 +71,9 @@ namespace mica
   private:
     std::vector<Pool*> _pools;
 
-    typedef STD_EXT_NS::hash_map<Symbol, PID, hash_symbol> NamesMap;
+    typedef STD_EXT_NS::hash_map< Symbol, PID, hash_symbol,
+				  std::equal_to<Symbol>,
+				  boost::pool_allocator<Symbol> > NamesMap;
     
     NamesMap names;
 

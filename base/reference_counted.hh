@@ -1,4 +1,4 @@
-/** Copyright 2002, Ryan Daum.
+/** Copyright 2002, 2003, Ryan Daum.
  */
 #ifndef ANTICYCLIC_REFCOUNTED_HH
 #define ANTICYCLIC_REFCOUNTED_HH
@@ -7,11 +7,6 @@
 #include "config.h"
 
 #include <boost/cstdint.hpp>
-
-using boost::int16_t;
-using boost::uint16_t;
-using boost::uint32_t;
-
 #include <list>
 
 namespace mica {
@@ -81,7 +76,6 @@ namespace mica {
     bool garbaged     : 1;
     Colouring colour  : 5; 
     uint16_t unused;       
-
 
   public:
     reference_counted();

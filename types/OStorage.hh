@@ -4,6 +4,8 @@
 #include "common/mica.h"
 #include "config.h"
 
+#include <boost/pool/pool_alloc.hpp>
+
 #include <map>
 
 #ifdef HAVE_EXT_HASH_MAP
@@ -80,22 +82,29 @@ namespace mica {
     /** Carries a list of slots hashed by name
      */
     typedef STD_EXT_NS::hash_map< Symbol,
-				  Var, hash_symbol > OptSlotList;
+				  Var, hash_symbol,
+				  std::equal_to<Symbol>,
+				  boost::pool_allocator<Symbol> > OptSlotList;
 
 
     /** Map accessor -> slotlist
      */
-    typedef STD_EXT_NS::hash_map< Var, OptSlotList, hash_var > OptSlotMap;
+    typedef STD_EXT_NS::hash_map< Var, OptSlotList, hash_var,
+				  std::equal_to<Var>,
+				  boost::pool_allocator<Var> > OptSlotMap;
 
     OptSlotMap mOptSlots;    
 
 
   public:
-    typedef std::list< Ref<VerbDef> > VerbTemplatesMap;
+    typedef std::list< Ref<VerbDef>, 
+		       boost::pool_allocator< Ref<VerbDef> > > VerbTemplatesMap;
 
     typedef STD_EXT_NS::hash_map< std::pair< Symbol, unsigned int >,
 				  VerbTemplatesMap,
-				  hash_verb_pair > VerbParasiteMap;
+				  hash_verb_pair,
+				  std::equal_to<std::pair< Symbol, unsigned int > >,
+				  boost::pool_allocator< std::pair< Symbol, unsigned int > > > VerbParasiteMap;
 
     VerbParasiteMap verb_parasites;
 

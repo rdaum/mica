@@ -7,7 +7,6 @@
 
 namespace mica {
 
-  //  template<class T>  class AbstractStorage<T>;
 
   class Pool;
 
@@ -57,7 +56,7 @@ namespace mica {
 	: object_id(oid), usecnt(uses), deleted(false) {}
 
       /** Backwards from what you think, so that higher usecounts
-       *  appear first
+       *  appear first in sorting.
        */
       bool operator<( const CacheEntry &rhs ) const {
 	return usecnt > rhs.usecnt;

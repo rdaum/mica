@@ -5,6 +5,8 @@
 
 #include "config.h"
 
+#include <boost/pool/pool_alloc.hpp>
+
 #ifdef HAVE_EXT_HASH_SET
 #include <ext/hash_set>
 #else
@@ -18,7 +20,8 @@
 
 namespace mica {
 
-  typedef STD_EXT_NS::hash_set<Var, hash_var> var_set;
+  typedef STD_EXT_NS::hash_set< Var, hash_var, std::equal_to<Var>,
+				boost::pool_allocator<Var> > var_set;
 
   class Set
     : public Data, 

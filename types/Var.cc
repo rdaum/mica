@@ -3,7 +3,6 @@
 #include "common/mica.h"
 #include "common/contract.h"
 
-#include <cassert>
 #include <cstdio>
 #include <iostream>
 #include <sstream>
@@ -13,7 +12,6 @@
 #include <malloc.h>
 
 #define BOOST_NO_LIMITS_COMPILE_TIME_CONSTANTS
-#include <boost/type_traits/is_const.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/pool/object_pool.hpp>
 
@@ -50,7 +48,7 @@ jmp_buf env;
 void 
 signal_handler (int sig) 
 {
-  assert( sig == SIGFPE );
+  ASSERT_D( sig == SIGFPE );
   longjmp(env, sig); 
 }
 
@@ -100,7 +98,7 @@ struct delegates_visitor {
   template<typename T>
   inline var_vector operator()(const T& t) const
   {
-    assert(0);
+    ASSERT_D(0);
   }
 };
 
@@ -178,7 +176,7 @@ struct hashing_visitor {
   template< typename X >
   inline unsigned int operator()( int y ) const {
     // DEFAULT
-    assert(0);
+    ASSERT_D(0);
   }
 };
 
@@ -345,7 +343,7 @@ void Var::set_data( Data *data ) {
   v.atom.is_float   = false;
   v.atom.is_pointer = true;
 
-  assert( get_data() == data );
+  ASSERT_D( get_data() == data );
 
   upcount();
 }
@@ -359,7 +357,7 @@ float Var::as_float() const {
   return get_float()->value;
 }
 
-Var::float_store* Var::get_float() const {
+inline Var::float_store *Var::get_float() const {
   return reinterpret_cast<float_store*>( TO_FLOAT_POINTER(v.value) );
 }
 
@@ -375,7 +373,7 @@ void Var::set_float( float val ) {
   v.atom.is_integer = false;
   v.atom.is_float   = true;
 
-  assert( as_float() == val );
+  ASSERT_D( as_float() == val );
 }
 
 
@@ -387,8 +385,8 @@ Var::~Var() {
 Var::Var()
 {
   v.value = NONE.v.value;
-  assert(!v.atom.is_float);
-  assert(!v.atom.is_pointer);
+  ASSERT_D(!v.atom.is_float);
+  ASSERT_D(!v.atom.is_pointer);
 }
 
 // Copy constructor
@@ -400,7 +398,7 @@ Var::Var( const Var &from )
   // This is a constructor, so we can't check our own invariant, and
   // thus don't use a normal precondition.  The invariant for what
   // we're copying however, can and does hold.
-  ASSERT(from.invariant());
+  ASSERT_D(from.invariant());
 }
 
 Var::Var( int initial )
@@ -459,7 +457,7 @@ Var::Var( Data *initial )
 {
   v.value = 0;
   // constructor, can't use PRECONDITION
-  ASSERT(Data::static_invariant(initial));
+  ASSERT_D(Data::static_invariant(initial));
   set_data( initial );
 }
 
@@ -467,7 +465,7 @@ Var::Var( const Data *initial )
 {
   v.value = 0;
   // constructor, can't use PRECONDITION
-  ASSERT(Data::static_invariant(initial));
+  ASSERT_D(Data::static_invariant(initial));
   set_data( const_cast<Data*>(initial) );
 }
 

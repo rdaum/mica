@@ -18,6 +18,12 @@
 
 #include "common/contract.h"
 
+#ifdef DEBUG
+#define ASSERT_D( x ) assert( x )
+#else
+#define ASSERT_D( x ) 
+#endif
+ 
 namespace mica
 {
   /** Forward defined, but never used in core/.  Here so that 
@@ -25,7 +31,6 @@ namespace mica
    */
   class Data;
   class Symbol;
-
 
   /** Reference counting Smart pointer and dynamically-typed union.  
    *  Fits in 32-bits.
@@ -37,6 +42,7 @@ namespace mica
       boost::shiftable<Var>                 // << >>
   {
   private:
+
     /** Internal structures used for storage in the union
      */
     struct _Integer {
@@ -45,15 +51,28 @@ namespace mica
     };
 
   public:
+
+    /** Storage for floats
+     */
     struct float_store
     {
       float           value;
       unsigned int    refcnt;
 
       static void free( float_store *ptr );
+      void dncount() {
+	refcnt--;
+	if (!refcnt)
+	  float_store::free( this );
+      }
+      void upcount() {
+	refcnt++;
+      }
+
     };
 
   public:
+
     /** Union/variant-type or reference to an object
      */
     union {
@@ -64,6 +83,8 @@ namespace mica
 
     
   public: 
+    /** Returns the type identifier of what is held in the Var
+     */
     inline Type::Identifier type_identifier() const {
       if (v.integer.is_integer) 
 	return Type::INTEGER;
@@ -86,9 +107,9 @@ namespace mica
 	  return Type::SYMBOL;
 	  break;
 	default:
-	  assert(0);
+	  ASSERT_D(0);
 	}
-      assert(0);
+      ASSERT_D(0);
       return Type::ABSTRACT;     // Shouldn't get here
     }
 
@@ -115,10 +136,10 @@ namespace mica
 	  return x.operator()( as_symbol() );
 	  break;
 	default:
-	  assert(0);
+	  ASSERT_D(0);
 	  break;
 	}
-      assert(0);
+      ASSERT_D(0);
       exit(-1);
     }
 
@@ -226,48 +247,40 @@ namespace mica
      */
     Data *operator->() const;
 
-    /**
+    /** Convert the low level repres
      */
     Symbol as_symbol() const;
 
-    /**
+  private:
+    /** Return the float contents of the Var
      */
     float as_float() const;
-
-  private:
-
-    void set_data( Data * );
-    void set_float( float val );
-
-    Data *get_data() const;
 
     inline bool is_float() const {
       return !v.atom.is_integer && v.atom.is_float;
     }
 
+    void set_float( float val );
+
+  private:
+    void set_data( Data * );
+
+    Data *get_data() const;
+
     inline void upcount() {
       if (isData()) {
-	Data *data = get_data();
-	if (data) data->upcount();
+	get_data()->upcount();
       } else if (is_float())
-	get_float()->refcnt++;
-
-	
+	get_float()->upcount();
     }
     
     float_store *get_float() const;
 
     inline void dncount() {
       if (isData()) {
-	Data *data = get_data();
-	if (data) data->dncount();
+	get_data()->dncount();
       } else if (is_float()) {
-	float_store *fl = get_float();
-	if (fl) {
-	  fl->refcnt--;
-	  if (!fl->refcnt)
-	    float_store::free( fl );
-	}
+	get_float()->dncount();
       }
     }
 
@@ -463,9 +476,13 @@ namespace mica
     bool isObject() const;
 
   public:
+    /** Return the list of delegates of this object
+     */
     var_vector delegates() const;
 
   public:
+    /** Apply this object as a function, with the given arguments
+     */
     var_vector perform( const Ref<Frame> &caller, const Var &args );
 
   public:

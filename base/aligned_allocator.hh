@@ -4,6 +4,7 @@
 #include "config.h"
 
 #include <memory>
+#include <malloc.h>
 #include <iostream>
 #include <stdlib.h>
 

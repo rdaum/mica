@@ -11,6 +11,8 @@
 #include <hash_map>
 #endif
 
+#include <boost/pool/pool_alloc.hpp>
+
 #include "hash.hh"
 
 #include "Data.hh"
@@ -18,8 +20,10 @@
 
 namespace mica {
 
-  typedef STD_EXT_NS::hash_map<Var, Var, hash_var> var_map;
-
+  typedef STD_EXT_NS::hash_map< Var, Var, hash_var, 
+				std::equal_to<Var>,
+			        boost::pool_allocator<Var> > var_map;
+  
   class Map
     : public Data, 
       public association_protocol,
