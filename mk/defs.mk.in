@@ -1,0 +1,30 @@
+# -*- Makefile -*-
+# @configure_input@
+
+ifndef DEFS_MK_INCLUDE_GUARD
+DEFS_MK_INCLUDE_GUARD = true
+
+SHELL 	 = @SHELL@
+CXX   	 = @CXX@
+LD       = @LD@
+AR       = @AR@
+RANLIB   = @RANLIB@
+CPPFLAGS += @CPPFLAGS@
+CXXFLAGS += @CXXFLAGS@ 
+INCLUDES += @INCLUDES@ -I.. -I../base -I/usr/local/include
+LDFLAGS  += @LDFLAGS@
+LIBS     += @LIBS@
+
+OPT_ENABLE_DSO_BUILTINS = @OPT_ENABLE_DSO_BUILTINS@
+
+# some useful CXXFLAGS for g++
+# any extra -W flags given are not normally activated by -Wall
+
+# -pedantic-error -Wall -Werror
+# -Woverloaded-virtual -Wold-style-cast -Wefc++ 
+# -Wctor
+# -Wsign-promo -Wsynth
+
+# don't use -Wefc++ with -Werror, libstdc++ is not conforming
+
+endif
