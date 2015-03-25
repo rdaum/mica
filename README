@@ -32,6 +32,4 @@ To actually build the project, do:
 ./configure
 make
 
-For other information on poe see http://darksleep.com/twiki/bin/view/Main/Poe
-
 Ryan Daum
