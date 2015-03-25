@@ -3,7 +3,7 @@ Mica.
 I wrote this in 2001-2003. It is not finished.
 I'm storing it here for posterity.
  
-This is an interpreted object-oriented programming language
+This is an interpreted dynamic-typed object-oriented programming language
 It is prototype-based (classless). But not in the ugly way JavaScript is.
 It uses multiple dispatch for method resolution in message sends.
 The whole thing is backed by a persistent object database.
