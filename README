@@ -8,7 +8,8 @@ It uses multiple dispatch for method resolution in message sends.
 The whole thing is backed by a persistent object database.
 The intended use was for multiuser extensible virtual environments (ala LambdaMOO).
 
-In 2003 this compiled with the following dependencies and instructions. It is unlikely it would do so now.
+In 2003 this compiled with the following dependencies and instructions. 
+It is unlikely it would do so now.
 
    * Sleepycat DB (aka Berkeley DB)
 	http://www.sleepycat.com/
