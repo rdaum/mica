@@ -1,5 +1,6 @@
 I wrote this in 2003. It is not finished.
-It is an interpreted object-oriented programming language, using multiple dispatch and prototype-inheritance.
+It is an interpreted object-oriented programming language, using multiple dispatch and
+prototype-inheritance.
 The whole thing is backed by a persistent object database.
 The intended use was for multiuser programmable extendible virtual environments ala LambdaMOO.
 
