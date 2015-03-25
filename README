@@ -1,12 +1,15 @@
 Mica.
 
-### I wrote this in 2003. It is not finished. ###
+I wrote this in 2001-2003. It is not finished.
+I'm storing it here for posterity.
  
 This is an interpreted object-oriented programming language
 It is prototype-based (classless). But not in the ugly way JavaScript is.
 It uses multiple dispatch for method resolution in message sends.
 The whole thing is backed by a persistent object database.
 The intended use was for multiuser extensible virtual environments (ala LambdaMOO).
+
+I have lost some of the branches I had of this. This is one of the final forms I had before I quit working on it, but there was another form that used a radically different syntax with a more Smalltalk/Self style message passing syntax if I recall. There were also versions with different backend storage, different parser generators. I can't remember.
 
 In 2003 this compiled with the following dependencies and instructions. 
 It is unlikely it would do so now.
