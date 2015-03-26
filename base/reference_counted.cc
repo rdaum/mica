@@ -14,14 +14,14 @@
 
 /** Bring these two namespaces into scope, for convenience
  */
-using namespace mica;
-using namespace std;
+namespace mica {
 
 /** Global COLLECTING flag -- set during cycle collection to notify the
  *  cache that it shouldn't do any page outs during cycle collections.
  *  This is _absolutely_ not thread safe.
  */
 static bool COLLECTING = false;
+
 bool mica::cycle_collecting() { return COLLECTING; }
 
 /** Global FREEING flag -- set during frees to prevent further auto refcounts
@@ -47,7 +47,7 @@ static child_set Roots;
 
 /** Objects that are garbage, to delete
  */
-static vector<reference_counted *> GarbageList;
+static std::vector<reference_counted *> GarbageList;
 
 /** Add the object in question to the garbage list, to be freed later.
  */
@@ -65,7 +65,8 @@ static void free_garbage() {
    */
   FREEING = true;
 
-  for (vector<reference_counted *>::iterator x = GarbageList.begin(); x != GarbageList.end(); x++) {
+  for (std::vector<reference_counted *>::iterator x = GarbageList.begin(); x != GarbageList.end();
+       x++) {
     reference_counted *who = *x;
 
     /** Do not free paged objects while PAGING is in effect
@@ -346,8 +347,10 @@ void reference_counted::collect_white() {
 
     /** Recursion.
      */
-    for_each(children.begin(), children.end(), mem_fun(&reference_counted::collect_white));
+    for_each(children.begin(), children.end(), std::mem_fun(&reference_counted::collect_white));
 
     Free(this);  // Bye bye, cycle!
   }
 }
+
+}  // namespace mica

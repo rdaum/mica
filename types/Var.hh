@@ -10,7 +10,6 @@
 #include <typeinfo>
 
 #include "base/Ref.hh"
-#include "common/contract.h"
 #include "types/Atoms.hh"
 #include "types/Data.hh"
 #include "types/OpCode.hh"

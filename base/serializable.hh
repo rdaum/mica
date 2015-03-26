@@ -26,6 +26,7 @@ inline void serialize_string(serialize_buffer &s_form, const mica_string &istr) 
   Pack(s_form, len);
   s_form.append(istr);
 }
-};
 
-#endif /** MICA_SERIALIZABLE **/
+}  // namespace mica
+
+#endif  // MICA_SERIALIZABLE

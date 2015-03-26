@@ -6,7 +6,7 @@
 #include <sstream>
 
 #include "base/logging.hh"
-#include "common/mica.h"
+
 #include "types/Atom.hh"
 #include "types/Data.hh"
 #include "types/Error.hh"

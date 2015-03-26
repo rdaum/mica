@@ -9,7 +9,7 @@
 
 #include "base/reference_counted.hh"
 #include "base/type_protocol.hh"
-#include "common/mica.h"
+
 #include "types/hash.hh"
 
 namespace mica {

@@ -1,5 +1,5 @@
-#ifndef MICA_ARGUMENT_MASK_HH
-#define MICA_ARGUMENT_MASK_HH
+#ifndef MICA_TYPES_ARGUMENT_MASK_HH
+#define MICA_TYPES_ARGUMENT_MASK_HH
 
 #include <boost/numeric/conversion/cast.hpp>
 #include <stdint.h>
@@ -29,6 +29,7 @@ struct ArgumentMask {
     return marked_args == boost::numeric_cast<uint32_t>((1 << arguments) - 1);
   }
 };
-}
 
-#endif /** MICA_ARGUMENT_MASK_HH **/
+}  // namespace mica
+
+#endif   // MICA_TYPES_ARGUMENT_MASK_HH

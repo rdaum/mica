@@ -275,6 +275,7 @@ class type_protocol : public has_type_identifier, public boost::totally_ordered<
  public:
   virtual size_t hash() const = 0;
 };
-};
 
-#endif /* TYPE_PROTOCOL_HH */
+}  // namespace mica
+
+#endif  // MICA_TYPE_PROTOCOL_HH

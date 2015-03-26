@@ -9,6 +9,7 @@
 #include "base/types.hh"
 
 namespace mica {
+
 /** A reference counting smart pointer with support for multiple
  *  type storage and an interface for a common data manipulation
  *  protocol.
@@ -169,6 +170,7 @@ class Ref {
       return 0;
   }
 };
-};
 
-#endif /* VAR_HH */
+}  // namespace mica
+
+#endif  // MICA_TEMPL_VAR_HH

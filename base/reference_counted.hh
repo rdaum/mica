@@ -6,8 +6,6 @@
 #include <boost/cstdint.hpp>
 #include <list>
 
-#include "common/mica.h"
-
 namespace mica {
 
 class reference_counted;
@@ -189,6 +187,7 @@ extern void notify_end_paging();
  *  @param return true if the cycle collector is currently enabled
  */
 extern bool cycle_collecting();
-}
 
-#endif /** ANTICYCLIC _REFCOUNTED_HH **/
+}  // namespace mica
+
+#endif  // ANTICYCLIC_REFCOUNTED_HH

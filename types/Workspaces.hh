@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "common/mica.h"
+
 #include "types/hash.hh"
 
 namespace mica {

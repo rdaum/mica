@@ -12,6 +12,7 @@ namespace mica {
  */
 class Block;
 extern Ref<Block> compile(mica_string source);
-}
 
-#endif
+}  // namespace mica
+
+#endif  // COMPILE_HH

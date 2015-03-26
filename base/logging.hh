@@ -8,6 +8,7 @@ namespace mica {
 extern log4cpp::Category &logger;
 extern void initialize_log(bool debug = false);
 extern void close_log();
-}
 
-#endif
+}  // namespace mica
+
+#endif  // MICA_LOGGING_HH

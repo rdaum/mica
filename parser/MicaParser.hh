@@ -1,5 +1,5 @@
-#ifndef _PARSEDRIVER_HH_
-#define _PARSEDRIVER_HH_
+#ifndef MICA_PARSER_HH
+#define MICA_PARSER_HH
 
 #include <sstream>
 #include <string>
@@ -75,6 +75,7 @@ class micaParser {
   int getHexChar(const char* str);
   int getHexDigit(const char c);
 };
-}
 
-#endif /* #ifndef _PARSEDRIVER_HH_ */
+}  // namespace mica
+
+#endif  // MICA_PARSER_HH

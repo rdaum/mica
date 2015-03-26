@@ -6,7 +6,7 @@ namespace mica {
 /** Protocol for purely functional (immutable) sets.  Based roughly
  *  on the API from Edison for Haskell by Chris Okasaki.
  */
-template<typename T>
+template <typename T>
 class association_protocol {
  public:
   // INITIAL CONSTRUCTIONS
@@ -95,6 +95,6 @@ class association_protocol {
   virtual T lookup_withDefault(const T &n, const T &d) const = 0;
 };
 
-} /** namespace mica ... **/
+}  // namespace mica
 
-#endif
+#endif  // MICA_ASSOC_PROTOCOL_HH

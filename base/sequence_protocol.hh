@@ -6,7 +6,7 @@ namespace mica {
 /** Protocol for purely functional (immutable) sequences.  Based roughly
  *  on the API from Edison for Haskell by Chris Okasaki.
  */
-template<typename T>
+template <typename T>
 class sequence_protocol {
  public:
   // INITIAL CONSTRUCTIONS
@@ -203,6 +203,6 @@ class sequence_protocol {
   virtual T unzipTriple() const = 0;
 };
 
-} /** namespace mica ... **/
+}  // namespace mica
 
-#endif
+#endif  // MICA_SEQUENCE_PROTOCOL_HH

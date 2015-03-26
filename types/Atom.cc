@@ -4,13 +4,12 @@
 
 #include <iostream>
 
-#include "common/mica.h"
 #include "types/Exceptions.hh"
 #include "types/List.hh"
 #include "types/MetaObjects.hh"
 #include "types/Var.hh"
 
-using namespace mica;
+namespace mica {
 
 Var Atom::subseq(int start, int length) const {
   throw invalid_type("attempt to extract subseq from scalar operand");
@@ -36,3 +35,5 @@ var_vector Atom::flatten() const {
 }
 
 void Atom::append_child_pointers(child_set &child_list) {}
+
+}  // namespace mica

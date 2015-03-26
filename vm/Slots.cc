@@ -5,7 +5,7 @@
 #include <boost/cstdint.hpp>
 #include <unordered_set>
 
-#include "common/mica.h"
+
 #include "types/Data.hh"
 #include "types/Exceptions.hh"
 #include "types/GlobalSymbols.hh"

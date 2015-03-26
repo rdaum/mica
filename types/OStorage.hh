@@ -6,7 +6,7 @@
 #include <unordered_map>
 
 #include "base/reference_counted.hh"
-#include "common/mica.h"
+
 #include "types/hash.hh"
 #include "types/Symbol.hh"
 #include "types/Var.hh"

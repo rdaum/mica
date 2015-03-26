@@ -7,7 +7,7 @@
 #include <utility>
 #include <iostream>
 
-#include "common/mica.h"
+
 #include "types/Atom.hh"
 #include "types/Atom.hh"
 #include "types/Data.hh"

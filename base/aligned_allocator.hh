@@ -17,6 +17,7 @@ inline void* mica_memalign(size_t align, size_t size, void** ptr) {
               : NULL);
 #endif
 }
+
 namespace mica {
 
 inline void* do_alloc(size_t size_of) {
@@ -114,6 +115,6 @@ void* operator new(size_t size) throw(std::bad_alloc) {
  */
 void* operator new(size_t size, mica::Aligned& a) throw(std::bad_alloc) {
   return mica::do_alloc(size);
-}
+}  // namespace mica
 
-#endif
+#endif  // MMAP_ALLOC

@@ -1,7 +1,7 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
-#ifndef NODES_HH
-#define NODES_HH
+#ifndef MICA_NODES_HH
+#define MICA_NODES_HH
 
 #include <vector>
 
@@ -11,9 +11,9 @@
 #include "types/Data.hh"
 #include "types/Var.hh"
 
-using namespace std;
-
 namespace mica {
+
+using std::vector;
 
 class Var;
 class Block;
@@ -586,4 +586,4 @@ class noopNode : public Node {
 };
 }
 
-#endif /* NODES_HH */
+#endif   // MICA_NODES_HH

@@ -6,7 +6,7 @@ namespace mica {
 /** Protocol for purely functional (immutable) sets.  Based roughly
  *  on the API from Edison for Haskell by Chris Okasaki.
  */
-template<typename T>
+template <typename T>
 class collection_protocol {
  public:
   // INITIAL CONSTRUCTIONS
@@ -122,6 +122,6 @@ class collection_protocol {
   virtual bool subset(const T &a) const = 0;
 };
 
-} /** namespace mica ... **/
+}  // namespace mica
 
-#endif
+#endif  // MICA_COLLECTION_PROTOCOL_HH

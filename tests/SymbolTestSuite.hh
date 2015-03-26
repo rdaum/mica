@@ -3,7 +3,7 @@
 #ifndef SYMBOLTEST
 #define SYMBOLTEST
 
-#include "common/mica.h"
+
 
 
 #include <unordered_map>

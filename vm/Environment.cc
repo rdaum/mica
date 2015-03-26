@@ -5,7 +5,7 @@
 #include <assert.h>
 #include <vector>
 
-#include "common/mica.h"
+
 #include "types/Data.hh"
 #include "types/Var.hh"
 #include "vm/Task.hh"

@@ -3,7 +3,7 @@
 #ifndef OBJECT_HH
 #define OBJECT_HH
 
-#include "common/mica.h"
+
 #include "types/ArgumentMask.hh"
 #include "types/Atom.hh"
 #include "types/OStorage.hh"

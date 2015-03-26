@@ -1,7 +1,7 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
-#ifndef BINDING_HH
-#define BINDING_HH
+#ifndef MICA_BINDING_HH
+#define MICA_BINDING_HH
 
 #include "base/type_protocol.hh"
 
@@ -30,6 +30,7 @@ class Binding {
 
   unsigned int finishBlock();
 };
-}
 
-#endif
+}  // namespace mica
+
+#endif  // MICA_BINDING_HH

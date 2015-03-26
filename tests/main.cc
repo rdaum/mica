@@ -1,7 +1,7 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
 
-#include "common/mica.h"
+
 
 #include <cppunit/TestSuite.h>
 #include <cppunit/TextTestResult.h>

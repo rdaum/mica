@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "common/mica.h"
+
 #include "types/Data.hh"
 #include "types/Error.hh"
 #include "types/GlobalSymbols.hh"

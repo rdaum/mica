@@ -14,8 +14,6 @@
 #include <stdexcept>
 
 #include "base/logging.hh"
-#include "common/contract.h"
-#include "common/mica.h"
 #include "types/Data.hh"
 #include "types/Error.hh"
 #include "types/Exceptions.hh"
@@ -26,8 +24,7 @@
 #include "types/String.hh"
 #include "types/Symbol.hh"
 
-using namespace mica;
-using namespace std;
+namespace mica {
 
 #define CLEAR_BITS(x, mask) (((x) & ~(mask)))
 #define TO_POINTER(x) CLEAR_BITS(x, 4)
@@ -109,20 +106,20 @@ struct neg_visitor {
 /** Visitor to obtain a hash from the contents of a Var
  */
 struct hashing_visitor {
-  inline unsigned int operator()(int y) const { return STD_EXT_NS::hash<int>()(y); }
-  inline unsigned int operator()(char y) const { return STD_EXT_NS::hash<char>()(y); }
-  inline unsigned int operator()(bool y) const { return y ? 0 : 1; }
-  inline unsigned int operator()(float y) const {
-    return STD_EXT_NS::hash<unsigned long>()(boost::numeric_cast<unsigned long>(y));
+  inline size_t operator()(int y) const { return std::hash<int>()(y); }
+  inline size_t operator()(char y) const { return std::hash<char>()(y); }
+  inline size_t operator()(bool y) const { return y ? 0 : 1; }
+  inline size_t operator()(float y) const {
+    return std::hash<unsigned long>()(boost::numeric_cast<unsigned long>(y));
   }
-  inline unsigned int operator()(const Op &y) const {
-    return STD_EXT_NS::hash<int>()((int)((Var)y).v.value);
+  inline size_t operator()(const Op &y) const {
+    return std::hash<int>()((int)((Var)y).v.value);
   }
-  inline unsigned int operator()(const Symbol &y) const { return y.hash(); }
-  inline unsigned int operator()(Data *x) const { return x->hash(); }
+  inline size_t operator()(const Symbol &y) const { return y.hash(); }
+  inline size_t operator()(Data *x) const { return x->hash(); }
 
   template <typename X>
-  inline unsigned int operator()(int y) const {
+  inline size_t operator()(int y) const {
     // DEFAULT
     ASSERT_D(0);
   }
@@ -220,7 +217,7 @@ static rep_visitor rep_v;
 static flatten_visitor flatten_v;
 
 Data *Var::operator->() const {
-  PRECONDITION(isData());
+  ASSERT_D(isData());
   return get_data();
 };
 
@@ -262,7 +259,7 @@ void Var::set_data(Data *data) {
 }
 
 Data *Var::get_data() const {
-  PRECONDITION(isData());
+  ASSERT_D(isData());
   return reinterpret_cast<Data *>(TO_POINTER(v.value));
 }
 
@@ -300,9 +297,6 @@ Var::Var() {
 Var::Var(const Var &from) : v(from.v) {
   upcount();
 
-  // This is a constructor, so we can't check our own invariant, and
-  // thus don't use a normal precondition.  The invariant for what
-  // we're copying however, can and does hold.
   ASSERT_D(from.invariant());
 }
 
@@ -647,7 +641,7 @@ struct mod_op<float> {
   explicit mod_op(float i_lhs) : lhs(i_lhs){};
   template <typename LHT>
   inline Var operator()(const LHT &rhs) const {
-    return Var(fmod(lhs, boost::numeric_cast<float>(rhs)));
+    return Var(fmodf(lhs, boost::numeric_cast<float>(rhs)));
   }
   inline Var operator()(const bool &rhs) const { throw invalid_type("invalid operands"); }
   inline Var operator()(Data *rhs) const { throw invalid_type("invalid operands"); }
@@ -954,5 +948,7 @@ void Var::append_child_pointers(child_set &child_list) {
 }
 
 unsigned int Var::hash() const { return apply_visitor<unsigned int>(hasher); }
+
+}  // namespace mica
 
 std::ostream &mica::operator<<(std::ostream &lhs, const Var &rhs) { return rhs.append(lhs); }

@@ -4,6 +4,7 @@
 #include <string>
 
 namespace mica {
+
 typedef std::string mica_string;
 }  // namespace mica
 

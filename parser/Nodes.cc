@@ -14,9 +14,7 @@
 #include "vm/Block.hh"
 #include "vm/Task.hh"
 
-
-using namespace std;
-using namespace mica;
+namespace mica {
 
 vector<NPtr> mica::nblk(const NPtr &one) {
   vector<NPtr> x;
@@ -49,7 +47,7 @@ vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three, con
 }
 
 vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three, const NPtr &four,
-                        const NPtr &five) {
+    const NPtr &five) {
   vector<NPtr> x;
   x.push_back(one);
   x.push_back(two);
@@ -60,24 +58,24 @@ vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three, con
 }
 
 void mica::append_node(child_set &children, const NPtr &node) {
-  children.push_back(((Node *)node));
+  children.push_back(((Node *) node));
 }
 
 void mica::append_node_tuple(child_set &children, const NPtr &node, const NPtr &node2) {
-  children.push_back(((Node *)node));
-  children.push_back(((Node *)node2));
+  children.push_back(((Node *) node));
+  children.push_back(((Node *) node2));
 }
 
 void mica::append_node_tuple(child_set &children, const NPtr &node, const NPtr &node2,
-                             const NPtr &node3) {
-  children.push_back(((Node *)node));
-  children.push_back(((Node *)node2));
-  children.push_back(((Node *)node3));
+    const NPtr &node3) {
+  children.push_back(((Node *) node));
+  children.push_back(((Node *) node2));
+  children.push_back(((Node *) node3));
 }
 
 void mica::append_nodes(child_set &children, const vector<NPtr> &nodes) {
   for (vector<NPtr>::const_iterator x = nodes.begin(); x != nodes.end(); x++) {
-    children.push_back(((Node *)*x));
+    children.push_back(((Node *) *x));
   }
 }
 
@@ -88,7 +86,8 @@ var_vector Node::compile(Ref<Block> block, Binding &binding) const {
   return ops;
 }
 
-void Node::append_child_pointers(child_set &child_list) {}
+void Node::append_child_pointers(child_set &child_list) {
+}
 
 Ref<Block> Node::compile_to_expr(Binding &binding, const mica_string &source_str) {
   Ref<Block> expr = new Block(source_str);
@@ -135,7 +134,7 @@ var_vector blockNode::compile(Ref<Block> block, Binding &binding) const {
 
 var_vector quoteNode::compile(Ref<Block> block, Binding &binding) const {
   var_vector ops;
-  Ref<Block> q_block = new (aligned) Block("");
+  Ref<Block> q_block = new(aligned) Block("");
 
   /** Compile all statments
    */
@@ -188,7 +187,7 @@ var_vector lambdaNode::compile(Ref<Block> block, Binding &binding) const {
 var_vector objectConstructorNode::compile(Ref<Block> block, Binding &binding) const {
   /** Create a new block containing the instructions
    */
-  Ref<Block> object_block = new (aligned) Block("");
+  Ref<Block> object_block = new(aligned) Block("");
 
   /** Start a new block in the binding.
    */
@@ -487,7 +486,7 @@ var_vector errorNode::compile(Ref<Block> block, Binding &binding) const {
    */
   var_vector ops;
 
-  Var err = new (aligned) Error(sym, desc);
+  Var err = new(aligned) Error(sym, desc);
 
   ops.push_back(err);
 
@@ -543,15 +542,15 @@ var_vector scatterAssignNode::compile(Ref<Block> block, Binding &binding) const 
 
   /** Push each required var id
    */
-  for (x = required.begin(); x != required.end(); x++) ops.push_back(Var((int)binding.lookup(*x)));
+  for (x = required.begin(); x != required.end(); x++) ops.push_back(Var((int) binding.lookup(*x)));
 
   /** Now push each of the optional ids
    */
-  for (x = optional.begin(); x != optional.end(); x++) ops.push_back(Var((int)binding.lookup(*x)));
+  for (x = optional.begin(); x != optional.end(); x++) ops.push_back(Var((int) binding.lookup(*x)));
 
   if (has_remainder) {
     // Now push the remainder id
-    ops.push_back(Var((int)binding.lookup(remainder)));
+    ops.push_back(Var((int) binding.lookup(remainder)));
   }
 
   return ops;
@@ -694,9 +693,9 @@ var_vector forNode::compile(Ref<Block> block, Binding &binding) const {
       /** if (vname) continue; else break; **/
       new ifElseNode(new identNode(vname),
 
-                     new blockNode(nblk(new literalNode(Var(Op::CONTINUE)))),
+          new blockNode(nblk(new literalNode(Var(Op::CONTINUE)))),
 
-                     new blockNode(nblk(new literalNode(Var(Op::BREAK)))))));
+          new blockNode(nblk(new literalNode(Var(Op::BREAK)))))));
 
   NPtr on_done = new blockNode(nblk(new literalNode(Var(Op::BREAK))));
 
@@ -722,7 +721,7 @@ var_vector loopNode::compile(Ref<Block> block, Binding &binding) const {
 var_vector whileNode::compile(Ref<Block> block, Binding &binding) const {
   NPtr while_node = new loopNode(new blockNode(nblk(
       new ifElseNode(testExpr, new blockNode(nblk(trueBranch, new literalNode(Var(Op::CONTINUE)))),
-                     new blockNode(nblk(new literalNode(Var(Op::BREAK))))))));
+          new blockNode(nblk(new literalNode(Var(Op::BREAK))))))));
 
   return while_node->compile(block, binding);
 
@@ -750,7 +749,9 @@ var_vector whileNode::compile(Ref<Block> block, Binding &binding) const {
   //  return ops;
 }
 
-var_vector doWhileNode::compile(Ref<Block> block, Binding &binding) const { return var_vector(); }
+var_vector doWhileNode::compile(Ref<Block> block, Binding &binding) const {
+  return var_vector();
+}
 
 var_vector throwNode::compile(Ref<Block> block, Binding &binding) const {
   /** Push the error
@@ -834,3 +835,5 @@ var_vector noopNode::compile(Ref<Block> block, Binding &binding) const {
   var_vector a;
   return a;
 }
+
+}  // namespace mica

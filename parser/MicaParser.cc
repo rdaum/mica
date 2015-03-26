@@ -7,7 +7,7 @@
 #include <functional>
 #include <iostream>
 
-#include "common/mica.h"
+
 #include "parser/parser.h"
 #include "types/Error.hh"
 #include "types/Exceptions.hh"

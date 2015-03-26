@@ -4,7 +4,7 @@
 
 #include <iostream>
 
-#include "common/mica.h"
+
 #include "types/Exceptions.hh"
 #include "types/GlobalSymbols.hh"
 #include "types/List.hh"

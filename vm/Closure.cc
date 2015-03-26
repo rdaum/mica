@@ -1,7 +1,7 @@
 #include "vm/Closure.hh"
 
 #include "base/type_protocol.hh"
-#include "common/mica.h"
+
 #include "vm/Frame.hh"
 
 using namespace mica;

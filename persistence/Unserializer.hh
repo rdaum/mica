@@ -1,7 +1,7 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
-#ifndef UNSERIALIZER_HH
-#define UNSERIALIZER_HH
+#ifndef PERSISTENCE_UNSERIALIZER_HH
+#define PERSISTENCE_UNSERIALIZER_HH
 
 #include "vm/Task.hh"
 
@@ -56,6 +56,7 @@ class Unserializer {
 
   std::vector<int> readIntVector();
 };
-}
+}  // namespace mica
 
-#endif
+#endif  // PERSISTENCE_UNSERIALIZER_HH
+

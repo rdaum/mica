@@ -5,12 +5,11 @@
 #include <algorithm>
 #include <vector>
 
-#include "common/mica.h"
 #include "types/Data.hh"
 #include "types/Exceptions.hh"
 #include "types/Var.hh"
 
-using namespace mica;
+namespace mica {
 
 void Binding::startBlock() {
   if (bindStack.size()) {
@@ -53,3 +52,5 @@ unsigned int Binding::lookup(const Var &name) const {
   else
     return found - bindStack.begin();
 }
+
+}  // namespace mica

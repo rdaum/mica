@@ -5,7 +5,6 @@
 #include <cassert>
 #include <vector>
 
-#include "common/mica.h"
 #include "types/Data.hh"
 #include "types/Error.hh"
 #include "types/Exceptions.hh"
@@ -22,24 +21,13 @@
 #include "vm/Frame.hh"
 #include "vm/Message.hh"
 
-using namespace mica;
-using namespace std;
+namespace mica {
 
-#ifdef BROKEN_TEMPLATE_FUNCTIONS
-
-#define UnPack(N)                                         \
-  rep.copy(pos, sizeof(N), reinterpret_cast<char *>(&N)); \
-  pos += sizeof(N);
-
-#else
-
-template <class T>
+template<class T>
 void Unserializer::UnPack(T &N) {
   rep.copy(reinterpret_cast<char *>(&N), pos, sizeof(N));
   pos += sizeof(N);
 }
-
-#endif
 
 mica_string Unserializer::readString() {
   /** Get string size.
@@ -58,9 +46,12 @@ mica_string Unserializer::readString() {
   return res;
 }
 
-Unserializer::Unserializer(const mica_string &irep) : rep(irep), pos(0) {}
+Unserializer::Unserializer(const mica_string &irep) : rep(irep), pos(0) {
+}
 
-Var Unserializer::parse() { return parseVar(); }
+Var Unserializer::parse() {
+  return parseVar();
+}
 
 Var Unserializer::parseVar() {
   /** First grab the type
@@ -198,14 +189,13 @@ Var Unserializer::parseSet() {
 OStorage *Unserializer::parseOStorage() {
   /** An environment (physical storage of an object's slots)
    */
-  OStorage *env = new (aligned) OStorage();
+  OStorage *env = new(aligned) OStorage();
 
   while (1) {
     bool more;
     UnPack(more);
     if (more) {
       Symbol name(parseSymbol());
-      cerr << name.tostring() << endl;
       Var accessor(parseVar());
       Var value(parseVar());
 
@@ -281,7 +271,7 @@ Block *Unserializer::parseBlockCommon(Block *block) {
 }
 
 Var Unserializer::parseBlock() {
-  Var block = new (aligned) Block("tmp");
+  Var block = new(aligned) Block("tmp");
 
   return parseBlockCommon(block->asType<Block *>());
 }
@@ -294,7 +284,7 @@ Var Unserializer::parseError() {
   if (has_desc)
     desc = parseData()->asRef<String>();
 
-  return new (aligned) Error(err_sym, desc);
+  return new(aligned) Error(err_sym, desc);
 }
 
 Var Unserializer::parseTaskHandle() {
@@ -317,13 +307,12 @@ Ref<Task> Unserializer::parseTaskReal() {
   Task *task;
   switch (type_id) {
     case Type::TASK:
-      task = new (aligned) Task();
+      task = new(aligned) Task();
       break;
     case Type::FRAME:
-      task = new (aligned) Frame();
+      task = new(aligned) Frame();
       break;
     default:
-      cerr << type_id << endl;
       throw internal_error("invalid task type in task unserialization");
   }
 
@@ -407,16 +396,16 @@ Ref<Message> Unserializer::parseMessage() {
   Message *msg;
   switch (type_id) {
     case Type::MESSAGE:
-      msg = new (aligned) Message();
+      msg = new(aligned) Message();
       break;
     case Type::RETURNMESSAGE:
-      msg = new (aligned) ReturnMessage();
+      msg = new(aligned) ReturnMessage();
       break;
     case Type::RAISEMESSAGE:
-      msg = new (aligned) RaiseMessage();
+      msg = new(aligned) RaiseMessage();
       break;
     case Type::HALTMESSAGE:
-      msg = new (aligned) HaltMessage();
+      msg = new(aligned) HaltMessage();
       break;
     default:
       throw internal_error("invalid type_id in Unserializer::parseMessage");
@@ -447,3 +436,5 @@ Ref<Message> Unserializer::parseMessage() {
 
   return msg;
 }
+
+}  // namespace mica

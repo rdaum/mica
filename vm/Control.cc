@@ -4,7 +4,7 @@
 
 #include <sstream>
 
-#include "common/mica.h"
+
 #include "types/Atom.hh"
 #include "types/Data.hh"
 #include "types/Exceptions.hh"

@@ -29,7 +29,7 @@ generate_verbose_prints=false;
 */
    
 code_in_h = {
-#include "common/mica.h"
+
 
 
 #ifdef HAVE_EXT_HASH_MAP

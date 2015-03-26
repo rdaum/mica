@@ -4,8 +4,9 @@
 
 #include "logging.hh"
 
-using namespace mica;
-using namespace std;
+namespace mica {
+
+using std::cerr;
 
 static log4cpp::Appender *app;
 static log4cpp::Layout *layout;
@@ -26,3 +27,5 @@ void mica::initialize_log(bool debug) {
 }
 
 void mica::close_log() { log4cpp::Category::shutdown(); }
+
+}  // namespace mica

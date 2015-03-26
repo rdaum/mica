@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <vector>
 
+#include "base/logging.hh"
 #include "bin/compile.hh"
 #include "parser/MicaParser.hh"
 #include "persistence/PersistentWorkspace.hh"
@@ -32,13 +33,9 @@
 #include "vm/Slots.hh"
 #include "vm/Task.hh"
 
-
-#include "base/logging.hh"
-
 #define DEBUG_OPCODES
 
 using namespace mica;
-using namespace std;
 
 std::vector<mica_string> stringStack;
 

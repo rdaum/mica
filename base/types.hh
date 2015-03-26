@@ -65,6 +65,7 @@ class has_constant_type_identifier : public has_type_identifier {
  public:
   Type::Identifier type_identifier() const { return TYPE_ID; }
 };
-}
 
-#endif /** MICA_TYPES_HH **/
+}  // namespace mica
+
+#endif  // MICA_TYPES_HH

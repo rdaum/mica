@@ -5,7 +5,7 @@
 #include <sstream>
 #include <utility>
 
-#include "common/mica.h"
+
 #include "types/Exceptions.hh"
 #include "types/List.hh"
 #include "types/Var.hh"

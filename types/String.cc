@@ -6,24 +6,28 @@
 #include <boost/cast.hpp>
 #include <utility>
 
-#include "common/mica.h"
 #include "types/Exceptions.hh"
 #include "types/List.hh"
 #include "types/MetaObjects.hh"
 #include "types/Var.hh"
 
-using namespace mica;
-using namespace std;
+namespace mica {
 
-String::String() : Data(), mica_string() {}
+String::String() : Data(), mica_string() {
+}
 
-String::String(const String &from) : Data(), mica_string(from) {}
+String::String(const String &from) : Data(), mica_string(from) {
+}
 
-String::String(const mica_string &from) : Data(), mica_string(from) {}
+String::String(const mica_string &from) : Data(), mica_string(from) {
+}
 
-String::String(const char *from) : Data(), mica_string(from) {}
+String::String(const char *from) : Data(), mica_string(from) {
+}
 
-Ref<String> String::create(const char *from) { return new (aligned) String(from); }
+Ref<String> String::create(const char *from) {
+  return new(aligned) String(from);
+}
 
 /** Everything below here is public
  */
@@ -31,7 +35,7 @@ Var String::from_rope(const mica_string &from) {
   if (from.empty())
     return empty();
   else {
-    return new (aligned) String(from);
+    return new(aligned) String(from);
   }
 }
 
@@ -41,11 +45,13 @@ Var String::from_cstr(const char *from) {
   if (!strlen(from) || !from)
     return empty();
   else {
-    return new (aligned) String(from);
+    return new(aligned) String(from);
   }
 }
 
-mica_string String::as_rope() const { return *this; }
+mica_string String::as_rope() const {
+  return *this;
+}
 
 bool String::operator==(const Var &rhs) const {
   if (rhs.type_identifier() != type_identifier())
@@ -72,10 +78,12 @@ Var String::add(const Var &v2) const {
   else
     x.append(v2.tostring());
 
-  return new (aligned) String(x);
+  return new(aligned) String(x);
 }
 
-Var String::sub(const Var &v2) const { throw unimplemented("sublist subtraction"); }
+Var String::sub(const Var &v2) const {
+  throw unimplemented("sublist subtraction");
+}
 
 Var String::mul(const Var &v2) const {
   /** Multiplying empty lists is stupid
@@ -94,10 +102,12 @@ Var String::mul(const Var &v2) const {
     k.insert(k.end(), begin(), end());
   }
 
-  return new (aligned) String(k);
+  return new(aligned) String(k);
 }
 
-Var String::div(const Var &v2) const { throw unimplemented("invalid operand for division"); }
+Var String::div(const Var &v2) const {
+  throw unimplemented("invalid operand for division");
+}
 
 Var String::cons(const Var &el) const {
   mica_string n_vec;
@@ -107,7 +117,9 @@ Var String::cons(const Var &el) const {
   return String::from_rope(n_vec);
 }
 
-Var String::snoc(const Var &el) const { return this->add(el); }
+Var String::snoc(const Var &el) const {
+  return this->add(el);
+}
 
 Var String::append(const Var &seq) const {
   mica_string result(*this);
@@ -183,11 +195,17 @@ Var String::rtail() const {
   return String::from_rope(res);
 }
 
-bool String::null() const { return this->mica_string::empty(); }
+bool String::null() const {
+  return this->mica_string::empty();
+}
 
-int String::size() const { return boost::numeric_cast<int>(this->mica_string::size()); }
+int String::size() const {
+  return boost::numeric_cast<int>(this->mica_string::size());
+}
 
-Var String::concat() const { throw invalid_type("concat operation meaningless for strings"); }
+Var String::concat() const {
+  throw invalid_type("concat operation meaningless for strings");
+}
 
 Var String::reverse() const {
   mica_string result(*this);
@@ -239,7 +257,9 @@ Var String::subseq(int start, int length) const {
     return String::from_rope(mica_string(begin() + start, begin() + start + length));
 }
 
-bool String::inBounds(int i) const { return (i < size()); }
+bool String::inBounds(int i) const {
+  return (i < size());
+}
 
 Var String::lookup(const Var &N) const {
   int i(N.toint());
@@ -274,16 +294,25 @@ Var String::update(int i, const Var &e) const {
   }
 }
 
-Var String::zip(const Var &with) const { throw invalid_type("invalid operands"); }
+Var String::zip(const Var &with) const {
+  throw invalid_type("invalid operands");
+}
 
 Var String::zipTriple(const Var &two, const Var &three) const {
   throw invalid_type("invalid operands");
 }
 
-Var String::unzip() const { throw invalid_type("invalid operands"); }
-Var String::unzipTriple() const { throw invalid_type("invalid operands"); }
+Var String::unzip() const {
+  throw invalid_type("invalid operands");
+}
 
-var_vector String::flatten() const { throw invalid_type("cannot flatten string type"); }
+Var String::unzipTriple() const {
+  throw invalid_type("invalid operands");
+}
+
+var_vector String::flatten() const {
+  throw invalid_type("cannot flatten string type");
+}
 
 var_vector String::map(const Var &expr) const {
   /** Finished iterating.  No-op
@@ -314,8 +343,7 @@ var_vector String::map(const Var &expr) const {
 }
 
 mica_string String::tostring() const {
-  return *this;
-  ;
+  return *this;;
 }
 
 mica_string String::rep() const {
@@ -339,14 +367,24 @@ void String::serialize_to(serialize_buffer &s_form) const {
 }
 
 size_t String::hash() const {
-  STD_EXT_NS::hash<mica_string> hasher;
+  std::hash <mica_string> hasher;
   return hasher(*this);
 }
 
-int String::toint() const { throw invalid_type("toint() called on collection"); }
+int String::toint() const {
+  throw invalid_type("toint() called on collection");
+}
 
-float String::tofloat() const { throw invalid_type("tofloat() called on collection"); }
+float String::tofloat() const {
+  throw invalid_type("tofloat() called on collection");
+}
 
-Var String::mod(const Var &v2) const { throw invalid_type("invalid operands"); }
+Var String::mod(const Var &v2) const {
+  throw invalid_type("invalid operands");
+}
 
-Var String::neg() const { throw invalid_type("invalid operand"); }
+Var String::neg() const {
+  throw invalid_type("invalid operand");
+}
+
+}  // namespace mica

@@ -5,7 +5,7 @@
 #include <unordered_map>
 
 #include "base/Ref.hh"
-#include "common/mica.h"
+
 #include "types/Data.hh"
 #include "types/Symbol.hh"
 #include "types/Var.hh"

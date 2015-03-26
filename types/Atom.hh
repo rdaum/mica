@@ -1,7 +1,7 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
-#ifndef ATOM_HH
-#define ATOM_HH
+#ifndef MICA_TYPES_ATOM_HH
+#define MICA_TYPES_ATOM_HH
 
 #include "types/Data.hh"
 
@@ -34,9 +34,11 @@ class Atom : public Data {
    */
   virtual void append_child_pointers(child_set &child_list);
 };
-};
+
+}  // namespace mica
 
 #include <iostream>
 std::ostream &operator<<(std::ostream &, mica::Atom &);
 
-#endif /* NONE_HH */
+#endif  // MICA_TYPES_ATOM_HH
+

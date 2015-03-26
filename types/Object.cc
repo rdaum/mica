@@ -10,7 +10,7 @@
 #include "base/logging.hh"
 #include "base/Ref.hh"
 #include "base/Ref.hh"
-#include "common/mica.h"
+
 #include "types/Error.hh"
 #include "types/Exceptions.hh"
 #include "types/GlobalSymbols.hh"

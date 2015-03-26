@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "common/mica.h"
+
 #include "types/Atom.hh"
 #include "types/Data.hh"
 #include "types/Error.hh"

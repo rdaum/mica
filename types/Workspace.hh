@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "base/Ref.hh"
-#include "common/mica.h"
+
 #include "types/hash.hh"
 #include "types/Object.hh"
 #include "types/Symbol.hh"
