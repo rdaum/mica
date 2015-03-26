@@ -28,7 +28,7 @@ class Task : public generic_vm_entity {
 
  public:
   TID tid;
-  PID pid;
+  WID pid;
 
  public:
   /** Create a task.

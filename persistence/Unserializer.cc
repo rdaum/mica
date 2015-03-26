@@ -235,7 +235,7 @@ Var Unserializer::parseObject() {
 
   /** Get the object for it.
    */
-  return Var(Pools::instance.find_pool_by_name(poolName)->resolve(id));
+  return Var(Workspaces::instance.find_pool_by_name(poolName)->resolve(id));
 }
 
 var_vector Unserializer::readVarVector() {
@@ -297,7 +297,7 @@ Var Unserializer::parseTaskHandle() {
 
   /** Get the task for it.
    */
-  return Pools::instance.find_pool_by_name(poolName)->retrieve_task(tid);
+  return Workspaces::instance.find_pool_by_name(poolName)->retrieve_task(tid);
 }
 
 Ref<Task> Unserializer::parseTaskReal() {
@@ -328,7 +328,7 @@ Ref<Task> Unserializer::parseTaskReal() {
 
   /** Get the task for it.
    */
-  task->pid = Pools::instance.find_pool_by_name(poolName)->pid;
+  task->pid = Workspaces::instance.find_pool_by_name(poolName)->wid_;
 
   /** Parent task
    */

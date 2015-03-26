@@ -22,27 +22,27 @@
 using namespace std;
 using namespace mica;
 
-boost::tuple<PID, Var> Pool::open(const Symbol &name, const Ref<Object> &parent_lobby) {
-  Pool *pool = new (aligned) Pool(name);
-  pool->pid = Pools::instance.add(name, pool);
+boost::tuple<WID, Var> Workspace::open(const Symbol &name, const Ref<Object> &parent_lobby) {
+  Workspace *pool = new (aligned) Workspace(name);
+  pool->wid_ = Workspaces::instance.add(name, pool);
 
   Var lobby_v;
   if ((Object *)parent_lobby)
-    lobby_v = Object::create(pool->pid, parent_lobby);
+    lobby_v = Object::create(pool->wid_, parent_lobby);
   else
-    lobby_v = Object::create(pool->pid);
+    lobby_v = Object::create(pool->wid_);
 
-  pool->lobby = lobby_v->asRef<Object>();
+  pool->lobby_ = lobby_v->asRef<Object>();
 
-  return boost::tuple<PID, Var>(pool->pid, lobby_v);
+  return boost::tuple<WID, Var>(pool->wid_, lobby_v);
 }
 
-Pool::Pool(const Symbol &name) : poolName(name), lobby(Ref<Object>(0)) {
+Workspace::Workspace(const Symbol &name) : pool_name_(name), lobby_(Ref<Object>(0)) {
   free_object_list.clear();
-  free_task_list.clear();
+  free_task_list_.clear();
 }
 
-void Pool::sync() {}
+void Workspace::sync() {}
 
 template <class Container, class FreeList>
 unsigned int new_in(Container &container, FreeList &free_list) {
@@ -59,13 +59,13 @@ unsigned int new_in(Container &container, FreeList &free_list) {
 
 /** OBJECT SERVICES
  */
-Object *Pool::new_object() {
+Object *Workspace::new_object() {
   /** Look in the free list for an available object id.
    */
   unsigned int id = new_in(objects, free_object_list);
 
   ObjectEntry *new_entry =
-      new (aligned) ObjectEntry(new (aligned) Object(pid, id), new (aligned) OStorage());
+      new (aligned) ObjectEntry(new (aligned) Object(wid_, id), new (aligned) OStorage());
   objects[id] = new_entry;
 
   write(id);
@@ -73,7 +73,7 @@ Object *Pool::new_object() {
   return new_entry->object;
 }
 
-OStorage *Pool::get_environment(OID object_id) {
+OStorage *Workspace::get_environment(OID object_id) {
   assert(object_id < objects.size());
   assert(objects[object_id]);
 
@@ -82,7 +82,7 @@ OStorage *Pool::get_environment(OID object_id) {
 
 /** Write updates of an environment
  */
-void Pool::write(OID object_id) {
+void Workspace::write(OID object_id) {
   assert(object_id < objects.size());
   assert(objects[object_id]);
 
@@ -92,7 +92,7 @@ void Pool::write(OID object_id) {
 
 /** Destroys an object
  */
-void Pool::eject(OID object_id) {
+void Workspace::eject(OID object_id) {
   assert(object_id < objects.size());
   assert(objects[object_id]);
 
@@ -104,14 +104,14 @@ void Pool::eject(OID object_id) {
   free_object_list.push_back(object_id);
 }
 
-Ref<Object> Pool::resolve(OID object_id) { return objects[object_id]->object->asRef<Object>(); }
+Ref<Object> Workspace::resolve(OID object_id) { return objects[object_id]->object->asRef<Object>(); }
 
-void Pool::del(OID idx) {
+void Workspace::del(OID idx) {
   /** STUB
    */
 }
 
-void Pool::close() {
+void Workspace::close() {
   for (ObjectList::iterator x = objects.begin(); x != objects.end(); x++) {
     ObjectEntry *S = *x;
     if (S) {
@@ -131,27 +131,27 @@ void Pool::close() {
   }
   objects.clear();
 
-  Pools::instance.removePool(pid);
+  Workspaces::instance.removePool(wid_);
 }
 
 /*** TASK SERVICES
  **/
-TID Pool::manage_task(Task *task) {
+TID Workspace::manage_task(Task *task) {
   /** Look in the free list for an available task id.
    */
-  unsigned int id = new_in(managed_tasks, free_task_list);
+  unsigned int id = new_in(managed_tasks_, free_task_list_);
 
   TaskEntry *new_entry = new TaskEntry(task, id);
-  managed_tasks[id] = new_entry;
+  managed_tasks_[id] = new_entry;
 
   return id;
 }
 
-Task *Pool::retrieve_task(TID task_id) const { return managed_tasks[task_id]->task; }
+Task *Workspace::retrieve_task(TID task_id) const { return managed_tasks_[task_id]->task; }
 
-void Pool::unmanage_task(TID task_id) {
-  delete managed_tasks[task_id];
+void Workspace::unmanage_task(TID task_id) {
+  delete managed_tasks_[task_id];
 
-  managed_tasks[task_id] = 0;
-  free_task_list.push_back(task_id);
+  managed_tasks_[task_id] = 0;
+  free_task_list_.push_back(task_id);
 }

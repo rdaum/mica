@@ -48,11 +48,11 @@ Task::Task(Ref<Task> parent, size_t msgid, int pool_id) : generic_vm_entity(), p
   ticks = 0;
 
   if (pool_id == -1)
-    pid = Pools::instance.getDefault();
+    pid = Workspaces::instance.getDefault();
   else
     pid = pool_id;
 
-  Pool *pool = Pools::instance.get(pid);
+  Workspace *pool = Workspaces::instance.get(pid);
   tid = pool->manage_task(this);
 }
 
@@ -71,7 +71,7 @@ Task::Task(Ref<Task> from)
   task_counter++;
   paged = true;
 
-  Pool *pool = Pools::instance.get(pid);
+  Workspace *pool = Workspaces::instance.get(pid);
   tid = pool->manage_task(this);
 
   expire_timer.restart();
@@ -82,7 +82,7 @@ Task::~Task() {}
 void Task::finalize_paged_object() {
   task_counter--;
 
-  Pool *pool = Pools::instance.get(pid);
+  Workspace *pool = Workspaces::instance.get(pid);
   pool->unmanage_task(tid);
 }
 
@@ -299,7 +299,7 @@ void Task::serialize_to(serialize_buffer &s_form) const {
 
   /** Serialize the handle information
    */
-  s_form.append(Pools::instance.get(pid)->poolName.serialize());
+  s_form.append(Workspaces::instance.get(pid)->pool_name_.serialize());
 
   Pack(s_form, tid);
 }
@@ -315,7 +315,7 @@ void Task::serialize_full_to(serialize_buffer &s_form) const {
 
   /** Serialize the handle information
    */
-  s_form.append(Pools::instance.get(pid)->poolName.serialize());
+  s_form.append(Workspaces::instance.get(pid)->pool_name_.serialize());
 
   Pack(s_form, tid);
 

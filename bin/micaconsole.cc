@@ -166,7 +166,7 @@ int main(int argc, char *argv[]) {
   initializeOpcodes();
   initialize_log(true);
 
-  Pool *default_pool = 0;
+  Workspace *default_pool = 0;
 
   try {
     logger.infoStream() << "initializing symbols" << log4cpp::eol;
@@ -174,16 +174,16 @@ int main(int argc, char *argv[]) {
 
     logger.infoStream() << "opening builtin pool" << log4cpp::eol;
 
-    PID pid;
+    WID pid;
     Var lobby;
 
-    boost::tie(pid, lobby) = Pool::open(Symbol::create("builtin"));
-    Pools::instance.setDefault(pid);
+    boost::tie(pid, lobby) = Workspace::open(Symbol::create("builtin"));
+    Workspaces::instance.setDefault(pid);
 
     logger.infoStream() << "initializing builtins" << log4cpp::eol;
     MetaObjects::initialize(lobby);
 
-    default_pool = Pools::instance.get(pid);
+    default_pool = Workspaces::instance.get(pid);
 
     //    initNatives();
 
@@ -202,21 +202,21 @@ int main(int argc, char *argv[]) {
     try {
       logger.infoStream() << "opening pool:" << pool_name << log4cpp::eol;
 
-      PID pid;
+      WID pid;
       Var lobby;
 
       boost::tie(pid, lobby) =
           PersistentPool::open(Symbol::create(pool_name), MetaObjects::Lobby->asRef<Object>());
 
-      Pools::instance.setDefault(pid);
-      default_pool = Pools::instance.get(pid);
+      Workspaces::instance.setDefault(pid);
+      default_pool = Workspaces::instance.get(pid);
     } catch (Ref<Error> e) {
       logger.infoStream() << "unable to open pool:" << pool_name
                           << log4cpp::eol;
     }
   }
 
-  Var default_lobby(default_pool->lobby);
+  Var default_lobby(default_pool->lobby_);
 
   /** Create :eval_tmp slot for later writing
    */
@@ -245,7 +245,7 @@ int main(int argc, char *argv[]) {
   default_lobby = NONE;
 
   logger.infoStream() << "closing pools" << log4cpp::eol;
-  Pools::instance.close();
+  Workspaces::instance.close();
 
   logger.infoStream() << "cleaning up metaobject references" << log4cpp::eol;
   MetaObjects::cleanup();

@@ -1,41 +1,40 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
-#ifndef POOLS_HH
-#define POOLS_HH
+#ifndef TYPES_WORKSPACES_HH
+#define TYPES_WORKSPACES_HH
 
 #include <boost/pool/pool_alloc.hpp>
 #include <unordered_map>
 #include <vector>
 
-
 #include "types/hash.hh"
 
 namespace mica {
-typedef unsigned int PID;
+typedef unsigned int WID;
 typedef unsigned int OID;
 
-class Pool;
+class Workspace;
 
-class Pools {
+class Workspaces {
  public:
   /** The global static singleton.
    */
-  static Pools instance;
+  static Workspaces instance;
 
-  Pools();
+  Workspaces();
 
-  ~Pools();
+  ~Workspaces();
 
  public:
   /** Return a list of active pools.
    */
-  std::vector<Pool *> pools() const;
+  std::vector<Workspace *> pools() const;
 
-  Pool *get(PID pool) const;
+  Workspace *get(WID pool) const;
 
-  void removePool(PID pool);
+  void removePool(WID pool);
 
-  PID add(const Symbol &name, Pool *pool);
+  WID add(const Symbol &name, Workspace *pool);
 
   /** Close all pools.
    */
@@ -48,26 +47,26 @@ class Pools {
  public:
   /** Set the default pool
    */
-  void setDefault(PID pool);
+  void setDefault(WID pool);
 
   /** Return the current default pool
    */
-  PID getDefault() const;
+  WID getDefault() const;
 
  public:
   void remove(const Var &obj);
 
-  Pool *find_pool_by_name(const Symbol &poolName) const;
+  Workspace *find_pool_by_name(const Symbol &poolName) const;
 
  private:
-  std::vector<Pool *> _pools;
+  std::vector<Workspace *> workspaces_;
 
-  typedef std::unordered_map<Symbol, PID, hash_symbol, std::equal_to<Symbol>> NamesMap;
+  typedef std::unordered_map<Symbol, WID, hash_symbol, std::equal_to<Symbol>> NamesMap;
+  NamesMap names_;
 
-  NamesMap names;
-
-  PID default_pool;
-};
+  WID default_workspace_;
 };
 
-#endif
+};  // namespace mica
+
+#endif  // TYPES_WORKSPACES_HH

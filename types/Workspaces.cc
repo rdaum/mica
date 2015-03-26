@@ -21,29 +21,29 @@ using namespace std;
 
 /** Static global singleton
  */
-Pools Pools::instance;
+Workspaces Workspaces::instance;
 
-Pools::Pools() {
-  _pools.clear();
-  default_pool = 0;
+Workspaces::Workspaces() {
+  workspaces_.clear();
+  default_workspace_ = 0;
 }
 
-Pools::~Pools() {
+Workspaces::~Workspaces() {
   NamesMap::iterator ni;
-  for (ni = names.begin(); ni != names.end(); ni++) {
-    Pool *x = _pools[ni->second];
+  for (ni = names_.begin(); ni != names_.end(); ni++) {
+    Workspace *x = workspaces_[ni->second];
     delete x;
   }
 
-  names.clear();
-  _pools.clear();
+  names_.clear();
+  workspaces_.clear();
 }
 
-std::vector<Pool *> Pools::pools() const { return _pools; }
+std::vector<Workspace *> Workspaces::pools() const { return workspaces_; }
 
-Pool *Pools::get(PID pool) const {
-  Pool *poolO;
-  if (pool >= _pools.size() || !(poolO = _pools[pool])) {
+Workspace *Workspaces::get(WID pool) const {
+  Workspace *poolO;
+  if (pool >= workspaces_.size() || !(poolO = workspaces_[pool])) {
     char errstr[50];
     snprintf(errstr, 50, "pool %d not found", pool);
     throw internal_error(errstr);
@@ -51,66 +51,66 @@ Pool *Pools::get(PID pool) const {
   return poolO;
 }
 
-void Pools::removePool(PID pool) {
-  if (pool >= _pools.size())
+void Workspaces::removePool(WID pool) {
+  if (pool >= workspaces_.size())
     throw internal_error("pool not found");
 
-  _pools[pool] = (Pool *)0;
+  workspaces_[pool] = (Workspace *)0;
   NamesMap::iterator ni;
-  for (ni = names.begin(); ni != names.end(); ni++)
+  for (ni = names_.begin(); ni != names_.end(); ni++)
     if (ni->second == pool)
       break;
 
-  if (ni != names.end())
-    names.erase(ni);
+  if (ni != names_.end())
+    names_.erase(ni);
   else
     throw internal_error("name mapping for pool not found");
 }
 
-PID Pools::add(const Symbol &name, Pool *pool) {
-  PID idx = _pools.size();
-  _pools.push_back(pool);
-  names[name] = idx;
+WID Workspaces::add(const Symbol &name, Workspace *pool) {
+  WID idx = workspaces_.size();
+  workspaces_.push_back(pool);
+  names_[name] = idx;
 
   return idx;
 }
 
-void Pools::setDefault(PID pool) { default_pool = pool; }
+void Workspaces::setDefault(WID pool) { default_workspace_ = pool; }
 
-PID Pools::getDefault() const { return default_pool; }
+WID Workspaces::getDefault() const { return default_workspace_; }
 
-Pool *Pools::find_pool_by_name(const Symbol &poolName) const {
+Workspace *Workspaces::find_pool_by_name(const Symbol &poolName) const {
   NamesMap::const_iterator ni;
-  ni = names.find(poolName);
+  ni = names_.find(poolName);
 
-  if (ni == names.end())
+  if (ni == names_.end())
     throw not_found("object pool not found");
 
   return get(ni->second);
 }
 
-void Pools::remove(const Var &obj) {
+void Workspaces::remove(const Var &obj) {
   if (obj.type_identifier() != Type::OBJECT)
     throw invalid_type("unable to remove non-object from pool");
 
   Ref<Object> handle = obj->asRef<Object>();
 
-  return get(handle->pid)->eject(handle->oid);
+  return get(handle->wid_)->eject(handle->oid_);
 }
 
-void Pools::close() {
+void Workspaces::close() {
   /** Don't close the first one
    */
-  vector<Pool *>::iterator pi;
-  for (pi = _pools.begin() + 1; pi != _pools.end(); pi++) {
+  vector<Workspace *>::iterator pi;
+  for (pi = workspaces_.begin() + 1; pi != workspaces_.end(); pi++) {
     (*pi)->close();
     delete (*pi);
   }
 }
 
-void Pools::sync() {
-  vector<Pool *>::iterator pi;
-  for (pi = _pools.begin(); pi != _pools.end(); pi++) {
+void Workspaces::sync() {
+  vector<Workspace *>::iterator pi;
+  for (pi = workspaces_.begin(); pi != workspaces_.end(); pi++) {
     (*pi)->sync();
   }
 }

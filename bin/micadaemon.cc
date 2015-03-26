@@ -416,7 +416,7 @@ int main(int argc, char *argv[]) {
   Scheduler::initialize();
   initializeOpcodes();
 
-  Pool *default_pool = 0;
+  Workspace *default_pool = 0;
 
   struct sigaction new_action, old_action;
 
@@ -434,13 +434,13 @@ int main(int argc, char *argv[]) {
     initSymbols();
 
     logger.infoStream() << "opening builtin pool" << log4cpp::eol;
-    pair<PID, Var> pool_return = Pool::open(Symbol::create("builtin"));
-    Pools::instance.setDefault(pool_return.first);
+    pair<WID, Var> pool_return = Workspace::open(Symbol::create("builtin"));
+    Workspaces::instance.setDefault(pool_return.first);
 
     logger.infoStream() << "initializing builtins" << log4cpp::eol;
     MetaObjects::initialize(pool_return.second);
 
-    default_pool = Pools::instance.get(pool_return.first);
+    default_pool = Workspaces::instance.get(pool_return.first);
 
     initNatives();
 
@@ -460,11 +460,11 @@ int main(int argc, char *argv[]) {
       try {
         logger.infoStream() << "opening pool:" << pool_name << log4cpp::eol;
 
-        pair<PID, Var> p_pool_return(
+        pair<WID, Var> p_pool_return(
             PersistentPool::open(Symbol::create(pool_name), MetaObjects::Lobby->asRef<Object>()));
 
-        Pools::instance.setDefault(p_pool_return.first);
-        default_pool = Pools::instance.get(p_pool_return.first);
+        Workspaces::instance.setDefault(p_pool_return.first);
+        default_pool = Workspaces::instance.get(p_pool_return.first);
       } catch (Ref<Error> e) {
         logger.infoStream() << "unable to open pool:" << pool_name
                             << log4cpp::eol;
@@ -474,15 +474,15 @@ int main(int argc, char *argv[]) {
 
   try {
     connection_proto =
-        OptSlots::get_name(Var(default_pool->lobby), Symbol::create("connection")).value;
+        OptSlots::get_name(Var(default_pool->lobby_), Symbol::create("connection")).value;
   } catch (Ref<Error> e) {
     if (e == E_SLOTNF) {
       logger.errorStream() << "default pool is missing a $connection prototype"
                            << log4cpp::eol;
 
-      connection_proto = default_pool->lobby->clone();
+      connection_proto = default_pool->lobby_->clone();
 
-      default_pool->lobby->declare(Var(NAME_SYM), Symbol::create("eval_obj"), connection_proto);
+      default_pool->lobby_->declare(Var(NAME_SYM), Symbol::create("eval_obj"), connection_proto);
 
       logger.infoStream() << "created new connection prototype" << log4cpp::eol;
 
@@ -504,7 +504,7 @@ int main(int argc, char *argv[]) {
   connection_proto = NONE;
 
   logger.infoStream() << "closing pools" << log4cpp::eol;
-  Pools::instance.close();
+  Workspaces::instance.close();
 
   logger.infoStream() << "cleaning up metaobject references" << log4cpp::eol;
   MetaObjects::cleanup();

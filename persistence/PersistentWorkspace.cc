@@ -14,9 +14,9 @@ using std::vector;
 #define CACHE_WIDTH 64
 #define CACHE_GROW_WINDOW 32
 
-boost::tuple<PID, Var> PersistentPool::open(const Symbol &name, const Ref<Object> &parent_lobby) {
+boost::tuple<WID, Var> PersistentPool::open(const Symbol &name, const Ref<Object> &parent_lobby) {
   PersistentPool *pool = new (aligned) PersistentPool(name);
-  pool->pid = Pools::instance.add(name, pool);
+  pool->wid_ = Workspaces::instance.add(name, pool);
 
   pool->initialize();
 
@@ -24,21 +24,21 @@ boost::tuple<PID, Var> PersistentPool::open(const Symbol &name, const Ref<Object
    *  If this fails, create it.
    */
   if (!pool->exists(0)) {
-    pool->lobby = Object::create(pool->pid, parent_lobby)->asRef<Object>();
+    pool->lobby_ = Object::create(pool->wid_, parent_lobby)->asRef<Object>();
 
   } else {
     /** If there's a lobby, there's a task db, too.
      */
     pool->load_tasks();
 
-    pool->lobby = pool->resolve(0);
+    pool->lobby_ = pool->resolve(0);
   }
 
-  return boost::tuple<PID, Var>(pool->pid, Var(pool->lobby));
+  return boost::tuple<WID, Var>(pool->wid_, Var(pool->lobby_));
 }
 
 PersistentPool::PersistentPool(const Symbol &poolName)
-    : Pool(poolName), cache_width(CACHE_WIDTH), cache_grow_window(CACHE_GROW_WINDOW) {
+    : Workspace(poolName), cache_width(CACHE_WIDTH), cache_grow_window(CACHE_GROW_WINDOW) {
   for (int i = 0; i < NUM_DBS; i++) {
     int rc;
     if ((rc = mdb_env_create(&db_env_[i])) != 0) {
@@ -50,7 +50,7 @@ PersistentPool::PersistentPool(const Symbol &poolName)
 void PersistentPool::initialize() {
   /** Set name for each DB
    */
-  mica_string basename = poolName.tostring();
+  mica_string basename = pool_name_.tostring();
   for (int i = 0; i < NUM_DBS; i++) names_[i] = basename;
 
   names_[ENV_DB].append(".env");
@@ -75,7 +75,7 @@ void PersistentPool::initialize() {
 }
 
 void PersistentPool::sync() {
-  this->Pool::sync();
+  this->Workspace::sync();
 
   // First we do a cache cleanup.
 
@@ -113,7 +113,7 @@ void PersistentPool::close() {
     mdb_env_close(db_env_[i]);
   }
 
-  this->Pool::close();
+  this->Workspace::close();
 }
 
 void PersistentPool::del(OID idx) {
@@ -149,9 +149,9 @@ void PersistentPool::del(OID idx) {
    */
   int cache_id;
   if ((cache_id = objects[idx]->cache_id) != -1)
-    cache_list[cache_id].deleted = true;
+    cache_list_[cache_id].deleted = true;
 
-  this->Pool::del(idx);
+  this->Workspace::del(idx);
 }
 
 inline void file_error() {
@@ -165,7 +165,7 @@ void PersistentPool::load_tasks() {
 
   /** Open the task file - read only.
    */
-  mica_string task_fname(poolName.tostring());
+  mica_string task_fname(pool_name_.tostring());
   task_fname.append(".tsk");
   int flags = O_RDONLY;
   int task_fd = ::open(task_fname.c_str(), flags, S_IRWXU);
@@ -194,11 +194,11 @@ void PersistentPool::load_tasks() {
 
     Ref<Task> task(unserializer.parseTaskReal());
 
-    if (task->tid >= managed_tasks.size())
+    if (task->tid >= managed_tasks_.size())
       ;
-    managed_tasks.resize(task->tid + 64);
+    managed_tasks_.resize(task->tid + 64);
 
-    managed_tasks[task->tid] = new (aligned) TaskEntry((Task *)task, task->tid);
+    managed_tasks_[task->tid] = new (aligned) TaskEntry((Task *)task, task->tid);
   }
   ::close(task_fd);
 
@@ -207,10 +207,10 @@ void PersistentPool::load_tasks() {
   /** Now put all the blank spots in the task list into the free
    *  list.
    */
-  for (vector<TaskEntry *>::reverse_iterator f = managed_tasks.rbegin(); f != managed_tasks.rend();
+  for (vector<TaskEntry *>::reverse_iterator f = managed_tasks_.rbegin(); f != managed_tasks_.rend();
        f++) {
     if (!(*f)) {
-      free_task_list.push_back((managed_tasks.rend() - f) - 1);
+      free_task_list_.push_back((managed_tasks_.rend() - f) - 1);
     }
   }
 }
@@ -222,14 +222,14 @@ void PersistentPool::save_tasks() {
 
   /** Open the task file - write, truncate.
    */
-  mica_string task_fname(poolName.tostring());
+  mica_string task_fname(pool_name_.tostring());
   task_fname.append(".tsk");
   int flags = O_WRONLY | O_CREAT | O_TRUNC;
   int task_fd = ::open(task_fname.c_str(), flags, S_IRWXU);
 
   /** Now for each task in managed_tasks, write...
    */
-  for (vector<TaskEntry *>::iterator ti = managed_tasks.begin(); ti != managed_tasks.end(); ti++) {
+  for (vector<TaskEntry *>::iterator ti = managed_tasks_.begin(); ti != managed_tasks_.end(); ti++) {
     if (*ti) {
       Task *task = (*ti)->task;
 
@@ -260,13 +260,13 @@ void PersistentPool::push_cache(OID oid) {
    *  being bigger than the max cache_width PLUS the grow window
    *  We never flush the cache while collecting cycles.
    */
-  if (!cycle_collecting() && cache_list.size() > (cache_width + cache_grow_window))
+  if (!cycle_collecting() && cache_list_.size() > (cache_width + cache_grow_window))
     flush_cache();
 
   /** Now push the object onto the end of the cache
    */
-  unsigned int cache_id = cache_list.size();
-  cache_list.push_back(CacheEntry(oid, 1));
+  unsigned int cache_id = cache_list_.size();
+  cache_list_.push_back(CacheEntry(oid, 1));
   objects[oid]->cache_id = cache_id;
 }
 
@@ -274,15 +274,15 @@ void PersistentPool::flush_cache() {
   // Sort the cache_list in descending order.  This puts objects with
   // the lowest use count at the end
   // O(N Log N) on average.  Maybe better to try and use nth_element (O(N))
-  sort(cache_list.begin(), cache_list.end());
+  sort(cache_list_.begin(), cache_list_.end());
 
   // Count cache_width elements in -- anything after that is expired
   // and everything before it is decremented by the usecnt of that element
-  CacheVector::iterator last_valid = cache_list.begin() + cache_width;
+  CacheVector::iterator last_valid = cache_list_.begin() + cache_width;
   unsigned int lowest_use_cnt = last_valid->usecnt;
 
   // Now we go through and expire everything after it
-  for (CacheVector::iterator expire = last_valid + 1; expire != cache_list.end(); expire++) {
+  for (CacheVector::iterator expire = last_valid + 1; expire != cache_list_.end(); expire++) {
     if (!expire->deleted && objects[expire->object_id] && objects[expire->object_id]->object) {
       write_object(expire->object_id);
 
@@ -302,21 +302,21 @@ void PersistentPool::flush_cache() {
   }
 
   // Clear out the entries just expired:
-  cache_list.resize(cache_width);
+  cache_list_.resize(cache_width);
 
   // Now go through and do two things:
   //    subtract the lowest_use_cnt from each use count
   //    reset the object's cache entry id to its new location
-  for (CacheVector::iterator renum = cache_list.begin(); renum != cache_list.end(); renum++) {
+  for (CacheVector::iterator renum = cache_list_.begin(); renum != cache_list_.end(); renum++) {
     renum->usecnt -= lowest_use_cnt;
 
-    int c_id = renum - cache_list.begin();
+    int c_id = renum - cache_list_.begin();
     OID oid = renum->object_id;
     if (!renum->deleted && objects[oid])
       objects[oid]->cache_id = c_id;
   }
 
-  assert(objects[cache_list[0].object_id]->cache_id == 0);
+  assert(objects[cache_list_[0].object_id]->cache_id == 0);
 }
 
 OStorage *PersistentPool::get_environment(OID object_id) {
@@ -330,7 +330,7 @@ OStorage *PersistentPool::get_environment(OID object_id) {
     if (cache_id == -1)
       push_cache(object_id);
     else
-      cache_list[cache_id].usecnt++;  // otherwise increment use count
+      cache_list_[cache_id].usecnt++;  // otherwise increment use count
 
     return objects[object_id]->environment;
   }
@@ -404,9 +404,9 @@ void PersistentPool::write(OID id) {
 }
 
 Object *PersistentPool::new_object() {
-  Object *result = this->Pool::new_object();
+  Object *result = this->Workspace::new_object();
 
-  push_cache(result->oid);
+  push_cache(result->oid_);
 
   return result;
 }
@@ -453,7 +453,7 @@ Ref<Object> PersistentPool::resolve(OID id) {
 
     /** Now create the object
      */
-    objects[id]->object = new (aligned) Object(pid, id);
+    objects[id]->object = new (aligned) Object(wid_, id);
 
     /** Retrieve object's reference count
      */

@@ -969,7 +969,7 @@ void Frame::op_destroy(unsigned int param_1, unsigned int param_2) {
   /** Remove the object from Names and the HandleFactory.
    *  Garbage collection should take care of the rest.
    */
-  Pools::instance.remove(self);
+  Workspaces::instance.remove(self);
 
   push(Var());
 }

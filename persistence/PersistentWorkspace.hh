@@ -10,18 +10,18 @@
 
 namespace mica {
 
-class Pool;
+class Workspace;
 
 /** An object pool which provides transparent persistence services via
- *  an object database.  See the class documentation for Pool for more
+ *  an object database.  See the class documentation for Workspace for more
  *  description of the method functionality.
- *  @see Pool
+ *  @see Workspace
  */
-class PersistentPool : public Pool {
+class PersistentPool : public Workspace {
  public:
   /** Open a new persistent pool.
    */
-  static boost::tuple<PID, Var> open(const Symbol &name,
+  static boost::tuple<WID, Var> open(const Symbol &name,
                                      const Ref<Object> &parent_lobby = Ref<Object>(0));
   void sync();
 
@@ -60,7 +60,7 @@ class PersistentPool : public Pool {
     }
   };
   typedef std::vector<CacheEntry> CacheVector;
-  CacheVector cache_list;
+  CacheVector cache_list_;
 
   void flush_cache();
   void push_cache(OID oid);

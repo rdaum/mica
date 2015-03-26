@@ -27,25 +27,24 @@ using namespace mica;
 using namespace std;
 
 void Object::finalize_paged_object() {
-  logger.infoStream() << "Collecting unused Object pid: " << pid << " oid: " << oid
+  logger.infoStream() << "Collecting unused Object pid: " << wid_ << " oid: " << oid_
                       << log4cpp::eol;
-  Pool *pool = Pools::instance.get(pid);
-  pool->eject(oid);
+  Workspace *pool = Workspaces::instance.get(wid_);
+  pool->eject(oid_);
 }
 
-Object::Object(OID i_pid, PID i_oid) : pid(i_pid), oid(i_oid) {
+Object::Object(OID wid, WID oid) : wid_(wid), oid_(oid) {
   paged = true;
-  ;
 }
 
 Var Object::create(int pool_id, const Ref<Object> &parent) {
-  PID pid;
+  WID pid;
   if (pool_id == -1)
-    pid = Pools::instance.getDefault();
+    pid = Workspaces::instance.getDefault();
   else
     pid = pool_id;
 
-  Pool *pool = Pools::instance.get(pid);
+  Workspace *pool = Workspaces::instance.get(pid);
   Object *self = pool->new_object();
 
   if ((Object *)parent) {
@@ -60,15 +59,15 @@ Var Object::create(int pool_id, const Ref<Object> &parent) {
   return Var(self);
 }
 
-Var Object::clone() const { return Object::create(pid, this->asRef<Object>()); }
+Var Object::clone() const { return Object::create(wid_, this->asRef<Object>()); }
 
 var_vector Object::delegates() const { return environment()->delegates(); }
 
-OStorage *Object::environment() const { return Pools::instance.get(pid)->get_environment(oid); }
+OStorage *Object::environment() const { return Workspaces::instance.get(wid_)->get_environment(oid_); }
 
 /** Called after all mutations.
  */
-void Object::write() { Pools::instance.get(pid)->write(oid); }
+void Object::write() { Workspaces::instance.get(wid_)->write(oid_); }
 
 OptSlot Object::get(const Var &accessor, const Symbol &name) const {
   /** Attempt to actually get the value.
@@ -147,16 +146,16 @@ var_vector Object::perform(const Ref<Frame> &caller, const Var &args) {
 }
 
 /** this should only serialize the object and not the environment --
- *  that should be left to the Pool to do
+ *  that should be left to the Workspace to do
  */
 void Object::serialize_to(serialize_buffer &s_form) const {
   Pack(s_form, type_identifier());
 
   /** Serialize the handle information
    */
-  s_form.append(Pools::instance.get(pid)->poolName.serialize());
+  s_form.append(Workspaces::instance.get(wid_)->pool_name_.serialize());
 
-  Pack(s_form, oid);
+  Pack(s_form, oid_);
 }
 
 bool Object::operator<(const Var &rhs) const {

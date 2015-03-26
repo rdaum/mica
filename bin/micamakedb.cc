@@ -183,8 +183,8 @@ int main(int argc, char *argv[]) {
   try {
     initSymbols();
 
-    pair<PID, Var> pool_return = Pool::open(Symbol::create("builtin"));
-    Pools::instance.setDefault(pool_return.first);
+    pair<WID, Var> pool_return = Workspace::open(Symbol::create("builtin"));
+    Workspaces::instance.setDefault(pool_return.first);
 
     MetaObjects::initialize(pool_return.second);
 
@@ -193,10 +193,10 @@ int main(int argc, char *argv[]) {
     char *directory = argv[1];
     char *dbname = argv[2];
 
-    pair<PID, Var> p_pool_return(
+    pair<WID, Var> p_pool_return(
         PersistentPool::open(Symbol::create(dbname), pool_return.second->asRef<Object>()));
 
-    Pools::instance.setDefault(p_pool_return.first);
+    Workspaces::instance.setDefault(p_pool_return.first);
 
     compile_task = new CompileTask();
     Scheduler::instance->event_add(compile_task);
@@ -229,7 +229,7 @@ int main(int argc, char *argv[]) {
 
     cerr << "Done" << endl;
 
-    Pools::instance.close();
+    Workspaces::instance.close();
 
   } catch (Ref<Error> err) {
     cerr << err << endl;

@@ -1,7 +1,7 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
-#ifndef POOL_HH
-#define POOL_HH
+#ifndef TYPES_WORKSPACE_HH
+#define TYPES_WORKSPACE_HH
 
 #include <boost/tuple/tuple.hpp>
 #include <vector>
@@ -14,7 +14,7 @@
 
 namespace mica {
 
-typedef unsigned int PID;
+typedef unsigned int WID;
 typedef unsigned int OID;
 typedef unsigned int TID;
 
@@ -22,14 +22,14 @@ class OStorage;
 class Object;
 class Task;
 
-/** A Pool is a way of mapping object oids to actual physical environments,
+/** A Workspace is a way of mapping object oids to actual physical environments,
  *  and maintaining a list of such handles for use in persistence or remote
  *  access.
  *
  *  @see Object
  *  @see PersistentPool
  */
-class Pool {
+class Workspace {
  public:
   /** Open a new pool of this type.
    *  Meant to be used instead of the constructor
@@ -39,19 +39,19 @@ class Pool {
    *  @return returns a tuple of: < pool id of the pool,
    *                                lobby (namespace) object for the pool >
    */
-  static boost::tuple<PID, Var> open(const Symbol &name,
+  static boost::tuple<WID, Var> open(const Symbol &name,
                                      const Ref<Object> &parent_lobby = Ref<Object>(0));
 
   /** Blank virtual destructor here to satisfy the compiler
    */
-  virtual ~Pool(){};
+  virtual ~Workspace(){};
 
  public:
-  // Pool-related services.
+  // Workspace-related services.
 
   /** @return the PID of this pool.
    */
-  PID getPid() const { return pid; };
+  WID getPid() const { return wid_; };
 
   /** Sync this pool (to disk, etc.)
    */
@@ -146,21 +146,19 @@ class Pool {
     TaskEntry(Task *in_task, TID in_task_id) : task(in_task), tid(in_task_id) {}
   };
   typedef std::vector<TaskEntry *> TaskList;
-  TaskList managed_tasks;
-  FreeList free_task_list;
+  TaskList managed_tasks_;
+  FreeList free_task_list_;
 
  public:
-  PID pid;
-
-  Symbol poolName;
-
-  Ref<Object> lobby;
+  WID wid_;
+  Symbol pool_name_;
+  Ref<Object> lobby_;
 
  protected:
   /** Constructor is protected.
    */
-  Pool(const Symbol &name);
+  Workspace(const Symbol &name);
 };
 };
 
-#endif
+#endif  // TYPES_WORKSPACE_HH

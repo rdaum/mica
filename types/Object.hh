@@ -11,7 +11,7 @@
 
 namespace mica {
 
-typedef unsigned int PID;
+typedef unsigned int WID;
 typedef unsigned int OID;
 
 /** Holds an environment and provides inheritance.
@@ -21,17 +21,16 @@ class Object : public Atom {
   Type::Identifier type_identifier() const { return Type::OBJECT; }
 
  public:
-  /** Pool and object id
+  /** Workspace and object id
    */
-  PID pid;
-  OID oid;
-  ArgumentMask arg_mask;
+  WID wid_;
+  OID oid_;
+  ArgumentMask arg_mask_;
 
  protected:
-  friend class Pool;
-  friend class PersistentPool;
-
-  Object(PID pid, OID oid);
+  friend class Workspace;
+  friend class Workspaces;
+  Object(WID wid, OID oid);
 
  public:
   static Var create(int pool_id = -1, const Ref<Object> &parent = Ref<Object>(0));

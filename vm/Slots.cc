@@ -161,19 +161,19 @@ Slot Slots::match_verb(const Var &self, const Symbol &name, const var_vector &ar
 
           } else {
             delegations[pos].push_back(D);
-            D->arg_mask.clear();
+            D->arg_mask_.clear();
           }
 
           /** If this object hasn't been visited in this dispatch
            *  then we need to set the generation and clear its
            *  arg mask
            */
-          if (D->arg_mask.marked_argument(pos)) {
+          if (D->arg_mask_.marked_argument(pos)) {
             // the object has already been visited as this
             // argument position, skip it
             continue;
           }
-          D->arg_mask.mark_argument(pos);
+          D->arg_mask_.mark_argument(pos);
         }
 
       } else {
