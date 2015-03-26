@@ -4,10 +4,9 @@
 #include <sstream>
 #include <string>
 
-#include "parser.h"
-
-#include "Var.hh"
-#include "Nodes.hh"
+#include "parser/Nodes.hh"
+#include "parser/parser.h"
+#include "types/Var.hh"
 
 namespace mica {
 
