@@ -16,20 +16,20 @@
 
 namespace mica {
 
-vector<NPtr> mica::nblk(const NPtr &one) {
+vector<NPtr> nblk(const NPtr &one) {
   vector<NPtr> x;
   x.push_back(one);
   return x;
 }
 
-vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two) {
+vector<NPtr> nblk(const NPtr &one, const NPtr &two) {
   vector<NPtr> x;
   x.push_back(one);
   x.push_back(two);
   return x;
 }
 
-vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three) {
+vector<NPtr> nblk(const NPtr &one, const NPtr &two, const NPtr &three) {
   vector<NPtr> x;
   x.push_back(one);
   x.push_back(two);
@@ -37,7 +37,7 @@ vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three) {
   return x;
 }
 
-vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three, const NPtr &four) {
+vector<NPtr> nblk(const NPtr &one, const NPtr &two, const NPtr &three, const NPtr &four) {
   vector<NPtr> x;
   x.push_back(one);
   x.push_back(two);
@@ -46,7 +46,7 @@ vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three, con
   return x;
 }
 
-vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three, const NPtr &four,
+vector<NPtr> nblk(const NPtr &one, const NPtr &two, const NPtr &three, const NPtr &four,
     const NPtr &five) {
   vector<NPtr> x;
   x.push_back(one);
@@ -57,23 +57,23 @@ vector<NPtr> mica::nblk(const NPtr &one, const NPtr &two, const NPtr &three, con
   return x;
 }
 
-void mica::append_node(child_set &children, const NPtr &node) {
+void append_node(child_set &children, const NPtr &node) {
   children.push_back(((Node *) node));
 }
 
-void mica::append_node_tuple(child_set &children, const NPtr &node, const NPtr &node2) {
+void append_node_tuple(child_set &children, const NPtr &node, const NPtr &node2) {
   children.push_back(((Node *) node));
   children.push_back(((Node *) node2));
 }
 
-void mica::append_node_tuple(child_set &children, const NPtr &node, const NPtr &node2,
+void append_node_tuple(child_set &children, const NPtr &node, const NPtr &node2,
     const NPtr &node3) {
   children.push_back(((Node *) node));
   children.push_back(((Node *) node2));
   children.push_back(((Node *) node3));
 }
 
-void mica::append_nodes(child_set &children, const vector<NPtr> &nodes) {
+void append_nodes(child_set &children, const vector<NPtr> &nodes) {
   for (vector<NPtr>::const_iterator x = nodes.begin(); x != nodes.end(); x++) {
     children.push_back(((Node *) *x));
   }

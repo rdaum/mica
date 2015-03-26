@@ -20,7 +20,7 @@ namespace mica {
  */
 static bool COLLECTING = false;
 
-bool mica::cycle_collecting() { return COLLECTING; }
+bool cycle_collecting() { return COLLECTING; }
 
 /** Global FREEING flag -- set during frees to prevent further auto refcounts
  *  from taking hold.
@@ -32,9 +32,9 @@ static bool FREEING = false;
  */
 static bool PAGING = false;
 
-void mica::notify_start_paging() { PAGING = true; }
+void notify_start_paging() { PAGING = true; }
 
-void mica::notify_end_paging() { PAGING = false; }
+void notify_end_paging() { PAGING = false; }
 
 inline bool reference_counted::paging() const { return PAGING && this->paged; }
 

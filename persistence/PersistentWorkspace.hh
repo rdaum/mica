@@ -84,7 +84,7 @@ class PersistentWorkspace : public Workspace {
   void save_tasks();
 
  private:
-  enum { ENV_DB, OID_DB } dbs;
+  enum DBS { ENV_DB, OID_DB };
 #define NUM_DBS (OID_DB + 1)
   MDB_env *db_env_[NUM_DBS];
   MDB_txn *db_txn_[NUM_DBS];

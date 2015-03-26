@@ -5,6 +5,8 @@
 using namespace mica;
 using namespace std;
 
-extern void compile_it();
+extern void perform_compile();
 
-int main() { compile_it(); }
+int main() {
+  perform_compile();
+}
