@@ -189,7 +189,7 @@ Var Unserializer::parseSet() {
 OStorage *Unserializer::parseOStorage() {
   /** An environment (physical storage of an object's slots)
    */
-  OStorage *env = new(aligned) OStorage();
+  OStorage *env = new OStorage();
 
   while (1) {
     bool more;
@@ -271,7 +271,7 @@ Block *Unserializer::parseBlockCommon(Block *block) {
 }
 
 Var Unserializer::parseBlock() {
-  Var block = new(aligned) Block("tmp");
+  Var block = new Block("tmp");
 
   return parseBlockCommon(block->asType<Block *>());
 }
@@ -284,7 +284,7 @@ Var Unserializer::parseError() {
   if (has_desc)
     desc = parseData()->asRef<String>();
 
-  return new(aligned) Error(err_sym, desc);
+  return new Error(err_sym, desc);
 }
 
 Var Unserializer::parseTaskHandle() {
@@ -307,10 +307,10 @@ Ref<Task> Unserializer::parseTaskReal() {
   Task *task;
   switch (type_id) {
     case Type::TASK:
-      task = new(aligned) Task();
+      task = new Task();
       break;
     case Type::FRAME:
-      task = new(aligned) Frame();
+      task = new Frame();
       break;
     default:
       throw internal_error("invalid task type in task unserialization");
@@ -396,16 +396,16 @@ Ref<Message> Unserializer::parseMessage() {
   Message *msg;
   switch (type_id) {
     case Type::MESSAGE:
-      msg = new(aligned) Message();
+      msg = new Message();
       break;
     case Type::RETURNMESSAGE:
-      msg = new(aligned) ReturnMessage();
+      msg = new ReturnMessage();
       break;
     case Type::RAISEMESSAGE:
-      msg = new(aligned) RaiseMessage();
+      msg = new RaiseMessage();
       break;
     case Type::HALTMESSAGE:
-      msg = new(aligned) HaltMessage();
+      msg = new HaltMessage();
       break;
     default:
       throw internal_error("invalid type_id in Unserializer::parseMessage");

@@ -10,8 +10,6 @@
 #include <typeinfo>
 #include <vector>
 
-#include "base/logging.hh"
-
 /** Bring these two namespaces into scope, for convenience
  */
 namespace mica {

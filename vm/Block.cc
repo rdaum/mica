@@ -85,7 +85,7 @@ Ref<Task> Block::make_frame(const Ref<Message> &msg, const Var &definer) {
   /** mica blocks get a Frame.  We create a new one with all the
    *  right values copied from the message.
    */
-  Ref<Frame> new_frame(new (aligned) Frame(msg, definer, this));
+  Ref<Frame> new_frame(new Frame(msg, definer, this));
 
   /** Return it for scheduling.
    */

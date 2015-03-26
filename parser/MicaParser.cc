@@ -70,7 +70,7 @@ NPtr micaParser::translateProgram(NonterminalProgram* program) {
   vector<NPtr> stmts(map_to_vec(program->statementList.begin(), program->statementList.end(),
                                 member_pointer(&micaParser::translateStatement)));
 
-  return new (aligned) blockNode(stmts);
+  return new blockNode(stmts);
 }
 
 NPtr micaParser::translateStatement(NonterminalStatement* statement) {
@@ -82,25 +82,25 @@ NPtr micaParser::translateStatement(NonterminalStatement* statement) {
 
     if (statement->elseStatement) {
       NPtr elseBranch(translateStatement(statement->elseStatement));
-      return new (aligned) ifElseNode(testExpr, trueBranch, elseBranch);
+      return new ifElseNode(testExpr, trueBranch, elseBranch);
     } else {
-      return new (aligned) ifNode(testExpr, trueBranch);
+      return new ifNode(testExpr, trueBranch);
     }
   } else if (statement->isWhileLoop) {
     NPtr testExpr(translateExpr(statement->testExpr));
     NPtr trueBranch(translateStatement(statement->body));
-    return new (aligned) whileNode(testExpr, trueBranch);
+    return new whileNode(testExpr, trueBranch);
   } else if (statement->isDoWhileLoop) {
     NPtr testExpr(translateExpr(statement->testExpr));
     NPtr trueBranch(translateStatement(statement->body));
-    return new (aligned) doWhileNode(testExpr, trueBranch);
+    return new doWhileNode(testExpr, trueBranch);
   } else if (statement->iterator) {
     Var ident = translateId(statement->iterator->id);
 
     NPtr rangeExpr(translateExpr(statement->container));
     NPtr doStmt(translateStatement(statement->body));
 
-    return new (aligned) forNode(ident, rangeExpr, doStmt);
+    return new forNode(ident, rangeExpr, doStmt);
 
   } else if (statement->tryBody) {
     NPtr body(translateStatement(statement->tryBody));
@@ -111,15 +111,15 @@ NPtr micaParser::translateStatement(NonterminalStatement* statement) {
       NonterminalCatchStatement* c = *x;
       tryCatchNode::Catch catcher;
       catcher.ident = translateId(c->var);
-      catcher.err = new (aligned) Error(Symbol::create(c->error->text + 1), Ref<String>(0));
+      catcher.err = new Error(Symbol::create(c->error->text + 1), Ref<String>(0));
       catcher.branch = translateStatement(c->body);
 
       catchers.push_back(catcher);
     }
-    return new (aligned) tryCatchNode(body, catchers);
+    return new tryCatchNode(body, catchers);
   } else if (statement->throwError) {
     NPtr err(translateError(statement->throwError));
-    return new (aligned) throwNode(err);
+    return new throwNode(err);
   } else if (statement->scatterSource) {
     bool declare = (statement->declaringVars ? true : false);
     return translateArgDeclList(statement->args, translateExpr(statement->scatterSource), declare);
@@ -127,27 +127,27 @@ NPtr micaParser::translateStatement(NonterminalStatement* statement) {
   } else if (!statement->declList.empty()) {
     vector<NPtr> declares(map_to_vec(statement->declList.begin(), statement->declList.end(),
                                      member_pointer(&micaParser::translateDecl)));
-    return new (aligned) stmtListNode(declares);
+    return new stmtListNode(declares);
   } else if (statement->returnValue) {
-    return new (aligned) returnNode(translateExpr(statement->returnValue));
+    return new returnNode(translateExpr(statement->returnValue));
   } else if (statement->isContinue) {
-    return new (aligned) literalNode(Var(Op::CONTINUE));
+    return new literalNode(Var(Op::CONTINUE));
   } else if (statement->isBreak) {
-    return new (aligned) literalNode(Var(Op::BREAK));
+    return new literalNode(Var(Op::BREAK));
   } else if (statement->isAssign) {
     return translateAssign(statement->isAssign, statement->value);
   } else if (!statement->removeList.empty()) {
-    return new (aligned)
+    return new
         stmtListNode(map_to_vec(statement->removeList.begin(), statement->removeList.end(),
                                 member_pointer(&micaParser::translateRemove)));
   } else if (statement->notifyExpr) {
-    return new (aligned) unaryNode(translateExpr(statement->notifyExpr), Var(Op::NOTIFY));
+    return new unaryNode(translateExpr(statement->notifyExpr), Var(Op::NOTIFY));
 
   } else if (statement->isDetach) {
-    return new (aligned) literalNode(Var(Op::DETACH));
+    return new literalNode(Var(Op::DETACH));
 
   } else {
-    return new (aligned) blockNode(
+    return new blockNode(
         vector<NPtr>(map_to_vec(statement->statementList.begin(), statement->statementList.end(),
                                 member_pointer(&micaParser::translateStatement))));
   }
@@ -194,7 +194,7 @@ NPtr micaParser::translateArgDeclList(NonterminalArgDeclList* args, const NPtr& 
   if (args->remainderVar)
     remainder = translateId(args->remainderVar);
 
-  return new (aligned) scatterAssignNode(source, mandatory, optional, remainder, declare);
+  return new scatterAssignNode(source, mandatory, optional, remainder, declare);
 }
 
 struct operator_info {
@@ -234,7 +234,7 @@ NPtr micaParser::translateExpr(NonterminalExpr* expr) {
       throw internal_error("unable to find opcode to match unary expression operator");
     }
 
-    return new (aligned) unaryNode(translateExpr(expr->unaryArg), opcode);
+    return new unaryNode(translateExpr(expr->unaryArg), opcode);
 
   } else if (expr->builtin) {
     Var opcode;
@@ -247,13 +247,13 @@ NPtr micaParser::translateExpr(NonterminalExpr* expr) {
     if (opcode == NONE)
       throw internal_error("unable to find opcode to match builtin expression");
 
-    return new (aligned) literalNode(opcode);
+    return new literalNode(opcode);
 
   } else if (expr->isList) {
-    return new (aligned) listNode(map_to_vec(expr->listItemList.begin(), expr->listItemList.end(),
+    return new listNode(map_to_vec(expr->listItemList.begin(), expr->listItemList.end(),
                                              member_pointer(&micaParser::translateListItem)));
   } else if (expr->isSet) {
-    return new (aligned) setNode(map_to_vec(expr->setItemList.begin(), expr->setItemList.end(),
+    return new setNode(map_to_vec(expr->setItemList.begin(), expr->setItemList.end(),
                                             member_pointer(&micaParser::translateListItem)));
   } else if (expr->isMap) {
     vector<NPtr> map_vec;
@@ -263,24 +263,24 @@ NPtr micaParser::translateExpr(NonterminalExpr* expr) {
       map_vec.push_back(translateExpr(mapEntry->key));
       map_vec.push_back(translateExpr(mapEntry->value));
     }
-    return new (aligned) mapNode(map_vec);
+    return new mapNode(map_vec);
   } else if (expr->containerExpr) {
     if (expr->index && !expr->end)
-      return new (aligned) binaryNode(translateExpr(expr->containerExpr),
+      return new binaryNode(translateExpr(expr->containerExpr),
                                       translateExpr(expr->index), Var(Op::SLICE));
     else
-      return new (aligned)
+      return new
           trinaryNode(translateExpr(expr->containerExpr), translateExpr(expr->index),
                       translateExpr(expr->end), Var(Op::GETRANGE));
 
   } else if (expr->integerLiteral) {
     int number_value = boost::lexical_cast<int>(expr->integerLiteral->text);
-    return new (aligned) literalNode(Var(number_value));
+    return new literalNode(Var(number_value));
   } else if (expr->floatLiteral) {
     float number_value = boost::lexical_cast<float>(expr->floatLiteral->text);
-    return new (aligned) literalNode(Var(number_value));
+    return new literalNode(Var(number_value));
   } else if (expr->charLiteral) {
-    return new (aligned) literalNode(Var(expr->charLiteral->text[1]));
+    return new literalNode(Var(expr->charLiteral->text[1]));
   } else if (!expr->stringLiteralList.empty()) {
     // Concatenate a sequence of directly adjacent string literals
     std::vector<TerminalStringLiteral*>::iterator iter;
@@ -289,10 +289,10 @@ NPtr micaParser::translateExpr(NonterminalExpr* expr) {
       str.append(translateEscapeCodes((*iter)->text));
     }
 
-    return new (aligned) literalNode(String::from_cstr(str.c_str()));
+    return new literalNode(String::from_cstr(str.c_str()));
 
   } else if (expr->symbol) {
-    return new (aligned) literalNode(Var(Symbol::create(expr->symbol->text + 1)));
+    return new literalNode(Var(Symbol::create(expr->symbol->text + 1)));
   } else if (expr->var) {
     return translateVar(expr->var);
   } else if (expr->error) {
@@ -301,25 +301,25 @@ NPtr micaParser::translateExpr(NonterminalExpr* expr) {
     pair<int, int> start_pos(make_pair(expr->isMethod->line - 1, expr->isMethod->column - 1));
 
     pair<NPtr, std::string> result(translateFrame(start_pos, expr->frame));
-    return new (aligned) methodNode(result.first, result.second.c_str());
+    return new methodNode(result.first, result.second.c_str());
   } else if (expr->isLambda) {
     pair<int, int> start_pos(make_pair(expr->isLambda->line - 1, expr->isLambda->column - 1));
 
     pair<NPtr, std::string> result(translateFrame(start_pos, expr->frame));
-    return new (aligned) lambdaNode(result.first, result.second.c_str());
+    return new lambdaNode(result.first, result.second.c_str());
   } else if (expr->isObjectConstruct) {
     NonterminalObjectConstruct* block = expr->isObjectConstruct;
 
-    NPtr o_block(new (aligned)
+    NPtr o_block(new
                      blockNode(map_to_vec(block->statementList.begin(), block->statementList.end(),
                                           member_pointer(&micaParser::translateStatement))));
 
-    return new (aligned) objectConstructorNode(o_block);
+    return new objectConstructorNode(o_block);
 
   } else if (expr->boolT) {
-    return new (aligned) literalNode(Var(true));
+    return new literalNode(Var(true));
   } else if (expr->boolF) {
-    return new (aligned) literalNode(Var(false));
+    return new literalNode(Var(false));
   }
 }
 
@@ -335,13 +335,13 @@ NPtr micaParser::translateBinaryExpr(const NPtr& left, NonterminalBinaryExpr* ex
     if (opcode == NONE)
       throw internal_error("unable to find opcode to match binary expression operator");
 
-    return new (aligned) binaryNode(translateExpr(expr->rightArg), left, opcode);
+    return new binaryNode(translateExpr(expr->rightArg), left, opcode);
   } else if (expr->func_apply) {
     NPtr arguments =
-        new (aligned) listNode(map_to_vec(expr->argList.begin(), expr->argList.end(),
+        new listNode(map_to_vec(expr->argList.begin(), expr->argList.end(),
                                           member_pointer(&micaParser::translateListItem)));
 
-    return new (aligned) functionApplyNode(left, arguments);
+    return new functionApplyNode(left, arguments);
 
   } else if (expr->messageExpr) {
     return translateMessage(expr->messageExpr, left);
@@ -355,12 +355,12 @@ pair<NPtr, std::string> micaParser::translateFrame(pair<int, int> start_pos,
 
   if (frame->argslist && frame->argslist->args) {
     NPtr args_declare =
-        translateArgDeclList(frame->argslist->args, new (aligned) literalNode(Var(Op::ARGS)), true);
+        translateArgDeclList(frame->argslist->args, new literalNode(Var(Op::ARGS)), true);
 
     statements.push_back(args_declare);
   }
 
-  NPtr stmts = new (aligned)
+  NPtr stmts = new
       stmtListNode(map_to_vec(frame->statementList.begin(), frame->statementList.end(),
                               member_pointer(&micaParser::translateStatement)));
 
@@ -370,14 +370,14 @@ pair<NPtr, std::string> micaParser::translateFrame(pair<int, int> start_pos,
 
   std::string program(get_range(start_pos, end_pos));
 
-  return make_pair(new (aligned) blockNode(statements), program);
+  return make_pair(new blockNode(statements), program);
 }
 
 NPtr micaParser::translateVar(NonterminalVar* var) {
   if (var->slot)
     return translateSlot(var->slot);
   else if (var->id)
-    return new (aligned) identNode(translateId(var->id));
+    return new identNode(translateId(var->id));
 }
 
 NPtr micaParser::translateError(NonterminalErrorValue* errorValue) {
@@ -386,7 +386,7 @@ NPtr micaParser::translateError(NonterminalErrorValue* errorValue) {
   if (errorValue->errorArgumentString)
     errorStr = String::from_cstr(translateEscapeCodes(errorValue->errorArgumentString->text)
                                      .c_str())->asRef<String>();
-  return new (aligned) errorNode(errorId, errorStr);
+  return new errorNode(errorId, errorStr);
 }
 
 Var micaParser::translateId(TerminalId* id) { return Var(Symbol::create(id->text)); }
@@ -396,7 +396,7 @@ NPtr micaParser::get_slot_name(const T slot) {
   if (slot->slotNameExpr)
     return translateExpr(slot->slotNameExpr);
   else
-    return new (aligned) literalNode(Var(Symbol::create(slot->slotName->text)));
+    return new literalNode(Var(Symbol::create(slot->slotName->text)));
 }
 
 NPtr micaParser::translateMessage(NonterminalMessage* msg, const NPtr& destination) {
@@ -405,10 +405,10 @@ NPtr micaParser::translateMessage(NonterminalMessage* msg, const NPtr& destinati
   NPtr args = result.second;
 
   if (msg->qualifier)
-    return new (aligned)
+    return new
         qualifiedMessageNode(destination, selector, args, translateExpr(msg->qualifier->asObj));
   else
-    return new (aligned) messageNode(destination, selector, args);
+    return new messageNode(destination, selector, args);
 }
 
 NPtr micaParser::translateRemove(NonterminalRemove* remove) {
@@ -427,7 +427,7 @@ NPtr micaParser::translateSlotRm(NonterminalSlot* slot) {
   if (slot->verbSlot) {
     pair<NPtr, NPtr> vs_info = translateVerbTemplt(slot->verbSlot->verbT);
 
-    return new (aligned) rmVerbNode(vs_info.first, vs_info.second);
+    return new rmVerbNode(vs_info.first, vs_info.second);
 
   } else if (slot->privateSlot) {
     opcode = Op::RMPRIVATE;
@@ -440,7 +440,7 @@ NPtr micaParser::translateSlotRm(NonterminalSlot* slot) {
     slot_name = get_slot_name(slot->nameSlot);
   }
 
-  return new (aligned) unaryNode(slot_name, Var(opcode));
+  return new unaryNode(slot_name, Var(opcode));
 }
 
 NPtr micaParser::translateDecl(NonterminalDecl* decl) {
@@ -458,16 +458,16 @@ NPtr micaParser::translateVarDecl(NonterminalVarDecl* varDecl) {
   if (varDecl->initialValue) {
     initial = translateExpr(varDecl->initialValue);
   } else {
-    initial = new (aligned) literalNode(NONE);
+    initial = new literalNode(NONE);
   }
-  return new (aligned) varDeclNode(id, initial);
+  return new varDeclNode(id, initial);
 }
 
 NPtr micaParser::translateVerbArg(NonterminalVerbArg* varg) {
   if (varg->argexpr)
     return translateExpr(varg->argexpr);
   else if (varg->wildcard)
-    return new (aligned) literalNode(MetaObjects::AnyMeta);
+    return new literalNode(MetaObjects::AnyMeta);
 
   assert(0);
 }
@@ -482,7 +482,7 @@ pair<NPtr, NPtr> micaParser::translateVerbTemplt(NonterminalVerbTemplt* vs) {
     selector_name.push_back('_');
     selector_name.append((*x)->text);
   }
-  NPtr selector = new (aligned) literalNode(Var(Symbol::create(selector_name)));
+  NPtr selector = new literalNode(Var(Symbol::create(selector_name)));
 
   vector<NPtr> args_vec;
   if (vs->rootArg)
@@ -493,7 +493,7 @@ pair<NPtr, NPtr> micaParser::translateVerbTemplt(NonterminalVerbTemplt* vs) {
 
   args_vec.insert(args_vec.end(), args_vec2.begin(), args_vec2.end());
 
-  NPtr args = new (aligned) listNode(args_vec);
+  NPtr args = new listNode(args_vec);
 
   return make_pair(selector, args);
 }
@@ -508,7 +508,7 @@ pair<NPtr, NPtr> micaParser::translateMsgArgs(NonterminalMsgArgs* vs) {
     selector_name.push_back('_');
     selector_name.append((*x)->text);
   }
-  NPtr selector = new (aligned) literalNode(Var(Symbol::create(selector_name)));
+  NPtr selector = new literalNode(Var(Symbol::create(selector_name)));
 
   vector<NPtr> args_vec;
   if (vs->rootArg)
@@ -519,7 +519,7 @@ pair<NPtr, NPtr> micaParser::translateMsgArgs(NonterminalMsgArgs* vs) {
 
   args_vec.insert(args_vec.end(), args_vec2.begin(), args_vec2.end());
 
-  NPtr args = new (aligned) listNode(args_vec);
+  NPtr args = new listNode(args_vec);
 
   return make_pair(selector, args);
 }
@@ -536,13 +536,13 @@ NPtr micaParser::translateSlotDecl(NonterminalSlotDecl* slotDecl) {
   if (slotDecl->initialValue) {
     value = translateExpr(slotDecl->initialValue);
   } else {
-    value = new (aligned) literalNode(NONE);
+    value = new literalNode(NONE);
   }
 
   if (slotDecl->slot->verbSlot) {
     pair<NPtr, NPtr> vs_info(translateVerbTemplt(slotDecl->slot->verbSlot->verbT));
 
-    return new (aligned) declVerbNode(vs_info.first, vs_info.second, value);
+    return new declVerbNode(vs_info.first, vs_info.second, value);
 
   } else if (slotDecl->slot->privateSlot) {
     opcode = Op::DECLPRIVATE;
@@ -555,7 +555,7 @@ NPtr micaParser::translateSlotDecl(NonterminalSlotDecl* slotDecl) {
     name = get_slot_name(slotDecl->slot->nameSlot);
   }
 
-  return new (aligned) binaryNode(value, name, Var(Op(opcode)));
+  return new binaryNode(value, name, Var(Op(opcode)));
 }
 
 NPtr micaParser::translateSlot(NonterminalSlot* slot) {
@@ -569,7 +569,7 @@ NPtr micaParser::translateSlot(NonterminalSlot* slot) {
   if (slot->verbSlot) {
     pair<NPtr, NPtr> vs_info(translateVerbTemplt(slot->verbSlot->verbT));
 
-    return new (aligned) getVerbNode(vs_info.first, vs_info.second);
+    return new getVerbNode(vs_info.first, vs_info.second);
 
   } else if (slot->privateSlot) {
     opcode = Op::GETPRIVATE;
@@ -582,7 +582,7 @@ NPtr micaParser::translateSlot(NonterminalSlot* slot) {
     name = get_slot_name(slot->nameSlot);
   }
 
-  return new (aligned) unaryNode(name, Var(Op(opcode)));
+  return new unaryNode(name, Var(Op(opcode)));
 }
 
 NPtr micaParser::translateAssign(NonterminalVar* var, NonterminalExpr* expr) {
@@ -604,7 +604,7 @@ NPtr micaParser::translateAssignSlot(NonterminalSlot* slot, NonterminalExpr* exp
   if (slot->verbSlot) {
     pair<NPtr, NPtr> vs_info(translateVerbTemplt(slot->verbSlot->verbT));
 
-    return new (aligned) setVerbNode(vs_info.first, vs_info.second, value);
+    return new setVerbNode(vs_info.first, vs_info.second, value);
 
   } else if (slot->privateSlot) {
     opcode = Op::SETPRIVATE;
@@ -617,19 +617,19 @@ NPtr micaParser::translateAssignSlot(NonterminalSlot* slot, NonterminalExpr* exp
     name = get_slot_name(slot->nameSlot);
   }
 
-  return new (aligned) binaryNode(value, name, Var(Op(opcode)));
+  return new binaryNode(value, name, Var(Op(opcode)));
 }
 
 NPtr micaParser::translateAssignVar(TerminalId* var, NonterminalExpr* expr) {
   Var id(translateId(var));
   NPtr value(translateExpr(expr));
 
-  return new (aligned) assignNode(id, value);
+  return new assignNode(id, value);
 }
 
 NPtr micaParser::translateListItem(NonterminalListItem* listItem) {
   if (listItem->unaryArg) {
-    return new (aligned) unaryNode(translateExpr(listItem->unaryArg), Var(Op::FLATTEN));
+    return new unaryNode(translateExpr(listItem->unaryArg), Var(Op::FLATTEN));
   } else if (listItem->comp) {
     /** Mapping expression is (expr, (expr, op), map)
      */
@@ -643,13 +643,13 @@ NPtr micaParser::translateListItem(NonterminalListItem* listItem) {
       }
     }
     NPtr left = translateExpr(listItem->comp->leftArg);
-    NPtr right = new (aligned) unaryNode(translateExpr(listItem->comp->rightArg), opcode);
+    NPtr right = new unaryNode(translateExpr(listItem->comp->rightArg), opcode);
 
     vector<NPtr> exprs;
     exprs.push_back(right);
-    NPtr right_expr = new (aligned) quoteNode(exprs);
+    NPtr right_expr = new quoteNode(exprs);
 
-    return new (aligned) binaryNode(left, right_expr, Var(Op::MAP));
+    return new binaryNode(left, right_expr, Var(Op::MAP));
 
   } else {
     return translateExpr(listItem->expr);

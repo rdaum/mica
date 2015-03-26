@@ -122,7 +122,7 @@ void evalLoop(const Var &eval_obj) {
   /** Build a top-level frame for our session.  Schedule it, then
    *  we can send messages from it.
    */
-  Task *eval_task = new (aligned) EvalLoopTask(eval_obj);
+  Task *eval_task = new EvalLoopTask(eval_obj);
 
   Scheduler::instance->event_add(eval_task);
 
@@ -206,7 +206,7 @@ int main(int argc, char *argv[]) {
       Var lobby;
 
       boost::tie(pid, lobby) =
-          PersistentPool::open(Symbol::create(pool_name), MetaObjects::Lobby->asRef<Object>());
+          PersistentWorkspace::open(Symbol::create(pool_name), MetaObjects::Lobby->asRef<Object>());
 
       Workspaces::instance.setDefault(pid);
       default_pool = Workspaces::instance.get(pid);

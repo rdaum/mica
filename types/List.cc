@@ -27,7 +27,7 @@ Var List::from_vector(const var_vector &from) {
   if (from.empty())
     return List::empty();
   else {
-    return new (aligned) List(from);
+    return new List(from);
   }
 }
 
@@ -36,14 +36,14 @@ var_vector List::as_vector() const { return *this; }
 Var List::single(const Var &el) {
   var_vector s;
   s.push_back(el);
-  return new (aligned) List(s);
+  return new List(s);
 }
 
 Var List::tuple(const Var &left, const Var &right) {
   var_vector s;
   s.push_back(left);
   s.push_back(right);
-  return new (aligned) List(s);
+  return new List(s);
 }
 
 Var List::triple(const Var &one, const Var &two, const Var &three) {
@@ -51,7 +51,7 @@ Var List::triple(const Var &one, const Var &two, const Var &three) {
   s.push_back(one);
   s.push_back(two);
   s.push_back(three);
-  return new (aligned) List(s);
+  return new List(s);
 }
 
 bool List::operator==(const Var &rhs) const {
@@ -75,7 +75,7 @@ Var List::add(const Var &v2) const {
   var_vector x(*this);
   x.push_back(v2);
 
-  return new (aligned) List(x);
+  return new List(x);
 }
 
 Var List::sub(const Var &v2) const { throw unimplemented("sublist subtraction"); }
@@ -97,7 +97,7 @@ Var List::mul(const Var &v2) const {
     k.insert(k.end(), begin(), end());
   }
 
-  return new (aligned) List(k);
+  return new List(k);
 }
 
 Var List::div(const Var &v2) const { throw unimplemented("invalid operand for division"); }

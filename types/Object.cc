@@ -4,13 +4,12 @@
 
 #include <boost/tuple/tuple.hpp>
 #include <cassert>
+#include <glog/logging.h>
 #include <iostream>
 #include <sstream>
 
-#include "base/logging.hh"
 #include "base/Ref.hh"
 #include "base/Ref.hh"
-
 #include "types/Error.hh"
 #include "types/Exceptions.hh"
 #include "types/GlobalSymbols.hh"
@@ -27,8 +26,7 @@ using namespace mica;
 using namespace std;
 
 void Object::finalize_paged_object() {
-  logger.infoStream() << "Collecting unused Object pid: " << wid_ << " oid: " << oid_
-                      << log4cpp::eol;
+  LOG(INFO) << "Collecting unused Object pid: " << wid_ << " oid: " << oid_;
   Workspace *pool = Workspaces::instance.get(wid_);
   pool->eject(oid_);
 }

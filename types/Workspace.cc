@@ -23,7 +23,7 @@ using namespace std;
 using namespace mica;
 
 boost::tuple<WID, Var> Workspace::open(const Symbol &name, const Ref<Object> &parent_lobby) {
-  Workspace *pool = new (aligned) Workspace(name);
+  Workspace *pool = new Workspace(name);
   pool->wid_ = Workspaces::instance.add(name, pool);
 
   Var lobby_v;
@@ -65,7 +65,7 @@ Object *Workspace::new_object() {
   unsigned int id = new_in(objects, free_object_list);
 
   ObjectEntry *new_entry =
-      new (aligned) ObjectEntry(new (aligned) Object(wid_, id), new (aligned) OStorage());
+      new ObjectEntry(new Object(wid_, id), new OStorage());
   objects[id] = new_entry;
 
   write(id);

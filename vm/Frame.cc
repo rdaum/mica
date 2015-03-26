@@ -488,11 +488,11 @@ void Frame::serialize_full_to(serialize_buffer &s_form) const {
 void Frame::reply_return(const Var &value) {
   var_vector arguments;
   arguments.push_back(value);
-  reply(new (aligned)
+  reply(new
             ReturnMessage(this, msg_id, age, ticks, source, caller, self, on, selector, arguments));
 }
 
 void Frame::reply_raise(const Ref<Error> &error, mica_string traceback) {
-  reply(new (aligned) RaiseMessage(this, msg_id, age, ticks, source, caller, self, on, selector,
+  reply(new RaiseMessage(this, msg_id, age, ticks, source, caller, self, on, selector,
                                    error, traceback));
 }

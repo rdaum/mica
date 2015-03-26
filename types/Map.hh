@@ -32,7 +32,7 @@ class Map : public Data, public association_protocol<Var>, private var_map {
   /** @return an empty map
    */
   inline static const Var empty() {
-    static const Var inst(new (aligned) Map());
+    static const Var inst(new Map());
     return inst;
   }
 

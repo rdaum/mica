@@ -4,8 +4,7 @@
 
 #include <cassert>
 #include <sstream>
-
-#include "base/logging.hh"
+#include <glog/logging.h>
 
 #include "types/Atom.hh"
 #include "types/Data.hh"
@@ -108,8 +107,8 @@ void Task::reply(const Ref<Message> &message) {
     parent_task = 0;
 
   } else {
-    logger.errorStream() << "attempt to send a reply from top-level task.  pid: " << pid
-                         << " tid: " << tid << log4cpp::eol;
+    LOG(WARNING)  << "attempt to send a reply from top-level task.  pid: " << pid
+                         << " tid: " << tid;
   }
 }
 
@@ -163,8 +162,7 @@ void Task::receive(const Ref<Message> &msg) {
     unblock_on(msg->msg_id);
 
   } else {
-    logger.errorStream() << "reply was sent to a terminated task.  pid: " << pid << " tid: " << tid
-                         << log4cpp::eol;
+    LOG(WARNING) <<  "reply was sent to a terminated task.  pid: " << pid << " tid: " << tid;
   }
 }
 
@@ -184,7 +182,7 @@ Var Task::send(const Var &source, const Var &from, const Var &to, const Var &on,
                const Symbol &selector, const var_vector &args) {
   unsigned int msg_id = children.size();
 
-  Ref<Message> msg(new (aligned)
+  Ref<Message> msg(new
                        Message(this, msg_id, age + 1, ticks, source, from, to, on, selector, args));
 
   children.push_back(msg);
@@ -199,7 +197,7 @@ Var Task::send(const Var &source, const Var &from, const Var &to, const Var &on,
 Ref<Message> Task::spawn() {
   /** Put a dummy message for blocking in here
    */
-  Ref<Message> msg = new (aligned) Message();
+  Ref<Message> msg = new Message();
 
   msg->msg_id = children.size();
   children.push_back(msg);
@@ -292,7 +290,7 @@ mica_string Task::rep() const {
 
 /** This is the weak serialize form -- serializes a reference to the
  *  task, not the actual task.  For that, you need serialize_full,
- *  and only PersistentPool can call that.
+ *  and only PersistentWorkspace can call that.
  */
 void Task::serialize_to(serialize_buffer &s_form) const {
   Pack(s_form, Type::TASK_HANDLE);  // It's not really a task, so don't lie.
@@ -304,7 +302,7 @@ void Task::serialize_to(serialize_buffer &s_form) const {
   Pack(s_form, tid);
 }
 
-/** Full serialize method, invoked by the PersistentPool only.
+/** Full serialize method, invoked by the PersistentWorkspace only.
  */
 void Task::serialize_full_to(serialize_buffer &s_form) const {
   Pack(s_form, type_identifier());

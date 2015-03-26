@@ -8,7 +8,6 @@
 #include <iostream>
 #include <vector>
 
-#include "base/aligned_allocator.hh"
 #include "base/Ref.hh"
 #include "base/types.hh"
 

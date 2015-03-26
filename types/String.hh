@@ -38,7 +38,7 @@ class String : public Data, virtual sequence_protocol<Var>, private mica_string 
    *  anyways, this means fast comparisons for empty string.)
    */
   static inline const Var empty() {
-    static const Var inst(new (aligned) String());
+    static const Var inst(new String());
     return inst;
   }
 

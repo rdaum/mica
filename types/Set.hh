@@ -32,7 +32,7 @@ class Set : public Data, public collection_protocol<Var>, private var_set {
   /** @return an empty set
    */
   inline static const Var empty() {
-    static const Var inst(new (aligned) Set());
+    static const Var inst(new Set());
     return inst;
   }
 

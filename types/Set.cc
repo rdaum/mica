@@ -22,10 +22,10 @@ Set::Set(const var_set &from) : Data(), var_set(from) {}
 Var Set::single(const Var &N) {
   var_set s;
   s.insert(N);
-  return new (aligned) Set(s);
+  return new Set(s);
 }
 
-Var Set::from_set(const var_set &from) { return new (aligned) Set(from); }
+Var Set::from_set(const var_set &from) { return new Set(from); }
 
 var_set Set::as_var_set() const { return *this; }
 
@@ -47,7 +47,7 @@ Var Set::add(const Var &rhs) const {
   var_set self(*this);
   self.insert(rhs);
 
-  return new (aligned) Set(self);
+  return new Set(self);
 }
 
 Var Set::mul(const Var &rhs) const { throw invalid_type("invalid operand"); }
@@ -63,7 +63,7 @@ Var Set::insertSeq(const Var &N) const {
   var_vector seq(N.flatten());
   for (var_vector::iterator x = seq.begin(); x != seq.end(); x++) self.insert(*x);
 
-  return new (aligned) Set(self);
+  return new Set(self);
 }
 
 Var Set::merge(const Var &N) const {
@@ -73,7 +73,7 @@ Var Set::merge(const Var &N) const {
   var_vector seq(N.flatten());
   set_union(begin(), end(), seq.begin(), seq.end(), res_ins);
 
-  return new (aligned) Set(result);
+  return new Set(result);
 }
 
 Var Set::drop(const Var &n) const {
@@ -83,7 +83,7 @@ Var Set::drop(const Var &n) const {
   if (fi != self.end())
     self.erase(fi);
 
-  return new (aligned) Set(self);
+  return new Set(self);
 }
 
 Var Set::dropSeq(const Var &n) const {
@@ -94,7 +94,7 @@ Var Set::dropSeq(const Var &n) const {
     if (fi != self.end())
       self.erase(fi);
   }
-  return new (aligned) Set(self);
+  return new Set(self);
 }
 
 bool Set::null() const { return this->var_set::empty(); }
@@ -137,7 +137,7 @@ Var Set::intersect(const Var &N) const {
   var_vector seq(N.flatten());
   set_intersection(begin(), end(), seq.begin(), seq.end(), res_ins);
 
-  return new (aligned) Set(result);
+  return new Set(result);
 }
 
 Var Set::difference(const Var &N) const {
@@ -147,7 +147,7 @@ Var Set::difference(const Var &N) const {
   var_vector seq(N.flatten());
   set_difference(begin(), end(), seq.begin(), seq.end(), res_ins);
 
-  return new (aligned) Set(result);
+  return new Set(result);
 }
 
 bool Set::subset(const Var &N) const {
@@ -257,7 +257,7 @@ var_vector Set::map(const Var &expr) const
 
     /** car
      */
-    ops.push_back(new (aligned) Set(car));
+    ops.push_back(new Set(car));
   }
 
   return ops;

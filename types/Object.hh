@@ -30,6 +30,8 @@ class Object : public Atom {
  protected:
   friend class Workspace;
   friend class Workspaces;
+  friend class PersistentWorkspace;
+
   Object(WID wid, OID oid);
 
  public:

@@ -4,8 +4,7 @@
 
 #include <boost/spirit.hpp>
 
-#include "parser/MicaParser.hh"
-#include "types/Atom.hh"
+\#include "types/Atom.hh"
 #include "types/Exceptions.hh"
 #include "vm/Block.hh"
 #include "vm/Task.hh"
@@ -20,7 +19,7 @@ Ref<Block> mica::compile(mica_string source) {
   nodes = parser.parse();
 
   Binding binding;
-  Ref<Block> method(new(aligned) Block(source));
+  Ref<Block> method(new Block(source));
 
   method->code = nodes->compile(method, binding);
 

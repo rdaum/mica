@@ -194,7 +194,7 @@ int main(int argc, char *argv[]) {
     char *dbname = argv[2];
 
     pair<WID, Var> p_pool_return(
-        PersistentPool::open(Symbol::create(dbname), pool_return.second->asRef<Object>()));
+        PersistentWorkspace::open(Symbol::create(dbname), pool_return.second->asRef<Object>()));
 
     Workspaces::instance.setDefault(p_pool_return.first);
 

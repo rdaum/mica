@@ -13,7 +13,6 @@
 #include <sstream>
 #include <stdexcept>
 
-#include "base/logging.hh"
 #include "types/Data.hh"
 #include "types/Error.hh"
 #include "types/Exceptions.hh"

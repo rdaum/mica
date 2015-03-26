@@ -209,7 +209,7 @@ void OStorage::append_child_pointers(child_set &children) {
 void OStorage::set_verb_parasite(const Symbol &name, unsigned int pos,
                                  const var_vector &argument_template, const Var &definer,
                                  const Var &method) {
-  Ref<VerbDef> vd(new (aligned) VerbDef());
+  Ref<VerbDef> vd(new VerbDef());
   vd->definer = definer;
   vd->argument_template = argument_template;
   vd->method = method;

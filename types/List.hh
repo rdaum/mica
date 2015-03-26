@@ -43,7 +43,7 @@ class List : public Data,
    *  anyways, this means fast comparisons for empty lists.)
    */
   static inline const Var empty() {
-    static const Var inst(new (aligned) List());
+    static const Var inst(new List());
     return inst;
   }
 

@@ -88,7 +88,7 @@ class OStorage {
 
  protected:
   friend class Object;
-  friend class PersistentPool;
+  friend class PersistentWorkspace;
 
   /** Cached delegates slot entry
    */

@@ -9,7 +9,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "base/aligned_allocator.hh"
 #include "base/Ref.hh"
 #include "base/reference_counted.hh"
 #include "base/serializable.hh"

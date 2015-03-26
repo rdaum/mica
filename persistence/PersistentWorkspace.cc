@@ -4,7 +4,6 @@
 
 #include <fcntl.h>
 
-#include "base/logging.hh"
 #include "persistence/Unserializer.hh"
 
 namespace mica {
@@ -14,8 +13,8 @@ using std::vector;
 #define CACHE_WIDTH 64
 #define CACHE_GROW_WINDOW 32
 
-boost::tuple<WID, Var> PersistentPool::open(const Symbol &name, const Ref<Object> &parent_lobby) {
-  PersistentPool *pool = new (aligned) PersistentPool(name);
+boost::tuple<WID, Var> PersistentWorkspace::open(const Symbol &name, const Ref<Object> &parent_lobby) {
+  PersistentWorkspace *pool = new PersistentWorkspace(name);
   pool->wid_ = Workspaces::instance.add(name, pool);
 
   pool->initialize();
@@ -37,7 +36,7 @@ boost::tuple<WID, Var> PersistentPool::open(const Symbol &name, const Ref<Object
   return boost::tuple<WID, Var>(pool->wid_, Var(pool->lobby_));
 }
 
-PersistentPool::PersistentPool(const Symbol &poolName)
+PersistentWorkspace::PersistentWorkspace(const Symbol &poolName)
     : Workspace(poolName), cache_width(CACHE_WIDTH), cache_grow_window(CACHE_GROW_WINDOW) {
   for (int i = 0; i < NUM_DBS; i++) {
     int rc;
@@ -47,7 +46,7 @@ PersistentPool::PersistentPool(const Symbol &poolName)
   }
 }
 
-void PersistentPool::initialize() {
+void PersistentWorkspace::initialize() {
   /** Set name for each DB
    */
   mica_string basename = pool_name_.tostring();
@@ -74,7 +73,7 @@ void PersistentPool::initialize() {
   }
 }
 
-void PersistentPool::sync() {
+void PersistentWorkspace::sync() {
   this->Workspace::sync();
 
   // First we do a cache cleanup.
@@ -101,7 +100,7 @@ void PersistentPool::sync() {
   }
 }
 
-void PersistentPool::close() {
+void PersistentWorkspace::close() {
   /** Save the task list for the next open session
    */
   save_tasks();
@@ -116,7 +115,7 @@ void PersistentPool::close() {
   this->Workspace::close();
 }
 
-void PersistentPool::del(OID idx) {
+void PersistentWorkspace::del(OID idx) {
   MDB_val key;
   key.mv_data = &idx;
   key.mv_size = sizeof(idx);
@@ -160,7 +159,7 @@ inline void file_error() {
   throw internal_error(errmsg);
 }
 
-void PersistentPool::load_tasks() {
+void PersistentWorkspace::load_tasks() {
   notify_start_paging();
 
   /** Open the task file - read only.
@@ -198,7 +197,7 @@ void PersistentPool::load_tasks() {
       ;
     managed_tasks_.resize(task->tid + 64);
 
-    managed_tasks_[task->tid] = new (aligned) TaskEntry((Task *)task, task->tid);
+    managed_tasks_[task->tid] = new TaskEntry((Task *)task, task->tid);
   }
   ::close(task_fd);
 
@@ -215,7 +214,7 @@ void PersistentPool::load_tasks() {
   }
 }
 
-void PersistentPool::save_tasks() {
+void PersistentWorkspace::save_tasks() {
   reference_counted::collect_cycles();
 
   notify_start_paging();
@@ -253,7 +252,7 @@ void PersistentPool::save_tasks() {
   notify_end_paging();
 }
 
-void PersistentPool::push_cache(OID oid) {
+void PersistentWorkspace::push_cache(OID oid) {
   /** Pushes a new object to the cache.  Before doing so, we free up
    *  anything whose usecnt isn't up to spec.
    *  We don't flush unless the cache is full to the point of
@@ -270,7 +269,7 @@ void PersistentPool::push_cache(OID oid) {
   objects[oid]->cache_id = cache_id;
 }
 
-void PersistentPool::flush_cache() {
+void PersistentWorkspace::flush_cache() {
   // Sort the cache_list in descending order.  This puts objects with
   // the lowest use count at the end
   // O(N Log N) on average.  Maybe better to try and use nth_element (O(N))
@@ -319,7 +318,7 @@ void PersistentPool::flush_cache() {
   assert(objects[cache_list_[0].object_id]->cache_id == 0);
 }
 
-OStorage *PersistentPool::get_environment(OID object_id) {
+OStorage *PersistentWorkspace::get_environment(OID object_id) {
   /** CACHE HIT
    */
   if (objects[object_id]->environment) {
@@ -375,7 +374,7 @@ OStorage *PersistentPool::get_environment(OID object_id) {
   return objects[object_id]->environment;
 }
 
-void PersistentPool::write(OID id) {
+void PersistentWorkspace::write(OID id) {
   /** If it's not cached, then it's not worth writing.
    */
   if (!objects[id]->environment)
@@ -403,7 +402,7 @@ void PersistentPool::write(OID id) {
   }
 }
 
-Object *PersistentPool::new_object() {
+Object *PersistentWorkspace::new_object() {
   Object *result = this->Workspace::new_object();
 
   push_cache(result->oid_);
@@ -411,7 +410,7 @@ Object *PersistentPool::new_object() {
   return result;
 }
 
-void PersistentPool::write_object(OID id) {
+void PersistentWorkspace::write_object(OID id) {
   MDB_val key{sizeof(OID), &id};
 
 
@@ -433,7 +432,7 @@ void PersistentPool::write_object(OID id) {
   }
 }
 
-Ref<Object> PersistentPool::resolve(OID id) {
+Ref<Object> PersistentWorkspace::resolve(OID id) {
   if (objects.size() <= id) {
     objects.resize((id + 1) * 2);  // add 1 so special case of 0
     // is not a problem
@@ -448,12 +447,12 @@ Ref<Object> PersistentPool::resolve(OID id) {
     if (!objects[id]) {
       /** Empty object entry - we'll fill it in later.
        */
-      objects[id] = new (aligned) ObjectEntry(0, 0);
+      objects[id] = new ObjectEntry(0, 0);
     }
 
     /** Now create the object
      */
-    objects[id]->object = new (aligned) Object(wid_, id);
+    objects[id]->object = new Object(wid_, id);
 
     /** Retrieve object's reference count
      */
@@ -484,7 +483,7 @@ Ref<Object> PersistentPool::resolve(OID id) {
   return objects[id]->object;
 }
 
-bool PersistentPool::exists(OID id) {
+bool PersistentWorkspace::exists(OID id) {
   bool found = false;
 
   MDB_val key{sizeof(OID), &id};

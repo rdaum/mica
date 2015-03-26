@@ -17,7 +17,7 @@ class Workspace;
  *  description of the method functionality.
  *  @see Workspace
  */
-class PersistentPool : public Workspace {
+class PersistentWorkspace : public Workspace {
  public:
   /** Open a new persistent pool.
    */
@@ -72,7 +72,7 @@ class PersistentPool : public Workspace {
   /** Constructor is protected -- must open a pool through the
    *  static ::open function.
    */
-  PersistentPool(const Symbol &poolName);
+  PersistentWorkspace(const Symbol &poolName);
 
   void initialize();
 

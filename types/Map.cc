@@ -27,7 +27,7 @@ Var Map::from_map(const var_map &from) {
   if (from.empty())
     return empty();
   else
-    return new (aligned) Map(from);
+    return new Map(from);
 }
 
 bool Map::operator==(const Var &rhs) const {
@@ -222,7 +222,7 @@ var_vector Map::map(const Var &expr) const {
     ops.push_back(expr);
     /** car
      */
-    ops.push_back(new (aligned) Map(car));
+    ops.push_back(new Map(car));
   }
 
   return ops;

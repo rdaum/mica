@@ -26,7 +26,7 @@ using namespace mica;
 
 Scheduler *Scheduler::instance;
 
-void Scheduler::initialize() { Scheduler::instance = new (aligned) Scheduler(); }
+void Scheduler::initialize() { Scheduler::instance = new Scheduler(); }
 
 Scheduler::Scheduler() {
   notifiers.clear();
@@ -172,7 +172,7 @@ void Scheduler::send_nonblock(size_t age, size_t ticks, const Var &source, const
                               const Var &to, const Var &on, const Symbol &selector,
                               const var_vector &args) {
   Var msg =
-      new (aligned) Message((Ref<Task>)0, 0, age, ticks, source, from, to, on, selector, args);
+      new Message((Ref<Task>)0, 0, age, ticks, source, from, to, on, selector, args);
 
   /** Dispatch the message now.
    */

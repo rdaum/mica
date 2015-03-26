@@ -134,7 +134,7 @@ var_vector blockNode::compile(Ref<Block> block, Binding &binding) const {
 
 var_vector quoteNode::compile(Ref<Block> block, Binding &binding) const {
   var_vector ops;
-  Ref<Block> q_block = new(aligned) Block("");
+  Ref<Block> q_block = new Block("");
 
   /** Compile all statments
    */
@@ -187,7 +187,7 @@ var_vector lambdaNode::compile(Ref<Block> block, Binding &binding) const {
 var_vector objectConstructorNode::compile(Ref<Block> block, Binding &binding) const {
   /** Create a new block containing the instructions
    */
-  Ref<Block> object_block = new(aligned) Block("");
+  Ref<Block> object_block = new Block("");
 
   /** Start a new block in the binding.
    */
@@ -486,7 +486,7 @@ var_vector errorNode::compile(Ref<Block> block, Binding &binding) const {
    */
   var_vector ops;
 
-  Var err = new(aligned) Error(sym, desc);
+  Var err = new Error(sym, desc);
 
   ops.push_back(err);
 

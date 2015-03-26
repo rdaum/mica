@@ -27,7 +27,7 @@ class Task;
  *  access.
  *
  *  @see Object
- *  @see PersistentPool
+ *  @see PersistentWorkspace
  */
 class Workspace {
  public:
@@ -159,6 +159,7 @@ class Workspace {
    */
   Workspace(const Symbol &name);
 };
-};
+
+}  // namespace Workspace
 
 #endif  // TYPES_WORKSPACE_HH

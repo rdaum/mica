@@ -26,7 +26,7 @@ String::String(const char *from) : Data(), mica_string(from) {
 }
 
 Ref<String> String::create(const char *from) {
-  return new(aligned) String(from);
+  return new String(from);
 }
 
 /** Everything below here is public
@@ -35,7 +35,7 @@ Var String::from_rope(const mica_string &from) {
   if (from.empty())
     return empty();
   else {
-    return new(aligned) String(from);
+    return new String(from);
   }
 }
 
@@ -45,7 +45,7 @@ Var String::from_cstr(const char *from) {
   if (!strlen(from) || !from)
     return empty();
   else {
-    return new(aligned) String(from);
+    return new String(from);
   }
 }
 
@@ -78,7 +78,7 @@ Var String::add(const Var &v2) const {
   else
     x.append(v2.tostring());
 
-  return new(aligned) String(x);
+  return new String(x);
 }
 
 Var String::sub(const Var &v2) const {
@@ -102,7 +102,7 @@ Var String::mul(const Var &v2) const {
     k.insert(k.end(), begin(), end());
   }
 
-  return new(aligned) String(k);
+  return new String(k);
 }
 
 Var String::div(const Var &v2) const {
