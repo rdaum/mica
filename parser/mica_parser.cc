@@ -1,29 +1,23 @@
 // #define BOOST_SPIRIT_DEBUG
 
-#include <boost/lexical_cast.hpp>
-#include <boost/spirit/core.hpp>
-#include <boost/spirit/utility.hpp>
-#include <boost/spirit/symbols.hpp>
-#include <boost/spirit/tree/parse_tree.hpp>
-#include <boost/spirit/tree/ast.hpp>
-#include <boost/spirit/tree/tree_to_xml.hpp>
-#include <boost/spirit/utility/functor_parser.hpp>
-#include <boost/spirit/attribute.hpp>
-#include <boost/spirit/symbols.hpp>
-#include <boost/spirit/iterator/position_iterator.hpp>
-
-#include <boost/spirit/phoenix/primitives.hpp>
-#include <boost/spirit/phoenix/casts.hpp>
-#include <boost/spirit/phoenix/binders.hpp>
-
+#include <boost/spirit/include/classic_ast.hpp>
+#include <boost/spirit/include/classic_attribute.hpp>
+#include <boost/spirit/include/classic_core.hpp>
+#include <boost/spirit/include/classic_functor_parser.hpp>
+#include <boost/spirit/include/classic_parse_tree.hpp>
+#include <boost/spirit/include/classic_position_iterator.hpp>
+#include <boost/spirit/include/classic_symbols.hpp>
+#include <boost/spirit/include/classic_symbols.hpp>
+#include <boost/spirit/include/classic_tree_to_xml.hpp>
+#include <boost/spirit/include/classic_utility.hpp>
+#include <fstream>
 #include <iostream>
 #include <string>
-#include <fstream>
 #include <wchar.h>
+
 #include "types/Var.hh"
 #include "types/hash.hh"
 #include "types/Symbol.hh"
-#include "parser.h"
 #include "types/List.hh"
 #include "types/OpCode.hh"
 #include "types/MetaObjects.hh"
@@ -34,7 +28,7 @@
 #include "Nodes.hh"
 
 using namespace std;
-using namespace boost::spirit;
+using namespace boost::spirit::classic;
 using namespace mica;
 
 /** Here's some convenient typedefs
@@ -48,7 +42,7 @@ typedef scanner<iterator_t, scanner_policies<iter_policy_t, match_policy_t> > sc
 typedef match_t::tree_iterator iter_t;
 typedef match_t::const_tree_iterator const_iter_t;
 
-#define RULE(x) rule<scanner_t, parser_context, parser_tag<parser_ids::x> > x
+#define RULE(x) rule<scanner_t, parser_context<nil_t>, parser_tag<parser_ids::x> > x
 
 struct parser_ids {
   typedef enum {
