@@ -1,65 +1,58 @@
 #ifndef MICA_CLOSURE_HH
 #define MICA_CLOSURE_HH
 
-#include "generic_vm_entity.hh"
-#include "Block.hh"
-#include "Control.hh"
-#include "Environment.hh"
-#include "Frame.hh"
+#include "vm/Block.hh"
+#include "vm/Control.hh"
+#include "vm/Environment.hh"
+#include "vm/Frame.hh"
+#include "vm/generic_vm_entity.hh"
 
 namespace mica {
 
-  /** Closure is a snapshot (closure around) state in a Frame, and represents
-   *  the current state of a function
+/** Closure is a snapshot (closure around) state in a Frame, and represents
+ *  the current state of a function
+ */
+class Closure : public generic_vm_entity {
+ public:
+  Type::Identifier type_identifier() const { return Type::CLOSURE; }
+
+ public:
+  Closure(const var_vector &i_stack, const Environment &i_scope, const Control &control,
+          const ExceptionMap &i_exceptions, ClosureTag i_tag, const Var &self = NONE,
+          const Var &definer = NONE);
+
+  virtual ~Closure();
+
+ public:
+  /** Apply the closure (with arguments) into a running frame
+   *  @param frame the running frame in which to apply the closure
+   *  @param args arguments to set
+   *  @return return value is ignored
    */
-  class Closure
-    : public generic_vm_entity
-  {
-  public:
-    Type::Identifier type_identifier() const { return Type::CLOSURE; }
+  var_vector perform(const Ref<Frame> &frame, const Var &args);
 
-  public:
-    Closure( const var_vector &i_stack,
-	     const Environment &i_scope,
-	     const Control &control,
-	     const ExceptionMap &i_exceptions,
-	     ClosureTag i_tag,
-	     const Var &self = NONE,
-	     const Var &definer = NONE );
+ public:
+  var_vector stack;
 
-    virtual ~Closure();
+  Environment scope;
 
-  public:
-    /** Apply the closure (with arguments) into a running frame
-     *  @param frame the running frame in which to apply the closure
-     *  @param args arguments to set
-     *  @return return value is ignored
-     */
-    var_vector perform( const Ref<Frame> &frame, const Var &args );
+  Control control;
 
-  public:
-    var_vector stack;
+  ExceptionMap exceptions;
 
-    Environment scope;
+  ClosureTag tag;
 
-    Control control;
+  Var self;
 
-    ExceptionMap exceptions;
+  Var definer;
 
-    ClosureTag tag;
-    
-    Var self;
+ public:
+  void serialize_to(serialize_buffer &s_form) const;
 
-    Var definer;
+  void append_child_pointers(child_set &child_list);
 
-  public:
-    void serialize_to( serialize_buffer &s_form ) const;
-
-    void append_child_pointers( child_set &child_list );
-
-    mica_string rep() const;
-  };
-
+  mica_string rep() const;
+};
 }
 
 #endif /** MICA_CLOSURE_HH **/

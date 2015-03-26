@@ -1,37 +1,22 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
+#include "types/hash.hh"
+
+#include <unordered_map>
+
+#include "base/Ref.hh"
 #include "common/mica.h"
-#include "config.h"
-
-#ifdef HAVE_EXT_HASH_MAP
-#include <ext/hash_map>
-#else
-#include <hash_map>
-#endif
-
-#include "Data.hh"
-#include "Var.hh"
-#include "Ref.hh"
-#include "Symbol.hh"
-#include "hash.hh"
-
+#include "types/Data.hh"
+#include "types/Symbol.hh"
+#include "types/Var.hh"
 
 using namespace mica;
 
-unsigned int hash_var::operator ()( const Var &var ) const
-{
-  return var.hash(); 
-};
+size_t hash_var::operator()(const Var &var) const { return var.hash(); };
 
-unsigned int hash_symbol::operator()( const Symbol &sym ) const {
-  return sym.hash();
-}
+size_t hash_symbol::operator()(const Symbol &sym) const { return sym.hash(); }
 
-
-unsigned int str_hash::operator ()( const mica_string &str ) const
-{
-  STD_EXT_NS::hash<mica_string> hasher;
+size_t str_hash::operator()(const mica_string &str) const {
+  std::hash<mica_string> hasher;
   return hasher(str);
 };
-
-

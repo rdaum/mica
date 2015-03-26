@@ -1,20 +1,18 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
  */
+#include "types/GlobalSymbols.hh"
+
 #include "common/mica.h"
-
-#include "Data.hh"
-#include "Var.hh"
-#include "Symbol.hh"
-#include "Exceptions.hh"
-
-#include "GlobalSymbols.hh"
+#include "types/Data.hh"
+#include "types/Exceptions.hh"
+#include "types/Symbol.hh"
+#include "types/Var.hh"
 
 using namespace mica;
 
 Var mica::NONE;
 
-void mica::initSymbols()
-{
+void mica::initSymbols() {
   /** This should be the first symbol created.
    *  Its index into the symbol vector should
    *  be 0.
@@ -43,7 +41,7 @@ void mica::initSymbols()
   INVALID_TYPE_SYM = Symbol::create("invalid_type");
   SLOT_NOT_FOUND_SYM = Symbol::create("slot_not_found");
   SLOT_OVERLOAD_SYM = Symbol::create("slot_overload");
-  NOT_FOUND_SYM = Symbol::create("not_found");  
+  NOT_FOUND_SYM = Symbol::create("not_found");
   STACK_UNDERFLOW_SYM = Symbol::create("stack_underflow");
   VAR_NOT_FOUND_SYM = Symbol::create("var_not_found");
   INTERNAL_SYM = Symbol::create("internal");
@@ -68,7 +66,6 @@ void mica::initSymbols()
   E_PARSE = parse_error("parse error");
   E_PERM = permission_error("permission denied");
   E_SLOTOVLD = slot_overload("slot already declared");
-
 }
 
 Ref<Error> mica::E_SLOTNF(0);
@@ -78,11 +75,10 @@ Ref<Error> mica::E_NONE(0);
 Ref<Error> mica::E_PARSE(0);
 Ref<Error> mica::E_PERM(0);
 
-
 Symbol mica::LAMBDA_SYM;
-Symbol mica::EVAL_SYM;  
-Symbol mica::PARENT_SYM;  
-Symbol mica::PERFORM_SYM; 
+Symbol mica::EVAL_SYM;
+Symbol mica::PARENT_SYM;
+Symbol mica::PERFORM_SYM;
 
 Symbol mica::INITIALIZE_SYM;
 Symbol mica::PARSE_SYM;
@@ -98,7 +94,7 @@ Symbol mica::UNIMPLEMENTED_SYM;
 Symbol mica::INVALID_TYPE_SYM;
 Symbol mica::SLOT_NOT_FOUND_SYM;
 Symbol mica::SLOT_OVERLOAD_SYM;
-Symbol mica::NOT_FOUND_SYM;  
+Symbol mica::NOT_FOUND_SYM;
 Symbol mica::STACK_UNDERFLOW_SYM;
 Symbol mica::VAR_NOT_FOUND_SYM;
 Symbol mica::INTERNAL_SYM;

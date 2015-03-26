@@ -3,75 +3,71 @@
 #ifndef MICA_ERROR_HH
 #define MICA_ERROR_HH
 
-#include "Atom.hh"
-#include "Var.hh"
-#include "Symbol.hh"
-#include "String.hh"
+#include "types/Atom.hh"
+#include "types/Var.hh"
+#include "types/Symbol.hh"
+#include "types/String.hh"
 
-namespace mica
-{
-  /** Error: a symbol and a description.  Used to pass exceptions
-   *  around as values.
-   */
-  class Error
-    : public Atom
-  {
-  public:
-    Type::Identifier type_identifier() const { return Type::ERROR; }
+namespace mica {
+/** Error: a symbol and a description.  Used to pass exceptions
+ *  around as values.
+ */
+class Error : public Atom {
+ public:
+  Type::Identifier type_identifier() const { return Type::ERROR; }
 
-  public:
-    Symbol err_sym;
-    Ref<String> desc;
+ public:
+  Symbol err_sym;
+  Ref<String> desc;
 
-  public:
-    Error( const Symbol &err_sym, const Ref<String> &description );
+ public:
+  Error(const Symbol &err_sym, const Ref<String> &description);
 
-    Error( const Error &from );
+  Error(const Error &from);
 
-  public:
-    bool operator==( const Error &rhs ) const;
+ public:
+  bool operator==(const Error &rhs) const;
 
-    bool operator==( const Var &rhs ) const;
+  bool operator==(const Var &rhs) const;
 
-    bool operator<(const Var &v2) const;
-  
-    bool truth() const;
+  bool operator<(const Var &v2) const;
 
-    Var add( const Var &rhs ) const;
+  bool truth() const;
 
-    Var div( const Var &rhs ) const;
+  Var add(const Var &rhs) const;
 
-    Var mul( const Var &rhs ) const;
+  Var div(const Var &rhs) const;
 
-    Var sub( const Var &rhs ) const;
+  Var mul(const Var &rhs) const;
 
-    Var mod( const Var &rhs ) const;
+  Var sub(const Var &rhs) const;
 
-    Var neg() const;
+  Var mod(const Var &rhs) const;
 
-    Var inc() const;
+  Var neg() const;
 
-    Var dec() const;
+  Var inc() const;
 
-    unsigned int length() const;
+  Var dec() const;
 
-    int toint() const;
-    float tofloat() const;
+  unsigned int length() const;
 
-    mica_string tostring() const;
+  int toint() const;
+  float tofloat() const;
 
-    mica_string rep() const;
+  mica_string tostring() const;
 
-    void serialize_to( serialize_buffer &s_form ) const;
+  mica_string rep() const;
 
-    bool isNumeric() const;
+  void serialize_to(serialize_buffer &s_form) const;
 
-    unsigned int hash() const;
+  bool isNumeric() const;
 
-  public:
-    void append_child_pointers( child_set &child_list );
-  };
+  size_t hash() const;
 
+ public:
+  void append_child_pointers(child_set &child_list);
+};
 }
 
 #endif /* MICA_ERROR_HH */

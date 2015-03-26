@@ -3,134 +3,199 @@
 #ifndef OPCODE_HH
 #define OPCODE_HH
 
-#include "Atoms.hh"
+#include <assert.h>
+
+#include "types/Atoms.hh"
 
 namespace mica {
 
-  struct Op {
-    /** Here are the OpCode entries for the virtual machine
-     */
-    typedef enum {
+struct Op {
+  /** Here are the OpCode entries for the virtual machine
+   */
+  typedef enum {
 
-      // Special marker codes.
-      LIST_MARKER = -3, SET_MARKER, MAP_MARKER, 
+    // Special marker codes.
+    LIST_MARKER = -3,
+    SET_MARKER,
+    MAP_MARKER,
 
-      // Stack manipulation
-      POP_LIST, POP_MAP,  POP_SET, POP, FLATTEN,
+    // Stack manipulation
+    POP_LIST,
+    POP_MAP,
+    POP_SET,
+    POP,
+    FLATTEN,
 
-      // Local variable manipulation
-      SETVAR, GETVAR, SCATTER,
+    // Local variable manipulation
+    SETVAR,
+    GETVAR,
+    SCATTER,
 
-      // Private slot manipulation
-      GETPRIVATE, DECLPRIVATE, SETPRIVATE, SLOTS, RMPRIVATE, 
+    // Private slot manipulation
+    GETPRIVATE,
+    DECLPRIVATE,
+    SETPRIVATE,
+    SLOTS,
+    RMPRIVATE,
 
-      // Verb slot manipulation
-      GETVERB, DECLVERB, SETVERB, RMVERB, 
+    // Verb slot manipulation
+    GETVERB,
+    DECLVERB,
+    SETVERB,
+    RMVERB,
 
-      // Name slot manipulation
-      DECLNAME, RMNAME, GETNAME, SETNAME,
+    // Name slot manipulation
+    DECLNAME,
+    RMNAME,
+    GETNAME,
+    SETNAME,
 
-      // Delegate slot manipulation
-      DECLDELEGATE, RMDELEGATE, GETDELEGATE, SETDELEGATE,
+    // Delegate slot manipulation
+    DECLDELEGATE,
+    RMDELEGATE,
+    GETDELEGATE,
+    SETDELEGATE,
 
-      // Object manipulation
-      MAKE_OBJECT, DESTROY, COMPOSE,
+    // Object manipulation
+    MAKE_OBJECT,
+    DESTROY,
+    COMPOSE,
 
-      // Messaging
-      SEND, SEND_LIKE, PASS, PASS_TO, RETURN, SUSPEND, PERFORM, 
-    
-      // NOTIFICATION
-      NOTIFY, DETACH,
-    
-      // Runtime status/information
-      TICKS, SELF, CALLER, SOURCE, SELECTOR, ARGS, 
+    // Messaging
+    SEND,
+    SEND_LIKE,
+    PASS,
+    PASS_TO,
+    RETURN,
+    SUSPEND,
+    PERFORM,
 
-      // Unary ops
-      NOT, NEG, 
+    // NOTIFICATION
+    NOTIFY,
+    DETACH,
 
-      // Binary ops
-      LSHIFT, RSHIFT, SLICE, AND, XOR, OR, ADD, SUB, MUL, DIV, MOD, 
-      EQUAL, NEQUAL, LESST, GREATERT, LESSTE, GREATERTE, BAND, BOR,
-      ISA, CDR, CAR, CONS, 
+    // Runtime status/information
+    TICKS,
+    SELF,
+    CALLER,
+    SOURCE,
+    SELECTOR,
+    ARGS,
 
-      // More-than-binary ops,
-      GETRANGE,
+    // Unary ops
+    NOT,
+    NEG,
 
-      // Make current closure as value
-      CLOSURE,
+    // Binary ops
+    LSHIFT,
+    RSHIFT,
+    SLICE,
+    AND,
+    XOR,
+    OR,
+    ADD,
+    SUB,
+    MUL,
+    DIV,
+    MOD,
+    EQUAL,
+    NEQUAL,
+    LESST,
+    GREATERT,
+    LESSTE,
+    GREATERTE,
+    BAND,
+    BOR,
+    ISA,
+    CDR,
+    CAR,
+    CONS,
 
-      // Replace current closure with another.
-      J,
+    // More-than-binary ops,
+    GETRANGE,
 
-      // Evaluate an expression on the stack in a sub-branch
-      EVAL,
+    // Make current closure as value
+    CLOSURE,
 
-      // As above, but replace current branch
-      TRAMPOLINE,
+    // Replace current closure with another.
+    J,
 
-      // Restore from the branch stack
-      JOIN,
+    // Evaluate an expression on the stack in a sub-branch
+    EVAL,
 
-      // Make a lambda expression
-      MAKE_LAMBDA, 
+    // As above, but replace current branch
+    TRAMPOLINE,
 
-      // Iteration
-      MAP, 
+    // Restore from the branch stack
+    JOIN,
 
-      // Looping
-      BREAK, CONTINUE, LOOP,
+    // Make a lambda expression
+    MAKE_LAMBDA,
 
-      // Error
-      CATCH, THROW,
+    // Iteration
+    MAP,
 
-      // If/else
-      IF, IFELSE
+    // Looping
+    BREAK,
+    CONTINUE,
+    LOOP,
 
-    } Code;
+    // Error
+    CATCH,
+    THROW,
 
-    bool         is_integer : 1;
-    bool         is_float   : 1;
-    bool         is_pointer : 1;
-    Atoms::types type       : 3;
-    Code         code       : 8;
-    unsigned int param_1    : 9;
-    unsigned int param_2    : 9;
+    // If/else
+    IF,
+    IFELSE
 
-    Op() 
-      : is_integer(false),  is_float(false), is_pointer(false),
-	type(Atoms::OPCODE),
-	code(IFELSE), param_1(0), param_2(0) {};
+  } Code;
 
-    Op( const Code &operation_code, unsigned int parameter_1 = 0, 
-	unsigned int parameter_2 = 0 ) :
-      is_integer(false), is_float(false), is_pointer(false), 
-      type(Atoms::OPCODE),
-      code(operation_code), param_1(parameter_1), param_2(parameter_2) {};
+  bool is_integer : 1;
+  bool is_float : 1;
+  bool is_pointer : 1;
+  Atoms::types type : 3;
+  Code code : 8;
+  unsigned int param_1 : 9;
+  unsigned int param_2 : 9;
 
-    Op( const Op &opcode ) :
-      is_integer(false), is_float(false), is_pointer(false), 
-      type(Atoms::OPCODE),
-      code(opcode.code), param_1(opcode.param_1), param_2(opcode.param_2) {};
+  Op()
+      : is_integer(false),
+        is_float(false),
+        is_pointer(false),
+        type(Atoms::OPCODE),
+        code(IFELSE),
+        param_1(0),
+        param_2(0){};
 
-    Op( const _Atom &atom_conversion )
-    {
-      memcpy( this, &atom_conversion, sizeof( atom_conversion ) );
-      assert( type == Atoms::OPCODE);
-    }
+  Op(const Code &operation_code, unsigned int parameter_1 = 0, unsigned int parameter_2 = 0)
+      : is_integer(false),
+        is_float(false),
+        is_pointer(false),
+        type(Atoms::OPCODE),
+        code(operation_code),
+        param_1(parameter_1),
+        param_2(parameter_2){};
 
-    bool operator<( const Op &opcode ) const {
-      return code < opcode.code;
-    }
+  Op(const Op &opcode)
+      : is_integer(false),
+        is_float(false),
+        is_pointer(false),
+        type(Atoms::OPCODE),
+        code(opcode.code),
+        param_1(opcode.param_1),
+        param_2(opcode.param_2){};
 
-    bool operator==( const Op &opcode ) const {
-      return code == opcode.code;
-    }
+  Op(const _Atom &atom_conversion) {
+    memcpy(this, &atom_conversion, sizeof(atom_conversion));
+    assert(type == Atoms::OPCODE);
+  }
 
-    bool operator==( Code operation_code ) const {
-      return code == operation_code;
-    }
+  bool operator<(const Op &opcode) const { return code < opcode.code; }
 
-  };
+  bool operator==(const Op &opcode) const { return code == opcode.code; }
+
+  bool operator==(Code operation_code) const { return code == operation_code; }
+};
 }
 
 #endif

@@ -3,34 +3,33 @@
 #ifndef BINDING_HH
 #define BINDING_HH
 
+#include "base/type_protocol.hh"
+
 namespace mica {
 
-  class Var;
+class Var;
 
-  /** A Binding provides a way of binding names to stack offsets in
-   *  a block-nested fashion.  This is used at compile time to map variable
-   *  names to stack pointers.  It is not kept around after compile.
-   */
-  class Binding {
+/** A Binding provides a way of binding names to stack offsets in
+ *  a block-nested fashion.  This is used at compile time to map variable
+ *  names to stack pointers.  It is not kept around after compile.
+ */
+class Binding {
+ public:
+  typedef var_vector BindMap;
 
-  public:
-    typedef var_vector BindMap;
+  BindMap bindStack;
 
-    BindMap bindStack; 
+  std::vector<unsigned int> lastBlockPos;
 
-    std::vector<unsigned int> lastBlockPos;
+ public:
+  void startBlock();
 
-  public:
-    void startBlock();
+  unsigned int define(const Var &name);
 
-    unsigned int define( const Var &name );
+  unsigned int lookup(const Var &name) const;
 
-    unsigned int lookup( const Var &name ) const;
-
-    unsigned int finishBlock();
-
-  };
-
+  unsigned int finishBlock();
+};
 }
 
 #endif

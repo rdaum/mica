@@ -3,74 +3,66 @@
 #ifndef BLOCK_HH
 #define BLOCK_HH
 
-#include "Environment.hh"
-#include "generic_vm_entity.hh"
-#include "ArgumentMask.hh"
+#include "types/ArgumentMask.hh"
+#include "vm/Environment.hh"
+#include "vm/generic_vm_entity.hh"
 
 namespace mica {
-  
-  class Frame;
-  class Task;
-  class Message;
 
-  class Block
-    : public generic_vm_entity 
-  {
-  public:
-    Type::Identifier type_identifier() const { return Type::BLOCK; }
+class Frame;
+class Task;
+class Message;
 
-  public:
-    var_vector code;            // The code storage of the block.   
+class Block : public generic_vm_entity {
+ public:
+  Type::Identifier type_identifier() const { return Type::BLOCK; }
 
-    std::vector<int> statements;// Encoding of PC positions to statement
+ public:
+  var_vector code;  // The code storage of the block.
+
+  std::vector<int> statements;  // Encoding of PC positions to statement
                                 // #.
-    std::vector<int> line_nos;  // Statement -> source line # mapping.
-                             // is index in the stack.
+  std::vector<int> line_nos;    // Statement -> source line # mapping.
+                                // is index in the stack.
 
-    mica_string source;      // the source of the method.
+  mica_string source;  // the source of the method.
 
-    unsigned int add_scope;  // How many variables the block adds to scope
+  unsigned int add_scope;  // How many variables the block adds to scope
 
-    ArgumentMask arg_mask;   // Used for marking during dispatch
-    
-  public:
-    Block( const mica_string &source );
+  ArgumentMask arg_mask;  // Used for marking during dispatch
 
-    Block( const Ref<Block> &from );
+ public:
+  Block(const mica_string &source);
 
-  public:
-    /** Add a line # for a program counter position
-     */
-    void add_line( int pc, int lineno );
-    
-    /** Return the line # for a program counter position
-     */
-    virtual int pc_to_line( int pc ) const;
+  Block(const Ref<Block> &from);
 
-  public:
-    mica_string dump() const;
+ public:
+  /** Add a line # for a program counter position
+   */
+  void add_line(int pc, int lineno);
 
-  public:
-    Ref<Task> make_frame( const Ref<Message> &msg, const Var &definer );
+  /** Return the line # for a program counter position
+   */
+  virtual int pc_to_line(int pc) const;
 
-  public:
+ public:
+  mica_string dump() const;
 
-    virtual void serialize_to( serialize_buffer &s_form ) const;
+ public:
+  Ref<Task> make_frame(const Ref<Message> &msg, const Var &definer);
 
-    virtual mica_string tostring() const;
+ public:
+  virtual void serialize_to(serialize_buffer &s_form) const;
 
-    virtual mica_string rep() const;
+  virtual mica_string tostring() const;
 
-    virtual bool isBlock() const ;
+  virtual mica_string rep() const;
 
-  public:
-    void append_child_pointers( child_set &child_list ) ;
-   
-  };
+  virtual bool isBlock() const;
 
-
-
+ public:
+  void append_child_pointers(child_set &child_list);
+};
 }
 
 #endif /* BLOCK_HH */
-

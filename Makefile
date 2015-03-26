@@ -1,27 +1,39 @@
-include mk/defs.mk
+CONFIG ?= Debug
 
-DIRS = base types vm  parser persistence bin
-DIRSDEPEND = $(patsubst %,%-depend,$(DIRS))
-DIRSCLEAN = $(patsubst %,%-clean,$(DIRS))
+PREFIX =
 
-all: fixup-pre $(DIRS) fixup-post
+compile = \
+	AR=$(PREFIX)ar \
+	AS=$(PREFIX)as \
+	CC=$(PREFIX)gcc \
+	CXX=$(PREFIX)g++ \
+	gyp $(1) --depth=. -f ninja && \
+	ninja -v -C out/$(CONFIG)
 
-fixup-pre: ;
+cmake = \
+	AR=$(PREFIX)ar \
+	AS=$(PREFIX)as \
+	CC=$(PREFIX)gcc \
+	CXX=$(PREFIX)g++ \
+	gyp $(1) --depth=. -f cmake 
 
-fixup-post: ;
+.PHONY: all
 
-$(DIRS):
-	cd $@ && make
+all: mica
 
-$(DIRSDEPEND):
-	cd $(subst -depend,,$@) && make depend
+clean:
+	ninja -v -C out/Debug -t clean
+	ninja -v -C out/Release -t clean
 
-$(DIRSCLEAN):
-	cd $(subst -clean,,$@) && make clean
+nuke: 
+	rm -rf out build
 
-depend: $(DIRSDEPEND)
+# Targets
 
-clean: $(DIRSCLEAN)
+cmakefile:
+	$(call cmake, mica.gyp)
 
-.SILENT: fixup-pre fixup-post
-.PHONY: fixup-pre fixup-post all $(DIRS) $(DIRSDEPEND) $(DIRSCLEAN) clean quick-clean
+mica:
+	$(call compile, mica.gyp)
+
+

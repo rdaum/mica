@@ -4,12 +4,11 @@
 #define SYMBOLTEST
 
 #include "common/mica.h"
-#include "config.h"
 
-#ifdef HAVE_EXT_HASH_MAP
-#  include <ext/hash_map>
-#else
-#  include <hash_map>
+
+#include <unordered_map>
+
+
 #endif
 
 class SymbolTest
@@ -45,7 +44,7 @@ protected:
   void testSymbolHash() {
     Var x(Symbol::create("test"));
 
-    STD_EXT_NS::hash_map< Var, int, hash_var > z;
+    std::unordered_map< Var, int, hash_var > z;
 
     z[x] = 5;
 

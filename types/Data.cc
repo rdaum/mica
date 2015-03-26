@@ -1,180 +1,113 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
  */
-#include "common/mica.h"
-#include "config.h"
-
-
+#include "types/Data.hh"
 
 #include <iostream>
 
-
-#include "Data.hh"
-#include "Var.hh"
-#include "Exceptions.hh"
-#include "List.hh"
-#include "GlobalSymbols.hh"
-#include "MetaObjects.hh"
+#include "common/mica.h"
+#include "types/Exceptions.hh"
+#include "types/GlobalSymbols.hh"
+#include "types/List.hh"
+#include "types/MetaObjects.hh"
+#include "types/Var.hh"
 
 using namespace mica;
 using namespace std;
 
+Data::Data() : reference_counted(), guard(0xcafebabe) {}
 
-Data::Data()
-  : reference_counted(),
-    guard(0xcafebabe)
-{}
+Data::Data(const Data &from) : reference_counted(), guard(0xcafebabe) {}
 
-Data::Data( const Data &from )
-  : reference_counted(),
-    guard(0xcafebabe)
-{}
+Data::~Data() { guard = 0xdeadbeef; }
 
-Data::~Data()
-{
-  guard = 0xdeadbeef;
-}
+Var Data::value() const { return Var(this); }
 
-Var Data::value() const
-{
-  return Var(this);
-}
+Var Data::clone() const { return Var(this); }
 
-Var Data::clone() const
-{
-  return Var(this);
-}
+bool Data::isBlock() const { return false; }
 
-bool Data::isBlock() const
-{
-  return false;
-}
+bool Data::isObject() const { return false; }
 
-bool Data::isObject() const
-{
-  return false;
-}
-
-Var Data::bor( const Var &rhs ) const
-{
+Var Data::bor(const Var &rhs) const {
   throw unimplemented("bitwise or unimplemented on non-numeric types");
 }
 
-Var Data::band( const Var &rhs ) const
-{
+Var Data::band(const Var &rhs) const {
   throw unimplemented("bitwise and unimplemented on non-numeric types");
 }
 
-Var Data::eor( const Var &rhs ) const
-{
+Var Data::eor(const Var &rhs) const {
   throw unimplemented("bitwise and unimplemented on non-numeric types");
 }
 
-Var Data::lshift( const Var &rhs ) const
-{
+Var Data::lshift(const Var &rhs) const {
   throw unimplemented("bitwise left shift unimplemented on non-numeric types");
 }
 
-Var Data::rshift( const Var &rhs ) const
-{
+Var Data::rshift(const Var &rhs) const {
   throw unimplemented("bitwise right shift unimplemented on non-numeric types");
 }
 
-var_vector Data::perform( const Ref<Frame> &caller,  const Var &args )
-{
+var_vector Data::perform(const Ref<Frame> &caller, const Var &args) {
   throw unimplemented("perform operation not implemented for this type");
 }
 
-
-void mica::append_data( child_set &list, const Var &var )
-{
+void mica::append_data(child_set &list, const Var &var) {
   if (var.isData())
-    list.push_back( var->asType<reference_counted*>() );
+    list.push_back(var->asType<reference_counted *>());
 }
 
-void mica::append_datas( child_set &children,
-			const var_vector &data ) {
-  for (var_vector::const_iterator x = data.begin();
-       x != data.end(); x++ ) {
+void mica::append_datas(child_set &children, const var_vector &data) {
+  for (var_vector::const_iterator x = data.begin(); x != data.end(); x++) {
     if (x->isData())
-      children.push_back( (*x)->asType<reference_counted*>() );
+      children.push_back((*x)->asType<reference_counted *>());
   }
 }
 
-child_set mica::data_list( const var_vector &data ) {
+child_set mica::data_list(const var_vector &data) {
   child_set children;
-  append_datas( children, data );
+  append_datas(children, data);
   return children;
 }
 
-child_set mica::data_single( const Var &one ) {
+child_set mica::data_single(const Var &one) {
   child_set children;
-  append_data( children, one );
+  append_data(children, one);
   return children;
 }
-child_set mica::data_pair( const Var &left,
-			  const Var &right ) {
+child_set mica::data_pair(const Var &left, const Var &right) {
   child_set children;
-  append_data( children, left );
-  append_data( children, right );
-
-  return children;
-}
-
-child_set mica::data_triple( const Var &one,
-			    const Var &two,
-			    const Var &three ) {
-  child_set children;
-  append_data( children, one );
-  append_data( children, two );
-  append_data( children, three );
+  append_data(children, left);
+  append_data(children, right);
 
   return children;
 }
 
+child_set mica::data_triple(const Var &one, const Var &two, const Var &three) {
+  child_set children;
+  append_data(children, one);
+  append_data(children, two);
+  append_data(children, three);
 
-child_set &mica::operator <<  (child_set &children, const Var &var) {
+  return children;
+}
 
-  append_data( children, var );
+child_set &mica::operator<<(child_set &children, const Var &var) {
+  append_data(children, var);
 
   return children;
 };
 
-unsigned int Data::hash() const
-{
-  return (reinterpret_cast<unsigned int>(this) * 2743 + 5923);
-}
+size_t Data::hash() const { return (reinterpret_cast<size_t>(this) * 2743 + 5923); }
 
+var_vector Data::delegates() const { return MetaObjects::delegates_for(type_identifier()); }
 
+Var Data::declare(const Var &accessor, const Symbol &name, const Var &value) { throw E_PERM; }
 
-var_vector Data::delegates() const {
-  return MetaObjects::delegates_for( type_identifier() );
-}
+OptSlot Data::get(const Var &accessor, const Symbol &name) const { return OptSlot(); }
 
-Var Data::declare( const Var &accessor, const Symbol &name,
-		   const Var &value ) {
+Var Data::assign(const Var &accessor, const Symbol &name, const Var &value) { throw E_SLOTNF; }
 
-  throw E_PERM;
-}
+void Data::remove(const Var &accessor, const Symbol &name) { throw E_SLOTNF; }
 
-OptSlot Data::get( const Var &accessor, const Symbol &name ) const {
-
-  return OptSlot();
-}
-
-Var Data::assign( const Var &accessor, const Symbol &name,
-		  const Var &value ) {
-
-  throw E_SLOTNF;
-}
-
-void Data::remove( const Var &accessor, const Symbol &name ) {
-
-  throw E_SLOTNF;
-}
-
-Var Data::slots() const {
-  
-  return List::empty()
-;
-}
-
+Var Data::slots() const { return List::empty(); }

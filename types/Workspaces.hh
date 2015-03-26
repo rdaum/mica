@@ -3,83 +3,71 @@
 #ifndef POOLS_HH
 #define POOLS_HH
 
-#include <vector>
 #include <boost/pool/pool_alloc.hpp>
+#include <unordered_map>
+#include <vector>
 
-#include "config.h"
 #include "common/mica.h"
+#include "types/hash.hh"
 
-#ifdef HAVE_EXT_HASH_MAP
-#  include <ext/hash_map>
-#else
-#  include <hash_map>
-#endif
+namespace mica {
+typedef unsigned int PID;
+typedef unsigned int OID;
 
-#include "hash.hh"
+class Pool;
 
-namespace mica 
-{
-  typedef unsigned int PID;
-  typedef unsigned int OID;
+class Pools {
+ public:
+  /** The global static singleton.
+   */
+  static Pools instance;
 
-  class Pool;
+  Pools();
 
-  class Pools
-  {
-  public:  
-    /** The global static singleton.
-     */
-    static Pools instance;
+  ~Pools();
 
-    Pools();
+ public:
+  /** Return a list of active pools.
+   */
+  std::vector<Pool *> pools() const;
 
-    ~Pools();
+  Pool *get(PID pool) const;
 
-  public:
-    /** Return a list of active pools.
-     */
-    std::vector<Pool*> pools() const ;
+  void removePool(PID pool);
 
-    Pool* get( PID pool ) const ;
+  PID add(const Symbol &name, Pool *pool);
 
-    void removePool( PID pool );
+  /** Close all pools.
+   */
+  void close();
 
-    PID add( const Symbol &name, Pool *pool );
+  /** Sync all pools
+   */
+  void sync();
 
-    /** Close all pools.
-     */
-    void close();
+ public:
+  /** Set the default pool
+   */
+  void setDefault(PID pool);
 
-    /** Sync all pools
-     */
-    void sync();
+  /** Return the current default pool
+   */
+  PID getDefault() const;
 
-  public:
-    /** Set the default pool
-     */
-    void setDefault( PID pool );
+ public:
+  void remove(const Var &obj);
 
-    /** Return the current default pool
-     */
-    PID getDefault() const;
+  Pool *find_pool_by_name(const Symbol &poolName) const;
 
-  public:
-    void remove( const Var &obj );
+ private:
+  std::vector<Pool *> _pools;
 
-    Pool *find_pool_by_name( const Symbol &poolName ) const;
+  typedef std::unordered_map<Symbol, PID, hash_symbol, std::equal_to<Symbol>> NamesMap;
 
-  private:
-    std::vector<Pool*> _pools;
+  NamesMap names;
 
-    typedef STD_EXT_NS::hash_map< Symbol, PID, hash_symbol,
-				  std::equal_to<Symbol>,
-				  boost::pool_allocator<Symbol> > NamesMap;
-    
-    NamesMap names;
-
-    PID default_pool;
-  };
-
+  PID default_pool;
+};
 };
 
 #endif

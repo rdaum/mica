@@ -4,159 +4,146 @@
 #define OBJECT_HH
 
 #include "common/mica.h"
-#include "config.h"
-
-#include "OStorage.hh"
-#include "Atom.hh"
-#include "ArgumentMask.hh"
+#include "types/ArgumentMask.hh"
+#include "types/Atom.hh"
+#include "types/OStorage.hh"
+#include "types/Workspaces.hh"
 
 namespace mica {
 
-  typedef unsigned int PID;
-  typedef unsigned int OID;
+typedef unsigned int PID;
+typedef unsigned int OID;
 
-  /** Holds an environment and provides inheritance.
+/** Holds an environment and provides inheritance.
+ */
+class Object : public Atom {
+ public:
+  Type::Identifier type_identifier() const { return Type::OBJECT; }
+
+ public:
+  /** Pool and object id
    */
-  class Object 
-    : public Atom
-  {
-  public:   
-    Type::Identifier type_identifier() const { return Type::OBJECT; }
+  PID pid;
+  OID oid;
+  ArgumentMask arg_mask;
 
-  public:
-    /** Pool and object id
-     */
-    PID pid;
-    OID oid;
-    ArgumentMask arg_mask;
+ protected:
+  friend class Pool;
+  friend class PersistentPool;
 
-  protected:
-    friend class Pool;
-    friend class PersistentPool;
+  Object(PID pid, OID oid);
 
-    Object( PID pid, OID oid );
+ public:
+  static Var create(int pool_id = -1, const Ref<Object> &parent = Ref<Object>(0));
 
-  public:
-    static Var create( int pool_id = -1,
-		       const Ref<Object> &parent = Ref<Object>(0) );
+  Var clone() const;
 
-    Var clone() const;
+  var_vector delegates() const;
 
-    var_vector delegates() const;
+ public:
+  /** Declare a slot on an object
+   *  @param the accessor of the slot, or None if public
+   *  @param name the symbol to create
+   *  @return the slot value
+   */
+  Var declare(const Var &accessor, const Symbol &name, const Var &value);
 
-  public:
-    /** Declare a slot on an object
-     *  @param the accessor of the slot, or None if public
-     *  @param name the symbol to create
-     *  @return the slot value
-     */
-    Var declare( const Var &accessor, const Symbol &name, 
-		 const Var &value ) ;
+  /** Search for a slot by accessor and name
+   *  @param accessor the accessor object used for use during the search
+   *  @param name the symbol to search for
+   *  @return copy of value
+   *  @throws not_found
+   */
+  OptSlot get(const Var &accessor, const Symbol &name) const;
 
-    /** Search for a slot by accessor and name
-     *  @param accessor the accessor object used for use during the search
-     *  @param name the symbol to search for
-     *  @return copy of value
-     *  @throws not_found
-     */
-    OptSlot get( const Var &accessor, const Symbol &name ) const;
+  /** assign a value to a slot
+   *  @param accessor the accessor of the slot, or None if public
+   *  @param name the symbol to set
+   *  @param value the value to set the slot to
+   *  @return copy of value
+   *  @throws slot_not_found
+   */
+  Var assign(const Var &accessor, const Symbol &name, const Var &value);
 
-    /** assign a value to a slot
-     *  @param accessor the accessor of the slot, or None if public
-     *  @param name the symbol to set
-     *  @param value the value to set the slot to
-     *  @return copy of value
-     *  @throws slot_not_found
-     */
-    Var assign( const Var &accessor, 
-		const Symbol &name, const Var &value );
+  /** remove a slot
+   *  @param accessor the accessor of the slot, or None if public
+   *  @param name the symbol of the slot
+   *  @throws slot_not_found
+   */
+  void remove(const Var &accessor, const Symbol &name);
 
-    /** remove a slot
-     *  @param accessor the accessor of the slot, or None if public
-     *  @param name the symbol of the slot
-     *  @throws slot_not_found
-     */
-    void remove( const Var &accessor, const Symbol &name );
+  /** @return a list of slots implemented on this object
+   */
+  Var slots() const;
 
-    /** @return a list of slots implemented on this object
-     */  
-    Var slots() const;
+ public:
+  void set_verb_parasite(const Symbol &name, unsigned int pos, const var_vector &argument_template,
+                         const Var &definer, const Var &method);
 
-  public:
+  VerbList get_verb_parasites(const Symbol &name, unsigned int pos) const;
 
-    void set_verb_parasite( const Symbol &name,
-			    unsigned int pos,
-			    const var_vector &argument_template,
-			    const Var &definer,
-			    const Var &method ) ;
-    
-    VerbList get_verb_parasites( const Symbol &name,
-				unsigned int pos ) const;
+  void rm_verb_parasite(const Symbol &name, unsigned int pos, const var_vector &argument_template);
 
-    void rm_verb_parasite( const Symbol &name,
-			    unsigned int pos,
-			    const var_vector &argument_template ) ;
-     
-  public:
-    /** Returns true -- yes, this is an object (prototype)
-     */
-    bool isObject() const;
-    
-  public:
-    /** Forwards to :perform
-     */
-    var_vector perform( const Ref<Frame> &caller, const Var &args );
+ public:
+  /** Returns true -- yes, this is an object (prototype)
+   */
+  bool isObject() const;
 
-  public:
-    mica_string rep() const;
+ public:
+  /** Forwards to :perform
+   */
+  var_vector perform(const Ref<Frame> &caller, const Var &args);
 
-    void serialize_to( serialize_buffer &s_form ) const;
+ public:
+  mica_string rep() const;
 
-  public:
-    bool operator==( const Object &obj ) const;
+  void serialize_to(serialize_buffer &s_form) const;
 
-    bool operator==( const Var &rhs ) const;    
- 
-    bool operator<(const Var &v2) const;
+ public:
+  bool operator==(const Object &obj) const;
 
-    bool truth() const;
+  bool operator==(const Var &rhs) const;
 
-    Var add( const Var &rhs ) const;
+  bool operator<(const Var &v2) const;
 
-    Var div( const Var &rhs ) const;
+  bool truth() const;
 
-    Var mul( const Var &rhs ) const;
+  Var add(const Var &rhs) const;
 
-    Var sub( const Var &rhs ) const;
+  Var div(const Var &rhs) const;
 
-    Var mod( const Var &rhs ) const;
+  Var mul(const Var &rhs) const;
 
-    Var neg() const;
+  Var sub(const Var &rhs) const;
 
-    Var inc() const;
+  Var mod(const Var &rhs) const;
 
-    Var dec() const;
+  Var neg() const;
 
-    unsigned int length() const;
+  Var inc() const;
 
-    int toint() const;
+  Var dec() const;
 
-    float tofloat() const;
+  unsigned int length() const;
 
-    bool isNumeric() const;
+  int toint() const;
 
-    mica_string tostring() const;
+  float tofloat() const;
 
-    void finalize_paged_object();
+  bool isNumeric() const;
 
-  public:
-    void append_child_pointers( child_set &child_list );    
+  mica_string tostring() const;
 
-  public:
-    OStorage *environment() const;
+  void finalize_paged_object();
 
-    void write();
-  };
+ public:
+  void append_child_pointers(child_set &child_list);
+
+ public:
+  OStorage *environment() const;
+
+  void write();
+};
 }
 
 #endif /* OBJECT_HH */

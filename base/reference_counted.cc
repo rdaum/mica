@@ -1,19 +1,16 @@
-/** Copyright 2002, Ryan Daum 
+/** Copyright 2002, Ryan Daum
  */
 
-/** Implementation of reference counted base class.  See header for 
- *  documentation
- */
-#include <typeinfo>
+#include "base/reference_counted.hh"
+
 #include <algorithm>
 #include <functional>
 #include <iostream>
 #include <set>
+#include <typeinfo>
 #include <vector>
 
-#include "reference_counted.hh"
-
-#include "logging.hh"
+#include "base/logging.hh"
 
 /** Bring these two namespaces into scope, for convenience
  */
@@ -25,9 +22,7 @@ using namespace std;
  *  This is _absolutely_ not thread safe.
  */
 static bool COLLECTING = false;
-bool mica::cycle_collecting() {
-  return COLLECTING;
-}
+bool mica::cycle_collecting() { return COLLECTING; }
 
 /** Global FREEING flag -- set during frees to prevent further auto refcounts
  *  from taking hold.
@@ -39,18 +34,11 @@ static bool FREEING = false;
  */
 static bool PAGING = false;
 
-void mica::notify_start_paging() {
-  PAGING = true;
-}
-    
-void mica::notify_end_paging() {
-  PAGING = false;
-}
+void mica::notify_start_paging() { PAGING = true; }
 
+void mica::notify_end_paging() { PAGING = false; }
 
-inline bool reference_counted::paging() const {
-  return PAGING && this->paged;
-}
+inline bool reference_counted::paging() const { return PAGING && this->paged; }
 
 /** This is the list of roots.  It's a linked list, for quick inplace
  *  insertions / removals.
@@ -59,42 +47,37 @@ static child_set Roots;
 
 /** Objects that are garbage, to delete
  */
-static vector<reference_counted*> GarbageList;
+static vector<reference_counted *> GarbageList;
 
 /** Add the object in question to the garbage list, to be freed later.
  */
-static void Free( reference_counted *who )
-{
+static void Free(reference_counted *who) {
   if (!who->garbaged) {
     who->garbaged = true;
-    GarbageList.push_back( who );
+    GarbageList.push_back(who);
   }
 }
 
 /** Take out the trash.
  */
 static void free_garbage() {
-
   /** Engage lock
    */
   FREEING = true;
 
-  for (vector<reference_counted*>::iterator x = GarbageList.begin();
-       x != GarbageList.end(); x++) {
-
+  for (vector<reference_counted *>::iterator x = GarbageList.begin(); x != GarbageList.end(); x++) {
     reference_counted *who = *x;
 
     /** Do not free paged objects while PAGING is in effect
      */
     if (!who->paging()) {
-
       who->finalize_object();
-    
+
       if (who->paged)
-	who->finalize_paged_object();
-      
+        who->finalize_paged_object();
+
       delete who;
-    }   
+    }
   }
   /** Remove lock
    */
@@ -107,91 +90,65 @@ static void free_garbage() {
  *  a BLACK colour
  */
 reference_counted::reference_counted()
-  : refcnt(0),
-    buffered(false),
-    paged(false),
-    garbaged(false),
-    colour(BLACK)
-{}
+    : refcnt(0), buffered(false), paged(false), garbaged(false), colour(BLACK) {}
 
 reference_counted::~reference_counted() {}
-
 
 /** SEE DOCUMENTATION IN PAPER FOR ALGORITHM AND FUNCTION DESCRIPTIONS
  */
 void reference_counted::mark_roots() {
-
-
   uint32_t cnt = 0;
 
-  for (child_set::iterator x = Roots.begin();
-       x != Roots.end();) {
-   
+  for (child_set::iterator x = Roots.begin(); x != Roots.end();) {
     cnt++;
     reference_counted *S = *x;
- 
+
     child_set::iterator next = x;
     next++;
 
-    if (S) { // Only visit non-NULL nodes, just in case garbage
+    if (S) {  // Only visit non-NULL nodes, just in case garbage
       // gets in here
 
       if (S->colour == reference_counted::PURPLE) {
-       
-	S->mark_gray();
-       
-      } else {
-       
-	Roots.erase( x );
+        S->mark_gray();
 
-	S->buffered = false;
-	if (S->colour == reference_counted::BLACK && (S->refcnt == 0)) {
-	  Free(S);
-	}
-       
+      } else {
+        Roots.erase(x);
+
+        S->buffered = false;
+        if (S->colour == reference_counted::BLACK && (S->refcnt == 0)) {
+          Free(S);
+        }
       }
     }
-   
+
     x = next;
-
   }
-
 }
 
 void reference_counted::scan_roots() {
-
-  for (child_set::iterator mr = Roots.begin(); 
-       mr != Roots.end(); mr++) {
+  for (child_set::iterator mr = Roots.begin(); mr != Roots.end(); mr++) {
     reference_counted *S = *mr;
     if (S)
       S->scan();
-  }  
-
+  }
 }
 
 void reference_counted::collect_roots() {
-
-  for (child_set::iterator mr = Roots.begin(); 
-       mr != Roots.end(); mr++) {
-
+  for (child_set::iterator mr = Roots.begin(); mr != Roots.end(); mr++) {
     reference_counted *S = *mr;
 
     if (S->paging())
       continue;
 
-    S->buffered = false;     // Unbuffer it.
+    S->buffered = false;  // Unbuffer it.
     S->collect_white();
-  }  
+  }
 
   Roots = global_roots();
-
 }
 
 void reference_counted::collect_cycles() {
-
-  logger.debugStream() << "collecting cycles" << 
-    log4cpp::CategoryStream::ENDLINE;
-
   /** Set collecting flag.  This is here so that the cache algorithm will not
    *  attempt to page out objects while a collection cycle is in process.
    */
@@ -208,7 +165,6 @@ void reference_counted::collect_cycles() {
     return;
   }
 
-
   // Remove internal reference counts
   mark_roots();
 
@@ -216,7 +172,7 @@ void reference_counted::collect_cycles() {
   scan_roots();
 
   // Collect cyclic garbage
-  collect_roots(); 
+  collect_roots();
 
   // Do actual free
   free_garbage();
@@ -226,8 +182,7 @@ void reference_counted::collect_cycles() {
   locked = COLLECTING = false;
 }
 
-
-void reference_counted::upcount() { 
+void reference_counted::upcount() {
   if (FREEING || paging())
     return;
 
@@ -242,14 +197,13 @@ void reference_counted::upcount() {
    */
   if (colour != GREEN)
     colour = BLACK;
-} 
- 
-void reference_counted::dncount() {
+}
 
+void reference_counted::dncount() {
   if (FREEING || paging())
     return;
 
-  refcnt--; // reduce the reference count
+  refcnt--;  // reduce the reference count
 
   /** Green nodes should be freed without checking for possible roots
    *  They can't be part of a cycle.
@@ -258,41 +212,35 @@ void reference_counted::dncount() {
     Free(this);  // Bye bye greeny.
   else {
     /** The idea here is that if this guy is still around (non zero refcnt)
-     *  then there's a good chance (statistically) that it could be a 
+     *  then there's a good chance (statistically) that it could be a
      *  cycle member.  We trace it to find out.
      */
-    if (refcnt == 0) 
-      release(); 
-    else 
-      possible_root();  
+    if (refcnt == 0)
+      release();
+    else
+      possible_root();
   }
-} 
+}
 
 void reference_counted::release() {
-
   /** Decrement children
    */
   child_set children;
-  append_child_pointers( children );
-  for (child_set::iterator x = children.begin();
-       x != children.end(); x++) {
+  append_child_pointers(children);
+  for (child_set::iterator x = children.begin(); x != children.end(); x++) {
     reference_counted *S = *x;
     if (S)
       S->dncount();
   }
-  
+
   /** We only release non-buffered nodes
    */
   colour = BLACK;
   if (!buffered)
-    Free(this); // Bye bye
-
+    Free(this);  // Bye bye
 }
 
-
-
 void reference_counted::possible_root() {
-
   // If colour is already purple then I'm a candidate root.  If not,
   // colour me purple and scan my friends.  Don't look at greens, they
   // are non-cyclic by nature.
@@ -305,42 +253,38 @@ void reference_counted::possible_root() {
       /** This is a root.  Maybe.
        */
 
-      Roots.push_back( this );
+      Roots.push_back(this);
     }
   }
 }
 
 void reference_counted::scan() {
-
   if (paging())
     return;
 
   if (colour == GRAY) {
-    
     if (refcnt > 0) {
       scan_black();
 
     } else {
       colour = WHITE;
 
-      /** RECURSION.  Would be nice if we could roll this out into (TODO) 
+      /** RECURSION.  Would be nice if we could roll this out into (TODO)
        *  something iterative.
        */
       child_set children;
       append_child_pointers(children);
-      for (child_set::iterator x = children.begin();
-	   x != children.end(); x++) {
-	(*x)->scan();
+      for (child_set::iterator x = children.begin(); x != children.end(); x++) {
+        (*x)->scan();
       }
-      
+
       /** I rolled the for_each out to be explicit
        *  so that debugging would be easier
        *  (STL likes to confuse GDB.)
        */
 
-      //      for_each( children.begin(), children.end(), 
+      //      for_each( children.begin(), children.end(),
       //		mem_fun( &reference_counted::scan ) );
-
     }
   }
 }
@@ -353,19 +297,17 @@ void reference_counted::scan_black() {
 
   colour = BLACK;
 
-  
   child_set children;
-  append_child_pointers( children );
+  append_child_pointers(children);
 
-  for (child_set::iterator x = children.begin();
-       x != children.end(); x++) {
+  for (child_set::iterator x = children.begin(); x != children.end(); x++) {
     reference_counted *S = *x;
 
     if (S) {
-      S->refcnt++;        // increase refcnt
-      
+      S->refcnt++;  // increase refcnt
+
       if (S->colour != BLACK)
-	S->scan_black();          // At it again.
+        S->scan_black();  // At it again.
     }
   }
 }
@@ -380,14 +322,13 @@ void reference_counted::mark_gray() {
     colour = GRAY;
 
     child_set children;
-    append_child_pointers( children );
-    for (child_set::iterator x = children.begin();
-	 x != children.end(); x++) {
+    append_child_pointers(children);
+    for (child_set::iterator x = children.begin(); x != children.end(); x++) {
       reference_counted *S = *x;
       if (S) {
-	S->refcnt--;    // decrement refcnt
-	
-	S->mark_gray();
+        S->refcnt--;  // decrement refcnt
+
+        S->mark_gray();
       }
     }
   }
@@ -399,15 +340,14 @@ void reference_counted::collect_white() {
 
   if (colour == WHITE && !buffered) {
     colour = BLACK;
-    
+
     child_set children;
-    append_child_pointers( children );
+    append_child_pointers(children);
 
     /** Recursion.
      */
-    for_each( children.begin(), children.end(),
-	      mem_fun( &reference_counted::collect_white ) );
+    for_each(children.begin(), children.end(), mem_fun(&reference_counted::collect_white));
 
-    Free(this);       // Bye bye, cycle!
+    Free(this);  // Bye bye, cycle!
   }
 }

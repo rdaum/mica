@@ -1,14 +1,13 @@
 #ifndef MICA_LOGGING_HH
 #define MICA_LOGGING_HH
 
-#include	<log4cpp/Category.hh>
+#include <log4cpp/Category.hh>
 
 namespace mica {
 
-  extern log4cpp::Category &logger;
-  extern void initialize_log( bool debug = false );
-  extern void close_log();
-
+extern log4cpp::Category &logger;
+extern void initialize_log(bool debug = false);
+extern void close_log();
 }
 
 #endif

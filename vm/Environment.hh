@@ -3,74 +3,69 @@
 #ifndef MICA_ENVIRONMENT_HH
 #define MICA_ENVIRONMENT_HH
 
+#include <vector>
+
+#include "base/reference_counted.hh"
+#include "types/Var.hh"
+
 namespace mica {
 
-  class Var;
-  typedef unsigned int VarIndex;
-  using std::vector;
+class Var;
+typedef unsigned int VarIndex;
+using std::vector;
 
-  class GCVector 
-    : public reference_counted,
-      public var_vector
-  {
-  public:
-    GCVector()
-      : reference_counted(), var_vector() {};
+class GCVector : public reference_counted, public var_vector {
+ public:
+  GCVector() : reference_counted(), var_vector(){};
 
-    GCVector( const GCVector &from )
-      : var_vector(from) {}
+  GCVector(const GCVector &from) : var_vector(from) {}
 
-    void append_child_pointers( child_set &child_list ) {
-      append_datas( child_list, *this );
-    }
-  };
+  void append_child_pointers(child_set &child_list) { append_datas(child_list, *this); }
+};
 
-  class Environment
-  {
-  protected:
-    friend class Frame;
+class Environment {
+ protected:
+  friend class Frame;
 
-    Ref<GCVector> env;
+  Ref<GCVector> env;
 
-    std::vector<unsigned int> widths;
+  std::vector<unsigned int> widths;
 
-  public:
-    /** Create blank variable storage record.
-     */
-    Environment();
+ public:
+  /** Create blank variable storage record.
+   */
+  Environment();
 
-    /** Copy/inherit from another variable storage record
-     *  @param from Variable storage record to copy from. 
-     */
-    Environment( const Environment &from );
+  /** Copy/inherit from another variable storage record
+   *  @param from Variable storage record to copy from.
+   */
+  Environment(const Environment &from);
 
-    ~Environment();
+  ~Environment();
 
-  public:
-    Environment copy() const;
+ public:
+  Environment copy() const;
 
-    void enter( unsigned int W );
+  void enter(unsigned int W);
 
-    void exit();
+  void exit();
 
-    /** Set the value of a local variable
-     *  @param var VarIndex index of the variable.
-     *  @param value new value of the variable
-     */
-    void set( unsigned int var, const Var &value );
+  /** Set the value of a local variable
+   *  @param var VarIndex index of the variable.
+   *  @param value new value of the variable
+   */
+  void set(unsigned int var, const Var &value);
 
-    /** Retrieve the value of a local variable
-     *  @param var VarIndex index of the variable.
-     */
-    Var get( unsigned int var );
+  /** Retrieve the value of a local variable
+   *  @param var VarIndex index of the variable.
+   */
+  Var get(unsigned int var);
 
-  public:
-    void serialize_to( serialize_buffer &s_form ) const;
+ public:
+  void serialize_to(serialize_buffer &s_form) const;
 
-    void append_child_pointers( child_set &child_list );
-
-  };
-
+  void append_child_pointers(child_set &child_list);
+};
 }
 
 #endif

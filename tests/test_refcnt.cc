@@ -1,4 +1,4 @@
-#include "config.h"
+
 #include "common/mica.h"
 
 #include "Data.hh"

@@ -5,254 +5,201 @@
 
 #include <vector>
 
+#include "types/Var.hh"
+#include "vm/generic_vm_entity.hh"
+
 namespace mica {
 
-#include "Var.hh"
-#include "generic_vm_entity.hh"
+class Task;
+class Message;
 
-  class Task;
-  class Message;
+/** A Message is a send from one object to another which is turned
+ *  into a frame by the scheduler at send time.  Note that messages
+ *  are also used to encapsulate replies from one task/frame to
+ *  another.
+ */
+class Message : public generic_vm_entity {
+ public:
+  virtual Type::Identifier type_identifier() const { return Type::MESSAGE; }
 
-  /** A Message is a send from one object to another which is turned
-   *  into a frame by the scheduler at send time.  Note that messages
-   *  are also used to encapsulate replies from one task/frame to
-   *  another.
+ public:
+  /** Parent_Frame - the frame that spawned me.  NULL if top-message.
    */
-  class Message 
-    : public generic_vm_entity
-  {
-  public:
-    virtual Type::Identifier type_identifier() const {
-      return Type::MESSAGE;
-    }
+  Ref<Task> parent_task;
 
-  public:
-    /** Parent_Frame - the frame that spawned me.  NULL if top-message.
-     */
-    Ref<Task> parent_task;
+  /** Index into the children list on the frame that spawned us.
+   */
+  unsigned int msg_id;
 
-    /** Index into the children list on the frame that spawned us.
-     */
-    unsigned int msg_id;
+  /** Age and ticks are for measuring the
+   *  time spent during message usage.
+   */
+  unsigned int age;
+  unsigned int ticks;
 
-    /** Age and ticks are for measuring the
-     *  time spent during message usage.
-     */
-    unsigned int age;
-    unsigned int ticks;
+  /** Source, caller, and to are the ultimate source,
+   *  last caller, and the destination of the message.
+   *  On is where to get the method from, usually self,
+   *  except in case of pass.
+   */
+  Var source;
+  Var caller;
+  Var self;
+  Var on;
 
-    /** Source, caller, and to are the ultimate source,
-     *  last caller, and the destination of the message.
-     *  On is where to get the method from, usually self,
-     *  except in case of pass.
-     */
-    Var source;
-    Var caller;
-    Var self;
-    Var on;
+  /** The selector is always Symbol representing the
+   *  name of the method to invoke.
+   */
+  Symbol selector;
 
-    /** The selector is always Symbol representing the
-     *  name of the method to invoke.
-     */
-    Symbol selector;
+  /** Arguments is the list of arguments to
+   *  pass to the method.
+   */
+  var_vector args;
 
-    /** Arguments is the list of arguments to
-     *  pass to the method.
-     */
-    var_vector args;
+ public:
+  /** create an empty message
+   */
+  Message();
 
-  public:
-    /** create an empty message
-     */
-    Message();
+  /** construct a message with values filled in
+   *  @param parent_frame the courses we tide from
+   *  @param age age of the message
+   *  @param ticks number of ticks of the message
+   *  @param source source attached to the message
+   *  @param caller originating caller object
+   *  @param to destination object
+   *  @param msg the actual string message
+   *  @param args the arguments
+   *  @param on where the message is on
+   */
+  Message(Ref<Task> parent_task, unsigned int id, unsigned int age, unsigned int ticks,
+          const Var &source, const Var &caller, const Var &to, const Var &on,
+          const Symbol &selector, const var_vector &args);
 
-    /** construct a message with values filled in
-     *  @param parent_frame the courses we tide from
-     *  @param age age of the message
-     *  @param ticks number of ticks of the message
-     *  @param source source attached to the message
-     *  @param caller originating caller object
-     *  @param to destination object
-     *  @param msg the actual string message
-     *  @param args the arguments
-     *  @param on where the message is on
-     */
-    Message( Ref<Task> parent_task,
-	     unsigned int id, 
-	     unsigned int age, 
-	     unsigned int ticks, 
-	     const Var &source, 
-	     const Var &caller, 
-	     const Var &to,
-	     const Var &on,
-	     const Symbol &selector, 
-	     const var_vector &args ); 
-  
-    /** copy a message
-     *  @param caller message to copy
-     */
-    Message( const Message &caller );
+  /** copy a message
+   *  @param caller message to copy
+   */
+  Message(const Message &caller);
 
-    /** assignment operator
-     *  @param caller message to assign caller
-     *  @return this
-     */
-    Message& operator=(const Message& caller);
+  /** assignment operator
+   *  @param caller message to assign caller
+   *  @return this
+   */
+  Message &operator=(const Message &caller);
 
-    /** equivalence comparison operator
-     *  @param v2 right hand side of comparison
-     *  @return truth value of comparison
-     */
-    bool operator==( const Message &v2 ) const;
+  /** equivalence comparison operator
+   *  @param v2 right hand side of comparison
+   *  @return truth value of comparison
+   */
+  bool operator==(const Message &v2) const;
 
-    virtual void append_child_pointers( child_set &child_list );
+  virtual void append_child_pointers(child_set &child_list);
 
-    void finalize_object();
+  void finalize_object();
 
-  public:
-    /** Dispatch the message!
-     */
-    var_vector perform( const Ref<Frame> &parent, const Var &args );
+ public:
+  /** Dispatch the message!
+   */
+  var_vector perform(const Ref<Frame> &parent, const Var &args);
 
-  public:
-    bool isLocal() const;
+ public:
+  bool isLocal() const;
 
-  public:
-    /** is this a return?
-     */
-    virtual bool isReturn() const;
+ public:
+  /** is this a return?
+   */
+  virtual bool isReturn() const;
 
-    /** is this a raise?
-     */
-    virtual bool isRaise() const;
+  /** is this a raise?
+   */
+  virtual bool isRaise() const;
 
-    /** is this a halt?
-     */
-    virtual bool isHalt() const;
+  /** is this a halt?
+   */
+  virtual bool isHalt() const;
 
-    /** is this a reply?  (one of return, raise, or halt)
-     */
-    virtual bool isReply() const;
+  /** is this a reply?  (one of return, raise, or halt)
+   */
+  virtual bool isReply() const;
 
-    /** is this a reply to this event?
-     */
-    virtual bool isReplyTo( const Ref<Task> &e ) const;
+  /** is this a reply to this event?
+   */
+  virtual bool isReplyTo(const Ref<Task> &e) const;
 
-  public:
-    virtual mica_string typeName() const { return "Message"; }
+ public:
+  virtual mica_string typeName() const { return "Message"; }
 
-    mica_string rep() const;
+  mica_string rep() const;
 
-    virtual void serialize_to( serialize_buffer &s_form ) const;
-  };
-  
-  class ReturnMessage
-    : public Message
-  {
-  public:
-    Type::Identifier type_identifier() const { return Type::RETURNMESSAGE; }
+  virtual void serialize_to(serialize_buffer &s_form) const;
+};
 
-  public:
-    ReturnMessage() :
-      Message() 
-    {
-    };
+class ReturnMessage : public Message {
+ public:
+  Type::Identifier type_identifier() const { return Type::RETURNMESSAGE; }
 
-    ReturnMessage( Ref<Task> parent_task, 
-		   unsigned int id,
-		   unsigned int age, 
-		   unsigned int ticks, 
-		   const Var &source, 
-		   const Var &caller, const Var &to, const Var &on, 
-		   const Symbol &selector, 
-		   const var_vector &args )
-      : Message( parent_task, id, age, ticks, source, caller, to, on, 
-		 selector, args ) 
-    {
-    }; 
-  
-    /** is this a return?
-     */
-    bool isReturn() const {
-      return true;
-    }; 
+ public:
+  ReturnMessage() : Message(){};
 
-    mica_string typeName() const { return "ReturnMessage"; }
-  };
+  ReturnMessage(Ref<Task> parent_task, unsigned int id, unsigned int age, unsigned int ticks,
+                const Var &source, const Var &caller, const Var &to, const Var &on,
+                const Symbol &selector, const var_vector &args)
+      : Message(parent_task, id, age, ticks, source, caller, to, on, selector, args){};
 
+  /** is this a return?
+   */
+  bool isReturn() const { return true; };
 
-  class RaiseMessage
-    : public Message
-  {
-  public:
-    Type::Identifier type_identifier() const { return Type::RAISEMESSAGE; }
+  mica_string typeName() const { return "ReturnMessage"; }
+};
 
-  public:
-    mica_string trace_str;
-    Ref<Error> err;
+class RaiseMessage : public Message {
+ public:
+  Type::Identifier type_identifier() const { return Type::RAISEMESSAGE; }
 
-  protected:
-    friend class Unserializer;
-    RaiseMessage() ;
+ public:
+  mica_string trace_str;
+  Ref<Error> err;
 
-  public:
-    RaiseMessage( Ref<Task> parent_task, 
-		  unsigned int id,
-		  unsigned int age, unsigned int ticks, 
-		  const Var &source, 
-		  const Var &caller, const Var &to, const Var &on, 
-		  const Symbol &selector, 
-		  const Ref<Error> &error, 
-		  mica_string traceback );
+ protected:
+  friend class Unserializer;
+  RaiseMessage();
 
-    mica_string traceback() const {
-      return trace_str;
-    }
+ public:
+  RaiseMessage(Ref<Task> parent_task, unsigned int id, unsigned int age, unsigned int ticks,
+               const Var &source, const Var &caller, const Var &to, const Var &on,
+               const Symbol &selector, const Ref<Error> &error, mica_string traceback);
 
-    Ref<Error> error() const {
-      return err;
-    }
+  mica_string traceback() const { return trace_str; }
 
-    bool isRaise() const {
-      return true;
-    }; 
+  Ref<Error> error() const { return err; }
 
-    void append_child_pointers( child_set &child_list );
+  bool isRaise() const { return true; };
 
-    mica_string typeName() const { return "RaiseMessage"; }
-  };
+  void append_child_pointers(child_set &child_list);
 
-  class HaltMessage
-    : public Message
-  {
-  public:
-    Type::Identifier type_identifier() const { return Type::HALTMESSAGE; }
+  mica_string typeName() const { return "RaiseMessage"; }
+};
 
-  public:
-    HaltMessage() :
-      Message() 
-    {};
+class HaltMessage : public Message {
+ public:
+  Type::Identifier type_identifier() const { return Type::HALTMESSAGE; }
 
-    HaltMessage( Ref<Task> parent_task, 
-		 unsigned int id,
-		 unsigned int age, unsigned int ticks, 
-		 const Var &source, 
-		 const Var &caller, const Var &to, const Var &on, 
-		 const Symbol &selector, 
-		 const var_vector &args )
-      : Message( parent_task, id, age, ticks, source, caller, 
-		 to, on, selector, args ) 
-    {}; 
- 
-    bool isHalt() const {
-      return true;
-    }; 
+ public:
+  HaltMessage() : Message(){};
 
-    mica_string typeName() const { return "HaltMessage"; }
-  };
+  HaltMessage(Ref<Task> parent_task, unsigned int id, unsigned int age, unsigned int ticks,
+              const Var &source, const Var &caller, const Var &to, const Var &on,
+              const Symbol &selector, const var_vector &args)
+      : Message(parent_task, id, age, ticks, source, caller, to, on, selector, args){};
 
-  extern int msg_count();
+  bool isHalt() const { return true; };
 
+  mica_string typeName() const { return "HaltMessage"; }
+};
+
+extern int msg_count();
 }
 
 #endif
