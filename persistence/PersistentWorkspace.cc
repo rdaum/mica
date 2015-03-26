@@ -2,28 +2,14 @@
  */
 #include "persistence/PersistentWorkspace.hh"
 
-#include <boost/cast.hpp>
-#include <errno.h>
 #include <fcntl.h>
-#include <iostream>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <vector>
 
 #include "base/logging.hh"
-#include "common/mica.h"
 #include "persistence/Unserializer.hh"
-#include "types/Data.hh"
-#include "types/Exceptions.hh"
-#include "types/GlobalSymbols.hh"
-#include "types/List.hh"
-#include "types/Object.hh"
-#include "types/Symbol.hh"
-#include "types/Var.hh"
 
-using namespace mica;
-using namespace std;
+namespace mica {
+
+using std::vector;
 
 #define CACHE_WIDTH 64
 #define CACHE_GROW_WINDOW 32
@@ -54,17 +40,10 @@ boost::tuple<PID, Var> PersistentPool::open(const Symbol &name, const Ref<Object
 PersistentPool::PersistentPool(const Symbol &poolName)
     : Pool(poolName), cache_width(CACHE_WIDTH), cache_grow_window(CACHE_GROW_WINDOW) {
   for (int i = 0; i < NUM_DBS; i++) {
-    databases[i] = new (aligned) Db(NULL, DB_CXX_NO_EXCEPTIONS);
-
-    int ret;
-    if ((ret = databases[i]->set_cachesize(0, 10 * 1024 * 1024, 1)) != 0) {
-      throw internal_error("unable to set DB cache size");
+    int rc;
+    if ((rc = mdb_env_create(&db_env_[i])) != 0) {
+      throw internal_error("unable to initialize database environment");
     }
-
-    if ((ret = databases[i]->set_pagesize(4096)) != 0) {
-      throw internal_error("unable to set DB page size");
-    }
-    databases[i]->set_errfile(stderr);
   }
 }
 
@@ -72,30 +51,24 @@ void PersistentPool::initialize() {
   /** Set name for each DB
    */
   mica_string basename = poolName.tostring();
-  for (int i = 0; i < NUM_DBS; i++) names[i] = basename;
+  for (int i = 0; i < NUM_DBS; i++) names_[i] = basename;
 
-  names[ENV_DB].append(".env");
-  names[OID_DB].append(".oid");
+  names_[ENV_DB].append(".env");
+  names_[OID_DB].append(".oid");
 
   /** Open each DB file
    */
 
   for (int i = 0; i < NUM_DBS; i++) {
-    /* Open berkeley db file.  Create if necessary.
-     */
-    int flags = DB_CREATE;
+    if (mdb_env_open(db_env_[i], names_[i].c_str(), 0, 0644) != 0) {
+      throw internal_error("cannot open db environment");
+    }
 
-    int ret;
-    ret = databases[i]->open(
-/** Version 4.1 of Berkeley DB wants one more arg
- *  here.
- */
-#if (DB_VERSION_MAJOR == 4 && DB_VERSION_MINOR == 1)
-        NULL,
-#endif
-        names[i].c_str(), NULL, DB_HASH, flags, S_IRWXU);
+    if (mdb_txn_begin(db_env_[i], nullptr, 0, &db_txn_[i]) != 0) {
+      throw internal_error("cannot open db transaction");
+    }
 
-    if (ret != 0) {
+    if (mdb_open(db_txn_[i], nullptr, 0, &db_dbi_[i]) != 0) {
       throw internal_error("cannot open db");
     }
   }
@@ -123,7 +96,9 @@ void PersistentPool::sync() {
     }
   }
 
-  for (int i = 0; i < NUM_DBS; i++) databases[i]->sync(0);
+  for (int i = 0; i < NUM_DBS; i++) {
+    mdb_env_sync(db_env_[i], 0);
+  }
 }
 
 void PersistentPool::close() {
@@ -134,23 +109,38 @@ void PersistentPool::close() {
   sync();
 
   for (int i = 0; i < NUM_DBS; i++) {
-    databases[i]->close(0);
-    delete databases[i];
+    mdb_close(db_env_[i], db_dbi_[i]);
+    mdb_env_close(db_env_[i]);
   }
 
   this->Pool::close();
 }
 
 void PersistentPool::del(OID idx) {
-  Dbt key;
-  key.set_data(&idx);
+  MDB_val key;
+  key.mv_data = &idx;
+  key.mv_size = sizeof(idx);
 
-  int ret;
-  if ((ret = databases[OID_DB]->del(NULL, &key, 0))) {
-    throw internal_error("unable to remove object id from db");
+  MDB_txn *txn_oid, *txn_env;
+  if (mdb_txn_begin(db_env_[OID_DB], nullptr, 0, &txn_oid) !=0) {
+    throw internal_error("unable to start delete transaction in oid db");
   }
-  if ((ret = databases[ENV_DB]->del(NULL, &key, 0))) {
-    throw internal_error("unable to remove environment from db");
+  if (mdb_del(txn_oid, db_dbi_[OID_DB], &key, nullptr) !=0 ){
+    mdb_txn_abort(txn_oid);
+    throw internal_error("unable to delete key from oid db");
+  }
+  if (mdb_txn_begin(db_env_[ENV_DB], nullptr, 0, &txn_env) !=0) {
+    throw internal_error("unable to start delete transaction in env db");
+  }
+  if (mdb_del(txn_env, db_dbi_[ENV_DB], &key, nullptr) !=0 ) {
+    mdb_txn_abort(txn_env);
+    throw internal_error("unable to delete key from env db");
+  }
+  if (mdb_txn_commit(txn_oid) !=0 ) {
+    throw internal_error("unable to commit delete transaction in oid db");
+  }
+  if (mdb_txn_commit(txn_env) !=0 ) {
+    throw internal_error("unable to commit delete transaction in env db");
   }
 
   /** Turf the cache entry for this object -- just reduce the use count
@@ -347,18 +337,22 @@ OStorage *PersistentPool::get_environment(OID object_id) {
 
   /** CACHE MISS -- Get it.
    */
-  Dbt key;
-  key.set_data(&object_id);
-  key.set_size(sizeof(OID));
-  key.set_ulen(sizeof(OID));
+  MDB_val key{sizeof(OID), &object_id};
+  MDB_val value;
 
-  Dbt value;
-
-  int ret;
-  if ((ret = databases[ENV_DB]->get(NULL, &key, &value, 0)) != 0)
+  MDB_txn *txn;
+  if (mdb_txn_begin(db_env_[ENV_DB], nullptr, MDB_RDONLY, &txn) != 0) {
+    throw internal_error("unable to open transaction to retrieve environment from db");
+  }
+  if (mdb_get(txn, db_dbi_[ENV_DB], &key, &value) != 0) {
+    mdb_txn_abort(txn);
     throw internal_error("unable to retrieve environment from store");
+  }
+  if (mdb_txn_commit(txn) != 0) {
+    throw internal_error("unable to end to commit read transaction to retrieve environment from db");
+  }
 
-  mica_string buffer((char *)value.get_data(), value.get_size());
+  mica_string buffer((char *)value.mv_data, value.mv_size);
 
   Unserializer unserializer(buffer);
 
@@ -389,22 +383,24 @@ void PersistentPool::write(OID id) {
 
   /** Must enforce cache put policy here
    */
-  Dbt key;
-  key.set_data(&id);
-  key.set_size(sizeof(OID));
-  key.set_ulen(sizeof(OID));
+  MDB_val key{sizeof(OID), &id};
 
   serialize_buffer serialized_form;
   objects[id]->environment->serialize_to(serialized_form);
 
-  Dbt value;
-  value.set_data((void *)serialized_form.c_str());
-  value.set_size(serialized_form.size());
-  value.set_ulen(serialized_form.size());
+  MDB_val value{serialized_form.size(), (void *)serialized_form.c_str()};
 
-  int ret;
-  if ((ret = databases[ENV_DB]->put(NULL, &key, &value, 0)) != 0)
-    throw internal_error("unable to store environment in db");
+  MDB_txn *txn;
+  if (mdb_txn_begin(db_env_[ENV_DB], nullptr, 0, &txn) != 0) {
+    throw internal_error("unable to open transaction to store object");
+  }
+  if (mdb_put(txn, db_dbi_[ENV_DB], &key, &value, 0) != 0) {
+    mdb_txn_abort(txn);
+    throw internal_error("unable to write object to db");
+  }
+  if (mdb_txn_commit(txn) != 0) {
+    throw internal_error("unable to end to commit write transaction to write object to db");
+  }
 }
 
 Object *PersistentPool::new_object() {
@@ -416,23 +412,25 @@ Object *PersistentPool::new_object() {
 }
 
 void PersistentPool::write_object(OID id) {
-  Dbt key;
-  key.set_data(&id);
-  key.set_size(sizeof(OID));
-  key.set_ulen(sizeof(OID));
+  MDB_val key{sizeof(OID), &id};
+
 
   /** Just the refcnt
    */
-  Dbt value;
-
   reference_counted::refcount_type refcnt = objects[id]->object->refcnt;
-  value.set_data(&refcnt);
-  value.set_size(sizeof(reference_counted::refcount_type));
-  value.set_ulen(sizeof(reference_counted::refcount_type));
+  MDB_val value{sizeof(reference_counted::refcount_type), &refcnt};
 
-  int ret;
-  if ((ret = databases[OID_DB]->put(NULL, &key, &value, 0)) != 0)
-    throw internal_error("unable to store object refcount in db");
+  MDB_txn *txn;
+  if (mdb_txn_begin(db_env_[OID_DB], nullptr, 0, &txn) != 0) {
+    throw internal_error("unable to open transaction to store refcnt");
+  }
+  if (mdb_put(txn, db_dbi_[OID_DB], &key, &value, 0) != 0) {
+    mdb_txn_abort(txn);
+    throw internal_error("unable to write refcnt to db");
+  }
+  if (mdb_txn_commit(txn) != 0) {
+    throw internal_error("unable to end to commit write transaction to write refcnt to db");
+  }
 }
 
 Ref<Object> PersistentPool::resolve(OID id) {
@@ -459,19 +457,27 @@ Ref<Object> PersistentPool::resolve(OID id) {
 
     /** Retrieve object's reference count
      */
-    Dbt key;
-    key.set_data(&id);
-    key.set_size(sizeof(OID));
-    key.set_ulen(sizeof(OID));
+    MDB_val key{sizeof(OID), &id};
+    MDB_val value;
+    MDB_txn *txn;
+    if (mdb_txn_begin(db_env_[OID_DB], nullptr, MDB_RDONLY, &txn) != 0) {
+      throw internal_error("unable to open transaction to retrieve refcount from db");
+    }
+    int get_result = mdb_get(txn, db_dbi_[OID_DB], &key, &value);
+    if (get_result == MDB_NOTFOUND) {
+      // warn!
+    } else if (get_result != 0) {
+      mdb_txn_abort(txn);
+      throw internal_error("unable to retrieve refcount from store");
+    }
+    if (mdb_txn_commit(txn) != 0) {
+      throw internal_error("unable to end to commit read transaction to refcount environment from db");
+    }
 
-    Dbt value;
-
-    int ret;
-    if ((ret = databases[OID_DB]->get(NULL, &key, &value, 0)) != 0)
-      throw internal_error("unable to retrieve object refcount from db");
+    // Handle miss in mdb_get!
 
     reference_counted::refcount_type refcnt;
-    memcpy(&refcnt, value.get_data(), sizeof(reference_counted::refcount_type));
+    memcpy(&refcnt, value.mv_data, sizeof(reference_counted::refcount_type));
     objects[id]->object->refcnt = refcnt;
   }
 
@@ -479,18 +485,27 @@ Ref<Object> PersistentPool::resolve(OID id) {
 }
 
 bool PersistentPool::exists(OID id) {
-  /** Attempt to find object.
-   */
-  Dbt key;
-  key.set_data(&id);
-  key.set_size(sizeof(OID));
-  key.set_ulen(sizeof(OID));
+  bool found = false;
 
-  Dbt value;
-
-  int ret;
-  if ((ret = databases[OID_DB]->get(NULL, &key, &value, 0)) != 0)
-    return false;
-  else
-    return true;
+  MDB_val key{sizeof(OID), &id};
+  MDB_val value;
+  MDB_txn *txn;
+  if (mdb_txn_begin(db_env_[OID_DB], nullptr, MDB_RDONLY, &txn) != 0) {
+    throw internal_error("unable to open transaction to retrieve refcount from db");
+  }
+  int get_result = mdb_get(txn, db_dbi_[OID_DB], &key, &value);
+  if (get_result == MDB_NOTFOUND) {
+    found = false;
+  } else if (get_result != 0) {
+    mdb_txn_abort(txn);
+    throw internal_error("unable to retrieve refcount from store");
+  } else {
+    found = true;
+  }
+  if (mdb_txn_commit(txn) != 0) {
+    throw internal_error("unable to end to commit read transaction to refcount environment from db");
+  }
+  return found;
 }
+
+}  // namespace mica

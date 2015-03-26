@@ -1,10 +1,10 @@
 /** Copyright (C) Ryan Daum 2001, 2002, 2003.  See COPYING for details.
 */
-#ifndef PERSPOOL_HH
-#define PERSPOOL_HH
+#ifndef MICA_PERSISTENT_WORKSPACE_HH
+#define MICA_PERSISTENT_WORKSPACE_HH
 
 #include <boost/tuple/tuple.hpp>
-#include <db_cxx.h>
+#include <lmdb.h>
 
 #include "types/Workspace.hh"
 
@@ -86,9 +86,13 @@ class PersistentPool : public Pool {
  private:
   enum { ENV_DB, OID_DB } dbs;
 #define NUM_DBS (OID_DB + 1)
-  Db *databases[NUM_DBS];
-  mica_string names[NUM_DBS];
+  MDB_env *db_env_[NUM_DBS];
+  MDB_txn *db_txn_[NUM_DBS];
+  MDB_dbi db_dbi_[NUM_DBS];
+  mica_string names_[NUM_DBS];
 };
-}
 
-#endif /* PERSHANDLEFACTORY_HH */
+}  // namespace mica
+
+#endif   // MICA_PERSISTENT_WORKSPACE_HH
+
