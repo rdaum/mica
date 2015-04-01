@@ -1,569 +1,260 @@
-// #define BOOST_SPIRIT_DEBUG
-
-#include <boost/spirit/include/classic_ast.hpp>
-#include <boost/spirit/include/classic_attribute.hpp>
-#include <boost/spirit/include/classic_core.hpp>
-#include <boost/spirit/include/classic_functor_parser.hpp>
-#include <boost/spirit/include/classic_parse_tree.hpp>
-#include <boost/spirit/include/classic_position_iterator.hpp>
-#include <boost/spirit/include/classic_symbols.hpp>
-#include <boost/spirit/include/classic_symbols.hpp>
-#include <boost/spirit/include/classic_tree_to_xml.hpp>
-#include <boost/spirit/include/classic_utility.hpp>
-#include <fstream>
+#include <cassert>
+#include <functional>
 #include <iostream>
-#include <string>
-#include <wchar.h>
+#include <map>
+#include <pegtl.hh>
+#include <pegtl/analyze.hh>
+#include <pegtl/trace.hh>
+#include <pegtl/contrib/raw_string.hh>
 
-#include "types/Var.hh"
-#include "types/hash.hh"
-#include "types/Symbol.hh"
-#include "types/List.hh"
-#include "types/OpCode.hh"
-#include "types/MetaObjects.hh"
-#include "types/String.hh"
-#include "vm/Block.hh"
-#include "types/Error.hh"
-#include "types/Exceptions.hh"
-#include "Nodes.hh"
+#include <pegtl/read_parser.hh>
 
-using namespace std;
-using namespace boost::spirit::classic;
-using namespace mica;
+using namespace pegtl;
 
-/** Here's some convenient typedefs
- */
-typedef char const* iterator_t;
-typedef node_val_data_factory<Var> factory_t;
-typedef tree_node<factory_t> tree_node_t;
-typedef tree_match<iterator_t, factory_t> match_t;
-typedef ast_match_policy<iterator_t, factory_t> match_policy_t;
-typedef scanner<iterator_t, scanner_policies<iter_policy_t, match_policy_t> > scanner_t;
-typedef match_t::tree_iterator iter_t;
-typedef match_t::const_tree_iterator const_iter_t;
+namespace mica {
+namespace grammar {
 
-#define RULE(x) rule<scanner_t, parser_context<nil_t>, parser_tag<parser_ids::x> > x
+struct sep : pegtl::sor<pegtl::ascii::space> {};
+struct seps : pegtl::star<sep> {};
 
-struct parser_ids {
-  typedef enum {
-    list_expression,
-    primary_expression,
-    map_expression,
-    map_item,
-    statement,
-    if_expression,
-    compound_statement,
-    lambda_expression,
-    assignment,
-    declare,
-    message,
-    while_loop,
-    do_loop,
-    for_range,
-    try_catch,
-    catch_block,
-    loop_statement,
-    control_statement,
-    slot_or_var,
-    argument_mask,
-    argument_declaration,
-    method,
-    object,
-    literals,
+struct str_break : pegtl::string<'b', 'r', 'e', 'a', 'k'> {};
+struct str_catch : pegtl::string<'c', 'a', 't', 'c', 'h'> {};
+struct str_continue : pegtl::string<'c', 'o', 'n', 't', 'i', 'n', 'u', 'e'> {};
+struct str_do : pegtl::string<'d', 'o'> {};
+struct str_new : pegtl::string<'n', 'e', 'w'> {};
+struct str_delegate : pegtl::string<'d', 'e', 'l', 'e', 'g', 'a', 't', 'e'> {};
+struct str_else : pegtl::string<'e', 'l', 's', 'e'> {};
+struct str_for : pegtl::string<'f', 'o', 'r'> {};
+struct str_if : pegtl::string<'i', 'f'> {};
+struct str_in : pegtl::string<'i', 'n'> {};
+struct str_lambda : pegtl::string<'l', 'a', 'm', 'b', 'd', 'a'> {};
+struct str_method : pegtl::string<'m', 'e', 't', 'h', 'o', 'd'> {};
+struct str_name : pegtl::string<'n', 'a', 'm', 'e'> {};
+struct str_my : pegtl::string<'m', 'y'> {};
+struct str_like : pegtl::string<'l', 'i', 'k', 'e'> {};
+struct str_remove : pegtl::string<'r', 'e', 'm', 'o', 'v', 'e'> {};
+struct str_return : pegtl::string<'r', 'e', 't', 'u', 'r', 'n'> {};
+struct str_slots : pegtl::string<'s', 'l', 'o', 't', 's'> {};
+struct str_self : pegtl::string<'s', 'e', 'l', 'f'> {};
+struct str_throw : pegtl::string<'t', 'h', 'r', 'o', 'w'> {};
+struct str_notify : pegtl::string<'n', 'o', 't', 'i', 'f', 'y'> {};
+struct str_detach : pegtl::string<'d', 'e', 't', 'a', 'c', 'h'> {};
+struct str_selector : pegtl::string<'s', 'e', 'l', 'e', 'c', 't', 'o', 'r'> {};
+struct str_source : pegtl::string<'s', 'o', 'u', 'r', 'c', 'e'> {};
+struct str_caller : pegtl::string<'c', 'a', 'l', 'l', 'e', 'r'> {};
+struct str_args : pegtl::string<'a', 'r', 'g', 's'> {};
+struct str_try : pegtl::string<'t', 'r', 'y'> {};
+struct str_verb : pegtl::string<'v', 'e', 'r', 'b'> {};
+struct str_while : pegtl::string<'w', 'h', 'i', 'l', 'e'> {};
+struct str_object : pegtl::string<'o', 'b', 'j', 'e', 'c', 't'> {};
+struct str_true : pegtl::string<'t', 'r', 'u', 'e'> {};
+struct str_false : pegtl::string<'f', 'a', 'l', 's', 'e'> {};
+struct str_map : pegtl::string<'m', 'a', 'p'> {};
+struct str_and : pegtl::string<'&', '&'> {};
+struct str_or : pegtl::string<'|', '|'> {};
 
-    mandatory,
-    optional,
-    remainder,
+struct token_colon : pegtl::one<':'> {};
 
-    postfix_expression,
-    multiplicative_expression,
-    additive_expression,
-    shift_expression,
-    relational_expression,
-    equality_expression,
-    and_expression,
-    exclusive_or_expression,
-    inclusive_or_expression,
-    logical_and_expression,
-    logical_or_expression,
-    assignment_expression,
-    argument_expression_list,
-    assignment_operator,
-    expression,
-    program,
+struct token_semicolon : pegtl::one<';'> {};
 
-    NUMBER,
-    HEX,
-    FLOAT,
-    IDENTIFIER,
-    STRING_LITERAL,
-    SYMBOL_LITERAL,
-    ERROR_LITERAL,
+struct token_lparen : pegtl::one<'('> {};
 
-    IF,
-    ELSE,
-    LAMBDA,
-    NEW,
-    RETURN,
-    TRY,
-    CATCH,
-    WHILE,
-    DO,
-    IN,
-    BREAK,
-    CONTINUE,
-    FOR,
-    NAME,
-    MY,
-    VERB,
-    DELEGATE,
-    OBJECT,
-    METHOD,
-    SELF,
-    SELECTOR,
-    SOURCE,
-    CALLER,
-    ARGS,
-    TRUE,
-    FALSE,
-    NOTIFY,
-    DETACH,
-    PASS,
-    REMOVE,
-    THROW
+struct token_rparen : pegtl::one<')'> {};
 
-  } parser_ids_enum;
+// String literals
+struct single : pegtl::one<'a', 'b', 'f', 'n', 'r', 't', 'v', '\\', '"', '\'', '0', '\n'> {};
+struct spaces : pegtl::seq<pegtl::one<'z'>, pegtl::star<pegtl::space>> {};
+struct hexbyte : pegtl::if_must<pegtl::one<'x'>, pegtl::xdigit, pegtl::xdigit> {};
+struct decbyte : pegtl::if_must<pegtl::digit, pegtl::rep_opt<2, pegtl::digit>> {};
+struct unichar : pegtl::if_must<pegtl::one<'u'>, pegtl::one<'{'>, pegtl::plus<pegtl::xdigit>,
+                                pegtl::one<'}'>> {};
+struct escaped
+    : pegtl::if_must<pegtl::one<'\\'>, pegtl::sor<hexbyte, decbyte, unichar, single, spaces>> {};
+struct regular : pegtl::not_one<'\r', '\n'> {};
+struct character : pegtl::sor<escaped, regular> {};
+struct string_literal : pegtl::if_must<pegtl::one<'"'>, pegtl::until<pegtl::one<'"'>, character>> {
 };
 
-/** Converts a string literal into a mica String
- */
-struct assign_string {
-  void operator()(tree_node<node_val_data<const char*, mica::Var> >& n, const char*& b,
-                  const char* const& e) const {
-    size_t length = e - b - 1;  // (chop off quotes)
-    mica_string r;
-    for (unsigned int i = 1; i < length; i++) {
-      char c;
-      parse(b + i, c_escape_ch_p[assign(c)]);
-      if (b[i] == '\\')
-        b++;
+// Numeric literals
+template <typename E>
+struct exponent
+    : pegtl::opt<pegtl::if_must<E, pegtl::opt<pegtl::one<'+', '-'>>, pegtl::plus<pegtl::digit>>> {};
 
-      r.push_back(c);
-    }
-    n.value.value(Var(String::from_rope(r)));
-  }
+template <typename D, typename E>
+struct numeral_three : pegtl::seq<pegtl::if_must<pegtl::one<'.'>, pegtl::plus<D>>, exponent<E>> {};
+template <typename D, typename E>
+struct numeral_two
+    : pegtl::seq<pegtl::plus<D>, pegtl::opt<pegtl::one<'.'>, pegtl::star<D>>, exponent<E>> {};
+template <typename D, typename E>
+struct numeral_one : pegtl::sor<numeral_two<D, E>, numeral_three<D, E>> {};
+
+struct decimal : numeral_one<pegtl::digit, pegtl::one<'e', 'E'>> {};
+struct hexadecimal
+    : pegtl::if_must<pegtl::istring<'0', 'x'>, numeral_one<pegtl::xdigit, pegtl::one<'p', 'P'>>> {};
+
+struct number_literal : pegtl::sor<hexadecimal, decimal> {};
+
+// Forward declare this for later use.
+struct expression;
+
+// Atoms
+struct boolean_literal : sor<str_true, str_false> {};
+
+struct symbol_literal : if_must<pegtl::one<'\''>, identifier> {};
+
+struct literals : sor<number_literal, symbol_literal, string_literal, boolean_literal> {};
+
+struct builtin_values : sor<str_self, str_selector, str_source, str_caller, str_args, str_slots> {};
+
+// Slots
+
+// Slot name format
+struct slot_name_expr : seq<token_lparen, seps, expression, seps, token_rparen> {};
+struct slot_name : sor<identifier, slot_name_expr> {};
+
+// Private ivar slots
+struct private_slot_ref : sor<str_my, pegtl::one<'.'>> {};
+struct private_slot : seq<private_slot_ref, seps, slot_name> {};
+
+// Global names
+struct name_slot_ref : sor<str_name, pegtl::one<'$'>> {};
+struct name_slot : seq<name_slot_ref, seq<seps, slot_name>> {};
+
+// Delegate slots
+struct delegate_slot : if_must<str_delegate, seq<seps, slot_name>> {};
+
+// Verb references
+struct verb_arg : sor<expression, pegtl::one<'*'>> {};
+struct verb_template_rest : list<seq<identifier, seps, token_colon, seps, verb_arg>, seps> {};
+struct verb_template_root : seq<identifier, seps, opt<seq<token_colon>, seps, verb_arg>> {};
+struct verb_template : seq<verb_template_root, seps, opt<verb_template_rest>> {};
+struct verb_slot : if_must<str_verb, seq<seps, verb_template>> {};
+
+struct slot_reference : sor<verb_slot, private_slot, delegate_slot, name_slot> {};
+
+// Message send.
+struct selector_key : seq<identifier, token_colon> {};
+
+struct message_argument : if_must<selector_key, seq<seps, expression>> {};
+
+struct first_message_argument : seq<identifier, seps, opt<token_colon>, seps, expression> {};
+
+struct message_args : seq<first_message_argument, seps, opt<list<message_argument, seps>>> {};
+
+struct receiver_cast : seq<expression, sep, str_like, sep, expression> {};
+
+struct receiver_expression : sor<receiver_cast, expression> {};
+
+struct message_expr
+    : if_must<token_lparen,
+              until<token_rparen, seps, receiver_expression, seps, message_args, seps>> {};
+
+//
+
+template <char O, char... N>
+struct op_one : pegtl::seq<pegtl::one<O>, pegtl::at<pegtl::not_one<N...>>> {};
+template <char O, char P, char... N>
+struct op_two : pegtl::seq<pegtl::string<O, P>, pegtl::at<pegtl::not_one<N...>>> {};
+
+template <typename S, typename O>
+struct left_assoc : pegtl::seq<S, seps, pegtl::star<pegtl::if_must<O, seps, S, seps>>> {};
+template <typename S, typename O>
+struct right_assoc : pegtl::seq<S, seps, pegtl::opt<pegtl::if_must<O, seps, right_assoc<S, O>>>> {};
+
+struct unary_operators
+    : pegtl::sor<pegtl::one<'-'>, pegtl::one<'#'>, op_one<'~', '='>, pegtl::one<'!'>> {};
+
+struct value;
+struct expr_ten;
+
+struct bracket_expr : seq<pegtl::one<'('>, seps, expression, seps, pegtl::one<')'>> {};
+
+struct expr_thirteen : sor<value, bracket_expr> {};
+
+struct expr_twelve : pegtl::sor<expr_thirteen, message_expr> {};
+struct expr_eleven
+    : pegtl::seq<expr_twelve, seps, pegtl::opt<pegtl::one<'^'>, seps, expr_ten, seps>> {};
+struct unary_apply : pegtl::if_must<unary_operators, seps, expr_ten, seps> {};
+struct expr_ten : pegtl::sor<unary_apply, expr_eleven> {};
+struct operators_nine
+    : pegtl::sor<pegtl::two<'/'>, pegtl::one<'/'>, pegtl::one<'*'>, pegtl::one<'%'>> {};
+struct expr_nine : left_assoc<expr_ten, operators_nine> {};
+struct operators_eight : pegtl::sor<pegtl::one<'+'>, pegtl::one<'-'>> {};
+struct expr_eight : left_assoc<expr_nine, operators_eight> {};
+struct expr_seven : right_assoc<expr_eight, op_two<'.', '.', '.'>> {};
+struct operators_six : pegtl::sor<pegtl::two<'<'>, pegtl::two<'>'>> {};
+struct expr_six : left_assoc<expr_seven, operators_six> {};
+struct expr_five : left_assoc<expr_six, pegtl::one<'&'>> {};
+struct expr_four : left_assoc<expr_five, op_one<'~', '='>> {};
+struct expr_three : left_assoc<expr_four, pegtl::one<'|'>> {};
+struct operators_two : pegtl::sor<pegtl::two<'='>, pegtl::string<'<', '='>, pegtl::string<'>', '='>,
+                                  op_one<'<', '<'>, op_one<'>', '>'>, pegtl::string<'~', '='>> {};
+struct expr_two : left_assoc<expr_three, operators_two> {};
+struct expr_one : left_assoc<expr_two, str_and> {};
+struct expression : left_assoc<expr_one, str_or> {};
+
+// Expressions and statements
+struct var_reference : identifier {};
+
+struct value : sor<builtin_values, slot_reference, var_reference, literals> {};
+
+struct expression_statement : if_must<expression, token_semicolon> {};
+
+struct statement : sor<expression_statement, token_semicolon> {};
+
+struct program : seq<statement> {};
+
+// Class template for user-defined actions that does
+// nothing by default.
+
+template <typename Rule>
+struct action : nothing<Rule> {};
+
+// Specialisation of the user-defined action to do
+// something when the 'name' rule succeeds; is called
+// with the portion of the input that matched the rule.
+
+template <>
+struct action<number_literal> {
+  static void apply(const input& in, std::string& name) { name = in.string(); }
 };
-
-struct assign_integer {
-  void operator()(tree_node<node_val_data<const char*, mica::Var> >& n, const char*& b,
-                  const char* const& e) const {
-    int number;
-    parse(b, int_p[assign(number)]);
-    cerr << "INT: " << number << " " << typeid(number).name() << endl;
-    n.value.value(Var(number));
-  }
+template <>
+struct action<string_literal> {
+  static void apply(const input& in, std::string& name) { name = in.string(); }
 };
-
-struct assign_float {
-  void operator()(tree_node<node_val_data<const char*, mica::Var> >& n, const char*& b,
-                  const char* const& e) const {
-    float number;
-    parse(b, real_p[assign(number)]);
-    cerr << "FLOAT: " << number << " " << typeid(number).name() << endl;
-    n.value.value(Var(number));
-  }
+template <>
+struct action<symbol_literal> {
+  static void apply(const input& in, std::string& name) { name = in.string(); }
 };
-
-struct assign_hex {
-  void operator()(tree_node<node_val_data<const char*, mica::Var> >& n, const char*& b,
-                  const char* const& e) const {
-    int number;
-    parse(b, hex_p[assign(number)]);
-    cerr << "HEX: " << number << " " << typeid(number).name() << endl;
-    n.value.value(Var(number));
-  }
+template <>
+struct action<boolean_literal> {
+  static void apply(const input& in, std::string& name) { name = in.string(); }
 };
-
-struct assign_symbol {
-  void operator()(tree_node<node_val_data<const char*, mica::Var> >& n, const char*& b,
-                  const char* const& e) const {
-    mica_string x(b + 1, e);  // +1 to eliminate # at beginning
-
-    cerr << "sym: " << x << endl;
-    n.value.value(Var(Symbol::create(x)));
-  }
-};
-
-struct mica_grammar {
-  /** All of these get declared in global scope so that we can use parse_id
-   *  on them during compilation
-   */
-  RULE(list_expression);
-  RULE(primary_expression);
-  RULE(map_expression);
-  RULE(map_item);
-  RULE(statement);
-  RULE(if_expression);
-  RULE(compound_statement);
-  RULE(lambda_expression);
-  RULE(assignment);
-  RULE(declare);
-  RULE(message);
-  RULE(while_loop);
-  RULE(do_loop);
-  RULE(for_range);
-  RULE(try_catch);
-  RULE(catch_block);
-  RULE(loop_statement);
-  RULE(control_statement);
-  RULE(slot_or_var);
-  RULE(argument_mask);
-  RULE(argument_declaration);
-  RULE(method);
-  RULE(object);
-  RULE(literals);
-
-  RULE(mandatory);
-  RULE(optional);
-  RULE(remainder);
-
-  RULE(postfix_expression);
-  RULE(multiplicative_expression);
-  RULE(additive_expression);
-  RULE(shift_expression);
-  RULE(relational_expression);
-  RULE(equality_expression);
-  RULE(and_expression);
-  RULE(exclusive_or_expression);
-  RULE(inclusive_or_expression);
-  RULE(logical_and_expression);
-  RULE(logical_or_expression);
-  RULE(assignment_expression);
-  RULE(argument_expression_list);
-  RULE(assignment_operator);
-  RULE(expression);
-  RULE(program);
-
-  RULE(NUMBER);
-  RULE(HEX);
-  RULE(FLOAT);
-  RULE(IDENTIFIER);
-  RULE(STRING_LITERAL);
-  RULE(SYMBOL_LITERAL);
-  RULE(ERROR_LITERAL);
-
-  RULE(IF);
-  RULE(ELSE);
-  RULE(LAMBDA);
-  RULE(NEW);
-  RULE(RETURN);
-  RULE(TRY);
-  RULE(CATCH);
-  RULE(WHILE);
-  RULE(DO);
-  RULE(IN);
-  RULE(BREAK);
-  RULE(CONTINUE);
-  RULE(FOR);
-  RULE(NAME);
-  RULE(MY);
-  RULE(VERB);
-  RULE(DELEGATE);
-  RULE(OBJECT);
-  RULE(METHOD);
-  RULE(SELF);
-  RULE(SELECTOR);
-  RULE(SOURCE);
-  RULE(CALLER);
-  RULE(ARGS);
-  RULE(TRUE);
-  RULE(FALSE);
-  RULE(NOTIFY);
-  RULE(DETACH);
-  RULE(PASS);
-  RULE(REMOVE);
-  RULE(THROW);
-
-  symbols<> keywords;
-
-  strlit<> RIGHT_OP, LEFT_OP, INC_OP, DEC_OP, PTR_OP, AND_OP, OR_OP, LE_OP, GE_OP, ASSIGN, NE_OP,
-      MAP_START, LEFT_ASSOC, RIGHT_ASSOC;
-
-  chlit<> SEMICOLON, COMMA, COLON, EQ_OP, LEFT_PAREN, RIGHT_PAREN, DOT, ADDROF, BANG, TILDE, MINUS,
-      PLUS, STAR, SLASH, PERCENT, LT_OP, GT_OP, XOR, OR, QUEST, LEFT_BRACKET, RIGHT_BRACKET,
-      LEFT_BRACE, RIGHT_BRACE, HASH, AT, DOLLAR, QUOTE;
-
-  mica_grammar()
-      : RIGHT_OP(">>"),
-        LEFT_OP("<<"),
-        INC_OP("++"),
-        DEC_OP("--"),
-        PTR_OP("->"),
-        AND_OP("&&"),
-        OR_OP("||"),
-        LE_OP("<="),
-        GE_OP(">="),
-        ASSIGN(":="),
-        NE_OP("!="),
-        MAP_START("#["),
-        LEFT_ASSOC("<="),
-        RIGHT_ASSOC("=>"),
-        SEMICOLON(';'),
-        COMMA(','),
-        COLON(':'),
-        EQ_OP('='),
-        LEFT_PAREN('('),
-        RIGHT_PAREN(')'),
-        DOT('.'),
-        ADDROF('&'),
-        BANG('!'),
-        TILDE('~'),
-        MINUS('-'),
-        PLUS('+'),
-        STAR('*'),
-        SLASH('/'),
-        PERCENT('%'),
-        LT_OP('<'),
-        GT_OP('>'),
-        XOR('^'),
-        OR('|'),
-        QUEST('?'),
-        LEFT_BRACKET('['),
-        RIGHT_BRACKET(']'),
-        LEFT_BRACE('{'),
-        RIGHT_BRACE('}'),
-        HASH('#'),
-        AT('@'),
-        DOLLAR('$'),
-        QUOTE('"') {
-    keywords = "if", "else", "lambda", "new", "return", "new", "verb", "delegate", "my", "while",
-    "try", "catch", "break", "continue", "name", "object", "method", "do", "until", "for", "in",
-    "self", "selector", "source", "caller", "args", "true", "false", "notify", "detach", "pass",
-    "remove", "throw";
-
-    IF = strlit<>("if");
-    ELSE = strlit<>("else");
-    LAMBDA = strlit<>("lambda");
-    NEW = strlit<>("new");
-    RETURN = strlit<>("return");
-    TRY = strlit<>("try");
-    CATCH = strlit<>("catch");
-    WHILE = strlit<>("while");
-    FOR = strlit<>("for");
-    DO = strlit<>("do");
-    IN = strlit<>("in");
-    BREAK = strlit<>("break");
-    CONTINUE = strlit<>("continue");
-    VERB = strlit<>("verb");
-    DELEGATE = strlit<>("delegate");
-    MY = strlit<>("my");
-    NAME = strlit<>("name");
-    OBJECT = strlit<>("object");
-    METHOD = strlit<>("method");
-    THROW = strlit<>("throw");
-    REMOVE = strlit<>("remove");
-
-    PASS = strlit<>("pass");
-    SELF = strlit<>("self");
-    SELECTOR = strlit<>("selector");
-    SOURCE = strlit<>("source");
-    CALLER = strlit<>("caller");
-    ARGS = strlit<>("args");
-    TRUE = strlit<>("true");
-    FALSE = strlit<>("false");
-    NOTIFY = strlit<>("notify");
-    DETACH = strlit<>("detach");
-
-    // string
-    STRING_LITERAL = inner_node_d[confix_p('"', (*c_escape_ch_p), '"')];
-
-    // identifer
-    IDENTIFIER =
-        lexeme_d[(alpha_p >> *(alnum_p | '_')) - (keywords >> anychar_p - (alnum_p | '_'))];
-    ;
-
-    // symbol
-    SYMBOL_LITERAL = access_node_d[HASH >> IDENTIFIER][assign_symbol()];
-
-    // error
-    ERROR_LITERAL = discard_node_d[TILDE] >> access_node_d[IDENTIFIER][assign_symbol()] >>
-        !(inner_node_d[LEFT_PAREN >> STRING_LITERAL >> RIGHT_PAREN]);
-
-    NUMBER = access_node_d[int_p][assign_integer()];
-
-    HEX = strlit<>("0x") >> access_node_d[hex_p][assign_hex()];
-
-    FLOAT = access_node_d[real_p][assign_float()];
-
-    literals = SELF | SELECTOR | SOURCE | CALLER | ARGS | TRUE | FALSE;
-
-    assignment_expression =
-        slot_or_var >> *((root_node_d[ASSIGN] >> expression) |
-                         (primary_expression >> root_node_d[RIGHT_ASSOC] >> !(NEW) >>
-                          inner_node_d[LEFT_PAREN >> argument_mask >> RIGHT_PAREN]));
-
-    primary_expression = longest_d[NUMBER | FLOAT] | HEX |
-        access_node_d[STRING_LITERAL][assign_string()] | SYMBOL_LITERAL | ERROR_LITERAL |
-        assignment_expression | leaf_node_d[literals] | list_expression | map_expression |
-        lambda_expression | method | object | message | declare | control_statement |
-        inner_node_d[LEFT_PAREN >> expression >> RIGHT_PAREN];
-
-    postfix_expression = primary_expression >>
-        *((LEFT_BRACKET >> expression >> discard_node_d[RIGHT_BRACKET]) |
-          (inner_node_d[LEFT_PAREN >> !argument_expression_list >> RIGHT_PAREN]));
-
-    argument_expression_list = infix_node_d[expression >> *(COMMA >> expression)];
-
-    multiplicative_expression = postfix_expression >>
-        *((root_node_d[SLASH] >> postfix_expression) |
-          (root_node_d[PERCENT] >> postfix_expression) | (root_node_d[STAR] >> postfix_expression));
-
-    additive_expression =
-        multiplicative_expression >> *((root_node_d[PLUS] >> multiplicative_expression) |
-                                       root_node_d[MINUS] >> multiplicative_expression);
-
-    shift_expression = additive_expression >> *((root_node_d[LEFT_OP] >> additive_expression) |
-                                                (root_node_d[RIGHT_OP] >> additive_expression));
-
-    relational_expression = shift_expression >>
-        *((root_node_d[LT_OP] >> shift_expression) | (root_node_d[GT_OP] >> shift_expression) |
-          (root_node_d[LE_OP] >> shift_expression) | (root_node_d[GE_OP] >> shift_expression));
-
-    equality_expression = relational_expression >> *((root_node_d[EQ_OP] >> relational_expression) |
-                                                     (root_node_d[NE_OP] >> relational_expression));
-
-    and_expression = equality_expression >> *(root_node_d[ADDROF] >> equality_expression);
-
-    exclusive_or_expression = and_expression >> *(root_node_d[XOR] >> and_expression);
-
-    inclusive_or_expression =
-        exclusive_or_expression >> *(root_node_d[OR] >> exclusive_or_expression);
-
-    logical_and_expression =
-        inclusive_or_expression >> *(root_node_d[AND_OP] >> inclusive_or_expression);
-
-    logical_or_expression =
-        logical_and_expression >> *(root_node_d[OR_OP] >> logical_and_expression);
-
-    expression = logical_or_expression;
-
-    do_loop = root_node_d[DO] >> loop_statement >> discard_node_d[WHILE] >>
-        inner_node_d[LEFT_PAREN >> expression >> RIGHT_PAREN];
-
-    for_range = root_node_d[FOR] >> IDENTIFIER >> discard_node_d[IN] >> expression >>
-        discard_node_d[DO] >> loop_statement;
-
-    while_loop = WHILE >> inner_node_d[LEFT_PAREN >> expression >> RIGHT_PAREN] >> loop_statement;
-
-    catch_block = root_node_d[CATCH] >>
-        inner_node_d[LEFT_PAREN >> IDENTIFIER >> discard_node_d[ASSIGN] >> ERROR_LITERAL >>
-                     RIGHT_PAREN] >>
-        statement;
-
-    try_catch = TRY >> statement >> +(catch_block);
-
-    message = +(IDENTIFIER >> COLON >> statement);
-
-    list_expression =
-        inner_node_d[LEFT_BRACKET >> infix_node_d[*(list_p(expression, COMMA))] >> RIGHT_BRACKET];
-
-    map_item = expression >> discard_node_d[RIGHT_ASSOC] >> expression;
-
-    map_expression = inner_node_d[MAP_START >> *(list_p(map_item, COMMA)) >> RIGHT_BRACKET];
-
-    argument_declaration = inner_node_d[LT_OP >> argument_mask >> GT_OP];
-
-    mandatory = infix_node_d[list_p(slot_or_var, COMMA)];
-    optional = infix_node_d[(QUEST >> slot_or_var, COMMA)];
-    remainder = infix_node_d[(AT >> slot_or_var, COMMA)];
-
-    argument_mask = !(mandatory) >> !(!(COMMA) >> optional) >> !(!(COMMA) >> remainder);
-
-    declare = NEW >> slot_or_var >> !(ASSIGN >> expression);
-
-    slot_or_var = IDENTIFIER | (MY | DOT) >> IDENTIFIER | (NAME | DOLLAR) >> IDENTIFIER |
-        DELEGATE >> IDENTIFIER | VERB >> message;
-
-    loop_statement = statement | BREAK >> SEMICOLON | CONTINUE >> SEMICOLON;
-
-    lambda_expression = LAMBDA >> argument_declaration >> compound_statement;
-
-    method = METHOD >> argument_declaration >> compound_statement;
-
-    object = OBJECT >> compound_statement;
-
-    compound_statement = inner_node_d[LEFT_BRACE >> +statement >> RIGHT_BRACE];
-
-    if_expression = root_node_d[IF] >> inner_node_d[LEFT_PAREN >> expression >> RIGHT_PAREN] >>
-        statement >> !(root_node_d[ELSE] >> statement);
-
-    control_statement =
-        if_expression | try_catch | while_loop | do_loop | for_range | compound_statement;
-
-    statement = expression >> !SEMICOLON | root_node_d[RETURN] >> expression >> SEMICOLON |
-        root_node_d[NOTIFY] >> LEFT_PAREN >> expression >> RIGHT_PAREN >> SEMICOLON |
-        root_node_d[DETACH] >> LEFT_PAREN >> RIGHT_PAREN >> SEMICOLON |
-        root_node_d[THROW] >> ERROR_LITERAL >> SEMICOLON |
-        root_node_d[REMOVE] >> list_p(slot_or_var, COMMA) >> SEMICOLON;
-
-    program = (*statement);
-  }
-
-  match_t parse(const std::string& str) {
-    const char* first = str.c_str();
-    const char* last = first + str.size();
-
-    scanner_t scan = scanner_t(first, last);
-    match_t info = program.parse(scan);
-
-    return info;
+template <>
+struct action<var_reference> {
+  static void apply(const input& in, std::string& name) {
+    std::cerr << "var_reference slot: " << name << std::endl;
   }
 };
 
-NPtr compile_statement(iter_t& i) {
-  NPtr result;
+}  // namespace grammar
 
-  /** handle literals
-   */
-  if (i->value.id() == parser_ids::SYMBOL_LITERAL) {
-    cerr << "FOUND SYMBOL: " << i->children.begin()->value.value() << endl;
-  } else if (i->value.id() == parser_ids::STRING_LITERAL) {
-    cerr << "FOUND STRING: " << i->value.value() << endl;
-  } else if (i->value.id() == parser_ids::FLOAT) {
-    cerr << "FOUND FLOAT: " << i->value.value() << endl;
-  } else if (i->value.id() == parser_ids::NUMBER) {
-    cerr << "FOUND INTEGER: " << i->value.value() << endl;
-  } else {
-    for (iter_t j = i->children.begin(); j != i->children.end(); j++) compile_statement(j);
-  }
-  return result;
-}
-
-void compile_nodes(const match_t& info) {
-  tree_to_xml(cout, info.trees);
-
-  std::vector<NPtr> block;
-  for (iter_t i = info.trees.begin(); i != info.trees.end(); i++)
-    block.push_back(compile_statement(i));
-}
-
-void compile_it() {
-  mica_grammar grammar;
-
+void perform_compile() {
+  analyze<mica::grammar::program>();
   std::string str;
-  while (getline(cin, str)) {
+  while (getline(std::cin, str)) {
+    std::string name;
     try {
-      match_t info = grammar.parse(str);
-
-      //      if (info.full) {
-      //	cout << "parsing succeeded\n";
-
-      compile_nodes(info);
-      //      } else {
-      //	cout << "parsing failed\n";
-      //      }
-    } catch (...) {
-      cout << "error during parse" << endl;
+      parse<mica::grammar::program, mica::grammar::action>(str, "terminal", name);
+    } catch (pegtl::parse_error& pe) {
+      std::cerr << "parse error (" << pe.what() << ") at positions: " << std::endl;
+      for (auto pos : pe.positions) {
+        std::cerr << " line: " << pos.line << " col: " << pos.column << " begin: " << pos.begin
+                  << std::endl;
+      }
     }
+    std::cerr << name << std::endl;
   }
 }
+
+}  // namespace mica
