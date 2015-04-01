@@ -31,7 +31,7 @@ Ref<String> String::create(const char *from) {
 
 /** Everything below here is public
  */
-Var String::from_rope(const mica_string &from) {
+Var String::from_string(const mica_string &from) {
   if (from.empty())
     return empty();
   else {
@@ -114,7 +114,7 @@ Var String::cons(const Var &el) const {
   n_vec.push_back(el.tochar());
   n_vec.insert(n_vec.end(), begin(), end());
 
-  return String::from_rope(n_vec);
+  return String::from_string(n_vec);
 }
 
 Var String::snoc(const Var &el) const {
@@ -126,7 +126,7 @@ Var String::append(const Var &seq) const {
   mica_string to_append(seq.tostring());
   result.insert(result.end(), to_append.begin(), to_append.end());
 
-  return String::from_rope(result);
+  return String::from_string(result);
 }
 
 Var String::lview() const {
@@ -141,8 +141,8 @@ Var String::lview() const {
     viewr.insert(viewr.end(), (begin() + 1), end());
 
   var_vector res;
-  res.push_back(String::from_rope(viewl));
-  res.push_back(String::from_rope(viewr));
+  res.push_back(String::from_string(viewl));
+  res.push_back(String::from_string(viewr));
 
   return List::from_vector(res);
 }
@@ -160,7 +160,7 @@ Var String::ltail() const {
 
   mica_string res(*this);
   res.pop_back();
-  return String::from_rope(res);
+  return String::from_string(res);
 }
 
 Var String::rview() const {
@@ -174,8 +174,8 @@ Var String::rview() const {
   viewr.pop_back();
 
   var_vector res;
-  res.push_back(String::from_rope(viewl));
-  res.push_back(String::from_rope(viewr));
+  res.push_back(String::from_string(viewl));
+  res.push_back(String::from_string(viewr));
 
   return List::from_vector(res);
 }
@@ -192,7 +192,7 @@ Var String::rtail() const {
     return empty();
 
   mica_string res(begin() + 1, end());
-  return String::from_rope(res);
+  return String::from_string(res);
 }
 
 bool String::null() const {
@@ -210,7 +210,7 @@ Var String::concat() const {
 Var String::reverse() const {
   mica_string result(*this);
   std::reverse(result.begin(), result.end());
-  return String::from_rope(result);
+  return String::from_string(result);
 }
 
 Var String::take(int i) const {
@@ -219,7 +219,7 @@ Var String::take(int i) const {
   else if (i < 0)
     return String::empty();
   else
-    return String::from_rope(mica_string(begin(), begin() + i));
+    return String::from_string(mica_string(begin(), begin() + i));
 }
 
 Var String::drop(int i) const {
@@ -228,7 +228,7 @@ Var String::drop(int i) const {
   else if (i < 0)
     return String::empty();
   else
-    return String::from_rope(mica_string(begin() + i, end()));
+    return String::from_string(mica_string(begin() + i, end()));
 }
 
 Var String::splitAt(int i) const {
@@ -240,8 +240,8 @@ Var String::splitAt(int i) const {
     mica_string splitl(begin(), begin() + i);
     mica_string splitr(begin() + i, end());
     var_vector result;
-    result.push_back(String::from_rope(splitl));
-    result.push_back(String::from_rope(splitr));
+    result.push_back(String::from_string(splitl));
+    result.push_back(String::from_string(splitr));
     return List::from_vector(result);
   }
 }
@@ -252,9 +252,9 @@ Var String::subseq(int start, int length) const {
   else if (start < 0)
     return String::empty();
   else if (length < 0)
-    return String::from_rope(mica_string(begin() + start, end()));
+    return String::from_string(mica_string(begin() + start, end()));
   else
-    return String::from_rope(mica_string(begin() + start, begin() + start + length));
+    return String::from_string(mica_string(begin() + start, begin() + start + length));
 }
 
 bool String::inBounds(int i) const {
@@ -290,7 +290,7 @@ Var String::update(int i, const Var &e) const {
   else {
     mica_string result = *this;
     result[i] = e.tochar();
-    return String::from_rope(result);
+    return String::from_string(result);
   }
 }
 

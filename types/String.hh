@@ -50,7 +50,7 @@ class String : public Data, virtual sequence_protocol<Var>, private mica_string 
    *  we use empty(), instead.  This makes room for memoization
    *  or hash flattening in the future.
    */
-  static Var from_rope(const mica_string &from);
+  static Var from_string(const mica_string &from);
 
   /** As above, but from a C-style null-terminated string
    */

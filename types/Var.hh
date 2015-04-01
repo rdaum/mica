@@ -184,6 +184,11 @@ class Var : boost::totally_ordered<Var>,     // >, >=, <=, etc.
    */
   explicit Var(const char *initial);
 
+  /** construct a String Var from a string
+ *  @param initial string value of the Var
+ */
+  explicit Var(const std::string &initial);
+
   /** construct a char Var
    *  @param initial value of the Var
    */
@@ -369,6 +374,10 @@ class Var : boost::totally_ordered<Var>,     // >, >=, <=, etc.
   /** assignment to string
    */
   Var &operator=(char *from);
+
+  /** assignment to string
+ */
+  Var &operator=(const std::string &from);
 
   /** assignment to char
    */

@@ -336,6 +336,12 @@ Var::Var(const char *from) {
   operator=(String::from_cstr(from));
 }
 
+
+Var::Var(const std::string &from) {
+  v.value = 0;
+  operator=(String::from_string(from));
+}
+
 Var::Var(Data *initial) {
   v.value = 0;
   // constructor, can't use PRECONDITION
@@ -396,6 +402,14 @@ Var &Var::operator=(char *from) {
   dncount();
 
   operator=(String::from_cstr(from));
+
+  return *this;
+}
+
+Var &Var::operator=(const std::string &from) {
+  dncount();
+
+  operator=(String::from_string(from));
 
   return *this;
 }

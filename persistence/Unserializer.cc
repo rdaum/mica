@@ -125,7 +125,7 @@ Var Unserializer::parseData() {
 Var Unserializer::parseString() {
   /** Very simple.  Just read the string.
    */
-  return String::from_rope(readString());
+  return String::from_string(readString());
 }
 
 Symbol Unserializer::parseSymbol() {
