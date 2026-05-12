@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["crates/var"]
+exclude = ["crates/var/fuzz"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+micromeasure = "0.6"

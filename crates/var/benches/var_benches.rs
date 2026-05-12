@@ -1,0 +1,128 @@
+use mica_var::{Identity, Symbol, Value};
+use micromeasure::{
+    BenchContext, BenchmarkMainOptions, NoContext, Throughput, benchmark_main, black_box,
+};
+use std::time::Duration;
+
+struct IntContext(Value);
+
+impl BenchContext for IntContext {
+    fn prepare(_num_chunks: usize) -> Self {
+        Self(Value::int(0).unwrap())
+    }
+}
+
+struct StringContext(Value);
+
+impl BenchContext for StringContext {
+    fn prepare(_num_chunks: usize) -> Self {
+        Self(Value::string("brass lamp"))
+    }
+}
+
+struct ListContext(Value);
+
+impl BenchContext for ListContext {
+    fn prepare(_num_chunks: usize) -> Self {
+        Self(Value::list((0..64).map(|i| Value::int(i).unwrap())))
+    }
+}
+
+fn construct_ints(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    for i in 0..chunk_size {
+        black_box(Value::int(i as i64).unwrap());
+    }
+}
+
+fn construct_identities(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    for i in 0..chunk_size {
+        black_box(Value::identity(Identity::new(i as u64).unwrap()));
+    }
+}
+
+fn construct_symbols(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    let symbol = Symbol::intern("take");
+    for _ in 0..chunk_size {
+        black_box(Value::symbol(symbol));
+    }
+}
+
+fn int_add(ctx: &mut IntContext, chunk_size: usize, _chunk_num: usize) {
+    let mut value = ctx.0.clone();
+    let one = Value::int(1).unwrap();
+    for _ in 0..chunk_size {
+        value = value.checked_add(&one).unwrap();
+        black_box(&value);
+    }
+    ctx.0 = value;
+}
+
+fn int_cmp(ctx: &mut IntContext, chunk_size: usize, _chunk_num: usize) {
+    let value = ctx.0.clone();
+    for _ in 0..chunk_size {
+        black_box(value.cmp(&value));
+    }
+}
+
+fn string_clone(ctx: &mut StringContext, chunk_size: usize, _chunk_num: usize) {
+    for _ in 0..chunk_size {
+        black_box(ctx.0.clone());
+    }
+}
+
+fn list_clone(ctx: &mut ListContext, chunk_size: usize, _chunk_num: usize) {
+    for _ in 0..chunk_size {
+        black_box(ctx.0.clone());
+    }
+}
+
+fn ordered_key_identity(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    for i in 0..chunk_size {
+        let value = Value::identity(Identity::new(i as u64).unwrap());
+        black_box(value.ordered_key_bytes());
+    }
+}
+
+benchmark_main!(
+    BenchmarkMainOptions {
+        filter_help: Some(
+            "all, construct, int, clone, key, or any benchmark name substring".to_string()
+        ),
+        runtime: micromeasure::BenchmarkRuntimeOptions {
+            benchmark_duration: Duration::from_secs(1),
+            ..Default::default()
+        },
+        ..Default::default()
+    },
+    |runner| {
+        runner.group::<NoContext>("construct", |g| {
+            g.throughput(Throughput::per_operation(1, "value"))
+                .bench("construct_ints", construct_ints);
+            g.throughput(Throughput::per_operation(1, "value"))
+                .bench("construct_identities", construct_identities);
+            g.throughput(Throughput::per_operation(1, "value"))
+                .bench("construct_symbols", construct_symbols);
+        });
+
+        runner.group::<IntContext>("int", |g| {
+            g.throughput(Throughput::per_operation(1, "op"))
+                .bench("int_add", int_add);
+            g.throughput(Throughput::per_operation(1, "cmp"))
+                .bench("int_cmp", int_cmp);
+        });
+
+        runner.group::<StringContext>("clone", |g| {
+            g.throughput(Throughput::per_operation(1, "clone"))
+                .bench("string_clone", string_clone);
+        });
+        runner.group::<ListContext>("clone", |g| {
+            g.throughput(Throughput::per_operation(1, "clone"))
+                .bench("list_clone", list_clone);
+        });
+
+        runner.group::<NoContext>("key", |g| {
+            g.throughput(Throughput::per_operation(1, "key"))
+                .bench("ordered_key_identity", ordered_key_identity);
+        });
+    }
+);

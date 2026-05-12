@@ -1,0 +1,17 @@
+[package]
+name = "mica-var"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Compact value representation for Mica"
+
+[dependencies]
+
+[dev-dependencies]
+micromeasure.workspace = true
+proptest = "1.6"
+
+[[bench]]
+name = "var_benches"
+harness = false
