@@ -1,0 +1,9 @@
+/target/
+/crates/var/fuzz/target/
+
+.idea/
+
+**/*.rs.bk
+*.swp
+*.swo
+*~
