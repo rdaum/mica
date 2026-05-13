@@ -165,9 +165,15 @@ pub struct MethodRelations {
     pub program_bytes: RelationId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DotRelation {
+    pub relation: RelationId,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompileContext {
     relations: HashMap<String, RelationId>,
+    dot_relations: HashMap<String, DotRelation>,
     identities: HashMap<String, Identity>,
     program_identities: HashMap<String, Identity>,
     method_relations: Option<MethodRelations>,
@@ -180,6 +186,11 @@ impl CompileContext {
 
     pub fn with_relation(mut self, name: impl Into<String>, id: RelationId) -> Self {
         self.define_relation(name, id);
+        self
+    }
+
+    pub fn with_dot_relation(mut self, name: impl Into<String>, relation: RelationId) -> Self {
+        self.define_dot_relation(name, relation);
         self
     }
 
@@ -202,6 +213,11 @@ impl CompileContext {
         self.relations.insert(name.into(), id);
     }
 
+    pub fn define_dot_relation(&mut self, name: impl Into<String>, relation: RelationId) {
+        self.dot_relations
+            .insert(name.into(), DotRelation { relation });
+    }
+
     pub fn define_identity(&mut self, name: impl Into<String>, id: Identity) {
         self.identities.insert(name.into(), id);
     }
@@ -212,6 +228,10 @@ impl CompileContext {
 
     pub fn relation(&self, name: &str) -> Option<RelationId> {
         self.relations.get(name).copied()
+    }
+
+    pub fn dot_relation(&self, name: &str) -> Option<DotRelation> {
+        self.dot_relations.get(name).copied()
     }
 
     pub fn identity(&self, name: &str) -> Option<Identity> {
@@ -611,9 +631,12 @@ impl<'a> ProgramCompiler<'a> {
                     HirPlace::Index {
                         collection, index, ..
                     } => self.compile_index_assignment(*id, collection, index.as_deref(), value),
+                    HirPlace::Dot { base, name, .. } => {
+                        self.compile_dot_assignment(*id, base, name, value)
+                    }
                     _ => Err(self.unsupported(
                         *id,
-                        "only local and indexed local assignment are implemented in the task compiler yet",
+                        "only local, indexed local, and declared dot assignment are implemented in the task compiler yet",
                     )),
                 }
             }
@@ -624,6 +647,7 @@ impl<'a> ProgramCompiler<'a> {
                 collection,
                 index,
             } => self.compile_index(*id, collection, index.as_deref()),
+            HirExpr::Field { id, base, name } => self.compile_dot_read(*id, base, name),
             HirExpr::Unary { id, op, expr } => self.compile_unary(*id, *op, expr),
             HirExpr::Binary {
                 id,
@@ -911,6 +935,45 @@ impl<'a> ProgramCompiler<'a> {
             src: updated,
         });
         Ok(collection)
+    }
+
+    fn compile_dot_read(
+        &mut self,
+        id: NodeId,
+        base: &HirExpr,
+        name: &str,
+    ) -> Result<Register, CompileError> {
+        let dot = self
+            .context
+            .dot_relation(name)
+            .ok_or_else(|| self.unsupported(id, format!("dot name `{name}` is not declared")))?;
+        let key = self.compile_expr_for_operand(base)?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::ScanValue {
+            dst,
+            relation: dot.relation,
+            key,
+        });
+        Ok(dst)
+    }
+
+    fn compile_dot_assignment(
+        &mut self,
+        id: NodeId,
+        base: &HirExpr,
+        name: &str,
+        value: Register,
+    ) -> Result<Register, CompileError> {
+        let dot = self
+            .context
+            .dot_relation(name)
+            .ok_or_else(|| self.unsupported(id, format!("dot name `{name}` is not declared")))?;
+        let key = self.compile_expr_for_operand(base)?;
+        self.emit(Instruction::ReplaceFunctional {
+            relation: dot.relation,
+            values: vec![key, Operand::Register(value)],
+        });
+        Ok(value)
     }
 
     fn compile_and(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
@@ -1538,7 +1601,7 @@ fn expr_id(expr: &HirExpr) -> NodeId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mica_relation_kernel::{RelationKernel, RelationMetadata, Tuple};
+    use mica_relation_kernel::{ConflictPolicy, RelationKernel, RelationMetadata, Tuple};
     use mica_runtime::{Scheduler, TaskOutcome};
 
     fn id(raw: u64) -> Identity {
@@ -1787,6 +1850,65 @@ mod tests {
                 retries: 0,
             }
         );
+    }
+
+    #[test]
+    fn compiled_task_reads_and_writes_declared_dot_relations() {
+        let name = id(1);
+        let lamp = id(10);
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(
+                RelationMetadata::new(name, Symbol::intern("Name"), 2).with_conflict_policy(
+                    ConflictPolicy::Functional {
+                        key_positions: vec![0],
+                    },
+                ),
+            )
+            .unwrap();
+        let context = CompileContext::new()
+            .with_dot_relation("name", name)
+            .with_identity("lamp", lamp);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "$lamp.name = \"brass lamp\"\n\
+             return $lamp.name",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::string("brass lamp"),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert_eq!(
+            scheduler
+                .kernel()
+                .snapshot()
+                .scan(name, &[Some(Value::identity(lamp)), None])
+                .unwrap(),
+            vec![Tuple::from([
+                Value::identity(lamp),
+                Value::string("brass lamp"),
+            ])]
+        );
+    }
+
+    #[test]
+    fn undeclared_dot_names_are_rejected() {
+        let lamp = id(10);
+        let context = CompileContext::new().with_identity("lamp", lamp);
+        let error = compile_source("$lamp.color", &context).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CompileError::Unsupported { message, .. } if message == "dot name `color` is not declared"
+        ));
     }
 
     #[test]
@@ -2440,6 +2562,107 @@ mod tests {
             scheduler
                 .resolver()
                 .contains(&Value::identity(update_program))
+        );
+    }
+
+    #[test]
+    fn persisted_method_can_read_and_write_declared_dot_relations() {
+        let name = id(1);
+        let rename_method = id(100);
+        let rename_program = id(101);
+        let player = id(200);
+        let thing = id(201);
+        let alice = id(300);
+        let coin = id(301);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+        kernel
+            .create_relation(
+                RelationMetadata::new(name, Symbol::intern("Name"), 2).with_conflict_policy(
+                    ConflictPolicy::Functional {
+                        key_positions: vec![0],
+                    },
+                ),
+            )
+            .unwrap();
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_dot_relation("name", name)
+            .with_method_relations(method_relations)
+            .with_identity("rename_thing", rename_method)
+            .with_program_identity("rename_thing", rename_program)
+            .with_identity("player", player)
+            .with_identity("thing", thing);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method $rename_thing :rename\n\
+               roles actor: $player, item: $thing\n\
+             do\n\
+               item.name = \"bright coin\"\n\
+               return item.name\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(coin),
+                    Value::identity(thing),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice)
+            .with_identity("coin", coin);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            ":rename(actor: $alice, item: $coin)",
+            &invoke_context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::string("bright coin"),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert_eq!(
+            scheduler
+                .kernel()
+                .snapshot()
+                .scan(name, &[Some(Value::identity(coin)), None])
+                .unwrap(),
+            vec![Tuple::from([
+                Value::identity(coin),
+                Value::string("bright coin"),
+            ])]
+        );
+        assert!(
+            scheduler
+                .resolver()
+                .contains(&Value::identity(rename_program))
         );
     }
 

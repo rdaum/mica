@@ -288,6 +288,17 @@ impl RegisterVm {
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
+            Instruction::ScanValue { dst, relation, key } => {
+                let key = self.resolve_operand(&key)?;
+                let value = tx
+                    .scan(relation, &[Some(key), None])?
+                    .first()
+                    .map(|row| row.values()[1].clone())
+                    .unwrap_or_else(Value::nothing);
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
             Instruction::Assert { relation, values } => {
                 tx.assert(relation, self.resolve_tuple(values)?)?;
                 self.advance_ip()?;

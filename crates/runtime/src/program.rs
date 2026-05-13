@@ -91,6 +91,11 @@ pub enum Instruction {
         relation: RelationId,
         bindings: Vec<Option<Operand>>,
     },
+    ScanValue {
+        dst: Register,
+        relation: RelationId,
+        key: Operand,
+    },
     Assert {
         relation: RelationId,
         values: Vec<Operand>,
@@ -362,6 +367,10 @@ fn validate_instruction(
             validate_register(register_count, *dst)?;
             validate_bindings(register_count, bindings)
         }
+        Instruction::ScanValue { dst, key, .. } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, key)
+        }
         Instruction::Assert { values, .. }
         | Instruction::Retract { values, .. }
         | Instruction::ReplaceFunctional { values, .. } => {
@@ -475,6 +484,7 @@ const INST_COLLECTION_LEN: u8 = 21;
 const INST_COLLECTION_KEY_AT: u8 = 22;
 const INST_COLLECTION_VALUE_AT: u8 = 23;
 const INST_SET_INDEX: u8 = 24;
+const INST_SCAN_VALUE: u8 = 25;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -610,6 +620,12 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *dst);
             write_identity(out, *relation);
             write_optional_operands(out, bindings)
+        }
+        Instruction::ScanValue { dst, relation, key } => {
+            out.push(INST_SCAN_VALUE);
+            write_register(out, *dst);
+            write_identity(out, *relation);
+            write_operand(out, key)
         }
         Instruction::Assert { relation, values } => {
             out.push(INST_ASSERT);
@@ -921,6 +937,11 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 relation: self.read_identity()?,
                 bindings: self.read_optional_operands()?,
+            },
+            INST_SCAN_VALUE => Instruction::ScanValue {
+                dst: self.read_register()?,
+                relation: self.read_identity()?,
+                key: self.read_operand()?,
             },
             INST_ASSERT => Instruction::Assert {
                 relation: self.read_identity()?,
