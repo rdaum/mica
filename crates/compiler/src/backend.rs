@@ -1,6 +1,7 @@
 use crate::{
-    BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirExpr, HirItem, HirPlace, HirProgram,
-    HirRelationAtom, Literal, NodeId, SemanticProgram, Span, UnaryOp, parse_semantic,
+    BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCollectionItem, HirExpr, HirItem,
+    HirPlace, HirProgram, HirRelationAtom, Literal, NodeId, SemanticProgram, Span, UnaryOp,
+    parse_semantic,
 };
 use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
 use mica_runtime::{
@@ -599,6 +600,13 @@ impl<'a> ProgramCompiler<'a> {
                     )),
                 }
             }
+            HirExpr::List { id, items } => self.compile_list(*id, items),
+            HirExpr::Map { entries, .. } => self.compile_map(entries),
+            HirExpr::Index {
+                id,
+                collection,
+                index,
+            } => self.compile_index(*id, collection, index.as_deref()),
             HirExpr::Unary { id, op, expr } => self.compile_unary(*id, *op, expr),
             HirExpr::Binary {
                 id,
@@ -756,6 +764,68 @@ impl<'a> ProgramCompiler<'a> {
                 Ok(dst)
             }
         }
+    }
+
+    fn compile_list(
+        &mut self,
+        id: NodeId,
+        items: &[HirCollectionItem],
+    ) -> Result<Register, CompileError> {
+        let mut operands = Vec::with_capacity(items.len());
+        for item in items {
+            match item {
+                HirCollectionItem::Expr(expr) => {
+                    operands.push(self.compile_expr_for_operand(expr)?)
+                }
+                HirCollectionItem::Splice(_) => {
+                    return Err(self.unsupported(
+                        id,
+                        "list splices are not implemented in the task compiler yet",
+                    ));
+                }
+            }
+        }
+        let dst = self.alloc_register();
+        self.emit(Instruction::BuildList {
+            dst,
+            items: operands,
+        });
+        Ok(dst)
+    }
+
+    fn compile_map(&mut self, entries: &[(HirExpr, HirExpr)]) -> Result<Register, CompileError> {
+        let entries = entries
+            .iter()
+            .map(|(key, value)| {
+                Ok((
+                    self.compile_expr_for_operand(key)?,
+                    self.compile_expr_for_operand(value)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, CompileError>>()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::BuildMap { dst, entries });
+        Ok(dst)
+    }
+
+    fn compile_index(
+        &mut self,
+        id: NodeId,
+        collection: &HirExpr,
+        index: Option<&HirExpr>,
+    ) -> Result<Register, CompileError> {
+        let Some(index) = index else {
+            return Err(self.unsupported(id, "index expressions require an explicit index"));
+        };
+        let collection = self.compile_expr_for_value(collection)?;
+        let index = self.compile_expr_for_operand(index)?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::Index {
+            dst,
+            collection,
+            index,
+        });
+        Ok(dst)
     }
 
     fn compile_and(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
@@ -1326,6 +1396,30 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_builds_and_indexes_collections() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let values = [10, 20, 30]\n\
+             let labels = {:answer -> values[1]}\n\
+             return labels[:answer]",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(20).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn installs_method_facts_and_invokes_method_through_dispatch() {
         let located_in = id(1);
         let get_method = id(100);
@@ -1447,6 +1541,86 @@ mod tests {
             vec![Tuple::from(
                 [Value::identity(coin), Value::identity(alice),]
             )]
+        );
+    }
+
+    #[test]
+    fn persisted_method_can_return_indexed_collection_values() {
+        let inspect_method = id(100);
+        let inspect_program = id(101);
+        let player = id(200);
+        let thing = id(201);
+        let alice = id(300);
+        let coin = id(301);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("inspect_thing", inspect_method)
+            .with_program_identity("inspect_thing", inspect_program)
+            .with_identity("player", player)
+            .with_identity("thing", thing);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method $inspect_thing :inspect\n\
+               roles actor: $player, item: $thing\n\
+             do\n\
+               let values = [actor, item]\n\
+               let result = {:target -> values[1]}\n\
+               return result[:target]\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(coin),
+                    Value::identity(thing),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice)
+            .with_identity("coin", coin);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            ":inspect(actor: $alice, item: $coin)",
+            &invoke_context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::identity(coin),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert!(
+            scheduler
+                .resolver()
+                .contains(&Value::identity(inspect_program))
         );
     }
 

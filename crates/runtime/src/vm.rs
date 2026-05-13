@@ -199,6 +199,39 @@ impl RegisterVm {
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
+            Instruction::BuildList { dst, items } => {
+                let items = items
+                    .iter()
+                    .map(|item| self.resolve_operand(item))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.write_register(dst, Value::list(items))?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::BuildMap { dst, entries } => {
+                let entries = entries
+                    .iter()
+                    .map(|(key, value)| {
+                        Ok((self.resolve_operand(key)?, self.resolve_operand(value)?))
+                    })
+                    .collect::<Result<Vec<_>, RuntimeError>>()?;
+                self.write_register(dst, Value::map(entries))?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::Index {
+                dst,
+                collection,
+                index,
+            } => {
+                let value = index_value(
+                    self.read_register(collection)?,
+                    &self.resolve_operand(&index)?,
+                );
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
             Instruction::ScanExists {
                 dst,
                 relation,
@@ -445,4 +478,14 @@ fn eval_binary(op: RuntimeBinaryOp, left: &Value, right: &Value) -> Value {
         RuntimeBinaryOp::Ge => Value::bool(left >= right),
         RuntimeBinaryOp::Add => left.checked_add(right).unwrap_or_else(Value::nothing),
     }
+}
+
+fn index_value(collection: &Value, index: &Value) -> Value {
+    if let Some(index) = index.as_int()
+        && index >= 0
+        && let Some(value) = collection.list_get(index as usize)
+    {
+        return value;
+    }
+    collection.map_get(index).unwrap_or_else(Value::nothing)
 }

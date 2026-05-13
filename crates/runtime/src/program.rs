@@ -53,6 +53,19 @@ pub enum Instruction {
         left: Register,
         right: Register,
     },
+    BuildList {
+        dst: Register,
+        items: Vec<Operand>,
+    },
+    BuildMap {
+        dst: Register,
+        entries: Vec<(Operand, Operand)>,
+    },
+    Index {
+        dst: Register,
+        collection: Register,
+        index: Operand,
+    },
     ScanExists {
         dst: Register,
         relation: RelationId,
@@ -270,6 +283,28 @@ fn validate_instruction(
             validate_register(register_count, *left)?;
             validate_register(register_count, *right)
         }
+        Instruction::BuildList { dst, items } => {
+            validate_register(register_count, *dst)?;
+            validate_operands(register_count, items.iter())
+        }
+        Instruction::BuildMap { dst, entries } => {
+            validate_register(register_count, *dst)?;
+            validate_operands(
+                register_count,
+                entries
+                    .iter()
+                    .flat_map(|(key, value)| [key, value].into_iter()),
+            )
+        }
+        Instruction::Index {
+            dst,
+            collection,
+            index,
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_register(register_count, *collection)?;
+            validate_operand(register_count, index)
+        }
         Instruction::ScanExists { dst, bindings, .. } => {
             validate_register(register_count, *dst)?;
             validate_bindings(register_count, bindings)
@@ -380,6 +415,9 @@ const INST_ROLLBACK_RETRY: u8 = 14;
 const INST_RETURN: u8 = 15;
 const INST_ABORT: u8 = 16;
 const INST_DISPATCH: u8 = 17;
+const INST_BUILD_LIST: u8 = 18;
+const INST_BUILD_MAP: u8 = 19;
+const INST_INDEX: u8 = 20;
 
 const UNARY_NOT: u8 = 0;
 
@@ -435,6 +473,31 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *left);
             write_register(out, *right);
             Ok(())
+        }
+        Instruction::BuildList { dst, items } => {
+            out.push(INST_BUILD_LIST);
+            write_register(out, *dst);
+            write_operands(out, items)
+        }
+        Instruction::BuildMap { dst, entries } => {
+            out.push(INST_BUILD_MAP);
+            write_register(out, *dst);
+            write_u32(out, entries.len() as u32);
+            for (key, value) in entries {
+                write_operand(out, key)?;
+                write_operand(out, value)?;
+            }
+            Ok(())
+        }
+        Instruction::Index {
+            dst,
+            collection,
+            index,
+        } => {
+            out.push(INST_INDEX);
+            write_register(out, *dst);
+            write_register(out, *collection);
+            write_operand(out, index)
         }
         Instruction::ScanExists {
             dst,
@@ -714,6 +777,19 @@ impl<'a> ByteReader<'a> {
                 left: self.read_register()?,
                 right: self.read_register()?,
             },
+            INST_BUILD_LIST => Instruction::BuildList {
+                dst: self.read_register()?,
+                items: self.read_operands()?,
+            },
+            INST_BUILD_MAP => Instruction::BuildMap {
+                dst: self.read_register()?,
+                entries: self.read_map_entries()?,
+            },
+            INST_INDEX => Instruction::Index {
+                dst: self.read_register()?,
+                collection: self.read_register()?,
+                index: self.read_operand()?,
+            },
             INST_SCAN_EXISTS => Instruction::ScanExists {
                 dst: self.read_register()?,
                 relation: self.read_identity()?,
@@ -801,6 +877,13 @@ impl<'a> ByteReader<'a> {
         let count = self.read_u32()? as usize;
         (0..count)
             .map(|_| Ok((self.read_value()?, self.read_operand()?)))
+            .collect()
+    }
+
+    fn read_map_entries(&mut self) -> Result<Vec<(Operand, Operand)>, RuntimeError> {
+        let count = self.read_u32()? as usize;
+        (0..count)
+            .map(|_| Ok((self.read_operand()?, self.read_operand()?)))
             .collect()
     }
 
