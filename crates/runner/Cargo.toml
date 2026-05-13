@@ -1,0 +1,17 @@
+[package]
+name = "mica-runner"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mica"
+path = "src/main.rs"
+
+[dependencies]
+mica-compiler = { path = "../compiler" }
+mica-relation-kernel = { path = "../relation-kernel" }
+mica-runtime = { path = "../runtime" }
+mica-var = { path = "../var" }
+rustyline = "18.0.0"
