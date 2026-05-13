@@ -140,6 +140,21 @@ impl Snapshot {
         self.relations.values().map(|relation| relation.metadata())
     }
 
+    pub fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {
+        let mut facts = Vec::new();
+        for (relation_id, relation) in &self.relations {
+            let bindings = vec![None; relation.metadata().arity() as usize];
+            facts.extend(
+                relation
+                    .scan(&bindings)?
+                    .into_iter()
+                    .map(|tuple| (*relation_id, tuple)),
+            );
+        }
+        facts.sort();
+        Ok(facts)
+    }
+
     pub fn rules(&self) -> &[RuleDefinition] {
         &self.rules
     }

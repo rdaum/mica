@@ -12,9 +12,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_compiler::{
-    CompileContext, CompileError, HirItem, MethodInstallation, MethodKind, MethodRelations,
-    SourceTaskError, install_methods, install_rules_from_source, parse, parse_semantic,
-    submit_source_task,
+    CompileContext, CompileError, HirExpr, HirItem, Literal, MethodInstallation, MethodKind,
+    MethodRelations, SourceTaskError, install_methods, install_rules_from_source, parse,
+    parse_semantic, submit_source_task,
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, KernelError, RelationKernel, RelationMetadata, Tuple,
@@ -23,7 +23,7 @@ use mica_runtime::{
     Builtin, BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -36,6 +36,37 @@ const PARAM_RELATION_ID: u64 = 0x00df_ffff_ffff_fffd;
 const DELEGATES_RELATION_ID: u64 = 0x00df_ffff_ffff_fffc;
 const METHOD_PROGRAM_RELATION_ID: u64 = 0x00df_ffff_ffff_fffb;
 const PROGRAM_BYTES_RELATION_ID: u64 = 0x00df_ffff_ffff_fffa;
+const METHOD_SOURCE_RELATION_ID: u64 = 0x00df_ffff_ffff_fff9;
+const SOURCE_OWNS_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_fff8;
+const SOURCE_OWNS_RULE_RELATION_ID: u64 = 0x00df_ffff_ffff_fff7;
+const SOURCE_OWNS_RELATION_RELATION_ID: u64 = 0x00df_ffff_ffff_fff6;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileinMode {
+    Add,
+    Replace,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FileinReport {
+    pub reports: Vec<RunReport>,
+    pub owned_facts: usize,
+    pub owned_rules: usize,
+    pub owned_relations: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SourceProjection {
+    facts: BTreeSet<(Identity, Tuple)>,
+    rules: BTreeSet<Identity>,
+    relations: BTreeMap<Identity, RelationMetadata>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SourceDeclarations {
+    identities: BTreeSet<String>,
+    relations: BTreeSet<(String, u16)>,
+}
 
 pub struct SourceRunner {
     context: CompileContext,
@@ -93,24 +124,107 @@ impl SourceRunner {
 
     pub fn run_filein(&mut self, source: &str) -> Result<Vec<RunReport>, SourceTaskError> {
         let mut reports = Vec::new();
-        let mut buffer = String::new();
-
-        for line in source.lines() {
-            if line.trim().is_empty() && buffer.trim().is_empty() {
-                continue;
-            }
-            buffer.push_str(line);
-            buffer.push('\n');
-            if parse(&buffer).errors.is_empty() {
-                reports.push(self.run_source(&buffer)?);
-                buffer.clear();
-            }
-        }
-
-        if !buffer.trim().is_empty() {
-            reports.push(self.run_source(&buffer)?);
+        for chunk in source_chunks(source) {
+            reports.push(self.run_source(&chunk)?);
         }
         Ok(reports)
+    }
+
+    pub fn run_filein_with_unit(
+        &mut self,
+        unit: Symbol,
+        source: &str,
+        mode: FileinMode,
+    ) -> Result<FileinReport, SourceTaskError> {
+        if mode == FileinMode::Replace {
+            self.retract_source_unit(unit)?;
+        }
+
+        let declarations = collect_source_declarations(source)?;
+        let before = self.source_projection()?;
+        let reports = self.run_filein(source)?;
+        let after = self.source_projection()?;
+
+        let owned_facts = after
+            .facts
+            .difference(&before.facts)
+            .filter(|(relation, _)| is_ownable_fact_relation(*relation))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let owned_rules = after
+            .rules
+            .difference(&before.rules)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut owned_relations = after
+            .relations
+            .keys()
+            .filter(|relation| !before.relations.contains_key(relation))
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        for (name, arity) in declarations.relations {
+            if let Some((relation, existing_arity)) =
+                relation_named(self.scheduler.kernel(), Symbol::intern(&name))
+                && existing_arity == arity
+            {
+                owned_relations.insert(relation);
+            }
+        }
+
+        let mut tx = self.scheduler.kernel().begin();
+        for identity_name in declarations.identities {
+            if let Some(identity) = identity_named_in_tx(&tx, Symbol::intern(&identity_name))
+                .map_err(CompileError::from)?
+            {
+                tx.assert(
+                    source_owns_fact_relation(),
+                    ownership_fact_tuple(
+                        unit,
+                        named_identity_relation(),
+                        Tuple::from([
+                            Value::symbol(Symbol::intern(&identity_name)),
+                            Value::identity(identity),
+                        ]),
+                    ),
+                )
+                .map_err(CompileError::from)?;
+            }
+        }
+        for relation in &owned_relations {
+            tx.assert(
+                source_owns_relation_relation(),
+                Tuple::from([Value::symbol(unit), Value::identity(*relation)]),
+            )
+            .map_err(CompileError::from)?;
+        }
+        for (relation, tuple) in &owned_facts {
+            tx.assert(
+                source_owns_fact_relation(),
+                ownership_fact_tuple(unit, *relation, tuple.clone()),
+            )
+            .map_err(CompileError::from)?;
+        }
+        for rule in &owned_rules {
+            tx.assert(
+                source_owns_rule_relation(),
+                Tuple::from([Value::symbol(unit), Value::identity(*rule)]),
+            )
+            .map_err(CompileError::from)?;
+        }
+        tx.commit().map_err(CompileError::from)?;
+        self.refresh_context_from_catalog();
+
+        Ok(FileinReport {
+            reports,
+            owned_facts: owned_facts.len(),
+            owned_rules: owned_rules.len(),
+            owned_relations: owned_relations.len(),
+        })
+    }
+
+    pub fn fileout_unit(&self, unit: Symbol) -> Result<String, SourceTaskError> {
+        Ok(fileout_unit_source(self.scheduler.kernel(), unit).map_err(CompileError::from)?)
     }
 
     fn install_methods_from_source(
@@ -185,6 +299,14 @@ impl SourceRunner {
         }
 
         let installation = install_methods(semantic, &install_context, &mut install_tx)?;
+        for method in &installation.methods {
+            install_tx
+                .assert(
+                    method_source_relation(),
+                    Tuple::from([method.method.clone(), Value::string(source)]),
+                )
+                .map_err(CompileError::from)?;
+        }
         install_tx.commit().map_err(CompileError::from)?;
         self.context = install_context;
         self.next_method_identity_id = next_method_identity_id;
@@ -205,6 +327,89 @@ impl SourceRunner {
             self.context
                 .define_identity(format!("rule{}", index + 1), rule.id());
         }
+    }
+
+    fn retract_source_unit(&mut self, unit: Symbol) -> Result<(), SourceTaskError> {
+        let snapshot = self.scheduler.kernel().snapshot();
+        let owned_rules = snapshot
+            .scan(
+                source_owns_rule_relation(),
+                &[Some(Value::symbol(unit)), None],
+            )
+            .map_err(CompileError::from)?
+            .into_iter()
+            .filter_map(|tuple| tuple.values().get(1).and_then(Value::as_identity))
+            .collect::<Vec<_>>();
+        for rule in owned_rules {
+            self.scheduler
+                .kernel()
+                .disable_rule(rule)
+                .map_err(CompileError::from)?;
+        }
+
+        let mut tx = self.scheduler.kernel().begin();
+        for ownership in snapshot
+            .scan(
+                source_owns_fact_relation(),
+                &[Some(Value::symbol(unit)), None, None],
+            )
+            .map_err(CompileError::from)?
+        {
+            if let Some((relation, tuple)) = owned_fact_tuple(&ownership) {
+                if relation != named_identity_relation() {
+                    tx.retract(relation, tuple).map_err(CompileError::from)?;
+                }
+            }
+            tx.retract(source_owns_fact_relation(), ownership)
+                .map_err(CompileError::from)?;
+        }
+        for ownership in snapshot
+            .scan(
+                source_owns_rule_relation(),
+                &[Some(Value::symbol(unit)), None],
+            )
+            .map_err(CompileError::from)?
+        {
+            tx.retract(source_owns_rule_relation(), ownership)
+                .map_err(CompileError::from)?;
+        }
+        for ownership in snapshot
+            .scan(
+                source_owns_relation_relation(),
+                &[Some(Value::symbol(unit)), None],
+            )
+            .map_err(CompileError::from)?
+        {
+            tx.retract(source_owns_relation_relation(), ownership)
+                .map_err(CompileError::from)?;
+        }
+        tx.commit().map_err(CompileError::from)?;
+        self.refresh_context_from_catalog();
+        Ok(())
+    }
+
+    fn source_projection(&self) -> Result<SourceProjection, SourceTaskError> {
+        let snapshot = self.scheduler.kernel().snapshot();
+        let facts = snapshot
+            .extensional_facts()
+            .map_err(CompileError::from)?
+            .into_iter()
+            .collect();
+        let rules = snapshot
+            .rules()
+            .iter()
+            .filter(|rule| rule.active())
+            .map(|rule| rule.id())
+            .collect();
+        let relations = snapshot
+            .relation_metadata()
+            .map(|metadata| (metadata.id(), metadata.clone()))
+            .collect();
+        Ok(SourceProjection {
+            facts,
+            rules,
+            relations,
+        })
     }
 
     fn identity_names(&self) -> BTreeMap<Identity, String> {
@@ -237,6 +442,352 @@ impl SourceRunner {
             .relation_metadata()
             .filter_map(|metadata| Some((metadata.id(), metadata.name().name()?.to_owned())))
             .collect()
+    }
+}
+
+fn source_chunks(source: &str) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut buffer = String::new();
+
+    for line in source.lines() {
+        if line.trim().is_empty() && buffer.trim().is_empty() {
+            continue;
+        }
+        buffer.push_str(line);
+        buffer.push('\n');
+        if parse(&buffer).errors.is_empty() {
+            chunks.push(std::mem::take(&mut buffer));
+        }
+    }
+
+    if !buffer.trim().is_empty() {
+        chunks.push(buffer);
+    }
+    chunks
+}
+
+fn collect_source_declarations(source: &str) -> Result<SourceDeclarations, SourceTaskError> {
+    let mut declarations = SourceDeclarations::default();
+    for chunk in source_chunks(source) {
+        let semantic = parse_semantic(&chunk);
+        if !semantic.parse_errors.is_empty() {
+            return Err(CompileError::ParseErrors {
+                count: semantic.parse_errors.len(),
+            }
+            .into());
+        }
+        if let Some(diagnostic) = semantic.diagnostics.first() {
+            return Err(CompileError::SemanticDiagnostic {
+                diagnostic: diagnostic.clone(),
+            }
+            .into());
+        }
+        for item in semantic.hir.items {
+            let HirItem::Expr { expr, .. } = item else {
+                continue;
+            };
+            collect_declaration_expr(&expr, &mut declarations);
+        }
+    }
+    Ok(declarations)
+}
+
+fn collect_declaration_expr(expr: &HirExpr, declarations: &mut SourceDeclarations) {
+    let HirExpr::Call { callee, args, .. } = expr else {
+        return;
+    };
+    let HirExpr::ExternalRef { name, .. } = callee.as_ref() else {
+        return;
+    };
+    match (name.as_str(), args.as_slice()) {
+        ("make_identity", [arg]) => {
+            if let HirExpr::Symbol { name, .. } = &arg.value {
+                declarations.identities.insert(name.clone());
+            }
+        }
+        ("make_relation", [name_arg, arity_arg]) => {
+            let (HirExpr::Symbol { name, .. }, HirExpr::Literal { value, .. }) =
+                (&name_arg.value, &arity_arg.value)
+            else {
+                return;
+            };
+            let Literal::Int(arity) = value else {
+                return;
+            };
+            if let Ok(arity) = arity.parse::<u16>() {
+                declarations.relations.insert((name.clone(), arity));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_exported_fact_relation(relation: Identity) -> bool {
+    !matches!(
+        relation.raw(),
+        NAMED_IDENTITY_RELATION_ID
+            | METHOD_SELECTOR_RELATION_ID
+            | PARAM_RELATION_ID
+            | METHOD_PROGRAM_RELATION_ID
+            | PROGRAM_BYTES_RELATION_ID
+            | METHOD_SOURCE_RELATION_ID
+            | SOURCE_OWNS_FACT_RELATION_ID
+            | SOURCE_OWNS_RULE_RELATION_ID
+            | SOURCE_OWNS_RELATION_RELATION_ID
+    )
+}
+
+fn is_ownable_fact_relation(relation: Identity) -> bool {
+    !matches!(
+        relation.raw(),
+        SOURCE_OWNS_FACT_RELATION_ID
+            | SOURCE_OWNS_RULE_RELATION_ID
+            | SOURCE_OWNS_RELATION_RELATION_ID
+    )
+}
+
+fn ownership_fact_tuple(unit: Symbol, relation: Identity, tuple: Tuple) -> Tuple {
+    Tuple::from([
+        Value::symbol(unit),
+        Value::identity(relation),
+        Value::list(tuple.values().iter().cloned().collect::<Vec<_>>()),
+    ])
+}
+
+fn owned_fact_tuple(ownership: &Tuple) -> Option<(Identity, Tuple)> {
+    let [_, relation, values] = ownership.values() else {
+        return None;
+    };
+    let relation = relation.as_identity()?;
+    let tuple = values.with_list(|values| Tuple::new(values.iter().cloned()))?;
+    Some((relation, tuple))
+}
+
+fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, KernelError> {
+    let snapshot = kernel.snapshot();
+    let identity_names = identity_name_map(&snapshot);
+    let relation_names = relation_name_map(&snapshot);
+    let mut relation_declarations = BTreeSet::new();
+    let mut identity_declarations = BTreeSet::new();
+    let mut facts = BTreeSet::new();
+    let mut rule_sources = BTreeSet::new();
+    let mut method_sources = BTreeSet::new();
+
+    for row in snapshot.scan(
+        source_owns_relation_relation(),
+        &[Some(Value::symbol(unit)), None],
+    )? {
+        let Some(relation) = row.values().get(1).and_then(Value::as_identity) else {
+            continue;
+        };
+        if let Some(metadata) = snapshot
+            .relation_metadata()
+            .find(|metadata| metadata.id() == relation)
+            && let Some(name) = metadata.name().name()
+        {
+            relation_declarations.insert((name.to_owned(), metadata.arity()));
+        }
+    }
+
+    for row in snapshot.scan(
+        source_owns_fact_relation(),
+        &[Some(Value::symbol(unit)), None, None],
+    )? {
+        let Some((relation, tuple)) = owned_fact_tuple(&row) else {
+            continue;
+        };
+        if relation == named_identity_relation() {
+            if let [name, _identity] = tuple.values()
+                && let Some(symbol) = name.as_symbol()
+                && let Some(name) = symbol.name()
+            {
+                identity_declarations.insert(name.to_owned());
+            }
+            continue;
+        }
+        if relation == method_source_relation() {
+            if let Some(source) = tuple
+                .values()
+                .get(1)
+                .and_then(|value| value.with_str(str::to_owned))
+            {
+                method_sources.insert(source.trim().to_owned());
+            }
+            continue;
+        }
+        if is_exported_fact_relation(relation) {
+            facts.insert((relation, tuple));
+        }
+    }
+
+    for row in snapshot.scan(
+        source_owns_rule_relation(),
+        &[Some(Value::symbol(unit)), None],
+    )? {
+        let Some(rule_id) = row.values().get(1).and_then(Value::as_identity) else {
+            continue;
+        };
+        if let Some(rule) = snapshot
+            .rules()
+            .iter()
+            .find(|rule| rule.id() == rule_id && rule.active())
+        {
+            rule_sources.insert(rule.source().trim().to_owned());
+        }
+    }
+
+    let mut sections = Vec::new();
+    if !identity_declarations.is_empty() {
+        sections.push(
+            identity_declarations
+                .into_iter()
+                .map(|name| format!("make_identity(:{name})"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    if !relation_declarations.is_empty() {
+        sections.push(
+            relation_declarations
+                .into_iter()
+                .map(|(name, arity)| format!("make_relation(:{name}, {arity})"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    if !facts.is_empty() {
+        sections.push(
+            facts
+                .into_iter()
+                .filter_map(|(relation, tuple)| {
+                    let relation_name = relation_names.get(&relation)?;
+                    Some(format!(
+                        "assert {relation_name}({})",
+                        tuple
+                            .values()
+                            .iter()
+                            .map(|value| source_literal(value, &identity_names, &relation_names))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    if !rule_sources.is_empty() {
+        sections.push(rule_sources.into_iter().collect::<Vec<_>>().join("\n\n"));
+    }
+    if !method_sources.is_empty() {
+        sections.push(method_sources.into_iter().collect::<Vec<_>>().join("\n\n"));
+    }
+
+    Ok(sections.join("\n\n"))
+}
+
+fn identity_name_map(snapshot: &mica_relation_kernel::Snapshot) -> BTreeMap<Identity, String> {
+    snapshot
+        .scan(named_identity_relation(), &[None, None])
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tuple| {
+            let [name, identity] = tuple.values() else {
+                return None;
+            };
+            Some((
+                identity.as_identity()?,
+                name.as_symbol()?.name()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn relation_name_map(snapshot: &mica_relation_kernel::Snapshot) -> BTreeMap<Identity, String> {
+    snapshot
+        .relation_metadata()
+        .filter_map(|metadata| Some((metadata.id(), metadata.name().name()?.to_owned())))
+        .collect()
+}
+
+fn source_literal(
+    value: &Value,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> String {
+    match value.kind() {
+        ValueKind::Nothing => "nothing".to_owned(),
+        ValueKind::Bool => value.as_bool().unwrap().to_string(),
+        ValueKind::Int => value.as_int().unwrap().to_string(),
+        ValueKind::Float => format!("{:?}", value.as_float().unwrap()),
+        ValueKind::Identity => {
+            let identity = value.as_identity().unwrap();
+            match identity_names.get(&identity) {
+                Some(name) => format!("#{name}"),
+                None if relation_names.contains_key(&identity) => format!("#{}", identity.raw()),
+                None => format!("#{}", identity.raw()),
+            }
+        }
+        ValueKind::Symbol => render_symbol(value.as_symbol().unwrap(), ":"),
+        ValueKind::ErrorCode => render_symbol(value.as_error_code().unwrap(), ""),
+        ValueKind::String => value.with_str(|value| format!("{value:?}")).unwrap(),
+        ValueKind::Bytes => format!("{value:?}"),
+        ValueKind::List => value
+            .with_list(|values| {
+                render_sequence(
+                    "[",
+                    "]",
+                    values
+                        .iter()
+                        .map(|value| source_literal(value, identity_names, relation_names)),
+                )
+            })
+            .unwrap(),
+        ValueKind::Map => value
+            .with_map(|entries| {
+                render_sequence(
+                    "[",
+                    "]",
+                    entries.iter().map(|(key, value)| {
+                        format!(
+                            "{}: {}",
+                            source_literal(key, identity_names, relation_names),
+                            source_literal(value, identity_names, relation_names)
+                        )
+                    }),
+                )
+            })
+            .unwrap(),
+        ValueKind::Range => value
+            .with_range(|start, end| match end {
+                Some(end) => format!(
+                    "{}..{}",
+                    source_literal(start, identity_names, relation_names),
+                    source_literal(end, identity_names, relation_names)
+                ),
+                None => format!(
+                    "{}.._",
+                    source_literal(start, identity_names, relation_names)
+                ),
+            })
+            .unwrap(),
+        ValueKind::Error => value
+            .with_error(|error| {
+                let mut out = format!("error({}", render_symbol(error.code(), ""));
+                if let Some(message) = error.message() {
+                    out.push_str(", ");
+                    out.push_str(&format!("{message:?}"));
+                }
+                if let Some(payload) = error.value() {
+                    if error.message().is_none() {
+                        out.push_str(", nothing");
+                    }
+                    out.push_str(", ");
+                    out.push_str(&source_literal(payload, identity_names, relation_names));
+                }
+                out.push(')');
+                out
+            })
+            .unwrap(),
     }
 }
 
@@ -374,8 +925,8 @@ fn method_relations() -> MethodRelations {
     }
 }
 
-fn method_relation_metadata() -> [RelationMetadata; 5] {
-    [
+fn method_relation_metadata() -> Vec<RelationMetadata> {
+    vec![
         RelationMetadata::new(
             method_selector_relation(),
             Symbol::intern("MethodSelector"),
@@ -391,6 +942,25 @@ fn method_relation_metadata() -> [RelationMetadata; 5] {
             2,
         ),
         RelationMetadata::new(program_bytes_relation(), Symbol::intern("ProgramBytes"), 2),
+        RelationMetadata::new(method_source_relation(), Symbol::intern("MethodSource"), 2)
+            .with_conflict_policy(ConflictPolicy::Functional {
+                key_positions: vec![0],
+            }),
+        RelationMetadata::new(
+            source_owns_fact_relation(),
+            Symbol::intern("SourceOwnsFact"),
+            3,
+        ),
+        RelationMetadata::new(
+            source_owns_rule_relation(),
+            Symbol::intern("SourceOwnsRule"),
+            2,
+        ),
+        RelationMetadata::new(
+            source_owns_relation_relation(),
+            Symbol::intern("SourceOwnsRelation"),
+            2,
+        ),
     ]
 }
 
@@ -402,6 +972,7 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("rules", rules_builtin)
         .with_builtin("describe_rule", describe_rule_builtin)
         .with_builtin("disable_rule", disable_rule_builtin)
+        .with_builtin("fileout", fileout_builtin)
         .with_builtin("fileout_rules", fileout_rules_builtin)
 }
 
@@ -456,6 +1027,18 @@ fn describe_rule_builtin(
         .map(|rule| Value::string(rule.source()))
         .unwrap_or_else(Value::nothing);
     Ok(source)
+}
+
+fn fileout_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("fileout", "expected fileout(:unit)"));
+    }
+    let unit = builtin_symbol_arg("fileout", args, 0)?;
+    let source = fileout_unit_source(context.kernel(), unit)?;
+    Ok(Value::string(source))
 }
 
 fn fileout_rules_builtin(
@@ -627,6 +1210,20 @@ fn identity_named(
         .and_then(Value::as_identity))
 }
 
+fn identity_named_in_tx(
+    tx: &mica_relation_kernel::Transaction<'_>,
+    name: Symbol,
+) -> Result<Option<Identity>, KernelError> {
+    let tuples = tx.scan(
+        named_identity_relation(),
+        &[Some(Value::symbol(name)), None],
+    )?;
+    Ok(tuples
+        .first()
+        .and_then(|tuple| tuple.values().get(1))
+        .and_then(Value::as_identity))
+}
+
 fn named_identity_relation() -> Identity {
     Identity::new(NAMED_IDENTITY_RELATION_ID).unwrap()
 }
@@ -649,6 +1246,22 @@ fn method_program_relation() -> Identity {
 
 fn program_bytes_relation() -> Identity {
     Identity::new(PROGRAM_BYTES_RELATION_ID).unwrap()
+}
+
+fn method_source_relation() -> Identity {
+    Identity::new(METHOD_SOURCE_RELATION_ID).unwrap()
+}
+
+fn source_owns_fact_relation() -> Identity {
+    Identity::new(SOURCE_OWNS_FACT_RELATION_ID).unwrap()
+}
+
+fn source_owns_rule_relation() -> Identity {
+    Identity::new(SOURCE_OWNS_RULE_RELATION_ID).unwrap()
+}
+
+fn source_owns_relation_relation() -> Identity {
+    Identity::new(SOURCE_OWNS_RELATION_RELATION_ID).unwrap()
 }
 
 fn item_id(item: &HirItem) -> mica_compiler::NodeId {
@@ -879,7 +1492,7 @@ fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = Stri
 
 #[cfg(test)]
 mod tests {
-    use super::SourceRunner;
+    use super::{FileinMode, SourceRunner};
     use mica_runtime::TaskOutcome;
     use mica_var::{Symbol, Value};
 
@@ -1152,6 +1765,77 @@ mod tests {
         imported.run_source("make_relation(:VisibleTo, 2)").unwrap();
         let installed = imported.run_source(&source).unwrap();
         assert_eq!(installed.render(), "task 3 complete: #rule1 (retries: 0)");
+    }
+
+    #[test]
+    fn runner_filein_unit_fileout_round_trips_readable_source() {
+        let mut runner = SourceRunner::new_empty();
+        let unit = Symbol::intern("mud_core");
+        runner
+            .run_filein_with_unit(
+                unit,
+                "make_identity(:lamp)\n\
+                 make_identity(:room)\n\
+                 make_relation(:Name, 2)\n\
+                 make_relation(:LocatedIn, 2)\n\
+                 make_relation(:VisibleTo, 2)\n\
+                 assert Name(#lamp, \"brass lamp\")\n\
+                 assert LocatedIn(#lamp, #room)\n\
+                 VisibleTo(actor, obj) :- LocatedIn(obj, actor)\n\
+                 verb look(actor: #room)\n\
+                   return \"ok\"\n\
+                 end\n",
+                FileinMode::Add,
+            )
+            .unwrap();
+
+        let source = runner.fileout_unit(unit).unwrap();
+
+        assert!(source.contains("make_identity(:lamp)"));
+        assert!(source.contains("make_relation(:Name, 2)"));
+        assert!(source.contains("assert Name(#lamp, \"brass lamp\")"));
+        assert!(source.contains("VisibleTo(actor, obj) :- LocatedIn(obj, actor)"));
+        assert!(source.contains("verb look(actor: #room)"));
+
+        let mut imported = SourceRunner::new_empty();
+        imported
+            .run_filein_with_unit(unit, &source, FileinMode::Add)
+            .unwrap();
+        let query = imported.run_source("return Name(#lamp, ?name)").unwrap();
+        let dispatch = imported.run_source("return :look(actor: #room)").unwrap();
+        assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+        assert!(dispatch.render().contains("\"ok\""));
+    }
+
+    #[test]
+    fn runner_filein_replace_removes_facts_no_longer_in_source_unit() {
+        let mut runner = SourceRunner::new_empty();
+        let unit = Symbol::intern("mud_core");
+        runner
+            .run_filein_with_unit(
+                unit,
+                "make_identity(:lamp)\n\
+                 make_relation(:Name, 2)\n\
+                 assert Name(#lamp, \"brass lamp\")\n",
+                FileinMode::Add,
+            )
+            .unwrap();
+        runner
+            .run_filein_with_unit(
+                unit,
+                "make_identity(:lamp)\n\
+                 make_relation(:Name, 2)\n\
+                 assert Name(#lamp, \"golden lamp\")\n",
+                FileinMode::Replace,
+            )
+            .unwrap();
+
+        let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
+        let source = runner.fileout_unit(unit).unwrap();
+
+        assert!(query.render().contains("[[:name: \"golden lamp\"]]"));
+        assert!(source.contains("assert Name(#lamp, \"golden lamp\")"));
+        assert!(!source.contains("brass lamp"));
     }
 
     #[test]

@@ -12,7 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_compiler::parse;
-use mica_runner::SourceRunner;
+use mica_runner::{FileinMode, SourceRunner};
+use mica_var::Symbol;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::env;
@@ -49,15 +50,59 @@ fn run() -> Result<(), String> {
         }
         "filein" => {
             args.remove(0);
-            let path = args
-                .first()
-                .ok_or_else(|| "usage: mica filein <file.mica>".to_owned())?;
+            let mut unit = None;
+            let mut mode = FileinMode::Add;
+            while let Some(flag) = args.first().cloned() {
+                match flag.as_str() {
+                    "--replace" => {
+                        args.remove(0);
+                        mode = FileinMode::Replace;
+                    }
+                    "--unit" => {
+                        args.remove(0);
+                        let name = args
+                            .first()
+                            .ok_or_else(|| {
+                                "usage: mica filein [--unit name] [--replace] <file.mica>"
+                                    .to_owned()
+                            })?
+                            .clone();
+                        args.remove(0);
+                        unit = Some(Symbol::intern(name.trim_start_matches(':')));
+                    }
+                    _ => break,
+                }
+            }
+            let path = args.first().ok_or_else(|| {
+                "usage: mica filein [--unit name] [--replace] <file.mica>".to_owned()
+            })?;
             let source = fs::read_to_string(path)
                 .map_err(|error| format!("failed to read {path}: {error}"))?;
             let mut runner = SourceRunner::new_empty();
-            for report in runner.run_filein(&source).map_err(format_source_error)? {
-                print_report(report);
+            if let Some(unit) = unit {
+                let report = runner
+                    .run_filein_with_unit(unit, &source, mode)
+                    .map_err(format_source_error)?;
+                for report in report.reports {
+                    print_report(report);
+                }
+            } else {
+                for report in runner.run_filein(&source).map_err(format_source_error)? {
+                    print_report(report);
+                }
             }
+            Ok(())
+        }
+        "fileout" => {
+            args.remove(0);
+            let unit = args
+                .first()
+                .ok_or_else(|| "usage: mica fileout <unit>".to_owned())?;
+            let runner = SourceRunner::new_empty();
+            let source = runner
+                .fileout_unit(Symbol::intern(unit.trim_start_matches(':')))
+                .map_err(format_source_error)?;
+            println!("{source}");
             Ok(())
         }
         "eval" => {
@@ -147,7 +192,7 @@ fn print_help() {
 }
 
 fn help_text() -> &'static str {
-    "usage:\n  mica run <file.mica>\n  mica filein <file.mica>\n  mica eval <source>\n  mica repl"
+    "usage:\n  mica run <file.mica>\n  mica filein [--unit name] [--replace] <file.mica>\n  mica fileout <unit>\n  mica eval <source>\n  mica repl"
 }
 
 fn print_repl_help() {
