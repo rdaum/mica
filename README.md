@@ -34,6 +34,9 @@ be lost to time. This project is not a continuation of that code, but it is a
 return to some of the same questions with different tools and a more relational
 foundation.
 
+>**NOTE**: If you're looking at this on GitHub be aware this is just a mirror from 
+the canonical Codeberg repository at https://codeberg.org/timbran/mica
+
 ## Core Idea
 
 Mica is based around the concept of persistent / long-lived objects that
