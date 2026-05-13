@@ -211,10 +211,11 @@ Mica is an early Rust prototype. The current tree has:
 - a compact value layer;
 - a relation kernel with base facts, transactions, indexes, catalogue metadata,
   and derived rules;
-- a register-based runtime and scheduler;
-- parser/lowering/compilation for a growing Mica surface syntax;
+- a virtual machine (register-based) runtime
+- a task scheduler (based roughly on mooR's) that manages transaction and execution lifecycle 
+- compiler for a growing Mica language surface;
 - role-based method dispatch;
-- `verb` sugar for author-facing behaviour;
+- a "filein" syntax for bringing in state-as-initial-blueprint;
 - a simple runner and REPL;
 - a small filein example.
 
@@ -251,8 +252,8 @@ cargo test --workspace
   verbs, and dispatch.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,
   and the relation kernel.
-- `CODING-STYLE.md`: project coding guidelines, including dependency policy.
-- `CONTRIBUTING.md`: contribution expectations, checks, and licence terms.
+- [`CODING-STYLE.md`](CODING-STYLE.md): project coding guidelines, including dependency policy.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): contribution expectations, checks, and licence terms.
 
 ## Licence
 
