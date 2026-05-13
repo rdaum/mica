@@ -1,0 +1,11 @@
+[package]
+name = "mica-relation-kernel"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MVCC relation kernel for Mica"
+
+[dependencies]
+arc-swap = "1.7"
+mica-var = { path = "../var" }

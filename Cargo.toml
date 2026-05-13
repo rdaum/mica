@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/var"]
+members = ["crates/relation-kernel", "crates/var"]
 exclude = ["crates/var/fuzz"]
 
 [workspace.package]

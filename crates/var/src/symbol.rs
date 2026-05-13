@@ -106,10 +106,16 @@ impl SymbolTable {
             return symbol;
         }
 
-        if let Some(id) = self.inner.read().unwrap().by_name.get(name).copied() {
+        if let Some((id, interned_name)) = {
+            let inner = self.inner.read().unwrap();
+            inner
+                .by_name
+                .get(name)
+                .copied()
+                .map(|id| (id, inner.by_id[id as usize].name))
+        } {
             let symbol = Symbol(id);
-            let name = self.name(symbol).expect("interned symbol name must exist");
-            SYMBOL_CACHE.with(|cache| cache.borrow_mut().insert(name, symbol));
+            SYMBOL_CACHE.with(|cache| cache.borrow_mut().insert(interned_name, symbol));
             return symbol;
         }
 
