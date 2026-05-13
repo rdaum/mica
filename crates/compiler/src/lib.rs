@@ -13,7 +13,7 @@ mod syntax;
 
 pub use ast::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
-    FunctionBody, Item, Literal, MethodKind, ObjectClause, Param, ParamMode, UnaryOp,
+    FunctionBody, Item, Literal, MethodKind, NodeId, ObjectClause, Param, ParamMode, UnaryOp,
 };
 pub use lexer::lex;
 pub use lower::parse_ast;

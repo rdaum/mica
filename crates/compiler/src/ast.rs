@@ -2,27 +2,43 @@ use std::ops::Range;
 
 pub type Span = Range<usize>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct NodeId(pub u32);
+
+impl NodeId {
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ast {
     pub items: Vec<Item>,
     pub errors: Vec<crate::ParseError>,
+    pub node_count: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Item {
-    Expr(Expr),
+    Expr {
+        id: NodeId,
+        expr: Expr,
+    },
     RelationRule {
+        id: NodeId,
         span: Span,
         head: Expr,
         body: Vec<Expr>,
     },
     Object {
+        id: NodeId,
         span: Span,
         identity: Option<String>,
         extends: Option<String>,
         clauses: Vec<ObjectClause>,
     },
     Method {
+        id: NodeId,
         span: Span,
         kind: MethodKind,
         identity: Option<String>,
@@ -30,6 +46,17 @@ pub enum Item {
         clauses: Vec<String>,
         body: Vec<Item>,
     },
+}
+
+impl Item {
+    pub fn id(&self) -> NodeId {
+        match self {
+            Self::Expr { id, .. }
+            | Self::RelationRule { id, .. }
+            | Self::Object { id, .. }
+            | Self::Method { id, .. } => *id,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +67,7 @@ pub enum MethodKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectClause {
+    pub id: NodeId,
     pub span: Span,
     pub exprs: Vec<Expr>,
 }
@@ -47,81 +75,98 @@ pub struct ObjectClause {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Expr {
     Literal {
+        id: NodeId,
         span: Span,
         value: Literal,
     },
     Name {
+        id: NodeId,
         span: Span,
         name: String,
     },
     Identity {
+        id: NodeId,
         span: Span,
         name: String,
     },
     Symbol {
+        id: NodeId,
         span: Span,
         name: String,
     },
     Hole {
+        id: NodeId,
         span: Span,
     },
     List {
+        id: NodeId,
         span: Span,
         items: Vec<CollectionItem>,
     },
     Map {
+        id: NodeId,
         span: Span,
         entries: Vec<(Expr, Expr)>,
     },
     Unary {
+        id: NodeId,
         span: Span,
         op: UnaryOp,
         expr: Box<Expr>,
     },
     Binary {
+        id: NodeId,
         span: Span,
         op: BinaryOp,
         left: Box<Expr>,
         right: Box<Expr>,
     },
     Assign {
+        id: NodeId,
         span: Span,
         target: Box<Expr>,
         value: Box<Expr>,
     },
     Call {
+        id: NodeId,
         span: Span,
         callee: Box<Expr>,
         args: Vec<Arg>,
     },
     RoleCall {
+        id: NodeId,
         span: Span,
         selector: Box<Expr>,
         args: Vec<Arg>,
     },
     ReceiverCall {
+        id: NodeId,
         span: Span,
         receiver: Box<Expr>,
         selector: Box<Expr>,
         args: Vec<Arg>,
     },
     Index {
+        id: NodeId,
         span: Span,
         collection: Box<Expr>,
         index: Option<Box<Expr>>,
     },
     Field {
+        id: NodeId,
         span: Span,
         base: Box<Expr>,
         name: String,
     },
     Binding {
+        id: NodeId,
         span: Span,
         kind: BindingKind,
         pattern: BindingPattern,
         value: Option<Box<Expr>>,
     },
     If {
+        id: NodeId,
         span: Span,
         condition: Box<Expr>,
         then_items: Vec<Item>,
@@ -129,10 +174,12 @@ pub enum Expr {
         else_items: Vec<Item>,
     },
     Block {
+        id: NodeId,
         span: Span,
         items: Vec<Item>,
     },
     For {
+        id: NodeId,
         span: Span,
         key: String,
         value: Option<String>,
@@ -140,50 +187,90 @@ pub enum Expr {
         body: Vec<Item>,
     },
     While {
+        id: NodeId,
         span: Span,
         condition: Box<Expr>,
         body: Vec<Item>,
     },
     Return {
+        id: NodeId,
         span: Span,
         value: Option<Box<Expr>>,
     },
     Break {
+        id: NodeId,
         span: Span,
     },
     Continue {
+        id: NodeId,
         span: Span,
     },
     Try {
+        id: NodeId,
         span: Span,
         body: Vec<Item>,
         catches: Vec<CatchClause>,
         finally: Vec<Item>,
     },
     Function {
+        id: NodeId,
         span: Span,
         name: Option<String>,
         params: Vec<Param>,
         body: FunctionBody,
     },
     Effect {
+        id: NodeId,
         span: Span,
         kind: EffectKind,
         expr: Box<Expr>,
     },
     Error {
+        id: NodeId,
         span: Span,
     },
 }
 
 impl Expr {
+    pub fn id(&self) -> NodeId {
+        match self {
+            Self::Literal { id, .. }
+            | Self::Name { id, .. }
+            | Self::Identity { id, .. }
+            | Self::Symbol { id, .. }
+            | Self::Hole { id, .. }
+            | Self::List { id, .. }
+            | Self::Map { id, .. }
+            | Self::Unary { id, .. }
+            | Self::Binary { id, .. }
+            | Self::Assign { id, .. }
+            | Self::Call { id, .. }
+            | Self::RoleCall { id, .. }
+            | Self::ReceiverCall { id, .. }
+            | Self::Index { id, .. }
+            | Self::Field { id, .. }
+            | Self::Binding { id, .. }
+            | Self::If { id, .. }
+            | Self::Block { id, .. }
+            | Self::For { id, .. }
+            | Self::While { id, .. }
+            | Self::Return { id, .. }
+            | Self::Break { id, .. }
+            | Self::Continue { id, .. }
+            | Self::Try { id, .. }
+            | Self::Function { id, .. }
+            | Self::Effect { id, .. }
+            | Self::Error { id, .. } => *id,
+        }
+    }
+
     pub fn span(&self) -> &Span {
         match self {
             Self::Literal { span, .. }
             | Self::Name { span, .. }
             | Self::Identity { span, .. }
             | Self::Symbol { span, .. }
-            | Self::Hole { span }
+            | Self::Hole { span, .. }
             | Self::List { span, .. }
             | Self::Map { span, .. }
             | Self::Unary { span, .. }
@@ -200,12 +287,12 @@ impl Expr {
             | Self::For { span, .. }
             | Self::While { span, .. }
             | Self::Return { span, .. }
-            | Self::Break { span }
-            | Self::Continue { span }
+            | Self::Break { span, .. }
+            | Self::Continue { span, .. }
             | Self::Try { span, .. }
             | Self::Function { span, .. }
             | Self::Effect { span, .. }
-            | Self::Error { span } => span,
+            | Self::Error { span, .. } => span,
         }
     }
 }
@@ -227,6 +314,7 @@ pub enum CollectionItem {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Arg {
+    pub id: NodeId,
     pub role: Option<String>,
     pub value: Expr,
 }
@@ -245,6 +333,7 @@ pub enum BindingPattern {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Param {
+    pub id: NodeId,
     pub name: String,
     pub mode: ParamMode,
     pub default: Option<Expr>,
@@ -265,6 +354,7 @@ pub enum FunctionBody {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatchClause {
+    pub id: NodeId,
     pub name: Option<String>,
     pub condition: Option<Expr>,
     pub body: Vec<Item>,

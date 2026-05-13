@@ -1,7 +1,7 @@
 use crate::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, CstElement,
-    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, ObjectClause,
-    Param, ParamMode, ParseError, SyntaxKind, UnaryOp, parse,
+    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, NodeId,
+    ObjectClause, Param, ParamMode, ParseError, SyntaxKind, UnaryOp, parse,
 };
 
 pub fn parse_ast(source: &str) -> Ast {
@@ -11,17 +11,29 @@ pub fn parse_ast(source: &str) -> Ast {
     Ast {
         items,
         errors: lower.errors,
+        node_count: lower.next_id,
     }
 }
 
 struct Lower<'a> {
     source: &'a str,
     errors: Vec<ParseError>,
+    next_id: u32,
 }
 
 impl<'a> Lower<'a> {
     fn new(source: &'a str, errors: Vec<ParseError>) -> Self {
-        Self { source, errors }
+        Self {
+            source,
+            errors,
+            next_id: 0,
+        }
+    }
+
+    fn node_id(&mut self) -> NodeId {
+        let id = NodeId(self.next_id);
+        self.next_id += 1;
+        id
     }
 
     fn lower_program(&mut self, root: &CstNode) -> Vec<Item> {
@@ -44,7 +56,10 @@ impl<'a> Lower<'a> {
                 .next()
                 .map(|child| match child.kind {
                     SyntaxKind::RelationRule => self.lower_relation_rule(child),
-                    _ => Item::Expr(self.lower_expr(child)),
+                    _ => Item::Expr {
+                        id: self.node_id(),
+                        expr: self.lower_expr(child),
+                    },
                 }),
             SyntaxKind::ObjectItem => Some(self.lower_object_item(node)),
             SyntaxKind::MethodItem => Some(self.lower_method_item(node, MethodKind::Method)),
@@ -64,6 +79,7 @@ impl<'a> Lower<'a> {
         let mut iter = exprs.into_iter();
         let head = iter.next().unwrap_or_else(|| self.error_expr(node));
         Item::RelationRule {
+            id: self.node_id(),
             span: node.span.clone(),
             head,
             body: iter.collect(),
@@ -81,6 +97,7 @@ impl<'a> Lower<'a> {
             .node_children(node)
             .filter(|child| child.kind == SyntaxKind::ObjectClause)
             .map(|child| ObjectClause {
+                id: self.node_id(),
                 span: child.span.clone(),
                 exprs: self
                     .node_children(child)
@@ -89,6 +106,7 @@ impl<'a> Lower<'a> {
             })
             .collect();
         Item::Object {
+            id: self.node_id(),
             span: node.span.clone(),
             identity,
             extends,
@@ -125,6 +143,7 @@ impl<'a> Lower<'a> {
             .map(|body| self.lower_items(body))
             .unwrap_or_default();
         Item::Method {
+            id: self.node_id(),
             span: node.span.clone(),
             kind,
             identity,
@@ -153,6 +172,7 @@ impl<'a> Lower<'a> {
             SyntaxKind::IdentityExpr => self.lower_identity(node),
             SyntaxKind::SymbolExpr => self.lower_symbol(node),
             SyntaxKind::HoleExpr => Expr::Hole {
+                id: self.node_id(),
                 span: node.span.clone(),
             },
             SyntaxKind::ListExpr => self.lower_list(node),
@@ -169,6 +189,7 @@ impl<'a> Lower<'a> {
             SyntaxKind::ConstExpr => self.lower_binding(node, BindingKind::Const),
             SyntaxKind::IfExpr => self.lower_if(node),
             SyntaxKind::BeginExpr => Expr::Block {
+                id: self.node_id(),
                 span: node.span.clone(),
                 items: self
                     .node_children(node)
@@ -180,9 +201,11 @@ impl<'a> Lower<'a> {
             SyntaxKind::WhileExpr => self.lower_while(node),
             SyntaxKind::ReturnExpr => self.lower_return(node),
             SyntaxKind::BreakExpr => Expr::Break {
+                id: self.node_id(),
                 span: node.span.clone(),
             },
             SyntaxKind::ContinueExpr => Expr::Continue {
+                id: self.node_id(),
                 span: node.span.clone(),
             },
             SyntaxKind::TryExpr => self.lower_try(node),
@@ -204,9 +227,10 @@ impl<'a> Lower<'a> {
         }
     }
 
-    fn lower_literal(&self, node: &CstNode) -> Expr {
+    fn lower_literal(&mut self, node: &CstNode) -> Expr {
         let Some(token) = self.token_children(node).next() else {
             return Expr::Error {
+                id: self.node_id(),
                 span: node.span.clone(),
             };
         };
@@ -220,13 +244,15 @@ impl<'a> Lower<'a> {
             _ => Literal::Nothing,
         };
         Expr::Literal {
+            id: self.node_id(),
             span: node.span.clone(),
             value,
         }
     }
 
-    fn lower_name(&self, node: &CstNode) -> Expr {
+    fn lower_name(&mut self, node: &CstNode) -> Expr {
         Expr::Name {
+            id: self.node_id(),
             span: node.span.clone(),
             name: self.first_text(node, SyntaxKind::Ident).unwrap_or_default(),
         }
@@ -239,6 +265,7 @@ impl<'a> Lower<'a> {
             String::new()
         });
         Expr::Identity {
+            id: self.node_id(),
             span: node.span.clone(),
             name,
         }
@@ -247,6 +274,7 @@ impl<'a> Lower<'a> {
     fn lower_symbol(&mut self, node: &CstNode) -> Expr {
         if let Some(name) = self.first_text(node, SyntaxKind::Ident) {
             Expr::Symbol {
+                id: self.node_id(),
                 span: node.span.clone(),
                 name,
             }
@@ -276,6 +304,7 @@ impl<'a> Lower<'a> {
             })
             .collect();
         Expr::List {
+            id: self.node_id(),
             span: node.span.clone(),
             items,
         }
@@ -291,6 +320,7 @@ impl<'a> Lower<'a> {
             })
             .collect();
         Expr::Map {
+            id: self.node_id(),
             span: node.span.clone(),
             entries,
         }
@@ -311,6 +341,7 @@ impl<'a> Lower<'a> {
             .map(|child| self.lower_expr(child))
             .unwrap_or_else(|| self.error_expr(node));
         Expr::Unary {
+            id: self.node_id(),
             span: node.span.clone(),
             op,
             expr: Box::new(expr),
@@ -332,6 +363,7 @@ impl<'a> Lower<'a> {
             .map(|child| self.lower_expr(child))
             .unwrap_or_else(|| self.error_expr(node));
         Expr::Binary {
+            id: self.node_id(),
             span: node.span.clone(),
             op,
             left: Box::new(left),
@@ -350,6 +382,7 @@ impl<'a> Lower<'a> {
             .map(|child| self.lower_expr(child))
             .unwrap_or_else(|| self.error_expr(node));
         Expr::Assign {
+            id: self.node_id(),
             span: node.span.clone(),
             target: Box::new(target),
             value: Box::new(value),
@@ -367,6 +400,7 @@ impl<'a> Lower<'a> {
             .map(|args| self.lower_args(args))
             .unwrap_or_default();
         Expr::Call {
+            id: self.node_id(),
             span: node.span.clone(),
             callee: Box::new(callee),
             args,
@@ -381,6 +415,7 @@ impl<'a> Lower<'a> {
             .map(|args| self.lower_args(args))
             .unwrap_or_default();
         Expr::RoleCall {
+            id: self.node_id(),
             span: node.span.clone(),
             selector: Box::new(selector),
             args,
@@ -400,6 +435,7 @@ impl<'a> Lower<'a> {
             .map(|args| self.lower_args(args))
             .unwrap_or_default();
         Expr::ReceiverCall {
+            id: self.node_id(),
             span: node.span.clone(),
             receiver: Box::new(receiver),
             selector: Box::new(selector),
@@ -423,6 +459,7 @@ impl<'a> Lower<'a> {
             .map(|token| self.text(token.span.clone()).to_owned())
             .unwrap_or_default();
         Expr::Symbol {
+            id: self.node_id(),
             span: node.span.clone(),
             name,
         }
@@ -436,6 +473,7 @@ impl<'a> Lower<'a> {
             .unwrap_or_else(|| self.error_expr(node));
         let index = exprs.get(1).map(|child| Box::new(self.lower_expr(child)));
         Expr::Index {
+            id: self.node_id(),
             span: node.span.clone(),
             collection: Box::new(collection),
             index,
@@ -449,6 +487,7 @@ impl<'a> Lower<'a> {
             .map(|child| self.lower_expr(child))
             .unwrap_or_else(|| self.error_expr(node));
         Expr::Field {
+            id: self.node_id(),
             span: node.span.clone(),
             base: Box::new(base),
             name: self.last_text(node, SyntaxKind::Ident).unwrap_or_default(),
@@ -468,6 +507,7 @@ impl<'a> Lower<'a> {
             .find(|child| child.kind != SyntaxKind::ParamList)
             .map(|child| Box::new(self.lower_expr(child)));
         Expr::Binding {
+            id: self.node_id(),
             span: node.span.clone(),
             kind,
             pattern,
@@ -515,6 +555,7 @@ impl<'a> Lower<'a> {
             .map(|block| self.lower_items(block))
             .unwrap_or_default();
         Expr::If {
+            id: self.node_id(),
             span: node.span.clone(),
             condition: Box::new(condition),
             then_items,
@@ -540,6 +581,7 @@ impl<'a> Lower<'a> {
             .map(|block| self.lower_items(block))
             .unwrap_or_default();
         Expr::For {
+            id: self.node_id(),
             span: node.span.clone(),
             key: names.first().cloned().unwrap_or_default(),
             value: names.get(1).cloned(),
@@ -560,6 +602,7 @@ impl<'a> Lower<'a> {
             .map(|block| self.lower_items(block))
             .unwrap_or_default();
         Expr::While {
+            id: self.node_id(),
             span: node.span.clone(),
             condition: Box::new(condition),
             body,
@@ -572,6 +615,7 @@ impl<'a> Lower<'a> {
             .find(|child| is_expr_node(child.kind))
             .map(|child| Box::new(self.lower_expr(child)));
         Expr::Return {
+            id: self.node_id(),
             span: node.span.clone(),
             value,
         }
@@ -598,6 +642,7 @@ impl<'a> Lower<'a> {
             .map(|block| self.lower_items(block))
             .unwrap_or_default();
         Expr::Try {
+            id: self.node_id(),
             span: node.span.clone(),
             body,
             catches,
@@ -617,6 +662,7 @@ impl<'a> Lower<'a> {
             .map(|block| self.lower_items(block))
             .unwrap_or_default();
         CatchClause {
+            id: self.node_id(),
             name,
             condition,
             body,
@@ -652,6 +698,7 @@ impl<'a> Lower<'a> {
             FunctionBody::Expr(Box::new(expr))
         };
         Expr::Function {
+            id: self.node_id(),
             span: node.span.clone(),
             name,
             params,
@@ -671,6 +718,7 @@ impl<'a> Lower<'a> {
             .map(|child| self.lower_expr(child))
             .unwrap_or_else(|| self.error_expr(node));
         Expr::Function {
+            id: self.node_id(),
             span: node.span.clone(),
             name: None,
             params,
@@ -685,6 +733,7 @@ impl<'a> Lower<'a> {
             .map(|child| self.lower_expr(child))
             .unwrap_or_else(|| self.error_expr(node));
         Expr::Effect {
+            id: self.node_id(),
             span: node.span.clone(),
             kind,
             expr: Box::new(expr),
@@ -708,7 +757,11 @@ impl<'a> Lower<'a> {
                     .next()
                     .map(|expr| self.lower_expr(expr))
                     .unwrap_or_else(|| self.error_expr(arg));
-                Arg { role, value }
+                Arg {
+                    id: self.node_id(),
+                    role,
+                    value,
+                }
             })
             .collect()
     }
@@ -736,6 +789,7 @@ impl<'a> Lower<'a> {
                 }
                 SyntaxKind::Ident => {
                     let param = Param {
+                        id: self.node_id(),
                         name: self.text(token.span.clone()).to_owned(),
                         mode: mode.clone(),
                         default: None,
@@ -768,6 +822,7 @@ impl<'a> Lower<'a> {
             .find(|child| is_expr_node(child.kind))
             .map(|child| self.lower_expr(child));
         Param {
+            id: self.node_id(),
             name,
             mode,
             default,
@@ -776,6 +831,7 @@ impl<'a> Lower<'a> {
 
     fn error_expr(&mut self, node: &CstNode) -> Expr {
         Expr::Error {
+            id: self.node_id(),
             span: node.span.clone(),
         }
     }
@@ -900,8 +956,9 @@ mod tests {
     use super::parse_ast;
     use crate::{
         BinaryOp, BindingKind, BindingPattern, CollectionItem, EffectKind, Expr, FunctionBody,
-        Item, Literal, MethodKind, ParamMode,
+        Item, Literal, MethodKind, NodeId, Param, ParamMode,
     };
+    use std::collections::BTreeSet;
 
     #[test]
     fn lowers_calls_and_collections() {
@@ -914,12 +971,16 @@ mod tests {
         assert_eq!(ast.errors, vec![]);
         assert_eq!(ast.items.len(), 4);
 
-        let Item::Expr(Expr::Binding {
-            kind: BindingKind::Let,
-            pattern: BindingPattern::Name(name),
-            value: Some(value),
+        let Item::Expr {
+            expr:
+                Expr::Binding {
+                    kind: BindingKind::Let,
+                    pattern: BindingPattern::Name(name),
+                    value: Some(value),
+                    ..
+                },
             ..
-        }) = &ast.items[0]
+        } = &ast.items[0]
         else {
             panic!("expected let binding");
         };
@@ -929,12 +990,20 @@ mod tests {
         };
         assert!(matches!(items[1], CollectionItem::Splice(_)));
 
-        let Item::Expr(Expr::RoleCall { args, .. }) = &ast.items[2] else {
+        let Item::Expr {
+            expr: Expr::RoleCall { args, .. },
+            ..
+        } = &ast.items[2]
+        else {
             panic!("expected role call");
         };
         assert_eq!(args[0].role.as_deref(), Some("actor"));
 
-        let Item::Expr(Expr::ReceiverCall { selector, .. }) = &ast.items[3] else {
+        let Item::Expr {
+            expr: Expr::ReceiverCall { selector, .. },
+            ..
+        } = &ast.items[3]
+        else {
             panic!("expected receiver call");
         };
         assert!(matches!(&**selector, Expr::Symbol { name, .. } if name == "put"));
@@ -953,7 +1022,7 @@ mod tests {
         ));
         assert!(matches!(
             &ast.items[1],
-            Item::Expr(Expr::If { else_items, .. }) if else_items.len() == 1
+            Item::Expr { expr: Expr::If { else_items, .. }, .. } if else_items.len() == 1
         ));
     }
 
@@ -993,10 +1062,13 @@ mod tests {
         assert_eq!(clauses.len(), 1);
         assert!(matches!(
             &body[0],
-            Item::Expr(Expr::Effect {
-                kind: EffectKind::Require,
+            Item::Expr {
+                expr: Expr::Effect {
+                    kind: EffectKind::Require,
+                    ..
+                },
                 ..
-            })
+            }
         ));
     }
 
@@ -1019,9 +1091,12 @@ mod tests {
         );
         assert_eq!(ast.errors, vec![]);
 
-        let Item::Expr(Expr::Binding {
-            value: Some(value), ..
-        }) = &ast.items[0]
+        let Item::Expr {
+            expr: Expr::Binding {
+                value: Some(value), ..
+            },
+            ..
+        } = &ast.items[0]
         else {
             panic!("expected lambda binding");
         };
@@ -1045,12 +1120,12 @@ mod tests {
 
         assert!(matches!(
             &ast.items[1],
-            Item::Expr(Expr::Block { items, .. })
-                if matches!(&items[0], Item::Expr(Expr::For { key, value: Some(value), .. }) if key == "key" && value == "value")
+            Item::Expr { expr: Expr::Block { items, .. }, .. }
+                if matches!(&items[0], Item::Expr { expr: Expr::For { key, value: Some(value), .. }, .. } if key == "key" && value == "value")
         ));
         assert!(matches!(
             &ast.items[2],
-            Item::Expr(Expr::Try { catches, finally, .. }) if catches.len() == 1 && !finally.is_empty()
+            Item::Expr { expr: Expr::Try { catches, finally, .. }, .. } if catches.len() == 1 && !finally.is_empty()
         ));
     }
 
@@ -1060,23 +1135,259 @@ mod tests {
         assert_eq!(ast.errors, vec![]);
         assert!(matches!(
             &ast.items[0],
-            Item::Expr(Expr::Assign { target, value, .. })
+            Item::Expr { expr: Expr::Assign { target, value, .. }, .. }
                 if matches!(&**target, Expr::Field { name, .. } if name == "name")
                     && matches!(&**value, Expr::Literal { value: Literal::String(text), .. } if text == "golden lamp")
         ));
         assert!(matches!(
             &ast.items[1],
-            Item::Expr(Expr::Literal {
-                value: Literal::Bool(true),
+            Item::Expr {
+                expr: Expr::Literal {
+                    value: Literal::Bool(true),
+                    ..
+                },
                 ..
-            })
+            }
         ));
         assert!(matches!(
             &ast.items[2],
-            Item::Expr(Expr::Literal {
-                value: Literal::Nothing,
+            Item::Expr {
+                expr: Expr::Literal {
+                    value: Literal::Nothing,
+                    ..
+                },
                 ..
-            })
+            }
         ));
+    }
+
+    #[test]
+    fn assigns_unique_dense_node_ids() {
+        let ast = parse_ast(
+            "object $lamp extends $thing\n\
+               name = \"brass lamp\"\n\
+             end\n\
+             let f = {x, ?style = :short, @rest} => x + 1\n\
+             :move(actor: $alice, item: $coin)\n\
+             try\n\
+               risky()\n\
+             catch err if err == :perm\n\
+               \"permission denied\"\n\
+             finally\n\
+               cleanup()\n\
+             end",
+        );
+        assert_eq!(ast.errors, vec![]);
+
+        let mut ids = Vec::new();
+        for item in &ast.items {
+            collect_item_ids(item, &mut ids);
+        }
+        let unique = ids.iter().copied().collect::<BTreeSet<_>>();
+
+        assert_eq!(ids.len(), unique.len());
+        assert_eq!(ids.len(), ast.node_count as usize);
+        assert_eq!(
+            unique
+                .iter()
+                .copied()
+                .map(NodeId::as_u32)
+                .collect::<Vec<_>>(),
+            (0..ast.node_count).collect::<Vec<_>>()
+        );
+    }
+
+    fn collect_item_ids(item: &Item, ids: &mut Vec<NodeId>) {
+        ids.push(item.id());
+        match item {
+            Item::Expr { expr, .. } => collect_expr_ids(expr, ids),
+            Item::RelationRule { head, body, .. } => {
+                collect_expr_ids(head, ids);
+                for expr in body {
+                    collect_expr_ids(expr, ids);
+                }
+            }
+            Item::Object { clauses, .. } => {
+                for clause in clauses {
+                    ids.push(clause.id);
+                    for expr in &clause.exprs {
+                        collect_expr_ids(expr, ids);
+                    }
+                }
+            }
+            Item::Method { body, .. } => {
+                for item in body {
+                    collect_item_ids(item, ids);
+                }
+            }
+        }
+    }
+
+    fn collect_expr_ids(expr: &Expr, ids: &mut Vec<NodeId>) {
+        ids.push(expr.id());
+        match expr {
+            Expr::List { items, .. } => {
+                for item in items {
+                    match item {
+                        CollectionItem::Expr(expr) | CollectionItem::Splice(expr) => {
+                            collect_expr_ids(expr, ids);
+                        }
+                    }
+                }
+            }
+            Expr::Map { entries, .. } => {
+                for (key, value) in entries {
+                    collect_expr_ids(key, ids);
+                    collect_expr_ids(value, ids);
+                }
+            }
+            Expr::Unary { expr, .. } => collect_expr_ids(expr, ids),
+            Expr::Binary { left, right, .. } => {
+                collect_expr_ids(left, ids);
+                collect_expr_ids(right, ids);
+            }
+            Expr::Assign { target, value, .. } => {
+                collect_expr_ids(target, ids);
+                collect_expr_ids(value, ids);
+            }
+            Expr::Call { callee, args, .. } => {
+                collect_expr_ids(callee, ids);
+                collect_arg_ids(args, ids);
+            }
+            Expr::RoleCall { selector, args, .. } => {
+                collect_expr_ids(selector, ids);
+                collect_arg_ids(args, ids);
+            }
+            Expr::ReceiverCall {
+                receiver,
+                selector,
+                args,
+                ..
+            } => {
+                collect_expr_ids(receiver, ids);
+                collect_expr_ids(selector, ids);
+                collect_arg_ids(args, ids);
+            }
+            Expr::Index {
+                collection, index, ..
+            } => {
+                collect_expr_ids(collection, ids);
+                if let Some(index) = index {
+                    collect_expr_ids(index, ids);
+                }
+            }
+            Expr::Field { base, .. } => collect_expr_ids(base, ids),
+            Expr::Binding { pattern, value, .. } => {
+                if let BindingPattern::Scatter(params) = pattern {
+                    collect_param_ids(params, ids);
+                }
+                if let Some(value) = value {
+                    collect_expr_ids(value, ids);
+                }
+            }
+            Expr::If {
+                condition,
+                then_items,
+                elseif,
+                else_items,
+                ..
+            } => {
+                collect_expr_ids(condition, ids);
+                for item in then_items {
+                    collect_item_ids(item, ids);
+                }
+                for (condition, items) in elseif {
+                    collect_expr_ids(condition, ids);
+                    for item in items {
+                        collect_item_ids(item, ids);
+                    }
+                }
+                for item in else_items {
+                    collect_item_ids(item, ids);
+                }
+            }
+            Expr::Block { items, .. } => {
+                for item in items {
+                    collect_item_ids(item, ids);
+                }
+            }
+            Expr::For { iter, body, .. } => {
+                collect_expr_ids(iter, ids);
+                for item in body {
+                    collect_item_ids(item, ids);
+                }
+            }
+            Expr::While {
+                condition, body, ..
+            } => {
+                collect_expr_ids(condition, ids);
+                for item in body {
+                    collect_item_ids(item, ids);
+                }
+            }
+            Expr::Return { value, .. } => {
+                if let Some(value) = value {
+                    collect_expr_ids(value, ids);
+                }
+            }
+            Expr::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => {
+                for item in body {
+                    collect_item_ids(item, ids);
+                }
+                for catch in catches {
+                    ids.push(catch.id);
+                    if let Some(condition) = &catch.condition {
+                        collect_expr_ids(condition, ids);
+                    }
+                    for item in &catch.body {
+                        collect_item_ids(item, ids);
+                    }
+                }
+                for item in finally {
+                    collect_item_ids(item, ids);
+                }
+            }
+            Expr::Function { params, body, .. } => {
+                collect_param_ids(params, ids);
+                match body {
+                    FunctionBody::Expr(expr) => collect_expr_ids(expr, ids),
+                    FunctionBody::Block(items) => {
+                        for item in items {
+                            collect_item_ids(item, ids);
+                        }
+                    }
+                }
+            }
+            Expr::Effect { expr, .. } => collect_expr_ids(expr, ids),
+            Expr::Literal { .. }
+            | Expr::Name { .. }
+            | Expr::Identity { .. }
+            | Expr::Symbol { .. }
+            | Expr::Hole { .. }
+            | Expr::Break { .. }
+            | Expr::Continue { .. }
+            | Expr::Error { .. } => {}
+        }
+    }
+
+    fn collect_arg_ids(args: &[crate::Arg], ids: &mut Vec<NodeId>) {
+        for arg in args {
+            ids.push(arg.id);
+            collect_expr_ids(&arg.value, ids);
+        }
+    }
+
+    fn collect_param_ids(params: &[Param], ids: &mut Vec<NodeId>) {
+        for param in params {
+            ids.push(param.id);
+            if let Some(default) = &param.default {
+                collect_expr_ids(default, ids);
+            }
+        }
     }
 }
