@@ -463,7 +463,15 @@ struct ProgramCompiler<'a> {
     next_register: u16,
     locals: HashMap<BindingId, Register>,
     external_locals: HashMap<String, Register>,
+    loops: Vec<LoopContext>,
     returned: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LoopContext {
+    continue_target: usize,
+    break_jumps: Vec<usize>,
+    continue_jumps: Vec<usize>,
 }
 
 impl<'a> ProgramCompiler<'a> {
@@ -475,6 +483,7 @@ impl<'a> ProgramCompiler<'a> {
             next_register: 0,
             locals: HashMap::new(),
             external_locals: HashMap::new(),
+            loops: Vec::new(),
             returned: false,
         }
     }
@@ -591,8 +600,15 @@ impl<'a> ProgramCompiler<'a> {
                 let value = self.compile_expr_for_value(value)?;
                 match target {
                     HirPlace::Local { binding, .. } => {
-                        self.locals.insert(*binding, value);
-                        Ok(value)
+                        let dst = self.locals.get(binding).copied().ok_or_else(|| {
+                            CompileError::UnboundLocal {
+                                node: *id,
+                                span: self.span(*id),
+                                binding: *binding,
+                            }
+                        })?;
+                        self.emit(Instruction::Move { dst, src: value });
+                        Ok(dst)
                     }
                     _ => Err(self.unsupported(
                         *id,
@@ -682,6 +698,13 @@ impl<'a> ProgramCompiler<'a> {
                 elseif,
                 else_items,
             } => self.compile_if(*id, condition, then_items, elseif, else_items),
+            HirExpr::While {
+                id,
+                condition,
+                body,
+            } => self.compile_while(*id, condition, body),
+            HirExpr::Break { id } => self.compile_break(*id),
+            HirExpr::Continue { id } => self.compile_continue(*id),
             HirExpr::RoleDispatch { id, selector, args } => {
                 self.compile_dispatch(*id, selector, args, None)
             }
@@ -936,6 +959,96 @@ impl<'a> ProgramCompiler<'a> {
             || (!else_items.is_empty()
                 && !branch_returns.is_empty()
                 && branch_returns.iter().all(|returned| *returned));
+        Ok(dst)
+    }
+
+    fn compile_while(
+        &mut self,
+        _id: NodeId,
+        condition: &HirExpr,
+        body: &[HirItem],
+    ) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::nothing(),
+        });
+
+        let loop_start = self.instructions.len();
+        let condition = self.compile_expr_for_value(condition)?;
+        let branch = self.emit_branch(condition, 0, 0);
+        let body_target = self.instructions.len();
+
+        self.loops.push(LoopContext {
+            continue_target: loop_start,
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+        });
+        let body_returned = self.compile_loop_body(body)?;
+        let loop_context = self.loops.pop().ok_or_else(|| CompileError::Unsupported {
+            node: NodeId(0),
+            span: None,
+            message: "internal compiler error: missing loop context".to_owned(),
+        })?;
+
+        if !body_returned {
+            self.emit_jump(loop_start);
+        }
+        let end = self.instructions.len();
+        self.patch_branch(branch, body_target, end)?;
+        for jump in loop_context.break_jumps {
+            self.patch_jump(jump, end)?;
+        }
+        for jump in loop_context.continue_jumps {
+            self.patch_jump(jump, loop_context.continue_target)?;
+        }
+        Ok(dst)
+    }
+
+    fn compile_loop_body(&mut self, body: &[HirItem]) -> Result<bool, CompileError> {
+        let saved_returned = self.returned;
+        self.returned = false;
+        for item in body {
+            self.compile_item(item)?;
+        }
+        let body_returned = self.returned;
+        self.returned = saved_returned;
+        Ok(body_returned)
+    }
+
+    fn compile_break(&mut self, id: NodeId) -> Result<Register, CompileError> {
+        if self.loops.is_empty() {
+            return Err(self.unsupported(id, "break is only valid inside a loop"));
+        }
+        let jump = self.emit_jump(0);
+        self.loops
+            .last_mut()
+            .expect("loop stack was checked above")
+            .break_jumps
+            .push(jump);
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::nothing(),
+        });
+        Ok(dst)
+    }
+
+    fn compile_continue(&mut self, id: NodeId) -> Result<Register, CompileError> {
+        if self.loops.is_empty() {
+            return Err(self.unsupported(id, "continue is only valid inside a loop"));
+        }
+        let jump = self.emit_jump(0);
+        self.loops
+            .last_mut()
+            .expect("loop stack was checked above")
+            .continue_jumps
+            .push(jump);
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::nothing(),
+        });
         Ok(dst)
     }
 
@@ -1420,6 +1533,68 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_runs_while_loops() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let i = 0\n\
+             let total = 0\n\
+             while i < 5\n\
+               i = i + 1\n\
+               total = total + i\n\
+             end\n\
+             return total",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(15).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_runs_break_and_continue() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let i = 0\n\
+             let total = 0\n\
+             while i < 10\n\
+               i = i + 1\n\
+               if i == 2\n\
+                 continue\n\
+               end\n\
+               if i == 5\n\
+                 break\n\
+               end\n\
+               total = total + i\n\
+             end\n\
+             return total",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(8).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn installs_method_facts_and_invokes_method_through_dispatch() {
         let located_in = id(1);
         let get_method = id(100);
@@ -1621,6 +1796,70 @@ mod tests {
             scheduler
                 .resolver()
                 .contains(&Value::identity(inspect_program))
+        );
+    }
+
+    #[test]
+    fn persisted_method_can_run_while_loop() {
+        let count_method = id(100);
+        let count_program = id(101);
+        let player = id(200);
+        let alice = id(300);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("count_loop", count_method)
+            .with_program_identity("count_loop", count_program)
+            .with_identity("player", player);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method $count_loop :count\n\
+               roles actor: $player\n\
+             do\n\
+               let i = 0\n\
+               while i < 3\n\
+                 i = i + 1\n\
+               end\n\
+               return i\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted =
+            submit_source_task(":count(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(3).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert!(
+            scheduler
+                .resolver()
+                .contains(&Value::identity(count_program))
         );
     }
 
