@@ -641,6 +641,43 @@ fn direct_program_call_returns_into_caller_register() {
 }
 
 #[test]
+fn program_artifact_round_trips_range_slicing() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        3,
+        [
+            Instruction::BuildList {
+                dst: reg(0),
+                items: vec![v(int(1)), v(int(2)), v(int(3)), v(int(4))],
+            },
+            Instruction::BuildRange {
+                dst: reg(1),
+                start: v(int(1)),
+                end: Some(v(int(2))),
+            },
+            Instruction::Index {
+                dst: reg(2),
+                collection: reg(0),
+                index: r(1),
+            },
+            Instruction::Return { value: r(2) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: Value::list([int(2), int(3)]),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
 fn call_depth_limit_is_enforced() {
     let kernel = kernel_with_world_relations();
     let leaf = Arc::new(

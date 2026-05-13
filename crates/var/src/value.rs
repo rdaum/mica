@@ -15,6 +15,7 @@ pub(crate) const TAG_STRING: u8 = 6;
 pub(crate) const TAG_BYTES: u8 = 7;
 pub(crate) const TAG_LIST: u8 = 8;
 pub(crate) const TAG_MAP: u8 = 9;
+pub(crate) const TAG_RANGE: u8 = 10;
 
 pub(crate) const INT_BITS: u32 = 56;
 pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
@@ -65,6 +66,7 @@ pub enum ValueKind {
     Bytes = TAG_BYTES,
     List = TAG_LIST,
     Map = TAG_MAP,
+    Range = TAG_RANGE,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -152,6 +154,10 @@ impl Value {
         Self::heap(HeapValue::Map(canonical.into_boxed_slice()))
     }
 
+    pub fn range(start: Value, end: Option<Value>) -> Self {
+        Self::heap(HeapValue::Range { start, end })
+    }
+
     #[inline(always)]
     pub const fn raw_bits(&self) -> u64 {
         self.0
@@ -170,13 +176,17 @@ impl Value {
             TAG_BYTES => ValueKind::Bytes,
             TAG_LIST => ValueKind::List,
             TAG_MAP => ValueKind::Map,
+            TAG_RANGE => ValueKind::Range,
             _ => unreachable!(),
         }
     }
 
     #[inline(always)]
     pub const fn is_immediate(&self) -> bool {
-        !matches!(self.tag(), TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP)
+        !matches!(
+            self.tag(),
+            TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE
+        )
     }
 
     #[inline(always)]
@@ -253,12 +263,28 @@ impl Value {
         })?
     }
 
+    pub fn with_range<R>(&self, f: impl FnOnce(&Value, Option<&Value>) -> R) -> Option<R> {
+        self.with_heap(|heap| match heap {
+            HeapValue::Range { start, end } => Some(f(start, end.as_ref())),
+            _ => None,
+        })?
+    }
+
     pub fn list_len(&self) -> Option<usize> {
         self.with_list(<[Value]>::len)
     }
 
     pub fn list_get(&self, index: usize) -> Option<Value> {
         self.with_list(|values| values.get(index).cloned())?
+    }
+
+    pub fn list_slice(&self, start: usize, end_exclusive: usize) -> Option<Self> {
+        self.with_list(|values| {
+            if start > end_exclusive || end_exclusive > values.len() {
+                return None;
+            }
+            Some(Self::list(values[start..end_exclusive].iter().cloned()))
+        })?
     }
 
     pub fn list_set(&self, index: usize, value: Value) -> Option<Self> {

@@ -836,6 +836,7 @@ impl<'a> ProgramCompiler<'a> {
         match op {
             BinaryOp::And => self.compile_and(left, right),
             BinaryOp::Or => self.compile_or(left, right),
+            BinaryOp::Range => self.compile_range(left, right),
             _ => {
                 let Some(op) = runtime_binary_op(op) else {
                     return Err(self.unsupported(
@@ -855,6 +856,17 @@ impl<'a> ProgramCompiler<'a> {
                 Ok(dst)
             }
         }
+    }
+
+    fn compile_range(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
+        let start = self.compile_expr_for_operand(left)?;
+        let end = match right {
+            HirExpr::Hole { .. } => None,
+            _ => Some(self.compile_expr_for_operand(right)?),
+        };
+        let dst = self.alloc_register();
+        self.emit(Instruction::BuildRange { dst, start, end });
+        Ok(dst)
     }
 
     fn compile_list(
@@ -1919,6 +1931,31 @@ mod tests {
             submitted.outcome,
             TaskOutcome::Complete {
                 value: Value::int(20).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_slices_lists_with_ranges() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let values = [0, 1, 2, 3, 4]\n\
+             let mid = values[1..3]\n\
+             let tail = values[2..$]\n\
+             return mid[0] + mid[1] + mid[2] + tail[0] + tail[1] + tail[2]",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(15).unwrap(),
                 effects: vec![],
                 retries: 0,
             }

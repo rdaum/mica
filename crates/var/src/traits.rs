@@ -1,5 +1,7 @@
 use crate::heap::HeapValue;
-use crate::value::{TAG_BYTES, TAG_LIST, TAG_MAP, TAG_STRING, Value, ValueKind, normalize_f32};
+use crate::value::{
+    TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value, ValueKind, normalize_f32,
+};
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -53,6 +55,18 @@ impl Value {
                     out.push(0);
                 });
             }
+            ValueKind::Range => {
+                let _ = self.with_range(|start, end| {
+                    start.encode_ordered(out);
+                    match end {
+                        Some(end) => {
+                            out.push(1);
+                            end.encode_ordered(out);
+                        }
+                        None => out.push(0),
+                    }
+                });
+            }
         }
     }
 }
@@ -77,6 +91,15 @@ impl PartialEq for Value {
                 .unwrap(),
             (ValueKind::Map, ValueKind::Map) => self
                 .with_map(|left| other.with_map(|right| left == right).unwrap())
+                .unwrap(),
+            (ValueKind::Range, ValueKind::Range) => self
+                .with_range(|left_start, left_end| {
+                    other
+                        .with_range(|right_start, right_end| {
+                            left_start == right_start && left_end == right_end
+                        })
+                        .unwrap()
+                })
                 .unwrap(),
             _ => false,
         }
@@ -121,6 +144,17 @@ impl Ord for Value {
             ValueKind::Map => self
                 .with_map(|left| other.with_map(|right| left.cmp(right)).unwrap())
                 .unwrap(),
+            ValueKind::Range => self
+                .with_range(|left_start, left_end| {
+                    other
+                        .with_range(|right_start, right_end| {
+                            left_start
+                                .cmp(right_start)
+                                .then_with(|| left_end.cmp(&right_end))
+                        })
+                        .unwrap()
+                })
+                .unwrap(),
         }
     }
 }
@@ -148,6 +182,12 @@ impl Hash for Value {
             }
             ValueKind::Map => {
                 let _ = self.with_map(|entries| entries.hash(state));
+            }
+            ValueKind::Range => {
+                let _ = self.with_range(|start, end| {
+                    start.hash(state);
+                    end.hash(state);
+                });
             }
         };
     }
@@ -184,6 +224,9 @@ impl fmt::Debug for Value {
                     }
                     map.finish()
                 })
+                .unwrap(),
+            ValueKind::Range => self
+                .with_range(|start, end| write_range(start, end, f))
                 .unwrap(),
         }
     }
@@ -233,6 +276,9 @@ impl fmt::Display for Value {
                     f.write_str("]")
                 })
                 .unwrap(),
+            ValueKind::Range => self
+                .with_range(|start, end| write_range(start, end, f))
+                .unwrap(),
         }
     }
 }
@@ -257,6 +303,14 @@ fn write_hex_bytes(bytes: &[u8], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     Ok(())
 }
 
+fn write_range(start: &Value, end: Option<&Value>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{start}..")?;
+    match end {
+        Some(end) => write!(f, "{end}"),
+        None => f.write_str("$"),
+    }
+}
+
 fn encode_bytes_terminated(bytes: &[u8], out: &mut Vec<u8>) {
     for byte in bytes {
         if *byte == 0 {
@@ -273,5 +327,5 @@ const _: () = {
         heap.tag()
     }
     let _ = _heap_value_is_used;
-    let _ = (TAG_STRING, TAG_BYTES, TAG_LIST, TAG_MAP);
+    let _ = (TAG_STRING, TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE);
 };

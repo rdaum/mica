@@ -219,6 +219,16 @@ impl RegisterVm {
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
+            Instruction::BuildRange { dst, start, end } => {
+                let start = self.resolve_operand(&start)?;
+                let end = end
+                    .as_ref()
+                    .map(|end| self.resolve_operand(end))
+                    .transpose()?;
+                self.write_register(dst, Value::range(start, end))?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
             Instruction::Index {
                 dst,
                 collection,
@@ -542,6 +552,12 @@ fn eval_binary(op: RuntimeBinaryOp, left: &Value, right: &Value) -> Value {
 }
 
 fn index_value(collection: &Value, index: &Value) -> Value {
+    if let Some((start, end)) = index.with_range(|start, end| (start.clone(), end.cloned()))
+        && let Some(len) = collection.list_len()
+    {
+        return list_range_slice(collection, len, &start, end.as_ref())
+            .unwrap_or_else(Value::nothing);
+    }
     if let Some(index) = index.as_int()
         && index >= 0
         && let Some(value) = collection.list_get(index as usize)
@@ -549,6 +565,26 @@ fn index_value(collection: &Value, index: &Value) -> Value {
         return value;
     }
     collection.map_get(index).unwrap_or_else(Value::nothing)
+}
+
+fn list_range_slice(
+    collection: &Value,
+    len: usize,
+    start: &Value,
+    end: Option<&Value>,
+) -> Option<Value> {
+    let start = ordinal_index(start)?;
+    let end_exclusive = match end {
+        Some(end) => {
+            let end = ordinal_index(end)?;
+            if end < start {
+                return None;
+            }
+            end.checked_add(1)?
+        }
+        None => len,
+    };
+    collection.list_slice(start, end_exclusive)
 }
 
 fn set_index_value(collection: &Value, index: &Value, value: Value) -> Value {

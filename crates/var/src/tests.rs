@@ -112,7 +112,7 @@ fn numeric_operations_fall_back_to_floats() {
 }
 
 #[test]
-fn string_bytes_list_and_map_are_values() {
+fn string_bytes_list_map_and_range_are_values() {
     let string = Value::string("brass lamp");
     assert_eq!(
         string.with_str(|s| s.to_string()),
@@ -144,6 +144,16 @@ fn string_bytes_list_and_map_are_values() {
             .and_then(|value| value.with_str(str::to_string)),
         Some("blue".to_string())
     );
+
+    let range = Value::range(Value::int(1).unwrap(), Some(Value::int(3).unwrap()));
+    assert_eq!(
+        range.with_range(|start, end| (start.as_int(), end.and_then(Value::as_int))),
+        Some((Some(1), Some(3)))
+    );
+    assert_eq!(format!("{range}"), "1..3");
+
+    let open_range = Value::range(Value::int(2).unwrap(), None);
+    assert_eq!(format!("{open_range}"), "2..$");
 }
 
 #[test]
@@ -166,6 +176,22 @@ fn heap_values_are_arc_shared_and_acyclic() {
             .and_then(|value| value.with_str(str::to_string)),
         Some("alpha".to_string())
     );
+}
+
+#[test]
+fn list_slices_return_new_list_values() {
+    let list = Value::list([
+        Value::int(10).unwrap(),
+        Value::int(20).unwrap(),
+        Value::int(30).unwrap(),
+        Value::int(40).unwrap(),
+    ]);
+
+    let slice = list.list_slice(1, 3).unwrap();
+    assert_eq!(slice.list_len(), Some(2));
+    assert_eq!(slice.list_get(0).and_then(|value| value.as_int()), Some(20));
+    assert_eq!(slice.list_get(1).and_then(|value| value.as_int()), Some(30));
+    assert!(list.list_slice(3, 5).is_none());
 }
 
 #[test]
@@ -213,6 +239,7 @@ fn indexed_updates_return_new_collection_values() {
 fn total_order_is_stable() {
     let values = vec![
         Value::map([]),
+        Value::range(Value::int(1).unwrap(), None),
         Value::list([]),
         Value::bytes([1, 2, 3]),
         Value::string("x"),
@@ -229,7 +256,7 @@ fn total_order_is_stable() {
         assert!(pair[0] <= pair[1]);
     }
     assert_eq!(sorted.first(), Some(&Value::nothing()));
-    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Map);
+    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Range);
 }
 
 #[test]

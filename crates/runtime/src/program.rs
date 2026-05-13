@@ -61,6 +61,11 @@ pub enum Instruction {
         dst: Register,
         entries: Vec<(Operand, Operand)>,
     },
+    BuildRange {
+        dst: Register,
+        start: Operand,
+        end: Option<Operand>,
+    },
     Index {
         dst: Register,
         collection: Register,
@@ -326,6 +331,11 @@ fn validate_instruction(
                     .flat_map(|(key, value)| [key, value].into_iter()),
             )
         }
+        Instruction::BuildRange { dst, start, end } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, start)?;
+            validate_operands(register_count, end.iter())
+        }
         Instruction::Index {
             dst,
             collection,
@@ -486,6 +496,7 @@ const INST_COLLECTION_VALUE_AT: u8 = 23;
 const INST_SET_INDEX: u8 = 24;
 const INST_SCAN_VALUE: u8 = 25;
 const INST_CALL: u8 = 26;
+const INST_BUILD_RANGE: u8 = 27;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -561,6 +572,12 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
                 write_operand(out, value)?;
             }
             Ok(())
+        }
+        Instruction::BuildRange { dst, start, end } => {
+            out.push(INST_BUILD_RANGE);
+            write_register(out, *dst);
+            write_operand(out, start)?;
+            write_optional_operand(out, end.as_ref())
         }
         Instruction::Index {
             dst,
@@ -777,6 +794,22 @@ fn write_optional_operands(
     Ok(())
 }
 
+fn write_optional_operand(
+    out: &mut Vec<u8>,
+    operand: Option<&Operand>,
+) -> Result<(), RuntimeError> {
+    match operand {
+        Some(operand) => {
+            out.push(1);
+            write_operand(out, operand)
+        }
+        None => {
+            out.push(0);
+            Ok(())
+        }
+    }
+}
+
 fn write_operand(out: &mut Vec<u8>, operand: &Operand) -> Result<(), RuntimeError> {
     match operand {
         Operand::Register(register) => {
@@ -822,7 +855,7 @@ fn write_value(out: &mut Vec<u8>, value: &Value) -> Result<(), RuntimeError> {
     }) {
     } else {
         return Err(artifact_error(
-            "list and map values are not serializable in program artifacts yet",
+            "collection values are not serializable in program artifacts yet",
         ));
     }
     Ok(())
@@ -911,6 +944,11 @@ impl<'a> ByteReader<'a> {
             INST_BUILD_MAP => Instruction::BuildMap {
                 dst: self.read_register()?,
                 entries: self.read_map_entries()?,
+            },
+            INST_BUILD_RANGE => Instruction::BuildRange {
+                dst: self.read_register()?,
+                start: self.read_operand()?,
+                end: self.read_optional_operand()?,
             },
             INST_INDEX => Instruction::Index {
                 dst: self.read_register()?,
@@ -1013,13 +1051,15 @@ impl<'a> ByteReader<'a> {
 
     fn read_optional_operands(&mut self) -> Result<Vec<Option<Operand>>, RuntimeError> {
         let count = self.read_u32()? as usize;
-        (0..count)
-            .map(|_| match self.read_u8()? {
-                0 => Ok(None),
-                1 => self.read_operand().map(Some),
-                _ => Err(artifact_error("invalid optional operand tag")),
-            })
-            .collect()
+        (0..count).map(|_| self.read_optional_operand()).collect()
+    }
+
+    fn read_optional_operand(&mut self) -> Result<Option<Operand>, RuntimeError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_operand().map(Some),
+            _ => Err(artifact_error("invalid optional operand tag")),
+        }
     }
 
     fn read_operand(&mut self) -> Result<Operand, RuntimeError> {

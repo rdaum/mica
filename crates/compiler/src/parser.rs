@@ -254,7 +254,12 @@ impl<'a> Parser<'a> {
             SyntaxKind::LBracket => self.parse_list_expr(),
             SyntaxKind::LBrace if self.looks_like_brace_lambda() => self.parse_brace_lambda_expr(),
             SyntaxKind::LBrace => self.parse_map_expr(),
-            SyntaxKind::Dollar => self.parse_identity_expr(),
+            SyntaxKind::Dollar
+                if matches!(self.nth_kind(1), SyntaxKind::Ident | SyntaxKind::Int) =>
+            {
+                self.parse_identity_expr()
+            }
+            SyntaxKind::Dollar => self.single_token_node(SyntaxKind::HoleExpr),
             SyntaxKind::Colon => self.parse_symbol_or_role_call(),
             SyntaxKind::Underscore => self.single_token_node(SyntaxKind::HoleExpr),
             SyntaxKind::Ident => self.single_token_node(SyntaxKind::NameExpr),
@@ -867,6 +872,14 @@ mod tests {
         assert!(contains(&parse.root, SyntaxKind::ListExpr));
         assert!(contains(&parse.root, SyntaxKind::MapExpr));
         assert!(contains(&parse.root, SyntaxKind::MapEntry));
+    }
+
+    #[test]
+    fn parses_bare_dollar_as_range_endpoint_hole() {
+        let parse = parse("items[2..$]");
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::BinaryExpr));
+        assert!(contains(&parse.root, SyntaxKind::HoleExpr));
     }
 
     #[test]
