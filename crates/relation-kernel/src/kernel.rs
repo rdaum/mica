@@ -19,13 +19,14 @@ use crate::{
 };
 use arc_swap::ArcSwap;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 const GENERATED_RULE_ID_START: u64 = 0x00d0_0000_0000_0000;
 
 pub struct RelationKernel {
     root: ArcSwap<Snapshot>,
     provider: Arc<dyn CommitProvider>,
+    commit_lock: Mutex<()>,
 }
 
 impl RelationKernel {
@@ -43,6 +44,7 @@ impl RelationKernel {
                 commits: Arc::from([]),
             })),
             provider,
+            commit_lock: Mutex::new(()),
         }
     }
 
@@ -100,6 +102,7 @@ impl RelationKernel {
                 commits: commits.into(),
             })),
             provider,
+            commit_lock: Mutex::new(()),
         })
     }
 
@@ -159,6 +162,50 @@ impl RelationKernel {
                 commits: commits.into(),
             })),
             provider,
+            commit_lock: Mutex::new(()),
+        })
+    }
+
+    pub fn load_from_state(
+        state: crate::PersistedKernelState,
+        provider: Arc<dyn CommitProvider>,
+    ) -> Result<Self, KernelError> {
+        let mut states = BTreeMap::new();
+        for metadata in state.relations {
+            states.insert(metadata.id(), RelationState::empty(metadata)?);
+        }
+
+        for rule in &state.rules {
+            validate_rule_definition_against_relations(&states, rule)?;
+        }
+        RuleSet::new(active_rules(&state.rules))
+            .validate_stratified()
+            .map_err(KernelError::Rule)?;
+
+        for (relation_id, tuple) in state.facts {
+            let relation = states
+                .get_mut(&relation_id)
+                .ok_or(KernelError::UnknownRelation(relation_id))?;
+            if relation.metadata().arity() as usize != tuple.arity() {
+                return Err(KernelError::ArityMismatch {
+                    relation: relation_id,
+                    expected: relation.metadata().arity(),
+                    actual: tuple.arity(),
+                });
+            }
+            relation.insert(tuple);
+        }
+
+        Ok(Self {
+            root: ArcSwap::new(Arc::new(Snapshot {
+                version: state.version,
+                relations: states,
+                rules: state.rules,
+                derived_cache: empty_derived_cache(),
+                commits: Arc::from([]),
+            })),
+            provider,
+            commit_lock: Mutex::new(()),
         })
     }
 
@@ -170,37 +217,36 @@ impl RelationKernel {
         &self,
         metadata: RelationMetadata,
     ) -> Result<Arc<Snapshot>, KernelError> {
+        let _guard = self.commit_guard();
         let relation = RelationState::empty(metadata.clone())?;
-
-        let mut current = self.snapshot();
-        loop {
-            if current.relations.contains_key(&metadata.id()) {
-                return Err(KernelError::RelationAlreadyExists(metadata.id()));
-            }
-
-            let mut next = (*current).clone();
-            next.relations.insert(metadata.id(), relation.clone());
-            next.derived_cache = empty_derived_cache();
-            next.version += 1;
-            let commit = Commit {
-                version: next.version,
-                catalog_changes: Arc::from([CatalogChange::RelationCreated(metadata.clone())]),
-                changes: Arc::from([]),
-                bloom: crate::commit_bloom::CommitBloom::new(),
-            };
-            let mut commits = Vec::with_capacity(current.commits.len() + 1);
-            commits.extend(current.commits.iter().cloned());
-            commits.push(commit.clone());
-            next.commits = commits.into();
-            let next = Arc::new(next);
-
-            if self.try_publish(current.version(), next.clone()) {
-                self.persist_commit(&commit)?;
-                return Ok(next);
-            }
-
-            current = self.snapshot();
+        let current = self.snapshot();
+        if current.relations.contains_key(&metadata.id()) {
+            return Err(KernelError::RelationAlreadyExists(metadata.id()));
         }
+
+        let mut next = (*current).clone();
+        next.relations.insert(metadata.id(), relation);
+        next.derived_cache = empty_derived_cache();
+        next.version += 1;
+        let commit = Commit {
+            version: next.version,
+            catalog_changes: Arc::from([CatalogChange::RelationCreated(metadata.clone())]),
+            changes: Arc::from([]),
+            bloom: crate::commit_bloom::CommitBloom::new(),
+        };
+        let mut commits = Vec::with_capacity(current.commits.len() + 1);
+        commits.extend(current.commits.iter().cloned());
+        commits.push(commit.clone());
+        next.commits = commits.into();
+        let next = Arc::new(next);
+
+        self.persist_commit(&commit)?;
+        if !self.try_publish(current.version(), next.clone()) {
+            return Err(KernelError::Persistence(
+                "commit publish failed after serialized persistence".to_owned(),
+            ));
+        }
+        Ok(next)
     }
 
     pub fn install_rule(
@@ -209,74 +255,74 @@ impl RelationKernel {
         source: impl Into<String>,
     ) -> Result<RuleDefinition, KernelError> {
         let source = source.into();
-        let mut current = self.snapshot();
-        loop {
-            validate_rule_against_relations(&current.relations, &rule)?;
-            let definition =
-                RuleDefinition::new(next_rule_id(&current.rules), rule.clone(), source.clone());
-            let mut rules = current.rules.clone();
-            rules.push(definition.clone());
-            RuleSet::new(active_rules(&rules))
-                .validate_stratified()
-                .map_err(KernelError::Rule)?;
+        let _guard = self.commit_guard();
+        let current = self.snapshot();
+        validate_rule_against_relations(&current.relations, &rule)?;
+        let definition =
+            RuleDefinition::new(next_rule_id(&current.rules), rule.clone(), source.clone());
+        let mut rules = current.rules.clone();
+        rules.push(definition.clone());
+        RuleSet::new(active_rules(&rules))
+            .validate_stratified()
+            .map_err(KernelError::Rule)?;
 
-            let mut next = (*current).clone();
-            next.rules = rules;
-            next.derived_cache = empty_derived_cache();
-            next.version += 1;
-            let commit = Commit {
-                version: next.version,
-                catalog_changes: Arc::from([CatalogChange::RuleInstalled(definition.clone())]),
-                changes: Arc::from([]),
-                bloom: crate::commit_bloom::CommitBloom::new(),
-            };
-            let mut commits = Vec::with_capacity(current.commits.len() + 1);
-            commits.extend(current.commits.iter().cloned());
-            commits.push(commit.clone());
-            next.commits = commits.into();
-            let next = Arc::new(next);
+        let mut next = (*current).clone();
+        next.rules = rules;
+        next.derived_cache = empty_derived_cache();
+        next.version += 1;
+        let commit = Commit {
+            version: next.version,
+            catalog_changes: Arc::from([CatalogChange::RuleInstalled(definition.clone())]),
+            changes: Arc::from([]),
+            bloom: crate::commit_bloom::CommitBloom::new(),
+        };
+        let mut commits = Vec::with_capacity(current.commits.len() + 1);
+        commits.extend(current.commits.iter().cloned());
+        commits.push(commit.clone());
+        next.commits = commits.into();
+        let next = Arc::new(next);
 
-            if self.try_publish(current.version(), next.clone()) {
-                self.persist_commit(&commit)?;
-                return Ok(definition);
-            }
-
-            current = self.snapshot();
+        self.persist_commit(&commit)?;
+        if !self.try_publish(current.version(), next) {
+            return Err(KernelError::Persistence(
+                "commit publish failed after serialized persistence".to_owned(),
+            ));
         }
+        Ok(definition)
     }
 
     pub fn disable_rule(&self, rule_id: crate::FactId) -> Result<Arc<Snapshot>, KernelError> {
-        let mut current = self.snapshot();
-        loop {
-            let mut rules = current.rules.clone();
-            disable_rule_in(&mut rules, rule_id)?;
-            RuleSet::new(active_rules(&rules))
-                .validate_stratified()
-                .map_err(KernelError::Rule)?;
+        let _guard = self.commit_guard();
+        let current = self.snapshot();
+        let mut rules = current.rules.clone();
+        disable_rule_in(&mut rules, rule_id)?;
+        RuleSet::new(active_rules(&rules))
+            .validate_stratified()
+            .map_err(KernelError::Rule)?;
 
-            let mut next = (*current).clone();
-            next.rules = rules;
-            next.derived_cache = empty_derived_cache();
-            next.version += 1;
-            let commit = Commit {
-                version: next.version,
-                catalog_changes: Arc::from([CatalogChange::RuleDisabled(rule_id)]),
-                changes: Arc::from([]),
-                bloom: crate::commit_bloom::CommitBloom::new(),
-            };
-            let mut commits = Vec::with_capacity(current.commits.len() + 1);
-            commits.extend(current.commits.iter().cloned());
-            commits.push(commit.clone());
-            next.commits = commits.into();
-            let next = Arc::new(next);
+        let mut next = (*current).clone();
+        next.rules = rules;
+        next.derived_cache = empty_derived_cache();
+        next.version += 1;
+        let commit = Commit {
+            version: next.version,
+            catalog_changes: Arc::from([CatalogChange::RuleDisabled(rule_id)]),
+            changes: Arc::from([]),
+            bloom: crate::commit_bloom::CommitBloom::new(),
+        };
+        let mut commits = Vec::with_capacity(current.commits.len() + 1);
+        commits.extend(current.commits.iter().cloned());
+        commits.push(commit.clone());
+        next.commits = commits.into();
+        let next = Arc::new(next);
 
-            if self.try_publish(current.version(), next.clone()) {
-                self.persist_commit(&commit)?;
-                return Ok(next);
-            }
-
-            current = self.snapshot();
+        self.persist_commit(&commit)?;
+        if !self.try_publish(current.version(), next.clone()) {
+            return Err(KernelError::Persistence(
+                "commit publish failed after serialized persistence".to_owned(),
+            ));
         }
+        Ok(next)
     }
 
     pub fn begin(&self) -> Transaction<'_> {
@@ -301,6 +347,10 @@ impl RelationKernel {
         self.provider
             .persist_commit(commit)
             .map_err(KernelError::Persistence)
+    }
+
+    pub(crate) fn commit_guard(&self) -> MutexGuard<'_, ()> {
+        self.commit_lock.lock().unwrap()
     }
 }
 

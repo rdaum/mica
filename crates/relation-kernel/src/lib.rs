@@ -51,7 +51,10 @@ pub use kernel::RelationKernel;
 pub use materialized::materialize_rule_set;
 pub use metadata::{ConflictPolicy, RelationMetadata, RelationSchema, TupleIndexSpec};
 pub use neighborhood::{MentionedFact, SubjectFact};
-pub use provider::{CommitProvider, InMemoryCommitProvider};
+pub use provider::{
+    CommitProvider, FjallFormatStatus, FjallStateProvider, InMemoryCommitProvider,
+    PersistedKernelState,
+};
 pub use query::{QueryPlan, RelationRead};
 pub use rules::{Atom, Rule, RuleDefinition, RuleError, RuleEvalError, RuleSet, Term};
 pub use snapshot::{CatalogChange, Commit, CommitResult, FactChange, FactChangeKind, Snapshot};

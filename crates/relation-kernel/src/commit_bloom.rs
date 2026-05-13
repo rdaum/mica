@@ -35,17 +35,12 @@ impl CommitBloom {
         self.set_bit(h2 % BLOOM_BITS);
     }
 
+    #[cfg(test)]
     pub(crate) fn might_intersect(&self, other: &Self) -> bool {
         self.bits
             .iter()
             .zip(other.bits.iter())
             .any(|(left, right)| left & right != 0)
-    }
-
-    pub(crate) fn merge(&mut self, other: &Self) {
-        for (left, right) in self.bits.iter_mut().zip(other.bits.iter()) {
-            *left |= right;
-        }
     }
 
     fn set_bit(&mut self, bit: usize) {

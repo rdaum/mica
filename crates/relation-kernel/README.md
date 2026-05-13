@@ -25,8 +25,8 @@ inspection views.
 - `src/dispatch.rs`: role-based method applicability matching.
 - `src/closure.rs`: delegation closure helpers.
 - `src/neighborhood.rs`: object-neighbourhood inspection views.
-- `src/provider.rs`: commit provider boundary, including the in-memory
-  provider.
+- `src/provider.rs`: commit provider boundary, including in-memory persistence
+  and the Fjall-backed durable state store.
 - `src/commit_bloom.rs`: compact write-set tracking for conflict checks.
 - `src/tests.rs`: integration-style kernel tests.
 
@@ -35,6 +35,25 @@ inspection views.
 The kernel is the authoritative world state for the current prototype. The
 runtime opens transactions against it, the compiler installs methods and rules
 into it, and the runner refreshes its compile context from its catalogue facts.
+
+Persistence stores canonical relation state: relation metadata, rule
+definitions, current extensional facts, and the latest committed version. Each
+successful mutation is still represented as a semantic `Commit`, but the Fjall
+provider applies that commit to the canonical keyspaces in the same batch that
+records the commit entry.
+
+For users and operators, this means Fjall is the durability and restart
+boundary while the current query path still runs from memory. Startup loads the
+current relation state with `RelationKernel::load_from_state`; it is not
+required to replay the whole historical commit stream. The retained commit
+entries are an implementation aid for inspection, testing, and future recovery
+work, not the only durable representation of the world.
+
+For developers, this means the persisted representation is the state encoding
+in `src/provider.rs`, plus the commit encoding kept beside it. Changes to the
+state shape, value encoding, or catalogue representation must update the format
+version or shape marker and provide a migration path. `FjallStateProvider`
+records those markers so incompatible stores are detected before opening.
 
 ## Licence
 

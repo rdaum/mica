@@ -158,14 +158,6 @@ impl Snapshot {
             .ok_or(KernelError::UnknownRelation(relation))
     }
 
-    pub(crate) fn bloom_since(&self, version: Version) -> CommitBloom {
-        let mut bloom = CommitBloom::new();
-        for commit in self.commits_since(version) {
-            bloom.merge(&commit.bloom);
-        }
-        bloom
-    }
-
     fn derived_tuples(&self) -> Result<&BTreeMap<RelationId, Vec<Tuple>>, KernelError> {
         self.derived_cache
             .get_or_init(|| {

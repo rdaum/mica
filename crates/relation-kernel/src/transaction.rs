@@ -169,28 +169,20 @@ impl<'a> Transaction<'a> {
 
     pub fn commit(self) -> Result<CommitResult, KernelError> {
         let write_bloom = self.write_bloom()?;
-        let mut current = self.kernel.snapshot();
-        let mut skip_conflict_check = false;
-
-        loop {
-            if !skip_conflict_check {
-                self.validate_conflicts(&current)?;
-            }
-            let (next, commit) = self.build_next_snapshot(&current, write_bloom.clone())?;
-            if self.kernel.try_publish(current.version(), next.clone()) {
-                self.kernel.persist_commit(&commit)?;
-                return Ok(CommitResult {
-                    snapshot: next,
-                    commit,
-                });
-            }
-
-            let winner = self.kernel.snapshot();
-            skip_conflict_check = !winner
-                .bloom_since(current.version())
-                .might_intersect(&write_bloom);
-            current = winner;
+        let _guard = self.kernel.commit_guard();
+        let current = self.kernel.snapshot();
+        self.validate_conflicts(&current)?;
+        let (next, commit) = self.build_next_snapshot(&current, write_bloom)?;
+        self.kernel.persist_commit(&commit)?;
+        if !self.kernel.try_publish(current.version(), next.clone()) {
+            return Err(KernelError::Persistence(
+                "commit publish failed after serialized persistence".to_owned(),
+            ));
         }
+        Ok(CommitResult {
+            snapshot: next,
+            commit,
+        })
     }
 
     fn validate_tuple(&self, relation: RelationId, tuple: &Tuple) -> Result<(), KernelError> {

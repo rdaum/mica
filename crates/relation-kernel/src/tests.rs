@@ -12,12 +12,15 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    Atom, CatalogChange, CatalogFact, CatalogPredicate, Conflict, ConflictKind, ConflictPolicy,
-    Fact, FactChange, FactChangeKind, InMemoryCommitProvider, KernelError, MentionedFact,
-    RelationId, RelationKernel, RelationMetadata, Rule, SubjectFact, Term, Tuple,
+    Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider, Conflict,
+    ConflictKind, ConflictPolicy, Fact, FactChange, FactChangeKind, FjallFormatStatus,
+    FjallStateProvider, InMemoryCommitProvider, KernelError, MentionedFact, RelationId,
+    RelationKernel, RelationMetadata, Rule, SubjectFact, Term, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn rel(id: u64) -> RelationId {
     Identity::new(id).unwrap()
@@ -29,6 +32,62 @@ fn int(value: i64) -> Value {
 
 fn var(name: &str) -> Term {
     Term::Var(Symbol::intern(name))
+}
+
+struct TempStore {
+    path: PathBuf,
+}
+
+struct FailAfterCommitProvider {
+    commits: Mutex<Vec<Commit>>,
+    remaining_successes: Mutex<usize>,
+}
+
+impl FailAfterCommitProvider {
+    fn new(remaining_successes: usize) -> Self {
+        Self {
+            commits: Mutex::new(Vec::new()),
+            remaining_successes: Mutex::new(remaining_successes),
+        }
+    }
+}
+
+impl CommitProvider for FailAfterCommitProvider {
+    fn persist_commit(&self, commit: &Commit) -> Result<(), String> {
+        self.commits.lock().unwrap().push(commit.clone());
+        let mut remaining_successes = self.remaining_successes.lock().unwrap();
+        if *remaining_successes == 0 {
+            Err("intentional persistence failure".to_owned())
+        } else {
+            *remaining_successes -= 1;
+            Ok(())
+        }
+    }
+}
+
+impl TempStore {
+    fn new(name: &str) -> Self {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mica-relation-kernel-{name}-{}-{suffix}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempStore {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 #[test]
@@ -522,6 +581,46 @@ fn successful_commits_are_persisted_as_fact_change_batches() {
 }
 
 #[test]
+fn failed_persistence_does_not_publish_live_snapshot() {
+    let provider = Arc::new(FailAfterCommitProvider::new(0));
+    let kernel = RelationKernel::with_provider(provider);
+    let error = kernel
+        .create_relation(RelationMetadata::new(
+            rel(1),
+            Symbol::intern("LocatedIn"),
+            2,
+        ))
+        .unwrap_err();
+    assert!(matches!(error, KernelError::Persistence(_)));
+    assert_eq!(kernel.snapshot().version(), 0);
+    assert!(matches!(
+        kernel.snapshot().scan(rel(1), &[None, None]),
+        Err(KernelError::UnknownRelation(id)) if id == rel(1)
+    ));
+}
+
+#[test]
+fn failed_fact_persistence_does_not_publish_live_snapshot() {
+    let provider = Arc::new(FailAfterCommitProvider::new(1));
+    let kernel = RelationKernel::with_provider(provider);
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(1),
+            Symbol::intern("LocatedIn"),
+            2,
+        ))
+        .unwrap();
+
+    let tuple = Tuple::from([int(1), int(2)]);
+    let mut tx = kernel.begin();
+    tx.assert(rel(1), tuple.clone()).unwrap();
+    let error = tx.commit().unwrap_err();
+    assert!(matches!(error, KernelError::Persistence(_)));
+    assert_eq!(kernel.snapshot().version(), 1);
+    assert!(!kernel.snapshot().contains(rel(1), &tuple).unwrap());
+}
+
+#[test]
 fn kernel_can_replay_persisted_commit_batches() {
     let provider = Arc::new(InMemoryCommitProvider::new());
     let metadata = RelationMetadata::new(rel(1), Symbol::intern("LocatedIn"), 2);
@@ -579,6 +678,165 @@ fn kernel_can_replay_catalog_and_fact_commit_log() {
         loaded.snapshot().scan(rel(1), &[None, None]).unwrap(),
         vec![tuple]
     );
+}
+
+#[test]
+fn fjall_provider_persists_and_loads_canonical_state() {
+    let store = TempStore::new("canonical-state");
+    let values_tuple = Tuple::from([
+        Value::nothing(),
+        Value::bool(true),
+        int(42),
+        Value::float(12.5),
+        Value::identity(rel(99)),
+        Value::symbol(Symbol::intern("symbolic")),
+        Value::error_code(Symbol::intern("E_PERSIST")),
+        Value::string("stored"),
+        Value::bytes([0xde, 0xad, 0xbe, 0xef]),
+        Value::list([int(1), int(2), int(3)]),
+        Value::map([(Value::symbol(Symbol::intern("k")), Value::string("v"))]),
+        Value::range(int(1), Some(int(4))),
+        Value::error(Symbol::intern("E_RICH"), Some("rich error"), Some(int(7))),
+    ]);
+
+    {
+        let provider = Arc::new(FjallStateProvider::open(store.path()).unwrap());
+        let kernel = RelationKernel::with_provider(provider.clone());
+        kernel
+            .create_relation(
+                RelationMetadata::new(rel(10), Symbol::intern("ValueTuple"), 13)
+                    .with_argument_name(0, Symbol::intern("nothing"))
+                    .with_index([2, 0])
+                    .with_conflict_policy(ConflictPolicy::Functional {
+                        key_positions: vec![2],
+                    }),
+            )
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(rel(11), Symbol::intern("Base"), 1))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(rel(12), Symbol::intern("Derived"), 1))
+            .unwrap();
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(12),
+                    [var("item")],
+                    [Atom::positive(rel(11), [var("item")])],
+                ),
+                "Derived(item) :- Base(item)",
+            )
+            .unwrap();
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(10), values_tuple.clone()).unwrap();
+        tx.assert(rel(11), Tuple::from([int(77)])).unwrap();
+        let result = tx.commit().unwrap();
+        assert_eq!(provider.completed_version(), result.commit().version());
+    }
+
+    assert_eq!(
+        FjallStateProvider::check_format(store.path()).unwrap(),
+        FjallFormatStatus::Current
+    );
+
+    let provider = FjallStateProvider::open(store.path()).unwrap();
+    let persisted = provider.load_state().unwrap();
+    assert_eq!(persisted.version, 5);
+    assert_eq!(provider.load_commits().unwrap().len(), 5);
+    let loaded =
+        RelationKernel::load_from_state(persisted, Arc::new(InMemoryCommitProvider::new()))
+            .unwrap();
+
+    assert_eq!(loaded.snapshot().version(), 5);
+    assert_eq!(
+        loaded.snapshot().scan(rel(10), &vec![None; 13]).unwrap(),
+        vec![values_tuple]
+    );
+    assert_eq!(
+        loaded.snapshot().scan(rel(12), &[None]).unwrap(),
+        vec![Tuple::from([int(77)])]
+    );
+}
+
+#[test]
+fn fjall_provider_reopens_loads_and_continues_committing() {
+    let store = TempStore::new("reopen-continue");
+    let first = Tuple::from([int(1), int(10)]);
+    let second = Tuple::from([int(2), int(20)]);
+
+    {
+        let provider = Arc::new(FjallStateProvider::open(store.path()).unwrap());
+        let kernel = RelationKernel::with_provider(provider);
+        kernel
+            .create_relation(RelationMetadata::new(
+                rel(20),
+                Symbol::intern("LocatedIn"),
+                2,
+            ))
+            .unwrap();
+        let mut tx = kernel.begin();
+        tx.assert(rel(20), first.clone()).unwrap();
+        tx.commit().unwrap();
+    }
+
+    {
+        let provider = Arc::new(FjallStateProvider::open(store.path()).unwrap());
+        let persisted = provider.load_state().unwrap();
+        assert_eq!(persisted.version, 2);
+        let kernel = RelationKernel::load_from_state(persisted, provider.clone()).unwrap();
+        assert_eq!(
+            kernel.snapshot().scan(rel(20), &[None, None]).unwrap(),
+            vec![first.clone()]
+        );
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(20), second.clone()).unwrap();
+        let result = tx.commit().unwrap();
+        assert_eq!(result.commit().version(), 3);
+        assert_eq!(provider.completed_version(), 3);
+    }
+
+    let provider = FjallStateProvider::open(store.path()).unwrap();
+    let persisted = provider.load_state().unwrap();
+    assert_eq!(persisted.version, 3);
+    assert_eq!(provider.load_commits().unwrap().len(), 3);
+    let loaded =
+        RelationKernel::load_from_state(persisted, Arc::new(InMemoryCommitProvider::new()))
+            .unwrap();
+    assert_eq!(
+        loaded.snapshot().scan(rel(20), &[None, None]).unwrap(),
+        vec![first, second]
+    );
+}
+
+#[test]
+fn fjall_provider_detects_shape_mismatch() {
+    let store = TempStore::new("format-mismatch");
+    assert_eq!(
+        FjallStateProvider::check_format(store.path()).unwrap(),
+        FjallFormatStatus::Fresh
+    );
+
+    {
+        let database = fjall::Database::builder(store.path()).open().unwrap();
+        let metadata = database
+            .keyspace("metadata", fjall::KeyspaceCreateOptions::default)
+            .unwrap();
+        metadata.insert(b"format_version", b"old-format").unwrap();
+        metadata.insert(b"shape", b"old-shape").unwrap();
+    }
+
+    assert!(matches!(
+        FjallStateProvider::check_format(store.path()).unwrap(),
+        FjallFormatStatus::MigrationRequired {
+            stored_version: Some(version),
+            stored_shape: Some(shape),
+            ..
+        } if version == "old-format" && shape == "old-shape"
+    ));
+    assert!(FjallStateProvider::open(store.path()).is_err());
 }
 
 #[test]

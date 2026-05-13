@@ -8,4 +8,5 @@ description = "MVCC relation kernel for Mica"
 
 [dependencies]
 arc-swap.workspace = true
+fjall.workspace = true
 mica-var.workspace = true
