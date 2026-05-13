@@ -1,5 +1,5 @@
 use mica_relation_kernel::{KernelError, RelationId};
-use mica_var::Value;
+use mica_var::{Symbol, Value};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeError {
@@ -30,6 +30,9 @@ pub enum RuntimeError {
     AmbiguousDispatch {
         selector: Value,
         methods: Vec<Value>,
+    },
+    UnknownBuiltin {
+        name: Symbol,
     },
     MissingMethodProgram {
         method: Value,

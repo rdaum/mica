@@ -179,6 +179,11 @@ pub enum Instruction {
         program: Arc<Program>,
         args: Vec<Operand>,
     },
+    BuiltinCall {
+        dst: Register,
+        name: Symbol,
+        args: Vec<Operand>,
+    },
     Dispatch {
         dst: Register,
         relations: DispatchRelations,
@@ -493,6 +498,10 @@ fn validate_instruction(
             }
             Ok(())
         }
+        Instruction::BuiltinCall { dst, args, .. } => {
+            validate_register(register_count, *dst)?;
+            validate_operands(register_count, args.iter())
+        }
         Instruction::Dispatch {
             dst,
             selector,
@@ -584,6 +593,7 @@ const INST_EXIT_TRY: u8 = 29;
 const INST_END_FINALLY: u8 = 30;
 const INST_RAISE: u8 = 31;
 const INST_ERROR_FIELD: u8 = 32;
+const INST_BUILTIN_CALL: u8 = 33;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -868,6 +878,15 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_CALL);
             write_register(out, *dst);
             write_bytes(out, &program.to_bytes()?);
+            write_operands(out, args)
+        }
+        Instruction::BuiltinCall { dst, name, args } => {
+            let Some(name) = name.name() else {
+                return Err(artifact_error("cannot serialize unnamed builtin symbol"));
+            };
+            out.push(INST_BUILTIN_CALL);
+            write_register(out, *dst);
+            write_str(out, name);
             write_operands(out, args)
         }
     }
@@ -1214,6 +1233,11 @@ impl<'a> ByteReader<'a> {
             INST_CALL => Instruction::Call {
                 dst: self.read_register()?,
                 program: Arc::new(Program::from_bytes(&self.read_bytes()?)?),
+                args: self.read_operands()?,
+            },
+            INST_BUILTIN_CALL => Instruction::BuiltinCall {
+                dst: self.read_register()?,
+                name: Symbol::intern(&self.read_string()?),
                 args: self.read_operands()?,
             },
             INST_ASSERT => Instruction::Assert {

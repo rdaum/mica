@@ -1,5 +1,6 @@
 use crate::{
-    Program, ProgramResolver, SuspendKind, Task, TaskError, TaskId, TaskLimits, TaskOutcome,
+    BuiltinRegistry, Program, ProgramResolver, SuspendKind, Task, TaskError, TaskId, TaskLimits,
+    TaskOutcome,
 };
 use mica_relation_kernel::RelationKernel;
 use mica_var::Value;
@@ -53,6 +54,7 @@ pub struct Scheduler {
     effects: EffectLog,
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
+    builtins: Arc<BuiltinRegistry>,
 }
 
 impl Scheduler {
@@ -65,6 +67,7 @@ impl Scheduler {
             effects: EffectLog::default(),
             limits: TaskLimits::default(),
             resolver: Arc::new(ProgramResolver::new()),
+            builtins: Arc::new(BuiltinRegistry::new()),
         }
     }
 
@@ -75,6 +78,11 @@ impl Scheduler {
 
     pub fn with_resolver(mut self, resolver: Arc<ProgramResolver>) -> Self {
         self.resolver = resolver;
+        self
+    }
+
+    pub fn with_builtins(mut self, builtins: Arc<BuiltinRegistry>) -> Self {
+        self.builtins = builtins;
         self
     }
 
@@ -94,16 +102,21 @@ impl Scheduler {
         &self.resolver
     }
 
+    pub fn builtins(&self) -> &Arc<BuiltinRegistry> {
+        &self.builtins
+    }
+
     pub fn submit(
         &mut self,
         program: Arc<Program>,
     ) -> Result<(TaskId, TaskOutcome), SchedulerError> {
         let task_id = self.allocate_task_id();
-        let mut task = Task::new(
+        let mut task = Task::new_with_builtins(
             task_id,
             &self.kernel,
             program,
             self.resolver.clone(),
+            self.builtins.clone(),
             self.limits,
         );
         let outcome = task.run()?;
@@ -125,6 +138,7 @@ impl Scheduler {
             task_id,
             &self.kernel,
             self.resolver.clone(),
+            self.builtins.clone(),
             suspended.state,
         );
         let outcome = task.run()?;

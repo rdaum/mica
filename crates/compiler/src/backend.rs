@@ -1349,6 +1349,9 @@ impl<'a> ProgramCompiler<'a> {
         callee: &HirExpr,
         args: &[HirArg],
     ) -> Result<Register, CompileError> {
+        if let HirExpr::ExternalRef { name, .. } = callee {
+            return self.compile_builtin_call(id, name, args);
+        }
         let HirExpr::LocalRef { binding, .. } = callee else {
             return Err(self.unsupported(
                 id,
@@ -1388,6 +1391,29 @@ impl<'a> ProgramCompiler<'a> {
             dst,
             program: function.program,
             args: call_args,
+        });
+        Ok(dst)
+    }
+
+    fn compile_builtin_call(
+        &mut self,
+        id: NodeId,
+        name: &str,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(id, "builtin calls only support positional arguments"));
+        }
+        self.ensure_no_arg_splices(args, "builtin argument splices are not implemented yet")?;
+        let args = args
+            .iter()
+            .map(|arg| self.compile_arg_operand(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::BuiltinCall {
+            dst,
+            name: Symbol::intern(name),
+            args,
         });
         Ok(dst)
     }
@@ -2386,10 +2412,20 @@ fn expr_id(expr: &HirExpr) -> NodeId {
 mod tests {
     use super::*;
     use mica_relation_kernel::{ConflictPolicy, RelationKernel, RelationMetadata, Tuple};
-    use mica_runtime::{Scheduler, TaskOutcome};
+    use mica_runtime::{BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome};
+    use std::sync::Arc;
 
     fn id(raw: u64) -> Identity {
         Identity::new(raw).unwrap()
+    }
+
+    fn emit_first_arg(
+        context: &mut BuiltinContext<'_, '_>,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        let value = args.first().cloned().unwrap_or_else(Value::nothing);
+        context.emit(value.clone());
+        Ok(value)
     }
 
     fn dispatch_relations() -> MethodRelations {
@@ -2982,6 +3018,46 @@ mod tests {
                 retries: 0,
             }
         );
+    }
+
+    #[test]
+    fn compiled_task_calls_registered_runtime_builtin() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
+        let mut scheduler = Scheduler::new(kernel).with_builtins(Arc::new(builtins));
+        let submitted = submit_source_task(
+            "let value = emit_first_arg(\"hello\")\n\
+             return value",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::string("hello"),
+                effects: vec![Value::string("hello")],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_builtin_call_fails_at_runtime_when_unregistered() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let error =
+            submit_source_task("return missing_builtin()", &context, &mut scheduler).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SourceTaskError::Scheduler(mica_runtime::SchedulerError::Task(
+                mica_runtime::TaskError::Runtime(RuntimeError::UnknownBuiltin { name })
+            )) if name == Symbol::intern("missing_builtin")
+        ));
     }
 
     #[test]

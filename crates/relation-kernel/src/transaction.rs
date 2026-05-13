@@ -27,6 +27,10 @@ impl<'a> Transaction<'a> {
         self.base.version()
     }
 
+    pub fn kernel(&self) -> &'a RelationKernel {
+        self.kernel
+    }
+
     pub fn assert(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
         self.validate_tuple(relation, &tuple)?;
         self.writes

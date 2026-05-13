@@ -1,4 +1,6 @@
-use crate::{ProgramResolver, RegisterVm, SuspendKind, TaskError, VmHostResponse, VmState};
+use crate::{
+    BuiltinRegistry, ProgramResolver, RegisterVm, SuspendKind, TaskError, VmHostResponse, VmState,
+};
 use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
 use mica_var::Value;
 use std::sync::Arc;
@@ -46,6 +48,7 @@ pub struct Task<'a> {
     kernel: &'a RelationKernel,
     program: Arc<crate::Program>,
     resolver: Arc<ProgramResolver>,
+    builtins: Arc<BuiltinRegistry>,
     vm: RegisterVm,
     tx: Option<Transaction<'a>>,
     retry_state: VmState,
@@ -63,6 +66,24 @@ impl<'a> Task<'a> {
         resolver: Arc<ProgramResolver>,
         limits: TaskLimits,
     ) -> Self {
+        Self::new_with_builtins(
+            task_id,
+            kernel,
+            program,
+            resolver,
+            Arc::new(BuiltinRegistry::new()),
+            limits,
+        )
+    }
+
+    pub fn new_with_builtins(
+        task_id: TaskId,
+        kernel: &'a RelationKernel,
+        program: Arc<crate::Program>,
+        resolver: Arc<ProgramResolver>,
+        builtins: Arc<BuiltinRegistry>,
+        limits: TaskLimits,
+    ) -> Self {
         let vm = RegisterVm::new(program.clone());
         let retry_state = vm.snapshot_state();
         Self {
@@ -70,6 +91,7 @@ impl<'a> Task<'a> {
             kernel,
             program,
             resolver,
+            builtins,
             vm,
             tx: Some(kernel.begin()),
             retry_state,
@@ -84,6 +106,7 @@ impl<'a> Task<'a> {
         task_id: TaskId,
         kernel: &'a RelationKernel,
         resolver: Arc<ProgramResolver>,
+        builtins: Arc<BuiltinRegistry>,
         state: TaskState,
     ) -> Self {
         Self {
@@ -93,6 +116,7 @@ impl<'a> Task<'a> {
             tx: Some(kernel.begin()),
             program: state.program,
             resolver,
+            builtins,
             retry_state: state.retry_state,
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
@@ -134,6 +158,7 @@ impl<'a> Task<'a> {
                 self.vm.run_until_host_response(
                     tx,
                     &self.resolver,
+                    &self.builtins,
                     &mut self.pending_effects,
                     self.limits.instruction_budget,
                     self.limits.max_call_depth,

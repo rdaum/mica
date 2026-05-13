@@ -1,7 +1,8 @@
 use mica_compiler::{CompileContext, SourceTaskError, submit_source_task};
 use mica_relation_kernel::RelationKernel;
-use mica_runtime::{Scheduler, TaskOutcome};
+use mica_runtime::{BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome};
 use mica_var::Value;
+use std::sync::Arc;
 
 pub struct SourceRunner {
     context: CompileContext,
@@ -12,7 +13,8 @@ impl SourceRunner {
     pub fn new_empty() -> Self {
         Self {
             context: CompileContext::new(),
-            scheduler: Scheduler::new(RelationKernel::new()),
+            scheduler: Scheduler::new(RelationKernel::new())
+                .with_builtins(Arc::new(default_builtins())),
         }
     }
 
@@ -23,6 +25,19 @@ impl SourceRunner {
             outcome: submitted.outcome,
         })
     }
+}
+
+fn default_builtins() -> BuiltinRegistry {
+    BuiltinRegistry::new().with_builtin("emit", emit_builtin)
+}
+
+fn emit_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    let value = args.first().cloned().unwrap_or_else(Value::nothing);
+    context.emit(value.clone());
+    Ok(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,7 +98,7 @@ fn render_effects(out: &mut String, effects: &[Value]) {
 mod tests {
     use super::SourceRunner;
     use mica_runtime::TaskOutcome;
-    use mica_var::Value;
+    use mica_var::{Symbol, Value};
 
     #[test]
     fn runner_executes_source_against_empty_kernel() {
@@ -93,6 +108,31 @@ mod tests {
         assert!(matches!(
             report.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::int(3).unwrap()
+        ));
+    }
+
+    #[test]
+    fn runner_installs_default_emit_builtin() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner.run_source("return emit(\"hello\")").unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, effects, .. }
+                if value == Value::string("hello") && effects == vec![Value::string("hello")]
+        ));
+    }
+
+    #[test]
+    fn runner_aborts_on_divide_by_zero_before_builtin_effect() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner.run_source("return emit(1 / 0)").unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Aborted { error, effects, .. }
+                if error.error_code_symbol() == Some(Symbol::intern("E_DIV"))
+                    && effects.is_empty()
         ));
     }
 

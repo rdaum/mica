@@ -1,9 +1,9 @@
 use crate::{
-    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
-    RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp, SuspendKind,
+    BuiltinRegistry, CatchHandler, ErrorField, Instruction, ListItem, Operand, Program,
+    ProgramResolver, Register, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
-use mica_var::{Value, ValueKind};
+use mica_var::{Symbol, Value, ValueKind};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -155,12 +155,13 @@ impl RegisterVm {
         &mut self,
         tx: &mut Transaction<'_>,
         resolver: &ProgramResolver,
+        builtins: &BuiltinRegistry,
         pending_effects: &mut Vec<Value>,
         instruction_budget: usize,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
         for _ in 0..instruction_budget {
-            let response = self.step(tx, resolver, pending_effects, max_call_depth)?;
+            let response = self.step(tx, resolver, builtins, pending_effects, max_call_depth)?;
             if response != VmHostResponse::Continue {
                 return Ok(response);
             }
@@ -174,6 +175,7 @@ impl RegisterVm {
         &mut self,
         tx: &mut Transaction<'_>,
         resolver: &ProgramResolver,
+        builtins: &BuiltinRegistry,
         pending_effects: &mut Vec<Value>,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
@@ -201,7 +203,10 @@ impl RegisterVm {
             }
             Instruction::Unary { dst, op, src } => {
                 let value = self.read_register(src)?;
-                let value = eval_unary(op, value);
+                let value = match eval_unary(op, value) {
+                    Ok(value) => value,
+                    Err(error) => return self.begin_raise(error),
+                };
                 self.write_register(dst, value)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
@@ -212,7 +217,11 @@ impl RegisterVm {
                 left,
                 right,
             } => {
-                let value = eval_binary(op, self.read_register(left)?, self.read_register(right)?);
+                let value =
+                    match eval_binary(op, self.read_register(left)?, self.read_register(right)?) {
+                        Ok(value) => value,
+                        Err(error) => return self.begin_raise(error),
+                    };
                 self.write_register(dst, value)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
@@ -405,6 +414,20 @@ impl RegisterVm {
                 self.state
                     .frames
                     .push(Frame::new(program, Some(dst), args)?);
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::BuiltinCall { dst, name, args } => {
+                let builtin = builtins
+                    .get(name)
+                    .ok_or(RuntimeError::UnknownBuiltin { name })?;
+                let args = args
+                    .iter()
+                    .map(|arg| self.resolve_operand(arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut context = crate::BuiltinContext::new(tx.kernel(), tx, pending_effects);
+                let value = builtin.call(&mut context, &args)?;
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Dispatch {
@@ -693,27 +716,59 @@ fn truthy(value: &Value) -> bool {
     }
 }
 
-fn eval_unary(op: RuntimeUnaryOp, value: &Value) -> Value {
+fn eval_unary(op: RuntimeUnaryOp, value: &Value) -> Result<Value, Value> {
     match op {
-        RuntimeUnaryOp::Not => Value::bool(!truthy(value)),
-        RuntimeUnaryOp::Neg => value.checked_neg().unwrap_or_else(Value::nothing),
+        RuntimeUnaryOp::Not => Ok(Value::bool(!truthy(value))),
+        RuntimeUnaryOp::Neg => value
+            .checked_neg()
+            .ok_or_else(|| arithmetic_error("E_ARITH", "invalid unary arithmetic", [value])),
     }
 }
 
-fn eval_binary(op: RuntimeBinaryOp, left: &Value, right: &Value) -> Value {
+fn eval_binary(op: RuntimeBinaryOp, left: &Value, right: &Value) -> Result<Value, Value> {
     match op {
-        RuntimeBinaryOp::Eq => Value::bool(left == right),
-        RuntimeBinaryOp::Ne => Value::bool(left != right),
-        RuntimeBinaryOp::Lt => Value::bool(left < right),
-        RuntimeBinaryOp::Le => Value::bool(left <= right),
-        RuntimeBinaryOp::Gt => Value::bool(left > right),
-        RuntimeBinaryOp::Ge => Value::bool(left >= right),
-        RuntimeBinaryOp::Add => left.checked_add(right).unwrap_or_else(Value::nothing),
-        RuntimeBinaryOp::Sub => left.checked_sub(right).unwrap_or_else(Value::nothing),
-        RuntimeBinaryOp::Mul => left.checked_mul(right).unwrap_or_else(Value::nothing),
-        RuntimeBinaryOp::Div => left.checked_div(right).unwrap_or_else(Value::nothing),
-        RuntimeBinaryOp::Rem => left.checked_rem(right).unwrap_or_else(Value::nothing),
+        RuntimeBinaryOp::Eq => Ok(Value::bool(left == right)),
+        RuntimeBinaryOp::Ne => Ok(Value::bool(left != right)),
+        RuntimeBinaryOp::Lt => Ok(Value::bool(left < right)),
+        RuntimeBinaryOp::Le => Ok(Value::bool(left <= right)),
+        RuntimeBinaryOp::Gt => Ok(Value::bool(left > right)),
+        RuntimeBinaryOp::Ge => Ok(Value::bool(left >= right)),
+        RuntimeBinaryOp::Add => left
+            .checked_add(right)
+            .ok_or_else(|| arithmetic_error("E_ARITH", "invalid addition", [left, right])),
+        RuntimeBinaryOp::Sub => left
+            .checked_sub(right)
+            .ok_or_else(|| arithmetic_error("E_ARITH", "invalid subtraction", [left, right])),
+        RuntimeBinaryOp::Mul => left
+            .checked_mul(right)
+            .ok_or_else(|| arithmetic_error("E_ARITH", "invalid multiplication", [left, right])),
+        RuntimeBinaryOp::Div if is_zero(right) => {
+            Err(arithmetic_error("E_DIV", "division by zero", [left, right]))
+        }
+        RuntimeBinaryOp::Div => left
+            .checked_div(right)
+            .ok_or_else(|| arithmetic_error("E_ARITH", "invalid division", [left, right])),
+        RuntimeBinaryOp::Rem if is_zero(right) => Err(arithmetic_error(
+            "E_DIV",
+            "remainder by zero",
+            [left, right],
+        )),
+        RuntimeBinaryOp::Rem => left
+            .checked_rem(right)
+            .ok_or_else(|| arithmetic_error("E_ARITH", "invalid remainder", [left, right])),
     }
+}
+
+fn is_zero(value: &Value) -> bool {
+    value.as_int() == Some(0) || value.as_float() == Some(0.0)
+}
+
+fn arithmetic_error<const N: usize>(code: &str, message: &str, values: [&Value; N]) -> Value {
+    Value::error(
+        Symbol::intern(code),
+        Some(message),
+        Some(Value::list(values.into_iter().cloned())),
+    )
 }
 
 fn index_value(collection: &Value, index: &Value) -> Value {

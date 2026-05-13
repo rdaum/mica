@@ -1,6 +1,7 @@
 use crate::{
-    Effect, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
-    RuntimeError, Scheduler, SchedulerError, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
+    BuiltinContext, BuiltinRegistry, Effect, ErrorField, Instruction, ListItem, Operand, Program,
+    ProgramResolver, Register, RuntimeBinaryOp, RuntimeError, Scheduler, SchedulerError,
+    SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -86,6 +87,31 @@ fn run_program(
         },
     );
     task.run()
+}
+
+fn run_program_with_builtins(
+    kernel: &RelationKernel,
+    program: Program,
+    builtins: BuiltinRegistry,
+) -> Result<TaskOutcome, crate::TaskError> {
+    let mut task = Task::new_with_builtins(
+        1,
+        kernel,
+        Arc::new(program),
+        Arc::new(ProgramResolver::new()),
+        Arc::new(builtins),
+        TaskLimits::default(),
+    );
+    task.run()
+}
+
+fn emit_first_arg(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    let value = args.first().cloned().unwrap_or_else(Value::nothing);
+    context.emit(value.clone());
+    Ok(value)
 }
 
 #[test]
@@ -269,6 +295,58 @@ fn explicit_commit_boundary_survives_later_abort() {
     assert_eq!(
         kernel.snapshot().scan(rel(2), &[Some(item), None]).unwrap(),
         vec![Tuple::from([int(200), actor])]
+    );
+}
+
+#[test]
+fn binary_divide_by_zero_raises_catchable_error() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        4,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(1),
+            },
+            Instruction::Load {
+                dst: reg(1),
+                value: int(0),
+            },
+            Instruction::EnterTry {
+                catches: vec![crate::CatchHandler {
+                    code: Some(err("E_DIV")),
+                    binding: Some(reg(3)),
+                    target: 5,
+                }],
+                finally: None,
+                end: 6,
+            },
+            Instruction::Binary {
+                dst: reg(2),
+                op: RuntimeBinaryOp::Div,
+                left: reg(0),
+                right: reg(1),
+            },
+            Instruction::ExitTry,
+            Instruction::Return { value: r(3) },
+            Instruction::Return {
+                value: v(Value::nothing()),
+            },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program(&kernel, program, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: error(
+                "E_DIV",
+                Some("division by zero"),
+                Some(Value::list([int(1), int(0)]))
+            ),
+            effects: vec![],
+            retries: 0,
+        }
     );
 }
 
@@ -653,6 +731,59 @@ fn direct_program_call_returns_into_caller_register() {
             effects: vec![],
             retries: 0,
         }
+    );
+}
+
+#[test]
+fn builtin_call_invokes_registered_host_function() {
+    let kernel = kernel_with_world_relations();
+    let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
+    let program = Program::new(
+        1,
+        [
+            Instruction::BuiltinCall {
+                dst: reg(0),
+                name: Symbol::intern("emit_first_arg"),
+                args: vec![v(strv("hello"))],
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program_with_builtins(&kernel, restored, builtins).unwrap(),
+        TaskOutcome::Complete {
+            value: strv("hello"),
+            effects: vec![strv("hello")],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn missing_builtin_call_is_runtime_error() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        1,
+        [
+            Instruction::BuiltinCall {
+                dst: reg(0),
+                name: Symbol::intern("missing_builtin"),
+                args: vec![],
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program(&kernel, program, 100).unwrap_err(),
+        TaskError::Runtime(RuntimeError::UnknownBuiltin {
+            name: Symbol::intern("missing_builtin")
+        })
     );
 }
 
