@@ -1,5 +1,5 @@
 use crate::heap::HeapValue;
-use crate::value::{TAG_LIST, TAG_MAP, TAG_STRING, Value, ValueKind, normalize_f32};
+use crate::value::{TAG_BYTES, TAG_LIST, TAG_MAP, TAG_STRING, Value, ValueKind, normalize_f32};
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -30,6 +30,9 @@ impl Value {
             }
             ValueKind::String => {
                 let _ = self.with_str(|value| encode_bytes_terminated(value.as_bytes(), out));
+            }
+            ValueKind::Bytes => {
+                let _ = self.with_bytes(|value| encode_bytes_terminated(value, out));
             }
             ValueKind::List => {
                 let _ = self.with_list(|values| {
@@ -65,6 +68,9 @@ impl PartialEq for Value {
             | (ValueKind::Symbol, ValueKind::Symbol) => self.payload() == other.payload(),
             (ValueKind::String, ValueKind::String) => self
                 .with_str(|left| other.with_str(|right| left == right).unwrap())
+                .unwrap(),
+            (ValueKind::Bytes, ValueKind::Bytes) => self
+                .with_bytes(|left| other.with_bytes(|right| left == right).unwrap())
                 .unwrap(),
             (ValueKind::List, ValueKind::List) => self
                 .with_list(|left| other.with_list(|right| left == right).unwrap())
@@ -106,6 +112,9 @@ impl Ord for Value {
             ValueKind::String => self
                 .with_str(|left| other.with_str(|right| left.cmp(right)).unwrap())
                 .unwrap(),
+            ValueKind::Bytes => self
+                .with_bytes(|left| other.with_bytes(|right| left.cmp(right)).unwrap())
+                .unwrap(),
             ValueKind::List => self
                 .with_list(|left| other.with_list(|right| left.cmp(right)).unwrap())
                 .unwrap(),
@@ -131,6 +140,9 @@ impl Hash for Value {
             ValueKind::String => {
                 let _ = self.with_str(|value| value.hash(state));
             }
+            ValueKind::Bytes => {
+                let _ = self.with_bytes(|value| value.hash(state));
+            }
             ValueKind::List => {
                 let _ = self.with_list(|values| values.hash(state));
             }
@@ -154,6 +166,13 @@ impl fmt::Debug for Value {
                 None => write!(f, ":#{}", self.as_symbol().unwrap().id()),
             },
             ValueKind::String => self.with_str(|value| write!(f, "{value:?}")).unwrap(),
+            ValueKind::Bytes => self
+                .with_bytes(|value| {
+                    f.write_str("#bytes(\"")?;
+                    write_hex_bytes(value, f)?;
+                    f.write_str("\")")
+                })
+                .unwrap(),
             ValueKind::List => self
                 .with_list(|values| f.debug_list().entries(values).finish())
                 .unwrap(),
@@ -183,6 +202,13 @@ impl fmt::Display for Value {
                 None => write!(f, ":#{}", self.as_symbol().unwrap().id()),
             },
             ValueKind::String => self.with_str(|value| f.write_str(value)).unwrap(),
+            ValueKind::Bytes => self
+                .with_bytes(|value| {
+                    f.write_str("#bytes(\"")?;
+                    write_hex_bytes(value, f)?;
+                    f.write_str("\")")
+                })
+                .unwrap(),
             ValueKind::List => self
                 .with_list(|values| {
                     f.write_str("{")?;
@@ -221,6 +247,16 @@ fn ordered_f32_bits(value: f32) -> u32 {
     }
 }
 
+fn write_hex_bytes(bytes: &[u8], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in bytes {
+        f.write_str("\\x")?;
+        f.write_str(std::str::from_utf8(&[HEX[(byte >> 4) as usize]]).unwrap())?;
+        f.write_str(std::str::from_utf8(&[HEX[(byte & 0x0f) as usize]]).unwrap())?;
+    }
+    Ok(())
+}
+
 fn encode_bytes_terminated(bytes: &[u8], out: &mut Vec<u8>) {
     for byte in bytes {
         if *byte == 0 {
@@ -237,5 +273,5 @@ const _: () = {
         heap.tag()
     }
     let _ = _heap_value_is_used;
-    let _ = (TAG_STRING, TAG_LIST, TAG_MAP);
+    let _ = (TAG_STRING, TAG_BYTES, TAG_LIST, TAG_MAP);
 };

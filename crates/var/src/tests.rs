@@ -63,12 +63,19 @@ fn float_is_reduced_precision_and_canonicalizes_zero() {
 }
 
 #[test]
-fn string_list_and_map_are_values() {
+fn string_bytes_list_and_map_are_values() {
     let string = Value::string("brass lamp");
     assert_eq!(
         string.with_str(|s| s.to_string()),
         Some("brass lamp".to_string())
     );
+
+    let bytes = Value::bytes([0xde, 0xad, 0xbe, 0xef]);
+    assert_eq!(
+        bytes.with_bytes(|value| value.to_vec()),
+        Some(vec![0xde, 0xad, 0xbe, 0xef])
+    );
+    assert_eq!(format!("{bytes:?}"), "#bytes(\"\\xde\\xad\\xbe\\xef\")");
 
     let list = Value::list([Value::int(1).unwrap(), Value::int(2).unwrap()]);
     assert_eq!(list.with_list(|values| values.len()), Some(2));
@@ -117,6 +124,7 @@ fn total_order_is_stable() {
     let values = vec![
         Value::map([]),
         Value::list([]),
+        Value::bytes([1, 2, 3]),
         Value::string("x"),
         Value::symbol(Symbol::intern("x")),
         Value::identity_raw(1).unwrap(),
@@ -139,6 +147,15 @@ fn ordered_encoding_preserves_string_order() {
     let a = Value::string("a").ordered_key_bytes();
     let aa = Value::string("aa").ordered_key_bytes();
     let b = Value::string("b").ordered_key_bytes();
+    assert!(a < aa);
+    assert!(aa < b);
+}
+
+#[test]
+fn ordered_encoding_preserves_bytes_order() {
+    let a = Value::bytes([0x00]).ordered_key_bytes();
+    let aa = Value::bytes([0x00, 0x00]).ordered_key_bytes();
+    let b = Value::bytes([0x01]).ordered_key_bytes();
     assert!(a < aa);
     assert!(aa < b);
 }

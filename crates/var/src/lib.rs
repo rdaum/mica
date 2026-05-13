@@ -2,7 +2,7 @@
 //!
 //! `Value` is intentionally one machine word wide. Immediate identities,
 //! symbols, booleans, small integers, and reduced-precision floats stay inline;
-//! strings, lists, and maps are immutable heap values shared with `Arc`.
+//! strings, bytes, lists, and maps are immutable heap values shared with `Arc`.
 
 mod heap;
 mod symbol;

@@ -13,6 +13,7 @@ fn leaf_value() -> impl Strategy<Value = Value> {
         (0u64..=Identity::MAX).prop_map(|raw| Value::identity(Identity::new(raw).unwrap())),
         "[a-z_][a-z0-9_]{0,12}".prop_map(|name| Value::symbol(Symbol::intern(&name))),
         "\\PC{0,24}".prop_map(Value::string),
+        prop::collection::vec(any::<u8>(), 0..24).prop_map(Value::bytes),
     ]
 }
 

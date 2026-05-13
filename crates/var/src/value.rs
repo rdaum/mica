@@ -12,8 +12,9 @@ pub(crate) const TAG_FLOAT: u8 = 3;
 pub(crate) const TAG_IDENTITY: u8 = 4;
 pub(crate) const TAG_SYMBOL: u8 = 5;
 pub(crate) const TAG_STRING: u8 = 6;
-pub(crate) const TAG_LIST: u8 = 7;
-pub(crate) const TAG_MAP: u8 = 8;
+pub(crate) const TAG_BYTES: u8 = 7;
+pub(crate) const TAG_LIST: u8 = 8;
+pub(crate) const TAG_MAP: u8 = 9;
 
 pub(crate) const INT_BITS: u32 = 56;
 pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
@@ -61,6 +62,7 @@ pub enum ValueKind {
     Identity = TAG_IDENTITY,
     Symbol = TAG_SYMBOL,
     String = TAG_STRING,
+    Bytes = TAG_BYTES,
     List = TAG_LIST,
     Map = TAG_MAP,
 }
@@ -124,6 +126,10 @@ impl Value {
         Self::heap(HeapValue::String(value.as_ref().into()))
     }
 
+    pub fn bytes(value: impl AsRef<[u8]>) -> Self {
+        Self::heap(HeapValue::Bytes(value.as_ref().into()))
+    }
+
     pub fn list(values: impl IntoIterator<Item = Value>) -> Self {
         Self::heap(HeapValue::List(
             values.into_iter().collect::<Vec<_>>().into_boxed_slice(),
@@ -161,6 +167,7 @@ impl Value {
             TAG_IDENTITY => ValueKind::Identity,
             TAG_SYMBOL => ValueKind::Symbol,
             TAG_STRING => ValueKind::String,
+            TAG_BYTES => ValueKind::Bytes,
             TAG_LIST => ValueKind::List,
             TAG_MAP => ValueKind::Map,
             _ => unreachable!(),
@@ -169,7 +176,7 @@ impl Value {
 
     #[inline(always)]
     pub const fn is_immediate(&self) -> bool {
-        !matches!(self.tag(), TAG_STRING | TAG_LIST | TAG_MAP)
+        !matches!(self.tag(), TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP)
     }
 
     #[inline(always)]
@@ -221,6 +228,13 @@ impl Value {
     pub fn with_str<R>(&self, f: impl FnOnce(&str) -> R) -> Option<R> {
         self.with_heap(|heap| match heap {
             HeapValue::String(value) => Some(f(value)),
+            _ => None,
+        })?
+    }
+
+    pub fn with_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        self.with_heap(|heap| match heap {
+            HeapValue::Bytes(value) => Some(f(value)),
             _ => None,
         })?
     }
