@@ -213,6 +213,7 @@ pub struct HirRelationAtom {
     pub id: NodeId,
     pub name: String,
     pub args: Vec<HirArg>,
+    pub negated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

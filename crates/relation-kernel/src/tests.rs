@@ -128,14 +128,17 @@ fn installed_rules_derive_tuples_as_relation_reads() {
         ))
         .unwrap();
     kernel
-        .install_rule(Rule::new(
-            rel(2),
-            [var("actor"), var("obj")],
-            [
-                Atom::positive(rel(1), [var("actor"), var("room")]),
-                Atom::positive(rel(1), [var("obj"), var("room")]),
-            ],
-        ))
+        .install_rule(
+            Rule::new(
+                rel(2),
+                [var("actor"), var("obj")],
+                [
+                    Atom::positive(rel(1), [var("actor"), var("room")]),
+                    Atom::positive(rel(1), [var("obj"), var("room")]),
+                ],
+            ),
+            "VisibleTo(actor, obj) :- LocatedIn(actor, room), LocatedIn(obj, room)",
+        )
         .unwrap();
 
     let mut tx = kernel.begin();
@@ -169,11 +172,14 @@ fn relation_reads_union_asserted_and_rule_derived_tuples() {
         ))
         .unwrap();
     kernel
-        .install_rule(Rule::new(
-            rel(2),
-            [var("actor"), var("obj")],
-            [Atom::positive(rel(1), [var("actor"), var("obj")])],
-        ))
+        .install_rule(
+            Rule::new(
+                rel(2),
+                [var("actor"), var("obj")],
+                [Atom::positive(rel(1), [var("actor"), var("obj")])],
+            ),
+            "VisibleTo(actor, obj) :- LocatedIn(actor, obj)",
+        )
         .unwrap();
 
     let mut seed = kernel.begin();
@@ -190,6 +196,76 @@ fn relation_reads_union_asserted_and_rule_derived_tuples() {
             Tuple::from([int(99), int(100)])
         ]
     );
+}
+
+#[test]
+fn installed_rules_have_catalog_facts_and_can_be_disabled() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(1),
+            Symbol::intern("LocatedIn"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(2),
+            Symbol::intern("VisibleTo"),
+            2,
+        ))
+        .unwrap();
+    let definition = kernel
+        .install_rule(
+            Rule::new(
+                rel(2),
+                [var("actor"), var("obj")],
+                [Atom::positive(rel(1), [var("actor"), var("obj")])],
+            ),
+            "VisibleTo(actor, obj) :- LocatedIn(actor, obj)",
+        )
+        .unwrap();
+    let rule_id = definition.id();
+
+    let facts = kernel.snapshot().catalog_facts();
+    assert!(facts.contains(&CatalogFact {
+        predicate: CatalogPredicate::Rule,
+        tuple: Tuple::from([Value::identity(rule_id)]),
+    }));
+    assert!(facts.contains(&CatalogFact {
+        predicate: CatalogPredicate::RuleHead,
+        tuple: Tuple::from([Value::identity(rule_id), Value::identity(rel(2))]),
+    }));
+    assert!(facts.contains(&CatalogFact {
+        predicate: CatalogPredicate::RuleSource,
+        tuple: Tuple::from([
+            Value::identity(rule_id),
+            Value::string("VisibleTo(actor, obj) :- LocatedIn(actor, obj)")
+        ]),
+    }));
+    assert!(facts.contains(&CatalogFact {
+        predicate: CatalogPredicate::ActiveRule,
+        tuple: Tuple::from([Value::identity(rule_id), Value::bool(true)]),
+    }));
+
+    let mut seed = kernel.begin();
+    seed.assert(rel(1), Tuple::from([int(10), int(20)]))
+        .unwrap();
+    seed.commit().unwrap();
+    assert_eq!(
+        kernel.snapshot().scan(rel(2), &[None, None]).unwrap(),
+        vec![Tuple::from([int(10), int(20)])]
+    );
+
+    kernel.disable_rule(rule_id).unwrap();
+    assert_eq!(
+        kernel.snapshot().scan(rel(2), &[None, None]).unwrap(),
+        vec![]
+    );
+    assert!(kernel.snapshot().catalog_facts().contains(&CatalogFact {
+        predicate: CatalogPredicate::ActiveRule,
+        tuple: Tuple::from([Value::identity(rule_id), Value::bool(false)]),
+    }));
 }
 
 #[test]

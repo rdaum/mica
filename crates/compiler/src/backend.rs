@@ -5,7 +5,8 @@ use crate::{
     parse_semantic,
 };
 use mica_relation_kernel::{
-    Atom, DispatchRelations, RelationId, RelationKernel, Rule, Term, Transaction, Tuple,
+    Atom, DispatchRelations, RelationId, RelationKernel, Rule, RuleDefinition, Term, Transaction,
+    Tuple,
 };
 use mica_runtime::{
     CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, QueryBinding, Register,
@@ -63,13 +64,14 @@ pub fn install_rules_from_source(
     kernel: &RelationKernel,
 ) -> Result<Option<RuleInstallation>, CompileError> {
     let semantic = parse_semantic(source);
-    install_rules(semantic, context, kernel)
+    install_rules(semantic, context, kernel, source)
 }
 
 pub fn install_rules(
     semantic: SemanticProgram,
     context: &CompileContext,
     kernel: &RelationKernel,
+    source: &str,
 ) -> Result<Option<RuleInstallation>, CompileError> {
     if !semantic.parse_errors.is_empty() {
         return Err(CompileError::ParseErrors {
@@ -111,10 +113,18 @@ pub fn install_rules(
         .iter()
         .map(|item| compile_rule_item(&semantic, context, item))
         .collect::<Result<Vec<_>, _>>()?;
-    for rule in &rules {
-        kernel.install_rule(rule.clone())?;
-    }
-    Ok(Some(RuleInstallation { semantic, rules }))
+    let definitions = rules
+        .into_iter()
+        .map(|rule| {
+            kernel
+                .install_rule(rule, source.to_owned())
+                .map_err(Into::into)
+        })
+        .collect::<Result<Vec<_>, CompileError>>()?;
+    Ok(Some(RuleInstallation {
+        semantic,
+        rules: definitions,
+    }))
 }
 
 pub fn install_methods_from_source(
@@ -208,7 +218,7 @@ pub struct MethodInstallation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuleInstallation {
     pub semantic: SemanticProgram,
-    pub rules: Vec<Rule>,
+    pub rules: Vec<RuleDefinition>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -415,10 +425,12 @@ fn compile_rule_item(
                         span: semantic.span(atom.id).cloned(),
                         name: atom.name.clone(),
                     })?;
-            Ok(Atom::positive(
-                relation,
-                compile_rule_terms(semantic, context, &atom.args)?,
-            ))
+            let terms = compile_rule_terms(semantic, context, &atom.args)?;
+            Ok(if atom.negated {
+                Atom::negated(relation, terms)
+            } else {
+                Atom::positive(relation, terms)
+            })
         })
         .collect::<Result<Vec<_>, CompileError>>()?;
     if body.is_empty() {

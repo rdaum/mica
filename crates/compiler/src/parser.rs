@@ -253,7 +253,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::AssertKw => self.parse_effect_expr(SyntaxKind::AssertExpr),
             SyntaxKind::RetractKw => self.parse_effect_expr(SyntaxKind::RetractExpr),
             SyntaxKind::RequireKw => self.parse_effect_expr(SyntaxKind::RequireExpr),
-            SyntaxKind::Bang | SyntaxKind::Minus => self.parse_unary_expr(),
+            SyntaxKind::Bang | SyntaxKind::NotKw | SyntaxKind::Minus => self.parse_unary_expr(),
             SyntaxKind::LParen => self.parse_group_expr(),
             SyntaxKind::LBracket => self.parse_list_expr(),
             SyntaxKind::LBrace if self.looks_like_brace_lambda() => self.parse_brace_lambda_expr(),
@@ -760,6 +760,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::RetractKw
                 | SyntaxKind::RequireKw
                 | SyntaxKind::Bang
+                | SyntaxKind::NotKw
                 | SyntaxKind::Minus
                 | SyntaxKind::LParen
                 | SyntaxKind::LBracket
@@ -999,6 +1000,16 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::OneExpr));
         assert!(contains(&parse.root, SyntaxKind::QueryVarExpr));
+    }
+
+    #[test]
+    fn parses_not_in_relation_rule_body() {
+        let parse = parse(
+            "VisibleTo(actor, obj) :-\n  LocatedIn(actor, room),\n  not HiddenFrom(obj, actor)",
+        );
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::RelationRule));
+        assert!(contains(&parse.root, SyntaxKind::UnaryExpr));
     }
 
     #[test]

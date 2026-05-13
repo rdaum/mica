@@ -6,6 +6,10 @@ pub enum CatalogPredicate {
     Relation,
     RelationName,
     Arity,
+    Rule,
+    RuleHead,
+    RuleSource,
+    ActiveRule,
     ArgumentName,
     ConflictPolicy,
     FunctionalKey,
@@ -20,6 +24,10 @@ impl CatalogPredicate {
             Self::Relation => Symbol::intern("Relation"),
             Self::RelationName => Symbol::intern("RelationName"),
             Self::Arity => Symbol::intern("Arity"),
+            Self::Rule => Symbol::intern("Rule"),
+            Self::RuleHead => Symbol::intern("RuleHead"),
+            Self::RuleSource => Symbol::intern("RuleSource"),
+            Self::ActiveRule => Symbol::intern("ActiveRule"),
             Self::ArgumentName => Symbol::intern("ArgumentName"),
             Self::ConflictPolicy => Symbol::intern("ConflictPolicy"),
             Self::FunctionalKey => Symbol::intern("FunctionalKey"),
@@ -94,6 +102,25 @@ impl Snapshot {
                     ));
                 }
             }
+        }
+        for rule in &self.rules {
+            let rule_id = Value::identity(rule.id());
+            facts.push(catalog_fact(CatalogPredicate::Rule, [rule_id.clone()]));
+            facts.push(catalog_fact(
+                CatalogPredicate::RuleHead,
+                [
+                    rule_id.clone(),
+                    Value::identity(rule.rule().head_relation()),
+                ],
+            ));
+            facts.push(catalog_fact(
+                CatalogPredicate::RuleSource,
+                [rule_id.clone(), Value::string(rule.source())],
+            ));
+            facts.push(catalog_fact(
+                CatalogPredicate::ActiveRule,
+                [rule_id, Value::bool(rule.active())],
+            ));
         }
         facts
     }

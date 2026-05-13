@@ -26,6 +26,7 @@ pub enum SyntaxKind {
     RaiseKw,
     RecoverKw,
     OneKw,
+    NotKw,
     BreakKw,
     ContinueKw,
     TryKw,

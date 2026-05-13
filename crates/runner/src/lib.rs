@@ -64,6 +64,10 @@ impl SourceRunner {
         for (identity, name) in self.identity_names() {
             self.context.define_identity(name, identity);
         }
+        for (index, rule) in snapshot.rules().iter().enumerate() {
+            self.context
+                .define_identity(format!("rule{}", index + 1), rule.id());
+        }
     }
 
     fn identity_names(&self) -> BTreeMap<Identity, String> {
@@ -80,6 +84,13 @@ impl SourceRunner {
                 let identity = identity.as_identity()?;
                 Some((identity, name))
             })
+            .chain(
+                snapshot
+                    .rules()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, rule)| (rule.id(), format!("rule{}", index + 1))),
+            )
             .collect()
     }
 
@@ -92,13 +103,13 @@ impl SourceRunner {
     }
 }
 
-fn installed_rule_value(rules: &[mica_relation_kernel::Rule]) -> Value {
+fn installed_rule_value(rules: &[mica_relation_kernel::RuleDefinition]) -> Value {
     match rules {
-        [rule] => Value::identity(rule.head_relation()),
+        [rule] => Value::identity(rule.id()),
         _ => Value::list(
             rules
                 .iter()
-                .map(|rule| Value::identity(rule.head_relation()))
+                .map(|rule| Value::identity(rule.id()))
                 .collect::<Vec<_>>(),
         ),
     }
@@ -126,6 +137,10 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("emit", emit_builtin)
         .with_builtin("make_relation", MakeRelationBuiltin::new())
         .with_builtin("make_identity", MakeIdentityBuiltin::new())
+        .with_builtin("rules", rules_builtin)
+        .with_builtin("describe_rule", describe_rule_builtin)
+        .with_builtin("disable_rule", disable_rule_builtin)
+        .with_builtin("fileout_rules", fileout_rules_builtin)
 }
 
 fn emit_builtin(
@@ -135,6 +150,96 @@ fn emit_builtin(
     let value = args.first().cloned().unwrap_or_else(Value::nothing);
     context.emit(value.clone());
     Ok(value)
+}
+
+fn rules_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("rules", "expected rules(:Relation)"));
+    }
+    let name = builtin_symbol_arg("rules", args, 0)?;
+    let Some((relation, _)) = relation_named(context.kernel(), name) else {
+        return Ok(Value::list([]));
+    };
+    let rules = context
+        .kernel()
+        .snapshot()
+        .rules()
+        .iter()
+        .filter(|rule| rule.active() && rule.rule().head_relation() == relation)
+        .map(|rule| Value::identity(rule.id()))
+        .collect::<Vec<_>>();
+    Ok(Value::list(rules))
+}
+
+fn describe_rule_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "describe_rule",
+            "expected describe_rule($rule)",
+        ));
+    }
+    let rule_id = builtin_identity_arg("describe_rule", args, 0)?;
+    let source = context
+        .kernel()
+        .snapshot()
+        .rules()
+        .iter()
+        .find(|rule| rule.id() == rule_id)
+        .map(|rule| Value::string(rule.source()))
+        .unwrap_or_else(Value::nothing);
+    Ok(source)
+}
+
+fn fileout_rules_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() > 1 {
+        return Err(invalid_builtin_call(
+            "fileout_rules",
+            "expected fileout_rules() or fileout_rules(:Relation)",
+        ));
+    }
+    let relation = if args.is_empty() {
+        None
+    } else {
+        let name = builtin_symbol_arg("fileout_rules", args, 0)?;
+        relation_named(context.kernel(), name).map(|(relation, _)| relation)
+    };
+    let snapshot = context.kernel().snapshot();
+    let sources = snapshot
+        .rules()
+        .iter()
+        .filter(|rule| rule.active())
+        .filter(|rule| {
+            relation
+                .map(|relation| relation == rule.rule().head_relation())
+                .unwrap_or(true)
+        })
+        .map(|rule| rule.source().trim().to_owned())
+        .collect::<Vec<_>>();
+    Ok(Value::string(sources.join("\n\n")))
+}
+
+fn disable_rule_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "disable_rule",
+            "expected disable_rule($rule)",
+        ));
+    }
+    let rule_id = builtin_identity_arg("disable_rule", args, 0)?;
+    context.kernel().disable_rule(rule_id)?;
+    Ok(Value::nothing())
 }
 
 struct MakeRelationBuiltin {
@@ -268,6 +373,16 @@ fn builtin_symbol_arg(name: &str, args: &[Value], index: usize) -> Result<Symbol
     args.get(index)
         .and_then(Value::as_symbol)
         .ok_or_else(|| invalid_builtin_call(name, "expected symbol argument"))
+}
+
+fn builtin_identity_arg(
+    name: &str,
+    args: &[Value],
+    index: usize,
+) -> Result<Identity, RuntimeError> {
+    args.get(index)
+        .and_then(Value::as_identity)
+        .ok_or_else(|| invalid_builtin_call(name, "expected identity argument"))
 }
 
 fn builtin_arity_arg(name: &str, args: &[Value], index: usize) -> Result<u16, RuntimeError> {
@@ -676,13 +791,105 @@ mod tests {
 
         let query = runner.run_source("return VisibleTo($alice, ?obj)").unwrap();
 
-        assert_eq!(
-            rule.render(),
-            "task 3 complete: relation(:VisibleTo) (retries: 0)"
-        );
+        assert_eq!(rule.render(), "task 3 complete: $rule1 (retries: 0)");
         assert_eq!(
             query.render(),
             "task 9 complete: [[:obj: $alice], [:obj: $lamp]] (retries: 0)"
+        );
+    }
+
+    #[test]
+    fn runner_inspects_and_disables_rules() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+        runner.run_source("make_relation(:VisibleTo, 2)").unwrap();
+        runner
+            .run_source(
+                "VisibleTo(actor, obj) :-\n  LocatedIn(actor, room),\n  LocatedIn(obj, room)",
+            )
+            .unwrap();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_identity(:room)").unwrap();
+        runner
+            .run_source("assert LocatedIn($alice, $room)")
+            .unwrap();
+        runner.run_source("assert LocatedIn($lamp, $room)").unwrap();
+
+        let rules = runner.run_source("return rules(:VisibleTo)").unwrap();
+        let source = runner
+            .run_source("return describe_rule(one rules(:VisibleTo))")
+            .unwrap();
+        let disabled = runner
+            .run_source("disable_rule(one rules(:VisibleTo))")
+            .unwrap();
+        let query = runner.run_source("return VisibleTo($alice, ?obj)").unwrap();
+
+        assert_eq!(rules.render(), "task 9 complete: [$rule1] (retries: 0)");
+        assert_eq!(
+            source.render(),
+            "task 10 complete: \"VisibleTo(actor, obj) :-\\n  LocatedIn(actor, room),\\n  LocatedIn(obj, room)\" (retries: 0)"
+        );
+        assert_eq!(disabled.render(), "task 11 complete: nothing (retries: 0)");
+        assert_eq!(query.render(), "task 12 complete: [] (retries: 0)");
+    }
+
+    #[test]
+    fn runner_fileouts_active_rules() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+        runner.run_source("make_relation(:VisibleTo, 2)").unwrap();
+        runner
+            .run_source("VisibleTo(actor, obj) :- LocatedIn(actor, obj)")
+            .unwrap();
+
+        let fileout = runner
+            .run_source("return fileout_rules(:VisibleTo)")
+            .unwrap();
+
+        assert_eq!(
+            fileout.render(),
+            "task 4 complete: \"VisibleTo(actor, obj) :- LocatedIn(actor, obj)\" (retries: 0)"
+        );
+
+        let TaskOutcome::Complete { value, .. } = fileout.outcome else {
+            panic!("expected fileout to complete");
+        };
+        let source = value.with_str(str::to_owned).unwrap();
+        let mut imported = SourceRunner::new_empty();
+        imported.run_source("make_relation(:LocatedIn, 2)").unwrap();
+        imported.run_source("make_relation(:VisibleTo, 2)").unwrap();
+        let installed = imported.run_source(&source).unwrap();
+        assert_eq!(installed.render(), "task 3 complete: $rule1 (retries: 0)");
+    }
+
+    #[test]
+    fn runner_installs_rules_with_surface_negation() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+        runner.run_source("make_relation(:HiddenFrom, 2)").unwrap();
+        runner.run_source("make_relation(:VisibleTo, 2)").unwrap();
+        runner
+            .run_source(
+                "VisibleTo(actor, obj) :-\n  LocatedIn(actor, room),\n  LocatedIn(obj, room),\n  not HiddenFrom(obj, actor)",
+            )
+            .unwrap();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_identity(:room)").unwrap();
+        runner
+            .run_source("assert LocatedIn($alice, $room)")
+            .unwrap();
+        runner.run_source("assert LocatedIn($lamp, $room)").unwrap();
+        runner
+            .run_source("assert HiddenFrom($lamp, $alice)")
+            .unwrap();
+
+        let query = runner.run_source("return VisibleTo($alice, ?obj)").unwrap();
+
+        assert_eq!(
+            query.render(),
+            "task 11 complete: [[:obj: $alice]] (retries: 0)"
         );
     }
 

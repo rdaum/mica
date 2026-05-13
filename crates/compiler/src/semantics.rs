@@ -318,7 +318,7 @@ impl<'a> Analyzer<'a> {
                 let body = body
                     .iter()
                     .filter_map(|expr| {
-                        let atom = self.lower_relation_atom(expr, scope);
+                        let atom = self.lower_rule_atom(expr, scope);
                         if atom.is_none() {
                             self.diagnostic(
                                 DiagnosticCode::InvalidRelationRule,
@@ -388,6 +388,20 @@ impl<'a> Analyzer<'a> {
                     body,
                 }
             }
+        }
+    }
+
+    fn lower_rule_atom(&mut self, expr: &Expr, scope: ScopeId) -> Option<HirRelationAtom> {
+        match expr {
+            Expr::Unary {
+                op: crate::UnaryOp::Not,
+                expr,
+                ..
+            } => self.lower_relation_atom(expr, scope).map(|mut atom| {
+                atom.negated = true;
+                atom
+            }),
+            _ => self.lower_relation_atom(expr, scope),
         }
     }
 
@@ -870,6 +884,7 @@ impl<'a> Analyzer<'a> {
             id,
             name,
             args: self.lower_args(args, scope),
+            negated: false,
         }
     }
 
@@ -952,6 +967,7 @@ impl<'a> Analyzer<'a> {
             id,
             name: "<error>".to_owned(),
             args: Vec::new(),
+            negated: false,
         }
     }
 

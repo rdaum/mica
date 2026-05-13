@@ -3,6 +3,7 @@ use crate::{RelationId, RuleError, Tuple};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KernelError {
     UnknownRelation(RelationId),
+    UnknownRule(crate::FactId),
     RelationAlreadyExists(RelationId),
     ArityMismatch {
         relation: RelationId,

@@ -1,11 +1,14 @@
 use crate::commit_bloom::CommitBloom;
 use crate::index::RelationState;
 use crate::{
-    KernelError, RelationId, RelationMetadata, Rule, RuleEvalError, RuleSet, Tuple, Version,
+    KernelError, RelationId, RelationMetadata, RuleDefinition, RuleEvalError, RuleSet, Tuple,
+    Version,
 };
-use mica_var::Value;
+use mica_var::{Identity, Value};
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+pub(crate) type DerivedCache = Arc<OnceLock<Result<BTreeMap<RelationId, Vec<Tuple>>, KernelError>>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Commit {
@@ -32,7 +35,8 @@ impl Commit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogChange {
     RelationCreated(RelationMetadata),
-    RuleInstalled(Rule),
+    RuleInstalled(RuleDefinition),
+    RuleDisabled(Identity),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,7 +76,8 @@ impl CommitResult {
 pub struct Snapshot {
     pub(crate) version: Version,
     pub(crate) relations: BTreeMap<RelationId, RelationState>,
-    pub(crate) rules: Vec<Rule>,
+    pub(crate) rules: Vec<RuleDefinition>,
+    pub(crate) derived_cache: DerivedCache,
     pub(crate) commits: Arc<[Commit]>,
 }
 
@@ -91,9 +96,7 @@ impl Snapshot {
             return Ok(visible);
         }
 
-        let derived = RuleSet::new(self.rules.clone())
-            .evaluate_fixpoint(&ExtensionalSnapshotReader { snapshot: self })
-            .map_err(KernelError::from)?;
+        let derived = self.derived_tuples()?;
         if let Some(rows) = derived.get(&relation) {
             visible.extend(
                 rows.iter()
@@ -124,7 +127,7 @@ impl Snapshot {
         self.relations.values().map(|relation| relation.metadata())
     }
 
-    pub fn rules(&self) -> &[Rule] {
+    pub fn rules(&self) -> &[RuleDefinition] {
         &self.rules
     }
 
@@ -149,6 +152,29 @@ impl Snapshot {
         }
         bloom
     }
+
+    fn derived_tuples(&self) -> Result<&BTreeMap<RelationId, Vec<Tuple>>, KernelError> {
+        self.derived_cache
+            .get_or_init(|| {
+                RuleSet::new(active_rules(&self.rules))
+                    .evaluate_fixpoint(&ExtensionalSnapshotReader { snapshot: self })
+                    .map_err(KernelError::from)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+pub(crate) fn empty_derived_cache() -> DerivedCache {
+    Arc::new(OnceLock::new())
+}
+
+pub(crate) fn active_rules(rules: &[RuleDefinition]) -> Vec<crate::Rule> {
+    rules
+        .iter()
+        .filter(|rule| rule.active())
+        .map(|rule| rule.rule().clone())
+        .collect()
 }
 
 impl From<RuleEvalError> for KernelError {

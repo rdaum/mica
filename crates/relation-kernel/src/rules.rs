@@ -1,5 +1,5 @@
 use crate::{KernelError, RelationId, RelationRead, Tuple};
-use mica_var::{Symbol, Value};
+use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,6 +75,45 @@ impl Rule {
 
     pub fn body(&self) -> &[Atom] {
         &self.body
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuleDefinition {
+    id: Identity,
+    rule: Rule,
+    source: String,
+    active: bool,
+}
+
+impl RuleDefinition {
+    pub fn new(id: Identity, rule: Rule, source: impl Into<String>) -> Self {
+        Self {
+            id,
+            rule,
+            source: source.into(),
+            active: true,
+        }
+    }
+
+    pub fn id(&self) -> Identity {
+        self.id
+    }
+
+    pub fn rule(&self) -> &Rule {
+        &self.rule
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn active(&self) -> bool {
+        self.active
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
     }
 }
 

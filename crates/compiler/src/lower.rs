@@ -346,7 +346,7 @@ impl<'a> Lower<'a> {
             .token_children(node)
             .find_map(|token| match token.kind {
                 SyntaxKind::Minus => Some(UnaryOp::Neg),
-                SyntaxKind::Bang => Some(UnaryOp::Not),
+                SyntaxKind::Bang | SyntaxKind::NotKw => Some(UnaryOp::Not),
                 _ => None,
             })
             .unwrap_or(UnaryOp::Not);

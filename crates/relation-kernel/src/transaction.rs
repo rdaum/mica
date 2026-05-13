@@ -1,5 +1,6 @@
 use crate::commit_bloom::CommitBloom;
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
+use crate::snapshot::{active_rules, empty_derived_cache};
 use crate::{
     Conflict, ConflictKind, ConflictPolicy, KernelError, RelationId, RelationKernel, RuleSet,
     Snapshot, Tuple, Version,
@@ -77,7 +78,7 @@ impl<'a> Transaction<'a> {
         let mut visible = self.scan_extensional(relation, bindings)?;
 
         if !self.base.rules().is_empty() {
-            let derived = RuleSet::new(self.base.rules().to_vec())
+            let derived = RuleSet::new(active_rules(self.base.rules()))
                 .evaluate_fixpoint(&ExtensionalTransactionReader { tx: self })
                 .map_err(KernelError::from)?;
             if let Some(rows) = derived.get(&relation) {
@@ -304,6 +305,7 @@ impl<'a> Transaction<'a> {
         }
 
         next.version = current.version() + 1;
+        next.derived_cache = empty_derived_cache();
         let commit = Commit {
             version: next.version,
             catalog_changes: Arc::from([]),
