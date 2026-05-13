@@ -53,11 +53,11 @@ proptest! {
     #[test]
     fn map_entries_are_sorted_unique_and_last_write_wins(entries in prop::collection::vec((arb_value(), arb_value()), 0..24)) {
         let mut expected = entries.clone();
-        expected.sort_by_key(|(key, _)| *key);
+        expected.sort_by(|(left, _), (right, _)| left.cmp(right));
         let mut canonical = Vec::with_capacity(expected.len());
         for (key, value) in expected {
             if let Some((last_key, last_value)) = canonical.last_mut()
-                && *last_key == key
+                && last_key == &key
             {
                 *last_value = value;
                 continue;
@@ -78,10 +78,9 @@ proptest! {
     }
 
     #[test]
-    fn copied_heap_values_preserve_identity_and_semantics(value in arb_value()) {
-        let copied = value;
-        prop_assert_eq!(&value, &copied);
-        prop_assert_eq!(value.heap_handle(), copied.heap_handle());
-        prop_assert_eq!(hash(&value), hash(&copied));
+    fn cloned_heap_values_preserve_semantics(value in arb_value()) {
+        let cloned = value.clone();
+        prop_assert_eq!(&value, &cloned);
+        prop_assert_eq!(hash(&value), hash(&cloned));
     }
 }

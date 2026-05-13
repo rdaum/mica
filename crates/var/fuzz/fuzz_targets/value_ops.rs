@@ -19,10 +19,10 @@ fuzz_target!(|data: &[u8]| {
     }
 
     for value in &values {
-        let copied = *value;
-        assert_eq!(value, &copied);
-        assert_eq!(value.cmp(&copied), Ordering::Equal);
-        assert_eq!(hash(value), hash(&copied));
+        let cloned = value.clone();
+        assert_eq!(value, &cloned);
+        assert_eq!(value.cmp(&cloned), Ordering::Equal);
+        assert_eq!(hash(value), hash(&cloned));
     }
 
     for pair in values.windows(2) {

@@ -2,17 +2,14 @@
 //!
 //! `Value` is intentionally one machine word wide. Immediate identities,
 //! symbols, booleans, small integers, and reduced-precision floats stay inline;
-//! strings, lists, and maps are represented by stable heap handles. The current
-//! heap does not collect; it keeps cells stable so a later collector can scan
-//! roots and trace through container children without changing the value ABI.
+//! strings, lists, and maps are immutable heap values shared with `Arc`.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 const TAG_SHIFT: u64 = 56;
 const PAYLOAD_MASK: u64 = 0x00ff_ffff_ffff_ffff;
@@ -38,7 +35,6 @@ const MAX_PAYLOAD: u64 = PAYLOAD_MASK;
 /// raw bits. The current representation is a pragmatic tagged word, not a final
 /// commitment to this exact bit layout.
 #[repr(transparent)]
-#[derive(Clone, Copy)]
 pub struct Value(u64);
 
 const _: () = assert!(std::mem::size_of::<Value>() == 8);
@@ -98,15 +94,6 @@ pub struct SymbolMetadata {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct HeapHandle(usize);
-
-impl HeapHandle {
-    pub const fn raw(self) -> usize {
-        self.0
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u8)]
 pub enum ValueKind {
     Nothing = TAG_NOTHING,
@@ -124,7 +111,7 @@ pub enum ValueKind {
 pub enum ValueError {
     IntegerOutOfRange(i64),
     IdentityOutOfRange(u64),
-    HeapHandleOutOfRange(usize),
+    HeapPointerOutOfRange(usize),
 }
 
 impl Value {
@@ -187,11 +174,11 @@ impl Value {
 
     pub fn map(entries: impl IntoIterator<Item = (Value, Value)>) -> Self {
         let mut entries = entries.into_iter().collect::<Vec<_>>();
-        entries.sort_by_key(|(key, _)| *key);
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
         let mut canonical = Vec::with_capacity(entries.len());
         for (key, value) in entries {
             if let Some((last_key, last_value)) = canonical.last_mut()
-                && *last_key == key
+                && last_key == &key
             {
                 *last_value = value;
                 continue;
@@ -299,7 +286,7 @@ impl Value {
     }
 
     pub fn list_get(&self, index: usize) -> Option<Value> {
-        self.with_list(|values| values.get(index).copied())?
+        self.with_list(|values| values.get(index).cloned())?
     }
 
     pub fn map_len(&self) -> Option<usize> {
@@ -311,52 +298,8 @@ impl Value {
             entries
                 .binary_search_by(|(entry_key, _)| entry_key.cmp(key))
                 .ok()
-                .map(|index| entries[index].1)
+                .map(|index| entries[index].1.clone())
         })?
-    }
-
-    pub fn heap_handle(&self) -> Option<HeapHandle> {
-        if self.is_immediate() {
-            None
-        } else {
-            Some(HeapHandle(self.handle()))
-        }
-    }
-
-    pub fn visit_children(&self, mut visitor: impl FnMut(Value)) {
-        let _ = self.with_heap(|heap| match heap {
-            HeapValue::String(_) => {}
-            HeapValue::List(values) => {
-                for value in values {
-                    visitor(*value);
-                }
-            }
-            HeapValue::Map(entries) => {
-                for (key, value) in entries {
-                    visitor(*key);
-                    visitor(*value);
-                }
-            }
-        });
-    }
-
-    pub fn clear_gc_mark(&self) {
-        if let Some(handle) = self.heap_handle() {
-            heap_table().clear_mark(handle.raw());
-        }
-    }
-
-    pub fn mark_for_gc(&self) -> bool {
-        if let Some(handle) = self.heap_handle() {
-            heap_table().mark(handle.raw())
-        } else {
-            false
-        }
-    }
-
-    pub fn is_marked_for_gc(&self) -> bool {
-        self.heap_handle()
-            .is_some_and(|handle| heap_table().is_marked(handle.raw()))
     }
 
     pub fn checked_add(&self, rhs: &Self) -> Option<Self> {
@@ -427,29 +370,30 @@ impl Value {
     }
 
     #[inline(always)]
-    fn handle(&self) -> usize {
+    fn ptr_payload(&self) -> usize {
         self.payload() as usize
     }
 
     fn heap(value: HeapValue) -> Self {
-        let handle = heap_table().alloc(value);
-        assert!(
-            handle as u64 <= MAX_PAYLOAD,
-            "heap handle exceeded value payload"
-        );
-        let tag = match heap_table().kind(handle) {
+        let tag = match value.kind() {
             HeapKind::String => TAG_STRING,
             HeapKind::List => TAG_LIST,
             HeapKind::Map => TAG_MAP,
         };
-        Self::pack(tag, handle as u64)
+        let ptr = Arc::into_raw(Arc::new(value)) as usize;
+        assert!(
+            ptr as u64 <= MAX_PAYLOAD,
+            "heap pointer exceeded value payload"
+        );
+        Self::pack(tag, ptr as u64)
     }
 
     fn with_heap<R>(&self, f: impl FnOnce(&HeapValue) -> R) -> Option<R> {
         if self.is_immediate() {
             return None;
         }
-        Some(heap_table().with(self.handle(), f))
+        let ptr = self.ptr_payload() as *const HeapValue;
+        Some(unsafe { f(&*ptr) })
     }
 
     fn numeric_as_f64(&self) -> Option<f64> {
@@ -457,6 +401,35 @@ impl Value {
             Some(value as f64)
         } else {
             self.as_float()
+        }
+    }
+
+    #[cfg(test)]
+    fn heap_strong_count(&self) -> Option<usize> {
+        if self.is_immediate() {
+            return None;
+        }
+        let ptr = self.ptr_payload() as *const HeapValue;
+        let arc = unsafe { Arc::from_raw(ptr) };
+        let count = Arc::strong_count(&arc);
+        let _ = Arc::into_raw(arc);
+        Some(count)
+    }
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        if !self.is_immediate() {
+            unsafe { Arc::increment_strong_count(self.ptr_payload() as *const HeapValue) };
+        }
+        Self(self.0)
+    }
+}
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        if !self.is_immediate() {
+            unsafe { Arc::decrement_strong_count(self.ptr_payload() as *const HeapValue) };
         }
     }
 }
@@ -675,65 +648,6 @@ impl HeapValue {
             Self::Map(_) => HeapKind::Map,
         }
     }
-}
-
-struct HeapEntry {
-    marked: AtomicBool,
-    value: HeapValue,
-}
-
-struct HeapTable {
-    entries: Mutex<Vec<&'static HeapEntry>>,
-}
-
-impl HeapTable {
-    fn alloc(&self, value: HeapValue) -> usize {
-        let entry = Box::leak(Box::new(HeapEntry {
-            marked: AtomicBool::new(false),
-            value,
-        }));
-        let mut entries = self.entries.lock().unwrap();
-        entries.push(entry);
-        entries.len()
-    }
-
-    fn kind(&self, handle: usize) -> HeapKind {
-        self.entry(handle).value.kind()
-    }
-
-    fn with<R>(&self, handle: usize, f: impl FnOnce(&HeapValue) -> R) -> R {
-        f(&self.entry(handle).value)
-    }
-
-    fn mark(&self, handle: usize) -> bool {
-        !self.entry(handle).marked.swap(true, AtomicOrdering::AcqRel)
-    }
-
-    fn clear_mark(&self, handle: usize) {
-        self.entry(handle)
-            .marked
-            .store(false, AtomicOrdering::Release);
-    }
-
-    fn is_marked(&self, handle: usize) -> bool {
-        self.entry(handle).marked.load(AtomicOrdering::Acquire)
-    }
-
-    fn entry(&self, handle: usize) -> &'static HeapEntry {
-        assert!(handle != 0, "heap handles are one-based");
-        let entries = self.entries.lock().unwrap();
-        entries
-            .get(handle - 1)
-            .copied()
-            .expect("invalid value heap handle")
-    }
-}
-
-fn heap_table() -> &'static HeapTable {
-    static HEAP: OnceLock<HeapTable> = OnceLock::new();
-    HEAP.get_or_init(|| HeapTable {
-        entries: Mutex::new(Vec::new()),
-    })
 }
 
 const SYMBOL_CACHE_SIZE: usize = 16;
@@ -979,7 +893,7 @@ mod tests {
         let k = Value::symbol(Symbol::intern("color"));
         let red = Value::string("red");
         let blue = Value::string("blue");
-        let map = Value::map([(k, red), (k, blue)]);
+        let map = Value::map([(k.clone(), red), (k.clone(), blue)]);
         assert_eq!(map.with_map(|entries| entries.len()), Some(1));
         assert_eq!(
             map.with_map(|entries| entries[0].1.with_str(|s| s.to_string()).unwrap()),
@@ -994,45 +908,25 @@ mod tests {
     }
 
     #[test]
-    fn heap_values_are_stable_copy_handles() {
+    fn heap_values_are_arc_shared_and_acyclic() {
         let value = Value::list([
             Value::string("alpha"),
             Value::symbol(Symbol::intern("beta")),
             Value::identity_raw(42).unwrap(),
         ]);
-        let copied = value;
-        assert_eq!(value, copied);
-        assert_eq!(copied.list_len(), Some(3));
+        assert_eq!(value.heap_strong_count(), Some(1));
+        let cloned = value.clone();
+        assert_eq!(value.heap_strong_count(), Some(2));
+        assert_eq!(value, cloned);
+        drop(value);
+        assert_eq!(cloned.heap_strong_count(), Some(1));
+        assert_eq!(cloned.list_len(), Some(3));
         assert_eq!(
-            copied
+            cloned
                 .list_get(0)
                 .and_then(|value| value.with_str(str::to_string)),
             Some("alpha".to_string())
         );
-        assert_eq!(value.heap_handle(), copied.heap_handle());
-    }
-
-    #[test]
-    fn heap_children_can_be_visited_for_future_root_scanning() {
-        let key = Value::symbol(Symbol::intern("contents"));
-        let child = Value::identity_raw(99).unwrap();
-        let list = Value::list([child]);
-        let map = Value::map([(key, list)]);
-
-        let mut children = Vec::new();
-        map.visit_children(|value| children.push(value));
-        assert_eq!(children, vec![key, list]);
-
-        children.clear();
-        list.visit_children(|value| children.push(value));
-        assert_eq!(children, vec![child]);
-
-        assert!(!list.is_marked_for_gc());
-        assert!(list.mark_for_gc());
-        assert!(list.is_marked_for_gc());
-        assert!(!list.mark_for_gc());
-        list.clear_gc_mark();
-        assert!(!list.is_marked_for_gc());
     }
 
     #[test]

@@ -77,7 +77,7 @@ fn intern_symbol_varied(ctx: &mut SymbolNamesContext, chunk_size: usize, chunk_n
 }
 
 fn int_add(ctx: &mut IntContext, chunk_size: usize, _chunk_num: usize) {
-    let mut value = ctx.0;
+    let mut value = ctx.0.clone();
     let one = Value::int(1).unwrap();
     for _ in 0..chunk_size {
         value = value.checked_add(&one).unwrap();
@@ -87,21 +87,21 @@ fn int_add(ctx: &mut IntContext, chunk_size: usize, _chunk_num: usize) {
 }
 
 fn int_cmp(ctx: &mut IntContext, chunk_size: usize, _chunk_num: usize) {
-    let value = ctx.0;
+    let value = ctx.0.clone();
     for _ in 0..chunk_size {
         black_box(value.cmp(&value));
     }
 }
 
-fn string_handle_copy(ctx: &mut StringContext, chunk_size: usize, _chunk_num: usize) {
+fn string_arc_clone(ctx: &mut StringContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
-        black_box(ctx.0);
+        black_box(ctx.0.clone());
     }
 }
 
-fn list_handle_copy(ctx: &mut ListContext, chunk_size: usize, _chunk_num: usize) {
+fn list_arc_clone(ctx: &mut ListContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
-        black_box(ctx.0);
+        black_box(ctx.0.clone());
     }
 }
 
@@ -115,7 +115,7 @@ fn ordered_key_identity(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usi
 benchmark_main!(
     BenchmarkMainOptions {
         filter_help: Some(
-            "all, construct, int, copy, key, or any benchmark name substring".to_string()
+            "all, construct, symbol, int, arc, key, or any benchmark name substring".to_string()
         ),
         runtime: micromeasure::BenchmarkRuntimeOptions {
             benchmark_duration: Duration::from_secs(1),
@@ -149,13 +149,13 @@ benchmark_main!(
                 .bench("int_cmp", int_cmp);
         });
 
-        runner.group::<StringContext>("copy", |g| {
-            g.throughput(Throughput::per_operation(1, "copy"))
-                .bench("string_handle_copy", string_handle_copy);
+        runner.group::<StringContext>("arc", |g| {
+            g.throughput(Throughput::per_operation(1, "clone"))
+                .bench("string_arc_clone", string_arc_clone);
         });
-        runner.group::<ListContext>("copy", |g| {
-            g.throughput(Throughput::per_operation(1, "copy"))
-                .bench("list_handle_copy", list_handle_copy);
+        runner.group::<ListContext>("arc", |g| {
+            g.throughput(Throughput::per_operation(1, "clone"))
+                .bench("list_arc_clone", list_arc_clone);
         });
 
         runner.group::<NoContext>("key", |g| {
