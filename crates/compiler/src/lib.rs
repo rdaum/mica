@@ -19,8 +19,9 @@ pub use ast::{
     FunctionBody, Item, Literal, MethodKind, NodeId, ObjectClause, Param, ParamMode, Span, UnaryOp,
 };
 pub use backend::{
-    CompileContext, CompileError, CompiledProgram, SourceTaskError, SubmittedSourceTask,
-    compile_semantic, compile_source, submit_source_task,
+    CompileContext, CompileError, CompiledProgram, InstalledMethod, InstalledRole,
+    MethodInstallation, MethodRelations, SourceTaskError, SubmittedSourceTask, compile_semantic,
+    compile_source, install_methods, install_methods_from_source, submit_source_task,
 };
 pub use hir::{
     HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,

@@ -1,6 +1,7 @@
 use crate::RuntimeError;
-use mica_relation_kernel::RelationId;
+use mica_relation_kernel::{DispatchRelations, RelationId};
 use mica_var::Value;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -78,6 +79,14 @@ pub enum Instruction {
         program: Arc<Program>,
         args: Vec<Operand>,
     },
+    Dispatch {
+        dst: Register,
+        relations: DispatchRelations,
+        program_relation: RelationId,
+        programs: Arc<ProgramStore>,
+        selector: Operand,
+        roles: Vec<(Value, Operand)>,
+    },
     Commit,
     Suspend {
         kind: SuspendKind,
@@ -118,6 +127,42 @@ impl Program {
 
     pub fn instructions(&self) -> &[Instruction] {
         &self.instructions
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProgramStore {
+    programs: BTreeMap<Value, Arc<Program>>,
+}
+
+impl ProgramStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_program(mut self, method: Value, program: Program) -> Self {
+        self.insert(method, program);
+        self
+    }
+
+    pub fn insert(&mut self, method: Value, program: Program) -> Option<Arc<Program>> {
+        self.programs.insert(method, Arc::new(program))
+    }
+
+    pub fn get(&self, method: &Value) -> Option<Arc<Program>> {
+        self.programs.get(method).cloned()
+    }
+
+    pub fn contains(&self, method: &Value) -> bool {
+        self.programs.contains_key(method)
+    }
+
+    pub fn len(&self) -> usize {
+        self.programs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.programs.is_empty()
     }
 }
 
@@ -165,6 +210,16 @@ fn validate_instruction(
                 });
             }
             Ok(())
+        }
+        Instruction::Dispatch {
+            dst,
+            selector,
+            roles,
+            ..
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, selector)?;
+            validate_operands(register_count, roles.iter().map(|(_, operand)| operand))
         }
         Instruction::Commit | Instruction::Suspend { .. } | Instruction::RollbackRetry => Ok(()),
     }

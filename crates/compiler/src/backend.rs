@@ -2,9 +2,10 @@ use crate::{
     BindingId, Diagnostic, EffectKind, HirArg, HirExpr, HirItem, HirPlace, HirProgram,
     HirRelationAtom, Literal, NodeId, SemanticProgram, Span, parse_semantic,
 };
-use mica_relation_kernel::RelationId;
+use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
 use mica_runtime::{
-    Instruction, Operand, Program, Register, Scheduler, SchedulerError, TaskId, TaskOutcome,
+    Instruction, Operand, Program, ProgramStore, Register, Scheduler, SchedulerError, TaskId,
+    TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use std::collections::HashMap;
@@ -52,6 +53,74 @@ pub fn submit_source_task(
     })
 }
 
+pub fn install_methods_from_source(
+    source: &str,
+    context: &CompileContext,
+    tx: &mut Transaction<'_>,
+) -> Result<MethodInstallation, CompileError> {
+    let semantic = parse_semantic(source);
+    install_methods(semantic, context, tx)
+}
+
+pub fn install_methods(
+    semantic: SemanticProgram,
+    context: &CompileContext,
+    tx: &mut Transaction<'_>,
+) -> Result<MethodInstallation, CompileError> {
+    if !semantic.parse_errors.is_empty() {
+        return Err(CompileError::ParseErrors {
+            count: semantic.parse_errors.len(),
+        });
+    }
+    if let Some(diagnostic) = semantic.diagnostics.first() {
+        return Err(CompileError::SemanticDiagnostic {
+            diagnostic: diagnostic.clone(),
+        });
+    }
+
+    let method_relations = context
+        .method_relations
+        .ok_or_else(|| CompileError::Unsupported {
+            node: NodeId(0),
+            span: None,
+            message: "method relation ids are not configured".to_owned(),
+        })?;
+    let mut store = ProgramStore::new();
+    let mut methods = Vec::new();
+
+    for item in &semantic.hir.items {
+        if let HirItem::Method { .. } = item {
+            let method = compile_installed_method(&semantic, context, item)?;
+            tx.assert(
+                method_relations.dispatch.method_selector,
+                Tuple::from([method.method.clone(), method.selector.clone()]),
+            )?;
+            tx.assert(
+                method_relations.method_program,
+                Tuple::from([method.method.clone(), method.program.clone()]),
+            )?;
+            for role in &method.roles {
+                tx.assert(
+                    method_relations.dispatch.param,
+                    Tuple::from([
+                        method.method.clone(),
+                        role.role.clone(),
+                        role.restriction.clone(),
+                    ]),
+                )?;
+            }
+            store.insert(method.program.clone(), method.compiled.program.clone());
+            methods.push(method);
+        }
+    }
+
+    Ok(MethodInstallation {
+        semantic,
+        program_store: Arc::new(store),
+        methods,
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledProgram {
     pub semantic: SemanticProgram,
@@ -65,10 +134,41 @@ pub struct SubmittedSourceTask {
     pub outcome: TaskOutcome,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MethodInstallation {
+    pub semantic: SemanticProgram,
+    pub program_store: Arc<ProgramStore>,
+    pub methods: Vec<InstalledMethod>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstalledMethod {
+    pub method: Value,
+    pub program: Value,
+    pub selector: Value,
+    pub roles: Vec<InstalledRole>,
+    pub compiled: CompiledProgram,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstalledRole {
+    pub name: String,
+    pub role: Value,
+    pub restriction: Value,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MethodRelations {
+    pub dispatch: DispatchRelations,
+    pub method_program: RelationId,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompileContext {
     relations: HashMap<String, RelationId>,
     identities: HashMap<String, Identity>,
+    method_relations: Option<MethodRelations>,
+    program_store: Option<Arc<ProgramStore>>,
 }
 
 impl CompileContext {
@@ -86,6 +186,16 @@ impl CompileContext {
         self
     }
 
+    pub fn with_method_relations(mut self, method_relations: MethodRelations) -> Self {
+        self.method_relations = Some(method_relations);
+        self
+    }
+
+    pub fn with_program_store(mut self, program_store: Arc<ProgramStore>) -> Self {
+        self.program_store = Some(program_store);
+        self
+    }
+
     pub fn define_relation(&mut self, name: impl Into<String>, id: RelationId) {
         self.relations.insert(name.into(), id);
     }
@@ -100,6 +210,14 @@ impl CompileContext {
 
     pub fn identity(&self, name: &str) -> Option<Identity> {
         self.identities.get(name).copied()
+    }
+
+    pub fn method_relations(&self) -> Option<MethodRelations> {
+        self.method_relations
+    }
+
+    pub fn program_store(&self) -> Option<Arc<ProgramStore>> {
+        self.program_store.clone()
     }
 }
 
@@ -137,6 +255,7 @@ pub enum CompileError {
         binding: BindingId,
     },
     Runtime(mica_runtime::RuntimeError),
+    Kernel(mica_relation_kernel::KernelError),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -163,12 +282,132 @@ impl From<mica_runtime::RuntimeError> for CompileError {
     }
 }
 
+impl From<mica_relation_kernel::KernelError> for CompileError {
+    fn from(value: mica_relation_kernel::KernelError) -> Self {
+        Self::Kernel(value)
+    }
+}
+
+fn compile_installed_method(
+    semantic: &SemanticProgram,
+    context: &CompileContext,
+    item: &HirItem,
+) -> Result<InstalledMethod, CompileError> {
+    let HirItem::Method {
+        id,
+        identity,
+        selector,
+        clauses,
+        body,
+        ..
+    } = item
+    else {
+        return Err(CompileError::Unsupported {
+            node: item_id(item),
+            span: semantic.span(item_id(item)).cloned(),
+            message: "only method items can be installed as methods".to_owned(),
+        });
+    };
+    let identity_name = identity.as_ref().ok_or_else(|| CompileError::Unsupported {
+        node: *id,
+        span: semantic.span(*id).cloned(),
+        message: "method installation requires an explicit method identity".to_owned(),
+    })?;
+    let selector = selector.as_ref().ok_or_else(|| CompileError::Unsupported {
+        node: *id,
+        span: semantic.span(*id).cloned(),
+        message: "method installation requires an explicit selector".to_owned(),
+    })?;
+    let method = context
+        .identity(identity_name)
+        .ok_or_else(|| CompileError::UnknownIdentity {
+            node: *id,
+            span: semantic.span(*id).cloned(),
+            name: identity_name.clone(),
+        })
+        .map(Value::identity)?;
+    let roles = parse_method_roles(*id, semantic, context, clauses)?;
+
+    let mut compiler = ProgramCompiler::new(semantic, context);
+    compiler.next_register = roles.len() as u16;
+    for (idx, role) in roles.iter().enumerate() {
+        compiler
+            .external_locals
+            .insert(role.name.clone(), Register(idx as u16));
+    }
+    let program = compiler.compile_items(body)?;
+    Ok(InstalledMethod {
+        method: method.clone(),
+        program: method,
+        selector: Value::symbol(Symbol::intern(selector)),
+        roles,
+        compiled: CompiledProgram {
+            semantic: semantic.clone(),
+            program,
+        },
+    })
+}
+
+fn parse_method_roles(
+    id: NodeId,
+    semantic: &SemanticProgram,
+    context: &CompileContext,
+    clauses: &[String],
+) -> Result<Vec<InstalledRole>, CompileError> {
+    let mut roles = Vec::new();
+    for clause in clauses {
+        let clause = clause.trim();
+        let clause = clause.strip_prefix("roles").unwrap_or(clause).trim();
+        if !clause.contains(':') {
+            continue;
+        }
+        for part in clause
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            let Some((name, restriction)) = part.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            let restriction = restriction.trim();
+            if name.is_empty() || !restriction.starts_with('$') {
+                continue;
+            }
+            let restriction_name = restriction.trim_start_matches('$').trim();
+            let restriction = context.identity(restriction_name).ok_or_else(|| {
+                CompileError::UnknownIdentity {
+                    node: id,
+                    span: semantic.span(id).cloned(),
+                    name: restriction_name.to_owned(),
+                }
+            })?;
+            roles.push(InstalledRole {
+                name: name.to_owned(),
+                role: Value::symbol(Symbol::intern(name)),
+                restriction: Value::identity(restriction),
+            });
+        }
+    }
+    Ok(roles)
+}
+
+fn item_id(item: &HirItem) -> NodeId {
+    match item {
+        HirItem::Expr { id, .. }
+        | HirItem::RelationRule { id, .. }
+        | HirItem::Object { id, .. }
+        | HirItem::Method { id, .. } => *id,
+    }
+}
+
 struct ProgramCompiler<'a> {
     semantic: &'a SemanticProgram,
     context: &'a CompileContext,
     instructions: Vec<Instruction>,
     next_register: u16,
     locals: HashMap<BindingId, Register>,
+    external_locals: HashMap<String, Register>,
     returned: bool,
 }
 
@@ -180,13 +419,18 @@ impl<'a> ProgramCompiler<'a> {
             instructions: Vec::new(),
             next_register: 0,
             locals: HashMap::new(),
+            external_locals: HashMap::new(),
             returned: false,
         }
     }
 
-    fn compile_program(mut self, program: &HirProgram) -> Result<Program, CompileError> {
+    fn compile_program(self, program: &HirProgram) -> Result<Program, CompileError> {
+        self.compile_items(&program.items)
+    }
+
+    fn compile_items(mut self, items: &[HirItem]) -> Result<Program, CompileError> {
         let mut last_value = None;
-        for item in &program.items {
+        for item in items {
             last_value = self.compile_item(item)?;
         }
         if !self.returned {
@@ -362,13 +606,28 @@ impl<'a> ProgramCompiler<'a> {
                     dst
                 }))
             }
-            HirExpr::ExternalRef { id, name } => Err(CompileError::Unsupported {
-                node: *id,
-                span: self.span(*id),
-                message: format!(
-                    "runtime function `{name}` is not callable from compiled tasks yet"
-                ),
-            }),
+            HirExpr::RoleDispatch { id, selector, args } => {
+                self.compile_dispatch(*id, selector, args, None)
+            }
+            HirExpr::ReceiverDispatch {
+                id,
+                receiver,
+                selector,
+                args,
+            } => self.compile_dispatch(*id, selector, args, Some(receiver)),
+            HirExpr::ExternalRef { id, name } => {
+                if let Some(register) = self.external_locals.get(name).copied() {
+                    Ok(register)
+                } else {
+                    Err(CompileError::Unsupported {
+                        node: *id,
+                        span: self.span(*id),
+                        message: format!(
+                            "runtime function `{name}` is not callable from compiled tasks yet"
+                        ),
+                    })
+                }
+            }
             HirExpr::Error { id } => {
                 Err(self.unsupported(*id, "cannot compile erroneous HIR node"))
             }
@@ -376,6 +635,72 @@ impl<'a> ProgramCompiler<'a> {
                 expr_id(expr),
                 "HIR form is not implemented in the task compiler yet",
             )),
+        }
+    }
+
+    fn compile_dispatch(
+        &mut self,
+        id: NodeId,
+        selector: &HirExpr,
+        args: &[HirArg],
+        receiver: Option<&HirExpr>,
+    ) -> Result<Register, CompileError> {
+        let method_relations = self
+            .context
+            .method_relations
+            .ok_or_else(|| self.unsupported(id, "method relation ids are not configured"))?;
+        let programs = self
+            .context
+            .program_store
+            .clone()
+            .ok_or_else(|| self.unsupported(id, "method program store is not configured"))?;
+        let selector = self.compile_expr_for_operand(selector)?;
+        let mut roles = Vec::new();
+        if let Some(receiver) = receiver {
+            roles.push((
+                Value::symbol(Symbol::intern("receiver")),
+                Operand::Register(self.compile_expr_for_value(receiver)?),
+            ));
+        }
+        for arg in args {
+            let Some(role) = &arg.role else {
+                return Err(
+                    self.unsupported(arg.id, "dispatch arguments must use explicit role names")
+                );
+            };
+            roles.push((
+                Value::symbol(Symbol::intern(role)),
+                self.compile_arg_operand(arg)?,
+            ));
+        }
+        let dst = self.alloc_register();
+        self.emit(Instruction::Dispatch {
+            dst,
+            relations: method_relations.dispatch,
+            program_relation: method_relations.method_program,
+            programs,
+            selector,
+            roles,
+        });
+        Ok(dst)
+    }
+
+    fn compile_expr_for_operand(&mut self, expr: &HirExpr) -> Result<Operand, CompileError> {
+        match expr {
+            HirExpr::Symbol { name, .. } => Ok(Operand::Value(Value::symbol(Symbol::intern(name)))),
+            HirExpr::Identity { id, name } => {
+                let identity =
+                    self.context
+                        .identity(name)
+                        .ok_or_else(|| CompileError::UnknownIdentity {
+                            node: *id,
+                            span: self.span(*id),
+                            name: name.clone(),
+                        })?;
+                Ok(Operand::Value(Value::identity(identity)))
+            }
+            HirExpr::Literal { id, value } => Ok(Operand::Value(self.literal_value(*id, value)?)),
+            _ => Ok(Operand::Register(self.compile_expr_for_value(expr)?)),
         }
     }
 
@@ -537,6 +862,50 @@ mod tests {
         Identity::new(raw).unwrap()
     }
 
+    fn dispatch_relations() -> MethodRelations {
+        MethodRelations {
+            dispatch: DispatchRelations {
+                method_selector: id(40),
+                param: id(41),
+                delegates: id(42),
+            },
+            method_program: id(43),
+        }
+    }
+
+    fn create_method_relations(kernel: &RelationKernel) {
+        let relations = dispatch_relations();
+        kernel
+            .create_relation(
+                RelationMetadata::new(
+                    relations.dispatch.method_selector,
+                    Symbol::intern("MethodSelector"),
+                    2,
+                )
+                .with_index([1, 0]),
+            )
+            .unwrap();
+        kernel
+            .create_relation(
+                RelationMetadata::new(relations.dispatch.param, Symbol::intern("Param"), 3)
+                    .with_index([0, 1]),
+            )
+            .unwrap();
+        kernel
+            .create_relation(
+                RelationMetadata::new(relations.dispatch.delegates, Symbol::intern("Delegates"), 3)
+                    .with_index([0, 2, 1]),
+            )
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                relations.method_program,
+                Symbol::intern("MethodProgram"),
+                2,
+            ))
+            .unwrap();
+    }
+
     #[test]
     fn compiles_source_to_transactional_scheduler_task() {
         let located_in = id(1);
@@ -628,5 +997,134 @@ mod tests {
             .scan(located_in, &[None, None])
             .unwrap();
         assert_eq!(tuples, vec![]);
+    }
+
+    #[test]
+    fn installs_method_facts_and_invokes_method_through_dispatch() {
+        let located_in = id(1);
+        let get_method = id(100);
+        let player = id(200);
+        let thing = id(201);
+        let alice = id(300);
+        let coin = id(301);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+        kernel
+            .create_relation(RelationMetadata::new(
+                located_in,
+                Symbol::intern("LocatedIn"),
+                2,
+            ))
+            .unwrap();
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_relation("LocatedIn", located_in)
+            .with_method_relations(method_relations)
+            .with_identity("get_thing", get_method)
+            .with_identity("player", player)
+            .with_identity("thing", thing);
+        let mut install_tx = kernel.begin();
+        let installation = install_methods_from_source(
+            "method $get_thing :get\n\
+               roles actor: $player, item: $thing\n\
+             do\n\
+               assert LocatedIn(item, actor)\n\
+               return true\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(coin),
+                    Value::identity(thing),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        assert_eq!(installation.methods.len(), 1);
+        assert!(
+            installation
+                .program_store
+                .contains(&Value::identity(get_method))
+        );
+        assert_eq!(
+            kernel
+                .snapshot()
+                .scan(
+                    method_relations.dispatch.method_selector,
+                    &[
+                        Some(Value::identity(get_method)),
+                        Some(Value::symbol(Symbol::intern("get"))),
+                    ],
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            kernel
+                .snapshot()
+                .scan(
+                    method_relations.method_program,
+                    &[
+                        Some(Value::identity(get_method)),
+                        Some(Value::identity(get_method))
+                    ],
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_program_store(installation.program_store.clone())
+            .with_identity("alice", alice)
+            .with_identity("coin", coin);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            ":get(actor: $alice, item: $coin)",
+            &invoke_context,
+            &mut scheduler,
+        )
+        .unwrap();
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(true),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert_eq!(
+            scheduler
+                .kernel()
+                .snapshot()
+                .scan(
+                    located_in,
+                    &[Some(Value::identity(coin)), Some(Value::identity(alice))],
+                )
+                .unwrap(),
+            vec![Tuple::from(
+                [Value::identity(coin), Value::identity(alice),]
+            )]
+        );
     }
 }

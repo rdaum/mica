@@ -24,6 +24,16 @@ pub enum RuntimeError {
         expected_at_most: usize,
         actual: usize,
     },
+    NoApplicableMethod {
+        selector: Value,
+    },
+    AmbiguousDispatch {
+        selector: Value,
+        methods: Vec<Value>,
+    },
+    MissingMethodProgram {
+        method: Value,
+    },
     EmptyCallStack,
     Kernel(KernelError),
     Aborted(Value),

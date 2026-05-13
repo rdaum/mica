@@ -1,5 +1,5 @@
 use crate::{Instruction, Operand, Program, Register, RuntimeError, SuspendKind};
-use mica_relation_kernel::{Transaction, Tuple};
+use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Value, ValueKind};
 use std::sync::Arc;
 
@@ -243,6 +243,49 @@ impl RegisterVm {
                     .iter()
                     .map(|arg| self.resolve_operand(arg))
                     .collect::<Result<Vec<_>, _>>()?;
+                self.advance_ip()?;
+                self.state
+                    .frames
+                    .push(Frame::new(program, Some(dst), args)?);
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::Dispatch {
+                dst,
+                relations,
+                program_relation,
+                programs,
+                selector,
+                roles,
+            } => {
+                if self.state.frames.len() >= max_call_depth {
+                    return Err(RuntimeError::MaxCallDepthExceeded {
+                        max_depth: max_call_depth,
+                    });
+                }
+                let selector = self.resolve_operand(&selector)?;
+                let roles = roles
+                    .iter()
+                    .map(|(role, value)| Ok((role.clone(), self.resolve_operand(value)?)))
+                    .collect::<Result<Vec<_>, RuntimeError>>()?;
+                let methods = applicable_methods(tx, relations, selector.clone(), roles.clone())?;
+                let method = match methods.as_slice() {
+                    [] => return Err(RuntimeError::NoApplicableMethod { selector }),
+                    [method] => method.clone(),
+                    _ => {
+                        return Err(RuntimeError::AmbiguousDispatch { selector, methods });
+                    }
+                };
+                let program_rows = tx.scan(program_relation, &[Some(method.clone()), None])?;
+                let program_id = program_rows
+                    .first()
+                    .map(|row| row.values()[1].clone())
+                    .ok_or_else(|| RuntimeError::MissingMethodProgram {
+                        method: method.clone(),
+                    })?;
+                let program = programs
+                    .get(&program_id)
+                    .ok_or(RuntimeError::MissingMethodProgram { method })?;
+                let args = roles.into_iter().map(|(_, value)| value).collect();
                 self.advance_ip()?;
                 self.state
                     .frames
