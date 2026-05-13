@@ -26,6 +26,14 @@ Mica is less of a nostalgia project than mooR. It has no backwards
 compatibility constraint, so it can be a cleaner canvas for new ideas about
 objects, relations, rules, dispatch, agents, and live programmable systems.
 
+> The name also reaches back to an earlier abandoned project I worked on between
+2001 and 2004: an incomplete prototype-oriented, image-based object system in
+the same broad family of ideas as MOO, ColdMUD, and similar systems. That
+earlier Mica was written in C++, and the last version of its sources appears to
+be lost to time. This project is not a continuation of that code, but it is a
+return to some of the same questions with different tools and a more relational
+foundation.
+
 ## Core Idea
 
 Mica is based around the concept of persistent / long-lived objects that
@@ -177,6 +185,13 @@ the intended shape.
 
 Mica is meant to be a good substrate for agents and other software that needs to
 inspect, explain, and change a live domain model.
+
+There are many systems now described as agentic memory, agent workspaces,
+coordination layers, blackboards, or shared context stores. Mica belongs in
+that conversation, but it is aiming at a stronger foundation than a bag of
+messages, vector memories, task records, and tool calls. It treats the shared
+state as a durable, transactional, queryable world model with identities,
+relations, rules, behaviours, and authority as first-class parts of the system.
 
 Agents work best when the world is not opaque. In Mica, the important concepts
 are available as relations, rules, methods, and identities that can be queried
