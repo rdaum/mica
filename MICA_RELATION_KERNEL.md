@@ -1,8 +1,9 @@
 # Mica Relation Kernel
 
 This document sketches the storage and query substrate Mica wants underneath the
-language. The target is deliberately between mooR's live relation layer and
-Boxter's full relational database engine.
+language. The target is a live relation layer with enough database-style
+seriousness to support durable, transactional worlds without inheriting a
+SQL/table/row mental model.
 
 Mica should not start by pretending that objects are rows, or that the whole
 system is a SQL database with a different parser. It should also not inherit
@@ -55,7 +56,7 @@ Edge(graph, from, label, to)
 FactSource(fact, authority, time, reason)
 ```
 
-Boxter has the right physical seriousness:
+Mica still needs physical seriousness:
 
 - byte-key indexes
 - buffer pool
@@ -63,7 +64,6 @@ Boxter has the right physical seriousness:
 - B-tree range scans
 - WAL/checkpoint/recovery machinery
 - query planning and execution
-- transactional row storage
 
 But a full SQL-style planner/executor is probably not the center of Mica. Mica's
 hot queries are often small, repeated, role-aware, recursive, and cacheable:
@@ -106,7 +106,7 @@ The kernel should provide:
 - efficient joins over indexed relations
 - materialized and cached derived relations
 - enough introspection to build object outliners and live authoring tools
-- an eventual path to durable storage using Boxter-like lower machinery
+- an eventual path to durable storage using page, log, and checkpoint machinery
 
 The kernel should not require:
 
@@ -444,7 +444,7 @@ measured workloads, not because the design needs symmetry.
 
 ## Transaction Model
 
-The live model should be closer to mooR than Boxter:
+The live model should be image-oriented and snapshot-published:
 
 ```text
 current root snapshot
@@ -508,8 +508,8 @@ A practical sequence:
 1. Use immutable in-memory relation indexes and CAS-published snapshots.
 2. Persist commit batches to a simple key-value provider.
 3. Add checkpoint/snapshot loading.
-4. Replace or supplement provider storage with Boxter-like page/B-tree/WAL
-   machinery where needed.
+4. Replace or supplement provider storage with page, B-tree, or WAL machinery
+   where needed.
 
 The key principle is that the semantic unit of persistence is a fact change:
 
@@ -688,8 +688,7 @@ core Datalog primitive. They can come later.
 
 ## Datalog And Rules
 
-Rules should compile to a Mica-specific relational plan, not necessarily to
-Boxter's planner:
+Rules should compile to a Mica-specific relational plan:
 
 ```mica
 EffectiveName(o, name) :-
@@ -1011,29 +1010,6 @@ The catalog should distinguish:
 - cached views
 - private kernel relations
 
-## Relationship To Boxter
-
-Boxter remains relevant, but not as the default semantic layer.
-
-Potential reuse:
-
-- byte-key B-tree as durable index storage
-- buffer pool and swip machinery
-- WAL/checkpoint/page-store architecture
-- transaction validation ideas
-- query execution pieces for ad hoc non-recursive queries
-
-Potential mismatch:
-
-- SQL/table/row assumptions
-- scalar row layout pressure
-- planner overhead for hot object operations
-- cost model aimed at general relational DB queries
-- less direct support for live image-style semantic caches
-
-Mica should be able to use Boxter-like storage underneath the relation kernel
-without making Mica's semantics depend on Boxter's SQL-facing abstractions.
-
 ## Relationship To mooR
 
 mooR remains the closest conceptual ancestor for the live image model.
@@ -1071,8 +1047,8 @@ Important unsettled design questions:
   with provenance, or as a separate cache tier?
 - How much of query planning should be rule-compiler driven versus adaptive at
   runtime?
-- What is the first persistence provider: Fjall-like keyspaces, Boxter pages, or
-  a simple append log plus snapshot?
+- What is the first persistence provider: keyspaces, pages, or a simple append
+  log plus snapshot?
 - Which relations are private kernel state and which are author-visible facts?
 
 ## Suggested Prototype
@@ -1090,6 +1066,6 @@ The first prototype should be small and explicitly not a SQL database:
 9. Implement one dispatch query over selector, params, and delegation closure.
 10. Add persistence only after the access patterns are visible.
 
-This keeps the first implementation honest. If Mica's real workload demands
-Boxter-grade storage, that will become clear from concrete indexes and commit
+This keeps the first implementation honest. If Mica's real workload demands a
+heavier storage layer, that will become clear from concrete indexes and commit
 patterns rather than speculation.
