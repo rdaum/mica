@@ -217,6 +217,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-runtime"
+version = "0.1.0"
+dependencies = [
+ "mica-relation-kernel",
+ "mica-var",
+]
+
+[[package]]
 name = "mica-var"
 version = "0.1.0"
 dependencies = [
