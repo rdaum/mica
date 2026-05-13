@@ -25,8 +25,9 @@ inspection views.
 - `src/dispatch.rs`: role-based method applicability matching.
 - `src/closure.rs`: delegation closure helpers.
 - `src/neighborhood.rs`: object-neighbourhood inspection views.
-- `src/provider.rs`: commit provider boundary, including in-memory persistence
-  and the Fjall-backed durable state store.
+- `src/provider/`: commit provider boundary. `memory.rs` contains the
+  in-memory provider, `fjall/mod.rs` contains the Fjall-backed durable state
+  provider, and `fjall/codec.rs` contains the persisted binary encoding.
 - `src/commit_bloom.rs`: compact write-set tracking for conflict checks.
 - `src/tests.rs`: integration-style kernel tests.
 
@@ -42,12 +43,14 @@ successful mutation is still represented as a semantic `Commit`, but the Fjall
 provider applies that commit to the canonical keyspaces in the same batch that
 records the commit entry.
 
-For users and operators, this means Fjall is the durability and restart
-boundary while the current query path still runs from memory. Startup loads the
-current relation state with `RelationKernel::load_from_state`; it is not
-required to replay the whole historical commit stream. The retained commit
-entries are an implementation aid for inspection, testing, and future recovery
-work, not the only durable representation of the world.
+For users and operators, this means
+[Fjall](https://github.com/fjall-rs/fjall), a log-structured embedded
+key-value storage engine, is the durability and restart boundary while the
+current query path still runs from memory. Startup loads the current relation
+state with `RelationKernel::load_from_state`; it is not required to replay the
+whole historical commit stream. The retained commit entries are an
+implementation aid for inspection, testing, and future recovery work, not the
+only durable representation of the world.
 
 `FjallStateProvider::open` defaults to relaxed durability: a commit returns
 after it has been accepted into the provider's ordered writer queue, and normal
@@ -57,10 +60,11 @@ commit path. Strict mode gives an immediate disk-write acknowledgement at the
 cost of much slower commits.
 
 For developers, this means the persisted representation is the state encoding
-in `src/provider.rs`, plus the commit encoding kept beside it. Changes to the
-state shape, value encoding, or catalogue representation must update the format
-version or shape marker and provide a migration path. `FjallStateProvider`
-records those markers so incompatible stores are detected before opening.
+in `src/provider/fjall/codec.rs`, plus the commit encoding kept beside it.
+Changes to the state shape, value encoding, or catalogue representation must
+update the format version or shape marker and provide a migration path.
+`FjallStateProvider` records those markers so incompatible stores are detected
+before opening.
 
 ## Licence
 

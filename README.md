@@ -167,7 +167,7 @@ The runtime needs:
 - derived relations;
 - object-neighbourhood inspection;
 - author-facing syntax;
-- eventual durable storage and recovery.
+- durable relation state and restart recovery.
 
 Those concerns overlap with databases, object systems, logic languages, and
 interactive programming environments, but none of those models alone is quite
@@ -216,6 +216,7 @@ Mica is an early Rust prototype. The current tree has:
 - compiler for a growing Mica language surface;
 - role-based method dispatch;
 - a "filein" syntax for bringing in state-as-initial-blueprint;
+- Fjall-backed durable relation state with strict and relaxed commit modes;
 - a simple runner and REPL;
 - a small filein example.
 
@@ -269,7 +270,7 @@ Near-term work is about making the live system cohere:
 - richer ontology examples beyond the current MUD-shaped smoke test;
 - object neighbourhood/outliner queries;
 - authority and capability design;
-- durable storage strategy;
+- durable storage hardening, compaction, and recovery testing;
 - more complete rule evaluation and query planning;
 - a clearer standard library for common relations.
 
