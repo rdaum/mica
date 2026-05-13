@@ -1,6 +1,6 @@
 use crate::heap::HeapValue;
 use crate::value::{
-    TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value, ValueKind, normalize_f32,
+    TAG_BYTES, TAG_ERROR, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value, ValueKind, normalize_f32,
 };
 use std::cmp::Ordering;
 use std::fmt;
@@ -67,6 +67,25 @@ impl Value {
                     }
                 });
             }
+            ValueKind::Error => {
+                let _ = self.with_error(|error| {
+                    out.extend_from_slice(&(error.code().id() as u64).to_be_bytes());
+                    match error.message() {
+                        Some(message) => {
+                            out.push(1);
+                            encode_bytes_terminated(message.as_bytes(), out);
+                        }
+                        None => out.push(0),
+                    }
+                    match error.value() {
+                        Some(value) => {
+                            out.push(1);
+                            value.encode_ordered(out);
+                        }
+                        None => out.push(0),
+                    }
+                });
+            }
         }
     }
 }
@@ -101,6 +120,9 @@ impl PartialEq for Value {
                         })
                         .unwrap()
                 })
+                .unwrap(),
+            (ValueKind::Error, ValueKind::Error) => self
+                .with_error(|left| other.with_error(|right| left == right).unwrap())
                 .unwrap(),
             _ => false,
         }
@@ -158,6 +180,9 @@ impl Ord for Value {
                         .unwrap()
                 })
                 .unwrap(),
+            ValueKind::Error => self
+                .with_error(|left| other.with_error(|right| left.cmp(right)).unwrap())
+                .unwrap(),
         }
     }
 }
@@ -192,6 +217,9 @@ impl Hash for Value {
                     start.hash(state);
                     end.hash(state);
                 });
+            }
+            ValueKind::Error => {
+                let _ = self.with_error(|error| error.hash(state));
             }
         };
     }
@@ -235,6 +263,9 @@ impl fmt::Debug for Value {
                 .unwrap(),
             ValueKind::Range => self
                 .with_range(|start, end| write_range(start, end, f))
+                .unwrap(),
+            ValueKind::Error => self
+                .with_error(|error| write_error_value(error, f))
                 .unwrap(),
         }
     }
@@ -291,6 +322,9 @@ impl fmt::Display for Value {
             ValueKind::Range => self
                 .with_range(|start, end| write_range(start, end, f))
                 .unwrap(),
+            ValueKind::Error => self
+                .with_error(|error| write_error_value(error, f))
+                .unwrap(),
         }
     }
 }
@@ -323,6 +357,24 @@ fn write_range(start: &Value, end: Option<&Value>, f: &mut fmt::Formatter<'_>) -
     }
 }
 
+fn write_error_value(error: &crate::ErrorValue, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str("error(")?;
+    match error.code().name() {
+        Some(name) => f.write_str(name)?,
+        None => write!(f, "E_#{}", error.code().id())?,
+    }
+    if let Some(message) = error.message() {
+        write!(f, ", {message:?}")?;
+    }
+    if let Some(value) = error.value() {
+        if error.message().is_none() {
+            f.write_str(", nothing")?;
+        }
+        write!(f, ", {value:?}")?;
+    }
+    f.write_str(")")
+}
+
 fn encode_bytes_terminated(bytes: &[u8], out: &mut Vec<u8>) {
     for byte in bytes {
         if *byte == 0 {
@@ -339,5 +391,7 @@ const _: () = {
         heap.tag()
     }
     let _ = _heap_value_is_used;
-    let _ = (TAG_STRING, TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE);
+    let _ = (
+        TAG_STRING, TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_ERROR,
+    );
 };

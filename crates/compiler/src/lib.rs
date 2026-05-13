@@ -17,7 +17,7 @@ mod syntax;
 pub use ast::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
     FunctionBody, Item, Literal, MethodKind, MethodRole, NodeId, ObjectClause, Param, ParamMode,
-    Span, UnaryOp,
+    RecoveryClause, Span, UnaryOp,
 };
 pub use backend::{
     CompileContext, CompileError, CompiledProgram, InstalledMethod, InstalledRole,
@@ -26,7 +26,7 @@ pub use backend::{
 };
 pub use hir::{
     HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,
-    HirProgram, HirRelationAtom, HirScatterBinding,
+    HirProgram, HirRecovery, HirRelationAtom, HirScatterBinding,
 };
 pub use lexer::lex;
 pub use lower::parse_ast;

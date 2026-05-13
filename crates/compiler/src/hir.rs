@@ -158,6 +158,17 @@ pub enum HirExpr {
         id: NodeId,
         value: Option<Box<HirExpr>>,
     },
+    Raise {
+        id: NodeId,
+        error: Box<HirExpr>,
+        message: Option<Box<HirExpr>>,
+        value: Option<Box<HirExpr>>,
+    },
+    Recover {
+        id: NodeId,
+        expr: Box<HirExpr>,
+        catches: Vec<HirRecovery>,
+    },
     Break {
         id: NodeId,
     },
@@ -226,6 +237,14 @@ pub struct HirCatch {
     pub binding: Option<BindingId>,
     pub condition: Option<HirExpr>,
     pub body: Vec<HirItem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirRecovery {
+    pub id: NodeId,
+    pub binding: Option<BindingId>,
+    pub condition: Option<HirExpr>,
+    pub value: HirExpr,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

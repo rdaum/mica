@@ -1,6 +1,6 @@
 use crate::{
-    Instruction, ListItem, Operand, Program, ProgramResolver, Register, RuntimeBinaryOp,
-    RuntimeError, RuntimeUnaryOp, SuspendKind,
+    CatchHandler, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
+    RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Value, ValueKind};
@@ -12,6 +12,22 @@ pub struct Frame {
     ip: usize,
     registers: Vec<Value>,
     return_register: Option<Register>,
+    try_stack: Vec<TryRegion>,
+    pending_finally: Vec<FinallyContinuation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TryRegion {
+    catches: Vec<CatchHandler>,
+    finally: Option<usize>,
+    end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FinallyContinuation {
+    Normal(usize),
+    Raise(Value),
+    Return(Value),
 }
 
 impl Frame {
@@ -40,6 +56,8 @@ impl Frame {
             ip: 0,
             registers,
             return_register,
+            try_stack: Vec::new(),
+            pending_finally: Vec::new(),
         })
     }
 
@@ -347,6 +365,21 @@ impl RegisterVm {
                 self.current_frame_mut()?.ip = target;
                 Ok(VmHostResponse::Continue)
             }
+            Instruction::EnterTry {
+                catches,
+                finally,
+                end,
+            } => {
+                self.current_frame_mut()?.try_stack.push(TryRegion {
+                    catches,
+                    finally,
+                    end,
+                });
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::ExitTry => self.exit_try_region(),
+            Instruction::EndFinally => self.end_finally(),
             Instruction::Emit { value } => {
                 pending_effects.push(self.resolve_operand(&value)?);
                 self.advance_ip()?;
@@ -429,10 +462,44 @@ impl RegisterVm {
                 let error = self.resolve_operand(&error)?;
                 Ok(VmHostResponse::Abort(error))
             }
+            Instruction::Raise {
+                error,
+                message,
+                value,
+            } => {
+                let error = self.resolve_operand(&error)?;
+                let message = message
+                    .as_ref()
+                    .map(|message| self.resolve_operand(message))
+                    .transpose()?;
+                let value = value
+                    .as_ref()
+                    .map(|value| self.resolve_operand(value))
+                    .transpose()?;
+                let error = normalize_raised_error(error, message, value)?;
+                self.begin_raise(error)
+            }
         }
     }
 
     fn return_from_frame(&mut self, value: Value) -> Result<VmHostResponse, RuntimeError> {
+        {
+            let frame = self.current_frame_mut()?;
+            if frame.pending_finally.pop().is_some() {
+                // A return from inside a finally body replaces the control flow
+                // that originally entered the finally.
+            }
+            while let Some(region) = frame.try_stack.pop() {
+                if let Some(finally) = region.finally {
+                    frame
+                        .pending_finally
+                        .push(FinallyContinuation::Return(value));
+                    frame.ip = finally;
+                    return Ok(VmHostResponse::Continue);
+                }
+            }
+        }
+
         let frame = self
             .state
             .frames
@@ -443,6 +510,83 @@ impl RegisterVm {
         };
         self.write_register(return_register, value)?;
         Ok(VmHostResponse::Continue)
+    }
+
+    fn exit_try_region(&mut self) -> Result<VmHostResponse, RuntimeError> {
+        let frame = self.current_frame_mut()?;
+        let region = frame.try_stack.pop().ok_or(RuntimeError::EmptyTryStack)?;
+        if let Some(finally) = region.finally {
+            frame
+                .pending_finally
+                .push(FinallyContinuation::Normal(region.end));
+            frame.ip = finally;
+        } else {
+            frame.ip = region.end;
+        }
+        Ok(VmHostResponse::Continue)
+    }
+
+    fn end_finally(&mut self) -> Result<VmHostResponse, RuntimeError> {
+        let continuation = self
+            .current_frame_mut()?
+            .pending_finally
+            .pop()
+            .ok_or(RuntimeError::EmptyTryStack)?;
+        match continuation {
+            FinallyContinuation::Normal(target) => {
+                self.current_frame_mut()?.ip = target;
+                Ok(VmHostResponse::Continue)
+            }
+            FinallyContinuation::Raise(error) => self.begin_raise(error),
+            FinallyContinuation::Return(value) => self.return_from_frame(value),
+        }
+    }
+
+    fn begin_raise(&mut self, error: Value) -> Result<VmHostResponse, RuntimeError> {
+        loop {
+            let Some(frame) = self.state.frames.last_mut() else {
+                return Ok(VmHostResponse::Abort(error));
+            };
+
+            if frame.pending_finally.pop().is_some() {
+                // A raise from inside a finally body replaces the control flow
+                // that originally entered the finally.
+            }
+
+            while let Some(region) = frame.try_stack.pop() {
+                if let Some(handler) = matching_handler(&region.catches, &error) {
+                    if let Some(binding) = handler.binding {
+                        let register_count = frame.registers.len();
+                        let slot = frame.registers.get_mut(binding.0 as usize).ok_or(
+                            RuntimeError::RegisterOutOfBounds {
+                                register: binding.0,
+                                register_count,
+                            },
+                        )?;
+                        *slot = error;
+                    }
+                    if let Some(finally) = region.finally {
+                        frame.try_stack.push(TryRegion {
+                            catches: Vec::new(),
+                            finally: Some(finally),
+                            end: region.end,
+                        });
+                    }
+                    frame.ip = handler.target;
+                    return Ok(VmHostResponse::Continue);
+                }
+
+                if let Some(finally) = region.finally {
+                    frame
+                        .pending_finally
+                        .push(FinallyContinuation::Raise(error));
+                    frame.ip = finally;
+                    return Ok(VmHostResponse::Continue);
+                }
+            }
+
+            self.state.frames.pop();
+        }
     }
 
     fn advance_ip(&mut self) -> Result<(), RuntimeError> {
@@ -652,4 +796,45 @@ fn collection_value_at(collection: &Value, index: &Value) -> Value {
 fn ordinal_index(index: &Value) -> Option<usize> {
     let index = index.as_int()?;
     usize::try_from(index).ok()
+}
+
+fn matching_handler<'a>(catches: &'a [CatchHandler], error: &Value) -> Option<&'a CatchHandler> {
+    let error_code = error.error_code_symbol();
+    catches.iter().find(|catch| match &catch.code {
+        Some(code) => code.error_code_symbol().is_some() && code.error_code_symbol() == error_code,
+        None => true,
+    })
+}
+
+fn normalize_raised_error(
+    error: Value,
+    message: Option<Value>,
+    value: Option<Value>,
+) -> Result<Value, RuntimeError> {
+    let message = message
+        .and_then(|message| {
+            if message.kind() == ValueKind::Nothing {
+                None
+            } else {
+                Some(error_message_text(message))
+            }
+        })
+        .transpose()?;
+    if let Some(code) = error.as_error_code() {
+        return Ok(Value::error(code, message, value));
+    }
+    if let Some(result) = error.with_error(|existing| {
+        let message = message.or_else(|| existing.message().map(str::to_owned));
+        let value = value.or_else(|| existing.value().cloned());
+        Value::error(existing.code(), message, value)
+    }) {
+        return Ok(result);
+    }
+    Err(RuntimeError::InvalidRaisedValue(error))
+}
+
+fn error_message_text(value: Value) -> Result<String, RuntimeError> {
+    value
+        .with_str(str::to_owned)
+        .ok_or(RuntimeError::InvalidErrorMessage(value))
 }

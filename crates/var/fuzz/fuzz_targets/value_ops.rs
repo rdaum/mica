@@ -71,7 +71,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn value(&mut self, depth: usize) -> Option<Value> {
-        let tag = self.byte()? % if depth >= 4 { 8 } else { 10 };
+        let tag = self.byte()? % if depth >= 4 { 8 } else { 11 };
         match tag {
             0 => Some(Value::nothing()),
             1 => Some(Value::bool(self.byte()? & 1 != 0)),
@@ -106,6 +106,21 @@ impl<'a> Cursor<'a> {
                     entries.push((self.value(depth + 1)?, self.value(depth + 1)?));
                 }
                 Some(Value::map(entries))
+            }
+            10 => {
+                let code = Symbol::from_id(self.u32()?);
+                let message = match self.byte()? & 1 {
+                    0 => None,
+                    _ => {
+                        let bytes = self.bytes(32)?;
+                        Some(String::from_utf8_lossy(bytes).into_owned())
+                    }
+                };
+                let value = match self.byte()? & 1 {
+                    0 => None,
+                    _ => Some(self.value(depth + 1)?),
+                };
+                Some(Value::error(code, message, value))
             }
             _ => unreachable!(),
         }

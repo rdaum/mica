@@ -1,12 +1,13 @@
 use crate::{
-    BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCollectionItem, HirExpr,
-    HirFunctionBody, HirItem, HirPlace, HirProgram, HirRelationAtom, HirScatterBinding, Literal,
-    LocalKind, NodeId, ParamMode, SemanticProgram, Span, UnaryOp, parse_semantic,
+    BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCatch, HirCollectionItem, HirExpr,
+    HirFunctionBody, HirItem, HirPlace, HirProgram, HirRecovery, HirRelationAtom,
+    HirScatterBinding, Literal, LocalKind, NodeId, ParamMode, SemanticProgram, Span, UnaryOp,
+    parse_semantic,
 };
 use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
 use mica_runtime::{
-    Instruction, ListItem, Operand, Program, Register, RuntimeBinaryOp, RuntimeUnaryOp, Scheduler,
-    SchedulerError, TaskId, TaskOutcome,
+    CatchHandler, Instruction, ListItem, Operand, Program, Register, RuntimeBinaryOp,
+    RuntimeUnaryOp, Scheduler, SchedulerError, TaskId, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use std::collections::HashMap;
@@ -736,6 +737,13 @@ impl<'a> ProgramCompiler<'a> {
                 });
                 Ok(dst)
             }
+            HirExpr::Raise {
+                error,
+                message,
+                value,
+                ..
+            } => self.compile_raise(error, message.as_deref(), value.as_deref()),
+            HirExpr::Recover { id, expr, catches } => self.compile_recover(*id, expr, catches),
             HirExpr::Block { items, .. } => {
                 let saved = self.locals.clone();
                 let mut last_value = None;
@@ -775,6 +783,12 @@ impl<'a> ProgramCompiler<'a> {
             } => self.compile_for(*id, *key, *value, iter, body),
             HirExpr::Break { id } => self.compile_break(*id),
             HirExpr::Continue { id } => self.compile_continue(*id),
+            HirExpr::Try {
+                id,
+                body,
+                catches,
+                finally,
+            } => self.compile_try(*id, body, catches, finally),
             HirExpr::Function { id, .. } => {
                 let function = self.compile_function(expr, None)?;
                 let HirExpr::Function { name, .. } = expr else {
@@ -1740,6 +1754,214 @@ impl<'a> ProgramCompiler<'a> {
         Ok(body_returned)
     }
 
+    fn compile_raise(
+        &mut self,
+        error: &HirExpr,
+        message: Option<&HirExpr>,
+        value: Option<&HirExpr>,
+    ) -> Result<Register, CompileError> {
+        let error = self.compile_expr_for_operand(error)?;
+        let message = message
+            .map(|message| self.compile_expr_for_operand(message))
+            .transpose()?;
+        let value = value
+            .map(|value| self.compile_expr_for_operand(value))
+            .transpose()?;
+        self.emit(Instruction::Raise {
+            error,
+            message,
+            value,
+        });
+        self.returned = true;
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::nothing(),
+        });
+        Ok(dst)
+    }
+
+    fn compile_try(
+        &mut self,
+        id: NodeId,
+        body: &[HirItem],
+        catches: &[HirCatch],
+        finally: &[HirItem],
+    ) -> Result<Register, CompileError> {
+        let saved_locals = self.locals.clone();
+        let saved_returned = self.returned;
+        self.returned = false;
+
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::nothing(),
+        });
+
+        let mut handlers = catches
+            .iter()
+            .map(|catch| {
+                let binding = catch.binding.map(|binding| {
+                    let register = self.alloc_register();
+                    self.emit(Instruction::Load {
+                        dst: register,
+                        value: Value::nothing(),
+                    });
+                    self.locals.insert(binding, register);
+                    register
+                });
+                let code = self.catch_code(id, catch.condition.as_ref())?;
+                Ok(CatchHandler {
+                    code,
+                    binding,
+                    target: 0,
+                })
+            })
+            .collect::<Result<Vec<_>, CompileError>>()?;
+
+        let enter = self.instructions.len();
+        self.emit(Instruction::EnterTry {
+            catches: handlers.clone(),
+            finally: None,
+            end: 0,
+        });
+
+        let (body_value, body_returned) = self.compile_branch_items(body)?;
+        if let Some(value) = body_value {
+            self.emit(Instruction::Move { dst, src: value });
+        }
+        if !body_returned {
+            self.emit(Instruction::ExitTry);
+        }
+
+        let mut end_jumps = Vec::new();
+        for (idx, catch) in catches.iter().enumerate() {
+            handlers[idx].target = self.instructions.len();
+            let (value, returned) = self.compile_branch_items(&catch.body)?;
+            if let Some(value) = value {
+                self.emit(Instruction::Move { dst, src: value });
+            }
+            if !returned {
+                if finally.is_empty() {
+                    end_jumps.push(self.emit_jump(0));
+                } else {
+                    self.emit(Instruction::ExitTry);
+                }
+            }
+        }
+
+        let finally_target = if finally.is_empty() {
+            None
+        } else {
+            let target = self.instructions.len();
+            let _ = self.compile_branch_items(finally)?;
+            self.emit(Instruction::EndFinally);
+            Some(target)
+        };
+
+        let end = self.instructions.len();
+        for jump in end_jumps {
+            self.patch_jump(jump, end)?;
+        }
+        self.patch_enter_try(enter, handlers, finally_target, end)?;
+        self.locals = saved_locals;
+        self.returned = saved_returned;
+        Ok(dst)
+    }
+
+    fn compile_recover(
+        &mut self,
+        id: NodeId,
+        expr: &HirExpr,
+        catches: &[HirRecovery],
+    ) -> Result<Register, CompileError> {
+        let saved_locals = self.locals.clone();
+        let saved_returned = self.returned;
+        self.returned = false;
+
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::nothing(),
+        });
+
+        let mut handlers = catches
+            .iter()
+            .map(|catch| {
+                let binding = catch.binding.map(|binding| {
+                    let register = self.alloc_register();
+                    self.emit(Instruction::Load {
+                        dst: register,
+                        value: Value::nothing(),
+                    });
+                    self.locals.insert(binding, register);
+                    register
+                });
+                let code = self.catch_code(id, catch.condition.as_ref())?;
+                Ok(CatchHandler {
+                    code,
+                    binding,
+                    target: 0,
+                })
+            })
+            .collect::<Result<Vec<_>, CompileError>>()?;
+
+        let enter = self.instructions.len();
+        self.emit(Instruction::EnterTry {
+            catches: handlers.clone(),
+            finally: None,
+            end: 0,
+        });
+
+        let value = self.compile_expr_for_value(expr)?;
+        if !self.returned {
+            self.emit(Instruction::Move { dst, src: value });
+            self.emit(Instruction::ExitTry);
+        }
+
+        let mut end_jumps = Vec::new();
+        for (idx, catch) in catches.iter().enumerate() {
+            handlers[idx].target = self.instructions.len();
+            let saved_branch_returned = self.returned;
+            self.returned = false;
+            let value = self.compile_expr_for_value(&catch.value)?;
+            if !self.returned {
+                self.emit(Instruction::Move { dst, src: value });
+                end_jumps.push(self.emit_jump(0));
+            }
+            self.returned = saved_branch_returned;
+        }
+
+        let end = self.instructions.len();
+        for jump in end_jumps {
+            self.patch_jump(jump, end)?;
+        }
+        self.patch_enter_try(enter, handlers, None, end)?;
+        self.locals = saved_locals;
+        self.returned = saved_returned;
+        Ok(dst)
+    }
+
+    fn catch_code(
+        &self,
+        id: NodeId,
+        condition: Option<&HirExpr>,
+    ) -> Result<Option<Value>, CompileError> {
+        let Some(condition) = condition else {
+            return Ok(None);
+        };
+        match condition {
+            HirExpr::Literal {
+                value: Literal::ErrorCode(code),
+                ..
+            } => Ok(Some(Value::error_code(Symbol::intern(code)))),
+            _ => Err(self.unsupported(
+                id,
+                "compiled catch clauses currently match an error code literal or catch all",
+            )),
+        }
+    }
+
     fn compile_break(&mut self, id: NodeId) -> Result<Register, CompileError> {
         if self.loops.is_empty() {
             return Err(self.unsupported(id, "break is only valid inside a loop"));
@@ -2068,6 +2290,31 @@ impl<'a> ProgramCompiler<'a> {
         Ok(())
     }
 
+    fn patch_enter_try(
+        &mut self,
+        index: usize,
+        new_catches: Vec<CatchHandler>,
+        new_finally: Option<usize>,
+        new_end: usize,
+    ) -> Result<(), CompileError> {
+        let Some(Instruction::EnterTry {
+            catches,
+            finally,
+            end,
+        }) = self.instructions.get_mut(index)
+        else {
+            return Err(CompileError::Unsupported {
+                node: NodeId(0),
+                span: None,
+                message: "internal compiler error: expected enter-try instruction".to_owned(),
+            });
+        };
+        *catches = new_catches;
+        *finally = new_finally;
+        *end = new_end;
+        Ok(())
+    }
+
     fn unsupported(&self, node: NodeId, message: impl Into<String>) -> CompileError {
         CompileError::Unsupported {
             node,
@@ -2107,6 +2354,8 @@ fn expr_id(expr: &HirExpr) -> NodeId {
         | HirExpr::For { id, .. }
         | HirExpr::While { id, .. }
         | HirExpr::Return { id, .. }
+        | HirExpr::Raise { id, .. }
+        | HirExpr::Recover { id, .. }
         | HirExpr::Break { id }
         | HirExpr::Continue { id }
         | HirExpr::Try { id, .. }
@@ -2197,6 +2446,102 @@ mod tests {
                     value: Value::nothing(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiled_task_catches_raised_error_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "try\n\
+               raise E_NOT_PORTABLE, \"That cannot be taken.\", :lamp\n\
+             catch err if E_NOT_PORTABLE\n\
+               return err\n\
+             end",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::error(
+                    Symbol::intern("E_NOT_PORTABLE"),
+                    Some("That cannot be taken."),
+                    Some(Value::symbol(Symbol::intern("lamp"))),
+                ),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_runs_finally_during_return_unwind() {
+        let cleaned = id(1);
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(cleaned, Symbol::intern("Cleaned"), 1))
+            .unwrap();
+        let context = CompileContext::new().with_relation("Cleaned", cleaned);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "try\n\
+               return 7\n\
+             finally\n\
+               assert Cleaned(:done)\n\
+             end",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(7).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert_eq!(
+            scheduler
+                .kernel()
+                .snapshot()
+                .scan(cleaned, &[Some(Value::symbol(Symbol::intern("done")))])
+                .unwrap(),
+            vec![Tuple::from([Value::symbol(Symbol::intern("done"))])]
+        );
+    }
+
+    #[test]
+    fn compiled_task_recovers_expression_errors_inline() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let fallback = recover raise E_NOT_PORTABLE\n\
+             catch E_NOT_PORTABLE => 10\n\
+             end\n\
+             let untouched = recover 1\n\
+             catch E_NOT_PORTABLE => 99\n\
+             end\n\
+             return fallback + untouched",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(11).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
         );
     }
 

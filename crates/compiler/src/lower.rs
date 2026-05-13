@@ -1,7 +1,7 @@
 use crate::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, CstElement,
     CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, MethodRole,
-    NodeId, ObjectClause, Param, ParamMode, ParseError, SyntaxKind, UnaryOp, parse,
+    NodeId, ObjectClause, Param, ParamMode, ParseError, RecoveryClause, SyntaxKind, UnaryOp, parse,
 };
 
 pub fn parse_ast(source: &str) -> Ast {
@@ -202,6 +202,8 @@ impl<'a> Lower<'a> {
             SyntaxKind::ForExpr => self.lower_for(node),
             SyntaxKind::WhileExpr => self.lower_while(node),
             SyntaxKind::ReturnExpr => self.lower_return(node),
+            SyntaxKind::RaiseExpr => self.lower_raise(node),
+            SyntaxKind::RecoverExpr => self.lower_recover(node),
             SyntaxKind::BreakExpr => Expr::Break {
                 id: self.node_id(),
                 span: node.span.clone(),
@@ -624,6 +626,68 @@ impl<'a> Lower<'a> {
         }
     }
 
+    fn lower_raise(&mut self, node: &CstNode) -> Expr {
+        let expr_nodes = self
+            .node_children(node)
+            .filter(|child| is_expr_node(child.kind))
+            .collect::<Vec<_>>();
+        let error = expr_nodes
+            .first()
+            .map(|child| self.lower_expr(child))
+            .unwrap_or_else(|| self.error_expr(node));
+        let message = expr_nodes
+            .get(1)
+            .map(|child| Box::new(self.lower_expr(child)));
+        let value = expr_nodes
+            .get(2)
+            .map(|child| Box::new(self.lower_expr(child)));
+        Expr::Raise {
+            id: self.node_id(),
+            span: node.span.clone(),
+            error: Box::new(error),
+            message,
+            value,
+        }
+    }
+
+    fn lower_recover(&mut self, node: &CstNode) -> Expr {
+        let expr = self
+            .node_children(node)
+            .find(|child| is_expr_node(child.kind))
+            .map(|child| self.lower_expr(child))
+            .unwrap_or_else(|| self.error_expr(node));
+        let catches = self
+            .node_children(node)
+            .filter(|child| child.kind == SyntaxKind::RecoverClause)
+            .map(|catch| self.lower_recovery_clause(catch))
+            .collect();
+        Expr::Recover {
+            id: self.node_id(),
+            span: node.span.clone(),
+            expr: Box::new(expr),
+            catches,
+        }
+    }
+
+    fn lower_recovery_clause(&mut self, node: &CstNode) -> RecoveryClause {
+        let name = self.first_text(node, SyntaxKind::Ident);
+        let exprs = self
+            .node_children(node)
+            .filter(|child| is_expr_node(child.kind))
+            .collect::<Vec<_>>();
+        let (condition, value) = match exprs.as_slice() {
+            [value] => (None, self.lower_expr(value)),
+            [condition, value, ..] => (Some(self.lower_expr(condition)), self.lower_expr(value)),
+            [] => (None, self.error_expr(node)),
+        };
+        RecoveryClause {
+            id: self.node_id(),
+            name,
+            condition,
+            value,
+        }
+    }
+
     fn lower_try(&mut self, node: &CstNode) -> Expr {
         let body = self
             .node_children(node)
@@ -962,6 +1026,8 @@ fn is_expr_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::ForExpr
             | SyntaxKind::WhileExpr
             | SyntaxKind::ReturnExpr
+            | SyntaxKind::RaiseExpr
+            | SyntaxKind::RecoverExpr
             | SyntaxKind::BreakExpr
             | SyntaxKind::ContinueExpr
             | SyntaxKind::TryExpr
@@ -1381,6 +1447,30 @@ mod tests {
             Expr::Return { value, .. } => {
                 if let Some(value) = value {
                     collect_expr_ids(value, ids);
+                }
+            }
+            Expr::Raise {
+                error,
+                message,
+                value,
+                ..
+            } => {
+                collect_expr_ids(error, ids);
+                if let Some(message) = message {
+                    collect_expr_ids(message, ids);
+                }
+                if let Some(value) = value {
+                    collect_expr_ids(value, ids);
+                }
+            }
+            Expr::Recover { expr, catches, .. } => {
+                collect_expr_ids(expr, ids);
+                for catch in catches {
+                    ids.push(catch.id);
+                    if let Some(condition) = &catch.condition {
+                        collect_expr_ids(condition, ids);
+                    }
+                    collect_expr_ids(&catch.value, ids);
                 }
             }
             Expr::Try {

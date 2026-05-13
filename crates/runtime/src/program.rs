@@ -46,6 +46,13 @@ impl From<Operand> for ListItem {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatchHandler {
+    pub code: Option<Value>,
+    pub binding: Option<Register>,
+    pub target: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SuspendKind {
     Commit,
     TimedMillis(u64),
@@ -145,6 +152,13 @@ pub enum Instruction {
     Jump {
         target: usize,
     },
+    EnterTry {
+        catches: Vec<CatchHandler>,
+        finally: Option<usize>,
+        end: usize,
+    },
+    ExitTry,
+    EndFinally,
     Emit {
         value: Operand,
     },
@@ -171,6 +185,11 @@ pub enum Instruction {
     },
     Abort {
         error: Operand,
+    },
+    Raise {
+        error: Operand,
+        message: Option<Operand>,
+        value: Option<Operand>,
     },
 }
 
@@ -417,9 +436,36 @@ fn validate_instruction(
             validate_target(instruction_count, *if_false)
         }
         Instruction::Jump { target } => validate_target(instruction_count, *target),
+        Instruction::EnterTry {
+            catches,
+            finally,
+            end,
+        } => {
+            validate_target(instruction_count, *end)?;
+            if let Some(finally) = finally {
+                validate_target(instruction_count, *finally)?;
+            }
+            for catch in catches {
+                validate_target(instruction_count, catch.target)?;
+                if let Some(binding) = catch.binding {
+                    validate_register(register_count, binding)?;
+                }
+            }
+            Ok(())
+        }
+        Instruction::ExitTry | Instruction::EndFinally => Ok(()),
         Instruction::Emit { value }
         | Instruction::Return { value }
         | Instruction::Abort { error: value } => validate_operand(register_count, value),
+        Instruction::Raise {
+            error,
+            message,
+            value,
+        } => {
+            validate_operand(register_count, error)?;
+            validate_operands(register_count, message.iter())?;
+            validate_operands(register_count, value.iter())
+        }
         Instruction::Call { dst, program, args } => {
             validate_register(register_count, *dst)?;
             validate_operands(register_count, args.iter())?;
@@ -517,6 +563,10 @@ const INST_SET_INDEX: u8 = 24;
 const INST_SCAN_VALUE: u8 = 25;
 const INST_CALL: u8 = 26;
 const INST_BUILD_RANGE: u8 = 27;
+const INST_ENTER_TRY: u8 = 28;
+const INST_EXIT_TRY: u8 = 29;
+const INST_END_FINALLY: u8 = 30;
+const INST_RAISE: u8 = 31;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -548,6 +598,7 @@ const VALUE_SYMBOL: u8 = 5;
 const VALUE_ERROR_CODE: u8 = 6;
 const VALUE_STRING: u8 = 7;
 const VALUE_BYTES: u8 = 8;
+const VALUE_ERROR: u8 = 9;
 
 fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(), RuntimeError> {
     match instruction {
@@ -705,6 +756,24 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_u32(out, *target as u32);
             Ok(())
         }
+        Instruction::EnterTry {
+            catches,
+            finally,
+            end,
+        } => {
+            out.push(INST_ENTER_TRY);
+            write_u32(out, *end as u32);
+            write_optional_target(out, *finally);
+            write_catch_handlers(out, catches)
+        }
+        Instruction::ExitTry => {
+            out.push(INST_EXIT_TRY);
+            Ok(())
+        }
+        Instruction::EndFinally => {
+            out.push(INST_END_FINALLY);
+            Ok(())
+        }
         Instruction::Emit { value } => {
             out.push(INST_EMIT);
             write_operand(out, value)
@@ -733,6 +802,16 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
         Instruction::Abort { error } => {
             out.push(INST_ABORT);
             write_operand(out, error)
+        }
+        Instruction::Raise {
+            error,
+            message,
+            value,
+        } => {
+            out.push(INST_RAISE);
+            write_operand(out, error)?;
+            write_optional_operand(out, message.as_ref())?;
+            write_optional_operand(out, value.as_ref())
         }
         Instruction::Dispatch {
             dst,
@@ -818,6 +897,22 @@ fn write_list_items(out: &mut Vec<u8>, items: &[ListItem]) -> Result<(), Runtime
     Ok(())
 }
 
+fn write_catch_handlers(out: &mut Vec<u8>, catches: &[CatchHandler]) -> Result<(), RuntimeError> {
+    write_u32(out, catches.len() as u32);
+    for catch in catches {
+        write_optional_value(out, catch.code.as_ref())?;
+        match catch.binding {
+            Some(binding) => {
+                out.push(1);
+                write_register(out, binding);
+            }
+            None => out.push(0),
+        }
+        write_u32(out, catch.target as u32);
+    }
+    Ok(())
+}
+
 fn write_optional_operands(
     out: &mut Vec<u8>,
     operands: &[Option<Operand>],
@@ -843,6 +938,39 @@ fn write_optional_operand(
         Some(operand) => {
             out.push(1);
             write_operand(out, operand)
+        }
+        None => {
+            out.push(0);
+            Ok(())
+        }
+    }
+}
+
+fn write_optional_target(out: &mut Vec<u8>, target: Option<usize>) {
+    match target {
+        Some(target) => {
+            out.push(1);
+            write_u32(out, target as u32);
+        }
+        None => out.push(0),
+    }
+}
+
+fn write_optional_str(out: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            write_str(out, value);
+        }
+        None => out.push(0),
+    }
+}
+
+fn write_optional_value(out: &mut Vec<u8>, value: Option<&Value>) -> Result<(), RuntimeError> {
+    match value {
+        Some(value) => {
+            out.push(1);
+            write_value(out, value)
         }
         None => {
             out.push(0);
@@ -890,6 +1018,16 @@ fn write_value(out: &mut Vec<u8>, value: &Value) -> Result<(), RuntimeError> {
         };
         out.push(VALUE_ERROR_CODE);
         write_str(out, name);
+    } else if let Some(result) = value.with_error(|error| {
+        let Some(name) = error.code().name() else {
+            return Err(artifact_error("cannot serialize unnamed error code"));
+        };
+        out.push(VALUE_ERROR);
+        write_str(out, name);
+        write_optional_str(out, error.message());
+        write_optional_value(out, error.value())
+    }) {
+        result?;
     } else if value.kind() == mica_var::ValueKind::Nothing {
         out.push(VALUE_NOTHING);
     } else if let Some(()) = value.with_str(|text| {
@@ -1061,6 +1199,13 @@ impl<'a> ByteReader<'a> {
             INST_JUMP => Instruction::Jump {
                 target: self.read_u32()? as usize,
             },
+            INST_ENTER_TRY => Instruction::EnterTry {
+                end: self.read_u32()? as usize,
+                finally: self.read_optional_target()?,
+                catches: self.read_catch_handlers()?,
+            },
+            INST_EXIT_TRY => Instruction::ExitTry,
+            INST_END_FINALLY => Instruction::EndFinally,
             INST_EMIT => Instruction::Emit {
                 value: self.read_operand()?,
             },
@@ -1074,6 +1219,11 @@ impl<'a> ByteReader<'a> {
             },
             INST_ABORT => Instruction::Abort {
                 error: self.read_operand()?,
+            },
+            INST_RAISE => Instruction::Raise {
+                error: self.read_operand()?,
+                message: self.read_optional_operand()?,
+                value: self.read_optional_operand()?,
             },
             INST_DISPATCH => Instruction::Dispatch {
                 dst: self.read_register()?,
@@ -1107,6 +1257,23 @@ impl<'a> ByteReader<'a> {
             .collect()
     }
 
+    fn read_catch_handlers(&mut self) -> Result<Vec<CatchHandler>, RuntimeError> {
+        let count = self.read_u32()? as usize;
+        (0..count)
+            .map(|_| {
+                Ok(CatchHandler {
+                    code: self.read_optional_value()?,
+                    binding: match self.read_u8()? {
+                        0 => None,
+                        1 => Some(self.read_register()?),
+                        _ => return Err(artifact_error("invalid optional catch binding tag")),
+                    },
+                    target: self.read_u32()? as usize,
+                })
+            })
+            .collect()
+    }
+
     fn read_optional_operands(&mut self) -> Result<Vec<Option<Operand>>, RuntimeError> {
         let count = self.read_u32()? as usize;
         (0..count).map(|_| self.read_optional_operand()).collect()
@@ -1117,6 +1284,14 @@ impl<'a> ByteReader<'a> {
             0 => Ok(None),
             1 => self.read_operand().map(Some),
             _ => Err(artifact_error("invalid optional operand tag")),
+        }
+    }
+
+    fn read_optional_target(&mut self) -> Result<Option<usize>, RuntimeError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_u32().map(|target| Some(target as usize)),
+            _ => Err(artifact_error("invalid optional target tag")),
         }
     }
 
@@ -1155,8 +1330,30 @@ impl<'a> ByteReader<'a> {
             VALUE_ERROR_CODE => Value::error_code(Symbol::intern(&self.read_string()?)),
             VALUE_STRING => Value::string(self.read_string()?),
             VALUE_BYTES => Value::bytes(self.read_bytes()?),
+            VALUE_ERROR => {
+                let code = Symbol::intern(&self.read_string()?);
+                let message = self.read_optional_string()?;
+                let value = self.read_optional_value()?;
+                Value::error(code, message, value)
+            }
             _ => return Err(artifact_error("unknown value tag")),
         })
+    }
+
+    fn read_optional_string(&mut self) -> Result<Option<String>, RuntimeError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_string().map(Some),
+            _ => Err(artifact_error("invalid optional string tag")),
+        }
+    }
+
+    fn read_optional_value(&mut self) -> Result<Option<Value>, RuntimeError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_value().map(Some),
+            _ => Err(artifact_error("invalid optional value tag")),
+        }
     }
 
     fn read_register(&mut self) -> Result<Register, RuntimeError> {

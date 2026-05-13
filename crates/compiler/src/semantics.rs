@@ -1,8 +1,8 @@
 use crate::{
     Arg, Ast, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
     FunctionBody, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam,
-    HirPlace, HirProgram, HirRelationAtom, HirScatterBinding, Item, NodeId, Param, ParamMode,
-    ParseError, Span, parse_ast,
+    HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirScatterBinding, Item, NodeId, Param,
+    ParamMode, ParseError, RecoveryClause, Span, parse_ast,
 };
 use std::collections::{BTreeSet, HashMap};
 
@@ -636,6 +636,32 @@ impl<'a> Analyzer<'a> {
                     .as_ref()
                     .map(|value| Box::new(self.lower_expr(value, scope))),
             },
+            Expr::Raise {
+                id,
+                error,
+                message,
+                value,
+                ..
+            } => HirExpr::Raise {
+                id: *id,
+                error: Box::new(self.lower_expr(error, scope)),
+                message: message
+                    .as_ref()
+                    .map(|message| Box::new(self.lower_expr(message, scope))),
+                value: value
+                    .as_ref()
+                    .map(|value| Box::new(self.lower_expr(value, scope))),
+            },
+            Expr::Recover {
+                id, expr, catches, ..
+            } => HirExpr::Recover {
+                id: *id,
+                expr: Box::new(self.lower_expr(expr, scope)),
+                catches: catches
+                    .iter()
+                    .map(|catch| self.lower_recovery(catch, scope))
+                    .collect(),
+            },
             Expr::Break { id, .. } => HirExpr::Break { id: *id },
             Expr::Continue { id, .. } => HirExpr::Continue { id: *id },
             Expr::Try {
@@ -769,6 +795,25 @@ impl<'a> Analyzer<'a> {
             binding,
             condition,
             body,
+        }
+    }
+
+    fn lower_recovery(&mut self, catch: &RecoveryClause, parent: ScopeId) -> HirRecovery {
+        let scope = self.alloc_scope(Some(parent), Some(catch.id));
+        let binding = catch
+            .name
+            .as_ref()
+            .map(|name| self.declare(scope, name.clone(), LocalKind::Catch, catch.id, &(0..0)));
+        let condition = catch
+            .condition
+            .as_ref()
+            .map(|condition| self.lower_expr(condition, scope));
+        let value = self.lower_expr(&catch.value, scope);
+        HirRecovery {
+            id: catch.id,
+            binding,
+            condition,
+            value,
         }
     }
 
@@ -1074,6 +1119,26 @@ fn collect_expr_span(expr: &Expr, spans: &mut HashMap<NodeId, Span>) {
             collect_expr_span(condition, spans);
             collect_item_spans(body, spans);
         }
+        Expr::Raise {
+            error,
+            message,
+            value,
+            ..
+        } => {
+            collect_expr_span(error, spans);
+            if let Some(message) = message {
+                collect_expr_span(message, spans);
+            }
+            if let Some(value) = value {
+                collect_expr_span(value, spans);
+            }
+        }
+        Expr::Recover { expr, catches, .. } => {
+            collect_expr_span(expr, spans);
+            for catch in catches {
+                collect_recovery_span(catch, spans);
+            }
+        }
         Expr::Try {
             body,
             catches,
@@ -1126,6 +1191,14 @@ fn collect_catch_span(catch: &CatchClause, spans: &mut HashMap<NodeId, Span>) {
         collect_expr_span(condition, spans);
     }
     collect_item_spans(&catch.body, spans);
+}
+
+fn collect_recovery_span(catch: &RecoveryClause, spans: &mut HashMap<NodeId, Span>) {
+    spans.insert(catch.id, catch.value.span().clone());
+    if let Some(condition) = &catch.condition {
+        collect_expr_span(condition, spans);
+    }
+    collect_expr_span(&catch.value, spans);
 }
 
 fn first_item_span(items: &[Item]) -> Option<Span> {

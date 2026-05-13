@@ -22,6 +22,10 @@ fn err(name: &str) -> Value {
     Value::error_code(Symbol::intern(name))
 }
 
+fn error(name: &str, message: Option<&str>, value: Option<Value>) -> Value {
+    Value::error(Symbol::intern(name), message, value)
+}
+
 fn strv(value: &str) -> Value {
     Value::string(value)
 }
@@ -748,6 +752,238 @@ fn program_artifact_round_trips_error_codes() {
         TaskOutcome::Complete {
             value: code,
             effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn program_artifact_round_trips_rich_errors() {
+    let kernel = kernel_with_world_relations();
+    let error = error(
+        "E_NOT_PORTABLE",
+        Some("That cannot be taken."),
+        Some(strv("lamp")),
+    );
+    let program = Program::new(
+        1,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: error.clone(),
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: error,
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn raise_without_handler_aborts_with_rich_error() {
+    let kernel = kernel_with_world_relations();
+    let expected = error(
+        "E_NOT_PORTABLE",
+        Some("That cannot be taken."),
+        Some(strv("lamp")),
+    );
+    let program = Program::new(
+        0,
+        [Instruction::Raise {
+            error: v(err("E_NOT_PORTABLE")),
+            message: Some(v(strv("That cannot be taken."))),
+            value: Some(v(strv("lamp"))),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program(&kernel, program, 100).unwrap(),
+        TaskOutcome::Aborted {
+            error: expected,
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn try_catches_raised_error_by_code() {
+    let kernel = kernel_with_world_relations();
+    let expected = error(
+        "E_NOT_PORTABLE",
+        Some("That cannot be taken."),
+        Some(strv("lamp")),
+    );
+    let program = Program::new(
+        2,
+        [
+            Instruction::EnterTry {
+                catches: vec![crate::CatchHandler {
+                    code: Some(err("E_NOT_PORTABLE")),
+                    binding: Some(reg(1)),
+                    target: 3,
+                }],
+                finally: None,
+                end: 4,
+            },
+            Instruction::Raise {
+                error: v(err("E_NOT_PORTABLE")),
+                message: Some(v(strv("That cannot be taken."))),
+                value: Some(v(strv("lamp"))),
+            },
+            Instruction::ExitTry,
+            Instruction::Return { value: r(1) },
+            Instruction::Return {
+                value: v(Value::nothing()),
+            },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program(&kernel, program, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: expected,
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn raise_unwinds_across_activation_to_caller_handler() {
+    let kernel = kernel_with_world_relations();
+    let callee = Arc::new(
+        Program::new(
+            0,
+            [Instruction::Raise {
+                error: v(err("E_NO_EXIT")),
+                message: Some(v(strv("No exit."))),
+                value: None,
+            }],
+        )
+        .unwrap(),
+    );
+    let expected = error("E_NO_EXIT", Some("No exit."), None);
+    let caller = Program::new(
+        2,
+        [
+            Instruction::EnterTry {
+                catches: vec![crate::CatchHandler {
+                    code: Some(err("E_NO_EXIT")),
+                    binding: Some(reg(1)),
+                    target: 3,
+                }],
+                finally: None,
+                end: 4,
+            },
+            Instruction::Call {
+                dst: reg(0),
+                program: callee,
+                args: vec![],
+            },
+            Instruction::ExitTry,
+            Instruction::Return { value: r(1) },
+            Instruction::Return {
+                value: v(Value::nothing()),
+            },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program(&kernel, caller, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: expected,
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn finally_runs_on_return() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        1,
+        [
+            Instruction::EnterTry {
+                catches: vec![],
+                finally: Some(3),
+                end: 5,
+            },
+            Instruction::Return { value: v(int(7)) },
+            Instruction::ExitTry,
+            Instruction::Emit {
+                value: v(strv("cleanup")),
+            },
+            Instruction::EndFinally,
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program(&kernel, program, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: int(7),
+            effects: vec![strv("cleanup")],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn caught_exception_runs_finally_before_continuing() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        1,
+        [
+            Instruction::EnterTry {
+                catches: vec![crate::CatchHandler {
+                    code: Some(err("E_NOT_PORTABLE")),
+                    binding: None,
+                    target: 3,
+                }],
+                finally: Some(5),
+                end: 7,
+            },
+            Instruction::Raise {
+                error: v(err("E_NOT_PORTABLE")),
+                message: None,
+                value: None,
+            },
+            Instruction::ExitTry,
+            Instruction::Load {
+                dst: reg(0),
+                value: Value::bool(true),
+            },
+            Instruction::ExitTry,
+            Instruction::Emit {
+                value: v(strv("cleanup")),
+            },
+            Instruction::EndFinally,
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program(&kernel, program, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: Value::bool(true),
+            effects: vec![strv("cleanup")],
             retries: 0,
         }
     );

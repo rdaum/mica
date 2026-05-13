@@ -244,6 +244,8 @@ fn keyword_kind(text: &str) -> Option<SyntaxKind> {
         "in" => SyntaxKind::InKw,
         "while" => SyntaxKind::WhileKw,
         "return" => SyntaxKind::ReturnKw,
+        "raise" => SyntaxKind::RaiseKw,
+        "recover" => SyntaxKind::RecoverKw,
         "break" => SyntaxKind::BreakKw,
         "continue" => SyntaxKind::ContinueKw,
         "try" => SyntaxKind::TryKw,

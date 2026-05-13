@@ -17,6 +17,7 @@ pub(crate) const TAG_BYTES: u8 = 8;
 pub(crate) const TAG_LIST: u8 = 9;
 pub(crate) const TAG_MAP: u8 = 10;
 pub(crate) const TAG_RANGE: u8 = 11;
+pub(crate) const TAG_ERROR: u8 = 12;
 
 pub(crate) const INT_BITS: u32 = 56;
 pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
@@ -54,6 +55,35 @@ impl Identity {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ErrorValue {
+    code: Symbol,
+    message: Option<Box<str>>,
+    value: Option<Value>,
+}
+
+impl ErrorValue {
+    pub fn new(code: Symbol, message: Option<impl Into<Box<str>>>, value: Option<Value>) -> Self {
+        Self {
+            code,
+            message: message.map(Into::into),
+            value,
+        }
+    }
+
+    pub const fn code(&self) -> Symbol {
+        self.code
+    }
+
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    pub fn value(&self) -> Option<&Value> {
+        self.value.as_ref()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u8)]
 pub enum ValueKind {
@@ -69,6 +99,7 @@ pub enum ValueKind {
     List = TAG_LIST,
     Map = TAG_MAP,
     Range = TAG_RANGE,
+    Error = TAG_ERROR,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -131,6 +162,10 @@ impl Value {
         Self::pack(TAG_ERROR_CODE, symbol.id() as u64)
     }
 
+    pub fn error(code: Symbol, message: Option<impl Into<Box<str>>>, value: Option<Value>) -> Self {
+        Self::heap(HeapValue::Error(ErrorValue::new(code, message, value)))
+    }
+
     pub fn string(value: impl AsRef<str>) -> Self {
         Self::heap(HeapValue::String(value.as_ref().into()))
     }
@@ -185,6 +220,7 @@ impl Value {
             TAG_LIST => ValueKind::List,
             TAG_MAP => ValueKind::Map,
             TAG_RANGE => ValueKind::Range,
+            TAG_ERROR => ValueKind::Error,
             _ => unreachable!(),
         }
     }
@@ -193,7 +229,7 @@ impl Value {
     pub const fn is_immediate(&self) -> bool {
         !matches!(
             self.tag(),
-            TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE
+            TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR
         )
     }
 
@@ -285,6 +321,18 @@ impl Value {
             HeapValue::Range { start, end } => Some(f(start, end.as_ref())),
             _ => None,
         })?
+    }
+
+    pub fn with_error<R>(&self, f: impl FnOnce(&ErrorValue) -> R) -> Option<R> {
+        self.with_heap(|heap| match heap {
+            HeapValue::Error(error) => Some(f(error)),
+            _ => None,
+        })?
+    }
+
+    pub fn error_code_symbol(&self) -> Option<Symbol> {
+        self.as_error_code()
+            .or_else(|| self.with_error(ErrorValue::code))
     }
 
     pub fn list_len(&self) -> Option<usize> {

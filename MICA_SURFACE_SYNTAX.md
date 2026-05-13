@@ -356,22 +356,38 @@ Valid(actor) || return false
 
 ## 7. Errors
 
-MOO's backtick error-catching expression is powerful but visually strange.
-Mica should probably prefer block error handling and keep a compact expression
-form as optional sugar.
+Error codes are immediate values, but a raised error is a rich heap value:
+it carries an error code, an optional human message, and an optional payload
+value. Raising an error unwinds activations until a matching handler is found.
 
 ```mica
+raise E_NOT_PORTABLE, "That cannot be taken.", item
+
 try
   risky()
-catch err if err == E_PERM
+catch err if E_PERM
   "permission denied"
 finally
   cleanup()
 end
 ```
 
-Open question: whether error values use MOO-style `E_PERM` or symbol-like
-`:perm`.
+Catch conditions currently match error-code literals. A catch without a
+condition catches any error. If a catch names a binding, the binding receives
+the rich raised error value, not just the error code.
+
+MOO's backtick error-catching expression is powerful but visually strange.
+Mica uses a keyword expression form for compact local recovery:
+
+```mica
+description = recover item:description()
+catch E_PERM => "You cannot see that."
+catch err if E_NOT_PORTABLE => err
+end
+```
+
+This is sugar over the same exception machinery as `try`; it is not a separate
+result type protocol.
 
 ## 8. Functions
 

@@ -204,6 +204,19 @@ pub enum Expr {
         span: Span,
         value: Option<Box<Expr>>,
     },
+    Raise {
+        id: NodeId,
+        span: Span,
+        error: Box<Expr>,
+        message: Option<Box<Expr>>,
+        value: Option<Box<Expr>>,
+    },
+    Recover {
+        id: NodeId,
+        span: Span,
+        expr: Box<Expr>,
+        catches: Vec<RecoveryClause>,
+    },
     Break {
         id: NodeId,
         span: Span,
@@ -262,6 +275,8 @@ impl Expr {
             | Self::For { id, .. }
             | Self::While { id, .. }
             | Self::Return { id, .. }
+            | Self::Raise { id, .. }
+            | Self::Recover { id, .. }
             | Self::Break { id, .. }
             | Self::Continue { id, .. }
             | Self::Try { id, .. }
@@ -294,6 +309,8 @@ impl Expr {
             | Self::For { span, .. }
             | Self::While { span, .. }
             | Self::Return { span, .. }
+            | Self::Raise { span, .. }
+            | Self::Recover { span, .. }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
             | Self::Try { span, .. }
@@ -367,6 +384,14 @@ pub struct CatchClause {
     pub name: Option<String>,
     pub condition: Option<Expr>,
     pub body: Vec<Item>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryClause {
+    pub id: NodeId,
+    pub name: Option<String>,
+    pub condition: Option<Expr>,
+    pub value: Expr,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -46,6 +46,30 @@ fn immediate_constructors_round_trip() {
         format!("{}", Value::error_code(error_code)),
         "E_NOT_PORTABLE"
     );
+
+    let error = Value::error(
+        error_code,
+        Some("That cannot be taken."),
+        Some(Value::symbol(Symbol::intern("lamp"))),
+    );
+    assert_eq!(error.kind(), ValueKind::Error);
+    assert_eq!(error.error_code_symbol(), Some(error_code));
+    assert_eq!(
+        error.with_error(|error| (
+            error.code(),
+            error.message().map(str::to_string),
+            error.value().cloned(),
+        )),
+        Some((
+            error_code,
+            Some("That cannot be taken.".to_string()),
+            Some(Value::symbol(Symbol::intern("lamp"))),
+        ))
+    );
+    assert_eq!(
+        format!("{error:?}"),
+        "error(E_NOT_PORTABLE, \"That cannot be taken.\", :lamp)"
+    );
 }
 
 #[test]
@@ -251,6 +275,7 @@ fn indexed_updates_return_new_collection_values() {
 fn total_order_is_stable() {
     let values = vec![
         Value::map([]),
+        Value::error(Symbol::intern("E_TEST"), None::<Box<str>>, None),
         Value::range(Value::int(1).unwrap(), None),
         Value::list([]),
         Value::bytes([1, 2, 3]),
@@ -269,7 +294,7 @@ fn total_order_is_stable() {
         assert!(pair[0] <= pair[1]);
     }
     assert_eq!(sorted.first(), Some(&Value::nothing()));
-    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Range);
+    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Error);
 }
 
 #[test]

@@ -39,6 +39,9 @@ pub enum RuntimeError {
     },
     ProgramArtifact(String),
     EmptyCallStack,
+    EmptyTryStack,
+    InvalidRaisedValue(Value),
+    InvalidErrorMessage(Value),
     Kernel(KernelError),
     Aborted(Value),
 }

@@ -22,7 +22,15 @@ fn arb_value() -> impl Strategy<Value = Value> {
     leaf_value().prop_recursive(4, 64, 8, |inner| {
         prop_oneof![
             prop::collection::vec(inner.clone(), 0..8).prop_map(Value::list),
-            prop::collection::vec((inner.clone(), inner), 0..8).prop_map(Value::map),
+            prop::collection::vec((inner.clone(), inner.clone()), 0..8).prop_map(Value::map),
+            (
+                "E_[A-Z][A-Z0-9_]{0,12}",
+                prop::option::of("\\PC{0,24}"),
+                prop::option::of(inner),
+            )
+                .prop_map(|(code, message, value)| {
+                    Value::error(Symbol::intern(&code), message, value)
+                }),
         ]
     })
 }

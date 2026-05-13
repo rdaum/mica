@@ -1,4 +1,6 @@
-use crate::value::{TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value};
+use crate::value::{
+    ErrorValue, TAG_BYTES, TAG_ERROR, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value,
+};
 
 pub(crate) enum HeapValue {
     String(Box<str>),
@@ -6,6 +8,7 @@ pub(crate) enum HeapValue {
     List(Box<[Value]>),
     Map(Box<[(Value, Value)]>),
     Range { start: Value, end: Option<Value> },
+    Error(ErrorValue),
 }
 
 impl HeapValue {
@@ -16,6 +19,7 @@ impl HeapValue {
             Self::List(_) => TAG_LIST,
             Self::Map(_) => TAG_MAP,
             Self::Range { .. } => TAG_RANGE,
+            Self::Error(_) => TAG_ERROR,
         }
     }
 }

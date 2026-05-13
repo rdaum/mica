@@ -241,6 +241,8 @@ impl<'a> Parser<'a> {
             SyntaxKind::ForKw => self.parse_for_expr(),
             SyntaxKind::WhileKw => self.parse_while_expr(),
             SyntaxKind::ReturnKw => self.parse_return_expr(),
+            SyntaxKind::RaiseKw => self.parse_raise_expr(),
+            SyntaxKind::RecoverKw => self.parse_recover_expr(),
             SyntaxKind::BreakKw => self.parse_simple_control_expr(SyntaxKind::BreakExpr),
             SyntaxKind::ContinueKw => self.parse_simple_control_expr(SyntaxKind::ContinueExpr),
             SyntaxKind::TryKw => self.parse_try_expr(),
@@ -378,6 +380,49 @@ impl<'a> Parser<'a> {
             children.push(CstElement::Node(self.parse_expr(0)));
         }
         CstNode::new(SyntaxKind::ReturnExpr, children)
+    }
+
+    fn parse_raise_expr(&mut self) -> CstNode {
+        let mut children = vec![self.bump_element()];
+        if Self::starts_expr(self.current_kind()) && !self.at_separator_or_stop() {
+            children.push(CstElement::Node(self.parse_expr(0)));
+            for _ in 0..2 {
+                if self.current_kind() != SyntaxKind::Comma {
+                    break;
+                }
+                children.push(self.bump_element());
+                children.push(CstElement::Node(self.parse_expr(0)));
+            }
+        }
+        CstNode::new(SyntaxKind::RaiseExpr, children)
+    }
+
+    fn parse_recover_expr(&mut self) -> CstNode {
+        let mut children = vec![self.bump_element()];
+        children.push(CstElement::Node(self.parse_expr(0)));
+        self.consume_separators();
+        while self.current_kind() == SyntaxKind::CatchKw {
+            children.push(CstElement::Node(self.parse_recover_clause()));
+            self.consume_separators();
+        }
+        children.push(self.expect_token(SyntaxKind::EndKw, "expected end after recover"));
+        CstNode::new(SyntaxKind::RecoverExpr, children)
+    }
+
+    fn parse_recover_clause(&mut self) -> CstNode {
+        let mut children = vec![self.bump_element()];
+        if self.current_kind() == SyntaxKind::Ident {
+            children.push(self.bump_element());
+            if self.current_kind() == SyntaxKind::IfKw {
+                children.push(self.bump_element());
+                children.push(CstElement::Node(self.parse_expr(0)));
+            }
+        } else if Self::starts_expr(self.current_kind()) {
+            children.push(CstElement::Node(self.parse_expr(0)));
+        }
+        children.push(self.expect_token(SyntaxKind::FatArrow, "expected => in recovery clause"));
+        children.push(CstElement::Node(self.parse_expr(0)));
+        CstNode::new(SyntaxKind::RecoverClause, children)
     }
 
     fn parse_simple_control_expr(&mut self, kind: SyntaxKind) -> CstNode {
@@ -671,6 +716,8 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::ForKw
                 | SyntaxKind::WhileKw
                 | SyntaxKind::ReturnKw
+                | SyntaxKind::RaiseKw
+                | SyntaxKind::RecoverKw
                 | SyntaxKind::BreakKw
                 | SyntaxKind::ContinueKw
                 | SyntaxKind::TryKw
