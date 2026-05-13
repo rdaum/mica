@@ -283,6 +283,64 @@ impl Value {
         }
     }
 
+    pub fn checked_sub(&self, rhs: &Self) -> Option<Self> {
+        match (self.as_int(), rhs.as_int()) {
+            (Some(left), Some(right)) => left
+                .checked_sub(right)
+                .and_then(|diff| Self::int(diff).ok()),
+            _ => Some(Self::float(self.numeric_as_f64()? - rhs.numeric_as_f64()?)),
+        }
+    }
+
+    pub fn checked_mul(&self, rhs: &Self) -> Option<Self> {
+        match (self.as_int(), rhs.as_int()) {
+            (Some(left), Some(right)) => left
+                .checked_mul(right)
+                .and_then(|product| Self::int(product).ok()),
+            _ => Some(Self::float(self.numeric_as_f64()? * rhs.numeric_as_f64()?)),
+        }
+    }
+
+    pub fn checked_div(&self, rhs: &Self) -> Option<Self> {
+        match (self.as_int(), rhs.as_int()) {
+            (_, Some(0)) => None,
+            (Some(left), Some(right)) if left % right == 0 => Self::int(left / right).ok(),
+            _ => {
+                let rhs = rhs.numeric_as_f64()?;
+                if rhs == 0.0 {
+                    None
+                } else {
+                    Some(Self::float(self.numeric_as_f64()? / rhs))
+                }
+            }
+        }
+    }
+
+    pub fn checked_rem(&self, rhs: &Self) -> Option<Self> {
+        match (self.as_int(), rhs.as_int()) {
+            (_, Some(0)) => None,
+            (Some(left), Some(right)) => {
+                left.checked_rem(right).and_then(|rem| Self::int(rem).ok())
+            }
+            _ => {
+                let rhs = rhs.numeric_as_f64()?;
+                if rhs == 0.0 {
+                    None
+                } else {
+                    Some(Self::float(self.numeric_as_f64()? % rhs))
+                }
+            }
+        }
+    }
+
+    pub fn checked_neg(&self) -> Option<Self> {
+        if let Some(value) = self.as_int() {
+            value.checked_neg().and_then(|value| Self::int(value).ok())
+        } else {
+            Some(Self::float(-self.numeric_as_f64()?))
+        }
+    }
+
     #[inline(always)]
     pub(crate) const fn tag(&self) -> u8 {
         (self.0 >> TAG_SHIFT) as u8

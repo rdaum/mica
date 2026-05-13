@@ -63,6 +63,55 @@ fn float_is_reduced_precision_and_canonicalizes_zero() {
 }
 
 #[test]
+fn numeric_operations_preserve_ints_when_exact() {
+    let six = Value::int(6).unwrap();
+    let three = Value::int(3).unwrap();
+    let four = Value::int(4).unwrap();
+
+    assert_eq!(
+        six.checked_add(&three).and_then(|value| value.as_int()),
+        Some(9)
+    );
+    assert_eq!(
+        six.checked_sub(&three).and_then(|value| value.as_int()),
+        Some(3)
+    );
+    assert_eq!(
+        six.checked_mul(&three).and_then(|value| value.as_int()),
+        Some(18)
+    );
+    assert_eq!(
+        six.checked_div(&three).and_then(|value| value.as_int()),
+        Some(2)
+    );
+    assert_eq!(
+        six.checked_rem(&four).and_then(|value| value.as_int()),
+        Some(2)
+    );
+    assert_eq!(
+        three.checked_neg().and_then(|value| value.as_int()),
+        Some(-3)
+    );
+}
+
+#[test]
+fn numeric_operations_fall_back_to_floats() {
+    let five = Value::int(5).unwrap();
+    let two = Value::int(2).unwrap();
+    let half = Value::float(0.5);
+
+    assert_eq!(
+        five.checked_div(&two).and_then(|value| value.as_float()),
+        Some(2.5)
+    );
+    assert_eq!(
+        five.checked_add(&half).and_then(|value| value.as_float()),
+        Some(5.5)
+    );
+    assert_eq!(five.checked_div(&Value::int(0).unwrap()), None);
+}
+
+#[test]
 fn string_bytes_list_and_map_are_values() {
     let string = Value::string("brass lamp");
     assert_eq!(

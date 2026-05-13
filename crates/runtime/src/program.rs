@@ -141,6 +141,7 @@ pub enum Instruction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeUnaryOp {
     Not,
+    Neg,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,6 +153,10 @@ pub enum RuntimeBinaryOp {
     Gt,
     Ge,
     Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -454,6 +459,7 @@ const INST_COLLECTION_KEY_AT: u8 = 22;
 const INST_COLLECTION_VALUE_AT: u8 = 23;
 
 const UNARY_NOT: u8 = 0;
+const UNARY_NEG: u8 = 1;
 
 const BINARY_EQ: u8 = 0;
 const BINARY_NE: u8 = 1;
@@ -462,6 +468,10 @@ const BINARY_LE: u8 = 3;
 const BINARY_GT: u8 = 4;
 const BINARY_GE: u8 = 5;
 const BINARY_ADD: u8 = 6;
+const BINARY_SUB: u8 = 7;
+const BINARY_MUL: u8 = 8;
+const BINARY_DIV: u8 = 9;
+const BINARY_REM: u8 = 10;
 
 const OPERAND_REGISTER: u8 = 0;
 const OPERAND_VALUE: u8 = 1;
@@ -672,6 +682,7 @@ fn write_register(out: &mut Vec<u8>, register: Register) {
 fn write_unary_op(out: &mut Vec<u8>, op: RuntimeUnaryOp) {
     out.push(match op {
         RuntimeUnaryOp::Not => UNARY_NOT,
+        RuntimeUnaryOp::Neg => UNARY_NEG,
     });
 }
 
@@ -684,6 +695,10 @@ fn write_binary_op(out: &mut Vec<u8>, op: RuntimeBinaryOp) {
         RuntimeBinaryOp::Gt => BINARY_GT,
         RuntimeBinaryOp::Ge => BINARY_GE,
         RuntimeBinaryOp::Add => BINARY_ADD,
+        RuntimeBinaryOp::Sub => BINARY_SUB,
+        RuntimeBinaryOp::Mul => BINARY_MUL,
+        RuntimeBinaryOp::Div => BINARY_DIV,
+        RuntimeBinaryOp::Rem => BINARY_REM,
     });
 }
 
@@ -986,6 +1001,7 @@ impl<'a> ByteReader<'a> {
     fn read_unary_op(&mut self) -> Result<RuntimeUnaryOp, RuntimeError> {
         match self.read_u8()? {
             UNARY_NOT => Ok(RuntimeUnaryOp::Not),
+            UNARY_NEG => Ok(RuntimeUnaryOp::Neg),
             _ => Err(artifact_error("unknown unary operator tag")),
         }
     }
@@ -999,6 +1015,10 @@ impl<'a> ByteReader<'a> {
             BINARY_GT => Ok(RuntimeBinaryOp::Gt),
             BINARY_GE => Ok(RuntimeBinaryOp::Ge),
             BINARY_ADD => Ok(RuntimeBinaryOp::Add),
+            BINARY_SUB => Ok(RuntimeBinaryOp::Sub),
+            BINARY_MUL => Ok(RuntimeBinaryOp::Mul),
+            BINARY_DIV => Ok(RuntimeBinaryOp::Div),
+            BINARY_REM => Ok(RuntimeBinaryOp::Rem),
             _ => Err(artifact_error("unknown binary operator tag")),
         }
     }

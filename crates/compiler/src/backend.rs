@@ -446,13 +446,11 @@ fn runtime_binary_op(op: BinaryOp) -> Option<RuntimeBinaryOp> {
         BinaryOp::Gt => RuntimeBinaryOp::Gt,
         BinaryOp::Ge => RuntimeBinaryOp::Ge,
         BinaryOp::Add => RuntimeBinaryOp::Add,
-        BinaryOp::Sub
-        | BinaryOp::Mul
-        | BinaryOp::Div
-        | BinaryOp::Rem
-        | BinaryOp::And
-        | BinaryOp::Or
-        | BinaryOp::Range => return None,
+        BinaryOp::Sub => RuntimeBinaryOp::Sub,
+        BinaryOp::Mul => RuntimeBinaryOp::Mul,
+        BinaryOp::Div => RuntimeBinaryOp::Div,
+        BinaryOp::Rem => RuntimeBinaryOp::Rem,
+        BinaryOp::And | BinaryOp::Or | BinaryOp::Range => return None,
     })
 }
 
@@ -747,18 +745,13 @@ impl<'a> ProgramCompiler<'a> {
 
     fn compile_unary(
         &mut self,
-        id: NodeId,
+        _id: NodeId,
         op: UnaryOp,
         expr: &HirExpr,
     ) -> Result<Register, CompileError> {
         let op = match op {
             UnaryOp::Not => RuntimeUnaryOp::Not,
-            UnaryOp::Neg => {
-                return Err(self.unsupported(
-                    id,
-                    "numeric negation is not implemented in the task compiler yet",
-                ));
-            }
+            UnaryOp::Neg => RuntimeUnaryOp::Neg,
         };
         let src = self.compile_expr_for_value(expr)?;
         let dst = self.alloc_register();
@@ -1661,6 +1654,31 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_runs_scalar_arithmetic() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let a = 20 - 3 * 4\n\
+             let b = a / 2\n\
+             let c = b % 3\n\
+             return -c",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(-1).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn compiled_task_runs_while_loops() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
@@ -2164,6 +2182,66 @@ mod tests {
             scheduler
                 .resolver()
                 .contains(&Value::identity(count_program))
+        );
+    }
+
+    #[test]
+    fn persisted_method_can_run_scalar_arithmetic() {
+        let calc_method = id(100);
+        let calc_program = id(101);
+        let player = id(200);
+        let alice = id(300);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("calc", calc_method)
+            .with_program_identity("calc", calc_program)
+            .with_identity("player", player);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method $calc :calc\n\
+               roles actor: $player\n\
+             do\n\
+               return (10 * 3 - 4) / 2\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted =
+            submit_source_task(":calc(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(13).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert!(
+            scheduler
+                .resolver()
+                .contains(&Value::identity(calc_program))
         );
     }
 

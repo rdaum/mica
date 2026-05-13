@@ -495,6 +495,7 @@ fn truthy(value: &Value) -> bool {
 fn eval_unary(op: RuntimeUnaryOp, value: &Value) -> Value {
     match op {
         RuntimeUnaryOp::Not => Value::bool(!truthy(value)),
+        RuntimeUnaryOp::Neg => value.checked_neg().unwrap_or_else(Value::nothing),
     }
 }
 
@@ -507,6 +508,10 @@ fn eval_binary(op: RuntimeBinaryOp, left: &Value, right: &Value) -> Value {
         RuntimeBinaryOp::Gt => Value::bool(left > right),
         RuntimeBinaryOp::Ge => Value::bool(left >= right),
         RuntimeBinaryOp::Add => left.checked_add(right).unwrap_or_else(Value::nothing),
+        RuntimeBinaryOp::Sub => left.checked_sub(right).unwrap_or_else(Value::nothing),
+        RuntimeBinaryOp::Mul => left.checked_mul(right).unwrap_or_else(Value::nothing),
+        RuntimeBinaryOp::Div => left.checked_div(right).unwrap_or_else(Value::nothing),
+        RuntimeBinaryOp::Rem => left.checked_rem(right).unwrap_or_else(Value::nothing),
     }
 }
 
