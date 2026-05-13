@@ -66,6 +66,12 @@ pub enum Instruction {
         collection: Register,
         index: Operand,
     },
+    SetIndex {
+        dst: Register,
+        collection: Register,
+        index: Operand,
+        value: Operand,
+    },
     CollectionLen {
         dst: Register,
         collection: Register,
@@ -324,6 +330,17 @@ fn validate_instruction(
             validate_register(register_count, *collection)?;
             validate_operand(register_count, index)
         }
+        Instruction::SetIndex {
+            dst,
+            collection,
+            index,
+            value,
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_register(register_count, *collection)?;
+            validate_operand(register_count, index)?;
+            validate_operand(register_count, value)
+        }
         Instruction::CollectionLen { dst, collection }
         | Instruction::CollectionKeyAt {
             dst, collection, ..
@@ -457,6 +474,7 @@ const INST_INDEX: u8 = 20;
 const INST_COLLECTION_LEN: u8 = 21;
 const INST_COLLECTION_KEY_AT: u8 = 22;
 const INST_COLLECTION_VALUE_AT: u8 = 23;
+const INST_SET_INDEX: u8 = 24;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -542,6 +560,18 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *dst);
             write_register(out, *collection);
             write_operand(out, index)
+        }
+        Instruction::SetIndex {
+            dst,
+            collection,
+            index,
+            value,
+        } => {
+            out.push(INST_SET_INDEX);
+            write_register(out, *dst);
+            write_register(out, *collection);
+            write_operand(out, index)?;
+            write_operand(out, value)
         }
         Instruction::CollectionLen { dst, collection } => {
             out.push(INST_COLLECTION_LEN);
@@ -866,6 +896,12 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 collection: self.read_register()?,
                 index: self.read_operand()?,
+            },
+            INST_SET_INDEX => Instruction::SetIndex {
+                dst: self.read_register()?,
+                collection: self.read_register()?,
+                index: self.read_operand()?,
+                value: self.read_operand()?,
             },
             INST_COLLECTION_LEN => Instruction::CollectionLen {
                 dst: self.read_register()?,

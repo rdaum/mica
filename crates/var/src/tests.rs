@@ -169,6 +169,47 @@ fn heap_values_are_arc_shared_and_acyclic() {
 }
 
 #[test]
+fn indexed_updates_return_new_collection_values() {
+    let list = Value::list([
+        Value::int(1).unwrap(),
+        Value::int(2).unwrap(),
+        Value::int(3).unwrap(),
+    ]);
+    let updated = list
+        .index_set(&Value::int(1).unwrap(), Value::int(20).unwrap())
+        .unwrap();
+    assert_eq!(list.list_get(1).and_then(|value| value.as_int()), Some(2));
+    assert_eq!(
+        updated.list_get(1).and_then(|value| value.as_int()),
+        Some(20)
+    );
+    assert!(
+        list.index_set(&Value::int(10).unwrap(), Value::int(20).unwrap())
+            .is_none()
+    );
+
+    let key = Value::symbol(Symbol::intern("count"));
+    let map = Value::map([(key.clone(), Value::int(1).unwrap())]);
+    let replaced = map.index_set(&key, Value::int(2).unwrap()).unwrap();
+    assert_eq!(map.map_get(&key).and_then(|value| value.as_int()), Some(1));
+    assert_eq!(
+        replaced.map_get(&key).and_then(|value| value.as_int()),
+        Some(2)
+    );
+
+    let inserted_key = Value::symbol(Symbol::intern("other"));
+    let inserted = replaced
+        .index_set(&inserted_key, Value::int(3).unwrap())
+        .unwrap();
+    assert_eq!(
+        inserted
+            .map_get(&inserted_key)
+            .and_then(|value| value.as_int()),
+        Some(3)
+    );
+}
+
+#[test]
 fn total_order_is_stable() {
     let values = vec![
         Value::map([]),

@@ -232,6 +232,21 @@ impl RegisterVm {
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
+            Instruction::SetIndex {
+                dst,
+                collection,
+                index,
+                value,
+            } => {
+                let value = set_index_value(
+                    self.read_register(collection)?,
+                    &self.resolve_operand(&index)?,
+                    self.resolve_operand(&value)?,
+                );
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
             Instruction::CollectionLen { dst, collection } => {
                 let value = collection_len(self.read_register(collection)?);
                 self.write_register(dst, value)?;
@@ -523,6 +538,12 @@ fn index_value(collection: &Value, index: &Value) -> Value {
         return value;
     }
     collection.map_get(index).unwrap_or_else(Value::nothing)
+}
+
+fn set_index_value(collection: &Value, index: &Value, value: Value) -> Value {
+    collection
+        .index_set(index, value)
+        .unwrap_or_else(Value::nothing)
 }
 
 fn collection_len(collection: &Value) -> Value {

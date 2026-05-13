@@ -261,6 +261,15 @@ impl Value {
         self.with_list(|values| values.get(index).cloned())?
     }
 
+    pub fn list_set(&self, index: usize, value: Value) -> Option<Self> {
+        self.with_list(|values| {
+            let mut values = values.to_vec();
+            let slot = values.get_mut(index)?;
+            *slot = value;
+            Some(Self::list(values))
+        })?
+    }
+
     pub fn map_len(&self) -> Option<usize> {
         self.with_map(<[(Value, Value)]>::len)
     }
@@ -272,6 +281,22 @@ impl Value {
                 .ok()
                 .map(|index| entries[index].1.clone())
         })?
+    }
+
+    pub fn map_set(&self, key: Value, value: Value) -> Option<Self> {
+        self.with_map(|entries| {
+            let mut entries = entries.to_vec();
+            entries.push((key, value));
+            Self::map(entries)
+        })
+    }
+
+    pub fn index_set(&self, index: &Value, value: Value) -> Option<Self> {
+        if self.list_len().is_some() {
+            let index = usize::try_from(index.as_int()?).ok()?;
+            return self.list_set(index, value);
+        }
+        self.map_set(index.clone(), value)
     }
 
     pub fn checked_add(&self, rhs: &Self) -> Option<Self> {

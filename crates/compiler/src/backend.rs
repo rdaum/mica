@@ -608,9 +608,12 @@ impl<'a> ProgramCompiler<'a> {
                         self.emit(Instruction::Move { dst, src: value });
                         Ok(dst)
                     }
+                    HirPlace::Index {
+                        collection, index, ..
+                    } => self.compile_index_assignment(*id, collection, index.as_deref(), value),
                     _ => Err(self.unsupported(
                         *id,
-                        "only local assignment is implemented in the task compiler yet",
+                        "only local and indexed local assignment are implemented in the task compiler yet",
                     )),
                 }
             }
@@ -850,6 +853,64 @@ impl<'a> ProgramCompiler<'a> {
             index,
         });
         Ok(dst)
+    }
+
+    fn compile_index_assignment(
+        &mut self,
+        id: NodeId,
+        collection: &HirExpr,
+        index: Option<&HirExpr>,
+        value: Register,
+    ) -> Result<Register, CompileError> {
+        let Some(index) = index else {
+            return Err(self.unsupported(id, "indexed assignment requires an explicit index"));
+        };
+        let HirExpr::LocalRef { binding, .. } = collection else {
+            return Err(self.unsupported(
+                id,
+                "indexed assignment currently requires a local collection target",
+            ));
+        };
+        let binding_info = self
+            .semantic
+            .bindings
+            .get(binding.0 as usize)
+            .ok_or_else(|| CompileError::UnboundLocal {
+                node: id,
+                span: self.span(id),
+                binding: *binding,
+            })?;
+        if !binding_info.mutable {
+            return Err(self.unsupported(
+                id,
+                format!(
+                    "cannot assign through immutable indexed binding `{}`",
+                    binding_info.name
+                ),
+            ));
+        }
+        let collection =
+            self.locals
+                .get(binding)
+                .copied()
+                .ok_or_else(|| CompileError::UnboundLocal {
+                    node: id,
+                    span: self.span(id),
+                    binding: *binding,
+                })?;
+        let index = self.compile_expr_for_operand(index)?;
+        let updated = self.alloc_register();
+        self.emit(Instruction::SetIndex {
+            dst: updated,
+            collection,
+            index,
+            value: Operand::Register(value),
+        });
+        self.emit(Instruction::Move {
+            dst: collection,
+            src: updated,
+        });
+        Ok(collection)
     }
 
     fn compile_and(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
@@ -1654,6 +1715,81 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_assigns_indexed_list_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let values = [10, 20, 30]\n\
+             values[1] = 99\n\
+             return values[1]",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(99).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_assigns_indexed_map_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let counts = {:a -> 1}\n\
+             counts[:a] = 2\n\
+             counts[:b] = 3\n\
+             return counts[:a] + counts[:b]",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(5).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_assigns_indexed_values_inside_loop() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let values = [1, 2, 3]\n\
+             for index, item in values\n\
+               values[index] = item * 10\n\
+             end\n\
+             return values[0] + values[1] + values[2]",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(60).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn compiled_task_runs_scalar_arithmetic() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
@@ -2242,6 +2378,68 @@ mod tests {
             scheduler
                 .resolver()
                 .contains(&Value::identity(calc_program))
+        );
+    }
+
+    #[test]
+    fn persisted_method_can_assign_indexed_values() {
+        let update_method = id(100);
+        let update_program = id(101);
+        let player = id(200);
+        let alice = id(300);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("update", update_method)
+            .with_program_identity("update", update_program)
+            .with_identity("player", player);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method $update :update\n\
+               roles actor: $player\n\
+             do\n\
+               let counts = {:seen -> 1}\n\
+               counts[:seen] = counts[:seen] + 1\n\
+               return counts[:seen]\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted =
+            submit_source_task(":update(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(2).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert!(
+            scheduler
+                .resolver()
+                .contains(&Value::identity(update_program))
         );
     }
 
