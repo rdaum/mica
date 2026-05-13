@@ -777,6 +777,7 @@ impl<'a> Analyzer<'a> {
             .map(|arg| HirArg {
                 id: arg.id,
                 role: arg.role.clone(),
+                splice: arg.splice,
                 value: self.lower_expr(&arg.value, scope),
             })
             .collect()

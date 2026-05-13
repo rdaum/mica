@@ -759,9 +759,13 @@ impl<'a> Lower<'a> {
                     .next()
                     .map(|expr| self.lower_expr(expr))
                     .unwrap_or_else(|| self.error_expr(arg));
+                let splice = self
+                    .token_children(arg)
+                    .any(|token| token.kind == SyntaxKind::At);
                 Arg {
                     id: self.node_id(),
                     role,
+                    splice,
                     value,
                 }
             })

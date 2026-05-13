@@ -489,7 +489,16 @@ struct ProgramCompiler<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FunctionInfo {
     program: Arc<Program>,
-    arity: usize,
+    params: Vec<FunctionParamInfo>,
+    min_arity: usize,
+    max_arity: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FunctionParamInfo {
+    id: NodeId,
+    kind: LocalKind,
+    default: Option<HirExpr>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -937,11 +946,21 @@ impl<'a> ProgramCompiler<'a> {
                     ));
                 }
                 saw_rest = true;
-                let dst = self.compile_scatter_rest(source, len, position, binding.id)?;
+                let dst = self.compile_collection_rest(source, len, position, binding.id)?;
                 self.locals.insert(binding.binding, dst);
                 last = Some(dst);
             } else {
-                let dst = self.compile_scatter_slot(source, len, position, binding)?;
+                let dst = if matches!(binding.mode, ParamMode::Optional) {
+                    self.compile_collection_slot_with_optional_default(
+                        source,
+                        len,
+                        position,
+                        binding.id,
+                        binding.default.as_ref(),
+                    )?
+                } else {
+                    self.compile_collection_slot(source, position, binding.id)?
+                };
                 self.locals.insert(binding.binding, dst);
                 last = Some(dst);
                 position += 1;
@@ -958,24 +977,35 @@ impl<'a> ProgramCompiler<'a> {
         }))
     }
 
-    fn compile_scatter_slot(
+    fn compile_collection_slot(
         &mut self,
         collection: Register,
-        len: Register,
         position: usize,
-        binding: &HirScatterBinding,
+        id: NodeId,
     ) -> Result<Register, CompileError> {
         let dst = self.alloc_register();
         self.emit(Instruction::Index {
             dst,
             collection,
-            index: self.usize_operand(position, binding.id)?,
+            index: self.usize_operand(position, id)?,
         });
-        if !matches!(binding.mode, ParamMode::Optional) || binding.default.is_none() {
-            return Ok(dst);
-        }
+        Ok(dst)
+    }
 
-        let pos = self.load_usize(position, binding.id)?;
+    fn compile_collection_slot_with_optional_default(
+        &mut self,
+        collection: Register,
+        len: Register,
+        position: usize,
+        id: NodeId,
+        default: Option<&HirExpr>,
+    ) -> Result<Register, CompileError> {
+        let dst = self.compile_collection_slot(collection, position, id)?;
+        let Some(default) = default else {
+            return Ok(dst);
+        };
+
+        let pos = self.load_usize(position, id)?;
         let condition = self.alloc_register();
         self.emit(Instruction::Binary {
             dst: condition,
@@ -987,7 +1017,7 @@ impl<'a> ProgramCompiler<'a> {
         let true_target = self.instructions.len();
         self.emit_jump(0);
         let false_target = self.instructions.len();
-        let default = self.compile_expr_for_value(binding.default.as_ref().unwrap())?;
+        let default = self.compile_expr_for_value(default)?;
         self.emit(Instruction::Move { dst, src: default });
         let end = self.instructions.len();
         self.patch_branch(branch, true_target, false_target)?;
@@ -995,7 +1025,7 @@ impl<'a> ProgramCompiler<'a> {
         Ok(dst)
     }
 
-    fn compile_scatter_rest(
+    fn compile_collection_rest(
         &mut self,
         collection: Register,
         len: Register,
@@ -1196,12 +1226,42 @@ impl<'a> ProgramCompiler<'a> {
                 "anonymous function values are not implemented in the task compiler yet",
             ));
         }
+        let mut saw_optional = false;
+        let mut saw_rest = false;
         for param in params {
-            if param.kind != LocalKind::Param || param.default.is_some() {
-                return Err(self.unsupported(
-                    param.id,
-                    "only required positional function parameters are implemented in the task compiler yet",
-                ));
+            match param.kind {
+                LocalKind::Param => {
+                    if saw_optional || saw_rest {
+                        return Err(self.unsupported(
+                            param.id,
+                            "required function parameters must precede optional and rest parameters",
+                        ));
+                    }
+                }
+                LocalKind::OptionalParam => {
+                    if saw_rest {
+                        return Err(self.unsupported(
+                            param.id,
+                            "optional function parameters must precede rest parameters",
+                        ));
+                    }
+                    saw_optional = true;
+                }
+                LocalKind::RestParam => {
+                    if saw_rest {
+                        return Err(self.unsupported(
+                            param.id,
+                            "function signatures support only one rest parameter",
+                        ));
+                    }
+                    saw_rest = true;
+                }
+                _ => {
+                    return Err(self.unsupported(
+                        param.id,
+                        "unsupported function parameter kind in compiled function",
+                    ));
+                }
             }
         }
 
@@ -1214,9 +1274,31 @@ impl<'a> ProgramCompiler<'a> {
             HirFunctionBody::Expr(expr) => compiler.compile_function_expr_body(expr)?,
             HirFunctionBody::Block(items) => compiler.compile_items(items)?,
         };
+        let param_info = params
+            .iter()
+            .map(|param| FunctionParamInfo {
+                id: param.id,
+                kind: param.kind.clone(),
+                default: param.default.clone(),
+            })
+            .collect::<Vec<_>>();
+        let min_arity = param_info
+            .iter()
+            .filter(|param| param.kind == LocalKind::Param)
+            .count();
+        let max_arity = if param_info
+            .iter()
+            .any(|param| param.kind == LocalKind::RestParam)
+        {
+            None
+        } else {
+            Some(param_info.len())
+        };
         Ok(FunctionInfo {
             program: Arc::new(program),
-            arity: params.len(),
+            params: param_info,
+            min_arity,
+            max_arity,
         })
     }
 
@@ -1254,27 +1336,123 @@ impl<'a> ProgramCompiler<'a> {
                 "direct function calls only support positional arguments",
             ));
         }
-        if args.len() != function.arity {
-            return Err(self.unsupported(
-                id,
-                format!(
-                    "function call expected {} arguments but got {}",
-                    function.arity,
-                    args.len()
-                ),
-            ));
+        let has_splice = args.iter().any(|arg| arg.splice);
+        if !has_splice {
+            self.validate_static_function_arity(id, &function, args.len())?;
         }
-        let args = args
+        let call_args = if function
+            .params
             .iter()
-            .map(|arg| self.compile_arg_operand(arg))
-            .collect::<Result<Vec<_>, _>>()?;
+            .all(|param| param.kind == LocalKind::Param)
+            && !has_splice
+        {
+            args.iter()
+                .map(|arg| self.compile_arg_operand(arg))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            self.compile_bound_function_args(id, &function, args)?
+        };
         let dst = self.alloc_register();
         self.emit(Instruction::Call {
             dst,
             program: function.program,
-            args,
+            args: call_args,
         });
         Ok(dst)
+    }
+
+    fn validate_static_function_arity(
+        &self,
+        id: NodeId,
+        function: &FunctionInfo,
+        actual: usize,
+    ) -> Result<(), CompileError> {
+        if actual < function.min_arity {
+            return Err(self.unsupported(
+                id,
+                format!(
+                    "function call expected at least {} arguments but got {}",
+                    function.min_arity, actual
+                ),
+            ));
+        }
+        if let Some(max_arity) = function.max_arity
+            && actual > max_arity
+        {
+            return Err(self.unsupported(
+                id,
+                format!(
+                    "function call expected at most {} arguments but got {}",
+                    max_arity, actual
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn compile_bound_function_args(
+        &mut self,
+        id: NodeId,
+        function: &FunctionInfo,
+        args: &[HirArg],
+    ) -> Result<Vec<Operand>, CompileError> {
+        let items = args
+            .iter()
+            .map(|arg| {
+                let operand = self.compile_arg_operand(arg)?;
+                Ok(if arg.splice {
+                    ListItem::Splice(operand)
+                } else {
+                    ListItem::Value(operand)
+                })
+            })
+            .collect::<Result<Vec<_>, CompileError>>()?;
+        let actuals = self.alloc_register();
+        self.emit(Instruction::BuildList {
+            dst: actuals,
+            items,
+        });
+        let len = self.alloc_register();
+        self.emit(Instruction::CollectionLen {
+            dst: len,
+            collection: actuals,
+        });
+
+        let mut operands = Vec::with_capacity(function.params.len());
+        let mut position = 0usize;
+        for param in &function.params {
+            match param.kind {
+                LocalKind::Param => {
+                    operands.push(Operand::Register(
+                        self.compile_collection_slot(actuals, position, param.id)?,
+                    ));
+                    position += 1;
+                }
+                LocalKind::OptionalParam => {
+                    operands.push(Operand::Register(
+                        self.compile_collection_slot_with_optional_default(
+                            actuals,
+                            len,
+                            position,
+                            param.id,
+                            param.default.as_ref(),
+                        )?,
+                    ));
+                    position += 1;
+                }
+                LocalKind::RestParam => {
+                    operands.push(Operand::Register(
+                        self.compile_collection_rest(actuals, len, position, param.id)?,
+                    ));
+                }
+                _ => {
+                    return Err(
+                        self.unsupported(id, "unsupported function parameter kind in call binding")
+                    );
+                }
+            }
+        }
+        Ok(operands)
     }
 
     fn compile_and(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
@@ -1626,6 +1804,7 @@ impl<'a> ProgramCompiler<'a> {
             .context
             .method_relations
             .ok_or_else(|| self.unsupported(id, "method relation ids are not configured"))?;
+        self.ensure_no_arg_splices(args, "dispatch argument splices are not implemented yet")?;
         let selector = self.compile_expr_for_operand(selector)?;
         let mut roles = Vec::new();
         if let Some(receiver) = receiver {
@@ -1681,6 +1860,10 @@ impl<'a> ProgramCompiler<'a> {
         atom: &HirRelationAtom,
     ) -> Result<Register, CompileError> {
         let relation = self.relation_id(atom)?;
+        self.ensure_no_arg_splices(
+            &atom.args,
+            "relation argument splices are not implemented yet",
+        )?;
         let dst = self.alloc_register();
         let bindings = atom
             .args
@@ -1701,6 +1884,10 @@ impl<'a> ProgramCompiler<'a> {
         atom: &HirRelationAtom,
     ) -> Result<(), CompileError> {
         let relation = self.relation_id(atom)?;
+        self.ensure_no_arg_splices(
+            &atom.args,
+            "relation argument splices are not implemented yet",
+        )?;
         let values = atom
             .args
             .iter()
@@ -1718,6 +1905,13 @@ impl<'a> ProgramCompiler<'a> {
 
     fn compile_arg_operand(&mut self, arg: &HirArg) -> Result<Operand, CompileError> {
         Ok(Operand::Register(self.compile_expr_for_value(&arg.value)?))
+    }
+
+    fn ensure_no_arg_splices(&self, args: &[HirArg], message: &str) -> Result<(), CompileError> {
+        if let Some(arg) = args.iter().find(|arg| arg.splice) {
+            return Err(self.unsupported(arg.id, message));
+        }
+        Ok(())
     }
 
     fn relation_id(&self, atom: &HirRelationAtom) -> Result<RelationId, CompileError> {
@@ -2406,6 +2600,115 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_calls_functions_with_optional_params() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "fn pick(value, ?fallback = 10)\n\
+               return value + fallback\n\
+             end\n\
+             return pick(1) + pick(1, 2)",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(14).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_calls_functions_with_rest_params() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "fn sum(first, @rest)\n\
+               return first + rest[0] + rest[1]\n\
+             end\n\
+             fn empty(first, @rest)\n\
+               return (first == 1) and (rest[0] == nothing)\n\
+             end\n\
+             return sum(1, 2, 3) + if empty(1)\n\
+               10\n\
+             else\n\
+               0\n\
+             end",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(16).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_expands_direct_call_argument_splices() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "fn sum3(a, b, c)\n\
+               return a + b + c\n\
+             end\n\
+             let rest = [2, 3]\n\
+             return sum3(1, @rest)",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(6).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_combines_optional_rest_and_call_splices() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "fn total(first, ?second = 10, @rest)\n\
+               return first + second + rest[0] + rest[1]\n\
+             end\n\
+             let extra = [3, 4]\n\
+             return total(1, 2, @extra)",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(10).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn direct_function_calls_validate_arity() {
         let context = CompileContext::new();
         let error = compile_source(
@@ -2420,7 +2723,7 @@ mod tests {
         assert!(matches!(
             error,
             CompileError::Unsupported { message, .. }
-                if message == "function call expected 2 arguments but got 1"
+                if message == "function call expected at least 2 arguments but got 1"
         ));
     }
 

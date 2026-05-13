@@ -200,6 +200,7 @@ pub struct HirRelationAtom {
 pub struct HirArg {
     pub id: NodeId,
     pub role: Option<String>,
+    pub splice: bool,
     pub value: HirExpr,
 }
 

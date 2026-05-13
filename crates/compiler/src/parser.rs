@@ -622,6 +622,9 @@ impl<'a> Parser<'a> {
                 arg.push(self.bump_element());
                 arg.push(self.bump_element());
             }
+            if self.current_kind() == SyntaxKind::At {
+                arg.push(self.bump_element());
+            }
             arg.push(CstElement::Node(self.parse_expr(0)));
             children.push(CstElement::Node(CstNode::new(SyntaxKind::Arg, arg)));
             if self.current_kind() != SyntaxKind::Comma {
@@ -890,6 +893,14 @@ mod tests {
         assert!(contains(&parse.root, SyntaxKind::LetExpr));
         assert!(contains(&parse.root, SyntaxKind::ParamList));
         assert!(contains(&parse.root, SyntaxKind::Param));
+    }
+
+    #[test]
+    fn parses_call_argument_splices() {
+        let parse = parse("summarize(first, @rest)");
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::CallExpr));
+        assert!(contains(&parse.root, SyntaxKind::At));
     }
 
     #[test]

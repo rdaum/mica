@@ -237,11 +237,15 @@ For function and method parameter lists, the same shape should be available:
 fn summarize(first, ?style = :short, @rest)
   ...
 end
+
+summarize("lamp")
+summarize("lamp", :long, @extra)
 ```
 
-Open question: MOO uses `?optional` and `@rest` inside list patterns. Mica can
-keep that exact spelling, but should define whether defaults are required or
-whether omitted optionals default to `false`, `nothing`, or an unbound marker.
+Omitted optional parameters use their declared default. If no default is
+declared, the omitted value is `nothing`. Rest parameters receive a list, empty
+when there are no remaining arguments. `@` splices list values into list
+construction and direct function calls.
 
 ## 6. Control Forms
 

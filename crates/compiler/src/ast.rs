@@ -323,6 +323,7 @@ pub enum CollectionItem {
 pub struct Arg {
     pub id: NodeId,
     pub role: Option<String>,
+    pub splice: bool,
     pub value: Expr,
 }
 
