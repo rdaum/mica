@@ -1,10 +1,11 @@
 use crate::{
-    BindingId, Diagnostic, EffectKind, HirArg, HirExpr, HirItem, HirPlace, HirProgram,
-    HirRelationAtom, Literal, NodeId, SemanticProgram, Span, parse_semantic,
+    BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirExpr, HirItem, HirPlace, HirProgram,
+    HirRelationAtom, Literal, NodeId, SemanticProgram, Span, UnaryOp, parse_semantic,
 };
 use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
 use mica_runtime::{
-    Instruction, Operand, Program, Register, Scheduler, SchedulerError, TaskId, TaskOutcome,
+    Instruction, Operand, Program, Register, RuntimeBinaryOp, RuntimeUnaryOp, Scheduler,
+    SchedulerError, TaskId, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use std::collections::HashMap;
@@ -435,6 +436,25 @@ fn item_id(item: &HirItem) -> NodeId {
     }
 }
 
+fn runtime_binary_op(op: BinaryOp) -> Option<RuntimeBinaryOp> {
+    Some(match op {
+        BinaryOp::Eq => RuntimeBinaryOp::Eq,
+        BinaryOp::Ne => RuntimeBinaryOp::Ne,
+        BinaryOp::Lt => RuntimeBinaryOp::Lt,
+        BinaryOp::Le => RuntimeBinaryOp::Le,
+        BinaryOp::Gt => RuntimeBinaryOp::Gt,
+        BinaryOp::Ge => RuntimeBinaryOp::Ge,
+        BinaryOp::Add => RuntimeBinaryOp::Add,
+        BinaryOp::Sub
+        | BinaryOp::Mul
+        | BinaryOp::Div
+        | BinaryOp::Rem
+        | BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::Range => return None,
+    })
+}
+
 struct ProgramCompiler<'a> {
     semantic: &'a SemanticProgram,
     context: &'a CompileContext,
@@ -579,6 +599,13 @@ impl<'a> ProgramCompiler<'a> {
                     )),
                 }
             }
+            HirExpr::Unary { id, op, expr } => self.compile_unary(*id, *op, expr),
+            HirExpr::Binary {
+                id,
+                op,
+                left,
+                right,
+            } => self.compile_binary(*id, *op, left, right),
             HirExpr::RelationAtom(atom) => self.compile_relation_exists(atom),
             HirExpr::FactChange { kind, atom, .. } => {
                 self.compile_fact_change(kind, atom)?;
@@ -640,6 +667,13 @@ impl<'a> ProgramCompiler<'a> {
                     dst
                 }))
             }
+            HirExpr::If {
+                id,
+                condition,
+                then_items,
+                elseif,
+                else_items,
+            } => self.compile_if(*id, condition, then_items, elseif, else_items),
             HirExpr::RoleDispatch { id, selector, args } => {
                 self.compile_dispatch(*id, selector, args, None)
             }
@@ -670,6 +704,186 @@ impl<'a> ProgramCompiler<'a> {
                 "HIR form is not implemented in the task compiler yet",
             )),
         }
+    }
+
+    fn compile_unary(
+        &mut self,
+        id: NodeId,
+        op: UnaryOp,
+        expr: &HirExpr,
+    ) -> Result<Register, CompileError> {
+        let op = match op {
+            UnaryOp::Not => RuntimeUnaryOp::Not,
+            UnaryOp::Neg => {
+                return Err(self.unsupported(
+                    id,
+                    "numeric negation is not implemented in the task compiler yet",
+                ));
+            }
+        };
+        let src = self.compile_expr_for_value(expr)?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::Unary { dst, op, src });
+        Ok(dst)
+    }
+
+    fn compile_binary(
+        &mut self,
+        id: NodeId,
+        op: BinaryOp,
+        left: &HirExpr,
+        right: &HirExpr,
+    ) -> Result<Register, CompileError> {
+        match op {
+            BinaryOp::And => self.compile_and(left, right),
+            BinaryOp::Or => self.compile_or(left, right),
+            _ => {
+                let Some(op) = runtime_binary_op(op) else {
+                    return Err(self.unsupported(
+                        id,
+                        "binary operator is not implemented in the task compiler yet",
+                    ));
+                };
+                let left = self.compile_expr_for_value(left)?;
+                let right = self.compile_expr_for_value(right)?;
+                let dst = self.alloc_register();
+                self.emit(Instruction::Binary {
+                    dst,
+                    op,
+                    left,
+                    right,
+                });
+                Ok(dst)
+            }
+        }
+    }
+
+    fn compile_and(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::bool(false),
+        });
+        let left = self.compile_expr_for_value(left)?;
+        let branch = self.emit_branch(left, 0, 0);
+        let false_target = self.instructions.len();
+        self.emit(Instruction::Jump { target: 0 });
+        let true_target = self.instructions.len();
+        let right = self.compile_expr_for_value(right)?;
+        self.emit(Instruction::Move { dst, src: right });
+        let end = self.instructions.len();
+        self.patch_branch(branch, true_target, false_target)?;
+        self.patch_jump(false_target, end)?;
+        Ok(dst)
+    }
+
+    fn compile_or(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::bool(true),
+        });
+        let left = self.compile_expr_for_value(left)?;
+        let branch = self.emit_branch(left, 0, 0);
+        let true_target = self.instructions.len();
+        self.emit(Instruction::Jump { target: 0 });
+        let false_target = self.instructions.len();
+        let right = self.compile_expr_for_value(right)?;
+        self.emit(Instruction::Move { dst, src: right });
+        let end = self.instructions.len();
+        self.patch_branch(branch, true_target, false_target)?;
+        self.patch_jump(true_target, end)?;
+        Ok(dst)
+    }
+
+    fn compile_if(
+        &mut self,
+        _id: NodeId,
+        condition: &HirExpr,
+        then_items: &[HirItem],
+        elseif: &[(HirExpr, Vec<HirItem>)],
+        else_items: &[HirItem],
+    ) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        let saved_returned = self.returned;
+        self.returned = false;
+        self.emit(Instruction::Load {
+            dst,
+            value: Value::nothing(),
+        });
+        let condition = self.compile_expr_for_value(condition)?;
+        let first_branch = self.emit_branch(condition, 0, 0);
+        let mut false_jumps = Vec::new();
+        let mut end_jumps = Vec::new();
+        let mut branch_returns = Vec::new();
+        let then_target = self.instructions.len();
+        let (value, returned) = self.compile_branch_items(then_items)?;
+        branch_returns.push(returned);
+        if let Some(value) = value {
+            self.emit(Instruction::Move { dst, src: value });
+        }
+        if !returned {
+            end_jumps.push(self.emit_jump(0));
+        }
+        false_jumps.push(first_branch);
+
+        for (condition, items) in elseif {
+            let else_if_test = self.instructions.len();
+            let condition = self.compile_expr_for_value(condition)?;
+            let branch = self.emit_branch(condition, 0, 0);
+            let body_target = self.instructions.len();
+            let (value, returned) = self.compile_branch_items(items)?;
+            branch_returns.push(returned);
+            if let Some(value) = value {
+                self.emit(Instruction::Move { dst, src: value });
+            }
+            if !returned {
+                end_jumps.push(self.emit_jump(0));
+            }
+            let previous = false_jumps.pop().unwrap();
+            self.patch_false_target(previous, else_if_test)?;
+            self.patch_true_target(branch, body_target)?;
+            false_jumps.push(branch);
+        }
+
+        let else_target = self.instructions.len();
+        let (value, else_returned) = self.compile_branch_items(else_items)?;
+        if !else_items.is_empty() {
+            branch_returns.push(else_returned);
+        }
+        if let Some(value) = value {
+            self.emit(Instruction::Move { dst, src: value });
+        }
+        let end = self.instructions.len();
+        if let Some(last_false) = false_jumps.pop() {
+            self.patch_false_target(last_false, else_target)?;
+        }
+        self.patch_true_target(first_branch, then_target)?;
+        for jump in end_jumps {
+            self.patch_jump(jump, end)?;
+        }
+        self.returned = saved_returned
+            || (!else_items.is_empty()
+                && !branch_returns.is_empty()
+                && branch_returns.iter().all(|returned| *returned));
+        Ok(dst)
+    }
+
+    fn compile_branch_items(
+        &mut self,
+        items: &[HirItem],
+    ) -> Result<(Option<Register>, bool), CompileError> {
+        let saved = self.locals.clone();
+        let saved_returned = self.returned;
+        self.returned = false;
+        let mut value = None;
+        for item in items {
+            value = self.compile_item(item)?;
+        }
+        let branch_returned = self.returned;
+        self.locals = saved;
+        self.returned = saved_returned;
+        Ok((value, branch_returned))
     }
 
     fn compile_dispatch(
@@ -831,6 +1045,81 @@ impl<'a> ProgramCompiler<'a> {
 
     fn emit(&mut self, instruction: Instruction) {
         self.instructions.push(instruction);
+    }
+
+    fn emit_branch(&mut self, condition: Register, if_true: usize, if_false: usize) -> usize {
+        let index = self.instructions.len();
+        self.emit(Instruction::Branch {
+            condition,
+            if_true,
+            if_false,
+        });
+        index
+    }
+
+    fn emit_jump(&mut self, target: usize) -> usize {
+        let index = self.instructions.len();
+        self.emit(Instruction::Jump { target });
+        index
+    }
+
+    fn patch_branch(
+        &mut self,
+        index: usize,
+        if_true: usize,
+        if_false: usize,
+    ) -> Result<(), CompileError> {
+        let Some(Instruction::Branch {
+            if_true: true_slot,
+            if_false: false_slot,
+            ..
+        }) = self.instructions.get_mut(index)
+        else {
+            return Err(CompileError::Unsupported {
+                node: NodeId(0),
+                span: None,
+                message: "internal compiler error: expected branch instruction".to_owned(),
+            });
+        };
+        *true_slot = if_true;
+        *false_slot = if_false;
+        Ok(())
+    }
+
+    fn patch_true_target(&mut self, index: usize, target: usize) -> Result<(), CompileError> {
+        let Some(Instruction::Branch { if_true, .. }) = self.instructions.get_mut(index) else {
+            return Err(CompileError::Unsupported {
+                node: NodeId(0),
+                span: None,
+                message: "internal compiler error: expected branch instruction".to_owned(),
+            });
+        };
+        *if_true = target;
+        Ok(())
+    }
+
+    fn patch_false_target(&mut self, index: usize, target: usize) -> Result<(), CompileError> {
+        let Some(Instruction::Branch { if_false, .. }) = self.instructions.get_mut(index) else {
+            return Err(CompileError::Unsupported {
+                node: NodeId(0),
+                span: None,
+                message: "internal compiler error: expected branch instruction".to_owned(),
+            });
+        };
+        *if_false = target;
+        Ok(())
+    }
+
+    fn patch_jump(&mut self, index: usize, target: usize) -> Result<(), CompileError> {
+        let Some(Instruction::Jump { target: slot }) = self.instructions.get_mut(index) else {
+            return Err(CompileError::Unsupported {
+                node: NodeId(0),
+                span: None,
+                message: "internal compiler error: expected jump instruction".to_owned(),
+            });
+        };
+        *slot = target;
+        Ok(())
     }
 
     fn unsupported(&self, node: NodeId, message: impl Into<String>) -> CompileError {
@@ -1280,6 +1569,134 @@ mod tests {
             vec![Tuple::from(
                 [Value::identity(coin), Value::identity(alice),]
             )]
+        );
+    }
+
+    #[test]
+    fn dispatched_method_can_branch_on_relation_predicates() {
+        let portable = id(1);
+        let located_in = id(2);
+        let take_method = id(100);
+        let take_program = id(101);
+        let player = id(200);
+        let thing = id(201);
+        let alice = id(300);
+        let coin = id(301);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+        kernel
+            .create_relation(RelationMetadata::new(
+                portable,
+                Symbol::intern("Portable"),
+                2,
+            ))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                located_in,
+                Symbol::intern("LocatedIn"),
+                2,
+            ))
+            .unwrap();
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_relation("Portable", portable)
+            .with_relation("LocatedIn", located_in)
+            .with_method_relations(method_relations)
+            .with_identity("take_thing", take_method)
+            .with_program_identity("take_thing", take_program)
+            .with_identity("player", player)
+            .with_identity("thing", thing);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method $take_thing :take\n\
+               roles actor: $player, item: $thing\n\
+             do\n\
+               if Portable(item, true) && !LocatedIn(item, actor)\n\
+                 assert LocatedIn(item, actor)\n\
+                 return true\n\
+               else\n\
+                 return false\n\
+               end\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                portable,
+                Tuple::from([Value::identity(coin), Value::bool(true)]),
+            )
+            .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(coin),
+                    Value::identity(thing),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice)
+            .with_identity("coin", coin);
+        let mut scheduler = Scheduler::new(kernel);
+        let first = submit_source_task(
+            ":take(actor: $alice, item: $coin)",
+            &invoke_context,
+            &mut scheduler,
+        )
+        .unwrap();
+        assert_eq!(
+            first.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(true),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert_eq!(
+            scheduler
+                .kernel()
+                .snapshot()
+                .scan(
+                    located_in,
+                    &[Some(Value::identity(coin)), Some(Value::identity(alice))],
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let second = submit_source_task(
+            ":take(actor: $alice, item: $coin)",
+            &invoke_context,
+            &mut scheduler,
+        )
+        .unwrap();
+        assert_eq!(
+            second.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(false),
+                effects: vec![],
+                retries: 0,
+            }
         );
     }
 }

@@ -1,4 +1,7 @@
-use crate::{Instruction, Operand, Program, ProgramResolver, Register, RuntimeError, SuspendKind};
+use crate::{
+    Instruction, Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeError,
+    RuntimeUnaryOp, SuspendKind,
+};
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Value, ValueKind};
 use std::sync::Arc;
@@ -174,6 +177,24 @@ impl RegisterVm {
             }
             Instruction::Move { dst, src } => {
                 let value = self.read_register(src)?.clone();
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::Unary { dst, op, src } => {
+                let value = self.read_register(src)?;
+                let value = eval_unary(op, value);
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::Binary {
+                dst,
+                op,
+                left,
+                right,
+            } => {
+                let value = eval_binary(op, self.read_register(left)?, self.read_register(right)?);
                 self.write_register(dst, value)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
@@ -405,5 +426,23 @@ fn truthy(value: &Value) -> bool {
         ValueKind::Nothing => false,
         ValueKind::Bool => value.as_bool().unwrap_or(false),
         _ => true,
+    }
+}
+
+fn eval_unary(op: RuntimeUnaryOp, value: &Value) -> Value {
+    match op {
+        RuntimeUnaryOp::Not => Value::bool(!truthy(value)),
+    }
+}
+
+fn eval_binary(op: RuntimeBinaryOp, left: &Value, right: &Value) -> Value {
+    match op {
+        RuntimeBinaryOp::Eq => Value::bool(left == right),
+        RuntimeBinaryOp::Ne => Value::bool(left != right),
+        RuntimeBinaryOp::Lt => Value::bool(left < right),
+        RuntimeBinaryOp::Le => Value::bool(left <= right),
+        RuntimeBinaryOp::Gt => Value::bool(left > right),
+        RuntimeBinaryOp::Ge => Value::bool(left >= right),
+        RuntimeBinaryOp::Add => left.checked_add(right).unwrap_or_else(Value::nothing),
     }
 }

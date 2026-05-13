@@ -14,7 +14,10 @@ mod vm;
 mod tests;
 
 pub use error::{RuntimeError, TaskError};
-pub use program::{Instruction, Operand, Program, ProgramResolver, Register, SuspendKind};
+pub use program::{
+    Instruction, Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeUnaryOp,
+    SuspendKind,
+};
 pub use scheduler::{Effect, EffectLog, Scheduler, SchedulerError, SuspendedTask};
 pub use task::{Task, TaskId, TaskLimits, TaskOutcome};
 pub use vm::{Frame, RegisterVm, VmHostResponse, VmState};

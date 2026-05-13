@@ -42,6 +42,17 @@ pub enum Instruction {
         dst: Register,
         src: Register,
     },
+    Unary {
+        dst: Register,
+        op: RuntimeUnaryOp,
+        src: Register,
+    },
+    Binary {
+        dst: Register,
+        op: RuntimeBinaryOp,
+        left: Register,
+        right: Register,
+    },
     ScanExists {
         dst: Register,
         relation: RelationId,
@@ -98,6 +109,22 @@ pub enum Instruction {
     Abort {
         error: Operand,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeUnaryOp {
+    Not,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeBinaryOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Add,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -232,6 +259,17 @@ fn validate_instruction(
             validate_register(register_count, *dst)?;
             validate_register(register_count, *src)
         }
+        Instruction::Unary { dst, src, .. } => {
+            validate_register(register_count, *dst)?;
+            validate_register(register_count, *src)
+        }
+        Instruction::Binary {
+            dst, left, right, ..
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_register(register_count, *left)?;
+            validate_register(register_count, *right)
+        }
         Instruction::ScanExists { dst, bindings, .. } => {
             validate_register(register_count, *dst)?;
             validate_bindings(register_count, bindings)
@@ -326,20 +364,32 @@ fn validate_target(instruction_count: usize, target: usize) -> Result<(), Runtim
 
 const INST_LOAD: u8 = 0;
 const INST_MOVE: u8 = 1;
-const INST_SCAN_EXISTS: u8 = 2;
-const INST_ASSERT: u8 = 3;
-const INST_RETRACT: u8 = 4;
-const INST_RETRACT_WHERE: u8 = 5;
-const INST_REPLACE_FUNCTIONAL: u8 = 6;
-const INST_BRANCH: u8 = 7;
-const INST_JUMP: u8 = 8;
-const INST_EMIT: u8 = 9;
-const INST_COMMIT: u8 = 10;
-const INST_SUSPEND_COMMIT: u8 = 11;
-const INST_ROLLBACK_RETRY: u8 = 12;
-const INST_RETURN: u8 = 13;
-const INST_ABORT: u8 = 14;
-const INST_DISPATCH: u8 = 15;
+const INST_UNARY: u8 = 2;
+const INST_BINARY: u8 = 3;
+const INST_SCAN_EXISTS: u8 = 4;
+const INST_ASSERT: u8 = 5;
+const INST_RETRACT: u8 = 6;
+const INST_RETRACT_WHERE: u8 = 7;
+const INST_REPLACE_FUNCTIONAL: u8 = 8;
+const INST_BRANCH: u8 = 9;
+const INST_JUMP: u8 = 10;
+const INST_EMIT: u8 = 11;
+const INST_COMMIT: u8 = 12;
+const INST_SUSPEND_COMMIT: u8 = 13;
+const INST_ROLLBACK_RETRY: u8 = 14;
+const INST_RETURN: u8 = 15;
+const INST_ABORT: u8 = 16;
+const INST_DISPATCH: u8 = 17;
+
+const UNARY_NOT: u8 = 0;
+
+const BINARY_EQ: u8 = 0;
+const BINARY_NE: u8 = 1;
+const BINARY_LT: u8 = 2;
+const BINARY_LE: u8 = 3;
+const BINARY_GT: u8 = 4;
+const BINARY_GE: u8 = 5;
+const BINARY_ADD: u8 = 6;
 
 const OPERAND_REGISTER: u8 = 0;
 const OPERAND_VALUE: u8 = 1;
@@ -364,6 +414,26 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_MOVE);
             write_register(out, *dst);
             write_register(out, *src);
+            Ok(())
+        }
+        Instruction::Unary { dst, op, src } => {
+            out.push(INST_UNARY);
+            write_register(out, *dst);
+            write_unary_op(out, *op);
+            write_register(out, *src);
+            Ok(())
+        }
+        Instruction::Binary {
+            dst,
+            op,
+            left,
+            right,
+        } => {
+            out.push(INST_BINARY);
+            write_register(out, *dst);
+            write_binary_op(out, *op);
+            write_register(out, *left);
+            write_register(out, *right);
             Ok(())
         }
         Instruction::ScanExists {
@@ -472,6 +542,24 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
 
 fn write_register(out: &mut Vec<u8>, register: Register) {
     write_u16(out, register.0);
+}
+
+fn write_unary_op(out: &mut Vec<u8>, op: RuntimeUnaryOp) {
+    out.push(match op {
+        RuntimeUnaryOp::Not => UNARY_NOT,
+    });
+}
+
+fn write_binary_op(out: &mut Vec<u8>, op: RuntimeBinaryOp) {
+    out.push(match op {
+        RuntimeBinaryOp::Eq => BINARY_EQ,
+        RuntimeBinaryOp::Ne => BINARY_NE,
+        RuntimeBinaryOp::Lt => BINARY_LT,
+        RuntimeBinaryOp::Le => BINARY_LE,
+        RuntimeBinaryOp::Gt => BINARY_GT,
+        RuntimeBinaryOp::Ge => BINARY_GE,
+        RuntimeBinaryOp::Add => BINARY_ADD,
+    });
 }
 
 fn write_operands(out: &mut Vec<u8>, operands: &[Operand]) -> Result<(), RuntimeError> {
@@ -615,6 +703,17 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 src: self.read_register()?,
             },
+            INST_UNARY => Instruction::Unary {
+                dst: self.read_register()?,
+                op: self.read_unary_op()?,
+                src: self.read_register()?,
+            },
+            INST_BINARY => Instruction::Binary {
+                dst: self.read_register()?,
+                op: self.read_binary_op()?,
+                left: self.read_register()?,
+                right: self.read_register()?,
+            },
             INST_SCAN_EXISTS => Instruction::ScanExists {
                 dst: self.read_register()?,
                 relation: self.read_identity()?,
@@ -723,6 +822,26 @@ impl<'a> ByteReader<'a> {
 
     fn read_register(&mut self) -> Result<Register, RuntimeError> {
         self.read_u16().map(Register)
+    }
+
+    fn read_unary_op(&mut self) -> Result<RuntimeUnaryOp, RuntimeError> {
+        match self.read_u8()? {
+            UNARY_NOT => Ok(RuntimeUnaryOp::Not),
+            _ => Err(artifact_error("unknown unary operator tag")),
+        }
+    }
+
+    fn read_binary_op(&mut self) -> Result<RuntimeBinaryOp, RuntimeError> {
+        match self.read_u8()? {
+            BINARY_EQ => Ok(RuntimeBinaryOp::Eq),
+            BINARY_NE => Ok(RuntimeBinaryOp::Ne),
+            BINARY_LT => Ok(RuntimeBinaryOp::Lt),
+            BINARY_LE => Ok(RuntimeBinaryOp::Le),
+            BINARY_GT => Ok(RuntimeBinaryOp::Gt),
+            BINARY_GE => Ok(RuntimeBinaryOp::Ge),
+            BINARY_ADD => Ok(RuntimeBinaryOp::Add),
+            _ => Err(artifact_error("unknown binary operator tag")),
+        }
     }
 
     fn read_identity(&mut self) -> Result<Identity, RuntimeError> {
