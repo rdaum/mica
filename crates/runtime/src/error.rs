@@ -51,6 +51,10 @@ pub enum RuntimeError {
         name: Symbol,
         message: String,
     },
+    PermissionDenied {
+        operation: &'static str,
+        target: Value,
+    },
     MissingMethodProgram {
         method: Value,
     },

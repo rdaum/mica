@@ -2738,7 +2738,7 @@ mod tests {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         let value = args.first().cloned().unwrap_or_else(Value::nothing);
-        context.emit(value.clone());
+        context.emit(value.clone())?;
         Ok(value)
     }
 

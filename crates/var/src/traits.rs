@@ -40,7 +40,10 @@ impl Value {
                     &ordered_f32_bits(f32::from_bits(self.payload() as u32)).to_be_bytes(),
                 );
             }
-            ValueKind::Identity | ValueKind::Symbol | ValueKind::ErrorCode => {
+            ValueKind::Identity
+            | ValueKind::Symbol
+            | ValueKind::ErrorCode
+            | ValueKind::Capability => {
                 out.extend_from_slice(&self.payload().to_be_bytes());
             }
             ValueKind::String => {
@@ -112,7 +115,8 @@ impl PartialEq for Value {
             | (ValueKind::Float, ValueKind::Float)
             | (ValueKind::Identity, ValueKind::Identity)
             | (ValueKind::Symbol, ValueKind::Symbol)
-            | (ValueKind::ErrorCode, ValueKind::ErrorCode) => self.payload() == other.payload(),
+            | (ValueKind::ErrorCode, ValueKind::ErrorCode)
+            | (ValueKind::Capability, ValueKind::Capability) => self.payload() == other.payload(),
             (ValueKind::String, ValueKind::String) => self
                 .with_str(|left| other.with_str(|right| left == right).unwrap())
                 .unwrap(),
@@ -167,9 +171,10 @@ impl Ord for Value {
                 let right = f32::from_bits(other.payload() as u32);
                 left.total_cmp(&right)
             }
-            ValueKind::Identity | ValueKind::Symbol | ValueKind::ErrorCode => {
-                self.payload().cmp(&other.payload())
-            }
+            ValueKind::Identity
+            | ValueKind::Symbol
+            | ValueKind::ErrorCode
+            | ValueKind::Capability => self.payload().cmp(&other.payload()),
             ValueKind::String => self
                 .with_str(|left| other.with_str(|right| left.cmp(right)).unwrap())
                 .unwrap(),
@@ -210,7 +215,8 @@ impl Hash for Value {
             | ValueKind::Float
             | ValueKind::Identity
             | ValueKind::Symbol
-            | ValueKind::ErrorCode => {
+            | ValueKind::ErrorCode
+            | ValueKind::Capability => {
                 self.payload().hash(state);
             }
             ValueKind::String => {
@@ -246,6 +252,7 @@ impl fmt::Debug for Value {
             ValueKind::Int => write!(f, "{:?}", self.as_int().unwrap()),
             ValueKind::Float => write!(f, "{:?}", self.as_float().unwrap()),
             ValueKind::Identity => write!(f, "#{}", self.as_identity().unwrap().raw()),
+            ValueKind::Capability => f.write_str("<cap>"),
             ValueKind::Symbol => match self.as_symbol().unwrap().name() {
                 Some(name) => write!(f, ":{name}"),
                 None => write!(f, ":#{}", self.as_symbol().unwrap().id()),
@@ -292,6 +299,7 @@ impl fmt::Display for Value {
             ValueKind::Int => write!(f, "{}", self.as_int().unwrap()),
             ValueKind::Float => write!(f, "{}", self.as_float().unwrap()),
             ValueKind::Identity => write!(f, "#{}", self.as_identity().unwrap().raw()),
+            ValueKind::Capability => f.write_str("<cap>"),
             ValueKind::Symbol => match self.as_symbol().unwrap().name() {
                 Some(name) => write!(f, ":{name}"),
                 None => write!(f, ":#{}", self.as_symbol().unwrap().id()),

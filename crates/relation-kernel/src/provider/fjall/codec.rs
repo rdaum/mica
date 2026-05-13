@@ -273,6 +273,9 @@ fn encode_value(value: &Value, out: &mut Vec<u8>) -> Result<(), String> {
                 }
             })
             .ok_or_else(|| "error value missing heap payload".to_owned())??,
+        ValueKind::Capability => {
+            return Err("capability values cannot be persisted".to_owned());
+        }
     }
     Ok(())
 }

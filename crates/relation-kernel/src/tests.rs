@@ -30,6 +30,10 @@ fn int(value: i64) -> Value {
     Value::int(value).unwrap()
 }
 
+fn cap(value: u64) -> Value {
+    Value::capability_raw(value).unwrap()
+}
+
 fn var(name: &str) -> Term {
     Term::Var(Symbol::intern(name))
 }
@@ -180,6 +184,33 @@ fn transaction_reads_own_asserts_and_retracts() {
     );
     tx.retract(rel(1), tuple).unwrap();
     assert!(tx.scan(rel(1), &[Some(int(10)), None]).unwrap().is_empty());
+}
+
+#[test]
+fn transaction_rejects_capability_values_in_tuples() {
+    let kernel = kernel_with_located();
+    let mut tx = kernel.begin();
+    let tuple = Tuple::from([int(10), cap(1)]);
+
+    assert_eq!(
+        tx.assert(rel(1), tuple.clone()).unwrap_err(),
+        KernelError::NonPersistentValue {
+            relation: rel(1),
+            tuple,
+        }
+    );
+
+    let nested = Tuple::from([
+        int(10),
+        Value::map([(Value::symbol(Symbol::intern("cap")), cap(2))]),
+    ]);
+    assert_eq!(
+        tx.replace_functional(rel(1), nested.clone()).unwrap_err(),
+        KernelError::NonPersistentValue {
+            relation: rel(1),
+            tuple: nested,
+        }
+    );
 }
 
 #[test]

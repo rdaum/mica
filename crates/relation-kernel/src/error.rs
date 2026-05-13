@@ -23,6 +23,10 @@ pub enum KernelError {
         expected: u16,
         actual: usize,
     },
+    NonPersistentValue {
+        relation: RelationId,
+        tuple: Tuple,
+    },
     InvalidIndex {
         relation: RelationId,
         position: u16,

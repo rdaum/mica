@@ -194,6 +194,12 @@ impl<'a> Transaction<'a> {
                 actual: tuple.arity(),
             });
         }
+        if tuple.values().iter().any(|value| !value.is_persistable()) {
+            return Err(KernelError::NonPersistentValue {
+                relation,
+                tuple: tuple.clone(),
+            });
+        }
         Ok(())
     }
 

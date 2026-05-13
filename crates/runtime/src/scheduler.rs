@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    BuiltinRegistry, Program, ProgramResolver, SuspendKind, Task, TaskError, TaskId, TaskLimits,
-    TaskOutcome,
+    AuthorityContext, BuiltinRegistry, Program, ProgramResolver, SuspendKind, Task, TaskError,
+    TaskId, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::RelationKernel;
 use mica_var::Value;
@@ -123,13 +123,22 @@ impl Scheduler {
         &mut self,
         program: Arc<Program>,
     ) -> Result<(TaskId, TaskOutcome), SchedulerError> {
+        self.submit_with_authority(program, AuthorityContext::root())
+    }
+
+    pub fn submit_with_authority(
+        &mut self,
+        program: Arc<Program>,
+        authority: AuthorityContext,
+    ) -> Result<(TaskId, TaskOutcome), SchedulerError> {
         let task_id = self.allocate_task_id();
-        let mut task = Task::new_with_builtins(
+        let mut task = Task::new_with_authority(
             task_id,
             &self.kernel,
             program,
             self.resolver.clone(),
             self.builtins.clone(),
+            authority,
             self.limits,
         );
         let outcome = task.run()?;

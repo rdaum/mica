@@ -27,4 +27,4 @@ mod value;
 mod tests;
 
 pub use symbol::{Symbol, SymbolMetadata};
-pub use value::{ErrorValue, Identity, Value, ValueError, ValueKind};
+pub use value::{CapabilityId, ErrorValue, Identity, Value, ValueError, ValueKind};

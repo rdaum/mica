@@ -155,25 +155,140 @@ assert Effect(:notify, connection, payload)
 After commit, the runtime drains committed effects. Effects are therefore tied
 to the successful transaction, not to speculative attempts.
 
-### 3.4 Relational Authority
+### 3.4 Authority and Object Capabilities
 
-Authority is not checked only at commit. It also filters the readable world
-during evaluation.
+Mica should avoid a MOO-style global ACL table as the foundation of security.
+ACLs are still useful as world policy facts, but they should not be the
+primitive source of authority. The primitive source of authority is possession
+of unforgeable runtime designations: capabilities supplied by the connection,
+the current invocation, trusted libraries, or explicit attenuation.
 
-- **Invocation authority:** capabilities available to the command are supplied
-  as invocation-local runtime state, for example `Authority(inv, cap)`.
-- **Read filtering:** a method only sees tuples where
-  `Readable(auth, relation, tuple)` is true.
-- **Write validation:** at commit, the kernel checks each asserted or retracted
-  tuple against `Writable(auth, op, relation, tuple)`.
-- **Grant validation:** capability transfer or attenuation checks
-  `Grantable(auth, capability)`.
-- **Constraints:** the resulting state must satisfy system and world
+This gives Mica a hybrid shape:
+
+- **Capabilities are operational authority.** A capability is an unforgeable
+  runtime value or kernel-private handle. Possessing it lets code attempt a
+  class of operation.
+- **Policy is relational.** Public or protected relations can describe owners,
+  stewardship, groups, zones, object-local policies, grant rules, and audit
+  labels.
+- **Possession is not a public relation.** Ordinary code must not be able to
+  enumerate all capabilities, all holders, or all invocations with a given
+  capability.
+- **Authority decisions are derived.** Read, write, invoke, grant, and effect
+  checks combine the invocation's private capabilities with relational policy.
+
+The crucial distinction is between a capability and a description of a
+capability. A world may persist facts such as:
+
+```mica
+Owner(#lamp, #alice)
+Steward(#room, #bob)
+GrantPolicy(#alice, :rename, #lamp)
+```
+
+These facts can help derive authority, but none of them is the authority by
+itself. The actual ability to act comes from an invocation-local authority
+context supplied by the runtime.
+
+Authority is checked in several places:
+
+- **Read filtering:** relation scans, queries, dot reads, outliner views, and
+  rule evaluation only see tuples for which the current authority context can
+  read.
+- **Dispatch filtering:** methods that are not invokable under the current
+  authority context are not applicable, even if their selector and role
+  restrictions match.
+- **Write validation:** at commit, each asserted or retracted tuple is checked
+  against the current authority context and the relation's write policy.
+- **Grant validation:** capability transfer or attenuation checks that the
+  current authority context may create the attenuated authority being passed.
+- **Effect validation:** committed outbox effects are checked before the
+  runtime performs them.
+- **Constraint validation:** the resulting state must satisfy system and world
   constraints, including binary functional arity for dot-sugar relations.
 
-Relations such as `HeldBy(cap, user)` may be useful policy facts, but
-capability possession itself must not become an enumerable relation available to
-ordinary user code.
+A possible internal shape is:
+
+```text
+InvocationCaps(inv, cap)        -- kernel-private
+CapKind(cap, kind)              -- kernel-private or protected
+CapTarget(cap, target)          -- kernel-private or protected
+CapAttenuation(cap, policy)     -- kernel-private or protected
+
+CanRead(inv, relation, tuple)   -- derived authority predicate
+CanWrite(inv, op, relation, tuple)
+CanInvoke(inv, method, args)
+CanGrant(inv, cap_descriptor)
+CanEffect(inv, effect)
+```
+
+Only the `Can...` predicates should be ordinary author-facing concepts, and even
+they may need to be exposed as protected views rather than raw enumerable
+relations. The private capability set is runtime state, not world state.
+
+This avoids the main failure mode of modelling capabilities relationally:
+
+```mica
+HeldCapability(#alice, cap)
+```
+
+If that were an ordinary relation, any sufficiently privileged query path could
+turn "who can do what?" into enumerable data, and accidental leakage of `cap`
+values would become authority leakage. Capability possession must instead be
+designation plus invocation context. User code may be able to ask "may this
+invocation do X?" but not "show me every capability in the system."
+
+#### 3.4.1 No Ambient Authority
+
+Method bodies should not gain authority merely because they are code attached
+to a trusted object, prototype, relation, or source file. Authority should flow
+from the invocation and from explicitly passed or attenuated capabilities.
+
+This is the object-capability answer to the confused-deputy problem. A method
+that can rename an object because the caller designated that object and supplied
+rename authority is different from a method that can rename any object because
+it runs as a privileged owner.
+
+Trusted kernel builtins may need ambient implementation authority internally,
+but the surface language should treat that as a kernel boundary. Builtins should
+check the caller's authority context before mutating relations, invoking
+methods, performing effects, or exposing protected data.
+
+#### 3.4.2 Attenuation and Delegation
+
+Capability transfer should be attenuating by default. A broad capability can
+create a narrower capability, but a narrower capability cannot amplify itself.
+
+Examples of attenuation dimensions:
+
+- operation: read, write, invoke, grant, effect;
+- relation or method;
+- target handle or tuple pattern;
+- time or transaction boundary;
+- source connection or actor;
+- maximum grant depth;
+- revocation cell or version.
+
+An attenuated capability is still not just a fact. The world may contain a
+grant record or revocation record, but the live ability to use the grant is an
+invocation-local designation checked by the runtime.
+
+#### 3.4.3 Authority and Transactions
+
+Authority checks use the same snapshot discipline as ordinary reads, with one
+extra rule: a transaction must not use authority that appears only because of
+its own speculative writes unless the operation is explicitly designed that
+way.
+
+For example, a transaction should not normally be able to:
+
+1. assert `Owner(#lamp, #alice)`;
+2. use that uncommitted ownership to rewrite protected state;
+3. commit both changes as one operation.
+
+When bootstrapping or administrative transitions need that behaviour, they
+should use explicit trusted operations whose authority checks are visible in the
+kernel or standard library design.
 
 ---
 

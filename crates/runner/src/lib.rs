@@ -377,10 +377,10 @@ impl SourceRunner {
             )
             .map_err(CompileError::from)?
         {
-            if let Some((relation, tuple)) = owned_fact_tuple(&ownership) {
-                if relation != named_identity_relation() {
-                    tx.retract(relation, tuple).map_err(CompileError::from)?;
-                }
+            if let Some((relation, tuple)) = owned_fact_tuple(&ownership)
+                && relation != named_identity_relation()
+            {
+                tx.retract(relation, tuple).map_err(CompileError::from)?;
             }
             tx.retract(source_owns_fact_relation(), ownership)
                 .map_err(CompileError::from)?;
@@ -572,7 +572,7 @@ fn ownership_fact_tuple(unit: Symbol, relation: Identity, tuple: Tuple) -> Tuple
     Tuple::from([
         Value::symbol(unit),
         Value::identity(relation),
-        Value::list(tuple.values().iter().cloned().collect::<Vec<_>>()),
+        Value::list(tuple.values().to_vec()),
     ])
 }
 
@@ -810,6 +810,7 @@ fn source_literal(
                 out
             })
             .unwrap(),
+        ValueKind::Capability => "<cap>".to_owned(),
     }
 }
 
@@ -1023,7 +1024,7 @@ fn emit_builtin(
     args: &[Value],
 ) -> Result<Value, RuntimeError> {
     let value = args.first().cloned().unwrap_or_else(Value::nothing);
-    context.emit(value.clone());
+    context.emit(value.clone())?;
     Ok(value)
 }
 
@@ -1510,6 +1511,7 @@ fn render_value(
                 out
             })
             .unwrap(),
+        ValueKind::Capability => "<cap>".to_owned(),
     }
 }
 

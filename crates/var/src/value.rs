@@ -31,6 +31,7 @@ pub(crate) const TAG_LIST: u8 = 9;
 pub(crate) const TAG_MAP: u8 = 10;
 pub(crate) const TAG_RANGE: u8 = 11;
 pub(crate) const TAG_ERROR: u8 = 12;
+pub(crate) const TAG_CAPABILITY: u8 = 13;
 
 pub(crate) const INT_BITS: u32 = 56;
 pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
@@ -57,6 +58,30 @@ impl Identity {
 
     pub const fn new(raw: u64) -> Option<Self> {
         if raw <= Self::MAX {
+            Some(Self(raw))
+        } else {
+            None
+        }
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// Ephemeral authority designation payload.
+///
+/// Capability ids are ordinary values inside a running VM, but they are not
+/// durable world data. They must not be accepted from source text or persisted
+/// in relation tuples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct CapabilityId(u64);
+
+impl CapabilityId {
+    pub const MAX: u64 = MAX_PAYLOAD;
+
+    pub const fn new(raw: u64) -> Option<Self> {
+        if raw <= Self::MAX && raw != 0 {
             Some(Self(raw))
         } else {
             None
@@ -113,12 +138,14 @@ pub enum ValueKind {
     Map = TAG_MAP,
     Range = TAG_RANGE,
     Error = TAG_ERROR,
+    Capability = TAG_CAPABILITY,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ValueError {
     IntegerOutOfRange(i64),
     IdentityOutOfRange(u64),
+    CapabilityOutOfRange(u64),
     HeapPointerOutOfRange(usize),
 }
 
@@ -162,6 +189,19 @@ impl Value {
         match Identity::new(raw) {
             Some(identity) => Ok(Self::identity(identity)),
             None => Err(ValueError::IdentityOutOfRange(raw)),
+        }
+    }
+
+    #[inline(always)]
+    pub const fn capability(capability: CapabilityId) -> Self {
+        Self::pack(TAG_CAPABILITY, capability.raw())
+    }
+
+    #[inline(always)]
+    pub const fn capability_raw(raw: u64) -> Result<Self, ValueError> {
+        match CapabilityId::new(raw) {
+            Some(capability) => Ok(Self::capability(capability)),
+            None => Err(ValueError::CapabilityOutOfRange(raw)),
         }
     }
 
@@ -234,6 +274,7 @@ impl Value {
             TAG_MAP => ValueKind::Map,
             TAG_RANGE => ValueKind::Range,
             TAG_ERROR => ValueKind::Error,
+            TAG_CAPABILITY => ValueKind::Capability,
             _ => unreachable!(),
         }
     }
@@ -278,6 +319,15 @@ impl Value {
     pub const fn as_identity(&self) -> Option<Identity> {
         if self.tag() == TAG_IDENTITY {
             Some(Identity(self.payload()))
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_capability(&self) -> Option<CapabilityId> {
+        if self.tag() == TAG_CAPABILITY {
+            CapabilityId::new(self.payload())
         } else {
             None
         }
@@ -346,6 +396,31 @@ impl Value {
     pub fn error_code_symbol(&self) -> Option<Symbol> {
         self.as_error_code()
             .or_else(|| self.with_error(ErrorValue::code))
+    }
+
+    pub fn is_persistable(&self) -> bool {
+        match self.kind() {
+            ValueKind::Capability => false,
+            ValueKind::List => self
+                .with_list(|values| values.iter().all(Self::is_persistable))
+                .unwrap_or(false),
+            ValueKind::Map => self
+                .with_map(|entries| {
+                    entries
+                        .iter()
+                        .all(|(key, value)| key.is_persistable() && value.is_persistable())
+                })
+                .unwrap_or(false),
+            ValueKind::Range => self
+                .with_range(|start, end| {
+                    start.is_persistable() && end.is_none_or(Self::is_persistable)
+                })
+                .unwrap_or(false),
+            ValueKind::Error => self
+                .with_error(|error| error.value().is_none_or(Self::is_persistable))
+                .unwrap_or(false),
+            _ => true,
+        }
     }
 
     pub fn list_len(&self) -> Option<usize> {

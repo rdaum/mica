@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    BuiltinRegistry, CatchHandler, ErrorField, Instruction, ListItem, Operand, Program,
-    ProgramResolver, Register, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp, SuspendKind,
+    AuthorityContext, BuiltinRegistry, CatchHandler, ErrorField, Instruction, ListItem, Operand,
+    Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Symbol, Value, ValueKind};
@@ -124,6 +124,32 @@ pub enum VmHostResponse {
     RollbackRetry,
 }
 
+pub(crate) struct VmHostContext<'ctx, 'kernel> {
+    tx: &'ctx mut Transaction<'kernel>,
+    authority: &'ctx mut AuthorityContext,
+    resolver: &'ctx ProgramResolver,
+    builtins: &'ctx BuiltinRegistry,
+    pending_effects: &'ctx mut Vec<Value>,
+}
+
+impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
+    pub(crate) fn new(
+        tx: &'ctx mut Transaction<'kernel>,
+        authority: &'ctx mut AuthorityContext,
+        resolver: &'ctx ProgramResolver,
+        builtins: &'ctx BuiltinRegistry,
+        pending_effects: &'ctx mut Vec<Value>,
+    ) -> Self {
+        Self {
+            tx,
+            authority,
+            resolver,
+            builtins,
+            pending_effects,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RegisterVm {
     state: VmState,
@@ -164,17 +190,14 @@ impl RegisterVm {
         self.write_register(register, value)
     }
 
-    pub fn run_until_host_response(
+    pub(crate) fn run_until_host_response(
         &mut self,
-        tx: &mut Transaction<'_>,
-        resolver: &ProgramResolver,
-        builtins: &BuiltinRegistry,
-        pending_effects: &mut Vec<Value>,
+        host: &mut VmHostContext<'_, '_>,
         instruction_budget: usize,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
         for _ in 0..instruction_budget {
-            let response = self.step(tx, resolver, builtins, pending_effects, max_call_depth)?;
+            let response = self.step(host, max_call_depth)?;
             if response != VmHostResponse::Continue {
                 return Ok(response);
             }
@@ -186,10 +209,7 @@ impl RegisterVm {
 
     fn step(
         &mut self,
-        tx: &mut Transaction<'_>,
-        resolver: &ProgramResolver,
-        builtins: &BuiltinRegistry,
-        pending_effects: &mut Vec<Value>,
+        host: &mut VmHostContext<'_, '_>,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
         let instruction = {
@@ -344,8 +364,9 @@ impl RegisterVm {
                 relation,
                 bindings,
             } => {
+                require_read(host.authority, relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
-                let exists = !tx.scan(relation, &bindings)?.is_empty();
+                let exists = !host.tx.scan(relation, &bindings)?.is_empty();
                 self.write_register(dst, Value::bool(exists))?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
@@ -356,8 +377,9 @@ impl RegisterVm {
                 bindings,
                 outputs,
             } => {
+                require_read(host.authority, relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
-                let rows = tx.scan(relation, &bindings)?;
+                let rows = host.tx.scan(relation, &bindings)?;
                 let mut result = Vec::with_capacity(rows.len());
                 'row: for row in rows {
                     let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
@@ -382,8 +404,10 @@ impl RegisterVm {
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ScanValue { dst, relation, key } => {
+                require_read(host.authority, relation)?;
                 let key = self.resolve_operand(&key)?;
-                let value = tx
+                let value = host
+                    .tx
                     .scan(relation, &[Some(key), None])?
                     .first()
                     .map(|row| row.values()[1].clone())
@@ -393,26 +417,32 @@ impl RegisterVm {
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Assert { relation, values } => {
-                tx.assert(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority, relation)?;
+                host.tx.assert(relation, self.resolve_tuple(values)?)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Retract { relation, values } => {
-                tx.retract(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority, relation)?;
+                host.tx.retract(relation, self.resolve_tuple(values)?)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::RetractWhere { relation, bindings } => {
+                require_read(host.authority, relation)?;
+                require_write(host.authority, relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
-                let tuples = tx.scan(relation, &bindings)?;
+                let tuples = host.tx.scan(relation, &bindings)?;
                 for tuple in tuples {
-                    tx.retract(relation, tuple)?;
+                    host.tx.retract(relation, tuple)?;
                 }
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ReplaceFunctional { relation, values } => {
-                tx.replace_functional(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority, relation)?;
+                host.tx
+                    .replace_functional(relation, self.resolve_tuple(values)?)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
@@ -449,7 +479,13 @@ impl RegisterVm {
             Instruction::ExitTry => self.exit_try_region(),
             Instruction::EndFinally => self.end_finally(),
             Instruction::Emit { value } => {
-                pending_effects.push(self.resolve_operand(&value)?);
+                if !host.authority.can_effect() {
+                    return Err(RuntimeError::PermissionDenied {
+                        operation: "effect",
+                        target: Value::symbol(Symbol::intern("Effect")),
+                    });
+                }
+                host.pending_effects.push(self.resolve_operand(&value)?);
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
@@ -470,14 +506,20 @@ impl RegisterVm {
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuiltinCall { dst, name, args } => {
-                let builtin = builtins
+                let builtin = host
+                    .builtins
                     .get(name)
                     .ok_or(RuntimeError::UnknownBuiltin { name })?;
                 let args = args
                     .iter()
                     .map(|arg| self.resolve_operand(arg))
                     .collect::<Result<Vec<_>, _>>()?;
-                let mut context = crate::BuiltinContext::new(tx.kernel(), tx, pending_effects);
+                let mut context = crate::BuiltinContext::new(
+                    host.tx.kernel(),
+                    host.tx,
+                    host.authority,
+                    host.pending_effects,
+                );
                 let value = builtin.call(&mut context, &args)?;
                 self.write_register(dst, value)?;
                 self.advance_ip()?;
@@ -502,7 +544,11 @@ impl RegisterVm {
                     .map(|(role, value)| Ok((role.clone(), self.resolve_operand(value)?)))
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
                 roles.sort_by(|left, right| left.0.cmp(&right.0));
-                let methods = applicable_methods(tx, relations, selector.clone(), roles.clone())?;
+                let methods =
+                    applicable_methods(host.tx, relations, selector.clone(), roles.clone())?
+                        .into_iter()
+                        .filter(|method| host.authority.can_invoke_method(method))
+                        .collect::<Vec<_>>();
                 let method = match methods.as_slice() {
                     [] => return Err(RuntimeError::NoApplicableMethod { selector }),
                     [method] => method.clone(),
@@ -510,14 +556,16 @@ impl RegisterVm {
                         return Err(RuntimeError::AmbiguousDispatch { selector, methods });
                     }
                 };
-                let program_rows = tx.scan(program_relation, &[Some(method.clone()), None])?;
+                let program_rows = host
+                    .tx
+                    .scan(program_relation, &[Some(method.clone()), None])?;
                 let program_id = program_rows
                     .first()
                     .map(|row| row.values()[1].clone())
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
                         method: method.clone(),
                     })?;
-                let program = resolver.resolve(tx, program_bytes, &program_id)?;
+                let program = host.resolver.resolve(host.tx, program_bytes, &program_id)?;
                 let args = roles.into_iter().map(|(_, value)| value).collect();
                 self.advance_ip()?;
                 self.state
@@ -950,6 +998,34 @@ fn one_value(value: &Value) -> Result<Value, Value> {
 fn ordinal_index(index: &Value) -> Option<usize> {
     let index = index.as_int()?;
     usize::try_from(index).ok()
+}
+
+fn require_read(
+    authority: &AuthorityContext,
+    relation: mica_relation_kernel::RelationId,
+) -> Result<(), RuntimeError> {
+    if authority.can_read_relation(relation) {
+        Ok(())
+    } else {
+        Err(RuntimeError::PermissionDenied {
+            operation: "read",
+            target: Value::identity(relation),
+        })
+    }
+}
+
+fn require_write(
+    authority: &AuthorityContext,
+    relation: mica_relation_kernel::RelationId,
+) -> Result<(), RuntimeError> {
+    if authority.can_write_relation(relation) {
+        Ok(())
+    } else {
+        Err(RuntimeError::PermissionDenied {
+            operation: "write",
+            target: Value::identity(relation),
+        })
+    }
 }
 
 fn matching_handler<'a>(catches: &'a [CatchHandler], error: &Value) -> Option<&'a CatchHandler> {

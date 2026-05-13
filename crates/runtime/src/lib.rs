@@ -17,6 +17,7 @@
 //! interpreter that runs over `mica-relation-kernel` transactions and reports
 //! host responses at commit, suspend, retry, and completion boundaries.
 
+mod authority;
 mod builtin;
 mod error;
 mod program;
@@ -27,6 +28,7 @@ mod vm;
 #[cfg(test)]
 mod tests;
 
+pub use authority::{AuthorityContext, CapabilityGrant, CapabilityOp, CapabilityScope};
 pub use builtin::{Builtin, BuiltinContext, BuiltinRegistry};
 pub use error::{RuntimeError, TaskError};
 pub use program::{

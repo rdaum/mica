@@ -11,8 +11,10 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::vm::VmHostContext;
 use crate::{
-    BuiltinRegistry, ProgramResolver, RegisterVm, SuspendKind, TaskError, VmHostResponse, VmState,
+    AuthorityContext, BuiltinRegistry, ProgramResolver, RegisterVm, SuspendKind, TaskError,
+    VmHostResponse, VmState,
 };
 use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
 use mica_var::Value;
@@ -62,6 +64,7 @@ pub struct Task<'a> {
     program: Arc<crate::Program>,
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
+    authority: AuthorityContext,
     vm: RegisterVm,
     tx: Option<Transaction<'a>>,
     retry_state: VmState,
@@ -97,6 +100,26 @@ impl<'a> Task<'a> {
         builtins: Arc<BuiltinRegistry>,
         limits: TaskLimits,
     ) -> Self {
+        Self::new_with_authority(
+            task_id,
+            kernel,
+            program,
+            resolver,
+            builtins,
+            AuthorityContext::root(),
+            limits,
+        )
+    }
+
+    pub fn new_with_authority(
+        task_id: TaskId,
+        kernel: &'a RelationKernel,
+        program: Arc<crate::Program>,
+        resolver: Arc<ProgramResolver>,
+        builtins: Arc<BuiltinRegistry>,
+        authority: AuthorityContext,
+        limits: TaskLimits,
+    ) -> Self {
         let vm = RegisterVm::new(program.clone());
         let retry_state = vm.snapshot_state();
         Self {
@@ -105,6 +128,7 @@ impl<'a> Task<'a> {
             program,
             resolver,
             builtins,
+            authority,
             vm,
             tx: Some(kernel.begin()),
             retry_state,
@@ -130,6 +154,7 @@ impl<'a> Task<'a> {
             program: state.program,
             resolver,
             builtins,
+            authority: state.authority,
             retry_state: state.retry_state,
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
@@ -159,6 +184,7 @@ impl<'a> Task<'a> {
             program: self.program.clone(),
             vm_state: self.vm.snapshot_state(),
             retry_state: self.retry_state.clone(),
+            authority: self.authority.clone(),
             retries: self.retries,
             limits: self.limits,
         }
@@ -168,11 +194,15 @@ impl<'a> Task<'a> {
         loop {
             let response = {
                 let tx = self.tx.as_mut().ok_or(TaskError::MissingTransaction)?;
-                self.vm.run_until_host_response(
+                let mut host = VmHostContext::new(
                     tx,
+                    &mut self.authority,
                     &self.resolver,
                     &self.builtins,
                     &mut self.pending_effects,
+                );
+                self.vm.run_until_host_response(
+                    &mut host,
                     self.limits.instruction_budget,
                     self.limits.max_call_depth,
                 )?
@@ -262,6 +292,7 @@ pub(crate) struct TaskState {
     program: Arc<crate::Program>,
     vm_state: VmState,
     retry_state: VmState,
+    authority: AuthorityContext,
     retries: u8,
     limits: TaskLimits,
 }

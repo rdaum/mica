@@ -1161,6 +1161,8 @@ fn write_value(out: &mut Vec<u8>, value: &Value) -> Result<(), RuntimeError> {
         out.push(VALUE_BYTES);
         write_bytes(out, bytes);
     }) {
+    } else if value.as_capability().is_some() {
+        return Err(artifact_error("capability values are not serializable"));
     } else {
         return Err(artifact_error(
             "collection values are not serializable in program artifacts yet",

@@ -12,9 +12,10 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    BuiltinContext, BuiltinRegistry, Effect, ErrorField, Instruction, ListItem, Operand, Program,
-    ProgramResolver, QueryBinding, Register, RuntimeBinaryOp, RuntimeError, Scheduler,
-    SchedulerError, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
+    AuthorityContext, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp, Effect,
+    ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, QueryBinding, Register,
+    RuntimeBinaryOp, RuntimeError, Scheduler, SchedulerError, SuspendKind, Task, TaskError,
+    TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -118,13 +119,226 @@ fn run_program_with_builtins(
     task.run()
 }
 
+fn run_program_with_authority(
+    kernel: &RelationKernel,
+    program: Program,
+    authority: AuthorityContext,
+) -> Result<TaskOutcome, crate::TaskError> {
+    let mut task = Task::new_with_authority(
+        1,
+        kernel,
+        Arc::new(program),
+        Arc::new(ProgramResolver::new()),
+        Arc::new(BuiltinRegistry::new()),
+        authority,
+        TaskLimits::default(),
+    );
+    task.run()
+}
+
 fn emit_first_arg(
     context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
 ) -> Result<Value, RuntimeError> {
     let value = args.first().cloned().unwrap_or_else(Value::nothing);
-    context.emit(value.clone());
+    context.emit(value.clone())?;
     Ok(value)
+}
+
+fn mint_read_located(
+    context: &mut BuiltinContext<'_, '_>,
+    _args: &[Value],
+) -> Result<Value, RuntimeError> {
+    Ok(context.mint_capability(CapabilityGrant::relation(CapabilityOp::Read, rel(2))))
+}
+
+#[test]
+fn builtin_can_return_ephemeral_capability_value() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        1,
+        [
+            Instruction::BuiltinCall {
+                dst: reg(0),
+                name: Symbol::intern("mint_read_located"),
+                args: vec![],
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let builtins = BuiltinRegistry::new().with_builtin("mint_read_located", mint_read_located);
+
+    let outcome = run_program_with_builtins(&kernel, program, builtins).unwrap();
+    let TaskOutcome::Complete { value, .. } = outcome else {
+        panic!("expected complete outcome");
+    };
+    assert!(value.as_capability().is_some());
+    assert!(!value.is_persistable());
+}
+
+#[test]
+fn authority_context_rejects_unminted_capability_values() {
+    let context = AuthorityContext::empty();
+    assert!(
+        context
+            .grant_for(Value::capability_raw(44).unwrap())
+            .is_none()
+    );
+
+    let mut context = AuthorityContext::empty();
+    let cap = context.mint(CapabilityGrant::relation(CapabilityOp::Read, rel(2)));
+    assert!(context.grant_for(cap).is_some());
+}
+
+#[test]
+fn program_artifacts_reject_capability_constants() {
+    let program = Program::new(
+        1,
+        [Instruction::Load {
+            dst: reg(0),
+            value: Value::capability_raw(1).unwrap(),
+        }],
+    )
+    .unwrap();
+
+    assert!(matches!(
+        program.to_bytes(),
+        Err(RuntimeError::ProgramArtifact(message))
+            if message == "capability values are not serializable"
+    ));
+}
+
+#[test]
+fn authority_context_gates_runtime_writes() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        0,
+        [Instruction::ReplaceFunctional {
+            relation: rel(2),
+            values: vec![v(int(1)), v(int(2))],
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program_with_authority(&kernel, program, AuthorityContext::empty()).unwrap_err(),
+        TaskError::Runtime(RuntimeError::PermissionDenied {
+            operation: "write",
+            target: Value::identity(rel(2)),
+        })
+    );
+}
+
+#[test]
+fn authority_context_filters_dispatch_applicability() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(40), Symbol::intern("MethodSelector"), 2).with_index([1, 0]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(41), Symbol::intern("Param"), 3).with_index([0, 1]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(42), Symbol::intern("Delegates"), 3).with_index([0, 2, 1]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(43), Symbol::intern("MethodProgram"), 2).with_index([0]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(44),
+            Symbol::intern("ProgramBytes"),
+            2,
+        ))
+        .unwrap();
+
+    let method = int(100);
+    let program_id = int(900);
+    let mut seed = kernel.begin();
+    seed.assert(rel(40), Tuple::from([method.clone(), sym("look")]))
+        .unwrap();
+    seed.assert(rel(41), Tuple::from([method.clone(), sym("actor"), int(1)]))
+        .unwrap();
+    seed.assert(rel(43), Tuple::from([method.clone(), program_id.clone()]))
+        .unwrap();
+    seed.commit().unwrap();
+
+    let method_program = Program::new(
+        1,
+        [Instruction::Return {
+            value: v(strv("ok")),
+        }],
+    )
+    .unwrap();
+    let mut resolver = ProgramResolver::new();
+    resolver.insert(program_id, method_program);
+    let resolver = Arc::new(resolver);
+    let dispatch_program = Arc::new(
+        Program::new(
+            1,
+            [
+                Instruction::Dispatch {
+                    dst: reg(0),
+                    relations: mica_relation_kernel::DispatchRelations {
+                        method_selector: rel(40),
+                        param: rel(41),
+                        delegates: rel(42),
+                    },
+                    program_relation: rel(43),
+                    program_bytes: rel(44),
+                    selector: v(sym("look")),
+                    roles: vec![(sym("actor"), v(int(1)))],
+                },
+                Instruction::Return { value: r(0) },
+            ],
+        )
+        .unwrap(),
+    );
+
+    let mut denied = Task::new_with_authority(
+        1,
+        &kernel,
+        dispatch_program.clone(),
+        resolver.clone(),
+        Arc::new(BuiltinRegistry::new()),
+        AuthorityContext::empty(),
+        TaskLimits::default(),
+    );
+    assert_eq!(
+        denied.run().unwrap_err(),
+        TaskError::Runtime(RuntimeError::NoApplicableMethod {
+            selector: sym("look"),
+        })
+    );
+
+    let mut authority = AuthorityContext::empty();
+    authority.mint(CapabilityGrant::method(method));
+    let mut allowed = Task::new_with_authority(
+        2,
+        &kernel,
+        dispatch_program,
+        resolver,
+        Arc::new(BuiltinRegistry::new()),
+        authority,
+        TaskLimits::default(),
+    );
+    assert_eq!(
+        allowed.run().unwrap(),
+        TaskOutcome::Complete {
+            value: strv("ok"),
+            effects: vec![],
+            retries: 0,
+        }
+    );
 }
 
 #[test]

@@ -8,6 +8,7 @@ The standard library should provide:
 
 - object neighbourhood and outliner views;
 - relation visibility tiers for runtime-private state;
+- authority and capability policy conventions;
 - reusable effective-property policies.
 
 These are not all kernel primitives. They are standard shapes that authors,
@@ -28,7 +29,8 @@ is the first, key-like argument.
 SubjectFact(subject, Atom(relation, args)) :-
   BaseFact(Atom(relation, args)),
   args[0] = subject,
-  Readable(CurrentAuthority(), relation, args).
+  CurrentInvocation(inv),
+  CanRead(inv, relation, args).
 ```
 
 For `#lamp42`, this might include:
@@ -80,7 +82,8 @@ other than the first argument.
 IncomingFact(target, Atom(relation, args)) :-
   BaseFact(Atom(relation, args)),
   Contains(args[1..], target),
-  Readable(CurrentAuthority(), relation, args).
+  CurrentInvocation(inv),
+  CanRead(inv, relation, args).
 ```
 
 For a room, this could show contained objects:
@@ -194,8 +197,9 @@ Examples:
 ```mica
 CurrentInvocation(inv)
 CurrentActor(actor)
-Authority(inv, cap)
 CurrentTransaction(tx)
+CanRead(inv, relation, tuple)
+CanInvoke(inv, method, args)
 ```
 
 These relations let ordinary Mica rules talk about the current command without
@@ -218,8 +222,8 @@ HeldCapability(inv, cap)
 
 The last example is intentionally not public. Capability possession is
 designation plus authority, not a fact ordinary code can enumerate. User code
-may see an invocation-local `Authority(inv, cap)` view, but it must not be able
-to ask for all held capabilities in the system.
+may see derived authority predicates such as `CanRead` or `CanWrite`, but it
+must not be able to ask for all held capabilities in the system.
 
 ### 2.5 Outbox Relations
 
@@ -244,14 +248,139 @@ Effect(:notify, connection, payload)
 `Event` is world history or dispatch input. `Effect` is a request for trusted
 runtime action after commit.
 
-## 3. Effective Property Policies
+## 3. Authority and Capabilities
+
+The standard library should make authority explainable without turning
+capability possession into ordinary data. This requires two layers.
+
+### 3.1 Policy Facts
+
+Policy facts are ordinary or protected world facts. They describe the social and
+domain model:
+
+```mica
+Owner(#lamp, #alice)
+Steward(#workshop, #bob)
+MemberOf(#alice, #builders)
+MayEditGroup(#builders, #workshop)
+PublicReadable(Name)
+```
+
+These facts are useful because authors can inspect them, version them, derive
+rules over them, and change them transactionally. They are not, by themselves,
+capabilities. They are inputs to authority decisions.
+
+### 3.2 Capability Designations
+
+Capability possession is runtime designation, not normal persisted state.
+Capabilities may be represented internally as opaque values or kernel-private
+handles, but ordinary Mica code should not be able to forge them, enumerate all
+of them, serialise them accidentally, or recover them by querying policy facts.
+
+Author-facing code should normally talk to authority through predicates such as:
+
+```mica
+CanRead(inv, relation, tuple)
+CanWrite(inv, :assert, relation, tuple)
+CanInvoke(inv, method, args)
+CanGrant(inv, descriptor)
+CanEffect(inv, effect)
+```
+
+These predicates are derived from both policy facts and the invocation's private
+capability set. They are authority questions, not capability inventories.
+
+### 3.3 Read Filtering
+
+Every author-facing read path should be authority-filtered:
+
+- relation queries;
+- rule evaluation;
+- dot reads;
+- object neighbourhood views;
+- method discovery;
+- fileout and source inspection;
+- history and audit views.
+
+The outliner must not be a privileged backdoor. If a user cannot query a tuple,
+the same tuple should not appear merely because it mentions the inspected
+handle.
+
+### 3.4 Write and Invoke Checks
+
+Writes should be checked at commit against the current authority context:
+
+```mica
+CanWrite(inv, :assert, relation, tuple)
+CanWrite(inv, :retract, relation, tuple)
+```
+
+Invocation should also be checked before a method is considered applicable:
+
+```mica
+CanInvoke(inv, method, args)
+```
+
+That means dispatch is not only selector and role matching. A method that
+matches structurally may still be invisible or unavailable to the current
+invocation.
+
+### 3.5 Granting and Attenuation
+
+The library should prefer attenuation over copying broad authority. A grant
+should be narrower than the authority used to create it.
+
+Useful grant descriptors might include:
+
+```mica
+GrantDescriptor(
+  operation: :write,
+  relation: Name,
+  target: #lamp,
+  expires: time
+)
+```
+
+The descriptor can be data. The live capability created from it is not just
+data. It is accepted by the runtime only if the grant is authorised, current,
+unrevoked, and no broader than the grantor's authority.
+
+Revocation should be explicit. A capability can be tied to a revocation cell,
+version, or grant record that the runtime checks on use. That keeps revocation
+relational without making possession enumerable.
+
+### 3.6 Locality Without Object Ownership
+
+Object-capability systems often use object references as the authority-bearing
+designation. Mica should keep the designation idea but avoid concluding that
+the referenced handle owns all state and behaviour.
+
+For example, holding an attenuated capability to rename `#lamp` may authorise:
+
+```mica
+retract Name(#lamp, _)
+assert Name(#lamp, "green lamp")
+```
+
+It does not imply authority over:
+
+```mica
+LocatedIn(#lamp, room)
+Owner(#lamp, owner)
+MethodSource(method, source)
+```
+
+unless the capability or policy explicitly covers those relations. Authority is
+over operations on relational state, not over a hidden object record.
+
+## 4. Effective Property Policies
 
 Delegation is not a universal fallback. Each property-like relation needs an
 explicit policy. The standard library should provide reusable policy builders so
 authors do not hand-write `EffectiveName`, `EffectiveLit`, and similar rules for
 every property.
 
-### 3.1 Local First
+### 4.1 Local First
 
 Local-first is the common prototype property policy:
 
@@ -279,7 +408,7 @@ EffectiveLit(obj, val) :-
 
 This should be generated or expanded by library tooling, not manually repeated.
 
-### 3.2 Ordered Union
+### 4.2 Ordered Union
 
 Some relations should accumulate values through delegation instead of selecting
 one.
@@ -305,7 +434,7 @@ aliases
   "light"     inherited from #thing
 ```
 
-### 3.3 Error on Conflict
+### 4.3 Error on Conflict
 
 Some properties should be singular, but conflicting inherited values should be
 reported rather than arbitrarily resolved.
@@ -319,7 +448,7 @@ EffectivePolicy(Material, error_on_conflict).
 The effective relation is valid only when at most one visible value is present.
 Otherwise the outliner and constraint system can report a conflict.
 
-### 3.4 Required Local
+### 4.4 Required Local
 
 Some relations should never inherit. A missing local value is an error or
 absence.
@@ -332,13 +461,12 @@ EffectivePolicy(PasswordHash, required_local).
 
 This prevents accidental inheritance of sensitive or identity-specific state.
 
-### 3.5 No Effective Policy
+### 4.5 No Effective Policy
 
 Most relations should not be property-like at all. They are queried directly:
 
 ```mica
 LocatedIn(item, place)
-Permission(cap, op, relation, tuple)
 AcousticNeighbour(room, neighbour, attenuation)
 ```
 
@@ -346,7 +474,7 @@ The standard library should make direct relation use feel normal. Effective
 properties are a convenience for object-like authoring, not the foundation of
 the language.
 
-## 4. Maps as Values, Not World Shape
+## 5. Maps as Values, Not World Shape
 
 Mica can have map values without making maps part of the durable world model.
 Maps are appropriate when the structure is local to a computation or belongs to
@@ -379,7 +507,7 @@ If Mica needs to reason about it, make it a relation.
 If only this computation or an external payload needs it, a map is fine.
 ```
 
-## 5. Standard Library Shape
+## 6. Standard Library Shape
 
 A first useful standard library might define:
 
@@ -390,9 +518,10 @@ A first useful standard library might define:
   `EffectivePolicy`;
 - browser views: `SubjectFact`, `EffectiveFact`, `IncomingFact`,
   `RelatedMethod`;
-- authority predicates: `Readable`, `Writable`, `Invokable`, `Grantable`;
+- authority predicates: `CanRead`, `CanWrite`, `CanInvoke`, `CanGrant`,
+  `CanEffect`;
 - transaction-visible relations: `CurrentInvocation`, `CurrentActor`,
-  `Authority`;
+  `CurrentTransaction`;
 - event/effect relations: `Event`, `Effect`.
 
 This library is not the whole system. It is the shared vocabulary that lets

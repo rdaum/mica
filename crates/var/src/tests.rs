@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::value::{INT_MAX, INT_MIN};
-use crate::{Identity, Symbol, SymbolMetadata, Value, ValueKind};
+use crate::{CapabilityId, Identity, Symbol, SymbolMetadata, Value, ValueKind};
 use std::mem::{align_of, size_of};
 
 #[test]
@@ -33,6 +33,13 @@ fn immediate_constructors_round_trip() {
 
     let id = Identity::new(0x00ab_cdef).unwrap();
     assert_eq!(Value::identity(id).as_identity(), Some(id));
+
+    let capability = CapabilityId::new(7).unwrap();
+    assert_eq!(
+        Value::capability(capability).as_capability(),
+        Some(capability)
+    );
+    assert_eq!(format!("{}", Value::capability(capability)), "<cap>");
 
     let symbol = Symbol::intern("take");
     assert_eq!(Value::symbol(symbol).as_symbol(), Some(symbol));
@@ -83,6 +90,17 @@ fn immediate_constructors_round_trip() {
         format!("{error:?}"),
         "error(E_NOT_PORTABLE, \"That cannot be taken.\", :lamp)"
     );
+}
+
+#[test]
+fn capability_values_are_ephemeral() {
+    let cap = Value::capability_raw(1).unwrap();
+    assert_eq!(cap.kind(), ValueKind::Capability);
+    assert!(!cap.is_persistable());
+    assert!(!Value::list([Value::int(1).unwrap(), cap.clone()]).is_persistable());
+    assert!(!Value::map([(Value::symbol(Symbol::intern("cap")), cap.clone())]).is_persistable());
+    assert!(!Value::error(Symbol::intern("E_CAP"), None::<Box<str>>, Some(cap)).is_persistable());
+    assert!(Value::capability_raw(0).is_err());
 }
 
 #[test]
@@ -288,6 +306,7 @@ fn indexed_updates_return_new_collection_values() {
 fn total_order_is_stable() {
     let values = vec![
         Value::map([]),
+        Value::capability_raw(1).unwrap(),
         Value::error(Symbol::intern("E_TEST"), None::<Box<str>>, None),
         Value::range(Value::int(1).unwrap(), None),
         Value::list([]),
@@ -307,7 +326,7 @@ fn total_order_is_stable() {
         assert!(pair[0] <= pair[1]);
     }
     assert_eq!(sorted.first(), Some(&Value::nothing()));
-    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Error);
+    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Capability);
 }
 
 #[test]
