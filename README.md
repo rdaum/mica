@@ -1,5 +1,9 @@
 # Mica
 
+<p align="center">
+  <img src="assets/mica-logo.png" alt="Mica logo" width="320">
+</p>
+
 Mica is a live, programmable system for worlds of people, objects, places,
 rules, knowledge, and behaviour that change over time.
 
@@ -51,7 +55,7 @@ That means object structure is not fixed by one privileged storage layout. A
 world can add new relations when it needs new concepts:
 
 ```mica
-AcousticNeighbor(#hall, #atrium, 2)
+AcousticNeighbour(#hall, #atrium, 2)
 OwnedAt(#lamp, #alice, t1)
 WeatherExposed(#garden)
 Believes(#agent7, #door, :locked)
@@ -205,7 +209,7 @@ project.
 Mica is an early Rust prototype. The current tree has:
 
 - a compact value layer;
-- a relation kernel with base facts, transactions, indexes, catalog metadata,
+- a relation kernel with base facts, transactions, indexes, catalogue metadata,
   and derived rules;
 - a register-based runtime and scheduler;
 - parser/lowering/compilation for a growing Mica surface syntax;
@@ -236,15 +240,20 @@ cargo test --workspace
 
 - `crates/var`: Mica value representation.
 - `crates/relation-kernel`: relation storage, transactions, rules, dispatch
-  matching, and catalog facts.
+  matching, and catalogue facts.
 - `crates/runtime`: register VM, scheduler, tasks, builtins, and effects.
 - `crates/compiler`: lexer, parser, lowering, semantic analysis, and bytecode
   compilation.
 - `crates/runner`: REPL, filein runner, builtins, and rendered reports.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,
   verbs, and dispatch.
-- `MICA_*.md`: design notes for syntax, semantics, standard library, and the
-  relation kernel.
+- `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,
+  and the relation kernel.
+
+## Licence
+
+Mica is free software licensed under the GNU Affero General Public License v3.0, 
+as set out in [LICENSE](LICENSE).
 
 ## Direction
 

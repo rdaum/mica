@@ -11,8 +11,8 @@ It starts from a simple claim:
 ## Facts, Not Boxes
 
 Most programming systems teach us to imagine objects as containers. A lamp has a
-color because the color is inside the lamp. It has a location because the lamp
-points to a room. It has behavior because methods are stored on the lamp, its
+colour because the colour is inside the lamp. It has a location because the lamp
+points to a room. It has behaviour because methods are stored on the lamp, its
 class, or its prototype.
 
 That model is convenient, but it creates pressure to decide too early where
@@ -27,7 +27,7 @@ Object(#lamp42)
 Name(#lamp42, "brass lamp")
 LocatedIn(#lamp42, #room17)
 Owner(#room17, #alice)
-Color(#lamp42, "brass")
+Colour(#lamp42, "brass")
 ```
 
 `#lamp42` is not a record that contains those fields. It is a durable identity
@@ -41,10 +41,10 @@ browser can still show an object-shaped view:
 #lamp42
   name: "brass lamp"
   location: #room17
-  color: "brass"
+  colour: "brass"
 ```
 
-But that view is an outliner over a fact neighborhood, not evidence of a hidden
+But that view is an outliner over a fact neighbourhood, not evidence of a hidden
 object record. You can inspect from the lamp, the room, the owner, the relation,
 or the history, because none of those perspectives owns the truth.
 
@@ -72,9 +72,9 @@ constraints, indexes, authority checks, and standard library meaning. The point
 is that they are still part of the same world model, not a sealed layer beneath
 it.
 
-## Behavior Through Matching
+## Behaviour Through Matching
 
-In many object systems, behavior lookup starts with a receiver:
+In many object systems, behaviour lookup starts with a receiver:
 
 ```text
 receiver -> selector -> method
@@ -104,12 +104,12 @@ end
 ```
 
 Prototype delegation still matters, but it becomes part of matching rather than
-a physical place where behavior is stored. If `#coin` delegates to `#portable`,
+a physical place where behaviour is stored. If `#coin` delegates to `#portable`,
 then a method requiring `item: #portable` can apply to `#coin`.
 
-This makes behavior additive. Different authors can contribute methods that
+This makes behaviour additive. Different authors can contribute methods that
 match different roles, relations, situations, or subjects without having to
-agree that one object owns the entire behavior surface.
+agree that one object owns the entire behaviour surface.
 
 ## Live, But Transactional
 
@@ -125,12 +125,12 @@ authority, and write conflicts, then commits the transaction atomically.
 For an interactive author, the normal loop should still feel immediate:
 
 ```mica
-> #lamp42.color = "gold"
+> #lamp42.colour = "gold"
 committed
 ```
 
 The transaction is not a bureaucratic staging area. It is how a live multiuser
-system stays coherent while many behaviors and authors are active at once.
+system stays coherent while many behaviours and authors are active at once.
 
 ## Extensible Shape
 
@@ -142,7 +142,7 @@ legal responsibility. In Mica, these are not all forced into one object layout.
 They can become relations, rules, constraints, and methods.
 
 ```mica
-AcousticNeighbor(#hall, #atrium, attenuation: 2)
+AcousticNeighbour(#hall, #atrium, attenuation: 2)
 OwnedAt(#lamp42, #alice, t1)
 OwnedAt(#lamp42, #bob, t2)
 WeatherExposed(#garden, true)
@@ -161,7 +161,7 @@ It is a live relational object system:
 - objects are stable identities;
 - state is facts;
 - inheritance is delegation over identities;
-- behavior is dispatch over role bindings;
+- behaviour is dispatch over role bindings;
 - change is asserted and retracted transactionally;
 - authoring is part of the running world.
 

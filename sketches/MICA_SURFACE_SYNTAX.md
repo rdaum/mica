@@ -151,18 +151,18 @@ assert Effect(:notify, connection, {:body -> text, :format -> :djot})
 ```
 
 Maps should not become a shadow object model. If the world needs to query,
-dispatch on, constrain, authorize, index, or show a piece of state in an
+dispatch on, constrain, authorise, index, or show a piece of state in an
 outliner, that state should usually be a relation:
 
 ```mica
 Lit(#lamp, true)
-Color(#lamp, "brass")
+Colour(#lamp, "brass")
 ```
 
 not a map hidden inside one fact:
 
 ```mica
-Slot(#lamp, :state, {:lit -> true, :color -> "brass"})
+Slot(#lamp, :state, {:lit -> true, :colour -> "brass"})
 ```
 
 Map update syntax can mirror indexed assignment:
@@ -222,8 +222,9 @@ map[key] = expr
 object.dot_name = expr
 ```
 
-Dot assignment is available only for declared dot names backed by binary
-functional relations:
+Dot syntax is available when the compile context knows a matching binary
+relation. The current conventional mapping converts a lower-case dot name to
+an UpperCamelCase relation name:
 
 ```mica
 #lamp.name = "golden lamp"
@@ -237,6 +238,11 @@ assert Name(#lamp, "golden lamp")
 ```
 
 There is no silent fallback from dot assignment to `Slot`.
+
+The current runner recognizes this convention when the binary relation already
+exists. For example, after `make_relation(:Location, 2)`, `#thing.location`
+reads as `one Location(#thing, ?location)`, and assignment replaces
+`Location(#thing, _)`.
 
 ## 5. Scatter Binding and Assignment
 
@@ -473,28 +479,17 @@ bindings.
 
 ### 9.3 Receiver Sugar
 
-For MOO familiarity, receiver syntax fills a declared receiver role:
+For MOO familiarity, receiver syntax currently fills the conventional
+`receiver` role:
 
 ```mica
-#box:put(#coin, :into, actor: #alice)
+#box:put(actor: #alice, item: #coin)
+:put(receiver: #box, actor: #alice, item: #coin)
 ```
 
-If selector metadata declares:
-
-```mica
-selector :put
-  receiver destination
-  positional item, prep
-end
-```
-
-then the call desugars to:
-
-```mica
-:put(destination: #box, item: #coin, prep: :into, actor: #alice)
-```
-
-The receiver is syntactic sugar, not a privileged dispatch axis.
+Dispatch arguments must still use explicit role names. More elaborate selector
+metadata for positional arguments or alternate receiver role names is planned,
+not implemented.
 
 ### 9.4 Dynamic Calls
 
@@ -542,20 +537,28 @@ assert LocatedIn(#coin, #box)
 retract LocatedIn(#coin, _)
 ```
 
+Atoms with query variables return a list of binding maps:
+
+```mica
+Location(#thing, ?room)     // [[:room: #room]]
+Location(?what, ?where)     // all visible Location tuples
+```
+
+`one` projects a query that must produce exactly one binding:
+
+```mica
+one Location(#thing, ?room) // #room
+```
+
 ## 11. Methods and Verbs
 
-`method` is the explicit behavior definition form. It names the method identity.
+`method` is the explicit behaviour definition form. It names the method identity.
 
 ```mica
 method #move_into :move
-  names [:move]
-  grammar "{item} into {destination}"
-  receiver item
-  positional destination
   roles actor: #player,
         item: #portable,
         destination: #container
-  mode one
 do
   require CanMove(actor, item)
   require CanContain(destination, item)
@@ -565,8 +568,10 @@ do
 end
 ```
 
-`verb` is authoring sugar for command-facing methods when the author does not
-care to name the method identity explicitly.
+`verb` is the current authoring sugar for command-facing methods when the author
+does not care to name the method identity explicitly. It is valid as ordinary
+top-level source in the REPL/filein compiler; the runner currently installs
+generated method identities such as `#verb_get_1`.
 
 ```mica
 verb move(actor: #player, item: #portable, destination: #container)
@@ -578,10 +583,9 @@ verb move(actor: #player, item: #portable, destination: #container)
 end
 ```
 
-`self` is not magical. It is a lexical alias for the declared receiver role.
-
-Open question: whether `verb` should be limited to filein/fileout and authoring
-commands, or whether it is also valid as ordinary top-level program text.
+There is no magic `self` in the implemented surface. Receiver-call syntax
+supplies the conventional `receiver` role, and method or verb bodies should be
+written in terms of their declared role names.
 
 ## 12. Requirements and Assertions
 
@@ -617,26 +621,52 @@ end
 
 ## 14. Filein/Fileout Envelope
 
-Filein/fileout may use outer sugar:
+The current filein path runs the same compiler as the REPL. A filein is a
+sequence of ordinary Mica source chunks: builtin calls, fact changes, Horn
+rules, verb or method definitions, dispatch calls, and queries.
+
+```mica
+make_identity(:lamp)
+make_identity(:thing)
+make_identity(:player)
+
+make_relation(:Object, 1)
+make_relation(:Delegates, 3)
+make_relation(:Lit, 2)
+make_relation(:CanLight, 2)
+make_relation(:Event, 3)
+
+assert Object(#lamp)
+assert Object(#player)
+assert Delegates(#lamp, #thing, 0)
+assert Lit(#lamp, false)
+
+CanLight(actor, target) :-
+  Object(actor),
+  Lit(target, false)
+
+verb light(actor: #player, target: #thing)
+  require CanLight(actor, target)
+
+  retract Lit(target, _)
+  assert Lit(target, true)
+  assert Event(:lit, actor, target)
+end
+
+:light(actor: #player, target: #lamp)
+```
+
+Planned fileout may add outer sugar for object-shaped exports:
 
 ```mica
 object #lamp extends #thing
-  name = "brass lamp"
   lit = false
-end
-
-method #lamp_light :light
-  roles actor: #player,
-        target: #lamp
-do
-  target.lit = true
-  assert Event(:lit, actor, target)
 end
 ```
 
-The body inside `do ... end` is ordinary executable Mica. The `object` and
-outer `method` forms are import/export and authoring syntax that expand to
-facts about identities, relations, methods, versions, and source.
+That envelope should be import/export syntax only. It must expand to the same
+ordinary Mica operations above; bodies inside any verb or method remain normal
+executable Mica.
 
 ## 15. Syntax Still Missing
 

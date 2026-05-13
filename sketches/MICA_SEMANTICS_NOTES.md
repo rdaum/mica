@@ -7,7 +7,8 @@ This document provides technical notes on the logic, dispatch, and execution mod
 Mica's world state consists of indexed **Ground Facts** and **Derived Rules**.
 
 ### 1.1 Ground Facts vs. Executable Change Forms
-- **Ground Fact:** A terminated atom in a file or fixture: `Name(#lamp, "gold").`
+- **Ground Fact:** A tuple present in a relation, such as `Name(#lamp,
+  "gold")`.
 - **Condition:** An atom in a rule or query: `Name(obj, "gold")`.
 - **Executable Change Form:** Code that writes to the current transaction:
   `assert Name(obj, "gold")` or `retract Name(obj, _)`.
@@ -30,7 +31,7 @@ outliner visibility, model it as relations instead of hiding it inside a map.
 
 ## 2. Dispatch Engine
 
-Dispatch derives applicable behavior identities from a role-bound invocation.
+Dispatch derives applicable behaviour identities from a role-bound invocation.
 
 ### 2.1 Open Signatures
 An invocation `i` provides a set of role-value bindings. Mica uses **Open Signatures**:
@@ -89,12 +90,12 @@ that transaction view.
 
 ### 3.1 Command Transactions
 
-For an interactive command:
+For an interactive command or REPL/filein chunk:
 
-1. The system parses the command into an invocation.
+1. The system parses, lowers, and compiles ordinary Mica source.
 2. The runtime starts a transaction with a stable snapshot.
-3. Dispatch and method evaluation read from that snapshot plus the transaction's
-   own writes.
+3. Direct code, relation queries, dispatch, and method evaluation read from
+   that snapshot plus the transaction's own writes.
 4. `assert Relation(args...)` records a fact assertion in the transaction
    workspace.
 5. `retract Relation(args...)` records a fact retraction in the transaction
@@ -137,7 +138,7 @@ User-visible output should be buffered until the transaction commits. If a
 command retries, output from failed attempts is discarded. The user sees only
 the output from the committed run.
 
-Events can be modeled as facts asserted inside the transaction:
+Events can be modelled as facts asserted inside the transaction:
 
 ```mica
 assert Event(:lit, actor, target)
@@ -179,12 +180,29 @@ ordinary user code.
 ## 4. Property Semantics
 
 ### 4.1 Functional Dot Sugar
-The syntax `obj.prop` is permitted **only** if:
-1. the dot name `prop` is declared to map to a binary relation;
-2. that relation is constrained to be functional for its first argument.
+The current compiler supports `obj.prop` when `prop` maps to a binary relation.
+There are two paths:
 
-There is no automatic capitalization rule from `prop` to `Prop`; the mapping is
-schema metadata.
+1. explicit compile-context metadata can map a dot name to a relation;
+2. the runner also recognizes the conventional mapping from a lower-case dot
+   name to an UpperCamelCase relation, such as `location` to `Location`.
+
+Reads project the second column and require a single result:
+
+```mica
+#thing.location
+one Location(#thing, ?location)
+```
+
+Assignments replace the tuple for the first argument:
+
+```mica
+#thing.location = #room
+```
+
+The intended schema rule is stricter than the current convenience path: dot
+names should be backed by binary relations that are functional for their first
+argument. There is no automatic fallback from a dot name to `Slot`.
 
 ### 4.2 Effective State (Delegation)
 Delegation is not a universal fallback. It is a per-relation policy.

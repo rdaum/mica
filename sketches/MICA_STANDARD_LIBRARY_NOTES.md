@@ -6,14 +6,14 @@ traditional object model back into the runtime.
 
 The standard library should provide:
 
-- object neighborhood and outliner views;
+- object neighbourhood and outliner views;
 - relation visibility tiers for runtime-private state;
 - reusable effective-property policies.
 
 These are not all kernel primitives. They are standard shapes that authors,
 tools, and implementations can agree on.
 
-## 1. Object Neighborhood Views
+## 1. Object Neighbourhood Views
 
 An object identity is not a record, but authors still need a way to inspect
 "the object." Mica should define a family of standard views rather than one
@@ -96,7 +96,7 @@ this identity?"
 
 ### 1.4 Related Methods
 
-Methods are independent identities, so an object browser needs a behavior view
+Methods are independent identities, so an object browser needs a behaviour view
 defined by query, not containment.
 
 ```mica
@@ -116,7 +116,7 @@ it shows methods currently applicable through delegation.
 The browser should label why a method is related:
 
 ```text
-#brass_key behavior
+#brass_key behaviour
   get       #thing_get        item matches #thing
   unlock    #unlock_with_key  instrument matches #key
 ```
@@ -140,7 +140,7 @@ But tools should keep the sections distinct. A relation tuple shown in
 `RelatedMethods` is not stored inside the object.
 
 All views are authority-filtered. Two users may inspect the same identity and
-see different neighborhoods.
+see different neighbourhoods.
 
 ## 2. Relation Visibility Tiers
 
@@ -162,8 +162,8 @@ LocatedIn(#lamp42, #room17)
 Delegates(#lamp42, #thing, 0)
 ```
 
-Authors can query these relations when authorized, define rules over them, and
-mutate them with `assert` and `retract` when authorized.
+Authors can query these relations when authorised, define rules over them, and
+mutate them with `assert` and `retract` when authorised.
 
 ### 2.2 Protected System Relations
 
@@ -339,7 +339,7 @@ Most relations should not be property-like at all. They are queried directly:
 ```mica
 LocatedIn(item, place)
 Permission(cap, op, relation, tuple)
-AcousticNeighbor(room, neighbor, attenuation)
+AcousticNeighbour(room, neighbour, attenuation)
 ```
 
 The standard library should make direct relation use feel normal. Effective
@@ -353,23 +353,23 @@ Maps are appropriate when the structure is local to a computation or belongs to
 an external boundary:
 
 ```mica
-let render_options = [:style -> :brief, :depth -> 2]
-assert Effect(:notify, connection, [:body -> text, :format -> :djot])
+let render_options = {:style -> :brief, :depth -> 2}
+assert Effect(:notify, connection, {:body -> text, :format -> :djot})
 ```
 
 Maps are a poor fit when the system needs to see inside the structure. If state
 should participate in dispatch, permissions, constraints, indexing, history,
-queries, or outliner views, it should be modeled relationally:
+queries, or outliner views, it should be modelled relationally:
 
 ```mica
 Lit(#lamp, true)
-Color(#lamp, "brass")
+Colour(#lamp, "brass")
 ```
 
 instead of:
 
 ```mica
-Slot(#lamp, :state, [:lit -> true, :color -> "brass"])
+Slot(#lamp, :state, {:lit -> true, :colour -> "brass"})
 ```
 
 The rule of thumb:

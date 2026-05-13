@@ -56,7 +56,7 @@ Edge(graph, from, label, to)
 FactSource(fact, authority, time, reason)
 ```
 
-Mica still needs physical seriousness:
+Mica still needs physical seriousness which might look a bit like other database projects I've worked on:
 
 - byte-key indexes
 - buffer pool
@@ -65,7 +65,7 @@ Mica still needs physical seriousness:
 - WAL/checkpoint/recovery machinery
 - query planning and execution
 
-But a full SQL-style planner/executor is probably not the center of Mica. Mica's
+But a full SQL-style planner/executor is probably not the centre of Mica. Mica's
 hot queries are often small, repeated, role-aware, recursive, and cacheable:
 
 ```text
@@ -75,22 +75,6 @@ What is the effective value inherited through delegation?
 What objects can this actor see?
 What changed in this transaction?
 ```
-
-RART is the leading candidate for the live index layer because Mica tuple
-indexes can be encoded as ordered byte keys with strong prefix structure:
-
-```text
-relation_id / arg0 / arg1 / arg2 / fact_id
-arg0 / relation_id / arg1 / arg2 / fact_id
-selector / role_count / role0 / restriction0 / method
-```
-
-Adaptive radix trees give exact lookup, ordered traversal, prefix scans, range
-scans, and prefix-aware intersection behavior. RART is especially relevant
-because it already has efficient low-cardinality join/intersection behavior, a
-copy-on-write versioned tree, and is under our control if Mica needs new index
-APIs. Those are natural operations for relations and Datalog-like evaluation, as
-long as Mica's index keys are designed to be radix-friendly.
 
 ## Design Goals
 
@@ -104,7 +88,7 @@ The kernel should provide:
 - snapshot reads with read-your-own-writes
 - relation-specific conflict policy
 - efficient joins over indexed relations
-- materialized and cached derived relations
+- materialised and cached derived relations
 - enough introspection to build object outliners and live authoring tools
 - an eventual path to durable storage using page, log, and checkpoint machinery
 
@@ -168,7 +152,7 @@ Index(#LocatedIn, {:item})
 Index(#LocatedIn, {:container, :item})
 ```
 
-The kernel may keep a compiled catalog for speed, but the author-facing model is
+The kernel may keep a compiled catalogue for speed, but the author-facing model is
 still relational.
 
 ## Values
@@ -201,13 +185,13 @@ ExternalId(#lamp, :uuid, uuid("..."))
 
 Symbols and identities must be distinct from strings and integers. The kernel
 needs those distinctions for indexing, equality, display, authority, and object
-neighborhood inspection.
+neighbourhood inspection.
 
 ### Runtime Value Representation
 
 The value representation is not an implementation detail to defer. Mica's
 relation kernel will store and compare enormous numbers of tuple values. If each
-value is too wide, every relation scan, join, index traversal, and materialized
+value is too wide, every relation scan, join, index traversal, and materialised
 view pays for it in memory bandwidth.
 
 mooR's `Var` is a useful reference point: it uses a 128-bit representation with
@@ -376,72 +360,6 @@ The kernel should be willing to maintain redundant indexes. Mica's performance
 will come from making the common access paths explicit, not from hoping a general
 planner rediscovers them every time.
 
-## Radix-Friendly Keys
-
-If the live index uses RART, index keys should be encoded for prefix locality.
-
-Good key properties:
-
-- leading bytes correspond to the most commonly bound query positions
-- relation ids and argument tags have fixed-width encodings
-- identities and symbols have compact fixed-width encodings
-- integers use order-preserving big-endian encodings
-- variable-length values use escaping or length schemes that cannot collide with
-  tuple separators
-- strings preserve lexical grouping when the index needs string range behavior
-- type tags are single-byte and participate in ordering
-- fact ids appear last when used only to disambiguate duplicates
-
-Example key encodings:
-
-```text
-RelTuple:
-  rel_id / arg0 / arg1 / arg2 / fact_id
-
-Subject:
-  arg0_identity / rel_id / arg1 / arg2 / fact_id
-
-Mention:
-  identity / rel_id / arg_position / arg0 / arg1 / ... / fact_id
-
-Selector:
-  selector_symbol / method_id
-```
-
-RART is especially attractive for:
-
-- prefix scans over bound leading columns
-- object-neighborhood scans
-- selector-method scans
-- delegation child/proto scans
-- trie-style intersection joins
-- low-cardinality joins where index intersection can avoid broad scans
-- versioned snapshots with structural sharing
-- experiments with ordered-index join algorithms
-
-RART is less obviously ideal for:
-
-- random exact lookup with no prefix reuse
-- tiny relations
-- very wide heterogeneous values with expensive key encoding
-- full scans where key reconstruction dominates
-
-The kernel should not hard-code RART as the only possible index implementation.
-It should define an `Index` trait and allow multiple storage strategies:
-
-```rust
-enum IndexKind {
-    Hash,
-    Rart,
-    BTree,
-    DenseSmallVec,
-}
-```
-
-But RART should be the default implementation for the first serious live
-relation-store prototype. Other index kinds should be added in response to
-measured workloads, not because the design needs symmetry.
-
 ## Transaction Model
 
 The live model should be image-oriented and snapshot-published:
@@ -450,7 +368,7 @@ The live model should be image-oriented and snapshot-published:
 current root snapshot
   relation indexes
   derived caches
-  catalog snapshot
+  catalogue snapshot
 
 transaction
   base snapshot pointer
@@ -496,7 +414,7 @@ custom                  relation-defined merge/check hook
 ```
 
 This is important because Mica relations will range from ordinary state to event
-logs to derived materializations.
+logs to derived materialisations.
 
 ## Persistence
 
@@ -517,8 +435,8 @@ The key principle is that the semantic unit of persistence is a fact change:
 commit_id
 assert rel tuple fact_id
 retract rel tuple fact_id
-catalog changes
-materialized derived changes
+catalogue changes
+materialised derived changes
 ```
 
 The physical provider may store this as key-value entries, log records, pages,
@@ -589,8 +507,8 @@ This will probably be the first and most common join implementation.
 
 Use when both sides can produce tuples ordered by the join key.
 
-If RART or B-tree indexes can stream both relations in key order, merge join is
-useful for larger derived relations and materialization jobs.
+If indexes can stream both relations in key order, merge join is useful for larger
+derived relations and materialisation jobs.
 
 ### Hash Join
 
@@ -617,7 +535,7 @@ right index: selector / restriction / invocation_role
 
 A prefix-aware intersection can walk both trees and emit only matching prefixes.
 
-This is promising for dispatch, authorization, and Datalog semi-naive joins.
+This is promising for dispatch, authorisation, and Datalog semi-naive joins.
 
 ### Ordered-Index Joins
 
@@ -705,7 +623,7 @@ The evaluator should support:
 - non-recursive rule evaluation
 - recursive positive rules through semi-naive evaluation
 - stratified negation
-- materialized derived relations
+- materialised derived relations
 - transaction-local derived reads
 - incremental invalidation or recomputation
 
@@ -737,9 +655,9 @@ a rule or stratum until a fixpoint is reached.
 This is the natural fit for:
 
 - recursive derived relations
-- materialized views
+- materialised views
 - global closure relations like `DelegatesStar`
-- authorization summaries
+- authorisation summaries
 - indexes that should be reused by many invocations
 
 For recursive rules, Mica should use semi-naive evaluation rather than repeatedly
@@ -766,7 +684,7 @@ The evaluator should derive only paths affected by the latest delta, not
 recompute the whole closure every iteration.
 
 Bottom-up evaluation can be expensive if the query only needs one answer. Its
-strength is amortization: once a derived relation is materialized, many queries
+strength is amortisation: once a derived relation is materialised, many queries
 can reuse it.
 
 ### Top-Down Evaluation
@@ -780,7 +698,7 @@ This is the natural fit for:
 - interactive inspection
 - narrow dispatch checks
 - permission questions about a specific actor/object/action
-- derived predicates where full materialization would be wasteful
+- derived predicates where full materialisation would be wasteful
 
 Example:
 
@@ -805,7 +723,7 @@ graph reachable from the query.
 
 Mica probably wants a hybrid strategy:
 
-- bottom-up for durable/materialized derived relations
+- bottom-up for durable/materialised derived relations
 - top-down with tabling for narrow demand queries
 - specialized kernels for central closures like delegation
 - incremental maintenance for hot derived relations affected by transactions
@@ -813,7 +731,7 @@ Mica probably wants a hybrid strategy:
 For example, dispatch may use all of these:
 
 ```text
-DelegatesStar        materialized or cached bottom-up closure
+DelegatesStar        materialised or cached bottom-up closure
 MethodSelector       indexed base relation scan
 Param matching       indexed nested-loop or prefix intersection
 Applicable(...)      demand query for one invocation
@@ -873,12 +791,12 @@ base snapshot - local retractions + local assertions
 ```
 
 This is easy for top-down scans because every scan can consult the local overlay.
-It is harder for materialized bottom-up views because the committed
-materialization may be stale relative to the transaction's local writes.
+It is harder for materialised bottom-up views because the committed
+materialisation may be stale relative to the transaction's local writes.
 
 The kernel should support at least two modes:
 
-- committed materialization plus transaction-local delta correction
+- committed materialisation plus transaction-local delta correction
 - full demand evaluation against the transaction view
 
 For hot closures like `DelegatesStar`, the first mode matters. A transaction
@@ -887,20 +805,20 @@ closure merely to answer one dispatch query.
 
 ### Incremental Maintenance
 
-Eventually, materialized derived relations should be maintained incrementally
+Eventually, materialised derived relations should be maintained incrementally
 from base relation changes:
 
 ```text
 assert/retract base facts
 compute affected derived deltas
-update materialized relation indexes
+update materialised relation indexes
 commit base and derived changes together
 ```
 
 This is not required for the first prototype, but the transaction log should
 record changes in a way that makes it possible. Retractions are especially
 important: deleting a base fact may invalidate derived facts that still have
-other proofs, so provenance or support counts may be needed for materialized
+other proofs, so provenance or support counts may be needed for materialised
 recursive relations.
 
 ### Aggregation
@@ -917,10 +835,10 @@ InventoryCount(container, count(items)) :-
 
 Recursive aggregation should be deferred until there is a clear semantics.
 
-## Object Neighborhoods
+## Object Neighbourhoods
 
 The relation kernel should make object inspection cheap. An outliner is not
-looking up a record; it is querying the fact neighborhood of an identity.
+looking up a record; it is querying the fact neighbourhood of an identity.
 
 Useful system views:
 
@@ -936,7 +854,7 @@ These should be backed by indexes, not by scanning all facts.
 
 For a MOO/Self-style developer, this is the replacement mental model for "open
 the object." Opening `#lamp` means asking the kernel for the relevant facts in
-which `#lamp` participates, grouped and rendered as an object neighborhood.
+which `#lamp` participates, grouped and rendered as an object neighbourhood.
 
 ## Dispatch As A Query
 
@@ -1001,12 +919,12 @@ IndexKind(#idx_delegates_proto, :rart)
 
 Some indexes are author-visible tuning knobs. Others are kernel-required.
 
-The catalog should distinguish:
+The catalogue should distinguish:
 
 - logical relation declarations
 - constraints
 - indexes
-- materialized derived relations
+- materialised derived relations
 - cached views
 - private kernel relations
 
@@ -1030,42 +948,5 @@ Needed changes:
 - general tuple indexes
 - joins and rule evaluation
 - relation metadata as first-class world data
-- object neighborhoods instead of object records
+- object neighbourhoods instead of object records
 - dispatch as a relational query rather than parent-slot lookup
-
-## Open Questions
-
-Important unsettled design questions:
-
-- Should the live index use RART's versioned tree directly, or should Mica use
-  a custom snapshot wrapper around unversioned indexes?
-- How much should tuple indexes store: fact ids only, full tuple payloads, or
-  relation-specific compact payloads?
-- Are retractions by tuple enough, or do authoring/debugging tools require
-  stable fact ids everywhere?
-- Should materialized derived relations be stored as ordinary base relations
-  with provenance, or as a separate cache tier?
-- How much of query planning should be rule-compiler driven versus adaptive at
-  runtime?
-- What is the first persistence provider: keyspaces, pages, or a simple append
-  log plus snapshot?
-- Which relations are private kernel state and which are author-visible facts?
-
-## Suggested Prototype
-
-The first prototype should be small and explicitly not a SQL database:
-
-1. Define `Value`, `Identity64`, `RelationId`, `Tuple`, and `FactId`.
-2. Implement an in-memory `RelationStore` with n-ary set semantics.
-3. Add tuple indexes over selected position orders.
-4. Build the initial live indexes on RART with radix-friendly encoded tuple keys.
-5. Implement transaction working sets with assert/retract and read-own-writes.
-6. Implement indexed scans and index nested loop joins.
-7. Implement `SubjectFact` and `MentionedFact` views.
-8. Implement `DelegatesStar` as a materialized or cached derived relation.
-9. Implement one dispatch query over selector, params, and delegation closure.
-10. Add persistence only after the access patterns are visible.
-
-This keeps the first implementation honest. If Mica's real workload demands a
-heavier storage layer, that will become clear from concrete indexes and commit
-patterns rather than speculation.

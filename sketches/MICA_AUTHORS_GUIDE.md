@@ -16,28 +16,40 @@ This guide is for world-builders, game designers, and authors coming from "image
 
 ## 1. Working with Identities
 
-In Mica, an object is a **stable identity value** (e.g., `#lamp42`). You don't "allocate" it in the traditional sense; you create it by asserting its existence and describing it with facts.
+In Mica, an object is a **stable identity value** (e.g., `#lamp42`). You do not allocate a hidden record, vtable, slot dictionary, or storage box. You create a durable identity and then describe it with facts.
 
 ### Creating an Object
-For convenience, Mica provides command sugar for creating identities and their initial facts:
+
+The current executable surface uses ordinary Mica code. In the REPL or in a
+filein, create identities and relations with builtins, then assert facts:
 
 ```mica
-object #brass_lamp extends #portable_item
-  name = "brass lamp"
-  description = "A tarnished but sturdy lamp."
-  lit = false
-end
+make_identity(:brass_lamp)
+make_identity(:portable_item)
+make_identity(:study_room)
+
+make_relation(:Object, 1)
+make_relation(:Delegates, 3)
+make_relation(:Name, 2)
+make_relation(:Description, 2)
+make_relation(:Lit, 2)
+make_relation(:LocatedIn, 2)
+
+assert Object(#brass_lamp)
+assert Delegates(#brass_lamp, #portable_item, 0)
+assert Name(#brass_lamp, "brass lamp")
+assert Description(#brass_lamp, "A tarnished but sturdy lamp.")
+assert Lit(#brass_lamp, false)
+assert LocatedIn(#brass_lamp, #study_room)
 ```
 
-**Under the hood:** This sugar expands into a transaction of ordinary fact changes:
-- `assert Object(#brass_lamp)`
-- `assert Delegates(#brass_lamp, #portable_item, 0)`
-- `assert Name(#brass_lamp, "brass lamp")`
-- `assert Description(#brass_lamp, "A tarnished but sturdy lamp.")`
-- `assert Lit(#brass_lamp, false)`
+An `object #brass_lamp ... end` envelope is still a planned filein/fileout
+sugar. When it exists, it should expand to the same ordinary relation and fact
+changes shown above. The code inside method or verb bodies should remain the
+same Mica syntax used everywhere else.
 
 ### Inspecting an Object
-If you "inspect" `#brass_lamp`, the system shows you a **Fact Neighborhood**. It gathers all facts where `#brass_lamp` is a primary key. It looks like an object, but it is a computed view over the relational world.
+If you "inspect" `#brass_lamp`, the system shows you a **fact neighbourhood**. It gathers facts where `#brass_lamp` appears in important subject positions, especially argument 0. It looks like an object in an outliner, but it is a computed view over the relational world.
 
 ---
 
@@ -47,20 +59,31 @@ If you "inspect" `#brass_lamp`, the system shows you a **Fact Neighborhood**. It
 Core concepts like `Name`, `LocatedIn`, and `Owner` are **named relations**. These are fast, indexed, and subject to schema constraints.
 
 ### Dot Sugar
-Mica allows the `obj.prop` syntax as an ergonomic shortcut **only for declared binary functional relations**. 
+Mica supports `obj.prop` as sugar over a binary relation when the matching
+relation exists in the compile context. The current conventional mapping is
+`#brass_lamp.location` to `Location(#brass_lamp, ?location)`.
 
 ```mica
-#brass_lamp.located_in = #study_room
+#brass_lamp.location
 ```
 
-This expands to ordinary fact changes:
+This reads one value:
 
 ```mica
-retract LocatedIn(#brass_lamp, _)
-assert LocatedIn(#brass_lamp, #study_room)
+one Location(#brass_lamp, ?location)
 ```
 
-**Note:** If a relation is not declared as functional for the object, dot-assignment is not available. This prevents accidental "silent" creation of data in the wrong place.
+Assignment replaces the old tuple for that first argument:
+
+```mica
+#brass_lamp.location = #study_room
+```
+
+which is equivalent to replacing `Location(#brass_lamp, _)` with
+`Location(#brass_lamp, #study_room)`.
+
+The stricter schema story is not finished. The intended rule remains that dot
+names are for binary functional relations, with no silent fallback to `Slot`.
 
 ### Ad-hoc Slots
 If you need an ad-hoc property that doesn't have a dedicated relation, you must use the `Slot` relation explicitly:
@@ -69,21 +92,31 @@ If you need an ad-hoc property that doesn't have a dedicated relation, you must 
 assert Slot(#brass_lamp, :polish_level, 10)
 ```
 
+### Queries
+Relation atoms with query variables return bindings:
+
+```mica
+Location(#brass_lamp, ?room)      // [[:room: #study_room]]
+Location(?thing, ?room)           // every matching thing/room pair
+one Location(#brass_lamp, ?room)  // #study_room, or an error if not unique
+```
+
 ---
 
 ## 3. Writing Verbs (Methods)
 
-In image-based systems, a verb is "on" an object. In Mica, a method is an independent identity that matches **Invocation Roles**.
+In image-based systems, a verb is "on" an object. In Mica, a method is an independent identity that matches **invocation roles**.
 
 ### Defining a Verb
-Use the `verb` syntax to create behavior. Instead of a privileged `this`, you name the roles that the method requires.
+Use the `verb` syntax to create behaviour. Instead of a privileged `this`, you name the roles that the method requires.
 
 ```mica
 verb light(actor: #player, target: #brass_lamp)
   require Lit(target, false)
   require HasItem(actor, #matches)
-  
-  target.lit = true
+
+  retract Lit(target, _)
+  assert Lit(target, true)
   assert Event(:lit, actor, target)
 end
 ```
@@ -91,20 +124,20 @@ end
 ### Key Differences:
 - **Role Binding:** Instead of `dobj` and `iobj`, you use meaningful names like `target`, `item`, or `destination`.
 - **Requirements:** The `require` keyword checks a fact (or a rule) before the method runs. 
-- **Self:** There is no magic `self`. However, a method can declare a receiver role (e.g., `receiver target`) to allow the `target:light()` syntax. In the body, `self` is simply an alias for that role.
+- **Self:** There is no magic `self` in the current surface. A receiver call binds the conventional `receiver` role; method bodies still use declared role names.
 
 ---
 
 ## 4. Delegation and Dispatch
 
-It is important to distinguish between how **state** is found and how **behavior** is found.
+It is important to distinguish between how **state** is found and how **behaviour** is found.
 
 ### State (Properties)
 Some declared properties are **effective** properties. When you query an effective property like `target.lit`, the backing relation may follow `Delegates`: if the local identity does not have a value, the effective relation checks prototypes according to its declared policy.
 
 This is not automatic for every relation. Plain relation queries only ask the relation you named. Delegation participates when the relation or dot name is explicitly defined in terms of an effective relation.
 
-### Behavior (Dispatch)
+### Behaviour (Dispatch)
 Methods are **not** found by walking up a parent chain. Instead, when an invocation occurs, the system finds all methods whose **parameters** match the roles of the call. 
 - A method requiring `target: #portable` matches `#brass_lamp` because `#brass_lamp` delegates to `#portable`.
 - The method is an independent identity; it is not "inside" the `#portable` object.
@@ -114,7 +147,7 @@ Methods are **not** found by walking up a parent chain. Instead, when an invocat
 ## 5. The REPL Lifecycle
 
 When you type a command in Mica, it follows a rigorous lifecycle:
-1. **Parse:** Your text is turned into an **Invocation** with role bindings.
+1. **Compile:** Your text is parsed, lowered, and compiled as ordinary Mica source.
 2. **Match:** The system derives the set of **Applicable Methods**.
 3. **Execute:** Selected methods record assertions, retractions, events, or effects in the transaction.
 4. **Validate:** The system checks authority and world constraints.
@@ -128,10 +161,10 @@ To you, the author, it feels like an immediate update. To the system, it is a ch
 
 | MOO Concept | Mica Translation |
 | :--- | :--- |
-| `obj.prop` | A declared dot name backed by a binary functional relation, such as `Name(obj, val)`. |
+| `obj.prop` | Sugar over a binary relation, such as `Name(obj, val)`, with the current conventional mapping `obj.name` -> `Name(obj, ?name)`. |
 | `parent(obj)` | `Delegates(obj, p, 0)` |
 | `children(obj)` | `Delegates(c, obj, _)` |
-| `obj:verb(...)` | `:verb(receiver_role: obj, ...)` |
+| `obj:verb(...)` | Receiver-call sugar for a role-bound invocation with `receiver: obj`. The explicit current form is `:verb(role: value, ...)`. |
 | `move obj to dest` | `retract LocatedIn(obj, _)`, `assert LocatedIn(obj, dest)` |
 | `player` | `actor` (A standard role binding). |
 | `dobj / iobj` | Named roles (e.g., `item`, `target`) in the method signature. |
@@ -146,5 +179,5 @@ Mica gives you the same "live" feel as a MOO, but with a foundation built on **R
 
 1. **Identity first.** Create the anchor.
 2. **Fact-based state.** Use declared relations for structure, and `Slot` for the ad-hoc.
-3. **Behavior through roles.** Methods match your world’s facts; they don't live inside boxes.
+3. **Behaviour through roles.** Methods match your world’s facts; they don't live inside boxes.
 4. **Checked transitions.** Your changes are validated before they become the world's history.
