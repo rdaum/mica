@@ -29,6 +29,7 @@ pub enum SyntaxKind {
     ContinueKw,
     TryKw,
     CatchKw,
+    AsKw,
     FinallyKw,
     FnKw,
     MethodKw,

@@ -1,6 +1,6 @@
 use crate::{
-    Effect, Instruction, ListItem, Operand, Program, ProgramResolver, Register, RuntimeError,
-    Scheduler, SchedulerError, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
+    Effect, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
+    RuntimeError, Scheduler, SchedulerError, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -783,6 +783,61 @@ fn program_artifact_round_trips_rich_errors() {
         run_program(&kernel, restored, 100).unwrap(),
         TaskOutcome::Complete {
             value: error,
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn error_field_instruction_extracts_rich_error_parts() {
+    let kernel = kernel_with_world_relations();
+    let error = error(
+        "E_NOT_PORTABLE",
+        Some("That cannot be taken."),
+        Some(strv("lamp")),
+    );
+    let program = Program::new(
+        5,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: error,
+            },
+            Instruction::ErrorField {
+                dst: reg(1),
+                error: reg(0),
+                field: ErrorField::Code,
+            },
+            Instruction::ErrorField {
+                dst: reg(2),
+                error: reg(0),
+                field: ErrorField::Message,
+            },
+            Instruction::ErrorField {
+                dst: reg(3),
+                error: reg(0),
+                field: ErrorField::Value,
+            },
+            Instruction::BuildList {
+                dst: reg(4),
+                items: vec![item(r(1)), item(r(2)), item(r(3))],
+            },
+            Instruction::Return { value: r(4) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: Value::list([
+                err("E_NOT_PORTABLE"),
+                strv("That cannot be taken."),
+                strv("lamp")
+            ]),
             effects: vec![],
             retries: 0,
         }

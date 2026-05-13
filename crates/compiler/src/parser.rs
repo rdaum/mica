@@ -411,7 +411,7 @@ impl<'a> Parser<'a> {
 
     fn parse_recover_clause(&mut self) -> CstNode {
         let mut children = vec![self.bump_element()];
-        if self.current_kind() == SyntaxKind::Ident {
+        if self.current_kind() == SyntaxKind::Ident && self.nth_kind(1) != SyntaxKind::AsKw {
             children.push(self.bump_element());
             if self.current_kind() == SyntaxKind::IfKw {
                 children.push(self.bump_element());
@@ -419,6 +419,10 @@ impl<'a> Parser<'a> {
             }
         } else if Self::starts_expr(self.current_kind()) {
             children.push(CstElement::Node(self.parse_expr(0)));
+        }
+        if self.current_kind() == SyntaxKind::AsKw {
+            children.push(self.bump_element());
+            children.push(self.expect_token(SyntaxKind::Ident, "expected recovery binding"));
         }
         children.push(self.expect_token(SyntaxKind::FatArrow, "expected => in recovery clause"));
         children.push(CstElement::Node(self.parse_expr(0)));
@@ -448,12 +452,18 @@ impl<'a> Parser<'a> {
 
     fn parse_catch_clause(&mut self) -> CstNode {
         let mut children = vec![self.bump_element()];
-        if self.current_kind() == SyntaxKind::Ident {
+        if self.current_kind() == SyntaxKind::Ident && self.nth_kind(1) != SyntaxKind::AsKw {
             children.push(self.bump_element());
-        }
-        if self.current_kind() == SyntaxKind::IfKw {
-            children.push(self.bump_element());
+            if self.current_kind() == SyntaxKind::IfKw {
+                children.push(self.bump_element());
+                children.push(CstElement::Node(self.parse_expr(0)));
+            }
+        } else if Self::starts_expr(self.current_kind()) {
             children.push(CstElement::Node(self.parse_expr(0)));
+        }
+        if self.current_kind() == SyntaxKind::AsKw {
+            children.push(self.bump_element());
+            children.push(self.expect_token(SyntaxKind::Ident, "expected catch binding"));
         }
         children.push(CstElement::Node(self.parse_block(&[
             SyntaxKind::CatchKw,

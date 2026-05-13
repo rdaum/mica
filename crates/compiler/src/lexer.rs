@@ -250,6 +250,7 @@ fn keyword_kind(text: &str) -> Option<SyntaxKind> {
         "continue" => SyntaxKind::ContinueKw,
         "try" => SyntaxKind::TryKw,
         "catch" => SyntaxKind::CatchKw,
+        "as" => SyntaxKind::AsKw,
         "finally" => SyntaxKind::FinallyKw,
         "fn" => SyntaxKind::FnKw,
         "method" => SyntaxKind::MethodKw,

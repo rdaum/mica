@@ -1,5 +1,5 @@
 use crate::{
-    CatchHandler, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
+    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
     RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
@@ -268,6 +268,12 @@ impl RegisterVm {
                     &self.resolve_operand(&index)?,
                     self.resolve_operand(&value)?,
                 );
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::ErrorField { dst, error, field } => {
+                let value = error_field_value(self.read_register(error)?, field);
                 self.write_register(dst, value)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
@@ -749,6 +755,22 @@ fn list_range_slice(
 fn set_index_value(collection: &Value, index: &Value, value: Value) -> Value {
     collection
         .index_set(index, value)
+        .unwrap_or_else(Value::nothing)
+}
+
+fn error_field_value(error: &Value, field: ErrorField) -> Value {
+    if let Some(code) = error.as_error_code() {
+        return match field {
+            ErrorField::Code => Value::error_code(code),
+            ErrorField::Message | ErrorField::Value => Value::nothing(),
+        };
+    }
+    error
+        .with_error(|error| match field {
+            ErrorField::Code => Value::error_code(error.code()),
+            ErrorField::Message => error.message().map_or_else(Value::nothing, Value::string),
+            ErrorField::Value => error.value().cloned().unwrap_or_else(Value::nothing),
+        })
         .unwrap_or_else(Value::nothing)
 }
 

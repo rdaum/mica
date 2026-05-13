@@ -6,7 +6,7 @@ use crate::{
 };
 use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
 use mica_runtime::{
-    CatchHandler, Instruction, ListItem, Operand, Program, Register, RuntimeBinaryOp,
+    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, Register, RuntimeBinaryOp,
     RuntimeUnaryOp, Scheduler, SchedulerError, TaskId, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
@@ -472,6 +472,15 @@ fn runtime_binary_op(op: BinaryOp) -> Option<RuntimeBinaryOp> {
         BinaryOp::Div => RuntimeBinaryOp::Div,
         BinaryOp::Rem => RuntimeBinaryOp::Rem,
         BinaryOp::And | BinaryOp::Or | BinaryOp::Range => return None,
+    })
+}
+
+fn builtin_error_field(name: &str) -> Option<ErrorField> {
+    Some(match name {
+        "code" => ErrorField::Code,
+        "message" => ErrorField::Message,
+        "value" => ErrorField::Value,
+        _ => return None,
     })
 }
 
@@ -1180,6 +1189,14 @@ impl<'a> ProgramCompiler<'a> {
         base: &HirExpr,
         name: &str,
     ) -> Result<Register, CompileError> {
+        if let Some(field) = builtin_error_field(name)
+            && self.context.dot_relation(name).is_none()
+        {
+            let error = self.compile_expr_for_value(base)?;
+            let dst = self.alloc_register();
+            self.emit(Instruction::ErrorField { dst, error, field });
+            return Ok(dst);
+        }
         let dot = self
             .context
             .dot_relation(name)
@@ -2480,6 +2497,32 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_supports_code_first_catch_binding_and_error_fields() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "try\n\
+               raise E_NOT_PORTABLE, \"That cannot be taken.\", :lamp\n\
+             catch E_NOT_PORTABLE as err\n\
+               return (err.code == E_NOT_PORTABLE) and (err.message == \"That cannot be taken.\") and (err.value == :lamp)\n\
+             end",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(true),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn compiled_task_runs_finally_during_return_unwind() {
         let cleaned = id(1);
         let kernel = RelationKernel::new();
@@ -2539,6 +2582,31 @@ mod tests {
             submitted.outcome,
             TaskOutcome::Complete {
                 value: Value::int(11).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_supports_code_first_recover_binding() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let code = recover raise E_NO_EXIT, \"No exit.\"\n\
+             catch E_NO_EXIT as err => err.code\n\
+             end\n\
+             return code == E_NO_EXIT",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(true),
                 effects: vec![],
                 retries: 0,
             }

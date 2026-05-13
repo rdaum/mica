@@ -52,6 +52,13 @@ pub struct CatchHandler {
     pub target: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ErrorField {
+    Code,
+    Message,
+    Value,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SuspendKind {
     Commit,
@@ -103,6 +110,11 @@ pub enum Instruction {
         collection: Register,
         index: Operand,
         value: Operand,
+    },
+    ErrorField {
+        dst: Register,
+        error: Register,
+        field: ErrorField,
     },
     CollectionLen {
         dst: Register,
@@ -395,6 +407,10 @@ fn validate_instruction(
             validate_operand(register_count, index)?;
             validate_operand(register_count, value)
         }
+        Instruction::ErrorField { dst, error, .. } => {
+            validate_register(register_count, *dst)?;
+            validate_register(register_count, *error)
+        }
         Instruction::CollectionLen { dst, collection }
         | Instruction::CollectionKeyAt {
             dst, collection, ..
@@ -567,9 +583,14 @@ const INST_ENTER_TRY: u8 = 28;
 const INST_EXIT_TRY: u8 = 29;
 const INST_END_FINALLY: u8 = 30;
 const INST_RAISE: u8 = 31;
+const INST_ERROR_FIELD: u8 = 32;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
+
+const ERROR_FIELD_CODE: u8 = 0;
+const ERROR_FIELD_MESSAGE: u8 = 1;
+const ERROR_FIELD_VALUE: u8 = 2;
 
 const BINARY_EQ: u8 = 0;
 const BINARY_NE: u8 = 1;
@@ -675,6 +696,13 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *collection);
             write_operand(out, index)?;
             write_operand(out, value)
+        }
+        Instruction::ErrorField { dst, error, field } => {
+            out.push(INST_ERROR_FIELD);
+            write_register(out, *dst);
+            write_register(out, *error);
+            write_error_field(out, *field);
+            Ok(())
         }
         Instruction::CollectionLen { dst, collection } => {
             out.push(INST_COLLECTION_LEN);
@@ -869,6 +897,14 @@ fn write_binary_op(out: &mut Vec<u8>, op: RuntimeBinaryOp) {
         RuntimeBinaryOp::Mul => BINARY_MUL,
         RuntimeBinaryOp::Div => BINARY_DIV,
         RuntimeBinaryOp::Rem => BINARY_REM,
+    });
+}
+
+fn write_error_field(out: &mut Vec<u8>, field: ErrorField) {
+    out.push(match field {
+        ErrorField::Code => ERROR_FIELD_CODE,
+        ErrorField::Message => ERROR_FIELD_MESSAGE,
+        ErrorField::Value => ERROR_FIELD_VALUE,
     });
 }
 
@@ -1146,6 +1182,11 @@ impl<'a> ByteReader<'a> {
                 index: self.read_operand()?,
                 value: self.read_operand()?,
             },
+            INST_ERROR_FIELD => Instruction::ErrorField {
+                dst: self.read_register()?,
+                error: self.read_register()?,
+                field: self.read_error_field()?,
+            },
             INST_COLLECTION_LEN => Instruction::CollectionLen {
                 dst: self.read_register()?,
                 collection: self.read_register()?,
@@ -1382,6 +1423,15 @@ impl<'a> ByteReader<'a> {
             BINARY_DIV => Ok(RuntimeBinaryOp::Div),
             BINARY_REM => Ok(RuntimeBinaryOp::Rem),
             _ => Err(artifact_error("unknown binary operator tag")),
+        }
+    }
+
+    fn read_error_field(&mut self) -> Result<ErrorField, RuntimeError> {
+        match self.read_u8()? {
+            ERROR_FIELD_CODE => Ok(ErrorField::Code),
+            ERROR_FIELD_MESSAGE => Ok(ErrorField::Message),
+            ERROR_FIELD_VALUE => Ok(ErrorField::Value),
+            _ => Err(artifact_error("unknown error field tag")),
         }
     }
 

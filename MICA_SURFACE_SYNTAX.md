@@ -365,7 +365,7 @@ raise E_NOT_PORTABLE, "That cannot be taken.", item
 
 try
   risky()
-catch err if E_PERM
+catch E_PERM as err
   "permission denied"
 finally
   cleanup()
@@ -376,13 +376,38 @@ Catch conditions currently match error-code literals. A catch without a
 condition catches any error. If a catch names a binding, the binding receives
 the rich raised error value, not just the error code.
 
+The preferred binding syntax puts the matched code first:
+
+```mica
+catch E_NOT_PORTABLE as err
+  err.message
+end
+```
+
+The older binding-first form is also accepted when a conditional spelling reads
+better:
+
+```mica
+catch err if E_NOT_PORTABLE
+  err.value
+end
+```
+
+Rich errors expose three builtin fields:
+
+```mica
+err.code       // E_NOT_PORTABLE
+err.message    // message string, or nothing
+err.value      // payload value, or nothing
+```
+
 MOO's backtick error-catching expression is powerful but visually strange.
 Mica uses a keyword expression form for compact local recovery:
 
 ```mica
 description = recover item:description()
 catch E_PERM => "You cannot see that."
-catch err if E_NOT_PORTABLE => err
+catch E_NOT_PORTABLE as err => err.value
 end
 ```
 
