@@ -34,6 +34,10 @@ pub enum RuntimeError {
     UnknownBuiltin {
         name: Symbol,
     },
+    InvalidBuiltinCall {
+        name: Symbol,
+        message: String,
+    },
     MissingMethodProgram {
         method: Value,
     },

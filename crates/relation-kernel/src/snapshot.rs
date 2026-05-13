@@ -98,6 +98,10 @@ impl Snapshot {
         &self.commits[first..]
     }
 
+    pub fn relation_metadata(&self) -> impl Iterator<Item = &RelationMetadata> {
+        self.relations.values().map(|relation| relation.metadata())
+    }
+
     pub(crate) fn relation(&self, relation: RelationId) -> Result<&RelationState, KernelError> {
         self.relations
             .get(&relation)
