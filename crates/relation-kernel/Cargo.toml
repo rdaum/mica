@@ -7,5 +7,5 @@ license.workspace = true
 description = "MVCC relation kernel for Mica"
 
 [dependencies]
-arc-swap = "1.7"
-mica-var = { path = "../var" }
+arc-swap.workspace = true
+mica-var.workspace = true

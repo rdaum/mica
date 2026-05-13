@@ -10,7 +10,7 @@ description = "Compact value representation for Mica"
 
 [dev-dependencies]
 micromeasure.workspace = true
-proptest = "1.6"
+proptest.workspace = true
 
 [[bench]]
 name = "var_benches"

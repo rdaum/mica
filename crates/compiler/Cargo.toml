@@ -6,6 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-mica-relation-kernel = { path = "../relation-kernel" }
-mica-runtime = { path = "../runtime" }
-mica-var = { path = "../var" }
+mica-relation-kernel.workspace = true
+mica-runtime.workspace = true
+mica-var.workspace = true

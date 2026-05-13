@@ -10,8 +10,8 @@ name = "mica"
 path = "src/main.rs"
 
 [dependencies]
-mica-compiler = { path = "../compiler" }
-mica-relation-kernel = { path = "../relation-kernel" }
-mica-runtime = { path = "../runtime" }
-mica-var = { path = "../var" }
-rustyline = "18.0.0"
+mica-compiler.workspace = true
+mica-relation-kernel.workspace = true
+mica-runtime.workspace = true
+mica-var.workspace = true
+rustyline.workspace = true

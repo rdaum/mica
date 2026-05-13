@@ -7,5 +7,5 @@ license.workspace = true
 description = "Transactional register-based runtime for Mica"
 
 [dependencies]
-mica-relation-kernel = { path = "../relation-kernel" }
-mica-var = { path = "../var" }
+mica-relation-kernel.workspace = true
+mica-var.workspace = true

@@ -12,7 +12,20 @@ exclude = ["crates/var/fuzz"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.95"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 
 [workspace.dependencies]
+mica-compiler = { path = "crates/compiler" }
+mica-relation-kernel = { path = "crates/relation-kernel" }
+mica-runtime = { path = "crates/runtime" }
+mica-var = { path = "crates/var" }
+
+# core
+arc-swap = "1.9"
+
+# for util
+rustyline = "18.0.0"
+
+# development / testing / benching
 micromeasure = "0.6"
+proptest = "1.11"
