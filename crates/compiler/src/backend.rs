@@ -703,6 +703,14 @@ impl<'a> ProgramCompiler<'a> {
                 condition,
                 body,
             } => self.compile_while(*id, condition, body),
+            HirExpr::For {
+                id,
+                key,
+                value,
+                iter,
+                body,
+                ..
+            } => self.compile_for(*id, *key, *value, iter, body),
             HirExpr::Break { id } => self.compile_break(*id),
             HirExpr::Continue { id } => self.compile_continue(*id),
             HirExpr::RoleDispatch { id, selector, args } => {
@@ -1003,6 +1011,126 @@ impl<'a> ProgramCompiler<'a> {
             self.patch_jump(jump, loop_context.continue_target)?;
         }
         Ok(dst)
+    }
+
+    fn compile_for(
+        &mut self,
+        _id: NodeId,
+        key: BindingId,
+        value: Option<BindingId>,
+        iter: &HirExpr,
+        body: &[HirItem],
+    ) -> Result<Register, CompileError> {
+        let saved_locals = self.locals.clone();
+        let result = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst: result,
+            value: Value::nothing(),
+        });
+
+        let collection = self.compile_expr_for_value(iter)?;
+        let len = self.alloc_register();
+        self.emit(Instruction::CollectionLen {
+            dst: len,
+            collection,
+        });
+        let index = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst: index,
+            value: Value::int(0).unwrap(),
+        });
+        let one = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst: one,
+            value: Value::int(1).unwrap(),
+        });
+
+        let key_register = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst: key_register,
+            value: Value::nothing(),
+        });
+        self.locals.insert(key, key_register);
+        let value_register = if let Some(value) = value {
+            let register = self.alloc_register();
+            self.emit(Instruction::Load {
+                dst: register,
+                value: Value::nothing(),
+            });
+            self.locals.insert(value, register);
+            Some(register)
+        } else {
+            None
+        };
+
+        let loop_start = self.instructions.len();
+        let condition = self.alloc_register();
+        self.emit(Instruction::Binary {
+            dst: condition,
+            op: RuntimeBinaryOp::Lt,
+            left: index,
+            right: len,
+        });
+        let branch = self.emit_branch(condition, 0, 0);
+        let body_target = self.instructions.len();
+
+        if let Some(value_register) = value_register {
+            self.emit(Instruction::CollectionKeyAt {
+                dst: key_register,
+                collection,
+                index,
+            });
+            self.emit(Instruction::CollectionValueAt {
+                dst: value_register,
+                collection,
+                index,
+            });
+        } else {
+            self.emit(Instruction::CollectionValueAt {
+                dst: key_register,
+                collection,
+                index,
+            });
+        }
+
+        self.loops.push(LoopContext {
+            continue_target: 0,
+            break_jumps: Vec::new(),
+            continue_jumps: Vec::new(),
+        });
+        let body_returned = self.compile_loop_body(body)?;
+        let loop_context = self.loops.pop().ok_or_else(|| CompileError::Unsupported {
+            node: NodeId(0),
+            span: None,
+            message: "internal compiler error: missing loop context".to_owned(),
+        })?;
+
+        let increment_target = self.instructions.len();
+        if !body_returned {
+            let next_index = self.alloc_register();
+            self.emit(Instruction::Binary {
+                dst: next_index,
+                op: RuntimeBinaryOp::Add,
+                left: index,
+                right: one,
+            });
+            self.emit(Instruction::Move {
+                dst: index,
+                src: next_index,
+            });
+            self.emit_jump(loop_start);
+        }
+        let end = self.instructions.len();
+        self.patch_branch(branch, body_target, end)?;
+        for jump in loop_context.break_jumps {
+            self.patch_jump(jump, end)?;
+        }
+        for jump in loop_context.continue_jumps {
+            self.patch_jump(jump, increment_target)?;
+        }
+
+        self.locals = saved_locals;
+        Ok(result)
     }
 
     fn compile_loop_body(&mut self, body: &[HirItem]) -> Result<bool, CompileError> {
@@ -1595,6 +1723,118 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_runs_for_loop_over_list_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let total = 0\n\
+             for item in [1, 2, 3]\n\
+               total = total + item\n\
+             end\n\
+             return total",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(6).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_runs_for_loop_over_list_indexes_and_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let total = 0\n\
+             for index, item in [4, 5]\n\
+               total = total + index + item\n\
+             end\n\
+             return total",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(10).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_runs_for_loop_over_map_keys_and_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let total = 0\n\
+             for key, value in {:a -> 10, :b -> 20}\n\
+               if key == :b\n\
+                 total = total + value\n\
+               end\n\
+             end\n\
+             return total",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(20).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_runs_for_loop_break_and_continue() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let total = 0\n\
+             for item in [1, 2, 3, 4, 5]\n\
+               if item == 2\n\
+                 continue\n\
+               end\n\
+               if item == 5\n\
+                 break\n\
+               end\n\
+               total = total + item\n\
+             end\n\
+             return total",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(8).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn installs_method_facts_and_invokes_method_through_dispatch() {
         let located_in = id(1);
         let get_method = id(100);
@@ -1852,6 +2092,70 @@ mod tests {
             submitted.outcome,
             TaskOutcome::Complete {
                 value: Value::int(3).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert!(
+            scheduler
+                .resolver()
+                .contains(&Value::identity(count_program))
+        );
+    }
+
+    #[test]
+    fn persisted_method_can_run_for_loop() {
+        let count_method = id(100);
+        let count_program = id(101);
+        let player = id(200);
+        let alice = id(300);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("sum_loop", count_method)
+            .with_program_identity("sum_loop", count_program)
+            .with_identity("player", player);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method $sum_loop :sum\n\
+               roles actor: $player\n\
+             do\n\
+               let total = 0\n\
+               for item in [2, 3, 4]\n\
+                 total = total + item\n\
+               end\n\
+               return total\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted =
+            submit_source_task(":sum(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(9).unwrap(),
                 effects: vec![],
                 retries: 0,
             }

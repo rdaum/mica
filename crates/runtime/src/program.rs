@@ -66,6 +66,20 @@ pub enum Instruction {
         collection: Register,
         index: Operand,
     },
+    CollectionLen {
+        dst: Register,
+        collection: Register,
+    },
+    CollectionKeyAt {
+        dst: Register,
+        collection: Register,
+        index: Register,
+    },
+    CollectionValueAt {
+        dst: Register,
+        collection: Register,
+        index: Register,
+    },
     ScanExists {
         dst: Register,
         relation: RelationId,
@@ -305,6 +319,23 @@ fn validate_instruction(
             validate_register(register_count, *collection)?;
             validate_operand(register_count, index)
         }
+        Instruction::CollectionLen { dst, collection }
+        | Instruction::CollectionKeyAt {
+            dst, collection, ..
+        }
+        | Instruction::CollectionValueAt {
+            dst, collection, ..
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_register(register_count, *collection)?;
+            match instruction {
+                Instruction::CollectionKeyAt { index, .. }
+                | Instruction::CollectionValueAt { index, .. } => {
+                    validate_register(register_count, *index)
+                }
+                _ => Ok(()),
+            }
+        }
         Instruction::ScanExists { dst, bindings, .. } => {
             validate_register(register_count, *dst)?;
             validate_bindings(register_count, bindings)
@@ -418,6 +449,9 @@ const INST_DISPATCH: u8 = 17;
 const INST_BUILD_LIST: u8 = 18;
 const INST_BUILD_MAP: u8 = 19;
 const INST_INDEX: u8 = 20;
+const INST_COLLECTION_LEN: u8 = 21;
+const INST_COLLECTION_KEY_AT: u8 = 22;
+const INST_COLLECTION_VALUE_AT: u8 = 23;
 
 const UNARY_NOT: u8 = 0;
 
@@ -498,6 +532,34 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *dst);
             write_register(out, *collection);
             write_operand(out, index)
+        }
+        Instruction::CollectionLen { dst, collection } => {
+            out.push(INST_COLLECTION_LEN);
+            write_register(out, *dst);
+            write_register(out, *collection);
+            Ok(())
+        }
+        Instruction::CollectionKeyAt {
+            dst,
+            collection,
+            index,
+        } => {
+            out.push(INST_COLLECTION_KEY_AT);
+            write_register(out, *dst);
+            write_register(out, *collection);
+            write_register(out, *index);
+            Ok(())
+        }
+        Instruction::CollectionValueAt {
+            dst,
+            collection,
+            index,
+        } => {
+            out.push(INST_COLLECTION_VALUE_AT);
+            write_register(out, *dst);
+            write_register(out, *collection);
+            write_register(out, *index);
+            Ok(())
         }
         Instruction::ScanExists {
             dst,
@@ -789,6 +851,20 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 collection: self.read_register()?,
                 index: self.read_operand()?,
+            },
+            INST_COLLECTION_LEN => Instruction::CollectionLen {
+                dst: self.read_register()?,
+                collection: self.read_register()?,
+            },
+            INST_COLLECTION_KEY_AT => Instruction::CollectionKeyAt {
+                dst: self.read_register()?,
+                collection: self.read_register()?,
+                index: self.read_register()?,
+            },
+            INST_COLLECTION_VALUE_AT => Instruction::CollectionValueAt {
+                dst: self.read_register()?,
+                collection: self.read_register()?,
+                index: self.read_register()?,
             },
             INST_SCAN_EXISTS => Instruction::ScanExists {
                 dst: self.read_register()?,

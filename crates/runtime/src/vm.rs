@@ -232,6 +232,36 @@ impl RegisterVm {
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
+            Instruction::CollectionLen { dst, collection } => {
+                let value = collection_len(self.read_register(collection)?);
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::CollectionKeyAt {
+                dst,
+                collection,
+                index,
+            } => {
+                let value =
+                    collection_key_at(self.read_register(collection)?, self.read_register(index)?);
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::CollectionValueAt {
+                dst,
+                collection,
+                index,
+            } => {
+                let value = collection_value_at(
+                    self.read_register(collection)?,
+                    self.read_register(index)?,
+                );
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
             Instruction::ScanExists {
                 dst,
                 relation,
@@ -488,4 +518,50 @@ fn index_value(collection: &Value, index: &Value) -> Value {
         return value;
     }
     collection.map_get(index).unwrap_or_else(Value::nothing)
+}
+
+fn collection_len(collection: &Value) -> Value {
+    let len = collection
+        .list_len()
+        .or_else(|| collection.map_len())
+        .unwrap_or(0);
+    i64::try_from(len)
+        .ok()
+        .and_then(|len| Value::int(len).ok())
+        .unwrap_or_else(Value::nothing)
+}
+
+fn collection_key_at(collection: &Value, index: &Value) -> Value {
+    let Some(index) = ordinal_index(index) else {
+        return Value::nothing();
+    };
+    if collection.list_len().is_some() {
+        return i64::try_from(index)
+            .ok()
+            .and_then(|index| Value::int(index).ok())
+            .unwrap_or_else(Value::nothing);
+    }
+    collection
+        .with_map(|entries| entries.get(index).map(|(key, _)| key.clone()))
+        .flatten()
+        .unwrap_or_else(Value::nothing)
+}
+
+fn collection_value_at(collection: &Value, index: &Value) -> Value {
+    let Some(index) = ordinal_index(index) else {
+        return Value::nothing();
+    };
+    collection
+        .list_get(index)
+        .or_else(|| {
+            collection
+                .with_map(|entries| entries.get(index).map(|(_, value)| value.clone()))
+                .flatten()
+        })
+        .unwrap_or_else(Value::nothing)
+}
+
+fn ordinal_index(index: &Value) -> Option<usize> {
+    let index = index.as_int()?;
+    usize::try_from(index).ok()
 }
