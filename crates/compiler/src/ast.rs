@@ -310,6 +310,7 @@ pub enum Literal {
     Float(String),
     String(String),
     Bool(bool),
+    ErrorCode(String),
     Nothing,
 }
 

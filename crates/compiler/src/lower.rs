@@ -242,6 +242,7 @@ impl<'a> Lower<'a> {
             SyntaxKind::String => Literal::String(unquote(self.text(token.span.clone()))),
             SyntaxKind::TrueKw => Literal::Bool(true),
             SyntaxKind::FalseKw => Literal::Bool(false),
+            SyntaxKind::ErrorCode => Literal::ErrorCode(self.text(token.span.clone()).to_owned()),
             SyntaxKind::NothingKw => Literal::Nothing,
             _ => Literal::Nothing,
         };
@@ -1173,7 +1174,7 @@ mod tests {
 
     #[test]
     fn lowers_literals_and_field_assignment() {
-        let ast = parse_ast("$lamp.name = \"golden lamp\"\ntrue\nnothing");
+        let ast = parse_ast("$lamp.name = \"golden lamp\"\ntrue\nE_NOT_PORTABLE\nnothing");
         assert_eq!(ast.errors, vec![]);
         assert!(matches!(
             &ast.items[0],
@@ -1193,6 +1194,16 @@ mod tests {
         ));
         assert!(matches!(
             &ast.items[2],
+            Item::Expr {
+                expr: Expr::Literal {
+                    value: Literal::ErrorCode(text),
+                    ..
+                },
+                ..
+            } if text == "E_NOT_PORTABLE"
+        ));
+        assert!(matches!(
+            &ast.items[3],
             Item::Expr {
                 expr: Expr::Literal {
                     value: Literal::Nothing,

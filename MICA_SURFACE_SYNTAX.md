@@ -90,10 +90,28 @@ true
 false
 "brass lamp"
 :into
+E_NOT_PORTABLE
 $lamp42
 ```
 
-### 2.1 Lists
+### 2.1 Error Codes
+
+Any identifier beginning with `E_` is an error-code literal:
+
+```mica
+E_PERM
+E_NOT_PORTABLE
+E_no_such_exit
+```
+
+An error-code literal is not a variable lookup and not a symbol. It is a
+distinct value whose payload is the spelling of the code. Mica borrows MOO's
+readable `E_` convention without borrowing MOO's fixed predefined error set:
+new codes are valid as soon as authors write them. Tooling may warn about
+unregistered or non-conventionally-cased codes, but the runtime should treat
+the code space as open.
+
+### 2.2 Lists
 
 Use bracketed list literals. This keeps lists in the familiar modern shape
 instead of reusing MOO's `{...}` list spelling, which conflicts visually with
@@ -114,7 +132,7 @@ more = [@items, "lamp"]     // ["coin", "key", "lamp"]
 
 This is a strong MOO convenience and worth preserving.
 
-### 2.2 Maps
+### 2.3 Maps
 
 Use dictionary-style map literals with braces and `->` pairs:
 
@@ -156,7 +174,7 @@ m[:lit] = true
 Because primitive collections are immutable values, this assignment updates the
 variable or place with a modified copy.
 
-### 2.3 Ranges and Indexing
+### 2.4 Ranges and Indexing
 
 Use MOO/mooR-style ranges:
 

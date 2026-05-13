@@ -11,11 +11,12 @@ pub(crate) const TAG_INT: u8 = 2;
 pub(crate) const TAG_FLOAT: u8 = 3;
 pub(crate) const TAG_IDENTITY: u8 = 4;
 pub(crate) const TAG_SYMBOL: u8 = 5;
-pub(crate) const TAG_STRING: u8 = 6;
-pub(crate) const TAG_BYTES: u8 = 7;
-pub(crate) const TAG_LIST: u8 = 8;
-pub(crate) const TAG_MAP: u8 = 9;
-pub(crate) const TAG_RANGE: u8 = 10;
+pub(crate) const TAG_ERROR_CODE: u8 = 6;
+pub(crate) const TAG_STRING: u8 = 7;
+pub(crate) const TAG_BYTES: u8 = 8;
+pub(crate) const TAG_LIST: u8 = 9;
+pub(crate) const TAG_MAP: u8 = 10;
+pub(crate) const TAG_RANGE: u8 = 11;
 
 pub(crate) const INT_BITS: u32 = 56;
 pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
@@ -62,6 +63,7 @@ pub enum ValueKind {
     Float = TAG_FLOAT,
     Identity = TAG_IDENTITY,
     Symbol = TAG_SYMBOL,
+    ErrorCode = TAG_ERROR_CODE,
     String = TAG_STRING,
     Bytes = TAG_BYTES,
     List = TAG_LIST,
@@ -124,6 +126,11 @@ impl Value {
         Self::pack(TAG_SYMBOL, symbol.id() as u64)
     }
 
+    #[inline(always)]
+    pub const fn error_code(symbol: Symbol) -> Self {
+        Self::pack(TAG_ERROR_CODE, symbol.id() as u64)
+    }
+
     pub fn string(value: impl AsRef<str>) -> Self {
         Self::heap(HeapValue::String(value.as_ref().into()))
     }
@@ -172,6 +179,7 @@ impl Value {
             TAG_FLOAT => ValueKind::Float,
             TAG_IDENTITY => ValueKind::Identity,
             TAG_SYMBOL => ValueKind::Symbol,
+            TAG_ERROR_CODE => ValueKind::ErrorCode,
             TAG_STRING => ValueKind::String,
             TAG_BYTES => ValueKind::Bytes,
             TAG_LIST => ValueKind::List,
@@ -229,6 +237,15 @@ impl Value {
     #[inline(always)]
     pub const fn as_symbol(&self) -> Option<Symbol> {
         if self.tag() == TAG_SYMBOL {
+            Some(Symbol(self.payload() as u32))
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_error_code(&self) -> Option<Symbol> {
+        if self.tag() == TAG_ERROR_CODE {
             Some(Symbol(self.payload() as u32))
         } else {
             None

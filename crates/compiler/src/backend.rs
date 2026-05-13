@@ -1970,6 +1970,7 @@ impl<'a> ProgramCompiler<'a> {
             }
             Literal::String(value) => Ok(Value::string(value)),
             Literal::Bool(value) => Ok(Value::bool(*value)),
+            Literal::ErrorCode(value) => Ok(Value::error_code(Symbol::intern(value))),
             Literal::Nothing => Ok(Value::nothing()),
         }
     }
@@ -2175,6 +2176,28 @@ mod tests {
                 2,
             ))
             .unwrap();
+    }
+
+    #[test]
+    fn compiles_open_error_code_literals() {
+        let context = CompileContext::new();
+        let compiled = compile_source("return E_NOT_PORTABLE", &context).unwrap();
+        assert_eq!(
+            compiled.program.instructions(),
+            &[
+                Instruction::Load {
+                    dst: Register(0),
+                    value: Value::error_code(Symbol::intern("E_NOT_PORTABLE")),
+                },
+                Instruction::Return {
+                    value: Operand::Register(Register(0)),
+                },
+                Instruction::Load {
+                    dst: Register(1),
+                    value: Value::nothing(),
+                },
+            ]
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub enum SyntaxKind {
     Newline,
     LineComment,
     Ident,
+    ErrorCode,
     Int,
     Float,
     String,

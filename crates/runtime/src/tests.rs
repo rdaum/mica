@@ -18,6 +18,10 @@ fn sym(name: &str) -> Value {
     Value::symbol(Symbol::intern(name))
 }
 
+fn err(name: &str) -> Value {
+    Value::error_code(Symbol::intern(name))
+}
+
 fn strv(value: &str) -> Value {
     Value::string(value)
 }
@@ -715,6 +719,34 @@ fn program_artifact_round_trips_list_splices() {
         run_program(&kernel, restored, 100).unwrap(),
         TaskOutcome::Complete {
             value: Value::list([int(1), int(2), int(3), int(4)]),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn program_artifact_round_trips_error_codes() {
+    let kernel = kernel_with_world_relations();
+    let code = err("E_NOT_PORTABLE");
+    let program = Program::new(
+        1,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: code.clone(),
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: code,
             effects: vec![],
             retries: 0,
         }

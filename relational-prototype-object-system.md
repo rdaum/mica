@@ -302,7 +302,7 @@ Mica distinguishes object identities from primitive values.
 
 ```text
 identity values:   $lamp42, $room17, $method9, $user3
-primitive values:  3, true, "brass lamp", :into, 2026-05-12T14:00:00
+primitive values:  3, true, "brass lamp", :into, E_NOT_PORTABLE, 2026-05-12T14:00:00
 ```
 
 Both may appear in relations:

@@ -27,7 +27,7 @@ impl Value {
                     &ordered_f32_bits(f32::from_bits(self.payload() as u32)).to_be_bytes(),
                 );
             }
-            ValueKind::Identity | ValueKind::Symbol => {
+            ValueKind::Identity | ValueKind::Symbol | ValueKind::ErrorCode => {
                 out.extend_from_slice(&self.payload().to_be_bytes());
             }
             ValueKind::String => {
@@ -79,7 +79,8 @@ impl PartialEq for Value {
             | (ValueKind::Int, ValueKind::Int)
             | (ValueKind::Float, ValueKind::Float)
             | (ValueKind::Identity, ValueKind::Identity)
-            | (ValueKind::Symbol, ValueKind::Symbol) => self.payload() == other.payload(),
+            | (ValueKind::Symbol, ValueKind::Symbol)
+            | (ValueKind::ErrorCode, ValueKind::ErrorCode) => self.payload() == other.payload(),
             (ValueKind::String, ValueKind::String) => self
                 .with_str(|left| other.with_str(|right| left == right).unwrap())
                 .unwrap(),
@@ -131,7 +132,9 @@ impl Ord for Value {
                 let right = f32::from_bits(other.payload() as u32);
                 left.total_cmp(&right)
             }
-            ValueKind::Identity | ValueKind::Symbol => self.payload().cmp(&other.payload()),
+            ValueKind::Identity | ValueKind::Symbol | ValueKind::ErrorCode => {
+                self.payload().cmp(&other.payload())
+            }
             ValueKind::String => self
                 .with_str(|left| other.with_str(|right| left.cmp(right)).unwrap())
                 .unwrap(),
@@ -168,7 +171,8 @@ impl Hash for Value {
             | ValueKind::Int
             | ValueKind::Float
             | ValueKind::Identity
-            | ValueKind::Symbol => {
+            | ValueKind::Symbol
+            | ValueKind::ErrorCode => {
                 self.payload().hash(state);
             }
             ValueKind::String => {
@@ -204,6 +208,10 @@ impl fmt::Debug for Value {
             ValueKind::Symbol => match self.as_symbol().unwrap().name() {
                 Some(name) => write!(f, ":{name}"),
                 None => write!(f, ":#{}", self.as_symbol().unwrap().id()),
+            },
+            ValueKind::ErrorCode => match self.as_error_code().unwrap().name() {
+                Some(name) => f.write_str(name),
+                None => write!(f, "E_#{}", self.as_error_code().unwrap().id()),
             },
             ValueKind::String => self.with_str(|value| write!(f, "{value:?}")).unwrap(),
             ValueKind::Bytes => self
@@ -243,6 +251,10 @@ impl fmt::Display for Value {
             ValueKind::Symbol => match self.as_symbol().unwrap().name() {
                 Some(name) => write!(f, ":{name}"),
                 None => write!(f, ":#{}", self.as_symbol().unwrap().id()),
+            },
+            ValueKind::ErrorCode => match self.as_error_code().unwrap().name() {
+                Some(name) => f.write_str(name),
+                None => write!(f, "E_#{}", self.as_error_code().unwrap().id()),
             },
             ValueKind::String => self.with_str(|value| f.write_str(value)).unwrap(),
             ValueKind::Bytes => self

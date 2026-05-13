@@ -545,8 +545,9 @@ const VALUE_INT: u8 = 2;
 const VALUE_FLOAT: u8 = 3;
 const VALUE_IDENTITY: u8 = 4;
 const VALUE_SYMBOL: u8 = 5;
-const VALUE_STRING: u8 = 6;
-const VALUE_BYTES: u8 = 7;
+const VALUE_ERROR_CODE: u8 = 6;
+const VALUE_STRING: u8 = 7;
+const VALUE_BYTES: u8 = 8;
 
 fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(), RuntimeError> {
     match instruction {
@@ -883,6 +884,12 @@ fn write_value(out: &mut Vec<u8>, value: &Value) -> Result<(), RuntimeError> {
         };
         out.push(VALUE_SYMBOL);
         write_str(out, name);
+    } else if let Some(value) = value.as_error_code() {
+        let Some(name) = value.name() else {
+            return Err(artifact_error("cannot serialize unnamed error code"));
+        };
+        out.push(VALUE_ERROR_CODE);
+        write_str(out, name);
     } else if value.kind() == mica_var::ValueKind::Nothing {
         out.push(VALUE_NOTHING);
     } else if let Some(()) = value.with_str(|text| {
@@ -1145,6 +1152,7 @@ impl<'a> ByteReader<'a> {
             VALUE_FLOAT => Value::float(self.read_f64()?),
             VALUE_IDENTITY => Value::identity(self.read_identity()?),
             VALUE_SYMBOL => Value::symbol(Symbol::intern(&self.read_string()?)),
+            VALUE_ERROR_CODE => Value::error_code(Symbol::intern(&self.read_string()?)),
             VALUE_STRING => Value::string(self.read_string()?),
             VALUE_BYTES => Value::bytes(self.read_bytes()?),
             _ => return Err(artifact_error("unknown value tag")),

@@ -34,6 +34,18 @@ fn immediate_constructors_round_trip() {
     );
     assert_eq!(Symbol::intern("take"), symbol);
     assert_ne!(Symbol::intern("TAKE"), symbol);
+
+    let error_code = Symbol::intern("E_NOT_PORTABLE");
+    assert_eq!(Value::error_code(error_code).kind(), ValueKind::ErrorCode);
+    assert_eq!(
+        Value::error_code(error_code).as_error_code(),
+        Some(error_code)
+    );
+    assert_ne!(Value::error_code(error_code), Value::symbol(error_code));
+    assert_eq!(
+        format!("{}", Value::error_code(error_code)),
+        "E_NOT_PORTABLE"
+    );
 }
 
 #[test]
@@ -243,6 +255,7 @@ fn total_order_is_stable() {
         Value::list([]),
         Value::bytes([1, 2, 3]),
         Value::string("x"),
+        Value::error_code(Symbol::intern("E_NOT_PORTABLE")),
         Value::symbol(Symbol::intern("x")),
         Value::identity_raw(1).unwrap(),
         Value::float(1.0),

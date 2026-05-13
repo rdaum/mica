@@ -177,7 +177,13 @@ impl<'a> Lexer<'a> {
     fn lex_ident_or_keyword(&mut self, start: usize) -> SyntaxKind {
         self.consume_while(is_ident_continue);
         let text = &self.source[start..self.pos];
-        keyword_kind(text).unwrap_or(SyntaxKind::Ident)
+        keyword_kind(text).unwrap_or_else(|| {
+            if is_error_code_literal(text) {
+                SyntaxKind::ErrorCode
+            } else {
+                SyntaxKind::Ident
+            }
+        })
     }
 
     fn consume_newline(&mut self) {
@@ -216,6 +222,13 @@ impl<'a> Lexer<'a> {
 
 fn is_ident_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn is_error_code_literal(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("E_") else {
+        return false;
+    };
+    !rest.is_empty()
 }
 
 fn keyword_kind(text: &str) -> Option<SyntaxKind> {
@@ -278,5 +291,15 @@ mod tests {
             .map(|t| t.kind)
             .collect::<Vec<_>>();
         assert!(kinds.contains(&SyntaxKind::ColonDash));
+    }
+
+    #[test]
+    fn lexes_error_code_literals() {
+        let kinds = lex("E_NOT_PORTABLE E_mixed")
+            .into_iter()
+            .map(|t| t.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds[0], SyntaxKind::ErrorCode);
+        assert_eq!(kinds[2], SyntaxKind::ErrorCode);
     }
 }

@@ -1,8 +1,9 @@
 //! Compact values for Mica's relation kernel.
 //!
 //! `Value` is intentionally one machine word wide. Immediate identities,
-//! symbols, booleans, small integers, and reduced-precision floats stay inline;
-//! strings, bytes, lists, and maps are immutable heap values shared with `Arc`.
+//! symbols, error codes, booleans, small integers, and reduced-precision floats
+//! stay inline; strings, bytes, lists, and maps are immutable heap values shared
+//! with `Arc`.
 
 mod heap;
 mod symbol;

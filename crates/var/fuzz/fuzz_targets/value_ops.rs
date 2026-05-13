@@ -71,7 +71,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn value(&mut self, depth: usize) -> Option<Value> {
-        let tag = self.byte()? % if depth >= 4 { 7 } else { 9 };
+        let tag = self.byte()? % if depth >= 4 { 8 } else { 10 };
         match tag {
             0 => Some(Value::nothing()),
             1 => Some(Value::bool(self.byte()? & 1 != 0)),
@@ -86,11 +86,12 @@ impl<'a> Cursor<'a> {
                 Some(Value::identity(Identity::new(raw).unwrap()))
             }
             5 => Some(Value::symbol(Symbol::from_id(self.u32()?))),
-            6 => {
+            6 => Some(Value::error_code(Symbol::from_id(self.u32()?))),
+            7 => {
                 let bytes = self.bytes(32)?;
                 Some(Value::string(String::from_utf8_lossy(bytes)))
             }
-            7 => {
+            8 => {
                 let len = self.byte()? as usize % 8;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
@@ -98,7 +99,7 @@ impl<'a> Cursor<'a> {
                 }
                 Some(Value::list(values))
             }
-            8 => {
+            9 => {
                 let len = self.byte()? as usize % 8;
                 let mut entries = Vec::with_capacity(len);
                 for _ in 0..len {

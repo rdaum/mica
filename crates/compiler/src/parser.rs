@@ -263,7 +263,8 @@ impl<'a> Parser<'a> {
             SyntaxKind::Colon => self.parse_symbol_or_role_call(),
             SyntaxKind::Underscore => self.single_token_node(SyntaxKind::HoleExpr),
             SyntaxKind::Ident => self.single_token_node(SyntaxKind::NameExpr),
-            SyntaxKind::Int
+            SyntaxKind::ErrorCode
+            | SyntaxKind::Int
             | SyntaxKind::Float
             | SyntaxKind::String
             | SyntaxKind::TrueKw
@@ -688,6 +689,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::Colon
                 | SyntaxKind::Underscore
                 | SyntaxKind::Ident
+                | SyntaxKind::ErrorCode
                 | SyntaxKind::Int
                 | SyntaxKind::Float
                 | SyntaxKind::String

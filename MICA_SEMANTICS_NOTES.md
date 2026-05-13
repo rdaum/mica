@@ -14,7 +14,8 @@ Mica's world state consists of indexed **Ground Facts** and **Derived Rules**.
 
 ### 1.2 Atoms and Values
 - **Identity Values:** Stable, unique keys (`$lamp42`).
-- **Primitive Values:** Immutable data (Int, Bool, String, Symbol, Time).
+- **Primitive Values:** Immutable data (Int, Bool, String, Symbol, open
+  `E_...` ErrorCode literals, Time).
 - **Collection Values:** Immutable lists and maps used inside computations and
   at external boundaries.
 - **Reified Atoms:** For auditing, transaction workspaces, and history, an atom
