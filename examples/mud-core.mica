@@ -10,12 +10,20 @@ make_relation(:Delegates, 3)
 make_relation(:HeldBy, 2)
 make_relation(:In, 2)
 make_relation(:Portable, 1)
+make_relation(:CanSee, 2)
 
 assert Delegates(#portable, #thing, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
 assert Delegates(#box, #container, 0)
 assert Portable(#coin)
+
+CanSee(actor, item) :-
+  HeldBy(actor, item)
+
+CanSee(actor, item) :-
+  HeldBy(actor, container),
+  In(item, container)
 
 method #get_thing :get
   roles actor: #player, item: #thing
@@ -42,3 +50,4 @@ end
 :get(item: #coin, actor: #alice)
 :put(container: #box, item: #coin, actor: #alice)
 return In(#coin, ?container)
+return CanSee(#alice, ?item)

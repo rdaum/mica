@@ -1151,11 +1151,17 @@ mod tests {
                  make_relation(:HeldBy, 2)\n\
                  make_relation(:In, 2)\n\
                  make_relation(:Portable, 1)\n\
+                 make_relation(:CanSee, 2)\n\
                  assert Delegates(#portable, #thing, 0)\n\
                  assert Delegates(#coin, #portable, 0)\n\
                  assert Delegates(#alice, #player, 0)\n\
                  assert Delegates(#box, #container, 0)\n\
                  assert Portable(#coin)\n\
+                 CanSee(actor, item) :-\n\
+                   HeldBy(actor, item)\n\
+                 CanSee(actor, item) :-\n\
+                   HeldBy(actor, container),\n\
+                   In(item, container)\n\
                  method #get_thing :get\n\
                    roles actor: #player, item: #thing\n\
                  do\n\
@@ -1178,23 +1184,36 @@ mod tests {
                  end\n\
                  :get(item: #coin, actor: #alice)\n\
                  :put(container: #box, item: #coin, actor: #alice)\n\
-                 return In(#coin, ?container)\n",
+                 return In(#coin, ?container)\n\
+                 return CanSee(#alice, ?item)\n",
             )
             .unwrap();
 
         assert_eq!(
-            reports[16].render(),
-            "task 17 complete: #get_thing (retries: 0)"
+            reports[17].render(),
+            "task 18 complete: #rule1 (retries: 0)"
         );
         assert_eq!(
-            reports[17].render(),
-            "task 18 complete: #put_thing (retries: 0)"
+            reports[18].render(),
+            "task 19 complete: #rule2 (retries: 0)"
         );
-        assert_eq!(reports[18].render(), "task 19 complete: true (retries: 0)");
-        assert_eq!(reports[19].render(), "task 20 complete: true (retries: 0)");
+        assert_eq!(
+            reports[19].render(),
+            "task 20 complete: #get_thing (retries: 0)"
+        );
         assert_eq!(
             reports[20].render(),
-            "task 21 complete: [[:container: #box]] (retries: 0)"
+            "task 21 complete: #put_thing (retries: 0)"
+        );
+        assert_eq!(reports[21].render(), "task 22 complete: true (retries: 0)");
+        assert_eq!(reports[22].render(), "task 23 complete: true (retries: 0)");
+        assert_eq!(
+            reports[23].render(),
+            "task 24 complete: [[:container: #box]] (retries: 0)"
+        );
+        assert_eq!(
+            reports[24].render(),
+            "task 25 complete: [[:item: #coin]] (retries: 0)"
         );
     }
 
