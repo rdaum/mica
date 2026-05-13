@@ -1,7 +1,7 @@
 use crate::index::RelationState;
 use crate::{
-    CatalogChange, Commit, CommitProvider, FactChangeKind, KernelError, RelationMetadata, Snapshot,
-    Transaction,
+    CatalogChange, Commit, CommitProvider, FactChangeKind, KernelError, RelationMetadata, Rule,
+    RuleSet, Snapshot, Transaction,
 };
 use arc_swap::ArcSwap;
 use std::collections::BTreeMap;
@@ -22,6 +22,7 @@ impl RelationKernel {
             root: ArcSwap::new(Arc::new(Snapshot {
                 version: 0,
                 relations: BTreeMap::new(),
+                rules: Vec::new(),
                 commits: Arc::from([]),
             })),
             provider,
@@ -39,7 +40,19 @@ impl RelationKernel {
         }
 
         let commits = commits.into_iter().collect::<Vec<_>>();
+        let mut rules = Vec::new();
         for commit in &commits {
+            for change in commit.catalog_changes() {
+                if let CatalogChange::RuleInstalled(rule) = change {
+                    validate_rule_against_relations(&states, rule)?;
+                    let mut next_rules = rules.clone();
+                    next_rules.push(rule.clone());
+                    RuleSet::new(next_rules.clone())
+                        .validate_stratified()
+                        .map_err(KernelError::Rule)?;
+                    rules = next_rules;
+                }
+            }
             for change in commit.changes() {
                 let relation = states
                     .get_mut(&change.relation)
@@ -63,6 +76,7 @@ impl RelationKernel {
             root: ArcSwap::new(Arc::new(Snapshot {
                 version,
                 relations: states,
+                rules,
                 commits: commits.into(),
             })),
             provider,
@@ -75,12 +89,22 @@ impl RelationKernel {
     ) -> Result<Self, KernelError> {
         let commits = commits.into_iter().collect::<Vec<_>>();
         let mut states = BTreeMap::new();
+        let mut rules = Vec::new();
 
         for commit in &commits {
             for change in commit.catalog_changes() {
                 match change {
                     CatalogChange::RelationCreated(metadata) => {
                         states.insert(metadata.id(), RelationState::empty(metadata.clone())?);
+                    }
+                    CatalogChange::RuleInstalled(rule) => {
+                        validate_rule_against_relations(&states, rule)?;
+                        let mut next_rules = rules.clone();
+                        next_rules.push(rule.clone());
+                        RuleSet::new(next_rules.clone())
+                            .validate_stratified()
+                            .map_err(KernelError::Rule)?;
+                        rules = next_rules;
                     }
                 }
             }
@@ -107,6 +131,7 @@ impl RelationKernel {
             root: ArcSwap::new(Arc::new(Snapshot {
                 version,
                 relations: states,
+                rules,
                 commits: commits.into(),
             })),
             provider,
@@ -153,6 +178,40 @@ impl RelationKernel {
         }
     }
 
+    pub fn install_rule(&self, rule: Rule) -> Result<Arc<Snapshot>, KernelError> {
+        let mut current = self.snapshot();
+        loop {
+            validate_rule_against_relations(&current.relations, &rule)?;
+            let mut rules = current.rules.clone();
+            rules.push(rule.clone());
+            RuleSet::new(rules.clone())
+                .validate_stratified()
+                .map_err(KernelError::Rule)?;
+
+            let mut next = (*current).clone();
+            next.rules = rules;
+            next.version += 1;
+            let commit = Commit {
+                version: next.version,
+                catalog_changes: Arc::from([CatalogChange::RuleInstalled(rule.clone())]),
+                changes: Arc::from([]),
+                bloom: crate::commit_bloom::CommitBloom::new(),
+            };
+            let mut commits = Vec::with_capacity(current.commits.len() + 1);
+            commits.extend(current.commits.iter().cloned());
+            commits.push(commit.clone());
+            next.commits = commits.into();
+            let next = Arc::new(next);
+
+            if self.try_publish(current.version(), next.clone()) {
+                self.persist_commit(&commit)?;
+                return Ok(next);
+            }
+
+            current = self.snapshot();
+        }
+    }
+
     pub fn begin(&self) -> Transaction<'_> {
         Transaction::new(self, self.snapshot())
     }
@@ -176,6 +235,36 @@ impl RelationKernel {
             .persist_commit(commit)
             .map_err(KernelError::Persistence)
     }
+}
+
+fn validate_rule_against_relations(
+    relations: &BTreeMap<crate::RelationId, RelationState>,
+    rule: &Rule,
+) -> Result<(), KernelError> {
+    validate_rule_atom(relations, rule.head_relation(), rule.head_terms())?;
+    for atom in rule.body() {
+        validate_rule_atom(relations, atom.relation(), atom.terms())?;
+    }
+    Ok(())
+}
+
+fn validate_rule_atom(
+    relations: &BTreeMap<crate::RelationId, RelationState>,
+    relation: crate::RelationId,
+    terms: &[crate::Term],
+) -> Result<(), KernelError> {
+    let metadata = relations
+        .get(&relation)
+        .ok_or(KernelError::UnknownRelation(relation))?
+        .metadata();
+    if metadata.arity() as usize != terms.len() {
+        return Err(KernelError::ArityMismatch {
+            relation,
+            expected: metadata.arity(),
+            actual: terms.len(),
+        });
+    }
+    Ok(())
 }
 
 impl Default for RelationKernel {

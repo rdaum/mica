@@ -1,4 +1,6 @@
-use mica_compiler::{CompileContext, SourceTaskError, submit_source_task};
+use mica_compiler::{
+    CompileContext, SourceTaskError, install_rules_from_source, submit_source_task,
+};
 use mica_relation_kernel::{ConflictPolicy, KernelError, RelationKernel, RelationMetadata, Tuple};
 use mica_runtime::{
     Builtin, BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome,
@@ -29,6 +31,19 @@ impl SourceRunner {
     }
 
     pub fn run_source(&mut self, source: &str) -> Result<RunReport, SourceTaskError> {
+        if let Some(installation) =
+            install_rules_from_source(source, &self.context, self.scheduler.kernel())?
+        {
+            let value = installed_rule_value(&installation.rules);
+            let (task_id, outcome) = self.scheduler.complete_immediate(value);
+            self.refresh_context_from_catalog();
+            return Ok(RunReport {
+                task_id,
+                outcome,
+                identity_names: self.identity_names(),
+                relation_names: self.relation_names(),
+            });
+        }
         let submitted = submit_source_task(source, &self.context, &mut self.scheduler)?;
         self.refresh_context_from_catalog();
         Ok(RunReport {
@@ -74,6 +89,18 @@ impl SourceRunner {
             .relation_metadata()
             .filter_map(|metadata| Some((metadata.id(), metadata.name().name()?.to_owned())))
             .collect()
+    }
+}
+
+fn installed_rule_value(rules: &[mica_relation_kernel::Rule]) -> Value {
+    match rules {
+        [rule] => Value::identity(rule.head_relation()),
+        _ => Value::list(
+            rules
+                .iter()
+                .map(|rule| Value::identity(rule.head_relation()))
+                .collect::<Vec<_>>(),
+        ),
     }
 }
 
@@ -627,6 +654,36 @@ mod tests {
 
         assert_eq!(one.render(), "task 5 complete: $room (retries: 0)");
         assert_eq!(dot.render(), "task 6 complete: $room (retries: 0)");
+    }
+
+    #[test]
+    fn runner_installs_relation_rules_and_queries_derived_tuples() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+        runner.run_source("make_relation(:VisibleTo, 2)").unwrap();
+        let rule = runner
+            .run_source(
+                "VisibleTo(actor, obj) :-\n  LocatedIn(actor, room),\n  LocatedIn(obj, room)",
+            )
+            .unwrap();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_identity(:room)").unwrap();
+        runner
+            .run_source("assert LocatedIn($alice, $room)")
+            .unwrap();
+        runner.run_source("assert LocatedIn($lamp, $room)").unwrap();
+
+        let query = runner.run_source("return VisibleTo($alice, ?obj)").unwrap();
+
+        assert_eq!(
+            rule.render(),
+            "task 3 complete: relation(:VisibleTo) (retries: 0)"
+        );
+        assert_eq!(
+            query.render(),
+            "task 9 complete: [[:obj: $alice], [:obj: $lamp]] (retries: 0)"
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::{RelationId, Tuple};
+use crate::{RelationId, RuleError, Tuple};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KernelError {
@@ -15,6 +15,7 @@ pub enum KernelError {
         arity: u16,
     },
     Persistence(String),
+    Rule(RuleError),
     Conflict(Conflict),
 }
 

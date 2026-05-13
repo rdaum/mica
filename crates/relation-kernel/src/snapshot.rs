@@ -1,6 +1,8 @@
 use crate::commit_bloom::CommitBloom;
 use crate::index::RelationState;
-use crate::{KernelError, RelationId, RelationMetadata, Tuple, Version};
+use crate::{
+    KernelError, RelationId, RelationMetadata, Rule, RuleEvalError, RuleSet, Tuple, Version,
+};
 use mica_var::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -30,6 +32,7 @@ impl Commit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogChange {
     RelationCreated(RelationMetadata),
+    RuleInstalled(Rule),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +72,7 @@ impl CommitResult {
 pub struct Snapshot {
     pub(crate) version: Version,
     pub(crate) relations: BTreeMap<RelationId, RelationState>,
+    pub(crate) rules: Vec<Rule>,
     pub(crate) commits: Arc<[Commit]>,
 }
 
@@ -82,11 +86,29 @@ impl Snapshot {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
-        self.relation(relation)?.scan(bindings)
+        let mut visible = self.scan_extensional(relation, bindings)?;
+        if self.rules.is_empty() {
+            return Ok(visible);
+        }
+
+        let derived = RuleSet::new(self.rules.clone())
+            .evaluate_fixpoint(&ExtensionalSnapshotReader { snapshot: self })
+            .map_err(KernelError::from)?;
+        if let Some(rows) = derived.get(&relation) {
+            visible.extend(
+                rows.iter()
+                    .filter(|tuple| tuple.matches_bindings(bindings))
+                    .cloned(),
+            );
+            visible.sort();
+            visible.dedup();
+        }
+        Ok(visible)
     }
 
     pub fn contains(&self, relation: RelationId, tuple: &Tuple) -> Result<bool, KernelError> {
-        Ok(self.relation(relation)?.tuples.contains(tuple))
+        let bindings = tuple.values().iter().cloned().map(Some).collect::<Vec<_>>();
+        Ok(!self.scan(relation, &bindings)?.is_empty())
     }
 
     pub fn commits_since(&self, version: Version) -> &[Commit] {
@@ -102,6 +124,18 @@ impl Snapshot {
         self.relations.values().map(|relation| relation.metadata())
     }
 
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    pub(crate) fn scan_extensional(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        self.relation(relation)?.scan(bindings)
+    }
+
     pub(crate) fn relation(&self, relation: RelationId) -> Result<&RelationState, KernelError> {
         self.relations
             .get(&relation)
@@ -114,5 +148,28 @@ impl Snapshot {
             bloom.merge(&commit.bloom);
         }
         bloom
+    }
+}
+
+impl From<RuleEvalError> for KernelError {
+    fn from(value: RuleEvalError) -> Self {
+        match value {
+            RuleEvalError::Kernel(error) => error,
+            RuleEvalError::Rule(error) => Self::Rule(error),
+        }
+    }
+}
+
+struct ExtensionalSnapshotReader<'a> {
+    snapshot: &'a Snapshot,
+}
+
+impl crate::RelationRead for ExtensionalSnapshotReader<'_> {
+    fn scan_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        self.snapshot.scan_extensional(relation, bindings)
     }
 }

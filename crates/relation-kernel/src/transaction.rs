@@ -1,8 +1,8 @@
 use crate::commit_bloom::CommitBloom;
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::{
-    Conflict, ConflictKind, ConflictPolicy, KernelError, RelationId, RelationKernel, Snapshot,
-    Tuple, Version,
+    Conflict, ConflictKind, ConflictPolicy, KernelError, RelationId, RelationKernel, RuleSet,
+    Snapshot, Tuple, Version,
 };
 use mica_var::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -74,9 +74,32 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
+        let mut visible = self.scan_extensional(relation, bindings)?;
+
+        if !self.base.rules().is_empty() {
+            let derived = RuleSet::new(self.base.rules().to_vec())
+                .evaluate_fixpoint(&ExtensionalTransactionReader { tx: self })
+                .map_err(KernelError::from)?;
+            if let Some(rows) = derived.get(&relation) {
+                visible.extend(
+                    rows.iter()
+                        .filter(|tuple| tuple.matches_bindings(bindings))
+                        .cloned(),
+                );
+            }
+        }
+
+        Ok(visible.into_iter().collect())
+    }
+
+    pub(crate) fn scan_extensional(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<BTreeSet<Tuple>, KernelError> {
         let mut visible = self
             .base
-            .scan(relation, bindings)?
+            .scan_extensional(relation, bindings)?
             .into_iter()
             .collect::<BTreeSet<_>>();
 
@@ -96,7 +119,7 @@ impl<'a> Transaction<'a> {
             }
         }
 
-        Ok(visible.into_iter().collect())
+        Ok(visible)
     }
 
     pub fn reconcile_relation(
@@ -313,6 +336,24 @@ impl<'a> Transaction<'a> {
             }
         }
         Ok(bloom)
+    }
+}
+
+struct ExtensionalTransactionReader<'a, 'kernel> {
+    tx: &'a Transaction<'kernel>,
+}
+
+impl crate::RelationRead for ExtensionalTransactionReader<'_, '_> {
+    fn scan_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        Ok(self
+            .tx
+            .scan_extensional(relation, bindings)?
+            .into_iter()
+            .collect())
     }
 }
 

@@ -126,6 +126,17 @@ impl Scheduler {
         Ok((task_id, outcome))
     }
 
+    pub fn complete_immediate(&mut self, value: Value) -> (TaskId, TaskOutcome) {
+        let task_id = self.allocate_task_id();
+        let outcome = TaskOutcome::Complete {
+            value,
+            effects: Vec::new(),
+            retries: 0,
+        };
+        self.record_outcome(task_id, outcome.clone(), None);
+        (task_id, outcome)
+    }
+
     pub fn resume(&mut self, task_id: TaskId) -> Result<TaskOutcome, SchedulerError> {
         if self.completed.contains_key(&task_id) {
             return Err(SchedulerError::TaskAlreadyCompleted(task_id));

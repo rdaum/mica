@@ -1,7 +1,7 @@
 use crate::{
-    CatalogChange, CatalogFact, CatalogPredicate, Conflict, ConflictKind, ConflictPolicy, Fact,
-    FactChange, FactChangeKind, InMemoryCommitProvider, KernelError, MentionedFact, RelationId,
-    RelationKernel, RelationMetadata, SubjectFact, Tuple,
+    Atom, CatalogChange, CatalogFact, CatalogPredicate, Conflict, ConflictKind, ConflictPolicy,
+    Fact, FactChange, FactChangeKind, InMemoryCommitProvider, KernelError, MentionedFact,
+    RelationId, RelationKernel, RelationMetadata, Rule, SubjectFact, Term, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::sync::Arc;
@@ -12,6 +12,10 @@ fn rel(id: u64) -> RelationId {
 
 fn int(value: i64) -> Value {
     Value::int(value).unwrap()
+}
+
+fn var(name: &str) -> Term {
+    Term::Var(Symbol::intern(name))
 }
 
 #[test]
@@ -104,6 +108,88 @@ fn transaction_reads_own_asserts_and_retracts() {
     );
     tx.retract(rel(1), tuple).unwrap();
     assert!(tx.scan(rel(1), &[Some(int(10)), None]).unwrap().is_empty());
+}
+
+#[test]
+fn installed_rules_derive_tuples_as_relation_reads() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(1),
+            Symbol::intern("LocatedIn"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(2),
+            Symbol::intern("VisibleTo"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .install_rule(Rule::new(
+            rel(2),
+            [var("actor"), var("obj")],
+            [
+                Atom::positive(rel(1), [var("actor"), var("room")]),
+                Atom::positive(rel(1), [var("obj"), var("room")]),
+            ],
+        ))
+        .unwrap();
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(1), Tuple::from([int(10), int(1)])).unwrap();
+    tx.assert(rel(1), Tuple::from([int(20), int(1)])).unwrap();
+
+    assert_eq!(
+        tx.scan(rel(2), &[Some(int(10)), None]).unwrap(),
+        vec![
+            Tuple::from([int(10), int(10)]),
+            Tuple::from([int(10), int(20)])
+        ]
+    );
+}
+
+#[test]
+fn relation_reads_union_asserted_and_rule_derived_tuples() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(1),
+            Symbol::intern("LocatedIn"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(2),
+            Symbol::intern("VisibleTo"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .install_rule(Rule::new(
+            rel(2),
+            [var("actor"), var("obj")],
+            [Atom::positive(rel(1), [var("actor"), var("obj")])],
+        ))
+        .unwrap();
+
+    let mut seed = kernel.begin();
+    seed.assert(rel(1), Tuple::from([int(10), int(20)]))
+        .unwrap();
+    seed.assert(rel(2), Tuple::from([int(99), int(100)]))
+        .unwrap();
+    seed.commit().unwrap();
+
+    assert_eq!(
+        kernel.snapshot().scan(rel(2), &[None, None]).unwrap(),
+        vec![
+            Tuple::from([int(10), int(20)]),
+            Tuple::from([int(99), int(100)])
+        ]
+    );
 }
 
 #[test]

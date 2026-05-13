@@ -31,6 +31,18 @@ impl Atom {
             negated: true,
         }
     }
+
+    pub fn relation(&self) -> RelationId {
+        self.relation
+    }
+
+    pub fn terms(&self) -> &[Term] {
+        &self.terms
+    }
+
+    pub fn is_negated(&self) -> bool {
+        self.negated
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +67,14 @@ impl Rule {
 
     pub fn head_relation(&self) -> RelationId {
         self.head_relation
+    }
+
+    pub fn head_terms(&self) -> &[Term] {
+        &self.head_terms
+    }
+
+    pub fn body(&self) -> &[Atom] {
+        &self.body
     }
 }
 
@@ -132,6 +152,10 @@ impl RuleSet {
             .into_iter()
             .map(|(relation, tuples)| (relation, tuples.into_iter().collect()))
             .collect())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Rule> {
+        self.rules.iter()
     }
 
     fn stratified_rules(&self) -> Result<Vec<Vec<&Rule>>, RuleError> {

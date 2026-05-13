@@ -4,7 +4,9 @@ use crate::{
     HirScatterBinding, Literal, LocalKind, NodeId, ParamMode, SemanticProgram, Span, UnaryOp,
     parse_semantic,
 };
-use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
+use mica_relation_kernel::{
+    Atom, DispatchRelations, RelationId, RelationKernel, Rule, Term, Transaction, Tuple,
+};
 use mica_runtime::{
     CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, QueryBinding, Register,
     RuntimeBinaryOp, RuntimeUnaryOp, Scheduler, SchedulerError, TaskId, TaskOutcome,
@@ -53,6 +55,66 @@ pub fn submit_source_task(
         task_id,
         outcome,
     })
+}
+
+pub fn install_rules_from_source(
+    source: &str,
+    context: &CompileContext,
+    kernel: &RelationKernel,
+) -> Result<Option<RuleInstallation>, CompileError> {
+    let semantic = parse_semantic(source);
+    install_rules(semantic, context, kernel)
+}
+
+pub fn install_rules(
+    semantic: SemanticProgram,
+    context: &CompileContext,
+    kernel: &RelationKernel,
+) -> Result<Option<RuleInstallation>, CompileError> {
+    if !semantic.parse_errors.is_empty() {
+        return Err(CompileError::ParseErrors {
+            count: semantic.parse_errors.len(),
+        });
+    }
+    if let Some(diagnostic) = semantic.diagnostics.first() {
+        return Err(CompileError::SemanticDiagnostic {
+            diagnostic: diagnostic.clone(),
+        });
+    }
+
+    if !semantic
+        .hir
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::RelationRule { .. }))
+    {
+        return Ok(None);
+    }
+
+    if let Some(item) = semantic
+        .hir
+        .items
+        .iter()
+        .find(|item| !matches!(item, HirItem::RelationRule { .. }))
+    {
+        return Err(CompileError::Unsupported {
+            node: item_id(item),
+            span: semantic.span(item_id(item)).cloned(),
+            message: "relation rule definitions cannot be mixed with executable task code yet"
+                .to_owned(),
+        });
+    }
+
+    let rules = semantic
+        .hir
+        .items
+        .iter()
+        .map(|item| compile_rule_item(&semantic, context, item))
+        .collect::<Result<Vec<_>, _>>()?;
+    for rule in &rules {
+        kernel.install_rule(rule.clone())?;
+    }
+    Ok(Some(RuleInstallation { semantic, rules }))
 }
 
 pub fn install_methods_from_source(
@@ -141,6 +203,12 @@ pub struct SubmittedSourceTask {
 pub struct MethodInstallation {
     pub semantic: SemanticProgram,
     pub methods: Vec<InstalledMethod>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuleInstallation {
+    pub semantic: SemanticProgram,
+    pub rules: Vec<Rule>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -312,6 +380,140 @@ impl From<mica_runtime::RuntimeError> for CompileError {
 impl From<mica_relation_kernel::KernelError> for CompileError {
     fn from(value: mica_relation_kernel::KernelError) -> Self {
         Self::Kernel(value)
+    }
+}
+
+fn compile_rule_item(
+    semantic: &SemanticProgram,
+    context: &CompileContext,
+    item: &HirItem,
+) -> Result<Rule, CompileError> {
+    let HirItem::RelationRule { id, head, body } = item else {
+        return Err(CompileError::Unsupported {
+            node: item_id(item),
+            span: semantic.span(item_id(item)).cloned(),
+            message: "only relation rules can be installed as rules".to_owned(),
+        });
+    };
+    let head_relation =
+        context
+            .relation(&head.name)
+            .ok_or_else(|| CompileError::UnknownRelation {
+                node: head.id,
+                span: semantic.span(head.id).cloned(),
+                name: head.name.clone(),
+            })?;
+    let head_terms = compile_rule_terms(semantic, context, &head.args)?;
+    let body = body
+        .iter()
+        .map(|atom| {
+            let relation =
+                context
+                    .relation(&atom.name)
+                    .ok_or_else(|| CompileError::UnknownRelation {
+                        node: atom.id,
+                        span: semantic.span(atom.id).cloned(),
+                        name: atom.name.clone(),
+                    })?;
+            Ok(Atom::positive(
+                relation,
+                compile_rule_terms(semantic, context, &atom.args)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, CompileError>>()?;
+    if body.is_empty() {
+        return Err(CompileError::Unsupported {
+            node: *id,
+            span: semantic.span(*id).cloned(),
+            message: "relation rules require at least one body atom".to_owned(),
+        });
+    }
+    Ok(Rule::new(head_relation, head_terms, body))
+}
+
+fn compile_rule_terms(
+    semantic: &SemanticProgram,
+    context: &CompileContext,
+    args: &[HirArg],
+) -> Result<Vec<Term>, CompileError> {
+    args.iter()
+        .map(|arg| {
+            if arg.role.is_some() || arg.splice {
+                return Err(CompileError::Unsupported {
+                    node: arg.id,
+                    span: semantic.span(arg.id).cloned(),
+                    message: "relation rule atoms do not support named or spliced arguments"
+                        .to_owned(),
+                });
+            }
+            compile_rule_term(semantic, context, &arg.value)
+        })
+        .collect()
+}
+
+fn compile_rule_term(
+    semantic: &SemanticProgram,
+    context: &CompileContext,
+    expr: &HirExpr,
+) -> Result<Term, CompileError> {
+    match expr {
+        HirExpr::ExternalRef { name, .. } | HirExpr::QueryVar { name, .. } => {
+            Ok(Term::Var(Symbol::intern(name)))
+        }
+        HirExpr::Identity { id, name } => context
+            .identity(name)
+            .ok_or_else(|| CompileError::UnknownIdentity {
+                node: *id,
+                span: semantic.span(*id).cloned(),
+                name: name.clone(),
+            })
+            .map(|identity| Term::Value(Value::identity(identity))),
+        HirExpr::Symbol { name, .. } => Ok(Term::Value(Value::symbol(Symbol::intern(name)))),
+        HirExpr::Literal { id, value } => {
+            literal_value_for_rule(semantic, *id, value).map(Term::Value)
+        }
+        _ => Err(CompileError::Unsupported {
+            node: expr_id(expr),
+            span: semantic.span(expr_id(expr)).cloned(),
+            message: "relation rule terms must be variables or literal values".to_owned(),
+        }),
+    }
+}
+
+fn literal_value_for_rule(
+    semantic: &SemanticProgram,
+    id: NodeId,
+    literal: &Literal,
+) -> Result<Value, CompileError> {
+    match literal {
+        Literal::Int(value) => {
+            let value = value
+                .parse::<i64>()
+                .map_err(|error| CompileError::InvalidLiteral {
+                    node: id,
+                    span: semantic.span(id).cloned(),
+                    message: format!("invalid integer literal: {error}"),
+                })?;
+            Value::int(value).map_err(|error| CompileError::InvalidLiteral {
+                node: id,
+                span: semantic.span(id).cloned(),
+                message: format!("{error:?}"),
+            })
+        }
+        Literal::Float(value) => {
+            let value = value
+                .parse::<f64>()
+                .map_err(|error| CompileError::InvalidLiteral {
+                    node: id,
+                    span: semantic.span(id).cloned(),
+                    message: format!("invalid float literal: {error}"),
+                })?;
+            Ok(Value::float(value))
+        }
+        Literal::String(value) => Ok(Value::string(value)),
+        Literal::Bool(value) => Ok(Value::bool(*value)),
+        Literal::ErrorCode(value) => Ok(Value::error_code(Symbol::intern(value))),
+        Literal::Nothing => Ok(Value::nothing()),
     }
 }
 

@@ -164,6 +164,7 @@ impl<'a> Parser<'a> {
     fn parse_relation_rule(&mut self, head: CstNode) -> CstNode {
         let mut children = vec![CstElement::Node(head), self.bump_element()];
         loop {
+            self.consume_separators();
             let current = self.current_kind();
             if !Self::starts_expr(current) {
                 self.error("expected relation atom in rule body");
