@@ -226,9 +226,9 @@ Preserve MOO/mooR scatter assignment, including required, optional, and rest
 parts.
 
 ```mica
-let {first, second} = pair
-let {head, @tail} = items
-let {item, ?prep = :none, ?destination = nothing} = parsed
+let [first, second] = pair
+let [head, @tail] = items
+let [item, ?prep = :none, ?destination = nothing] = parsed
 ```
 
 For function and method parameter lists, the same shape should be available:

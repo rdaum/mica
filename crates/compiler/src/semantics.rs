@@ -1,8 +1,8 @@
 use crate::{
     Arg, Ast, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
     FunctionBody, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam,
-    HirPlace, HirProgram, HirRelationAtom, Item, NodeId, Param, ParamMode, ParseError, Span,
-    parse_ast,
+    HirPlace, HirProgram, HirRelationAtom, HirScatterBinding, Item, NodeId, Param, ParamMode,
+    ParseError, Span, parse_ast,
 };
 use std::collections::{BTreeSet, HashMap};
 
@@ -515,27 +515,54 @@ impl<'a> Analyzer<'a> {
                 let hir_value = value
                     .as_ref()
                     .map(|value| Box::new(self.lower_expr(value, scope)));
-                let binding = match pattern {
-                    BindingPattern::Name(name) => Some(self.declare(
-                        scope,
-                        name.clone(),
-                        match kind {
-                            BindingKind::Let => LocalKind::Let,
-                            BindingKind::Const => LocalKind::Const,
-                        },
-                        *id,
-                        span,
-                    )),
-                    BindingPattern::Scatter(params) => {
-                        for param in params {
-                            self.declare(scope, param.name.clone(), LocalKind::Let, param.id, span);
-                        }
-                        None
-                    }
+                let (binding, scatter) = match pattern {
+                    BindingPattern::Name(name) => (
+                        Some(self.declare(
+                            scope,
+                            name.clone(),
+                            match kind {
+                                BindingKind::Let => LocalKind::Let,
+                                BindingKind::Const => LocalKind::Const,
+                            },
+                            *id,
+                            span,
+                        )),
+                        Vec::new(),
+                    ),
+                    BindingPattern::Scatter(params) => (
+                        None,
+                        params
+                            .iter()
+                            .map(|param| {
+                                let local_kind = match kind {
+                                    BindingKind::Let => LocalKind::Let,
+                                    BindingKind::Const => LocalKind::Const,
+                                };
+                                let binding = self.declare(
+                                    scope,
+                                    param.name.clone(),
+                                    local_kind,
+                                    param.id,
+                                    span,
+                                );
+                                let default = param
+                                    .default
+                                    .as_ref()
+                                    .map(|default| self.lower_expr(default, scope));
+                                HirScatterBinding {
+                                    id: param.id,
+                                    binding,
+                                    mode: param.mode.clone(),
+                                    default,
+                                }
+                            })
+                            .collect(),
+                    ),
                 };
                 HirExpr::Binding {
                     id: *id,
                     binding,
+                    scatter,
                     kind: kind.clone(),
                     value: hir_value,
                 }

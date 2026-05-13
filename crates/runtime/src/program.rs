@@ -26,6 +26,26 @@ impl From<Value> for Operand {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListItem {
+    Value(Operand),
+    Splice(Operand),
+}
+
+impl ListItem {
+    fn operand(&self) -> &Operand {
+        match self {
+            Self::Value(operand) | Self::Splice(operand) => operand,
+        }
+    }
+}
+
+impl From<Operand> for ListItem {
+    fn from(value: Operand) -> Self {
+        Self::Value(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SuspendKind {
     Commit,
     TimedMillis(u64),
@@ -55,7 +75,7 @@ pub enum Instruction {
     },
     BuildList {
         dst: Register,
-        items: Vec<Operand>,
+        items: Vec<ListItem>,
     },
     BuildMap {
         dst: Register,
@@ -320,7 +340,7 @@ fn validate_instruction(
         }
         Instruction::BuildList { dst, items } => {
             validate_register(register_count, *dst)?;
-            validate_operands(register_count, items.iter())
+            validate_operands(register_count, items.iter().map(ListItem::operand))
         }
         Instruction::BuildMap { dst, entries } => {
             validate_register(register_count, *dst)?;
@@ -516,6 +536,9 @@ const BINARY_REM: u8 = 10;
 const OPERAND_REGISTER: u8 = 0;
 const OPERAND_VALUE: u8 = 1;
 
+const LIST_ITEM_VALUE: u8 = 0;
+const LIST_ITEM_SPLICE: u8 = 1;
+
 const VALUE_NOTHING: u8 = 0;
 const VALUE_BOOL: u8 = 1;
 const VALUE_INT: u8 = 2;
@@ -561,7 +584,7 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
         Instruction::BuildList { dst, items } => {
             out.push(INST_BUILD_LIST);
             write_register(out, *dst);
-            write_operands(out, items)
+            write_list_items(out, items)
         }
         Instruction::BuildMap { dst, entries } => {
             out.push(INST_BUILD_MAP);
@@ -777,6 +800,23 @@ fn write_operands(out: &mut Vec<u8>, operands: &[Operand]) -> Result<(), Runtime
     Ok(())
 }
 
+fn write_list_items(out: &mut Vec<u8>, items: &[ListItem]) -> Result<(), RuntimeError> {
+    write_u32(out, items.len() as u32);
+    for item in items {
+        match item {
+            ListItem::Value(operand) => {
+                out.push(LIST_ITEM_VALUE);
+                write_operand(out, operand)?;
+            }
+            ListItem::Splice(operand) => {
+                out.push(LIST_ITEM_SPLICE);
+                write_operand(out, operand)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn write_optional_operands(
     out: &mut Vec<u8>,
     operands: &[Option<Operand>],
@@ -939,7 +979,7 @@ impl<'a> ByteReader<'a> {
             },
             INST_BUILD_LIST => Instruction::BuildList {
                 dst: self.read_register()?,
-                items: self.read_operands()?,
+                items: self.read_list_items()?,
             },
             INST_BUILD_MAP => Instruction::BuildMap {
                 dst: self.read_register()?,
@@ -1047,6 +1087,17 @@ impl<'a> ByteReader<'a> {
     fn read_operands(&mut self) -> Result<Vec<Operand>, RuntimeError> {
         let count = self.read_u32()? as usize;
         (0..count).map(|_| self.read_operand()).collect()
+    }
+
+    fn read_list_items(&mut self) -> Result<Vec<ListItem>, RuntimeError> {
+        let count = self.read_u32()? as usize;
+        (0..count)
+            .map(|_| match self.read_u8()? {
+                LIST_ITEM_VALUE => self.read_operand().map(ListItem::Value),
+                LIST_ITEM_SPLICE => self.read_operand().map(ListItem::Splice),
+                _ => Err(artifact_error("unknown list item tag")),
+            })
+            .collect()
     }
 
     fn read_optional_operands(&mut self) -> Result<Vec<Option<Operand>>, RuntimeError> {

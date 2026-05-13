@@ -26,7 +26,7 @@ pub use backend::{
 };
 pub use hir::{
     HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,
-    HirProgram, HirRelationAtom,
+    HirProgram, HirRelationAtom, HirScatterBinding,
 };
 pub use lexer::lex;
 pub use lower::parse_ast;

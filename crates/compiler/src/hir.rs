@@ -1,6 +1,6 @@
 use crate::{
     BinaryOp, BindingId, BindingKind, EffectKind, Literal, LocalKind, MethodKind, MethodRole,
-    NodeId, ResolvedName, ScopeId, Span, UnaryOp,
+    NodeId, ParamMode, ResolvedName, ScopeId, Span, UnaryOp,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +125,7 @@ pub enum HirExpr {
     Binding {
         id: NodeId,
         binding: Option<BindingId>,
+        scatter: Vec<HirScatterBinding>,
         kind: BindingKind,
         value: Option<Box<HirExpr>>,
     },
@@ -207,6 +208,14 @@ pub struct HirParam {
     pub id: NodeId,
     pub binding: BindingId,
     pub kind: LocalKind,
+    pub default: Option<HirExpr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirScatterBinding {
+    pub id: NodeId,
+    pub binding: BindingId,
+    pub mode: ParamMode,
     pub default: Option<HirExpr>,
 }
 

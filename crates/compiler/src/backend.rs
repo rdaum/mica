@@ -1,11 +1,11 @@
 use crate::{
     BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCollectionItem, HirExpr,
-    HirFunctionBody, HirItem, HirPlace, HirProgram, HirRelationAtom, Literal, LocalKind, NodeId,
-    SemanticProgram, Span, UnaryOp, parse_semantic,
+    HirFunctionBody, HirItem, HirPlace, HirProgram, HirRelationAtom, HirScatterBinding, Literal,
+    LocalKind, NodeId, ParamMode, SemanticProgram, Span, UnaryOp, parse_semantic,
 };
 use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
 use mica_runtime::{
-    Instruction, Operand, Program, Register, RuntimeBinaryOp, RuntimeUnaryOp, Scheduler,
+    Instruction, ListItem, Operand, Program, Register, RuntimeBinaryOp, RuntimeUnaryOp, Scheduler,
     SchedulerError, TaskId, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
@@ -599,13 +599,20 @@ impl<'a> ProgramCompiler<'a> {
                     })
             }
             HirExpr::Binding {
-                binding, value, id, ..
+                binding,
+                scatter,
+                value,
+                id,
+                ..
             } => {
-                if let (Some(binding), Some(value)) = (binding, value.as_deref())
+                if !scatter.is_empty() {
+                    return self.compile_scatter_binding(*id, scatter, value.as_deref());
+                }
+                if let (Some(binding), Some(value)) = (*binding, value.as_deref())
                     && let HirExpr::Function { name: None, .. } = value
                 {
-                    let function = self.compile_function(value, Some(*binding))?;
-                    self.functions.insert(*binding, function);
+                    let function = self.compile_function(value, Some(binding))?;
+                    self.functions.insert(binding, function);
                     let dst = self.alloc_register();
                     self.emit(Instruction::Load {
                         dst,
@@ -871,20 +878,17 @@ impl<'a> ProgramCompiler<'a> {
 
     fn compile_list(
         &mut self,
-        id: NodeId,
+        _id: NodeId,
         items: &[HirCollectionItem],
     ) -> Result<Register, CompileError> {
         let mut operands = Vec::with_capacity(items.len());
         for item in items {
             match item {
                 HirCollectionItem::Expr(expr) => {
-                    operands.push(self.compile_expr_for_operand(expr)?)
+                    operands.push(ListItem::Value(self.compile_expr_for_operand(expr)?));
                 }
-                HirCollectionItem::Splice(_) => {
-                    return Err(self.unsupported(
-                        id,
-                        "list splices are not implemented in the task compiler yet",
-                    ));
+                HirCollectionItem::Splice(expr) => {
+                    operands.push(ListItem::Splice(self.compile_expr_for_operand(expr)?));
                 }
             }
         }
@@ -893,6 +897,143 @@ impl<'a> ProgramCompiler<'a> {
             dst,
             items: operands,
         });
+        Ok(dst)
+    }
+
+    fn compile_empty_list(&mut self) -> Register {
+        let dst = self.alloc_register();
+        self.emit(Instruction::BuildList {
+            dst,
+            items: Vec::new(),
+        });
+        dst
+    }
+
+    fn compile_scatter_binding(
+        &mut self,
+        _id: NodeId,
+        scatter: &[HirScatterBinding],
+        value: Option<&HirExpr>,
+    ) -> Result<Register, CompileError> {
+        let source = match value {
+            Some(value) => self.compile_expr_for_value(value)?,
+            None => self.compile_empty_list(),
+        };
+        let len = self.alloc_register();
+        self.emit(Instruction::CollectionLen {
+            dst: len,
+            collection: source,
+        });
+
+        let mut position = 0usize;
+        let mut last = None;
+        let mut saw_rest = false;
+        for binding in scatter {
+            if matches!(binding.mode, ParamMode::Rest) {
+                if saw_rest {
+                    return Err(self.unsupported(
+                        binding.id,
+                        "scatter assignment supports only one rest binding",
+                    ));
+                }
+                saw_rest = true;
+                let dst = self.compile_scatter_rest(source, len, position, binding.id)?;
+                self.locals.insert(binding.binding, dst);
+                last = Some(dst);
+            } else {
+                let dst = self.compile_scatter_slot(source, len, position, binding)?;
+                self.locals.insert(binding.binding, dst);
+                last = Some(dst);
+                position += 1;
+            }
+        }
+
+        Ok(last.unwrap_or_else(|| {
+            let dst = self.alloc_register();
+            self.emit(Instruction::Load {
+                dst,
+                value: Value::nothing(),
+            });
+            dst
+        }))
+    }
+
+    fn compile_scatter_slot(
+        &mut self,
+        collection: Register,
+        len: Register,
+        position: usize,
+        binding: &HirScatterBinding,
+    ) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        self.emit(Instruction::Index {
+            dst,
+            collection,
+            index: self.usize_operand(position, binding.id)?,
+        });
+        if !matches!(binding.mode, ParamMode::Optional) || binding.default.is_none() {
+            return Ok(dst);
+        }
+
+        let pos = self.load_usize(position, binding.id)?;
+        let condition = self.alloc_register();
+        self.emit(Instruction::Binary {
+            dst: condition,
+            op: RuntimeBinaryOp::Lt,
+            left: pos,
+            right: len,
+        });
+        let branch = self.emit_branch(condition, 0, 0);
+        let true_target = self.instructions.len();
+        self.emit_jump(0);
+        let false_target = self.instructions.len();
+        let default = self.compile_expr_for_value(binding.default.as_ref().unwrap())?;
+        self.emit(Instruction::Move { dst, src: default });
+        let end = self.instructions.len();
+        self.patch_branch(branch, true_target, false_target)?;
+        self.patch_jump(true_target, end)?;
+        Ok(dst)
+    }
+
+    fn compile_scatter_rest(
+        &mut self,
+        collection: Register,
+        len: Register,
+        position: usize,
+        id: NodeId,
+    ) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        let start = self.load_usize(position, id)?;
+        let condition = self.alloc_register();
+        self.emit(Instruction::Binary {
+            dst: condition,
+            op: RuntimeBinaryOp::Le,
+            left: start,
+            right: len,
+        });
+        let branch = self.emit_branch(condition, 0, 0);
+
+        let slice_target = self.instructions.len();
+        let range = self.alloc_register();
+        self.emit(Instruction::BuildRange {
+            dst: range,
+            start: Operand::Register(start),
+            end: None,
+        });
+        self.emit(Instruction::Index {
+            dst,
+            collection,
+            index: Operand::Register(range),
+        });
+        let jump = self.emit_jump(0);
+
+        let empty_target = self.instructions.len();
+        let empty = self.compile_empty_list();
+        self.emit(Instruction::Move { dst, src: empty });
+
+        let end = self.instructions.len();
+        self.patch_branch(branch, slice_target, empty_target)?;
+        self.patch_jump(jump, end)?;
         Ok(dst)
     }
 
@@ -1589,6 +1730,28 @@ impl<'a> ProgramCompiler<'a> {
             })
     }
 
+    fn load_usize(&mut self, value: usize, id: NodeId) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst,
+            value: self.usize_value(value, id)?,
+        });
+        Ok(dst)
+    }
+
+    fn usize_operand(&self, value: usize, id: NodeId) -> Result<Operand, CompileError> {
+        Ok(Operand::Value(self.usize_value(value, id)?))
+    }
+
+    fn usize_value(&self, value: usize, id: NodeId) -> Result<Value, CompileError> {
+        let value = i64::try_from(value).map_err(|error| CompileError::InvalidLiteral {
+            node: id,
+            span: self.span(id),
+            message: format!("scatter index is too large: {error}"),
+        })?;
+        Value::int(value).map_err(|error| self.value_error(id, error))
+    }
+
     fn literal_value(&self, id: NodeId, literal: &Literal) -> Result<Value, CompileError> {
         match literal {
             Literal::Int(value) => {
@@ -1956,6 +2119,76 @@ mod tests {
             submitted.outcome,
             TaskOutcome::Complete {
                 value: Value::int(15).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_expands_list_splices() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let rest = [2, 3]\n\
+             let values = [1, @rest, 4]\n\
+             return values[0] + values[1] + values[2] + values[3]",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(10).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_runs_scatter_assignment_with_required_optional_and_rest_parts() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let [head, ?middle = 10, @tail] = [1, 2, 3, 4]\n\
+             return head + middle + tail[0] + tail[1]",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(10).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_uses_scatter_optional_defaults_and_empty_rest() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let [head, ?middle = 10, @tail] = [1]\n\
+             return (head == 1) and (middle == 10) and (tail[0] == nothing)",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(true),
                 effects: vec![],
                 retries: 0,
             }

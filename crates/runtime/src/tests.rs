@@ -1,6 +1,6 @@
 use crate::{
-    Effect, Instruction, Operand, Program, ProgramResolver, Register, RuntimeError, Scheduler,
-    SchedulerError, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
+    Effect, Instruction, ListItem, Operand, Program, ProgramResolver, Register, RuntimeError,
+    Scheduler, SchedulerError, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -32,6 +32,14 @@ fn r(index: u16) -> Operand {
 
 fn v(value: Value) -> Operand {
     Operand::Value(value)
+}
+
+fn item(value: Operand) -> ListItem {
+    ListItem::Value(value)
+}
+
+fn splice(value: Operand) -> ListItem {
+    ListItem::Splice(value)
 }
 
 fn kernel_with_world_relations() -> RelationKernel {
@@ -648,7 +656,12 @@ fn program_artifact_round_trips_range_slicing() {
         [
             Instruction::BuildList {
                 dst: reg(0),
-                items: vec![v(int(1)), v(int(2)), v(int(3)), v(int(4))],
+                items: vec![
+                    item(v(int(1))),
+                    item(v(int(2))),
+                    item(v(int(3))),
+                    item(v(int(4))),
+                ],
             },
             Instruction::BuildRange {
                 dst: reg(1),
@@ -671,6 +684,37 @@ fn program_artifact_round_trips_range_slicing() {
         run_program(&kernel, restored, 100).unwrap(),
         TaskOutcome::Complete {
             value: Value::list([int(2), int(3)]),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn program_artifact_round_trips_list_splices() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        3,
+        [
+            Instruction::BuildList {
+                dst: reg(0),
+                items: vec![item(v(int(2))), item(v(int(3)))],
+            },
+            Instruction::BuildList {
+                dst: reg(1),
+                items: vec![item(v(int(1))), splice(r(0)), item(v(int(4)))],
+            },
+            Instruction::Return { value: r(1) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: Value::list([int(1), int(2), int(3), int(4)]),
             effects: vec![],
             retries: 0,
         }

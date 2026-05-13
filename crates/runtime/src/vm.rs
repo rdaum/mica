@@ -1,6 +1,6 @@
 use crate::{
-    Instruction, Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeError,
-    RuntimeUnaryOp, SuspendKind,
+    Instruction, ListItem, Operand, Program, ProgramResolver, Register, RuntimeBinaryOp,
+    RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Value, ValueKind};
@@ -200,11 +200,8 @@ impl RegisterVm {
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuildList { dst, items } => {
-                let items = items
-                    .iter()
-                    .map(|item| self.resolve_operand(item))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.write_register(dst, Value::list(items))?;
+                let value = self.build_list(&items)?;
+                self.write_register(dst, value)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
@@ -493,6 +490,24 @@ impl RegisterVm {
             Operand::Register(register) => Ok(self.read_register(*register)?.clone()),
             Operand::Value(value) => Ok(value.clone()),
         }
+    }
+
+    fn build_list(&self, items: &[ListItem]) -> Result<Value, RuntimeError> {
+        let mut values = Vec::new();
+        for item in items {
+            match item {
+                ListItem::Value(operand) => values.push(self.resolve_operand(operand)?),
+                ListItem::Splice(operand) => {
+                    let splice = self.resolve_operand(operand)?;
+                    let Some(()) = splice.with_list(|items| {
+                        values.extend(items.iter().cloned());
+                    }) else {
+                        return Ok(Value::nothing());
+                    };
+                }
+            }
+        }
+        Ok(Value::list(values))
     }
 
     fn resolve_tuple(&self, values: Vec<Operand>) -> Result<Tuple, RuntimeError> {

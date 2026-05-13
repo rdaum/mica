@@ -278,10 +278,12 @@ impl<'a> Parser<'a> {
 
     fn parse_binding_expr(&mut self, kind: SyntaxKind) -> CstNode {
         let mut children = vec![self.bump_element()];
-        if self.current_kind() == SyntaxKind::LBrace {
-            children.push(CstElement::Node(self.parse_pattern_braces()));
+        if self.current_kind() == SyntaxKind::LBracket {
+            children.push(CstElement::Node(self.parse_pattern_brackets()));
         } else {
-            children.push(self.expect_token(SyntaxKind::Ident, "expected binding name"));
+            children.push(
+                self.expect_token(SyntaxKind::Ident, "expected binding name or list pattern"),
+            );
         }
         if self.current_kind() == SyntaxKind::Eq {
             children.push(self.bump_element());
@@ -496,18 +498,17 @@ impl<'a> Parser<'a> {
         CstNode::new(SyntaxKind::MapExpr, children)
     }
 
-    fn parse_pattern_braces(&mut self) -> CstNode {
-        let mut children = vec![self.bump_element()];
-        while !matches!(self.current_kind(), SyntaxKind::RBrace | SyntaxKind::Eof) {
-            children.push(self.bump_element());
-        }
-        children.push(self.expect_token(SyntaxKind::RBrace, "expected '}'"));
-        CstNode::new(SyntaxKind::ParamList, children)
+    fn parse_brace_param_list(&mut self) -> CstNode {
+        self.parse_param_list_between(SyntaxKind::LBrace, SyntaxKind::RBrace)
     }
 
-    fn parse_brace_param_list(&mut self) -> CstNode {
-        let mut children = vec![self.expect_token(SyntaxKind::LBrace, "expected '{'")];
-        while !matches!(self.current_kind(), SyntaxKind::RBrace | SyntaxKind::Eof) {
+    fn parse_pattern_brackets(&mut self) -> CstNode {
+        self.parse_param_list_between(SyntaxKind::LBracket, SyntaxKind::RBracket)
+    }
+
+    fn parse_param_list_between(&mut self, open: SyntaxKind, close: SyntaxKind) -> CstNode {
+        let mut children = vec![self.expect_token(open, "expected parameter list")];
+        while !matches!(self.current_kind(), SyntaxKind::Eof) && self.current_kind() != close {
             let mut param = Vec::new();
             if matches!(self.current_kind(), SyntaxKind::Question | SyntaxKind::At) {
                 param.push(self.bump_element());
@@ -523,7 +524,7 @@ impl<'a> Parser<'a> {
             }
             children.push(self.bump_element());
         }
-        children.push(self.expect_token(SyntaxKind::RBrace, "expected '}'"));
+        children.push(self.expect_token(close, "expected end of parameter list"));
         CstNode::new(SyntaxKind::ParamList, children)
     }
 
@@ -880,6 +881,15 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::BinaryExpr));
         assert!(contains(&parse.root, SyntaxKind::HoleExpr));
+    }
+
+    #[test]
+    fn parses_bracket_scatter_binding() {
+        let parse = parse("let [head, ?middle = 10, @tail] = values");
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::LetExpr));
+        assert!(contains(&parse.root, SyntaxKind::ParamList));
+        assert!(contains(&parse.root, SyntaxKind::Param));
     }
 
     #[test]

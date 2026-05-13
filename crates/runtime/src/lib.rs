@@ -15,8 +15,8 @@ mod tests;
 
 pub use error::{RuntimeError, TaskError};
 pub use program::{
-    Instruction, Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeUnaryOp,
-    SuspendKind,
+    Instruction, ListItem, Operand, Program, ProgramResolver, Register, RuntimeBinaryOp,
+    RuntimeUnaryOp, SuspendKind,
 };
 pub use scheduler::{Effect, EffectLog, Scheduler, SchedulerError, SuspendedTask};
 pub use task::{Task, TaskId, TaskLimits, TaskOutcome};
