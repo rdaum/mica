@@ -569,7 +569,7 @@ end
 care to name the method identity explicitly.
 
 ```mica
-verb move(self item: #portable, actor: #player, destination: #container)
+verb move(actor: #player, item: #portable, destination: #container)
   require CanMove(actor, item)
   require CanContain(destination, item)
 

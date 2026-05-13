@@ -1,6 +1,7 @@
 use mica_compiler::{
-    CompileContext, CompileError, HirItem, MethodInstallation, MethodRelations, SourceTaskError,
-    install_methods, install_rules_from_source, parse, parse_semantic, submit_source_task,
+    CompileContext, CompileError, HirItem, MethodInstallation, MethodKind, MethodRelations,
+    SourceTaskError, install_methods, install_rules_from_source, parse, parse_semantic,
+    submit_source_task,
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, KernelError, RelationKernel, RelationMetadata, Tuple,
@@ -103,7 +104,7 @@ impl SourceRunner {
         &mut self,
         source: &str,
     ) -> Result<Option<MethodInstallation>, SourceTaskError> {
-        let semantic = parse_semantic(source);
+        let mut semantic = parse_semantic(source);
         if !semantic
             .hir
             .items
@@ -143,6 +144,7 @@ impl SourceRunner {
 
         let mut install_context = self.context.clone();
         let mut next_method_identity_id = self.next_method_identity_id;
+        assign_generated_verb_identities(&mut semantic, next_method_identity_id)?;
         let mut install_tx = self.scheduler.kernel().begin();
         for item in &semantic.hir.items {
             let HirItem::Method { identity, .. } = item else {
@@ -247,6 +249,40 @@ fn installed_method_value(installation: &MethodInstallation) -> Value {
                 .collect::<Vec<_>>(),
         ),
     }
+}
+
+fn assign_generated_verb_identities(
+    semantic: &mut mica_compiler::SemanticProgram,
+    next_identity_id: u64,
+) -> Result<(), CompileError> {
+    let mut generated = 0;
+    for item in &mut semantic.hir.items {
+        let HirItem::Method {
+            id,
+            kind,
+            identity,
+            selector,
+            ..
+        } = item
+        else {
+            continue;
+        };
+        if !matches!(kind, MethodKind::Verb) || identity.is_some() {
+            continue;
+        }
+        let selector = selector.as_ref().ok_or_else(|| CompileError::Unsupported {
+            node: *id,
+            span: None,
+            message: "verb installation requires a selector name".to_owned(),
+        })?;
+        let ordinal = next_identity_id
+            .checked_sub(GENERATED_METHOD_ID_START)
+            .map(|offset| offset / 2 + 1 + generated)
+            .unwrap_or(1 + generated);
+        generated += 1;
+        *identity = Some(format!("verb_{selector}_{ordinal}"));
+    }
+    Ok(())
 }
 
 fn ensure_named_identity(
@@ -1162,9 +1198,7 @@ mod tests {
                  CanSee(actor, item) :-\n\
                    HeldBy(actor, container),\n\
                    In(item, container)\n\
-                 method #get_thing :get\n\
-                   roles actor: #player, item: #thing\n\
-                 do\n\
+                 verb get(actor: #player, item: #thing)\n\
                    if Portable(item)\n\
                      assert HeldBy(actor, item)\n\
                      return true\n\
@@ -1172,9 +1206,7 @@ mod tests {
                      return false\n\
                    end\n\
                  end\n\
-                 method #put_thing :put\n\
-                   roles actor: #player, item: #thing, container: #container\n\
-                 do\n\
+                 verb put(actor: #player, item: #thing, container: #container)\n\
                    if HeldBy(actor, item)\n\
                      assert In(item, container)\n\
                      return true\n\
@@ -1199,11 +1231,11 @@ mod tests {
         );
         assert_eq!(
             reports[19].render(),
-            "task 20 complete: #get_thing (retries: 0)"
+            "task 20 complete: #verb_get_1 (retries: 0)"
         );
         assert_eq!(
             reports[20].render(),
-            "task 21 complete: #put_thing (retries: 0)"
+            "task 21 complete: #verb_put_2 (retries: 0)"
         );
         assert_eq!(reports[21].render(), "task 22 complete: true (retries: 0)");
         assert_eq!(reports[22].render(), "task 23 complete: true (retries: 0)");

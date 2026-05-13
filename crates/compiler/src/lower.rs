@@ -128,16 +128,26 @@ impl<'a> Lower<'a> {
         let header = self
             .node_children(node)
             .find(|child| child.kind == SyntaxKind::MethodHeader);
-        let (identity, selector) = header
-            .map(|header| self.lower_method_header(header))
-            .unwrap_or((None, None));
+        let (identity, selector, header_roles) = header
+            .map(|header| match kind {
+                MethodKind::Method => {
+                    let (identity, selector) = self.lower_method_header(header);
+                    (identity, selector, Vec::new())
+                }
+                MethodKind::Verb => self.lower_verb_header(header),
+            })
+            .unwrap_or((None, None, Vec::new()));
         let clauses = self
             .node_children(node)
             .filter(|child| child.kind == SyntaxKind::MethodClause)
             .map(|child| self.text(child.span.clone()).trim().to_owned())
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>();
-        let roles = lower_method_roles(&clauses);
+        let roles = if matches!(kind, MethodKind::Verb) {
+            header_roles
+        } else {
+            lower_method_roles(&clauses)
+        };
         let body = self
             .node_children(node)
             .find(|child| child.kind == SyntaxKind::Block)
@@ -165,6 +175,24 @@ impl<'a> Lower<'a> {
             .filter(|token| token.kind == SyntaxKind::Ident)
             .map(|token| self.text(token.span.clone()).to_owned());
         (identity, selector)
+    }
+
+    fn lower_verb_header(
+        &self,
+        node: &CstNode,
+    ) -> (Option<String>, Option<String>, Vec<MethodRole>) {
+        let text = self.text(node.span.clone()).trim();
+        let selector = text
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect::<String>();
+        let selector = (!selector.is_empty()).then_some(selector);
+        let roles = text
+            .split_once('(')
+            .and_then(|(_, rest)| rest.rsplit_once(')').map(|(roles, _)| roles))
+            .map(parse_verb_roles)
+            .unwrap_or_default();
+        (None, selector, roles)
     }
 
     fn lower_expr(&mut self, node: &CstNode) -> Expr {
@@ -1012,6 +1040,23 @@ fn lower_method_roles(clauses: &[String]) -> Vec<MethodRole> {
     roles
 }
 
+fn parse_verb_roles(text: &str) -> Vec<MethodRole> {
+    text.split(',')
+        .filter_map(|part| {
+            let (name, restriction) = part.trim().split_once(':')?;
+            let name = name.split_whitespace().last().unwrap_or_default().trim();
+            let restriction = restriction.trim().strip_prefix('#')?.trim();
+            if name.is_empty() || restriction.is_empty() {
+                return None;
+            }
+            Some(MethodRole {
+                name: name.to_owned(),
+                restriction: restriction.to_owned(),
+            })
+        })
+        .collect()
+}
+
 fn unquote(text: &str) -> String {
     text.strip_prefix('"')
         .and_then(|text| text.strip_suffix('"'))
@@ -1204,6 +1249,36 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn lowers_verb_header_roles() {
+        let ast = parse_ast(
+            "verb get(actor: #player, item: #thing)\n\
+               return true\n\
+             end",
+        );
+        assert_eq!(ast.errors, vec![]);
+        let Item::Method {
+            kind,
+            identity,
+            selector,
+            roles,
+            body,
+            ..
+        } = &ast.items[0]
+        else {
+            panic!("expected verb");
+        };
+        assert_eq!(kind, &MethodKind::Verb);
+        assert_eq!(identity, &None);
+        assert_eq!(selector.as_deref(), Some("get"));
+        assert_eq!(roles.len(), 2);
+        assert_eq!(roles[0].name, "actor");
+        assert_eq!(roles[0].restriction, "player");
+        assert_eq!(roles[1].name, "item");
+        assert_eq!(roles[1].restriction, "thing");
+        assert_eq!(body.len(), 1);
     }
 
     #[test]

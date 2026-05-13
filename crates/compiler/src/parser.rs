@@ -47,7 +47,7 @@ impl<'a> Parser<'a> {
     fn parse_item(&mut self) -> CstNode {
         match self.current_kind() {
             SyntaxKind::MethodKw => self.parse_method_like(SyntaxKind::MethodItem),
-            SyntaxKind::VerbKw => self.parse_method_like(SyntaxKind::VerbItem),
+            SyntaxKind::VerbKw => self.parse_verb_item(),
             SyntaxKind::ObjectKw => self.parse_object_item(),
             _ => self.parse_expr_stmt(),
         }
@@ -112,6 +112,16 @@ impl<'a> Parser<'a> {
         }
         children.push(self.expect_token(SyntaxKind::EndKw, "expected end after method body"));
         CstNode::new(kind, children)
+    }
+
+    fn parse_verb_item(&mut self) -> CstNode {
+        let children = vec![
+            self.bump_element(),
+            CstElement::Node(self.parse_method_header()),
+            CstElement::Node(self.parse_block(&[SyntaxKind::EndKw])),
+            self.expect_token(SyntaxKind::EndKw, "expected end after verb body"),
+        ];
+        CstNode::new(SyntaxKind::VerbItem, children)
     }
 
     fn parse_method_header(&mut self) -> CstNode {
@@ -1050,6 +1060,22 @@ mod tests {
         assert!(contains(&parse.root, SyntaxKind::MethodItem));
         assert!(contains(&parse.root, SyntaxKind::RequireExpr));
         assert!(contains(&parse.root, SyntaxKind::AssertExpr));
+    }
+
+    #[test]
+    fn parses_verb_sugar_body_without_do() {
+        let parse = parse(
+            "verb get(actor: #player, item: #thing)\n\
+               if Portable(item)\n\
+                 return true\n\
+               else\n\
+                 return false\n\
+               end\n\
+             end",
+        );
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::VerbItem));
+        assert!(contains(&parse.root, SyntaxKind::IfExpr));
     }
 
     #[test]

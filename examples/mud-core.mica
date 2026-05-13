@@ -25,9 +25,7 @@ CanSee(actor, item) :-
   HeldBy(actor, container),
   In(item, container)
 
-method #get_thing :get
-  roles actor: #player, item: #thing
-do
+verb get(actor: #player, item: #thing)
   if Portable(item)
     assert HeldBy(actor, item)
     return true
@@ -36,9 +34,7 @@ do
   end
 end
 
-method #put_thing :put
-  roles actor: #player, item: #thing, container: #container
-do
+verb put(actor: #player, item: #thing, container: #container)
   if HeldBy(actor, item)
     assert In(item, container)
     return true
