@@ -16,13 +16,13 @@ This guide is for world-builders, game designers, and authors coming from "image
 
 ## 1. Working with Identities
 
-In Mica, an object is a **stable identity value** (e.g., `$lamp42`). You don't "allocate" it in the traditional sense; you create it by asserting its existence and describing it with facts.
+In Mica, an object is a **stable identity value** (e.g., `#lamp42`). You don't "allocate" it in the traditional sense; you create it by asserting its existence and describing it with facts.
 
 ### Creating an Object
 For convenience, Mica provides command sugar for creating identities and their initial facts:
 
 ```mica
-object $brass_lamp extends $portable_item
+object #brass_lamp extends #portable_item
   name = "brass lamp"
   description = "A tarnished but sturdy lamp."
   lit = false
@@ -30,14 +30,14 @@ end
 ```
 
 **Under the hood:** This sugar expands into a transaction of ordinary fact changes:
-- `assert Object($brass_lamp)`
-- `assert Delegates($brass_lamp, $portable_item, 0)`
-- `assert Name($brass_lamp, "brass lamp")`
-- `assert Description($brass_lamp, "A tarnished but sturdy lamp.")`
-- `assert Lit($brass_lamp, false)`
+- `assert Object(#brass_lamp)`
+- `assert Delegates(#brass_lamp, #portable_item, 0)`
+- `assert Name(#brass_lamp, "brass lamp")`
+- `assert Description(#brass_lamp, "A tarnished but sturdy lamp.")`
+- `assert Lit(#brass_lamp, false)`
 
 ### Inspecting an Object
-If you "inspect" `$brass_lamp`, the system shows you a **Fact Neighborhood**. It gathers all facts where `$brass_lamp` is a primary key. It looks like an object, but it is a computed view over the relational world.
+If you "inspect" `#brass_lamp`, the system shows you a **Fact Neighborhood**. It gathers all facts where `#brass_lamp` is a primary key. It looks like an object, but it is a computed view over the relational world.
 
 ---
 
@@ -50,14 +50,14 @@ Core concepts like `Name`, `LocatedIn`, and `Owner` are **named relations**. The
 Mica allows the `obj.prop` syntax as an ergonomic shortcut **only for declared binary functional relations**. 
 
 ```mica
-$brass_lamp.located_in = $study_room
+#brass_lamp.located_in = #study_room
 ```
 
 This expands to ordinary fact changes:
 
 ```mica
-retract LocatedIn($brass_lamp, _)
-assert LocatedIn($brass_lamp, $study_room)
+retract LocatedIn(#brass_lamp, _)
+assert LocatedIn(#brass_lamp, #study_room)
 ```
 
 **Note:** If a relation is not declared as functional for the object, dot-assignment is not available. This prevents accidental "silent" creation of data in the wrong place.
@@ -66,7 +66,7 @@ assert LocatedIn($brass_lamp, $study_room)
 If you need an ad-hoc property that doesn't have a dedicated relation, you must use the `Slot` relation explicitly:
 
 ```mica
-assert Slot($brass_lamp, :polish_level, 10)
+assert Slot(#brass_lamp, :polish_level, 10)
 ```
 
 ---
@@ -79,9 +79,9 @@ In image-based systems, a verb is "on" an object. In Mica, a method is an indepe
 Use the `verb` syntax to create behavior. Instead of a privileged `this`, you name the roles that the method requires.
 
 ```mica
-verb light(actor: $player, target: $brass_lamp)
+verb light(actor: #player, target: #brass_lamp)
   require Lit(target, false)
-  require HasItem(actor, $matches)
+  require HasItem(actor, #matches)
   
   target.lit = true
   assert Event(:lit, actor, target)
@@ -106,8 +106,8 @@ This is not automatic for every relation. Plain relation queries only ask the re
 
 ### Behavior (Dispatch)
 Methods are **not** found by walking up a parent chain. Instead, when an invocation occurs, the system finds all methods whose **parameters** match the roles of the call. 
-- A method requiring `target: $portable` matches `$brass_lamp` because `$brass_lamp` delegates to `$portable`.
-- The method is an independent identity; it is not "inside" the `$portable` object.
+- A method requiring `target: #portable` matches `#brass_lamp` because `#brass_lamp` delegates to `#portable`.
+- The method is an independent identity; it is not "inside" the `#portable` object.
 
 ---
 

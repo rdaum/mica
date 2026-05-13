@@ -11,14 +11,14 @@ make_relation(:HeldBy, 2)
 make_relation(:In, 2)
 make_relation(:Portable, 1)
 
-assert Delegates($portable, $thing, 0)
-assert Delegates($coin, $portable, 0)
-assert Delegates($alice, $player, 0)
-assert Delegates($box, $container, 0)
-assert Portable($coin)
+assert Delegates(#portable, #thing, 0)
+assert Delegates(#coin, #portable, 0)
+assert Delegates(#alice, #player, 0)
+assert Delegates(#box, #container, 0)
+assert Portable(#coin)
 
-method $get_thing :get
-  roles actor: $player, item: $thing
+method #get_thing :get
+  roles actor: #player, item: #thing
 do
   if Portable(item)
     assert HeldBy(actor, item)
@@ -28,8 +28,8 @@ do
   end
 end
 
-method $put_thing :put
-  roles actor: $player, item: $thing, container: $container
+method #put_thing :put
+  roles actor: #player, item: #thing, container: #container
 do
   if HeldBy(actor, item)
     assert In(item, container)
@@ -39,6 +39,6 @@ do
   end
 end
 
-:get(item: $coin, actor: $alice)
-:put(container: $box, item: $coin, actor: $alice)
-return In($coin, ?container)
+:get(item: #coin, actor: #alice)
+:put(container: #box, item: #coin, actor: #alice)
+return In(#coin, ?container)

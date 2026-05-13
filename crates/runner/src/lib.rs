@@ -394,7 +394,7 @@ fn describe_rule_builtin(
     if args.len() != 1 {
         return Err(invalid_builtin_call(
             "describe_rule",
-            "expected describe_rule($rule)",
+            "expected describe_rule(#rule)",
         ));
     }
     let rule_id = builtin_identity_arg("describe_rule", args, 0)?;
@@ -447,7 +447,7 @@ fn disable_rule_builtin(
     if args.len() != 1 {
         return Err(invalid_builtin_call(
             "disable_rule",
-            "expected disable_rule($rule)",
+            "expected disable_rule(#rule)",
         ));
     }
     let rule_id = builtin_identity_arg("disable_rule", args, 0)?;
@@ -741,10 +741,10 @@ fn render_value(
         ValueKind::Identity => {
             let identity = value.as_identity().unwrap();
             match identity_names.get(&identity) {
-                Some(name) => format!("${name}"),
+                Some(name) => format!("#{name}"),
                 None => match relation_names.get(&identity) {
                     Some(name) => format!("relation(:{name})"),
-                    None => format!("${}", identity.raw()),
+                    None => format!("#{}", identity.raw()),
                 },
             }
         }
@@ -785,7 +785,7 @@ fn render_value(
                     render_value(start, identity_names, relation_names),
                     render_value(end, identity_names, relation_names)
                 ),
-                None => format!("{}..$", render_value(start, identity_names, relation_names)),
+                None => format!("{}.._", render_value(start, identity_names, relation_names)),
             })
             .unwrap(),
         ValueKind::Error => value
@@ -927,7 +927,7 @@ mod tests {
         };
 
         let asserted = runner
-            .run_source("assert Object($root)\nreturn true")
+            .run_source("assert Object(#root)\nreturn true")
             .unwrap();
 
         assert!(matches!(
@@ -954,13 +954,13 @@ mod tests {
         let mut runner = SourceRunner::new_empty();
         let made = runner.run_source("return make_identity(:thing)").unwrap();
         let report = runner
-            .run_source("return emit([$thing, {:owner -> $thing}])")
+            .run_source("return emit([#thing, {:owner -> #thing}])")
             .unwrap();
 
-        assert_eq!(made.render(), "task 1 complete: $thing (retries: 0)");
+        assert_eq!(made.render(), "task 1 complete: #thing (retries: 0)");
         assert_eq!(
             report.render(),
-            "task 2 complete: [$thing, [:owner: $thing]] (retries: 0)\neffect: [$thing, [:owner: $thing]]"
+            "task 2 complete: [#thing, [:owner: #thing]] (retries: 0)\neffect: [#thing, [:owner: #thing]]"
         );
     }
 
@@ -970,13 +970,13 @@ mod tests {
         runner.run_source("make_identity(:thing)").unwrap();
         runner.run_source("make_identity(:room)").unwrap();
         runner.run_source("make_relation(:Location, 2)").unwrap();
-        runner.run_source("assert Location($thing, $room)").unwrap();
+        runner.run_source("assert Location(#thing, #room)").unwrap();
 
-        let report = runner.run_source("return Location($thing, ?room)").unwrap();
+        let report = runner.run_source("return Location(#thing, ?room)").unwrap();
 
         assert_eq!(
             report.render(),
-            "task 5 complete: [[:room: $room]] (retries: 0)"
+            "task 5 complete: [[:room: #room]] (retries: 0)"
         );
     }
 
@@ -986,13 +986,13 @@ mod tests {
         runner.run_source("make_identity(:thing)").unwrap();
         runner.run_source("make_identity(:room)").unwrap();
         runner.run_source("make_relation(:Location, 2)").unwrap();
-        runner.run_source("assert Location($thing, $room)").unwrap();
+        runner.run_source("assert Location(#thing, #room)").unwrap();
 
         let report = runner.run_source("return Location(?what, ?where)").unwrap();
 
         assert_eq!(
             report.render(),
-            "task 5 complete: [[:what: $thing, :where: $room]] (retries: 0)"
+            "task 5 complete: [[:what: #thing, :where: #room]] (retries: 0)"
         );
     }
 
@@ -1002,15 +1002,15 @@ mod tests {
         runner.run_source("make_identity(:thing)").unwrap();
         runner.run_source("make_identity(:room)").unwrap();
         runner.run_source("make_relation(:Location, 2)").unwrap();
-        runner.run_source("assert Location($thing, $room)").unwrap();
+        runner.run_source("assert Location(#thing, #room)").unwrap();
 
         let one = runner
-            .run_source("return one Location($thing, ?room)")
+            .run_source("return one Location(#thing, ?room)")
             .unwrap();
-        let dot = runner.run_source("return $thing.location").unwrap();
+        let dot = runner.run_source("return #thing.location").unwrap();
 
-        assert_eq!(one.render(), "task 5 complete: $room (retries: 0)");
-        assert_eq!(dot.render(), "task 6 complete: $room (retries: 0)");
+        assert_eq!(one.render(), "task 5 complete: #room (retries: 0)");
+        assert_eq!(dot.render(), "task 6 complete: #room (retries: 0)");
     }
 
     #[test]
@@ -1027,16 +1027,16 @@ mod tests {
         runner.run_source("make_identity(:lamp)").unwrap();
         runner.run_source("make_identity(:room)").unwrap();
         runner
-            .run_source("assert LocatedIn($alice, $room)")
+            .run_source("assert LocatedIn(#alice, #room)")
             .unwrap();
-        runner.run_source("assert LocatedIn($lamp, $room)").unwrap();
+        runner.run_source("assert LocatedIn(#lamp, #room)").unwrap();
 
-        let query = runner.run_source("return VisibleTo($alice, ?obj)").unwrap();
+        let query = runner.run_source("return VisibleTo(#alice, ?obj)").unwrap();
 
-        assert_eq!(rule.render(), "task 3 complete: $rule1 (retries: 0)");
+        assert_eq!(rule.render(), "task 3 complete: #rule1 (retries: 0)");
         assert_eq!(
             query.render(),
-            "task 9 complete: [[:obj: $alice], [:obj: $lamp]] (retries: 0)"
+            "task 9 complete: [[:obj: #alice], [:obj: #lamp]] (retries: 0)"
         );
     }
 
@@ -1054,9 +1054,9 @@ mod tests {
         runner.run_source("make_identity(:lamp)").unwrap();
         runner.run_source("make_identity(:room)").unwrap();
         runner
-            .run_source("assert LocatedIn($alice, $room)")
+            .run_source("assert LocatedIn(#alice, #room)")
             .unwrap();
-        runner.run_source("assert LocatedIn($lamp, $room)").unwrap();
+        runner.run_source("assert LocatedIn(#lamp, #room)").unwrap();
 
         let rules = runner.run_source("return rules(:VisibleTo)").unwrap();
         let source = runner
@@ -1065,9 +1065,9 @@ mod tests {
         let disabled = runner
             .run_source("disable_rule(one rules(:VisibleTo))")
             .unwrap();
-        let query = runner.run_source("return VisibleTo($alice, ?obj)").unwrap();
+        let query = runner.run_source("return VisibleTo(#alice, ?obj)").unwrap();
 
-        assert_eq!(rules.render(), "task 9 complete: [$rule1] (retries: 0)");
+        assert_eq!(rules.render(), "task 9 complete: [#rule1] (retries: 0)");
         assert_eq!(
             source.render(),
             "task 10 complete: \"VisibleTo(actor, obj) :-\\n  LocatedIn(actor, room),\\n  LocatedIn(obj, room)\" (retries: 0)"
@@ -1102,7 +1102,7 @@ mod tests {
         imported.run_source("make_relation(:LocatedIn, 2)").unwrap();
         imported.run_source("make_relation(:VisibleTo, 2)").unwrap();
         let installed = imported.run_source(&source).unwrap();
-        assert_eq!(installed.render(), "task 3 complete: $rule1 (retries: 0)");
+        assert_eq!(installed.render(), "task 3 complete: #rule1 (retries: 0)");
     }
 
     #[test]
@@ -1120,18 +1120,18 @@ mod tests {
         runner.run_source("make_identity(:lamp)").unwrap();
         runner.run_source("make_identity(:room)").unwrap();
         runner
-            .run_source("assert LocatedIn($alice, $room)")
+            .run_source("assert LocatedIn(#alice, #room)")
             .unwrap();
-        runner.run_source("assert LocatedIn($lamp, $room)").unwrap();
+        runner.run_source("assert LocatedIn(#lamp, #room)").unwrap();
         runner
-            .run_source("assert HiddenFrom($lamp, $alice)")
+            .run_source("assert HiddenFrom(#lamp, #alice)")
             .unwrap();
 
-        let query = runner.run_source("return VisibleTo($alice, ?obj)").unwrap();
+        let query = runner.run_source("return VisibleTo(#alice, ?obj)").unwrap();
 
         assert_eq!(
             query.render(),
-            "task 11 complete: [[:obj: $alice]] (retries: 0)"
+            "task 11 complete: [[:obj: #alice]] (retries: 0)"
         );
     }
 
@@ -1151,13 +1151,13 @@ mod tests {
                  make_relation(:HeldBy, 2)\n\
                  make_relation(:In, 2)\n\
                  make_relation(:Portable, 1)\n\
-                 assert Delegates($portable, $thing, 0)\n\
-                 assert Delegates($coin, $portable, 0)\n\
-                 assert Delegates($alice, $player, 0)\n\
-                 assert Delegates($box, $container, 0)\n\
-                 assert Portable($coin)\n\
-                 method $get_thing :get\n\
-                   roles actor: $player, item: $thing\n\
+                 assert Delegates(#portable, #thing, 0)\n\
+                 assert Delegates(#coin, #portable, 0)\n\
+                 assert Delegates(#alice, #player, 0)\n\
+                 assert Delegates(#box, #container, 0)\n\
+                 assert Portable(#coin)\n\
+                 method #get_thing :get\n\
+                   roles actor: #player, item: #thing\n\
                  do\n\
                    if Portable(item)\n\
                      assert HeldBy(actor, item)\n\
@@ -1166,8 +1166,8 @@ mod tests {
                      return false\n\
                    end\n\
                  end\n\
-                 method $put_thing :put\n\
-                   roles actor: $player, item: $thing, container: $container\n\
+                 method #put_thing :put\n\
+                   roles actor: #player, item: #thing, container: #container\n\
                  do\n\
                    if HeldBy(actor, item)\n\
                      assert In(item, container)\n\
@@ -1176,25 +1176,25 @@ mod tests {
                      return false\n\
                    end\n\
                  end\n\
-                 :get(item: $coin, actor: $alice)\n\
-                 :put(container: $box, item: $coin, actor: $alice)\n\
-                 return In($coin, ?container)\n",
+                 :get(item: #coin, actor: #alice)\n\
+                 :put(container: #box, item: #coin, actor: #alice)\n\
+                 return In(#coin, ?container)\n",
             )
             .unwrap();
 
         assert_eq!(
             reports[16].render(),
-            "task 17 complete: $get_thing (retries: 0)"
+            "task 17 complete: #get_thing (retries: 0)"
         );
         assert_eq!(
             reports[17].render(),
-            "task 18 complete: $put_thing (retries: 0)"
+            "task 18 complete: #put_thing (retries: 0)"
         );
         assert_eq!(reports[18].render(), "task 19 complete: true (retries: 0)");
         assert_eq!(reports[19].render(), "task 20 complete: true (retries: 0)");
         assert_eq!(
             reports[20].render(),
-            "task 21 complete: [[:container: $box]] (retries: 0)"
+            "task 21 complete: [[:container: #box]] (retries: 0)"
         );
     }
 

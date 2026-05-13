@@ -116,11 +116,11 @@ impl<'a> Lower<'a> {
 
     fn lower_object_header(&self, node: &CstNode) -> (Option<String>, Option<String>) {
         let tokens = self.token_children(node).collect::<Vec<_>>();
-        let identity = identity_after_dollar(self.source, &tokens, 0);
+        let identity = identity_after_hash(self.source, &tokens, 0);
         let extends = tokens
             .iter()
             .position(|token| token.kind == SyntaxKind::ExtendsKw)
-            .and_then(|idx| identity_after_dollar(self.source, &tokens, idx + 1));
+            .and_then(|idx| identity_after_hash(self.source, &tokens, idx + 1));
         (identity, extends)
     }
 
@@ -157,7 +157,7 @@ impl<'a> Lower<'a> {
 
     fn lower_method_header(&self, node: &CstNode) -> (Option<String>, Option<String>) {
         let tokens = self.token_children(node).collect::<Vec<_>>();
-        let identity = identity_after_dollar(self.source, &tokens, 0);
+        let identity = identity_after_hash(self.source, &tokens, 0);
         let selector = tokens
             .iter()
             .position(|token| token.kind == SyntaxKind::Colon)
@@ -275,7 +275,7 @@ impl<'a> Lower<'a> {
 
     fn lower_identity(&mut self, node: &CstNode) -> Expr {
         let tokens = self.token_children(node).collect::<Vec<_>>();
-        let name = identity_after_dollar(self.source, &tokens, 0).unwrap_or_else(|| {
+        let name = identity_after_hash(self.source, &tokens, 0).unwrap_or_else(|| {
             self.error(node, "expected identity name");
             String::new()
         });
@@ -970,11 +970,11 @@ impl<'a> Lower<'a> {
     }
 }
 
-fn identity_after_dollar(source: &str, tokens: &[&CstToken], start: usize) -> Option<String> {
+fn identity_after_hash(source: &str, tokens: &[&CstToken], start: usize) -> Option<String> {
     tokens
         .iter()
         .skip(start)
-        .position(|token| token.kind == SyntaxKind::Dollar)
+        .position(|token| token.kind == SyntaxKind::Hash)
         .and_then(|relative| tokens.get(start + relative + 1))
         .filter(|token| matches!(token.kind, SyntaxKind::Ident | SyntaxKind::Int))
         .map(|token| source[token.span.clone()].to_owned())
@@ -998,7 +998,7 @@ fn lower_method_roles(clauses: &[String]) -> Vec<MethodRole> {
             };
             let name = name.trim();
             let restriction = restriction.trim();
-            let Some(restriction) = restriction.strip_prefix('$') else {
+            let Some(restriction) = restriction.strip_prefix('#') else {
                 continue;
             };
             if !name.is_empty() && !restriction.is_empty() {
@@ -1095,8 +1095,8 @@ mod tests {
         let ast = parse_ast(
             "let xs = [1, @rest]\n\
              let opts = {:style -> :brief}\n\
-             :move(actor: $alice, item: $coin)\n\
-             $box:put($coin, :into)",
+             :move(actor: #alice, item: #coin)\n\
+             #box:put(#coin, :into)",
         );
         assert_eq!(ast.errors, vec![]);
         assert_eq!(ast.items.len(), 4);
@@ -1143,7 +1143,7 @@ mod tests {
     fn lowers_relation_rule_and_control_forms() {
         let ast = parse_ast(
             "VisibleTo(actor, obj) :- LocatedIn(actor, room), LocatedIn(obj, room)\n\
-             if Lit($lamp, true)\n  \"lit\"\nelse\n  \"dark\"\nend",
+             if Lit(#lamp, true)\n  \"lit\"\nelse\n  \"dark\"\nend",
         );
         assert_eq!(ast.errors, vec![]);
         assert!(matches!(
@@ -1159,11 +1159,11 @@ mod tests {
     #[test]
     fn lowers_methods_objects_and_effects() {
         let ast = parse_ast(
-            "object $lamp extends $thing\n\
+            "object #lamp extends #thing\n\
                name = \"brass lamp\"\n\
              end\n\
-             method $move_into :move\n\
-               roles actor: $player, item: $portable\n\
+             method #move_into :move\n\
+               roles actor: #player, item: #portable\n\
              do\n\
                require CanMove(actor, item)\n\
                assert LocatedIn(item, destination)\n\
@@ -1265,7 +1265,7 @@ mod tests {
 
     #[test]
     fn lowers_literals_and_field_assignment() {
-        let ast = parse_ast("$lamp.name = \"golden lamp\"\ntrue\nE_NOT_PORTABLE\nnothing");
+        let ast = parse_ast("#lamp.name = \"golden lamp\"\ntrue\nE_NOT_PORTABLE\nnothing");
         assert_eq!(ast.errors, vec![]);
         assert!(matches!(
             &ast.items[0],
@@ -1308,11 +1308,11 @@ mod tests {
     #[test]
     fn assigns_unique_dense_node_ids() {
         let ast = parse_ast(
-            "object $lamp extends $thing\n\
+            "object #lamp extends #thing\n\
                name = \"brass lamp\"\n\
              end\n\
              let f = {x, ?style = :short, @rest} => x + 1\n\
-             :move(actor: $alice, item: $coin)\n\
+             :move(actor: #alice, item: #coin)\n\
              try\n\
                risky()\n\
              catch err if err == :perm\n\

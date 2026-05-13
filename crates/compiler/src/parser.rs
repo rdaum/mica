@@ -258,12 +258,9 @@ impl<'a> Parser<'a> {
             SyntaxKind::LBracket => self.parse_list_expr(),
             SyntaxKind::LBrace if self.looks_like_brace_lambda() => self.parse_brace_lambda_expr(),
             SyntaxKind::LBrace => self.parse_map_expr(),
-            SyntaxKind::Dollar
-                if matches!(self.nth_kind(1), SyntaxKind::Ident | SyntaxKind::Int) =>
-            {
+            SyntaxKind::Hash if matches!(self.nth_kind(1), SyntaxKind::Ident | SyntaxKind::Int) => {
                 self.parse_identity_expr()
             }
-            SyntaxKind::Dollar => self.single_token_node(SyntaxKind::HoleExpr),
             SyntaxKind::Colon => self.parse_symbol_or_role_call(),
             SyntaxKind::Question if self.nth_kind(1) == SyntaxKind::Ident => {
                 self.parse_query_var_expr()
@@ -600,7 +597,7 @@ impl<'a> Parser<'a> {
         if matches!(self.current_kind(), SyntaxKind::Ident | SyntaxKind::Int) {
             children.push(self.bump_element());
         } else {
-            children.push(self.missing("expected identity name after '$'"));
+            children.push(self.missing("expected identity name after '#'"));
         }
         CstNode::new(SyntaxKind::IdentityExpr, children)
     }
@@ -765,7 +762,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::LParen
                 | SyntaxKind::LBracket
                 | SyntaxKind::LBrace
-                | SyntaxKind::Dollar
+                | SyntaxKind::Hash
                 | SyntaxKind::Colon
                 | SyntaxKind::Question
                 | SyntaxKind::Underscore
@@ -962,8 +959,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_bare_dollar_as_range_endpoint_hole() {
-        let parse = parse("items[2..$]");
+    fn parses_underscore_as_range_endpoint_hole() {
+        let parse = parse("items[2.._]");
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::BinaryExpr));
         assert!(contains(&parse.root, SyntaxKind::HoleExpr));
@@ -988,7 +985,7 @@ mod tests {
 
     #[test]
     fn parses_query_variables_in_relation_calls() {
-        let parse = parse("Location($thing, ?room)");
+        let parse = parse("Location(#thing, ?room)");
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::CallExpr));
         assert!(contains(&parse.root, SyntaxKind::QueryVarExpr));
@@ -996,7 +993,7 @@ mod tests {
 
     #[test]
     fn parses_one_relation_query_expression() {
-        let parse = parse("one Location($thing, ?room)");
+        let parse = parse("one Location(#thing, ?room)");
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::OneExpr));
         assert!(contains(&parse.root, SyntaxKind::QueryVarExpr));
@@ -1014,7 +1011,7 @@ mod tests {
 
     #[test]
     fn parses_role_and_receiver_calls() {
-        let parse = parse(":move(actor: $alice, item: $coin)\n$box:put($coin, :into)");
+        let parse = parse(":move(actor: #alice, item: #coin)\n#box:put(#coin, :into)");
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::RoleCallExpr));
         assert!(contains(&parse.root, SyntaxKind::ReceiverCallExpr));
@@ -1032,7 +1029,7 @@ mod tests {
     fn parses_expression_blocks_and_relation_rules() {
         let parse = parse(
             "VisibleTo(actor, obj) :- LocatedIn(actor, room), LocatedIn(obj, room)\n\
-             if Lit($lamp, true)\n  \"lit\"\nelse\n  \"dark\"\nend",
+             if Lit(#lamp, true)\n  \"lit\"\nelse\n  \"dark\"\nend",
         );
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::RelationRule));
@@ -1042,8 +1039,8 @@ mod tests {
     #[test]
     fn parses_method_fileout_envelope() {
         let parse = parse(
-            "method $move_into :move\n\
-               roles actor: $player, item: $portable\n\
+            "method #move_into :move\n\
+               roles actor: #player, item: #portable\n\
              do\n\
                require CanMove(actor, item)\n\
                assert LocatedIn(item, destination)\n\
@@ -1058,7 +1055,7 @@ mod tests {
     #[test]
     fn parses_try_and_object_fileout_envelope() {
         let parse = parse(
-            "object $lamp extends $thing\n\
+            "object #lamp extends #thing\n\
                name = \"brass lamp\"\n\
              end\n\
              try\n\

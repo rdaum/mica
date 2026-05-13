@@ -189,7 +189,7 @@ fn string_bytes_list_map_and_range_are_values() {
     assert_eq!(format!("{range}"), "1..3");
 
     let open_range = Value::range(Value::int(2).unwrap(), None);
-    assert_eq!(format!("{open_range}"), "2..$");
+    assert_eq!(format!("{open_range}"), "2.._");
 }
 
 #[test]

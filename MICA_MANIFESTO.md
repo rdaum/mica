@@ -23,14 +23,14 @@ storage shapes that are hard to change.
 Mica keeps the identity and lets the representation move.
 
 ```mica
-Object($lamp42)
-Name($lamp42, "brass lamp")
-LocatedIn($lamp42, $room17)
-Owner($room17, $alice)
-Color($lamp42, "brass")
+Object(#lamp42)
+Name(#lamp42, "brass lamp")
+LocatedIn(#lamp42, #room17)
+Owner(#room17, #alice)
+Color(#lamp42, "brass")
 ```
 
-`$lamp42` is not a record that contains those fields. It is a durable identity
+`#lamp42` is not a record that contains those fields. It is a durable identity
 that appears in facts. The world is the collection of those facts, the rules
 that derive more facts from them, and the transactions that change them.
 
@@ -38,9 +38,9 @@ This does not mean objects disappear from the programmer's experience. A Mica
 browser can still show an object-shaped view:
 
 ```text
-$lamp42
+#lamp42
   name: "brass lamp"
-  location: $room17
+  location: #room17
   color: "brass"
 ```
 
@@ -90,10 +90,10 @@ A method does not have to live inside one receiver. It describes the role
 bindings it can handle.
 
 ```mica
-method $move_into :move
-  roles actor: $player,
-        item: $portable,
-        destination: $container
+method #move_into :move
+  roles actor: #player,
+        item: #portable,
+        destination: #container
 do
   require CanMove(actor, item)
   require CanContain(destination, item)
@@ -104,8 +104,8 @@ end
 ```
 
 Prototype delegation still matters, but it becomes part of matching rather than
-a physical place where behavior is stored. If `$coin` delegates to `$portable`,
-then a method requiring `item: $portable` can apply to `$coin`.
+a physical place where behavior is stored. If `#coin` delegates to `#portable`,
+then a method requiring `item: #portable` can apply to `#coin`.
 
 This makes behavior additive. Different authors can contribute methods that
 match different roles, relations, situations, or subjects without having to
@@ -125,7 +125,7 @@ authority, and write conflicts, then commits the transaction atomically.
 For an interactive author, the normal loop should still feel immediate:
 
 ```mica
-> $lamp42.color = "gold"
+> #lamp42.color = "gold"
 committed
 ```
 
@@ -142,10 +142,10 @@ legal responsibility. In Mica, these are not all forced into one object layout.
 They can become relations, rules, constraints, and methods.
 
 ```mica
-AcousticNeighbor($hall, $atrium, attenuation: 2)
-OwnedAt($lamp42, $alice, t1)
-OwnedAt($lamp42, $bob, t2)
-WeatherExposed($garden, true)
+AcousticNeighbor(#hall, #atrium, attenuation: 2)
+OwnedAt(#lamp42, #alice, t1)
+OwnedAt(#lamp42, #bob, t2)
+WeatherExposed(#garden, true)
 ```
 
 This is not an argument against structure. It is an argument for structure that

@@ -13,14 +13,14 @@ indexes, joins, and rule evaluation.
 The kernel's job is to make facts fast, durable enough, and semantically clean:
 
 ```mica
-Object($lamp)
-Name($lamp, "brass lamp")
-LocatedIn($lamp, $room)
-Delegates($lamp, $thing, 0)
-Method($m)
-MethodSelector($m, :take)
-Param($m, :actor, $player)
-Param($m, :item, $thing)
+Object(#lamp)
+Name(#lamp, "brass lamp")
+LocatedIn(#lamp, #room)
+Delegates(#lamp, #thing, 0)
+Method(#m)
+MethodSelector(#m, :take)
+Param(#m, :actor, #player)
+Param(#m, :item, #thing)
 ```
 
 An object is still just an identity value that appears in facts. The kernel does
@@ -158,14 +158,14 @@ event relation may all use different index layouts.
 Relation metadata is itself represented relationally:
 
 ```mica
-Relation($LocatedIn)
-RelationName($LocatedIn, :LocatedIn)
-Arity($LocatedIn, 2)
-ArgumentName($LocatedIn, 0, :item)
-ArgumentName($LocatedIn, 1, :container)
-Functional($LocatedIn, {0})
-Index($LocatedIn, {:item})
-Index($LocatedIn, {:container, :item})
+Relation(#LocatedIn)
+RelationName(#LocatedIn, :LocatedIn)
+Arity(#LocatedIn, 2)
+ArgumentName(#LocatedIn, 0, :item)
+ArgumentName(#LocatedIn, 1, :container)
+Functional(#LocatedIn, {0})
+Index(#LocatedIn, {:item})
+Index(#LocatedIn, {:container, :item})
 ```
 
 The kernel may keep a compiled catalog for speed, but the author-facing model is
@@ -196,7 +196,7 @@ enum Value {
 UUID. External UUIDs can still exist as ordinary values or as facts:
 
 ```mica
-ExternalId($lamp, :uuid, #uuid("..."))
+ExternalId(#lamp, :uuid, uuid("..."))
 ```
 
 Symbols and identities must be distinct from strings and integers. The kernel
@@ -242,9 +242,9 @@ The important point is that identities and symbols must fit inline. Mica facts
 will be full of identities and symbols:
 
 ```mica
-LocatedIn($lamp, $room)
-MethodSelector($m, :take)
-Param($m, :item, $thing)
+LocatedIn(#lamp, #room)
+MethodSelector(#m, :take)
+Param(#m, :item, #thing)
 ```
 
 If those are heap objects, the relation kernel loses before query planning even
@@ -300,8 +300,8 @@ engine built over bloated tuple values will lose to memory bandwidth.
 Mica's default relation semantics are set semantics:
 
 ```mica
-assert LocatedIn($lamp, $room)
-assert LocatedIn($lamp, $room)   # no duplicate fact by default
+assert LocatedIn(#lamp, #room)
+assert LocatedIn(#lamp, #room)   // no duplicate fact by default
 ```
 
 Functional relations are constrained set relations:
@@ -314,7 +314,7 @@ functional Name(subject) -> text
 This means:
 
 ```mica
-$lamp.name = "brass lamp"
+#lamp.name = "brass lamp"
 ```
 
 can be sugar for replacing the single tuple in a declared functional relation.
@@ -476,7 +476,7 @@ base snapshot - local retractions + local assertions
 This preserves the authoring feel:
 
 ```mica
-assert LocatedIn($lamp, $player)
+assert LocatedIn(#lamp, #player)
 say("Taken.")
 ```
 
@@ -553,13 +553,13 @@ scan(RelationId, bindings: &[Option<Value>]) -> TupleStream
 The scanner chooses an index whose leading positions are bound. For:
 
 ```mica
-Delegates($lamp, proto, rank)
+Delegates(#lamp, proto, rank)
 ```
 
 the scanner should use `Delegates_by_child`. For:
 
 ```mica
-Delegates(child, $thing, rank)
+Delegates(child, #thing, rank)
 ```
 
 it should use `Delegates_by_proto`.
@@ -786,7 +786,7 @@ This is the natural fit for:
 Example:
 
 ```mica
-CanSee($alice, $lamp)?
+CanSee(#alice, #lamp)?
 ```
 
 The evaluator should start with the bound values and push them into indexed
@@ -936,8 +936,8 @@ EffectiveFact(subject, relation, tuple...)
 These should be backed by indexes, not by scanning all facts.
 
 For a MOO/Self-style developer, this is the replacement mental model for "open
-the object." Opening `$lamp` means asking the kernel for the relevant facts in
-which `$lamp` participates, grouped and rendered as an object neighborhood.
+the object." Opening `#lamp` means asking the kernel for the relevant facts in
+which `#lamp` participates, grouped and rendered as an object neighborhood.
 
 ## Dispatch As A Query
 
@@ -947,23 +947,23 @@ roles and method signatures.
 An invocation supplies a selector and a role environment:
 
 ```mica
-$lamp:take(actor: $alice)
+#lamp:take(actor: #alice)
 ```
 
 Desugared shape:
 
 ```mica
-Invoke(selector: :take, item: $lamp, actor: $alice)
+Invoke(selector: :take, item: #lamp, actor: #alice)
 ```
 
 Candidate methods are facts:
 
 ```mica
-Method($m)
-MethodSelector($m, :take)
-Param($m, :actor, $player)
-Param($m, :item, $thing)
-DispatchMode($m, :best)
+Method(#m)
+MethodSelector(#m, :take)
+Param(#m, :actor, #player)
+Param(#m, :item, #thing)
+DispatchMode(#m, :best)
 ```
 
 Applicability is a derived relation:
@@ -984,20 +984,20 @@ closure.
 Every relation should carry logical and physical metadata:
 
 ```mica
-Relation($Delegates)
-RelationName($Delegates, :Delegates)
-Arity($Delegates, 3)
-ArgumentName($Delegates, 0, :child)
-ArgumentName($Delegates, 1, :proto)
-ArgumentName($Delegates, 2, :rank)
+Relation(#Delegates)
+RelationName(#Delegates, :Delegates)
+Arity(#Delegates, 3)
+ArgumentName(#Delegates, 0, :child)
+ArgumentName(#Delegates, 1, :proto)
+ArgumentName(#Delegates, 2, :rank)
 
-Index($Delegates, $idx_delegates_child)
-IndexPositions($idx_delegates_child, {0, 2, 1})
-IndexKind($idx_delegates_child, :rart)
+Index(#Delegates, #idx_delegates_child)
+IndexPositions(#idx_delegates_child, {0, 2, 1})
+IndexKind(#idx_delegates_child, :rart)
 
-Index($Delegates, $idx_delegates_proto)
-IndexPositions($idx_delegates_proto, {1, 0})
-IndexKind($idx_delegates_proto, :rart)
+Index(#Delegates, #idx_delegates_proto)
+IndexPositions(#idx_delegates_proto, {1, 0})
+IndexKind(#idx_delegates_proto, :rart)
 ```
 
 Some indexes are author-visible tuning knobs. Others are kernel-required.

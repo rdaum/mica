@@ -57,7 +57,7 @@ impl<'a> Lexer<'a> {
                 '}' => self.one(SyntaxKind::RBrace),
                 ',' => self.one(SyntaxKind::Comma),
                 ';' => self.one(SyntaxKind::Semi),
-                '$' => self.one(SyntaxKind::Dollar),
+                '#' => self.one(SyntaxKind::Hash),
                 '@' => self.one(SyntaxKind::At),
                 '?' => self.one(SyntaxKind::Question),
                 '.' if self.peek_next() == Some('.') => {

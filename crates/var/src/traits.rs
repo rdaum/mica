@@ -232,7 +232,7 @@ impl fmt::Debug for Value {
             ValueKind::Bool => write!(f, "{:?}", self.as_bool().unwrap()),
             ValueKind::Int => write!(f, "{:?}", self.as_int().unwrap()),
             ValueKind::Float => write!(f, "{:?}", self.as_float().unwrap()),
-            ValueKind::Identity => write!(f, "${}", self.as_identity().unwrap().raw()),
+            ValueKind::Identity => write!(f, "#{}", self.as_identity().unwrap().raw()),
             ValueKind::Symbol => match self.as_symbol().unwrap().name() {
                 Some(name) => write!(f, ":{name}"),
                 None => write!(f, ":#{}", self.as_symbol().unwrap().id()),
@@ -278,7 +278,7 @@ impl fmt::Display for Value {
             ValueKind::Bool => write!(f, "{}", self.as_bool().unwrap()),
             ValueKind::Int => write!(f, "{}", self.as_int().unwrap()),
             ValueKind::Float => write!(f, "{}", self.as_float().unwrap()),
-            ValueKind::Identity => write!(f, "${}", self.as_identity().unwrap().raw()),
+            ValueKind::Identity => write!(f, "#{}", self.as_identity().unwrap().raw()),
             ValueKind::Symbol => match self.as_symbol().unwrap().name() {
                 Some(name) => write!(f, ":{name}"),
                 None => write!(f, ":#{}", self.as_symbol().unwrap().id()),
@@ -353,7 +353,7 @@ fn write_range(start: &Value, end: Option<&Value>, f: &mut fmt::Formatter<'_>) -
     write!(f, "{start}..")?;
     match end {
         Some(end) => write!(f, "{end}"),
-        None => f.write_str("$"),
+        None => f.write_str("_"),
     }
 }
 

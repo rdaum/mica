@@ -643,10 +643,10 @@ fn lower_installed_roles(
             };
             let name = name.trim();
             let restriction = restriction.trim();
-            if name.is_empty() || !restriction.starts_with('$') {
+            if name.is_empty() || !restriction.starts_with('#') {
                 continue;
             }
-            let restriction_name = restriction.trim_start_matches('$').trim();
+            let restriction_name = restriction.trim_start_matches('#').trim();
             let restriction = context.identity(restriction_name).ok_or_else(|| {
                 CompileError::UnknownIdentity {
                     node: id,
@@ -2969,9 +2969,9 @@ mod tests {
             .with_identity("room", room);
         let mut scheduler = Scheduler::new(kernel);
         let submitted = submit_source_task(
-            "let actor = $alice\n\
-             assert LocatedIn(actor, $room)\n\
-             require LocatedIn(actor, $room)\n\
+            "let actor = #alice\n\
+             assert LocatedIn(actor, #room)\n\
+             require LocatedIn(actor, #room)\n\
              return true",
             &context,
             &mut scheduler,
@@ -3026,8 +3026,8 @@ mod tests {
             .with_identity("room", room);
         let mut scheduler = Scheduler::new(kernel);
         let submitted = submit_source_task(
-            "assert LocatedIn($alice, $room)\n\
-             require Visible($alice, $room)\n\
+            "assert LocatedIn(#alice, #room)\n\
+             require Visible(#alice, #room)\n\
              return true",
             &context,
             &mut scheduler,
@@ -3075,7 +3075,7 @@ mod tests {
         let submitted = submit_source_task(
             "let values = [0, 1, 2, 3, 4]\n\
              let mid = values[1..3]\n\
-             let tail = values[2..$]\n\
+             let tail = values[2.._]\n\
              return mid[0] + mid[1] + mid[2] + tail[0] + tail[1] + tail[2]",
             &context,
             &mut scheduler,
@@ -3256,8 +3256,8 @@ mod tests {
             .with_identity("lamp", lamp);
         let mut scheduler = Scheduler::new(kernel);
         let submitted = submit_source_task(
-            "$lamp.name = \"brass lamp\"\n\
-             return $lamp.name",
+            "#lamp.name = \"brass lamp\"\n\
+             return #lamp.name",
             &context,
             &mut scheduler,
         )
@@ -3288,7 +3288,7 @@ mod tests {
     fn undeclared_dot_names_are_rejected() {
         let lamp = id(10);
         let context = CompileContext::new().with_identity("lamp", lamp);
-        let error = compile_source("$lamp.color", &context).unwrap_err();
+        let error = compile_source("#lamp.color", &context).unwrap_err();
 
         assert!(matches!(
             error,
@@ -3763,8 +3763,8 @@ mod tests {
             .with_identity("thing", thing);
         let mut install_tx = kernel.begin();
         let installation = install_methods_from_source(
-            "method $get_thing :get\n\
-               roles actor: $player, item: $thing\n\
+            "method #get_thing :get\n\
+               roles actor: #player, item: #thing\n\
              do\n\
                assert LocatedIn(item, actor)\n\
                return true\n\
@@ -3831,7 +3831,7 @@ mod tests {
             .with_identity("coin", coin);
         let mut scheduler = Scheduler::new(kernel);
         let submitted = submit_source_task(
-            ":get(actor: $alice, item: $coin)",
+            ":get(actor: #alice, item: #coin)",
             &invoke_context,
             &mut scheduler,
         )
@@ -3879,8 +3879,8 @@ mod tests {
             .with_identity("thing", thing);
         let mut install_tx = kernel.begin();
         install_methods_from_source(
-            "method $inspect_thing :inspect\n\
-               roles actor: $player, item: $thing\n\
+            "method #inspect_thing :inspect\n\
+               roles actor: #player, item: #thing\n\
              do\n\
                let values = [actor, item]\n\
                let result = {:target -> values[1]}\n\
@@ -3918,7 +3918,7 @@ mod tests {
             .with_identity("coin", coin);
         let mut scheduler = Scheduler::new(kernel);
         let submitted = submit_source_task(
-            ":inspect(actor: $alice, item: $coin)",
+            ":inspect(actor: #alice, item: #coin)",
             &invoke_context,
             &mut scheduler,
         )
@@ -3956,8 +3956,8 @@ mod tests {
             .with_identity("player", player);
         let mut install_tx = kernel.begin();
         install_methods_from_source(
-            "method $count_loop :count\n\
-               roles actor: $player\n\
+            "method #count_loop :count\n\
+               roles actor: #player\n\
              do\n\
                let i = 0\n\
                while i < 3\n\
@@ -3986,7 +3986,7 @@ mod tests {
             .with_identity("alice", alice);
         let mut scheduler = Scheduler::new(kernel);
         let submitted =
-            submit_source_task(":count(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":count(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4020,8 +4020,8 @@ mod tests {
             .with_identity("player", player);
         let mut install_tx = kernel.begin();
         install_methods_from_source(
-            "method $sum_loop :sum\n\
-               roles actor: $player\n\
+            "method #sum_loop :sum\n\
+               roles actor: #player\n\
              do\n\
                let total = 0\n\
                for item in [2, 3, 4]\n\
@@ -4050,7 +4050,7 @@ mod tests {
             .with_identity("alice", alice);
         let mut scheduler = Scheduler::new(kernel);
         let submitted =
-            submit_source_task(":sum(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":sum(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4084,8 +4084,8 @@ mod tests {
             .with_identity("player", player);
         let mut install_tx = kernel.begin();
         install_methods_from_source(
-            "method $calc :calc\n\
-               roles actor: $player\n\
+            "method #calc :calc\n\
+               roles actor: #player\n\
              do\n\
                return (10 * 3 - 4) / 2\n\
              end",
@@ -4110,7 +4110,7 @@ mod tests {
             .with_identity("alice", alice);
         let mut scheduler = Scheduler::new(kernel);
         let submitted =
-            submit_source_task(":calc(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":calc(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4144,8 +4144,8 @@ mod tests {
             .with_identity("player", player);
         let mut install_tx = kernel.begin();
         install_methods_from_source(
-            "method $update :update\n\
-               roles actor: $player\n\
+            "method #update :update\n\
+               roles actor: #player\n\
              do\n\
                let counts = {:seen -> 1}\n\
                counts[:seen] = counts[:seen] + 1\n\
@@ -4172,7 +4172,7 @@ mod tests {
             .with_identity("alice", alice);
         let mut scheduler = Scheduler::new(kernel);
         let submitted =
-            submit_source_task(":update(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":update(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4220,8 +4220,8 @@ mod tests {
             .with_identity("thing", thing);
         let mut install_tx = kernel.begin();
         install_methods_from_source(
-            "method $rename_thing :rename\n\
-               roles actor: $player, item: $thing\n\
+            "method #rename_thing :rename\n\
+               roles actor: #player, item: #thing\n\
              do\n\
                item.name = \"bright coin\"\n\
                return item.name\n\
@@ -4258,7 +4258,7 @@ mod tests {
             .with_identity("coin", coin);
         let mut scheduler = Scheduler::new(kernel);
         let submitted = submit_source_task(
-            ":rename(actor: $alice, item: $coin)",
+            ":rename(actor: #alice, item: #coin)",
             &invoke_context,
             &mut scheduler,
         )
@@ -4307,8 +4307,8 @@ mod tests {
             .with_identity("player", player);
         let mut install_tx = kernel.begin();
         install_methods_from_source(
-            "method $calc :calc\n\
-               roles actor: $player\n\
+            "method #calc :calc\n\
+               roles actor: #player\n\
              do\n\
                fn double(x)\n\
                  return x * 2\n\
@@ -4336,7 +4336,7 @@ mod tests {
             .with_identity("alice", alice);
         let mut scheduler = Scheduler::new(kernel);
         let submitted =
-            submit_source_task(":calc(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":calc(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4386,14 +4386,14 @@ mod tests {
             .with_identity("thing", thing);
         let mut install_tx = kernel.begin();
         let installation = install_methods_from_source(
-            "method $mark_thing :mark\n\
-               roles actor: $player, item: $thing\n\
+            "method #mark_thing :mark\n\
+               roles actor: #player, item: #thing\n\
              do\n\
                assert LocatedIn(item, actor)\n\
                return true\n\
              end\n\
-             method $get_thing :get\n\
-               roles actor: $player, item: $thing\n\
+             method #get_thing :get\n\
+               roles actor: #player, item: #thing\n\
              do\n\
                :mark(actor: actor, item: item)\n\
                return true\n\
@@ -4440,7 +4440,7 @@ mod tests {
             .with_identity("coin", coin);
         let mut scheduler = Scheduler::new(kernel);
         let submitted = submit_source_task(
-            ":get(actor: $alice, item: $coin)",
+            ":get(actor: #alice, item: #coin)",
             &invoke_context,
             &mut scheduler,
         )
@@ -4513,8 +4513,8 @@ mod tests {
             .with_identity("thing", thing);
         let mut install_tx = kernel.begin();
         install_methods_from_source(
-            "method $take_thing :take\n\
-               roles actor: $player, item: $thing\n\
+            "method #take_thing :take\n\
+               roles actor: #player, item: #thing\n\
              do\n\
                if Portable(item, true) && !LocatedIn(item, actor)\n\
                  assert LocatedIn(item, actor)\n\
@@ -4561,7 +4561,7 @@ mod tests {
             .with_identity("coin", coin);
         let mut scheduler = Scheduler::new(kernel);
         let first = submit_source_task(
-            ":take(actor: $alice, item: $coin)",
+            ":take(actor: #alice, item: #coin)",
             &invoke_context,
             &mut scheduler,
         )
@@ -4588,7 +4588,7 @@ mod tests {
         );
 
         let second = submit_source_task(
-            ":take(actor: $alice, item: $coin)",
+            ":take(actor: #alice, item: #coin)",
             &invoke_context,
             &mut scheduler,
         )

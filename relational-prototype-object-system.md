@@ -53,24 +53,24 @@ primary key of one privileged object table that contains all object state.
 Again, identities are simple keys:
 
 ```mica
-$lamp42
-$room17
-$user3
-$open_method
+#lamp42
+#room17
+#user3
+#open_method
 ```
 
 But all meaning is relational:
 
 ```mica
-Object($lamp42)
-Name($lamp42, "brass lamp")
-LocatedIn($lamp42, $room17)
-Delegates($lamp42, $portable_thing, 0)
-Owner($lamp42, $user3)
-Portable($lamp42, true)
+Object(#lamp42)
+Name(#lamp42, "brass lamp")
+LocatedIn(#lamp42, #room17)
+Delegates(#lamp42, #portable_thing, 0)
+Owner(#lamp42, #user3)
+Portable(#lamp42, true)
 ```
 
-`$lamp42` is the identity. It is a reusable key component in facts about the
+`#lamp42` is the identity. It is a reusable key component in facts about the
 lamp. Different relations may have different keys involving that identity:
 
 ```text
@@ -116,35 +116,35 @@ The narrow neighborhood of an identity is the set of facts where the identity is
 the first, key-like argument:
 
 ```mica
-Object($lamp42)
-Name($lamp42, "brass lamp")
-Description($lamp42, "A polished brass lamp.")
-LocatedIn($lamp42, $room17)
-Owner($lamp42, $alice)
-Delegates($lamp42, $thing, 0)
-Portable($lamp42, true)
+Object(#lamp42)
+Name(#lamp42, "brass lamp")
+Description(#lamp42, "A polished brass lamp.")
+LocatedIn(#lamp42, #room17)
+Owner(#lamp42, #alice)
+Delegates(#lamp42, #thing, 0)
+Portable(#lamp42, true)
 ```
 
 This is the closest Mica equivalent of opening an object in a MOO browser. The
 standard outliner can present it as if it were object-shaped:
 
 ```text
-$lamp42
-  name: "brass lamp"              Name($lamp42, ...)
-  description: "A polished..."    Description($lamp42, ...)
-  location: $room17               LocatedIn($lamp42, ...)
-  owner: $alice                   Owner($lamp42, ...)
-  delegates: $thing               Delegates($lamp42, $thing, 0)
-  portable: true                  Portable($lamp42, true)
+#lamp42
+  name: "brass lamp"              Name(#lamp42, ...)
+  description: "A polished..."    Description(#lamp42, ...)
+  location: #room17               LocatedIn(#lamp42, ...)
+  owner: #alice                   Owner(#lamp42, ...)
+  delegates: #thing               Delegates(#lamp42, #thing, 0)
+  portable: true                  Portable(#lamp42, true)
 ```
 
 That outliner is a view, not the storage model. A broader neighborhood may also
 show incoming and non-key references:
 
 ```mica
-LocatedIn($coin, $lamp42)
-Wants($alice, $lamp42)
-Permission($cap9, write, Name, ($lamp42, _))
+LocatedIn(#coin, #lamp42)
+Wants(#alice, #lamp42)
+Permission(#cap9, write, Name, (#lamp42, _))
 ```
 
 The distinction matters. The primary outliner view answers "what facts describe
@@ -156,16 +156,16 @@ identity participate anywhere in the world?"
 Mica's relational notation is Datalog-inspired.
 
 ```mica
-Object($lamp)
+Object(#lamp)
 ```
 
-is a relation atom. It denotes the tuple `($lamp)` in the `Object` relation.
+is a relation atom. It denotes the tuple `(#lamp)` in the `Object` relation.
 
 ```mica
-LocatedIn($lamp, $room17)
+LocatedIn(#lamp, #room17)
 ```
 
-denotes the tuple `($lamp, $room17)` in the `LocatedIn` relation.
+denotes the tuple `(#lamp, #room17)` in the `LocatedIn` relation.
 
 ```mica
 VisibleTo(user, obj) :-
@@ -176,7 +176,7 @@ VisibleTo(user, obj) :-
 defines a derived relation. The head is true when all body predicates are true.
 The period terminates a serialized fact or rule. Commas are conjunction.
 Variables are unquoted names like `user` and `obj`; identity values are written
-with `$`, and symbols with `:`.
+with `#`, and symbols with `:`.
 
 ## Program Text Contexts
 
@@ -194,8 +194,8 @@ but they are not interchangeable syntax.
 A relation atom is the basic predicate-shaped expression:
 
 ```mica
-Object($lamp)
-Name($lamp, "brass lamp")
+Object(#lamp)
+Name(#lamp, "brass lamp")
 LocatedIn(obj, room)
 ```
 
@@ -207,11 +207,11 @@ A ground fact is a relation atom with no variables, written as a terminated fact
 in fileout/fixture text:
 
 ```mica
-Object($lamp).
-Name($lamp, "brass lamp").
+Object(#lamp).
+Name(#lamp, "brass lamp").
 ```
 
-`Object($lamp).` says `($lamp) in Object`. It is useful in exported world
+`Object(#lamp).` says `(#lamp) in Object`. It is useful in exported world
 snapshots and test fixtures. It is not, by itself, a live mutation command.
 
 In rules and queries, relation atoms are conditions to match:
@@ -230,9 +230,9 @@ In executable Mica code, including method bodies, REPL commands, admin scripts,
 and live authoring commands, fact changes are written one way:
 
 ```mica
-assert LocatedIn($coin, $box)
-retract LocatedIn($coin, _)
-$lamp.name = "brass lamp"
+assert LocatedIn(#coin, #box)
+retract LocatedIn(#coin, _)
+#lamp.name = "brass lamp"
 ```
 
 `assert Relation(...)` records a fact assertion in the current transaction.
@@ -255,10 +255,10 @@ facts according to policy.
 So the same visual form has a disciplined interpretation:
 
 ```mica
-Object($lamp).        // fileout/fixture: serialized fact
-Object($lamp)         // rule/query/body: condition
-assert Object($lamp)  // executable Mica: transaction write
-retract Object($lamp) // executable Mica: transaction write
+Object(#lamp).        // fileout/fixture: serialized fact
+Object(#lamp)         // rule/query/body: condition
+assert Object(#lamp)  // executable Mica: transaction write
+retract Object(#lamp) // executable Mica: transaction write
 ```
 
 ## Data Model
@@ -276,21 +276,21 @@ Base relations are directly stored facts. Derived relations are live definition
 objects whose structure is also stored as facts.
 
 ```mica
-DerivedRelation($portable_def)
-Defines($portable_def, Portable)
-Head($portable_def, [o])
-Clause($portable_def,
+DerivedRelation(#portable_def)
+Defines(#portable_def, Portable)
+Head(#portable_def, [o])
+Clause(#portable_def,
   Portable(o) :-
-    DelegatesStar(o, $portable))
-ActiveDefinition(Portable, $portable_def)
+    DelegatesStar(o, #portable))
+ActiveDefinition(Portable, #portable_def)
 
-DerivedRelation($contains_def)
-Defines($contains_def, Contains)
-Head($contains_def, [container, item])
-Clause($contains_def,
+DerivedRelation(#contains_def)
+Defines(#contains_def, Contains)
+Head(#contains_def, [container, item])
+Clause(#contains_def,
   Contains(container, item) :-
     LocatedIn(item, container))
-ActiveDefinition(Contains, $contains_def)
+ActiveDefinition(Contains, #contains_def)
 ```
 
 The database is the program. Source files and `def` forms are optional
@@ -301,17 +301,17 @@ import/export or editing syntax for creating these facts.
 Mica distinguishes object identities from primitive values.
 
 ```text
-identity values:   $lamp42, $room17, $method9, $user3
+identity values:   #lamp42, #room17, #method9, #user3
 primitive values:  3, true, "brass lamp", :into, E_NOT_PORTABLE, 2026-05-12T14:00:00
 ```
 
 Both may appear in relations:
 
 ```mica
-Name($lamp42, "brass lamp")
-Lit($lamp42, true)
-Weight($lamp42, 3)
-LocatedIn($lamp42, $room17)
+Name(#lamp42, "brass lamp")
+Lit(#lamp42, true)
+Weight(#lamp42, 3)
+LocatedIn(#lamp42, #room17)
 ```
 
 Primitive values have value equality:
@@ -324,8 +324,8 @@ Primitive values have value equality:
 Object identifiers have identity equality:
 
 ```text
-$room17 = $room17
-$room17 != $room18
+#room17 = #room17
+#room17 != #room18
 ```
 
 Only object identities participate in object mutation and prototype delegation
@@ -333,8 +333,8 @@ by default. Primitive values are immutable data. The integer `3` is not a
 mutable world object unless it is explicitly reified by some object.
 
 ```mica
-Object($three_concept)
-Represents($three_concept, 3)
+Object(#three_concept)
+Represents(#three_concept, 3)
 ```
 
 Primitive domains are exposed as relations:
@@ -387,16 +387,16 @@ A derived relation is not primarily a source-file declaration. It is an object i
 the live world.
 
 ```mica
-Object($can_move_def)
-DerivedRelation($can_move_def)
-Defines($can_move_def, CanMove)
-Head($can_move_def, [actor, item])
-Clause($can_move_def,
+Object(#can_move_def)
+DerivedRelation(#can_move_def)
+Defines(#can_move_def, CanMove)
+Head(#can_move_def, [actor, item])
+Clause(#can_move_def,
   CanMove(actor, item) :-
     VisibleTo(actor, item),
     Portable(item))
-Owner($can_move_def, $user3)
-ActiveDefinition(CanMove, $can_move_def)
+Owner(#can_move_def, #user3)
+ActiveDefinition(CanMove, #can_move_def)
 ```
 
 An authoring surface may let someone type:
@@ -415,7 +415,7 @@ facts.
 add_rule(name: CanMove,
          head: [actor, item],
          body: { VisibleTo(actor, item), Portable(item) })
-activate_definition(CanMove, $can_move_def)
+activate_definition(CanMove, #can_move_def)
 ```
 
 This is the same status as editing a MOO verb. The typed text is not canonical;
@@ -442,25 +442,25 @@ relation:
 For unary relations, this often looks like a type or class predicate:
 
 ```mica
-Object($thing).
-Room($kitchen).
-Player($alice).
+Object(#thing).
+Room(#kitchen).
+Player(#alice).
 ```
 
 Semantically, these are just set-membership facts:
 
 ```text
-$thing in Object
-$kitchen in Room
-$alice in Player
+#thing in Object
+#kitchen in Room
+#alice in Player
 ```
 
 For n-ary relations, the fact relates several values:
 
 ```mica
-LocatedIn($lamp, $room17).
-Owner($lamp, $alice).
-Portable($lamp, true).
+LocatedIn(#lamp, #room17).
+Owner(#lamp, #alice).
+Portable(#lamp, true).
 ```
 
 A derived rule has the form:
@@ -509,31 +509,31 @@ return to source files as the canonical program.
 Property access is surface sugar over relational application:
 
 ```mica
-$lamp.portable
+#lamp.portable
 ```
 
 should normally target a named binary relation:
 
 ```mica
-Portable[$lamp]
+Portable[#lamp]
 ```
 
 or, when used as a predicate:
 
 ```mica
-Portable($lamp, true)
+Portable(#lamp, true)
 ```
 
 For ad-hoc extension slots, the same surface form can fall back to `Slot`:
 
 ```mica
-$lamp.glow_color
+#lamp.glow_color
 ```
 
 means:
 
 ```mica
-EffectiveSlot[$lamp, :glow_color]
+EffectiveSlot[#lamp, :glow_color]
 ```
 
 ## Objects
@@ -543,27 +543,27 @@ An object identifier behaves like an entity key that can be referenced by many
 relations.
 
 ```mica
-Object($lamp)
-Name($lamp, "brass lamp")
-Lit($lamp, false)
+Object(#lamp)
+Name(#lamp, "brass lamp")
+Lit(#lamp, false)
 ```
 
-`Object($lamp)` is not the object record. It is an existence or facet fact about
-the identity `$lamp`. The rest of the world describes `$lamp` by using it as a
+`Object(#lamp)` is not the object record. It is an existence or facet fact about
+the identity `#lamp`. The rest of the world describes `#lamp` by using it as a
 key-like value in other relations.
 
 Prototype extension is an ordered relation.
 
 ```mica
-Delegates($red_lamp, $lamp, 0)
-Color($red_lamp, "red")
+Delegates(#red_lamp, #lamp, 0)
+Color(#red_lamp, "red")
 ```
 
 Changing an object's behavior is a transaction over facts.
 
 ```mica
-retract Delegates($shark, $healthy_shark, _)
-assert Delegates($shark, $dying_shark, 0)
+retract Delegates(#shark, #healthy_shark, _)
+assert Delegates(#shark, #dying_shark, 0)
 ```
 
 Two objects may have exactly the same relational facts and still be distinct if
@@ -574,13 +574,13 @@ endpoints.
 For example:
 
 ```mica
-Object($room17)
-Object($room18)
-Name($room17, "Empty Room")
-Name($room18, "Empty Room")
+Object(#room17)
+Object(#room18)
+Name(#room17, "Empty Room")
+Name(#room18, "Empty Room")
 ```
 
-`$room17 != $room18` even if their current fact neighborhoods are otherwise
+`#room17 != #room18` even if their current fact neighborhoods are otherwise
 identical. Identity is not structural equality.
 
 ## Effective State
@@ -588,9 +588,9 @@ identical. Identity is not structural equality.
 Local facts and prototype-derived facts are kept distinct.
 
 ```mica
-Color($red_lamp, "red")
-Delegates($red_lamp, $lamp, 0)
-Lit($lamp, false)
+Color(#red_lamp, "red")
+Delegates(#red_lamp, #lamp, 0)
+Lit(#lamp, false)
 ```
 
 The visible state of an object is derived relation-by-relation:
@@ -617,7 +617,7 @@ Generic slots are reserved for ad-hoc extension data that is not important
 enough to deserve a named relation:
 
 ```mica
-Slot($lamp, :glow_color, "amber").
+Slot(#lamp, :glow_color, "amber").
 
 EffectiveSlot(o, key, value) :-
   Slot(o, key, value).
@@ -645,8 +645,8 @@ invocation roles -> find methods whose params match those roles -> method bodies
 
 Prototype delegation still matters, but it is not where behavior physically
 lives. A prototype is a stable identity that methods and rules can match
-against. A method that says `item: $portable` is applicable to an item when that
-item delegates to `$portable`:
+against. A method that says `item: #portable` is applicable to an item when that
+item delegates to `#portable`:
 
 ```mica
 Matches(obj, proto) :-
@@ -659,33 +659,33 @@ own identity, and the prototype is part of the method's applicability filter.
 For example:
 
 ```mica
-Method($move_portable_into_container).
-Selector($move_portable_into_container, :move).
-Param($move_portable_into_container, item, $portable).
-Param($move_portable_into_container, destination, $container).
+Method(#move_portable_into_container).
+Selector(#move_portable_into_container, :move).
+Param(#move_portable_into_container, item, #portable).
+Param(#move_portable_into_container, destination, #container).
 
-Delegates($coin, $portable, 0).
-Delegates($box, $container, 0).
+Delegates(#coin, #portable, 0).
+Delegates(#box, #container, 0).
 ```
 
-An invocation with `item: $coin` and `destination: $box` matches that method
-because `$coin` is in the `$portable` prototype lineage and `$box` is in the
-`$container` lineage.
+An invocation with `item: #coin` and `destination: #box` matches that method
+because `#coin` is in the `#portable` prototype lineage and `#box` is in the
+`#container` lineage.
 
 A dispatch table can make this visible:
 
 ```text
 selector  method                         role          matcher
-move      $move_portable_into_container  item          $portable
-move      $move_portable_into_container  destination   $container
-move      $wizard_move_anything          actor         $wizard
-open      $open_container                target        $container
-open      $open_locked_with_key          target        $locked_container
-open      $open_locked_with_key          instrument    $key
+move      #move_portable_into_container  item          #portable
+move      #move_portable_into_container  destination   #container
+move      #wizard_move_anything          actor         #wizard
+open      #open_container                target        #container
+open      #open_locked_with_key          target        #locked_container
+open      #open_locked_with_key          instrument    #key
 ```
 
-The object outliner may show methods related to `$portable`, but that is a
-discovery view. It does not mean the method is stored inside `$portable`.
+The object outliner may show methods related to `#portable`, but that is a
+discovery view. It does not mean the method is stored inside `#portable`.
 
 ## Named Relations and Dot Sugar
 
@@ -694,19 +694,19 @@ Core system and domain semantics should use named relations, not generic slots.
 Prefer:
 
 ```mica
-Name($lamp42, "golden lamp").
-Description($lamp42, "A polished golden lamp.").
-Portable($lamp42, true).
-LocatedIn($lamp42, $room17).
-Owner($lamp42, $alice).
+Name(#lamp42, "golden lamp").
+Description(#lamp42, "A polished golden lamp.").
+Portable(#lamp42, true).
+LocatedIn(#lamp42, #room17).
+Owner(#lamp42, #alice).
 ```
 
 over:
 
 ```mica
-Slot($lamp42, :name, "golden lamp").
-Slot($lamp42, :description, "A polished golden lamp.").
-Slot($lamp42, :portable, true).
+Slot(#lamp42, :name, "golden lamp").
+Slot(#lamp42, :description, "A polished golden lamp.").
+Slot(#lamp42, :portable, true).
 ```
 
 Named relations give the system clearer keys, constraints, indexes, authority
@@ -717,22 +717,22 @@ For user ergonomics, binary functional relations can have familiar dot
 assignment syntax:
 
 ```mica
-$lamp42.name = "golden lamp"
-$lamp42.description = "A polished golden lamp."
-$lamp42.portable = true
+#lamp42.name = "golden lamp"
+#lamp42.description = "A polished golden lamp."
+#lamp42.portable = true
 ```
 
 This is sugar for relation updates:
 
 ```mica
-retract Name($lamp42, _)
-assert Name($lamp42, "golden lamp")
+retract Name(#lamp42, _)
+assert Name(#lamp42, "golden lamp")
 
-retract Description($lamp42, _)
-assert Description($lamp42, "A polished golden lamp.")
+retract Description(#lamp42, _)
+assert Description(#lamp42, "A polished golden lamp.")
 
-retract Portable($lamp42, _)
-assert Portable($lamp42, true)
+retract Portable(#lamp42, _)
+assert Portable(#lamp42, true)
 ```
 
 This should be limited to declared binary relations where the first argument is
@@ -750,16 +750,16 @@ DotName(:name, Name).
 
 `Functional(Name, [object])` says there may be at most one `Name(object, value)`
 fact for a given object. The storage engine or transaction validator must
-enforce that constraint. Without it, `$lamp.name` is not valid dot syntax; the
+enforce that constraint. Without it, `#lamp.name` is not valid dot syntax; the
 author must use relation syntax and decide how to handle multiple results.
 
 Dot reads therefore have predictable cardinality:
 
 ```mica
-$lamp.name
+#lamp.name
 ```
 
-means "read the one visible `Name($lamp, value)`." If the dot name is declared
+means "read the one visible `Name(#lamp, value)`." If the dot name is declared
 to read through an effective relation such as `EffectiveName`, that effective
 relation must also have a single-value policy. If no value exists, the
 relation-specific policy decides whether this is `missing`, inherited, or an
@@ -769,14 +769,14 @@ not a set-valued property read.
 Assignment is likewise constrained:
 
 ```mica
-$lamp.name = "new name"
+#lamp.name = "new name"
 ```
 
 means:
 
 ```mica
-retract Name($lamp, _)
-assert Name($lamp, "new name")
+retract Name(#lamp, _)
+assert Name(#lamp, "new name")
 ```
 
 or the equivalent update against the declared backing relation for that dot
@@ -785,8 +785,8 @@ name. It does not update an arbitrary slot dictionary.
 Higher-arity relations should usually be written in relation form:
 
 ```mica
-AcousticNeighbor($room17, $room18, attenuation: 2, max_depth: 3).
-Permission($cap17, write, LocatedIn, ($lamp42, $room17)).
+AcousticNeighbor(#room17, #room18, attenuation: 2, max_depth: 3).
+Permission(#cap17, write, LocatedIn, (#lamp42, #room17)).
 ```
 
 Trying to force all arities through dot syntax would recreate record-shaped
@@ -800,17 +800,17 @@ A command or function call creates a role-bound call frame.
 For example:
 
 ```mica
-move $coin into $box
+move #coin into #box
 ```
 
 may parse to a compact role call:
 
 ```mica
-:move(actor: $current_user,
-      item: $coin,
+:move(actor: #current_user,
+      item: #coin,
       prep: :into,
-      destination: $box,
-      context: $current_room)
+      destination: #box,
+      context: #current_room)
 ```
 
 That call frame is the input to dispatch semantics. It does not need to be
@@ -822,11 +822,11 @@ planning, the call frame can be reified into normalized facts:
 ```mica
 Invocation(i)
 Selector(i, move)
-Arg(i, actor, $current_user)
-Arg(i, item, $coin)
+Arg(i, actor, #current_user)
+Arg(i, item, #coin)
 Arg(i, prep, :into)
-Arg(i, destination, $box)
-Arg(i, context, $current_room)
+Arg(i, destination, #box)
+Arg(i, context, #current_room)
 ```
 
 Nothing about `item`, `prep`, `destination`, `actor`, or `context` is built into
@@ -838,16 +838,16 @@ representation, not the normal authoring syntax.
 For MOO familiarity, Mica can also support receiver-call syntax:
 
 ```mica
-$bucket:pour_into(500, :ml, $other_bucket)
+#bucket:pour_into(500, :ml, #other_bucket)
 ```
 
 This is sugar for a role call:
 
 ```mica
-:pour_into(from: $bucket,
+:pour_into(from: #bucket,
            quantity: 500,
            unit: :ml,
-           to: $other_bucket)
+           to: #other_bucket)
 ```
 
 The selector declares which role the syntactic receiver fills and how positional
@@ -863,7 +863,7 @@ end
 or in a method signature:
 
 ```mica
-method $pour_liquid :pour_into
+method #pour_liquid :pour_into
   receiver from
   positional quantity, unit, to
   roles from: LiquidContainer,
@@ -892,8 +892,8 @@ to: LiquidContainer
 So these are equivalent at dispatch time:
 
 ```mica
-$bucket:pour_into(500, :ml, $other_bucket)
-:pour_into(from: $bucket, quantity: 500, unit: :ml, to: $other_bucket)
+#bucket:pour_into(500, :ml, #other_bucket)
+:pour_into(from: #bucket, quantity: 500, unit: :ml, to: #other_bucket)
 ```
 
 The parser is allowed to be user-extensible. Command grammars can themselves be
@@ -915,36 +915,36 @@ or relation definition. The identity is not the source text and not a function
 pointer. It is a key-like value described by relations:
 
 ```mica
-Object($move_into).
-Method($move_into).
-Selector($move_into, :move).
-Param($move_into, actor, $actor).
-Param($move_into, item, $portable).
-Owner($move_into, $arch_wizard).
-ActiveVersion($move_into, version_3).
+Object(#move_into).
+Method(#move_into).
+Selector(#move_into, :move).
+Param(#move_into, actor, #actor).
+Param(#move_into, item, #portable).
+Owner(#move_into, #arch_wizard).
+ActiveVersion(#move_into, version_3).
 ```
 
 That method identity is useful because methods need ownership, permissions,
 history, active versions, documentation, dispatch metadata, and references from
-other relations. Editing a method changes facts about `$move_into`; it does not
+other relations. Editing a method changes facts about `#move_into`; it does not
 replace an invisible function stored inside a receiver object.
 
 The full creation syntax is `method`. It names the method identity and describes
 the behavior object explicitly:
 
 ```mica
-method $move_into :move
+method #move_into :move
   names [:move]
   grammar "{item} into {destination}"
   receiver item
   positional destination
-  roles actor: $actor,
-        item: $portable,
+  roles actor: #actor,
+        item: #portable,
         prep: :into,
-        destination: $container,
-        context: $room
+        destination: #container,
+        context: #room
   mode one
-  owner $arch_wizard
+  owner #arch_wizard
 do
   require CanMove(actor, item)
   require CanContain(destination, item)
@@ -958,13 +958,13 @@ The signature part creates the method object and its dispatch metadata. The body
 creates a method version that compiles to a transaction plan.
 
 ```mica
-Method($m1)
-Selector($m1, move)
-Param($m1, actor, $player)
-Param($m1, item, $portable)
-Param($m1, prep, :into)
-Param($m1, destination, $container)
-Source($m1, "...author text...")
+Method(#m1)
+Selector(#m1, move)
+Param(#m1, actor, #player)
+Param(#m1, item, #portable)
+Param(#m1, prep, :into)
+Param(#m1, destination, #container)
+Source(#m1, "...author text...")
 ```
 
 The shorter `verb` form is only authoring sugar for command-facing methods. It
@@ -973,7 +973,7 @@ care to choose the method identity, owner, command names, receiver role, or
 version metadata explicitly.
 
 ```mica
-verb move(self item: $portable, actor: $player, prep: :into, destination: $container)
+verb move(self item: #portable, actor: #player, prep: :into, destination: #container)
   require CanMove(actor, item)
   require CanContain(destination, item)
 
@@ -983,18 +983,18 @@ end
 ```
 
 This is sugar for creating a fresh method identity, for example
-`$method_7f3a`, with selector `:move`, inferred names and default policy, plus
+`#method_7f3a`, with selector `:move`, inferred names and default policy, plus
 an active body version.
 
 ```mica
-Object($method_7f3a).
-Method($method_7f3a).
-Selector($method_7f3a, :move).
-Param($method_7f3a, item, $portable).
-Param($method_7f3a, actor, $player).
-Param($method_7f3a, prep, :into).
-Param($method_7f3a, destination, $container).
-ActiveVersion($method_7f3a, version_1).
+Object(#method_7f3a).
+Method(#method_7f3a).
+Selector(#method_7f3a, :move).
+Param(#method_7f3a, item, #portable).
+Param(#method_7f3a, actor, #player).
+Param(#method_7f3a, prep, :into).
+Param(#method_7f3a, destination, #container).
+ActiveVersion(#method_7f3a, version_1).
 ```
 
 A method body runs with role bindings. The surface syntax is MOO-like in
@@ -1009,11 +1009,11 @@ prototype identities, primitive-domain relations, derived predicates, or literal
 primitive values.
 
 ```mica
-actor: $wizard        # prototype or identity match
-item: Portable        # derived relation match
-count: Int            # primitive-domain match
-prep: :into           # literal symbol match
-target: $door17       # identity-specific match
+actor: #wizard        // prototype or identity match
+item: Portable        // derived relation match
+count: Int            // primitive-domain match
+prep: :into           // literal symbol match
+target: #door17       // identity-specific match
 ```
 
 ## Behavior Discovery
@@ -1023,7 +1023,7 @@ outliner workflow, not "open the receiver object and edit the verb stored
 there."
 
 The standard browser should provide a behavior view for an identity. For
-`$thing`, that view is a query over method metadata:
+`#thing`, that view is a query over method metadata:
 
 ```mica
 RelatedMethod(object, method) :-
@@ -1036,25 +1036,25 @@ RelatedMethod(object, method) :-
   DelegatesStar(object, proto).
 ```
 
-For a prototype such as `$thing`, the outliner can show methods that mention it
+For a prototype such as `#thing`, the outliner can show methods that mention it
 directly:
 
 ```text
-$thing behavior
-  get        $thing_get        item: $thing
-  drop       $thing_drop       item: $thing
-  look       $thing_look       target: $thing
-  describe   $thing_describe   target: $thing
+#thing behavior
+  get        #thing_get        item: #thing
+  drop       #thing_drop       item: #thing
+  look       #thing_look       target: #thing
+  describe   #thing_describe   target: #thing
 ```
 
-For an instance such as `$brass_key`, the outliner can show methods that would
+For an instance such as `#brass_key`, the outliner can show methods that would
 currently apply through delegation:
 
 ```text
-$brass_key applicable behavior
-  get        $thing_get        item matches $thing
-  unlock     $unlock_with_key  instrument matches $key
-  describe   $thing_describe   target matches $thing
+#brass_key applicable behavior
+  get        #thing_get        item matches #thing
+  unlock     #unlock_with_key  instrument matches #key
+  describe   #thing_describe   target matches #thing
 ```
 
 This is the Mica replacement for a MOO verb list. It is not a containment claim;
@@ -1115,18 +1115,18 @@ The default matching policy is:
 For example, this method requires both `item` and `destination`:
 
 ```mica
-Param($move_into, item, $portable).
-Param($move_into, destination, $container).
+Param(#move_into, item, #portable).
+Param(#move_into, destination, #container).
 ```
 
-An invocation with only `item: $coin` does not match. An invocation with
-`item: $coin`, `destination: $box`, and `actor: $alice` can still match; the
+An invocation with only `item: #coin` does not match. An invocation with
+`item: #coin`, `destination: #box`, and `actor: #alice` can still match; the
 extra `actor` role remains available to the body or to other applicable methods.
 
 Closed signatures are explicit:
 
 ```mica
-ClosedSignature($exact_open).
+ClosedSignature(#exact_open).
 ```
 
 with the semantic rule:
@@ -1144,8 +1144,8 @@ UnsatisfiedParam(inv, method) :-
 Optional roles are also explicit:
 
 ```mica
-OptionalParam($look, instrument).
-DefaultArg($look, instrument, $none).
+OptionalParam(#look, instrument).
+DefaultArg(#look, instrument, #none).
 ```
 
 This keeps N-ary dispatch predictable. Adding a new role to an invocation can
@@ -1177,7 +1177,7 @@ Matches(:into, :into)
 The primitive result of dispatch semantics is a set:
 
 ```mica
-Applicable(i) -> {$m1, $m2, $m3}
+Applicable(i) -> {#m1, #m2, #m3}
 ```
 
 Single-method dispatch is a derived mode, not the foundation.
@@ -1196,11 +1196,11 @@ end
 Common modes:
 
 ```mica
-all selector(args)        # return or run all applicable behaviors
-best selector(args)       # choose most specific by rank
-one selector(args)        # require exactly one applicable behavior
-fold selector(args) by F  # combine results explicitly
-emit selector(args)       # event-style handlers writing to the transaction
+all selector(args)        // return or run all applicable behaviors
+best selector(args)       // choose most specific by rank
+one selector(args)        // require exactly one applicable behavior
+fold selector(args) by F  // combine results explicitly
+emit selector(args)       // event-style handlers writing to the transaction
 ```
 
 Ambiguity is only an error in modes that require uniqueness. In other modes,
@@ -1210,12 +1210,12 @@ For example, describing a locked container may naturally combine several
 contributions:
 
 ```mica
-verb describe(target: $thing) -> Text
-verb describe(target: $container) -> Text
-verb describe(target: $locked) -> Text
+verb describe(target: #thing) -> Text
+verb describe(target: #container) -> Text
+verb describe(target: #locked) -> Text
 ```
 
-If `$chest` is both a container and locked, `all describe(target: $chest)` may
+If `#chest` is both a container and locked, `all describe(target: #chest)` may
 produce multiple facts or text fragments. A separate reducer decides how to
 combine them.
 
@@ -1259,16 +1259,16 @@ conflicts, then commits the transaction atomically.
 In executable Mica code, the author writes:
 
 ```mica
-assert LocatedIn($coin, $box)
-retract LocatedIn($coin, $room)
+assert LocatedIn(#coin, #box)
+retract LocatedIn(#coin, #room)
 ```
 
 If the runtime reifies pending transaction writes for planning, auditing, or
 authorization, they can be represented internally as:
 
 ```mica
-Proposal(tx, assert, LocatedIn($coin, $box))
-Proposal(tx, retract, LocatedIn($coin, $room))
+Proposal(tx, assert, LocatedIn(#coin, #box))
+Proposal(tx, retract, LocatedIn(#coin, #room))
 ```
 
 This keeps `all` and `emit` dispatch coherent. Multiple behaviors can write to
@@ -1279,7 +1279,7 @@ or method invocation normally runs in an implicit transaction that commits befor
 the prompt returns:
 
 ```mica
-> $lamp.lit = true
+> #lamp.lit = true
 committed tx: 4817
 ```
 
@@ -1303,8 +1303,8 @@ intent is:
 
 ```mica
 transaction
-  $lamp.lit = true
-  assert Event(:lit, $alice, $lamp)
+  #lamp.lit = true
+  assert Event(:lit, #alice, #lamp)
 end
 ```
 
@@ -1314,7 +1314,7 @@ default interactive mode is auto-commit.
 The command:
 
 ```mica
-move $coin into $box
+move #coin into #box
 ```
 
 has this mechanical pipeline:
@@ -1350,28 +1350,28 @@ Constraints are part of the world model, not external validation code.
 Objects, methods, and derived relations evolve over time. Editing creates facts.
 
 ```mica
-Source($m1, version_7, text)
-Compiled($m1, version_7, bytecode)
-ActiveVersion($m1, version_7)
-EditedBy($m1, version_7, $user3)
-EditedAt($m1, version_7, now)
+Source(#m1, version_7, text)
+Compiled(#m1, version_7, bytecode)
+ActiveVersion(#m1, version_7)
+EditedBy(#m1, version_7, #user3)
+EditedAt(#m1, version_7, now)
 ```
 
 Relation definitions use the same versioning shape:
 
 ```mica
-Source($can_move_def, version_4, text)
-DefinitionAst($can_move_def, version_4, ast)
-CompiledDefinition($can_move_def, version_4, plan)
-ActiveVersion($can_move_def, version_4)
-EditedBy($can_move_def, version_4, $user3)
-EditedAt($can_move_def, version_4, now)
+Source(#can_move_def, version_4, text)
+DefinitionAst(#can_move_def, version_4, ast)
+CompiledDefinition(#can_move_def, version_4, plan)
+ActiveVersion(#can_move_def, version_4)
+EditedBy(#can_move_def, version_4, #user3)
+EditedAt(#can_move_def, version_4, now)
 ```
 
 Rollback is changing active facts, not restoring source files.
 
 ```mica
-activate_version($m1, version_6)
+activate_version(#m1, version_6)
 ```
 
 The live database is canonical. A source file is a serialization of some subset
@@ -1386,25 +1386,25 @@ The file format is for archival, review, import/export, fixtures, and bulk
 editing. It may contain ground facts and pleasant sugared forms:
 
 ```mica
-Object($lamp).
-Name($lamp, "brass lamp").
-Lit($lamp, false).
-Delegates($lamp, $thing, 0).
+Object(#lamp).
+Name(#lamp, "brass lamp").
+Lit(#lamp, false).
+Delegates(#lamp, #thing, 0).
 ```
 
 or:
 
 ```mica
-object $lamp extends $thing
+object #lamp extends #thing
   name = "brass lamp"
   lit = false
 end
 
-method $lamp_light :light
+method #lamp_light :light
   names [:light]
   grammar "{target}"
-  roles actor: $actor,
-        target: $lamp
+  roles actor: #actor,
+        target: #lamp
   mode one
 do
   target.lit = true
@@ -1419,27 +1419,27 @@ Filing this in runs an import transaction. The importer interprets outer
 serialization sugar as ordinary fact changes:
 
 ```mica
-assert Object($lamp)
-assert Delegates($lamp, $thing, 0)
-assert Name($lamp, "brass lamp")
-assert Lit($lamp, false)
+assert Object(#lamp)
+assert Delegates(#lamp, #thing, 0)
+assert Name(#lamp, "brass lamp")
+assert Lit(#lamp, false)
 
-assert Object($lamp_light)
-assert Method($lamp_light)
-assert Selector($lamp_light, :light)
-assert Param($lamp_light, actor, $actor)
-assert Param($lamp_light, target, $lamp)
-assert Source($lamp_light, version, source_text)
-assert ActiveVersion($lamp_light, version)
+assert Object(#lamp_light)
+assert Method(#lamp_light)
+assert Selector(#lamp_light, :light)
+assert Param(#lamp_light, actor, #actor)
+assert Param(#lamp_light, target, #lamp)
+assert Source(#lamp_light, version, source_text)
+assert ActiveVersion(#lamp_light, version)
 ```
 
 The fileout envelope is therefore not a second mutation language. The executable
 language has one way to propose fact changes: `assert` and `retract`.
 
 ```mica
-method $lamp_light :light
-  roles actor: $actor,
-        target: $lamp
+method #lamp_light :light
+  roles actor: #actor,
+        target: #lamp
 do
   require CanLight(actor, target)
   target.lit = true
@@ -1474,17 +1474,17 @@ unforgeable identity. Possessing the identity grants designation and authority
 according to relations derived from that capability and the current world state.
 
 ```mica
-Capability($cap17)
-Arg(inv, authority, $cap17)
-Arg(inv, actor, $user3)
-Arg(inv, subject, $current_subject)
+Capability(#cap17)
+Arg(inv, authority, #cap17)
+Arg(inv, actor, #user3)
+Arg(inv, subject, #current_subject)
 ```
 
 Knowing an object id is not authority:
 
 ```text
-$door17 designates a door
-$cap17 authorizes some operation involving it
+#door17 designates a door
+#cap17 authorizes some operation involving it
 ```
 
 This preserves the useful object-capability distinction:
@@ -1500,7 +1500,7 @@ assert that it holds one. The possession relation is supplied by the runtime as
 invocation-local state.
 
 ```mica
-Authority(inv, $cap17)
+Authority(inv, #cap17)
 ```
 
 The kernel enforces authority at three boundaries:
@@ -1571,7 +1571,7 @@ Subjective dispatch is just another role. A subject can contribute to method
 selection and authority derivation without being a special runtime construct.
 
 ```mica
-verb inspect(actor: $player, target: $thing, subject: $debug_subject)
+verb inspect(actor: #player, target: #thing, subject: #debug_subject)
 ```
 
 ## Syntax Sketch
@@ -1579,7 +1579,7 @@ verb inspect(actor: $player, target: $thing, subject: $debug_subject)
 Object authoring:
 
 ```mica
-object $lamp extends $thing
+object #lamp extends #thing
   name = "brass lamp"
   lit = false
 end
@@ -1588,9 +1588,9 @@ end
 Multiple delegation:
 
 ```mica
-object $magic_lamp
-  extends $lamp
-  extends $magic_item
+object #magic_lamp
+  extends #lamp
+  extends #magic_item
   charges = 3
 end
 ```
@@ -1613,11 +1613,11 @@ objects; it is not the underlying storage model.
 Verb definitions:
 
 ```mica
-verb look(actor: $player, target: $thing) -> Text
+verb look(actor: #player, target: #thing) -> Text
   return Description[target]
 end
 
-verb open(actor: $player, target: $container)
+verb open(actor: #player, target: #container)
   require CanOpen(actor, target)
   target.closed = false
 end
@@ -1626,7 +1626,7 @@ end
 Event-style contributions:
 
 ```mica
-verb after_move(actor: $player, item: $thing, destination: $room)
+verb after_move(actor: #player, item: #thing, destination: #room)
   emit Message(actor, "Moved.")
 end
 ```
@@ -1657,10 +1657,10 @@ containment are all queryable and transactionally editable.
 The familiar MOO command:
 
 ```mica
-move $coin into $box
+move #coin into #box
 ```
 
-is not "call `move` on `$coin`." It is:
+is not "call `move` on `#coin`." It is:
 
 ```text
 assert an invocation relation
@@ -1710,7 +1710,7 @@ relation[object]
 Verb invocation is relational restriction:
 
 ```mica
-move(actor: $user, item: $coin, prep: :into, destination: $box)
+move(actor: #user, item: #coin, prep: :into, destination: #box)
 ```
 
 desugars to an invocation relation plus dispatch over `Applicable`.

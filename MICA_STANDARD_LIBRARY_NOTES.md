@@ -31,14 +31,14 @@ SubjectFact(subject, Atom(relation, args)) :-
   Readable(CurrentAuthority(), relation, args).
 ```
 
-For `$lamp42`, this might include:
+For `#lamp42`, this might include:
 
 ```mica
-Object($lamp42)
-Name($lamp42, "brass lamp")
-LocatedIn($lamp42, $room17)
-Delegates($lamp42, $thing, 0)
-Portable($lamp42, true)
+Object(#lamp42)
+Name(#lamp42, "brass lamp")
+LocatedIn(#lamp42, #room17)
+Delegates(#lamp42, #thing, 0)
+Portable(#lamp42, true)
 ```
 
 This is the closest equivalent to opening an object in a MOO browser. It is a
@@ -60,13 +60,13 @@ EffectiveFact(subject, Atom(Lit, [subject, value])) :-
 The standard outliner should distinguish local facts from effective facts:
 
 ```text
-$lamp42
+#lamp42
   local
     Name: "brass lamp"
-    LocatedIn: $room17
+    LocatedIn: #room17
   effective
-    Portable: true          inherited from $thing
-    Description: "A thing." inherited from $thing
+    Portable: true          inherited from #thing
+    Description: "A thing." inherited from #thing
 ```
 
 This avoids pretending inherited state is physically stored on the object.
@@ -86,8 +86,8 @@ IncomingFact(target, Atom(relation, args)) :-
 For a room, this could show contained objects:
 
 ```mica
-LocatedIn($coin, $room17)
-LocatedIn($alice, $room17)
+LocatedIn(#coin, #room17)
+LocatedIn(#alice, #room17)
 ```
 
 Incoming facts are often essential for world authoring, but they should not be
@@ -116,9 +116,9 @@ it shows methods currently applicable through delegation.
 The browser should label why a method is related:
 
 ```text
-$brass_key behavior
-  get       $thing_get        item matches $thing
-  unlock    $unlock_with_key  instrument matches $key
+#brass_key behavior
+  get       #thing_get        item matches #thing
+  unlock    #unlock_with_key  instrument matches #key
 ```
 
 ### 1.5 Outliner Composition
@@ -156,10 +156,10 @@ and write authority.
 Examples:
 
 ```mica
-Object($lamp42)
-Name($lamp42, "brass lamp")
-LocatedIn($lamp42, $room17)
-Delegates($lamp42, $thing, 0)
+Object(#lamp42)
+Name(#lamp42, "brass lamp")
+LocatedIn(#lamp42, #room17)
+Delegates(#lamp42, #thing, 0)
 ```
 
 Authors can query these relations when authorized, define rules over them, and
@@ -174,8 +174,8 @@ kernel code.
 Examples:
 
 ```mica
-ActiveVersion($method, version)
-CompiledPlan($method, version, plan)
+ActiveVersion(#method, version)
+CompiledPlan(#method, version, plan)
 RelationSchema(Name, schema)
 Functional(Name, [object])
 DotName(:name, Name)
@@ -302,7 +302,7 @@ The outliner should display this as a collection and preserve provenance:
 ```text
 aliases
   "lamp"      local
-  "light"     inherited from $thing
+  "light"     inherited from #thing
 ```
 
 ### 3.3 Error on Conflict
@@ -362,14 +362,14 @@ should participate in dispatch, permissions, constraints, indexing, history,
 queries, or outliner views, it should be modeled relationally:
 
 ```mica
-Lit($lamp, true)
-Color($lamp, "brass")
+Lit(#lamp, true)
+Color(#lamp, "brass")
 ```
 
 instead of:
 
 ```mica
-Slot($lamp, :state, [:lit -> true, :color -> "brass"])
+Slot(#lamp, :state, [:lit -> true, :color -> "brass"])
 ```
 
 The rule of thumb:

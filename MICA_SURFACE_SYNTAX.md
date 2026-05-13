@@ -45,8 +45,8 @@ Forms used only for effects return a conventional unit value, written here as
 `nothing` until the value model is finalized.
 
 ```mica
-assert Lit($lamp, true)   // returns nothing
-retract Lit($lamp, _)     // returns nothing
+assert Lit(#lamp, true)   // returns nothing
+retract Lit(#lamp, _)     // returns nothing
 ```
 
 ### 1.2 Semicolons Are Separators
@@ -74,7 +74,7 @@ Proposed convention:
 ```text
 UpperCamelCase  relation names: LocatedIn, EffectiveName
 lower_snake     variables and roles: actor, target, destination
-$lower_snake    stable identities: $brass_lamp, $room17
+#lower_snake    stable identities: #brass_lamp, #room17
 :lower_snake    symbols: :into, :text_html
 ```
 
@@ -91,7 +91,7 @@ false
 "brass lamp"
 :into
 E_NOT_PORTABLE
-$lamp42
+#lamp42
 ```
 
 ### 2.1 Error Codes
@@ -155,14 +155,14 @@ dispatch on, constrain, authorize, index, or show a piece of state in an
 outliner, that state should usually be a relation:
 
 ```mica
-Lit($lamp, true)
-Color($lamp, "brass")
+Lit(#lamp, true)
+Color(#lamp, "brass")
 ```
 
 not a map hidden inside one fact:
 
 ```mica
-Slot($lamp, :state, {:lit -> true, :color -> "brass"})
+Slot(#lamp, :state, {:lit -> true, :color -> "brass"})
 ```
 
 Map update syntax can mirror indexed assignment:
@@ -181,7 +181,7 @@ Use MOO/mooR-style ranges:
 ```mica
 items[1]
 items[2..4]
-items[2..$]       // `$` as end marker inside ranges
+items[2.._]       // `_` as end marker inside ranges
 ```
 
 Whether Mica remains 1-indexed like MOO/mooR should be a deliberate choice. If
@@ -226,14 +226,14 @@ Dot assignment is available only for declared dot names backed by binary
 functional relations:
 
 ```mica
-$lamp.name = "golden lamp"
+#lamp.name = "golden lamp"
 ```
 
 expands to transaction writes:
 
 ```mica
-retract Name($lamp, _)
-assert Name($lamp, "golden lamp")
+retract Name(#lamp, _)
+assert Name(#lamp, "golden lamp")
 ```
 
 There is no silent fallback from dot assignment to `Slot`.
@@ -282,9 +282,9 @@ end
 ### 6.2 Conditionals
 
 ```mica
-if Lit($lamp, true)
+if Lit(#lamp, true)
   "lit"
-elseif Portable($lamp, true)
+elseif Portable(#lamp, true)
   "portable"
 else
   "ordinary"
@@ -464,8 +464,8 @@ format_name(actor)
 Mica's direct dispatch form should expose named roles:
 
 ```mica
-:move(actor: $alice, item: $coin, destination: $box)
-:look(actor: $alice, target: $lamp)
+:move(actor: #alice, item: #coin, destination: #box)
+:look(actor: #alice, target: #lamp)
 ```
 
 This is the canonical surface for invoking a selector with explicit role
@@ -476,7 +476,7 @@ bindings.
 For MOO familiarity, receiver syntax fills a declared receiver role:
 
 ```mica
-$box:put($coin, :into, actor: $alice)
+#box:put(#coin, :into, actor: #alice)
 ```
 
 If selector metadata declares:
@@ -491,7 +491,7 @@ end
 then the call desugars to:
 
 ```mica
-:put(destination: $box, item: $coin, prep: :into, actor: $alice)
+:put(destination: #box, item: #coin, prep: :into, actor: #alice)
 ```
 
 The receiver is syntactic sugar, not a privileged dispatch axis.
@@ -503,8 +503,8 @@ shape:
 
 ```mica
 selector = :open
-: (selector)(actor: $alice, target: $door)
-$door:(selector)(actor: $alice)
+: (selector)(actor: #alice, target: #door)
+#door:(selector)(actor: #alice)
 ```
 
 The exact spacing and parsing of `:(selector)` needs grammar work.
@@ -514,8 +514,8 @@ The exact spacing and parsing of `:(selector)` needs grammar work.
 Relation atoms:
 
 ```mica
-LocatedIn($coin, $room)
-Name($lamp, "brass lamp")
+LocatedIn(#coin, #room)
+Name(#lamp, "brass lamp")
 ```
 
 Rules use Horn-clause syntax:
@@ -530,7 +530,7 @@ Inside executable code, bare atoms are query conditions when used in boolean
 positions:
 
 ```mica
-if LocatedIn($coin, $room)
+if LocatedIn(#coin, #room)
   ...
 end
 ```
@@ -538,8 +538,8 @@ end
 Fact changes are explicit:
 
 ```mica
-assert LocatedIn($coin, $box)
-retract LocatedIn($coin, _)
+assert LocatedIn(#coin, #box)
+retract LocatedIn(#coin, _)
 ```
 
 ## 11. Methods and Verbs
@@ -547,14 +547,14 @@ retract LocatedIn($coin, _)
 `method` is the explicit behavior definition form. It names the method identity.
 
 ```mica
-method $move_into :move
+method #move_into :move
   names [:move]
   grammar "{item} into {destination}"
   receiver item
   positional destination
-  roles actor: $player,
-        item: $portable,
-        destination: $container
+  roles actor: #player,
+        item: #portable,
+        destination: #container
   mode one
 do
   require CanMove(actor, item)
@@ -569,7 +569,7 @@ end
 care to name the method identity explicitly.
 
 ```mica
-verb move(self item: $portable, actor: $player, destination: $container)
+verb move(self item: #portable, actor: #player, destination: #container)
   require CanMove(actor, item)
   require CanContain(destination, item)
 
@@ -620,14 +620,14 @@ end
 Filein/fileout may use outer sugar:
 
 ```mica
-object $lamp extends $thing
+object #lamp extends #thing
   name = "brass lamp"
   lit = false
 end
 
-method $lamp_light :light
-  roles actor: $player,
-        target: $lamp
+method #lamp_light :light
+  roles actor: #player,
+        target: #lamp
 do
   target.lit = true
   assert Event(:lit, actor, target)

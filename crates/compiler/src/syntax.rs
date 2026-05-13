@@ -58,7 +58,7 @@ pub enum SyntaxKind {
     Dot,
     DotDot,
     Colon,
-    Dollar,
+    Hash,
     At,
     Question,
     Underscore,

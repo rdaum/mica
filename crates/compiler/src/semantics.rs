@@ -1249,7 +1249,7 @@ mod tests {
     #[test]
     fn preserves_span_map_for_stable_node_ids() {
         let source = "let x = 1\n\
-                      CanMove(actor: $alice, item: $coin)\n\
+                      CanMove(actor: #alice, item: #coin)\n\
                       {y} => x + y";
         let ast = parse_ast(source);
         assert_eq!(ast.errors, vec![]);
@@ -1299,8 +1299,8 @@ mod tests {
     #[test]
     fn distinguishes_locals_from_external_relations_and_runtime_names() {
         let program = parse_ok(
-            "let actor = $alice\n\
-             CanMove(actor, $coin)\n\
+            "let actor = #alice\n\
+             CanMove(actor, #coin)\n\
              format_name(actor)",
         );
         assert_eq!(program.diagnostics, vec![]);
@@ -1328,7 +1328,7 @@ mod tests {
             "const limit = 3\n\
              limit = 4\n\
              1 = limit\n\
-             $lamp.name = \"gold\"",
+             #lamp.name = \"gold\"",
         );
         assert_eq!(program.diagnostics.len(), 2);
         assert!(
@@ -1374,11 +1374,11 @@ mod tests {
     #[test]
     fn normalizes_dispatch_relation_atoms_and_fact_changes() {
         let program = parse_ok(
-            ":move(actor: $alice, item: $coin)\n\
-             $box:put($coin, :into)\n\
-             CanMove($alice, $coin)\n\
-             assert LocatedIn($coin, $box)\n\
-             retract LocatedIn($coin, _)",
+            ":move(actor: #alice, item: #coin)\n\
+             #box:put(#coin, :into)\n\
+             CanMove(#alice, #coin)\n\
+             assert LocatedIn(#coin, #box)\n\
+             retract LocatedIn(#coin, _)",
         );
         assert_eq!(program.diagnostics, vec![]);
         assert!(matches!(
