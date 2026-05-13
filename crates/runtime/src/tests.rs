@@ -1,6 +1,6 @@
 use crate::{
-    Effect, Instruction, Operand, Program, Register, RuntimeError, Scheduler, SchedulerError,
-    SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
+    Effect, Instruction, Operand, Program, ProgramResolver, Register, RuntimeError, Scheduler,
+    SchedulerError, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -62,6 +62,7 @@ fn run_program(
         1,
         kernel,
         Arc::new(program),
+        Arc::new(ProgramResolver::new()),
         TaskLimits {
             instruction_budget: limit,
             max_retries: 10,
@@ -301,7 +302,13 @@ fn suspend_commits_then_resume_continues_in_new_transaction() {
     )
     .unwrap();
 
-    let mut task = Task::new(1, &kernel, Arc::new(program), TaskLimits::default());
+    let mut task = Task::new(
+        1,
+        &kernel,
+        Arc::new(program),
+        Arc::new(ProgramResolver::new()),
+        TaskLimits::default(),
+    );
     assert_eq!(
         task.run().unwrap(),
         TaskOutcome::Suspended {
@@ -373,6 +380,7 @@ fn task_retries_from_last_clean_state_on_commit_conflict() {
         1,
         &kernel,
         Arc::new(program),
+        Arc::new(ProgramResolver::new()),
         TaskLimits {
             instruction_budget: 100,
             max_retries: 2,
@@ -417,6 +425,7 @@ fn explicit_rollback_retry_stops_at_retry_limit() {
         1,
         &kernel,
         Arc::new(program),
+        Arc::new(ProgramResolver::new()),
         TaskLimits {
             instruction_budget: 100,
             max_retries: 2,
@@ -661,6 +670,7 @@ fn call_depth_limit_is_enforced() {
         1,
         &kernel,
         caller,
+        Arc::new(ProgramResolver::new()),
         TaskLimits {
             instruction_budget: 100,
             max_retries: 1,
@@ -790,6 +800,7 @@ fn commit_conflict_retries_restore_call_stack() {
         1,
         &kernel,
         caller,
+        Arc::new(ProgramResolver::new()),
         TaskLimits {
             instruction_budget: 100,
             max_retries: 2,

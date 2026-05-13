@@ -1,4 +1,6 @@
-use crate::{Program, SuspendKind, Task, TaskError, TaskId, TaskLimits, TaskOutcome};
+use crate::{
+    Program, ProgramResolver, SuspendKind, Task, TaskError, TaskId, TaskLimits, TaskOutcome,
+};
 use mica_relation_kernel::RelationKernel;
 use mica_var::Value;
 use std::collections::HashMap;
@@ -50,6 +52,7 @@ pub struct Scheduler {
     completed: HashMap<TaskId, TaskOutcome>,
     effects: EffectLog,
     limits: TaskLimits,
+    resolver: Arc<ProgramResolver>,
 }
 
 impl Scheduler {
@@ -61,11 +64,17 @@ impl Scheduler {
             completed: HashMap::new(),
             effects: EffectLog::default(),
             limits: TaskLimits::default(),
+            resolver: Arc::new(ProgramResolver::new()),
         }
     }
 
     pub fn with_limits(mut self, limits: TaskLimits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    pub fn with_resolver(mut self, resolver: Arc<ProgramResolver>) -> Self {
+        self.resolver = resolver;
         self
     }
 
@@ -81,12 +90,22 @@ impl Scheduler {
         &mut self.effects
     }
 
+    pub fn resolver(&self) -> &Arc<ProgramResolver> {
+        &self.resolver
+    }
+
     pub fn submit(
         &mut self,
         program: Arc<Program>,
     ) -> Result<(TaskId, TaskOutcome), SchedulerError> {
         let task_id = self.allocate_task_id();
-        let mut task = Task::new(task_id, &self.kernel, program, self.limits);
+        let mut task = Task::new(
+            task_id,
+            &self.kernel,
+            program,
+            self.resolver.clone(),
+            self.limits,
+        );
         let outcome = task.run()?;
         let suspended_state = suspended_state(&outcome, &task);
         drop(task);
@@ -102,7 +121,12 @@ impl Scheduler {
             .suspended
             .remove(&task_id)
             .ok_or(SchedulerError::UnknownTask(task_id))?;
-        let mut task = Task::from_state(task_id, &self.kernel, suspended.state);
+        let mut task = Task::from_state(
+            task_id,
+            &self.kernel,
+            self.resolver.clone(),
+            suspended.state,
+        );
         let outcome = task.run()?;
         let suspended_state = suspended_state(&outcome, &task);
         drop(task);

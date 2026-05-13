@@ -1,4 +1,4 @@
-use crate::{RegisterVm, SuspendKind, TaskError, VmHostResponse, VmState};
+use crate::{ProgramResolver, RegisterVm, SuspendKind, TaskError, VmHostResponse, VmState};
 use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
 use mica_var::Value;
 use std::sync::Arc;
@@ -45,6 +45,7 @@ pub struct Task<'a> {
     task_id: TaskId,
     kernel: &'a RelationKernel,
     program: Arc<crate::Program>,
+    resolver: Arc<ProgramResolver>,
     vm: RegisterVm,
     tx: Option<Transaction<'a>>,
     retry_state: VmState,
@@ -59,6 +60,7 @@ impl<'a> Task<'a> {
         task_id: TaskId,
         kernel: &'a RelationKernel,
         program: Arc<crate::Program>,
+        resolver: Arc<ProgramResolver>,
         limits: TaskLimits,
     ) -> Self {
         let vm = RegisterVm::new(program.clone());
@@ -67,6 +69,7 @@ impl<'a> Task<'a> {
             task_id,
             kernel,
             program,
+            resolver,
             vm,
             tx: Some(kernel.begin()),
             retry_state,
@@ -80,6 +83,7 @@ impl<'a> Task<'a> {
     pub(crate) fn from_state(
         task_id: TaskId,
         kernel: &'a RelationKernel,
+        resolver: Arc<ProgramResolver>,
         state: TaskState,
     ) -> Self {
         Self {
@@ -88,6 +92,7 @@ impl<'a> Task<'a> {
             vm: RegisterVm::from_state(state.vm_state),
             tx: Some(kernel.begin()),
             program: state.program,
+            resolver,
             retry_state: state.retry_state,
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
@@ -128,6 +133,7 @@ impl<'a> Task<'a> {
                 let tx = self.tx.as_mut().ok_or(TaskError::MissingTransaction)?;
                 self.vm.run_until_host_response(
                     tx,
+                    &self.resolver,
                     &mut self.pending_effects,
                     self.limits.instruction_budget,
                     self.limits.max_call_depth,

@@ -1,4 +1,4 @@
-use crate::{Instruction, Operand, Program, Register, RuntimeError, SuspendKind};
+use crate::{Instruction, Operand, Program, ProgramResolver, Register, RuntimeError, SuspendKind};
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Value, ValueKind};
 use std::sync::Arc;
@@ -133,12 +133,13 @@ impl RegisterVm {
     pub fn run_until_host_response(
         &mut self,
         tx: &mut Transaction<'_>,
+        resolver: &ProgramResolver,
         pending_effects: &mut Vec<Value>,
         instruction_budget: usize,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
         for _ in 0..instruction_budget {
-            let response = self.step(tx, pending_effects, max_call_depth)?;
+            let response = self.step(tx, resolver, pending_effects, max_call_depth)?;
             if response != VmHostResponse::Continue {
                 return Ok(response);
             }
@@ -151,6 +152,7 @@ impl RegisterVm {
     fn step(
         &mut self,
         tx: &mut Transaction<'_>,
+        resolver: &ProgramResolver,
         pending_effects: &mut Vec<Value>,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
@@ -253,7 +255,7 @@ impl RegisterVm {
                 dst,
                 relations,
                 program_relation,
-                programs,
+                program_bytes,
                 selector,
                 roles,
             } => {
@@ -282,9 +284,7 @@ impl RegisterVm {
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
                         method: method.clone(),
                     })?;
-                let program = programs
-                    .get(&program_id)
-                    .ok_or(RuntimeError::MissingMethodProgram { method })?;
+                let program = resolver.resolve(tx, program_bytes, &program_id)?;
                 let args = roles.into_iter().map(|(_, value)| value).collect();
                 self.advance_ip()?;
                 self.state

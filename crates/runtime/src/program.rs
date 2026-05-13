@@ -1,8 +1,8 @@
 use crate::RuntimeError;
-use mica_relation_kernel::{DispatchRelations, RelationId};
+use mica_relation_kernel::{DispatchRelations, RelationId, RelationRead};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Register(pub u16);
@@ -83,7 +83,7 @@ pub enum Instruction {
         dst: Register,
         relations: DispatchRelations,
         program_relation: RelationId,
-        programs: Arc<ProgramStore>,
+        program_bytes: RelationId,
         selector: Operand,
         roles: Vec<(Value, Operand)>,
     },
@@ -156,12 +156,12 @@ impl Program {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ProgramStore {
-    programs: BTreeMap<Value, Arc<Program>>,
+#[derive(Debug, Default)]
+pub struct ProgramResolver {
+    cache: RwLock<BTreeMap<Value, Arc<Program>>>,
 }
 
-impl ProgramStore {
+impl ProgramResolver {
     pub fn new() -> Self {
         Self::default()
     }
@@ -172,23 +172,52 @@ impl ProgramStore {
     }
 
     pub fn insert(&mut self, method: Value, program: Program) -> Option<Arc<Program>> {
-        self.programs.insert(method, Arc::new(program))
+        self.cache
+            .write()
+            .unwrap()
+            .insert(method, Arc::new(program))
     }
 
     pub fn get(&self, method: &Value) -> Option<Arc<Program>> {
-        self.programs.get(method).cloned()
+        self.cache.read().unwrap().get(method).cloned()
     }
 
     pub fn contains(&self, method: &Value) -> bool {
-        self.programs.contains_key(method)
+        self.cache.read().unwrap().contains_key(method)
     }
 
     pub fn len(&self) -> usize {
-        self.programs.len()
+        self.cache.read().unwrap().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.programs.is_empty()
+        self.cache.read().unwrap().is_empty()
+    }
+
+    pub fn resolve(
+        &self,
+        reader: &impl RelationRead,
+        program_bytes_relation: RelationId,
+        program_id: &Value,
+    ) -> Result<Arc<Program>, RuntimeError> {
+        if let Some(program) = self.get(program_id) {
+            return Ok(program);
+        }
+
+        let rows =
+            reader.scan_relation(program_bytes_relation, &[Some(program_id.clone()), None])?;
+        let bytes = rows
+            .first()
+            .and_then(|row| row.values()[1].with_bytes(<[u8]>::to_vec))
+            .ok_or_else(|| RuntimeError::MissingProgramArtifact {
+                program: program_id.clone(),
+            })?;
+        let program = Arc::new(Program::from_bytes(&bytes)?);
+        self.cache
+            .write()
+            .unwrap()
+            .insert(program_id.clone(), program.clone());
+        Ok(program)
     }
 }
 
@@ -310,6 +339,7 @@ const INST_SUSPEND_COMMIT: u8 = 11;
 const INST_ROLLBACK_RETRY: u8 = 12;
 const INST_RETURN: u8 = 13;
 const INST_ABORT: u8 = 14;
+const INST_DISPATCH: u8 = 15;
 
 const OPERAND_REGISTER: u8 = 0;
 const OPERAND_VALUE: u8 = 1;
@@ -411,8 +441,31 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_ABORT);
             write_operand(out, error)
         }
-        Instruction::Call { .. } | Instruction::Dispatch { .. } => Err(artifact_error(
-            "nested call and dispatch instructions are not serializable in program artifacts yet",
+        Instruction::Dispatch {
+            dst,
+            relations,
+            program_relation,
+            program_bytes,
+            selector,
+            roles,
+        } => {
+            out.push(INST_DISPATCH);
+            write_register(out, *dst);
+            write_identity(out, relations.method_selector);
+            write_identity(out, relations.param);
+            write_identity(out, relations.delegates);
+            write_identity(out, *program_relation);
+            write_identity(out, *program_bytes);
+            write_operand(out, selector)?;
+            write_u32(out, roles.len() as u32);
+            for (role, operand) in roles {
+                write_value(out, role)?;
+                write_operand(out, operand)?;
+            }
+            Ok(())
+        }
+        Instruction::Call { .. } => Err(artifact_error(
+            "direct call instructions are not serializable in program artifacts yet",
         )),
     }
 }
@@ -605,6 +658,18 @@ impl<'a> ByteReader<'a> {
             INST_ABORT => Instruction::Abort {
                 error: self.read_operand()?,
             },
+            INST_DISPATCH => Instruction::Dispatch {
+                dst: self.read_register()?,
+                relations: DispatchRelations {
+                    method_selector: self.read_identity()?,
+                    param: self.read_identity()?,
+                    delegates: self.read_identity()?,
+                },
+                program_relation: self.read_identity()?,
+                program_bytes: self.read_identity()?,
+                selector: self.read_operand()?,
+                roles: self.read_dispatch_roles()?,
+            },
             _ => return Err(artifact_error("unknown program artifact instruction tag")),
         })
     }
@@ -631,6 +696,13 @@ impl<'a> ByteReader<'a> {
             OPERAND_VALUE => self.read_value().map(Operand::Value),
             _ => Err(artifact_error("unknown operand tag")),
         }
+    }
+
+    fn read_dispatch_roles(&mut self) -> Result<Vec<(Value, Operand)>, RuntimeError> {
+        let count = self.read_u32()? as usize;
+        (0..count)
+            .map(|_| Ok((self.read_value()?, self.read_operand()?)))
+            .collect()
     }
 
     fn read_value(&mut self) -> Result<Value, RuntimeError> {
