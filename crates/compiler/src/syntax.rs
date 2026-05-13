@@ -1,0 +1,232 @@
+use std::ops::Range;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SyntaxKind {
+    Eof,
+    Error,
+    Whitespace,
+    Newline,
+    LineComment,
+    Ident,
+    Int,
+    Float,
+    String,
+    LetKw,
+    ConstKw,
+    IfKw,
+    ElseIfKw,
+    ElseKw,
+    EndKw,
+    BeginKw,
+    ForKw,
+    InKw,
+    WhileKw,
+    ReturnKw,
+    BreakKw,
+    ContinueKw,
+    TryKw,
+    CatchKw,
+    FinallyKw,
+    FnKw,
+    MethodKw,
+    VerbKw,
+    ObjectKw,
+    ExtendsKw,
+    DoKw,
+    TransactionKw,
+    AtomicKw,
+    AssertKw,
+    RetractKw,
+    RequireKw,
+    TrueKw,
+    FalseKw,
+    NothingKw,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LBrace,
+    RBrace,
+    Comma,
+    Semi,
+    Dot,
+    DotDot,
+    Colon,
+    Dollar,
+    At,
+    Question,
+    Underscore,
+    Eq,
+    EqEq,
+    BangEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    AmpAmp,
+    PipePipe,
+    Bang,
+    Arrow,
+    FatArrow,
+    ColonDash,
+    Program,
+    ItemList,
+    MethodItem,
+    VerbItem,
+    ObjectItem,
+    ObjectHeader,
+    ObjectClause,
+    MethodHeader,
+    MethodClause,
+    Block,
+    LetExpr,
+    ConstExpr,
+    IfExpr,
+    ElseIfClause,
+    ElseClause,
+    BeginExpr,
+    ForExpr,
+    WhileExpr,
+    ReturnExpr,
+    BreakExpr,
+    ContinueExpr,
+    TryExpr,
+    CatchClause,
+    FinallyClause,
+    FnExpr,
+    LambdaExpr,
+    ParamList,
+    Param,
+    ExprStmt,
+    AssignExpr,
+    BinaryExpr,
+    UnaryExpr,
+    CallExpr,
+    ReceiverCallExpr,
+    RoleCallExpr,
+    ArgList,
+    Arg,
+    IndexExpr,
+    FieldExpr,
+    ListExpr,
+    ListItem,
+    MapExpr,
+    MapEntry,
+    GroupExpr,
+    LiteralExpr,
+    NameExpr,
+    IdentityExpr,
+    SymbolExpr,
+    HoleExpr,
+    RelationRule,
+    AtomExpr,
+    AssertExpr,
+    RetractExpr,
+    RequireExpr,
+}
+
+impl SyntaxKind {
+    pub fn is_trivia(self) -> bool {
+        matches!(self, Self::Whitespace | Self::Newline | Self::LineComment)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Token {
+    pub kind: SyntaxKind,
+    pub span: Range<usize>,
+}
+
+impl Token {
+    pub(crate) fn new(kind: SyntaxKind, start: usize, end: usize) -> Self {
+        Self {
+            kind,
+            span: start..end,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CstToken {
+    pub kind: SyntaxKind,
+    pub span: Range<usize>,
+}
+
+impl From<Token> for CstToken {
+    fn from(value: Token) -> Self {
+        Self {
+            kind: value.kind,
+            span: value.span,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CstElement {
+    Node(CstNode),
+    Token(CstToken),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CstNode {
+    pub kind: SyntaxKind,
+    pub span: Range<usize>,
+    pub children: Vec<CstElement>,
+}
+
+impl CstNode {
+    pub fn new(kind: SyntaxKind, children: Vec<CstElement>) -> Self {
+        let span = children_span(&children);
+        Self {
+            kind,
+            span,
+            children,
+        }
+    }
+
+    pub fn token(kind: SyntaxKind, span: Range<usize>) -> CstElement {
+        CstElement::Token(CstToken { kind, span })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseError {
+    pub message: String,
+    pub span: Range<usize>,
+}
+
+impl ParseError {
+    pub(crate) fn new(message: impl Into<String>, span: Range<usize>) -> Self {
+        Self {
+            message: message.into(),
+            span,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Parse {
+    pub root: CstNode,
+    pub errors: Vec<ParseError>,
+}
+
+fn children_span(children: &[CstElement]) -> Range<usize> {
+    let mut start = None;
+    let mut end = None;
+    for child in children {
+        let span = match child {
+            CstElement::Node(node) => node.span.clone(),
+            CstElement::Token(token) => token.span.clone(),
+        };
+        if start.is_none() {
+            start = Some(span.start);
+        }
+        end = Some(span.end);
+    }
+    start.unwrap_or(0)..end.unwrap_or(0)
+}

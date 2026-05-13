@@ -95,39 +95,41 @@ $lamp42
 
 ### 2.1 Lists
 
-Keep MOO-style list literals:
+Use bracketed list literals. This keeps lists in the familiar modern shape
+instead of reusing MOO's `{...}` list spelling, which conflicts visually with
+blocks, patterns, and dictionary-like data.
 
 ```mica
-{1, 2, 3}
-{"red", "green", "blue"}
-{}
+[1, 2, 3]
+["red", "green", "blue"]
+[]
 ```
 
 Splice with `@`, following MOO:
 
 ```mica
-items = {"coin", "key"}
-more = {@items, "lamp"}     // {"coin", "key", "lamp"}
+items = ["coin", "key"]
+more = [@items, "lamp"]     // ["coin", "key", "lamp"]
 ```
 
 This is a strong MOO convenience and worth preserving.
 
 ### 2.2 Maps
 
-Use mooR-style maps:
+Use dictionary-style map literals with braces and `->` pairs:
 
 ```mica
-["name" -> "lamp", "lit" -> false]
-[:name -> "lamp", :lit -> false]
-[]
+{"name" -> "lamp", "lit" -> false}
+{:name -> "lamp", :lit -> false}
+{}
 ```
 
 Maps are immutable value data. They are useful for local computation, options,
 external payloads, and small lookup tables:
 
 ```mica
-let opts = [:style -> :brief, :depth -> 2]
-assert Effect(:notify, connection, [:body -> text, :format -> :djot])
+let opts = {:style -> :brief, :depth -> 2}
+assert Effect(:notify, connection, {:body -> text, :format -> :djot})
 ```
 
 Maps should not become a shadow object model. If the world needs to query,
@@ -142,7 +144,7 @@ Color($lamp, "brass")
 not a map hidden inside one fact:
 
 ```mica
-Slot($lamp, :state, [:lit -> true, :color -> "brass"])
+Slot($lamp, :state, {:lit -> true, :color -> "brass"})
 ```
 
 Map update syntax can mirror indexed assignment:
