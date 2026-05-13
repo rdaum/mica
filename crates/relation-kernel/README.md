@@ -49,6 +49,13 @@ required to replay the whole historical commit stream. The retained commit
 entries are an implementation aid for inspection, testing, and future recovery
 work, not the only durable representation of the world.
 
+`FjallStateProvider::open` defaults to relaxed durability: a commit returns
+after it has been accepted into the provider's ordered writer queue, and normal
+provider shutdown drains that queue. `FjallStateProvider::open_strict` waits
+for the background writer to apply the Fjall batch before returning from the
+commit path. Strict mode gives an immediate disk-write acknowledgement at the
+cost of much slower commits.
+
 For developers, this means the persisted representation is the state encoding
 in `src/provider.rs`, plus the commit encoding kept beside it. Changes to the
 state shape, value encoding, or catalogue representation must update the format

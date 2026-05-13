@@ -20,7 +20,7 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
 pub trait CommitProvider: Send + Sync {
@@ -73,6 +73,12 @@ pub enum FjallFormatStatus {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FjallDurabilityMode {
+    Relaxed,
+    Strict,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PersistedKernelState {
     pub version: Version,
@@ -92,13 +98,27 @@ struct FjallKeyspaces {
 
 pub struct FjallStateProvider {
     keyspaces: FjallKeyspaces,
+    durability: FjallDurabilityMode,
     sender: mpsc::SyncSender<WriterMessage>,
-    completed_version: AtomicU64,
+    queued_version: AtomicU64,
+    completed_version: Arc<AtomicU64>,
+    write_error: Arc<Mutex<Option<String>>>,
     writer: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl FjallStateProvider {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_with_durability(path, FjallDurabilityMode::Relaxed)
+    }
+
+    pub fn open_strict(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_with_durability(path, FjallDurabilityMode::Strict)
+    }
+
+    pub fn open_with_durability(
+        path: impl AsRef<Path>,
+        durability: FjallDurabilityMode,
+    ) -> Result<Self, String> {
         let path = path.as_ref();
         match Self::check_format(path)? {
             FjallFormatStatus::Fresh
@@ -137,17 +157,34 @@ impl FjallStateProvider {
         let (sender, receiver) = mpsc::sync_channel(1024);
         let writer_database = database.clone();
         let writer_keyspaces = keyspaces.clone();
+        let completed_version = Arc::new(AtomicU64::new(
+            load_state_version(&keyspaces.metadata)?
+                .unwrap_or(load_last_commit_version(&keyspaces.commits)?),
+        ));
+        let write_error = Arc::new(Mutex::new(None));
+        let writer_completed_version = completed_version.clone();
+        let writer_error = write_error.clone();
         let writer = thread::Builder::new()
             .name("mica-fjall-commit-writer".to_owned())
-            .spawn(move || writer_loop(writer_database, writer_keyspaces, receiver))
+            .spawn(move || {
+                writer_loop(
+                    writer_database,
+                    writer_keyspaces,
+                    receiver,
+                    writer_completed_version,
+                    writer_error,
+                )
+            })
             .map_err(|error| format!("failed to spawn fjall commit writer: {error}"))?;
 
-        let completed_version = load_state_version(&keyspaces.metadata)?
-            .unwrap_or(load_last_commit_version(&keyspaces.commits)?);
+        let initial_version = completed_version.load(Ordering::Acquire);
         Ok(Self {
             keyspaces,
+            durability,
             sender,
-            completed_version: AtomicU64::new(completed_version),
+            queued_version: AtomicU64::new(initial_version),
+            completed_version,
+            write_error,
             writer: Mutex::new(Some(writer)),
         })
     }
@@ -203,23 +240,57 @@ impl FjallStateProvider {
     pub fn completed_version(&self) -> u64 {
         self.completed_version.load(Ordering::Acquire)
     }
+
+    pub fn queued_version(&self) -> u64 {
+        self.queued_version.load(Ordering::Acquire)
+    }
+
+    pub fn durability(&self) -> FjallDurabilityMode {
+        self.durability
+    }
+
+    pub fn last_write_error(&self) -> Option<String> {
+        self.write_error.lock().unwrap().clone()
+    }
+
+    fn check_writer_error(&self) -> Result<(), String> {
+        match self.last_write_error() {
+            Some(error) => Err(format!("fjall commit writer failed: {error}")),
+            None => Ok(()),
+        }
+    }
 }
 
 impl CommitProvider for FjallStateProvider {
     fn persist_commit(&self, commit: &Commit) -> Result<(), String> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.sender
-            .send(WriterMessage::Persist {
-                commit: commit.clone(),
-                reply: reply_tx,
-            })
-            .map_err(|error| format!("fjall commit writer is stopped: {error}"))?;
-        reply_rx
-            .recv()
-            .map_err(|error| format!("fjall commit writer dropped reply: {error}"))??;
-        self.completed_version
-            .fetch_max(commit.version(), Ordering::AcqRel);
-        Ok(())
+        self.check_writer_error()?;
+        match self.durability {
+            FjallDurabilityMode::Relaxed => {
+                self.sender
+                    .send(WriterMessage::Persist {
+                        commit: commit.clone(),
+                        reply: None,
+                    })
+                    .map_err(|error| format!("fjall commit writer is stopped: {error}"))?;
+                self.queued_version
+                    .fetch_max(commit.version(), Ordering::AcqRel);
+                Ok(())
+            }
+            FjallDurabilityMode::Strict => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                self.sender
+                    .send(WriterMessage::Persist {
+                        commit: commit.clone(),
+                        reply: Some(reply_tx),
+                    })
+                    .map_err(|error| format!("fjall commit writer is stopped: {error}"))?;
+                self.queued_version
+                    .fetch_max(commit.version(), Ordering::AcqRel);
+                reply_rx
+                    .recv()
+                    .map_err(|error| format!("fjall commit writer dropped reply: {error}"))?
+            }
+        }
     }
 }
 
@@ -239,7 +310,7 @@ impl Drop for FjallStateProvider {
 enum WriterMessage {
     Persist {
         commit: Commit,
-        reply: mpsc::Sender<Result<(), String>>,
+        reply: Option<mpsc::Sender<Result<(), String>>>,
     },
     Shutdown {
         reply: mpsc::Sender<()>,
@@ -250,12 +321,24 @@ fn writer_loop(
     database: Database,
     keyspaces: FjallKeyspaces,
     receiver: mpsc::Receiver<WriterMessage>,
+    completed_version: Arc<AtomicU64>,
+    write_error: Arc<Mutex<Option<String>>>,
 ) {
     while let Ok(message) = receiver.recv() {
         match message {
             WriterMessage::Persist { commit, reply } => {
                 let result = write_commit(&database, &keyspaces, &commit);
-                let _ = reply.send(result);
+                match &result {
+                    Ok(()) => {
+                        completed_version.fetch_max(commit.version(), Ordering::AcqRel);
+                    }
+                    Err(error) => {
+                        *write_error.lock().unwrap() = Some(error.clone());
+                    }
+                }
+                if let Some(reply) = reply {
+                    let _ = reply.send(result);
+                }
             }
             WriterMessage::Shutdown { reply } => {
                 let _ = reply.send(());

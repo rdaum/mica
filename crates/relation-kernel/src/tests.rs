@@ -13,9 +13,9 @@
 
 use crate::{
     Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider, Conflict,
-    ConflictKind, ConflictPolicy, Fact, FactChange, FactChangeKind, FjallFormatStatus,
-    FjallStateProvider, InMemoryCommitProvider, KernelError, MentionedFact, RelationId,
-    RelationKernel, RelationMetadata, Rule, SubjectFact, Term, Tuple,
+    ConflictKind, ConflictPolicy, Fact, FactChange, FactChangeKind, FjallDurabilityMode,
+    FjallFormatStatus, FjallStateProvider, InMemoryCommitProvider, KernelError, MentionedFact,
+    RelationId, RelationKernel, RelationMetadata, Rule, SubjectFact, Term, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::path::{Path, PathBuf};
@@ -700,7 +700,8 @@ fn fjall_provider_persists_and_loads_canonical_state() {
     ]);
 
     {
-        let provider = Arc::new(FjallStateProvider::open(store.path()).unwrap());
+        let provider = Arc::new(FjallStateProvider::open_strict(store.path()).unwrap());
+        assert_eq!(provider.durability(), FjallDurabilityMode::Strict);
         let kernel = RelationKernel::with_provider(provider.clone());
         kernel
             .create_relation(
@@ -733,6 +734,7 @@ fn fjall_provider_persists_and_loads_canonical_state() {
         tx.assert(rel(10), values_tuple.clone()).unwrap();
         tx.assert(rel(11), Tuple::from([int(77)])).unwrap();
         let result = tx.commit().unwrap();
+        assert_eq!(provider.queued_version(), result.commit().version());
         assert_eq!(provider.completed_version(), result.commit().version());
     }
 
@@ -768,6 +770,7 @@ fn fjall_provider_reopens_loads_and_continues_committing() {
 
     {
         let provider = Arc::new(FjallStateProvider::open(store.path()).unwrap());
+        assert_eq!(provider.durability(), FjallDurabilityMode::Relaxed);
         let kernel = RelationKernel::with_provider(provider);
         kernel
             .create_relation(RelationMetadata::new(
@@ -778,7 +781,8 @@ fn fjall_provider_reopens_loads_and_continues_committing() {
             .unwrap();
         let mut tx = kernel.begin();
         tx.assert(rel(20), first.clone()).unwrap();
-        tx.commit().unwrap();
+        let result = tx.commit().unwrap();
+        assert_eq!(result.commit().version(), 2);
     }
 
     {
@@ -795,7 +799,7 @@ fn fjall_provider_reopens_loads_and_continues_committing() {
         tx.assert(rel(20), second.clone()).unwrap();
         let result = tx.commit().unwrap();
         assert_eq!(result.commit().version(), 3);
-        assert_eq!(provider.completed_version(), 3);
+        assert_eq!(provider.queued_version(), 3);
     }
 
     let provider = FjallStateProvider::open(store.path()).unwrap();
