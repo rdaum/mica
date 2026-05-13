@@ -42,6 +42,7 @@ pub enum TaskOutcome {
 pub struct Task<'a> {
     task_id: TaskId,
     kernel: &'a RelationKernel,
+    program: Arc<crate::Program>,
     vm: RegisterVm,
     tx: Option<Transaction<'a>>,
     retry_state: VmState,
@@ -58,11 +59,12 @@ impl<'a> Task<'a> {
         program: Arc<crate::Program>,
         limits: TaskLimits,
     ) -> Self {
-        let vm = RegisterVm::new(program);
+        let vm = RegisterVm::new(program.clone());
         let retry_state = vm.snapshot_state();
         Self {
             task_id,
             kernel,
+            program,
             vm,
             tx: Some(kernel.begin()),
             retry_state,
@@ -70,6 +72,25 @@ impl<'a> Task<'a> {
             committed_effects: Vec::new(),
             retries: 0,
             limits,
+        }
+    }
+
+    pub(crate) fn from_state(
+        task_id: TaskId,
+        kernel: &'a RelationKernel,
+        state: TaskState,
+    ) -> Self {
+        Self {
+            task_id,
+            kernel,
+            vm: RegisterVm::from_state(state.program.clone(), state.vm_state),
+            tx: Some(kernel.begin()),
+            program: state.program,
+            retry_state: state.retry_state,
+            pending_effects: Vec::new(),
+            committed_effects: Vec::new(),
+            retries: state.retries,
+            limits: state.limits,
         }
     }
 
@@ -87,6 +108,16 @@ impl<'a> Task<'a> {
 
     pub fn vm_mut(&mut self) -> &mut RegisterVm {
         &mut self.vm
+    }
+
+    pub(crate) fn checkpoint(&self) -> TaskState {
+        TaskState {
+            program: self.program.clone(),
+            vm_state: self.vm.snapshot_state(),
+            retry_state: self.retry_state.clone(),
+            retries: self.retries,
+            limits: self.limits,
+        }
     }
 
     pub fn run(&mut self) -> Result<TaskOutcome, TaskError> {
@@ -178,6 +209,14 @@ impl<'a> Task<'a> {
     fn take_committed_effects(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.committed_effects)
     }
+}
+
+pub(crate) struct TaskState {
+    program: Arc<crate::Program>,
+    vm_state: VmState,
+    retry_state: VmState,
+    retries: u8,
+    limits: TaskLimits,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

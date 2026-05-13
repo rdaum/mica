@@ -6,6 +6,7 @@
 
 mod error;
 mod program;
+mod scheduler;
 mod task;
 mod vm;
 
@@ -14,5 +15,6 @@ mod tests;
 
 pub use error::{RuntimeError, TaskError};
 pub use program::{Instruction, Operand, Program, Register, SuspendKind};
+pub use scheduler::{Effect, EffectLog, Scheduler, SchedulerError, SuspendedTask};
 pub use task::{Task, TaskId, TaskLimits, TaskOutcome};
 pub use vm::{RegisterVm, VmHostResponse, VmState};

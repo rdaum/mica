@@ -1,5 +1,6 @@
 use crate::{
-    Instruction, Operand, Program, Register, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
+    Effect, Instruction, Operand, Program, Register, Scheduler, SchedulerError, SuspendKind, Task,
+    TaskError, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -425,4 +426,173 @@ fn explicit_rollback_retry_stops_at_retry_limit() {
         TaskError::ConflictRetriesExceeded { retries: 2 }
     );
     assert_eq!(task.retries(), 2);
+}
+
+#[test]
+fn scheduler_records_completed_task_and_delivers_effects() {
+    let kernel = kernel_with_world_relations();
+    let program = Arc::new(
+        Program::new(
+            0,
+            [
+                Instruction::Emit {
+                    value: v(strv("done")),
+                },
+                Instruction::Return {
+                    value: v(Value::bool(true)),
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut scheduler = Scheduler::new(kernel);
+
+    let (task_id, outcome) = scheduler.submit(program).unwrap();
+    assert_eq!(
+        outcome,
+        TaskOutcome::Complete {
+            value: Value::bool(true),
+            effects: vec![strv("done")],
+            retries: 0,
+        }
+    );
+    assert_eq!(scheduler.completed(task_id), Some(&outcome));
+    assert!(scheduler.suspended(task_id).is_none());
+    assert_eq!(
+        scheduler.effects().effects(),
+        &[Effect {
+            task_id,
+            value: strv("done"),
+        }]
+    );
+}
+
+#[test]
+fn scheduler_parks_and_resumes_suspended_task() {
+    let kernel = kernel_with_world_relations();
+    let program = Arc::new(
+        Program::new(
+            0,
+            [
+                Instruction::Emit {
+                    value: v(strv("before")),
+                },
+                Instruction::Suspend {
+                    kind: SuspendKind::TimedMillis(1),
+                },
+                Instruction::Emit {
+                    value: v(strv("after")),
+                },
+                Instruction::Return {
+                    value: v(Value::bool(true)),
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut scheduler = Scheduler::new(kernel);
+
+    let (task_id, first) = scheduler.submit(program).unwrap();
+    assert_eq!(
+        first,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::TimedMillis(1),
+            effects: vec![strv("before")],
+            retries: 0,
+        }
+    );
+    assert_eq!(scheduler.suspended_len(), 1);
+    assert_eq!(
+        scheduler.suspended(task_id).map(|task| task.kind()),
+        Some(&SuspendKind::TimedMillis(1))
+    );
+    assert_eq!(
+        scheduler.effects().effects(),
+        &[Effect {
+            task_id,
+            value: strv("before"),
+        }]
+    );
+
+    let second = scheduler.resume(task_id).unwrap();
+    assert_eq!(
+        second,
+        TaskOutcome::Complete {
+            value: Value::bool(true),
+            effects: vec![strv("after")],
+            retries: 0,
+        }
+    );
+    assert_eq!(scheduler.suspended_len(), 0);
+    assert_eq!(scheduler.completed(task_id), Some(&second));
+    assert_eq!(
+        scheduler.effects().effects(),
+        &[
+            Effect {
+                task_id,
+                value: strv("before"),
+            },
+            Effect {
+                task_id,
+                value: strv("after"),
+            },
+        ]
+    );
+}
+
+#[test]
+fn scheduler_does_not_deliver_pending_effects_from_abort() {
+    let kernel = kernel_with_world_relations();
+    let program = Arc::new(
+        Program::new(
+            0,
+            [
+                Instruction::Emit {
+                    value: v(strv("discarded")),
+                },
+                Instruction::Abort {
+                    error: v(sym("abort")),
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut scheduler = Scheduler::new(kernel);
+
+    let (task_id, outcome) = scheduler.submit(program).unwrap();
+    assert_eq!(
+        outcome,
+        TaskOutcome::Aborted {
+            error: sym("abort"),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+    assert_eq!(scheduler.completed(task_id), Some(&outcome));
+    assert!(scheduler.effects().effects().is_empty());
+}
+
+#[test]
+fn scheduler_rejects_unknown_and_completed_resume() {
+    let kernel = kernel_with_world_relations();
+    let program = Arc::new(
+        Program::new(
+            0,
+            [Instruction::Return {
+                value: v(Value::nothing()),
+            }],
+        )
+        .unwrap(),
+    );
+    let mut scheduler = Scheduler::new(kernel);
+
+    assert_eq!(
+        scheduler.resume(999).unwrap_err(),
+        SchedulerError::UnknownTask(999)
+    );
+    let (task_id, _) = scheduler.submit(program).unwrap();
+    assert_eq!(
+        scheduler.resume(task_id).unwrap_err(),
+        SchedulerError::TaskAlreadyCompleted(task_id)
+    );
 }
