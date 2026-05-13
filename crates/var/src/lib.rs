@@ -2,13 +2,16 @@
 //!
 //! `Value` is intentionally one machine word wide. Immediate identities,
 //! symbols, booleans, small integers, and reduced-precision floats stay inline;
-//! strings, lists, and maps are represented by refcounted heap handles.
+//! strings, lists, and maps are represented by stable heap handles. The current
+//! heap does not collect; it keeps cells stable so a later collector can scan
+//! roots and trace through container children without changing the value ABI.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 const TAG_SHIFT: u64 = 56;
@@ -35,6 +38,7 @@ const MAX_PAYLOAD: u64 = PAYLOAD_MASK;
 /// raw bits. The current representation is a pragmatic tagged word, not a final
 /// commitment to this exact bit layout.
 #[repr(transparent)]
+#[derive(Clone, Copy)]
 pub struct Value(u64);
 
 const _: () = assert!(std::mem::size_of::<Value>() == 8);
@@ -77,8 +81,28 @@ impl Symbol {
         self.0
     }
 
-    pub fn name(self) -> Option<String> {
+    pub fn name(self) -> Option<&'static str> {
         symbol_table().name(self)
+    }
+
+    pub fn metadata(self) -> Option<SymbolMetadata> {
+        symbol_table().metadata(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct SymbolMetadata {
+    pub byte_len: usize,
+    pub char_len: usize,
+    pub is_ascii: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct HeapHandle(usize);
+
+impl HeapHandle {
+    pub const fn raw(self) -> usize {
+        self.0
     }
 }
 
@@ -163,7 +187,7 @@ impl Value {
 
     pub fn map(entries: impl IntoIterator<Item = (Value, Value)>) -> Self {
         let mut entries = entries.into_iter().collect::<Vec<_>>();
-        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        entries.sort_by_key(|(key, _)| *key);
         let mut canonical = Vec::with_capacity(entries.len());
         for (key, value) in entries {
             if let Some((last_key, last_value)) = canonical.last_mut()
@@ -270,6 +294,71 @@ impl Value {
         })?
     }
 
+    pub fn list_len(&self) -> Option<usize> {
+        self.with_list(<[Value]>::len)
+    }
+
+    pub fn list_get(&self, index: usize) -> Option<Value> {
+        self.with_list(|values| values.get(index).copied())?
+    }
+
+    pub fn map_len(&self) -> Option<usize> {
+        self.with_map(<[(Value, Value)]>::len)
+    }
+
+    pub fn map_get(&self, key: &Value) -> Option<Value> {
+        self.with_map(|entries| {
+            entries
+                .binary_search_by(|(entry_key, _)| entry_key.cmp(key))
+                .ok()
+                .map(|index| entries[index].1)
+        })?
+    }
+
+    pub fn heap_handle(&self) -> Option<HeapHandle> {
+        if self.is_immediate() {
+            None
+        } else {
+            Some(HeapHandle(self.handle()))
+        }
+    }
+
+    pub fn visit_children(&self, mut visitor: impl FnMut(Value)) {
+        let _ = self.with_heap(|heap| match heap {
+            HeapValue::String(_) => {}
+            HeapValue::List(values) => {
+                for value in values {
+                    visitor(*value);
+                }
+            }
+            HeapValue::Map(entries) => {
+                for (key, value) in entries {
+                    visitor(*key);
+                    visitor(*value);
+                }
+            }
+        });
+    }
+
+    pub fn clear_gc_mark(&self) {
+        if let Some(handle) = self.heap_handle() {
+            heap_table().clear_mark(handle.raw());
+        }
+    }
+
+    pub fn mark_for_gc(&self) -> bool {
+        if let Some(handle) = self.heap_handle() {
+            heap_table().mark(handle.raw())
+        } else {
+            false
+        }
+    }
+
+    pub fn is_marked_for_gc(&self) -> bool {
+        self.heap_handle()
+            .is_some_and(|handle| heap_table().is_marked(handle.raw()))
+    }
+
     pub fn checked_add(&self, rhs: &Self) -> Option<Self> {
         match (self.as_int(), rhs.as_int()) {
             (Some(left), Some(right)) => {
@@ -356,18 +445,6 @@ impl Value {
         Self::pack(tag, handle as u64)
     }
 
-    fn retain_heap(&self) {
-        if !self.is_immediate() {
-            heap_table().retain(self.handle());
-        }
-    }
-
-    fn release_heap(&self) {
-        if !self.is_immediate() {
-            heap_table().release(self.handle());
-        }
-    }
-
     fn with_heap<R>(&self, f: impl FnOnce(&HeapValue) -> R) -> Option<R> {
         if self.is_immediate() {
             return None;
@@ -381,21 +458,6 @@ impl Value {
         } else {
             self.as_float()
         }
-    }
-}
-
-impl Clone for Value {
-    #[inline(always)]
-    fn clone(&self) -> Self {
-        self.retain_heap();
-        Self(self.0)
-    }
-}
-
-impl Drop for Value {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.release_heap();
     }
 }
 
@@ -616,83 +678,112 @@ impl HeapValue {
 }
 
 struct HeapEntry {
-    rc: AtomicUsize,
+    marked: AtomicBool,
     value: HeapValue,
 }
 
 struct HeapTable {
-    slots: Mutex<HeapSlots>,
+    entries: Mutex<Vec<&'static HeapEntry>>,
 }
-
-struct HeapSlots {
-    entries: Vec<Option<*mut HeapEntry>>,
-    free: Vec<usize>,
-}
-
-unsafe impl Send for HeapSlots {}
-unsafe impl Sync for HeapSlots {}
 
 impl HeapTable {
     fn alloc(&self, value: HeapValue) -> usize {
-        let entry = Box::into_raw(Box::new(HeapEntry {
-            rc: AtomicUsize::new(1),
+        let entry = Box::leak(Box::new(HeapEntry {
+            marked: AtomicBool::new(false),
             value,
         }));
-        let mut slots = self.slots.lock().unwrap();
-        if let Some(index) = slots.free.pop() {
-            slots.entries[index] = Some(entry);
-            index + 1
-        } else {
-            slots.entries.push(Some(entry));
-            slots.entries.len()
-        }
-    }
-
-    fn retain(&self, handle: usize) {
-        let ptr = self.ptr(handle);
-        unsafe { (*ptr).rc.fetch_add(1, AtomicOrdering::Relaxed) };
-    }
-
-    fn release(&self, handle: usize) {
-        let ptr = self.ptr(handle);
-        if unsafe { (*ptr).rc.fetch_sub(1, AtomicOrdering::Release) } != 1 {
-            return;
-        }
-        std::sync::atomic::fence(AtomicOrdering::Acquire);
-        let mut slots = self.slots.lock().unwrap();
-        let index = handle - 1;
-        let removed = slots.entries[index].take().unwrap();
-        debug_assert_eq!(removed, ptr);
-        slots.free.push(index);
-        drop(slots);
-        unsafe { drop(Box::from_raw(ptr)) };
+        let mut entries = self.entries.lock().unwrap();
+        entries.push(entry);
+        entries.len()
     }
 
     fn kind(&self, handle: usize) -> HeapKind {
-        let ptr = self.ptr(handle);
-        unsafe { (*ptr).value.kind() }
+        self.entry(handle).value.kind()
     }
 
     fn with<R>(&self, handle: usize, f: impl FnOnce(&HeapValue) -> R) -> R {
-        let ptr = self.ptr(handle);
-        unsafe { f(&(*ptr).value) }
+        f(&self.entry(handle).value)
     }
 
-    fn ptr(&self, handle: usize) -> *mut HeapEntry {
+    fn mark(&self, handle: usize) -> bool {
+        !self.entry(handle).marked.swap(true, AtomicOrdering::AcqRel)
+    }
+
+    fn clear_mark(&self, handle: usize) {
+        self.entry(handle)
+            .marked
+            .store(false, AtomicOrdering::Release);
+    }
+
+    fn is_marked(&self, handle: usize) -> bool {
+        self.entry(handle).marked.load(AtomicOrdering::Acquire)
+    }
+
+    fn entry(&self, handle: usize) -> &'static HeapEntry {
         assert!(handle != 0, "heap handles are one-based");
-        let slots = self.slots.lock().unwrap();
-        slots.entries[handle - 1].expect("invalid value heap handle")
+        let entries = self.entries.lock().unwrap();
+        entries
+            .get(handle - 1)
+            .copied()
+            .expect("invalid value heap handle")
     }
 }
 
 fn heap_table() -> &'static HeapTable {
     static HEAP: OnceLock<HeapTable> = OnceLock::new();
     HEAP.get_or_init(|| HeapTable {
-        slots: Mutex::new(HeapSlots {
-            entries: Vec::new(),
-            free: Vec::new(),
-        }),
+        entries: Mutex::new(Vec::new()),
     })
+}
+
+const SYMBOL_CACHE_SIZE: usize = 16;
+
+#[derive(Clone, Copy)]
+struct SymbolCacheEntry {
+    name: &'static str,
+    symbol: Symbol,
+}
+
+struct SymbolCache {
+    entries: [Option<SymbolCacheEntry>; SYMBOL_CACHE_SIZE],
+    next_slot: usize,
+}
+
+impl SymbolCache {
+    const fn new() -> Self {
+        const NONE: Option<SymbolCacheEntry> = None;
+        Self {
+            entries: [NONE; SYMBOL_CACHE_SIZE],
+            next_slot: 0,
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<Symbol> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.symbol)
+    }
+
+    fn insert(&mut self, name: &'static str, symbol: Symbol) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.name == name)
+        {
+            entry.symbol = symbol;
+            return;
+        }
+
+        self.entries[self.next_slot] = Some(SymbolCacheEntry { name, symbol });
+        self.next_slot = (self.next_slot + 1) % SYMBOL_CACHE_SIZE;
+    }
+}
+
+thread_local! {
+    static SYMBOL_CACHE: RefCell<SymbolCache> = const { RefCell::new(SymbolCache::new()) };
 }
 
 struct SymbolTable {
@@ -701,33 +792,72 @@ struct SymbolTable {
 
 #[derive(Default)]
 struct SymbolTableInner {
-    by_name: HashMap<Box<str>, u32>,
-    by_id: Vec<Box<str>>,
+    by_name: HashMap<&'static str, u32>,
+    by_id: Vec<SymbolData>,
+}
+
+struct SymbolData {
+    name: &'static str,
+    metadata: SymbolMetadata,
 }
 
 impl SymbolTable {
     fn intern(&self, name: &str) -> Symbol {
-        if let Some(id) = self.inner.read().unwrap().by_name.get(name).copied() {
-            return Symbol(id);
+        if let Some(symbol) = SYMBOL_CACHE.with(|cache| cache.borrow().get(name)) {
+            return symbol;
         }
+
+        if let Some(id) = self.inner.read().unwrap().by_name.get(name).copied() {
+            let symbol = Symbol(id);
+            let name = self.name(symbol).expect("interned symbol name must exist");
+            SYMBOL_CACHE.with(|cache| cache.borrow_mut().insert(name, symbol));
+            return symbol;
+        }
+
         let mut inner = self.inner.write().unwrap();
         if let Some(id) = inner.by_name.get(name).copied() {
-            return Symbol(id);
+            let symbol = Symbol(id);
+            let name = inner.by_id[id as usize].name;
+            SYMBOL_CACHE.with(|cache| cache.borrow_mut().insert(name, symbol));
+            return symbol;
         }
+
         let id = inner.by_id.len() as u32;
-        let owned: Box<str> = name.into();
-        inner.by_name.insert(owned.clone(), id);
-        inner.by_id.push(owned);
-        Symbol(id)
+        let name: &'static str = Box::leak(Box::<str>::from(name));
+        inner.by_name.insert(name, id);
+        inner.by_id.push(SymbolData {
+            name,
+            metadata: SymbolMetadata {
+                byte_len: name.len(),
+                char_len: if name.is_ascii() {
+                    name.len()
+                } else {
+                    name.chars().count()
+                },
+                is_ascii: name.is_ascii(),
+            },
+        });
+        let symbol = Symbol(id);
+        SYMBOL_CACHE.with(|cache| cache.borrow_mut().insert(name, symbol));
+        symbol
     }
 
-    fn name(&self, symbol: Symbol) -> Option<String> {
+    fn name(&self, symbol: Symbol) -> Option<&'static str> {
         self.inner
             .read()
             .unwrap()
             .by_id
             .get(symbol.id() as usize)
-            .map(|name| name.to_string())
+            .map(|data| data.name)
+    }
+
+    fn metadata(&self, symbol: Symbol) -> Option<SymbolMetadata> {
+        self.inner
+            .read()
+            .unwrap()
+            .by_id
+            .get(symbol.id() as usize)
+            .map(|data| data.metadata)
     }
 }
 
@@ -796,7 +926,36 @@ mod tests {
 
         let symbol = Symbol::intern("take");
         assert_eq!(Value::symbol(symbol).as_symbol(), Some(symbol));
-        assert_eq!(symbol.name().as_deref(), Some("take"));
+        assert_eq!(symbol.name(), Some("take"));
+        assert_eq!(
+            symbol.metadata(),
+            Some(SymbolMetadata {
+                byte_len: 4,
+                char_len: 4,
+                is_ascii: true,
+            })
+        );
+        assert_eq!(Symbol::intern("take"), symbol);
+        assert_ne!(Symbol::intern("TAKE"), symbol);
+    }
+
+    #[test]
+    fn symbols_intern_consistently_across_threads() {
+        let handles = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..256 {
+                        assert_eq!(Symbol::intern("look"), Symbol::intern("look"));
+                    }
+                    Symbol::intern("look")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let expected = Symbol::intern("look");
+        for handle in handles {
+            assert_eq!(handle.join().unwrap(), expected);
+        }
     }
 
     #[test]
@@ -820,25 +979,60 @@ mod tests {
         let k = Value::symbol(Symbol::intern("color"));
         let red = Value::string("red");
         let blue = Value::string("blue");
-        let map = Value::map([(k.clone(), red), (k.clone(), blue.clone())]);
+        let map = Value::map([(k, red), (k, blue)]);
         assert_eq!(map.with_map(|entries| entries.len()), Some(1));
         assert_eq!(
             map.with_map(|entries| entries[0].1.with_str(|s| s.to_string()).unwrap()),
             Some("blue".to_string())
         );
+        assert_eq!(map.map_len(), Some(1));
+        assert_eq!(
+            map.map_get(&k)
+                .and_then(|value| value.with_str(str::to_string)),
+            Some("blue".to_string())
+        );
     }
 
     #[test]
-    fn clone_and_drop_heap_values() {
+    fn heap_values_are_stable_copy_handles() {
         let value = Value::list([
             Value::string("alpha"),
             Value::symbol(Symbol::intern("beta")),
             Value::identity_raw(42).unwrap(),
         ]);
-        let cloned = value.clone();
-        assert_eq!(value, cloned);
-        drop(value);
-        assert_eq!(cloned.with_list(|values| values.len()), Some(3));
+        let copied = value;
+        assert_eq!(value, copied);
+        assert_eq!(copied.list_len(), Some(3));
+        assert_eq!(
+            copied
+                .list_get(0)
+                .and_then(|value| value.with_str(str::to_string)),
+            Some("alpha".to_string())
+        );
+        assert_eq!(value.heap_handle(), copied.heap_handle());
+    }
+
+    #[test]
+    fn heap_children_can_be_visited_for_future_root_scanning() {
+        let key = Value::symbol(Symbol::intern("contents"));
+        let child = Value::identity_raw(99).unwrap();
+        let list = Value::list([child]);
+        let map = Value::map([(key, list)]);
+
+        let mut children = Vec::new();
+        map.visit_children(|value| children.push(value));
+        assert_eq!(children, vec![key, list]);
+
+        children.clear();
+        list.visit_children(|value| children.push(value));
+        assert_eq!(children, vec![child]);
+
+        assert!(!list.is_marked_for_gc());
+        assert!(list.mark_for_gc());
+        assert!(list.is_marked_for_gc());
+        assert!(!list.mark_for_gc());
+        list.clear_gc_mark();
+        assert!(!list.is_marked_for_gc());
     }
 
     #[test]
