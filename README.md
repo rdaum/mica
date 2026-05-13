@@ -251,6 +251,8 @@ cargo test --workspace
   verbs, and dispatch.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,
   and the relation kernel.
+- `CODING-STYLE.md`: project coding guidelines, including dependency policy.
+- `CONTRIBUTING.md`: contribution expectations, checks, and licence terms.
 
 ## Licence
 
