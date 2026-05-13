@@ -6,16 +6,26 @@
 //! concrete syntax tree with source spans and recoverable parse errors.
 
 mod ast;
+mod hir;
 mod lexer;
 mod lower;
 mod parser;
+mod semantics;
 mod syntax;
 
 pub use ast::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
-    FunctionBody, Item, Literal, MethodKind, NodeId, ObjectClause, Param, ParamMode, UnaryOp,
+    FunctionBody, Item, Literal, MethodKind, NodeId, ObjectClause, Param, ParamMode, Span, UnaryOp,
+};
+pub use hir::{
+    HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,
+    HirProgram, HirRelationAtom,
 };
 pub use lexer::lex;
 pub use lower::parse_ast;
 pub use parser::parse;
+pub use semantics::{
+    Binding, BindingId, Diagnostic, DiagnosticCode, LocalKind, Reference, ResolvedName, Scope,
+    ScopeId, SemanticProgram, analyze_ast, parse_semantic,
+};
 pub use syntax::{CstElement, CstNode, CstToken, Parse, ParseError, SyntaxKind, Token};

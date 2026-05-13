@@ -1,0 +1,247 @@
+use crate::{
+    BinaryOp, BindingId, BindingKind, EffectKind, Literal, LocalKind, MethodKind, NodeId,
+    ResolvedName, ScopeId, Span, UnaryOp,
+};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirProgram {
+    pub items: Vec<HirItem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HirItem {
+    Expr {
+        id: NodeId,
+        expr: HirExpr,
+    },
+    RelationRule {
+        id: NodeId,
+        head: HirRelationAtom,
+        body: Vec<HirRelationAtom>,
+    },
+    Object {
+        id: NodeId,
+        identity: Option<String>,
+        extends: Option<String>,
+        clauses: Vec<HirExpr>,
+    },
+    Method {
+        id: NodeId,
+        kind: MethodKind,
+        identity: Option<String>,
+        selector: Option<String>,
+        clauses: Vec<String>,
+        scope: ScopeId,
+        body: Vec<HirItem>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HirExpr {
+    Literal {
+        id: NodeId,
+        value: Literal,
+    },
+    LocalRef {
+        id: NodeId,
+        binding: BindingId,
+    },
+    ExternalRef {
+        id: NodeId,
+        name: String,
+    },
+    Identity {
+        id: NodeId,
+        name: String,
+    },
+    Symbol {
+        id: NodeId,
+        name: String,
+    },
+    Hole {
+        id: NodeId,
+    },
+    List {
+        id: NodeId,
+        items: Vec<HirCollectionItem>,
+    },
+    Map {
+        id: NodeId,
+        entries: Vec<(HirExpr, HirExpr)>,
+    },
+    Unary {
+        id: NodeId,
+        op: UnaryOp,
+        expr: Box<HirExpr>,
+    },
+    Binary {
+        id: NodeId,
+        op: BinaryOp,
+        left: Box<HirExpr>,
+        right: Box<HirExpr>,
+    },
+    Assign {
+        id: NodeId,
+        target: HirPlace,
+        value: Box<HirExpr>,
+    },
+    Call {
+        id: NodeId,
+        callee: Box<HirExpr>,
+        args: Vec<HirArg>,
+    },
+    RoleDispatch {
+        id: NodeId,
+        selector: Box<HirExpr>,
+        args: Vec<HirArg>,
+    },
+    ReceiverDispatch {
+        id: NodeId,
+        receiver: Box<HirExpr>,
+        selector: Box<HirExpr>,
+        args: Vec<HirArg>,
+    },
+    RelationAtom(HirRelationAtom),
+    FactChange {
+        id: NodeId,
+        kind: EffectKind,
+        atom: HirRelationAtom,
+    },
+    Require {
+        id: NodeId,
+        condition: Box<HirExpr>,
+    },
+    Index {
+        id: NodeId,
+        collection: Box<HirExpr>,
+        index: Option<Box<HirExpr>>,
+    },
+    Field {
+        id: NodeId,
+        base: Box<HirExpr>,
+        name: String,
+    },
+    Binding {
+        id: NodeId,
+        binding: Option<BindingId>,
+        kind: BindingKind,
+        value: Option<Box<HirExpr>>,
+    },
+    If {
+        id: NodeId,
+        condition: Box<HirExpr>,
+        then_items: Vec<HirItem>,
+        elseif: Vec<(HirExpr, Vec<HirItem>)>,
+        else_items: Vec<HirItem>,
+    },
+    Block {
+        id: NodeId,
+        scope: ScopeId,
+        items: Vec<HirItem>,
+    },
+    For {
+        id: NodeId,
+        scope: ScopeId,
+        key: BindingId,
+        value: Option<BindingId>,
+        iter: Box<HirExpr>,
+        body: Vec<HirItem>,
+    },
+    While {
+        id: NodeId,
+        condition: Box<HirExpr>,
+        body: Vec<HirItem>,
+    },
+    Return {
+        id: NodeId,
+        value: Option<Box<HirExpr>>,
+    },
+    Break {
+        id: NodeId,
+    },
+    Continue {
+        id: NodeId,
+    },
+    Try {
+        id: NodeId,
+        body: Vec<HirItem>,
+        catches: Vec<HirCatch>,
+        finally: Vec<HirItem>,
+    },
+    Function {
+        id: NodeId,
+        name: Option<BindingId>,
+        scope: ScopeId,
+        params: Vec<HirParam>,
+        captures: Vec<BindingId>,
+        body: HirFunctionBody,
+    },
+    Error {
+        id: NodeId,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HirCollectionItem {
+    Expr(HirExpr),
+    Splice(HirExpr),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirRelationAtom {
+    pub id: NodeId,
+    pub name: String,
+    pub args: Vec<HirArg>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirArg {
+    pub id: NodeId,
+    pub role: Option<String>,
+    pub value: HirExpr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirParam {
+    pub id: NodeId,
+    pub binding: BindingId,
+    pub kind: LocalKind,
+    pub default: Option<HirExpr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirCatch {
+    pub id: NodeId,
+    pub binding: Option<BindingId>,
+    pub condition: Option<HirExpr>,
+    pub body: Vec<HirItem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HirFunctionBody {
+    Expr(Box<HirExpr>),
+    Block(Vec<HirItem>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HirPlace {
+    Local {
+        id: NodeId,
+        binding: BindingId,
+    },
+    Index {
+        id: NodeId,
+        collection: Box<HirExpr>,
+        index: Option<Box<HirExpr>>,
+    },
+    Dot {
+        id: NodeId,
+        base: Box<HirExpr>,
+        name: String,
+    },
+    Invalid {
+        id: NodeId,
+        span: Span,
+        resolution: Option<ResolvedName>,
+    },
+}
