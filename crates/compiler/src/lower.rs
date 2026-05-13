@@ -171,6 +171,7 @@ impl<'a> Lower<'a> {
         match node.kind {
             SyntaxKind::LiteralExpr => self.lower_literal(node),
             SyntaxKind::NameExpr => self.lower_name(node),
+            SyntaxKind::QueryVarExpr => self.lower_query_var(node),
             SyntaxKind::IdentityExpr => self.lower_identity(node),
             SyntaxKind::SymbolExpr => self.lower_symbol(node),
             SyntaxKind::HoleExpr => Expr::Hole {
@@ -257,6 +258,14 @@ impl<'a> Lower<'a> {
 
     fn lower_name(&mut self, node: &CstNode) -> Expr {
         Expr::Name {
+            id: self.node_id(),
+            span: node.span.clone(),
+            name: self.first_text(node, SyntaxKind::Ident).unwrap_or_default(),
+        }
+    }
+
+    fn lower_query_var(&mut self, node: &CstNode) -> Expr {
+        Expr::QueryVar {
             id: self.node_id(),
             span: node.span.clone(),
             name: self.first_text(node, SyntaxKind::Ident).unwrap_or_default(),
@@ -1049,6 +1058,7 @@ fn is_expr_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::GroupExpr
             | SyntaxKind::LiteralExpr
             | SyntaxKind::NameExpr
+            | SyntaxKind::QueryVarExpr
             | SyntaxKind::IdentityExpr
             | SyntaxKind::SymbolExpr
             | SyntaxKind::HoleExpr
@@ -1509,6 +1519,7 @@ mod tests {
             Expr::Effect { expr, .. } => collect_expr_ids(expr, ids),
             Expr::Literal { .. }
             | Expr::Name { .. }
+            | Expr::QueryVar { .. }
             | Expr::Identity { .. }
             | Expr::Symbol { .. }
             | Expr::Hole { .. }

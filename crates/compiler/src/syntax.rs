@@ -127,6 +127,7 @@ pub enum SyntaxKind {
     GroupExpr,
     LiteralExpr,
     NameExpr,
+    QueryVarExpr,
     IdentityExpr,
     SymbolExpr,
     HoleExpr,

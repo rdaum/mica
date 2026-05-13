@@ -59,6 +59,10 @@ pub enum HirExpr {
         id: NodeId,
         name: String,
     },
+    QueryVar {
+        id: NodeId,
+        name: String,
+    },
     Hole {
         id: NodeId,
     },

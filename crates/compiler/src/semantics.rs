@@ -409,6 +409,10 @@ impl<'a> Analyzer<'a> {
                 id: *id,
                 name: name.clone(),
             },
+            Expr::QueryVar { id, name, .. } => HirExpr::QueryVar {
+                id: *id,
+                name: name.clone(),
+            },
             Expr::Hole { id, .. } => HirExpr::Hole { id: *id },
             Expr::List { id, items, .. } => HirExpr::List {
                 id: *id,
@@ -1014,6 +1018,7 @@ fn collect_expr_span(expr: &Expr, spans: &mut HashMap<NodeId, Span>) {
     match expr {
         Expr::Literal { .. }
         | Expr::Name { .. }
+        | Expr::QueryVar { .. }
         | Expr::Identity { .. }
         | Expr::Symbol { .. }
         | Expr::Hole { .. }

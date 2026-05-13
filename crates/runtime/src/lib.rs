@@ -17,8 +17,8 @@ mod tests;
 pub use builtin::{Builtin, BuiltinContext, BuiltinRegistry};
 pub use error::{RuntimeError, TaskError};
 pub use program::{
-    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
-    RuntimeBinaryOp, RuntimeUnaryOp, SuspendKind,
+    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver,
+    QueryBinding, Register, RuntimeBinaryOp, RuntimeUnaryOp, SuspendKind,
 };
 pub use scheduler::{Effect, EffectLog, Scheduler, SchedulerError, SuspendedTask};
 pub use task::{Task, TaskId, TaskLimits, TaskOutcome};

@@ -6,8 +6,8 @@ use crate::{
 };
 use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
 use mica_runtime::{
-    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, Register, RuntimeBinaryOp,
-    RuntimeUnaryOp, Scheduler, SchedulerError, TaskId, TaskOutcome,
+    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, QueryBinding, Register,
+    RuntimeBinaryOp, RuntimeUnaryOp, Scheduler, SchedulerError, TaskId, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use std::collections::HashMap;
@@ -484,6 +484,19 @@ fn builtin_error_field(name: &str) -> Option<ErrorField> {
     })
 }
 
+fn query_outputs(args: &[HirArg]) -> Vec<QueryBinding> {
+    args.iter()
+        .enumerate()
+        .filter_map(|(position, arg)| match &arg.value {
+            HirExpr::QueryVar { name, .. } => Some(QueryBinding {
+                name: Symbol::intern(name),
+                position: position as u16,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 struct ProgramCompiler<'a> {
     semantic: &'a SemanticProgram,
     context: &'a CompileContext,
@@ -607,6 +620,10 @@ impl<'a> ProgramCompiler<'a> {
                 });
                 Ok(dst)
             }
+            HirExpr::QueryVar { id, .. } => Err(self.unsupported(
+                *id,
+                "query variables are only valid inside relation queries",
+            )),
             HirExpr::LocalRef { id, binding } => {
                 self.locals
                     .get(binding)
@@ -2129,6 +2146,10 @@ impl<'a> ProgramCompiler<'a> {
             &atom.args,
             "relation argument splices are not implemented yet",
         )?;
+        let outputs = query_outputs(&atom.args);
+        if !outputs.is_empty() {
+            return self.compile_relation_query(relation, atom, outputs);
+        }
         let dst = self.alloc_register();
         let bindings = atom
             .args
@@ -2139,6 +2160,30 @@ impl<'a> ProgramCompiler<'a> {
             dst,
             relation,
             bindings,
+        });
+        Ok(dst)
+    }
+
+    fn compile_relation_query(
+        &mut self,
+        relation: RelationId,
+        atom: &HirRelationAtom,
+        outputs: Vec<QueryBinding>,
+    ) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        let bindings = atom
+            .args
+            .iter()
+            .map(|arg| match &arg.value {
+                HirExpr::QueryVar { .. } | HirExpr::Hole { .. } => Ok(None),
+                _ => self.compile_arg_operand(arg).map(Some),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.emit(Instruction::ScanBindings {
+            dst,
+            relation,
+            bindings,
+            outputs,
         });
         Ok(dst)
     }
@@ -2378,6 +2423,7 @@ fn expr_id(expr: &HirExpr) -> NodeId {
         | HirExpr::ExternalRef { id, .. }
         | HirExpr::Identity { id, .. }
         | HirExpr::Symbol { id, .. }
+        | HirExpr::QueryVar { id, .. }
         | HirExpr::Hole { id }
         | HirExpr::List { id, .. }
         | HirExpr::Map { id, .. }

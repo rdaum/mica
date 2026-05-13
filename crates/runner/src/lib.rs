@@ -3,7 +3,8 @@ use mica_relation_kernel::{ConflictPolicy, KernelError, RelationKernel, Relation
 use mica_runtime::{
     Builtin, BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome,
 };
-use mica_var::{Identity, Symbol, Value};
+use mica_var::{Identity, Symbol, Value, ValueKind};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -33,6 +34,8 @@ impl SourceRunner {
         Ok(RunReport {
             task_id: submitted.task_id,
             outcome: submitted.outcome,
+            identity_names: self.identity_names(),
+            relation_names: self.relation_names(),
         })
     }
 
@@ -43,17 +46,34 @@ impl SourceRunner {
                 self.context.define_relation(name, metadata.id());
             }
         }
-        for tuple in snapshot
+        for (identity, name) in self.identity_names() {
+            self.context.define_identity(name, identity);
+        }
+    }
+
+    fn identity_names(&self) -> BTreeMap<Identity, String> {
+        let snapshot = self.scheduler.kernel().snapshot();
+        snapshot
             .scan(named_identity_relation(), &[None, None])
             .unwrap_or_default()
-        {
-            if let [name, identity] = tuple.values()
-                && let (Some(name), Some(identity)) = (name.as_symbol(), identity.as_identity())
-                && let Some(name) = name.name()
-            {
-                self.context.define_identity(name, identity);
-            }
-        }
+            .into_iter()
+            .filter_map(|tuple| {
+                let [name, identity] = tuple.values() else {
+                    return None;
+                };
+                let name = name.as_symbol()?.name()?.to_owned();
+                let identity = identity.as_identity()?;
+                Some((identity, name))
+            })
+            .collect()
+    }
+
+    fn relation_names(&self) -> BTreeMap<Identity, String> {
+        let snapshot = self.scheduler.kernel().snapshot();
+        snapshot
+            .relation_metadata()
+            .filter_map(|metadata| Some((metadata.id(), metadata.name().name()?.to_owned())))
+            .collect()
     }
 }
 
@@ -241,6 +261,8 @@ fn invalid_builtin_call(name: &str, message: &str) -> RuntimeError {
 pub struct RunReport {
     pub task_id: u64,
     pub outcome: TaskOutcome,
+    identity_names: BTreeMap<Identity, String>,
+    relation_names: BTreeMap<Identity, String>,
 }
 
 impl RunReport {
@@ -250,12 +272,28 @@ impl RunReport {
                 value,
                 effects,
                 retries,
-            } => render_finished("complete", self.task_id, value, effects, *retries),
+            } => render_finished(
+                "complete",
+                self.task_id,
+                value,
+                effects,
+                *retries,
+                &self.identity_names,
+                &self.relation_names,
+            ),
             TaskOutcome::Aborted {
                 error,
                 effects,
                 retries,
-            } => render_finished("aborted", self.task_id, error, effects, *retries),
+            } => render_finished(
+                "aborted",
+                self.task_id,
+                error,
+                effects,
+                *retries,
+                &self.identity_names,
+                &self.relation_names,
+            ),
             TaskOutcome::Suspended {
                 kind,
                 effects,
@@ -265,7 +303,12 @@ impl RunReport {
                     "task {} suspended: {:?} (retries: {})",
                     self.task_id, kind, retries
                 );
-                render_effects(&mut out, effects);
+                render_effects(
+                    &mut out,
+                    effects,
+                    &self.identity_names,
+                    &self.relation_names,
+                );
                 out
             }
         }
@@ -278,17 +321,127 @@ fn render_finished(
     value: &Value,
     effects: &[Value],
     retries: u8,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
 ) -> String {
-    let mut out = format!("task {task_id} {label}: {value:?} (retries: {retries})");
-    render_effects(&mut out, effects);
+    let mut out = format!(
+        "task {task_id} {label}: {} (retries: {retries})",
+        render_value(value, identity_names, relation_names)
+    );
+    render_effects(&mut out, effects, identity_names, relation_names);
     out
 }
 
-fn render_effects(out: &mut String, effects: &[Value]) {
+fn render_effects(
+    out: &mut String,
+    effects: &[Value],
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) {
     for effect in effects {
         out.push_str("\neffect: ");
-        out.push_str(&format!("{effect:?}"));
+        out.push_str(&render_value(effect, identity_names, relation_names));
     }
+}
+
+fn render_value(
+    value: &Value,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> String {
+    match value.kind() {
+        ValueKind::Nothing => "nothing".to_owned(),
+        ValueKind::Bool => value.as_bool().unwrap().to_string(),
+        ValueKind::Int => value.as_int().unwrap().to_string(),
+        ValueKind::Float => format!("{:?}", value.as_float().unwrap()),
+        ValueKind::Identity => {
+            let identity = value.as_identity().unwrap();
+            match identity_names.get(&identity) {
+                Some(name) => format!("${name}"),
+                None => match relation_names.get(&identity) {
+                    Some(name) => format!("relation(:{name})"),
+                    None => format!("${}", identity.raw()),
+                },
+            }
+        }
+        ValueKind::Symbol => render_symbol(value.as_symbol().unwrap(), ":"),
+        ValueKind::ErrorCode => render_symbol(value.as_error_code().unwrap(), ""),
+        ValueKind::String => value.with_str(|value| format!("{value:?}")).unwrap(),
+        ValueKind::Bytes => format!("{value:?}"),
+        ValueKind::List => value
+            .with_list(|values| {
+                render_sequence(
+                    "[",
+                    "]",
+                    values
+                        .iter()
+                        .map(|value| render_value(value, identity_names, relation_names)),
+                )
+            })
+            .unwrap(),
+        ValueKind::Map => value
+            .with_map(|entries| {
+                render_sequence(
+                    "[",
+                    "]",
+                    entries.iter().map(|(key, value)| {
+                        format!(
+                            "{}: {}",
+                            render_value(key, identity_names, relation_names),
+                            render_value(value, identity_names, relation_names)
+                        )
+                    }),
+                )
+            })
+            .unwrap(),
+        ValueKind::Range => value
+            .with_range(|start, end| match end {
+                Some(end) => format!(
+                    "{}..{}",
+                    render_value(start, identity_names, relation_names),
+                    render_value(end, identity_names, relation_names)
+                ),
+                None => format!("{}..$", render_value(start, identity_names, relation_names)),
+            })
+            .unwrap(),
+        ValueKind::Error => value
+            .with_error(|error| {
+                let mut out = format!("error({}", render_symbol(error.code(), ""));
+                if let Some(message) = error.message() {
+                    out.push_str(", ");
+                    out.push_str(&format!("{message:?}"));
+                }
+                if let Some(payload) = error.value() {
+                    if error.message().is_none() {
+                        out.push_str(", nothing");
+                    }
+                    out.push_str(", ");
+                    out.push_str(&render_value(payload, identity_names, relation_names));
+                }
+                out.push(')');
+                out
+            })
+            .unwrap(),
+    }
+}
+
+fn render_symbol(symbol: Symbol, prefix: &str) -> String {
+    match symbol.name() {
+        Some(name) => format!("{prefix}{name}"),
+        None => format!("{prefix}#{}", symbol.id()),
+    }
+}
+
+fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = String>) -> String {
+    let mut out = open.to_owned();
+    for (index, item) in items.into_iter().enumerate() {
+        if index != 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&item);
+    }
+    out.push_str(close);
+    out
 }
 
 #[cfg(test)]
@@ -337,6 +490,10 @@ mod tests {
     fn runner_make_relation_refreshes_compile_context() {
         let mut runner = SourceRunner::new_empty();
         let made = runner.run_source("return make_relation(:Hog, 1)").unwrap();
+        assert_eq!(
+            made.render(),
+            "task 1 complete: relation(:Hog) (retries: 0)"
+        );
         let relation = match made.outcome {
             TaskOutcome::Complete { value, .. } => value.as_identity().unwrap(),
             other => panic!("unexpected make_relation outcome: {other:?}"),
@@ -405,6 +562,37 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn report_renders_named_identities_in_values_and_effects() {
+        let mut runner = SourceRunner::new_empty();
+        let made = runner.run_source("return make_identity(:thing)").unwrap();
+        let report = runner
+            .run_source("return emit([$thing, {:owner -> $thing}])")
+            .unwrap();
+
+        assert_eq!(made.render(), "task 1 complete: $thing (retries: 0)");
+        assert_eq!(
+            report.render(),
+            "task 2 complete: [$thing, [:owner: $thing]] (retries: 0)\neffect: [$thing, [:owner: $thing]]"
+        );
+    }
+
+    #[test]
+    fn runner_relation_calls_with_query_vars_return_binding_maps() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:thing)").unwrap();
+        runner.run_source("make_identity(:room)").unwrap();
+        runner.run_source("make_relation(:Location, 2)").unwrap();
+        runner.run_source("assert Location($thing, $room)").unwrap();
+
+        let report = runner.run_source("return Location($thing, ?room)").unwrap();
+
+        assert_eq!(
+            report.render(),
+            "task 5 complete: [[:room: $room]] (retries: 0)"
         );
     }
 

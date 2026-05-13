@@ -328,6 +328,37 @@ impl RegisterVm {
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
+            Instruction::ScanBindings {
+                dst,
+                relation,
+                bindings,
+                outputs,
+            } => {
+                let bindings = self.resolve_bindings(&bindings)?;
+                let rows = tx.scan(relation, &bindings)?;
+                let mut result = Vec::with_capacity(rows.len());
+                'row: for row in rows {
+                    let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
+                    for output in &outputs {
+                        let key = Value::symbol(output.name);
+                        let value = row.values()[output.position as usize].clone();
+                        if let Some((_, existing)) = entries
+                            .iter()
+                            .find(|(existing_key, _)| existing_key == &key)
+                        {
+                            if existing != &value {
+                                continue 'row;
+                            }
+                            continue;
+                        }
+                        entries.push((key, value));
+                    }
+                    result.push(Value::map(entries));
+                }
+                self.write_register(dst, Value::list(result))?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
             Instruction::ScanValue { dst, relation, key } => {
                 let key = self.resolve_operand(&key)?;
                 let value = tx

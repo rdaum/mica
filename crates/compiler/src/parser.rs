@@ -263,6 +263,9 @@ impl<'a> Parser<'a> {
             }
             SyntaxKind::Dollar => self.single_token_node(SyntaxKind::HoleExpr),
             SyntaxKind::Colon => self.parse_symbol_or_role_call(),
+            SyntaxKind::Question if self.nth_kind(1) == SyntaxKind::Ident => {
+                self.parse_query_var_expr()
+            }
             SyntaxKind::Underscore => self.single_token_node(SyntaxKind::HoleExpr),
             SyntaxKind::Ident => self.single_token_node(SyntaxKind::NameExpr),
             SyntaxKind::ErrorCode
@@ -716,6 +719,16 @@ impl<'a> Parser<'a> {
         CstNode::new(kind, vec![self.bump_element()])
     }
 
+    fn parse_query_var_expr(&mut self) -> CstNode {
+        CstNode::new(
+            SyntaxKind::QueryVarExpr,
+            vec![
+                self.bump_element(),
+                self.expect_token(SyntaxKind::Ident, "expected query variable name"),
+            ],
+        )
+    }
+
     fn starts_expr(kind: SyntaxKind) -> bool {
         matches!(
             kind,
@@ -744,6 +757,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::LBrace
                 | SyntaxKind::Dollar
                 | SyntaxKind::Colon
+                | SyntaxKind::Question
                 | SyntaxKind::Underscore
                 | SyntaxKind::Ident
                 | SyntaxKind::ErrorCode
@@ -960,6 +974,14 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::CallExpr));
         assert!(contains(&parse.root, SyntaxKind::At));
+    }
+
+    #[test]
+    fn parses_query_variables_in_relation_calls() {
+        let parse = parse("Location($thing, ?room)");
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::CallExpr));
+        assert!(contains(&parse.root, SyntaxKind::QueryVarExpr));
     }
 
     #[test]

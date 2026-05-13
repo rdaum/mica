@@ -91,6 +91,11 @@ pub enum Expr {
         span: Span,
         name: String,
     },
+    QueryVar {
+        id: NodeId,
+        span: Span,
+        name: String,
+    },
     Identity {
         id: NodeId,
         span: Span,
@@ -256,6 +261,7 @@ impl Expr {
         match self {
             Self::Literal { id, .. }
             | Self::Name { id, .. }
+            | Self::QueryVar { id, .. }
             | Self::Identity { id, .. }
             | Self::Symbol { id, .. }
             | Self::Hole { id, .. }
@@ -290,6 +296,7 @@ impl Expr {
         match self {
             Self::Literal { span, .. }
             | Self::Name { span, .. }
+            | Self::QueryVar { span, .. }
             | Self::Identity { span, .. }
             | Self::Symbol { span, .. }
             | Self::Hole { span, .. }

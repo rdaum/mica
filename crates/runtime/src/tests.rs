@@ -1,7 +1,7 @@
 use crate::{
     BuiltinContext, BuiltinRegistry, Effect, ErrorField, Instruction, ListItem, Operand, Program,
-    ProgramResolver, Register, RuntimeBinaryOp, RuntimeError, Scheduler, SchedulerError,
-    SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
+    ProgramResolver, QueryBinding, Register, RuntimeBinaryOp, RuntimeError, Scheduler,
+    SchedulerError, SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -344,6 +344,43 @@ fn binary_divide_by_zero_raises_catchable_error() {
                 Some("division by zero"),
                 Some(Value::list([int(1), int(0)]))
             ),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn scan_bindings_returns_query_binding_maps() {
+    let kernel = kernel_with_world_relations();
+    let thing = int(200);
+    let room = int(300);
+    let mut seed = kernel.begin();
+    seed.assert(rel(2), Tuple::from([thing.clone(), room.clone()]))
+        .unwrap();
+    seed.commit().unwrap();
+    let program = Program::new(
+        1,
+        [
+            Instruction::ScanBindings {
+                dst: reg(0),
+                relation: rel(2),
+                bindings: vec![Some(v(thing)), None],
+                outputs: vec![QueryBinding {
+                    name: Symbol::intern("room"),
+                    position: 1,
+                }],
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let program = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+
+    assert_eq!(
+        run_program(&kernel, program, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: Value::list([Value::map([(sym("room"), room)])]),
             effects: vec![],
             retries: 0,
         }

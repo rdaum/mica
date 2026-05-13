@@ -46,6 +46,12 @@ impl From<Operand> for ListItem {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryBinding {
+    pub name: Symbol,
+    pub position: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatchHandler {
     pub code: Option<Value>,
     pub binding: Option<Register>,
@@ -134,6 +140,12 @@ pub enum Instruction {
         dst: Register,
         relation: RelationId,
         bindings: Vec<Option<Operand>>,
+    },
+    ScanBindings {
+        dst: Register,
+        relation: RelationId,
+        bindings: Vec<Option<Operand>>,
+        outputs: Vec<QueryBinding>,
     },
     ScanValue {
         dst: Register,
@@ -433,7 +445,8 @@ fn validate_instruction(
                 _ => Ok(()),
             }
         }
-        Instruction::ScanExists { dst, bindings, .. } => {
+        Instruction::ScanExists { dst, bindings, .. }
+        | Instruction::ScanBindings { dst, bindings, .. } => {
             validate_register(register_count, *dst)?;
             validate_bindings(register_count, bindings)
         }
@@ -594,6 +607,7 @@ const INST_END_FINALLY: u8 = 30;
 const INST_RAISE: u8 = 31;
 const INST_ERROR_FIELD: u8 = 32;
 const INST_BUILTIN_CALL: u8 = 33;
+const INST_SCAN_BINDINGS: u8 = 34;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -751,6 +765,18 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *dst);
             write_identity(out, *relation);
             write_optional_operands(out, bindings)
+        }
+        Instruction::ScanBindings {
+            dst,
+            relation,
+            bindings,
+            outputs,
+        } => {
+            out.push(INST_SCAN_BINDINGS);
+            write_register(out, *dst);
+            write_identity(out, *relation);
+            write_optional_operands(out, bindings)?;
+            write_query_bindings(out, outputs)
         }
         Instruction::ScanValue { dst, relation, key } => {
             out.push(INST_SCAN_VALUE);
@@ -981,6 +1007,20 @@ fn write_optional_operands(
             }
             None => out.push(0),
         }
+    }
+    Ok(())
+}
+
+fn write_query_bindings(out: &mut Vec<u8>, bindings: &[QueryBinding]) -> Result<(), RuntimeError> {
+    write_u32(out, bindings.len() as u32);
+    for binding in bindings {
+        let Some(name) = binding.name.name() else {
+            return Err(artifact_error(
+                "cannot serialize unnamed query binding symbol",
+            ));
+        };
+        write_str(out, name);
+        write_u16(out, binding.position);
     }
     Ok(())
 }
@@ -1225,6 +1265,12 @@ impl<'a> ByteReader<'a> {
                 relation: self.read_identity()?,
                 bindings: self.read_optional_operands()?,
             },
+            INST_SCAN_BINDINGS => Instruction::ScanBindings {
+                dst: self.read_register()?,
+                relation: self.read_identity()?,
+                bindings: self.read_optional_operands()?,
+                outputs: self.read_query_bindings()?,
+            },
             INST_SCAN_VALUE => Instruction::ScanValue {
                 dst: self.read_register()?,
                 relation: self.read_identity()?,
@@ -1350,6 +1396,18 @@ impl<'a> ByteReader<'a> {
             1 => self.read_operand().map(Some),
             _ => Err(artifact_error("invalid optional operand tag")),
         }
+    }
+
+    fn read_query_bindings(&mut self) -> Result<Vec<QueryBinding>, RuntimeError> {
+        let count = self.read_u32()? as usize;
+        (0..count)
+            .map(|_| {
+                Ok(QueryBinding {
+                    name: Symbol::intern(&self.read_string()?),
+                    position: self.read_u16()?,
+                })
+            })
+            .collect()
     }
 
     fn read_optional_target(&mut self) -> Result<Option<usize>, RuntimeError> {
