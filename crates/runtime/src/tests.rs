@@ -1,6 +1,6 @@
 use crate::{
-    Effect, Instruction, Operand, Program, Register, Scheduler, SchedulerError, SuspendKind, Task,
-    TaskError, TaskLimits, TaskOutcome,
+    Effect, Instruction, Operand, Program, Register, RuntimeError, Scheduler, SchedulerError,
+    SuspendKind, Task, TaskError, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -65,6 +65,7 @@ fn run_program(
         TaskLimits {
             instruction_budget: limit,
             max_retries: 10,
+            max_call_depth: 50,
         },
     );
     task.run()
@@ -375,6 +376,7 @@ fn task_retries_from_last_clean_state_on_commit_conflict() {
         TaskLimits {
             instruction_budget: 100,
             max_retries: 2,
+            max_call_depth: 50,
         },
     );
 
@@ -418,6 +420,7 @@ fn explicit_rollback_retry_stops_at_retry_limit() {
         TaskLimits {
             instruction_budget: 100,
             max_retries: 2,
+            max_call_depth: 50,
         },
     );
 
@@ -594,5 +597,222 @@ fn scheduler_rejects_unknown_and_completed_resume() {
     assert_eq!(
         scheduler.resume(task_id).unwrap_err(),
         SchedulerError::TaskAlreadyCompleted(task_id)
+    );
+}
+
+#[test]
+fn direct_program_call_returns_into_caller_register() {
+    let kernel = kernel_with_world_relations();
+    let callee = Arc::new(Program::new(2, [Instruction::Return { value: r(0) }]).unwrap());
+    let caller = Program::new(
+        2,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(42),
+            },
+            Instruction::Call {
+                dst: reg(1),
+                program: callee,
+                args: vec![r(0)],
+            },
+            Instruction::Return { value: r(1) },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_program(&kernel, caller, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: int(42),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn call_depth_limit_is_enforced() {
+    let kernel = kernel_with_world_relations();
+    let leaf = Arc::new(
+        Program::new(
+            0,
+            [Instruction::Return {
+                value: v(Value::nothing()),
+            }],
+        )
+        .unwrap(),
+    );
+    let caller = Arc::new(
+        Program::new(
+            1,
+            [
+                Instruction::Call {
+                    dst: reg(0),
+                    program: leaf,
+                    args: vec![],
+                },
+                Instruction::Return { value: r(0) },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut task = Task::new(
+        1,
+        &kernel,
+        caller,
+        TaskLimits {
+            instruction_budget: 100,
+            max_retries: 1,
+            max_call_depth: 1,
+        },
+    );
+
+    assert_eq!(
+        task.run().unwrap_err(),
+        TaskError::Runtime(RuntimeError::MaxCallDepthExceeded { max_depth: 1 })
+    );
+}
+
+#[test]
+fn suspension_inside_callee_resumes_full_activation_stack() {
+    let kernel = kernel_with_world_relations();
+    let callee = Arc::new(
+        Program::new(
+            1,
+            [
+                Instruction::Emit {
+                    value: v(strv("in callee")),
+                },
+                Instruction::Suspend {
+                    kind: SuspendKind::TimedMillis(1),
+                },
+                Instruction::Return { value: r(0) },
+            ],
+        )
+        .unwrap(),
+    );
+    let caller = Arc::new(
+        Program::new(
+            2,
+            [
+                Instruction::Load {
+                    dst: reg(0),
+                    value: int(7),
+                },
+                Instruction::Call {
+                    dst: reg(1),
+                    program: callee,
+                    args: vec![r(0)],
+                },
+                Instruction::Return { value: r(1) },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut scheduler = Scheduler::new(kernel);
+
+    let (task_id, first) = scheduler.submit(caller).unwrap();
+    assert_eq!(
+        first,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::TimedMillis(1),
+            effects: vec![strv("in callee")],
+            retries: 0,
+        }
+    );
+    assert_eq!(scheduler.suspended(task_id).unwrap().frame_count(), 2);
+
+    assert_eq!(
+        scheduler.resume(task_id).unwrap(),
+        TaskOutcome::Complete {
+            value: int(7),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn commit_conflict_retries_restore_call_stack() {
+    let kernel = kernel_with_world_relations();
+    let item = int(200);
+    let room = int(300);
+    let other = int(500);
+    let actor = int(100);
+
+    let mut seed = kernel.begin();
+    seed.replace_functional(rel(2), Tuple::from([item.clone(), room]))
+        .unwrap();
+    seed.commit().unwrap();
+
+    let callee = Arc::new(
+        Program::new(
+            2,
+            [
+                Instruction::ReplaceFunctional {
+                    relation: rel(2),
+                    values: vec![r(0), r(1)],
+                },
+                Instruction::Emit {
+                    value: v(strv("moved")),
+                },
+                Instruction::Return {
+                    value: v(Value::bool(true)),
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    let caller = Arc::new(
+        Program::new(
+            3,
+            [
+                Instruction::Load {
+                    dst: reg(0),
+                    value: item.clone(),
+                },
+                Instruction::Load {
+                    dst: reg(1),
+                    value: actor.clone(),
+                },
+                Instruction::Call {
+                    dst: reg(2),
+                    program: callee,
+                    args: vec![r(0), r(1)],
+                },
+                Instruction::Return { value: r(2) },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut task = Task::new(
+        1,
+        &kernel,
+        caller,
+        TaskLimits {
+            instruction_budget: 100,
+            max_retries: 2,
+            max_call_depth: 50,
+        },
+    );
+
+    let mut concurrent = kernel.begin();
+    concurrent
+        .replace_functional(rel(2), Tuple::from([item.clone(), other]))
+        .unwrap();
+    concurrent.commit().unwrap();
+
+    assert_eq!(
+        task.run().unwrap(),
+        TaskOutcome::Complete {
+            value: Value::bool(true),
+            effects: vec![strv("moved")],
+            retries: 1,
+        }
+    );
+    assert_eq!(
+        kernel.snapshot().scan(rel(2), &[Some(item), None]).unwrap(),
+        vec![Tuple::from([int(200), actor])]
     );
 }

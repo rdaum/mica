@@ -180,4 +180,8 @@ impl SuspendedTask {
     pub fn kind(&self) -> &SuspendKind {
         &self.kind
     }
+
+    pub fn frame_count(&self) -> usize {
+        self.state.frame_count()
+    }
 }

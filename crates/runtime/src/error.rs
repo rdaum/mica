@@ -17,6 +17,14 @@ pub enum RuntimeError {
     InstructionBudgetExceeded {
         budget: usize,
     },
+    MaxCallDepthExceeded {
+        max_depth: usize,
+    },
+    InvalidCallArity {
+        expected_at_most: usize,
+        actual: usize,
+    },
+    EmptyCallStack,
     Kernel(KernelError),
     Aborted(Value),
 }

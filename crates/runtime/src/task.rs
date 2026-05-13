@@ -9,6 +9,7 @@ pub type TaskId = u64;
 pub struct TaskLimits {
     pub instruction_budget: usize,
     pub max_retries: u8,
+    pub max_call_depth: usize,
 }
 
 impl Default for TaskLimits {
@@ -16,6 +17,7 @@ impl Default for TaskLimits {
         Self {
             instruction_budget: 60_000,
             max_retries: 10,
+            max_call_depth: 50,
         }
     }
 }
@@ -83,7 +85,7 @@ impl<'a> Task<'a> {
         Self {
             task_id,
             kernel,
-            vm: RegisterVm::from_state(state.program.clone(), state.vm_state),
+            vm: RegisterVm::from_state(state.vm_state),
             tx: Some(kernel.begin()),
             program: state.program,
             retry_state: state.retry_state,
@@ -128,6 +130,7 @@ impl<'a> Task<'a> {
                     tx,
                     &mut self.pending_effects,
                     self.limits.instruction_budget,
+                    self.limits.max_call_depth,
                 )?
             };
 
@@ -217,6 +220,12 @@ pub(crate) struct TaskState {
     retry_state: VmState,
     retries: u8,
     limits: TaskLimits,
+}
+
+impl TaskState {
+    pub(crate) fn frame_count(&self) -> usize {
+        self.vm_state.frames().len()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

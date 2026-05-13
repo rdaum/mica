@@ -73,6 +73,11 @@ pub enum Instruction {
     Emit {
         value: Operand,
     },
+    Call {
+        dst: Register,
+        program: Arc<Program>,
+        args: Vec<Operand>,
+    },
     Commit,
     Suspend {
         kind: SuspendKind,
@@ -150,6 +155,17 @@ fn validate_instruction(
         Instruction::Emit { value }
         | Instruction::Return { value }
         | Instruction::Abort { error: value } => validate_operand(register_count, value),
+        Instruction::Call { dst, program, args } => {
+            validate_register(register_count, *dst)?;
+            validate_operands(register_count, args.iter())?;
+            if args.len() > program.register_count() {
+                return Err(RuntimeError::InvalidCallArity {
+                    expected_at_most: program.register_count(),
+                    actual: args.len(),
+                });
+            }
+            Ok(())
+        }
         Instruction::Commit | Instruction::Suspend { .. } | Instruction::RollbackRetry => Ok(()),
     }
 }

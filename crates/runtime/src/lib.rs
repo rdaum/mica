@@ -17,4 +17,4 @@ pub use error::{RuntimeError, TaskError};
 pub use program::{Instruction, Operand, Program, Register, SuspendKind};
 pub use scheduler::{Effect, EffectLog, Scheduler, SchedulerError, SuspendedTask};
 pub use task::{Task, TaskId, TaskLimits, TaskOutcome};
-pub use vm::{RegisterVm, VmHostResponse, VmState};
+pub use vm::{Frame, RegisterVm, VmHostResponse, VmState};
