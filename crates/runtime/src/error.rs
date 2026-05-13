@@ -34,6 +34,7 @@ pub enum RuntimeError {
     MissingMethodProgram {
         method: Value,
     },
+    ProgramArtifact(String),
     EmptyCallStack,
     Kernel(KernelError),
     Aborted(Value),

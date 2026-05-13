@@ -1,6 +1,6 @@
 use crate::{
-    BinaryOp, BindingId, BindingKind, EffectKind, Literal, LocalKind, MethodKind, NodeId,
-    ResolvedName, ScopeId, Span, UnaryOp,
+    BinaryOp, BindingId, BindingKind, EffectKind, Literal, LocalKind, MethodKind, MethodRole,
+    NodeId, ResolvedName, ScopeId, Span, UnaryOp,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +31,7 @@ pub enum HirItem {
         identity: Option<String>,
         selector: Option<String>,
         clauses: Vec<String>,
+        roles: Vec<MethodRole>,
         scope: ScopeId,
         body: Vec<HirItem>,
     },

@@ -1,7 +1,7 @@
 use crate::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, CstElement,
-    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, NodeId,
-    ObjectClause, Param, ParamMode, ParseError, SyntaxKind, UnaryOp, parse,
+    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, MethodRole,
+    NodeId, ObjectClause, Param, ParamMode, ParseError, SyntaxKind, UnaryOp, parse,
 };
 
 pub fn parse_ast(source: &str) -> Ast {
@@ -136,7 +136,8 @@ impl<'a> Lower<'a> {
             .filter(|child| child.kind == SyntaxKind::MethodClause)
             .map(|child| self.text(child.span.clone()).trim().to_owned())
             .filter(|text| !text.is_empty())
-            .collect();
+            .collect::<Vec<_>>();
+        let roles = lower_method_roles(&clauses);
         let body = self
             .node_children(node)
             .find(|child| child.kind == SyntaxKind::Block)
@@ -149,6 +150,7 @@ impl<'a> Lower<'a> {
             identity,
             selector,
             clauses,
+            roles,
             body,
         }
     }
@@ -886,6 +888,38 @@ fn identity_after_dollar(source: &str, tokens: &[&CstToken], start: usize) -> Op
         .map(|token| source[token.span.clone()].to_owned())
 }
 
+fn lower_method_roles(clauses: &[String]) -> Vec<MethodRole> {
+    let mut roles = Vec::new();
+    for clause in clauses {
+        let clause = clause.trim();
+        let clause = clause.strip_prefix("roles").unwrap_or(clause).trim();
+        if !clause.contains(':') {
+            continue;
+        }
+        for part in clause
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            let Some((name, restriction)) = part.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            let restriction = restriction.trim();
+            let Some(restriction) = restriction.strip_prefix('$') else {
+                continue;
+            };
+            if !name.is_empty() && !restriction.is_empty() {
+                roles.push(MethodRole {
+                    name: name.to_owned(),
+                    restriction: restriction.to_owned(),
+                });
+            }
+        }
+    }
+    roles
+}
+
 fn unquote(text: &str) -> String {
     text.strip_prefix('"')
         .and_then(|text| text.strip_suffix('"'))
@@ -1050,6 +1084,7 @@ mod tests {
             identity,
             selector,
             clauses,
+            roles,
             body,
             ..
         } = &ast.items[1]
@@ -1060,6 +1095,9 @@ mod tests {
         assert_eq!(identity.as_deref(), Some("move_into"));
         assert_eq!(selector.as_deref(), Some("move"));
         assert_eq!(clauses.len(), 1);
+        assert_eq!(roles.len(), 2);
+        assert_eq!(roles[0].name, "actor");
+        assert_eq!(roles[0].restriction, "player");
         assert!(matches!(
             &body[0],
             Item::Expr {

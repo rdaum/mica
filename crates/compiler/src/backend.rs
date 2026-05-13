@@ -2,7 +2,7 @@ use crate::{
     BindingId, Diagnostic, EffectKind, HirArg, HirExpr, HirItem, HirPlace, HirProgram,
     HirRelationAtom, Literal, NodeId, SemanticProgram, Span, parse_semantic,
 };
-use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
+use mica_relation_kernel::{DispatchRelations, RelationId, RelationRead, Transaction, Tuple};
 use mica_runtime::{
     Instruction, Operand, Program, ProgramStore, Register, Scheduler, SchedulerError, TaskId,
     TaskOutcome,
@@ -99,6 +99,13 @@ pub fn install_methods(
                 method_relations.method_program,
                 Tuple::from([method.method.clone(), method.program.clone()]),
             )?;
+            tx.assert(
+                method_relations.program_bytes,
+                Tuple::from([
+                    method.program.clone(),
+                    Value::bytes(method.compiled.program.to_bytes()?),
+                ]),
+            )?;
             for role in &method.roles {
                 tx.assert(
                     method_relations.dispatch.param,
@@ -119,6 +126,26 @@ pub fn install_methods(
         program_store: Arc::new(store),
         methods,
     })
+}
+
+pub fn load_program_store(
+    reader: &impl RelationRead,
+    method_relations: MethodRelations,
+) -> Result<Arc<ProgramStore>, CompileError> {
+    let rows = reader.scan_relation(method_relations.program_bytes, &[None, None])?;
+    let mut store = ProgramStore::new();
+    for row in rows {
+        let program_id = row.values()[0].clone();
+        let bytes = row.values()[1].with_bytes(<[u8]>::to_vec).ok_or_else(|| {
+            CompileError::InvalidProgramArtifact {
+                program: program_id.clone(),
+                message: "ProgramBytes value is not bytes".to_owned(),
+            }
+        })?;
+        let program = Program::from_bytes(&bytes).map_err(CompileError::Runtime)?;
+        store.insert(program_id, program);
+    }
+    Ok(Arc::new(store))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -161,12 +188,14 @@ pub struct InstalledRole {
 pub struct MethodRelations {
     pub dispatch: DispatchRelations,
     pub method_program: RelationId,
+    pub program_bytes: RelationId,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompileContext {
     relations: HashMap<String, RelationId>,
     identities: HashMap<String, Identity>,
+    program_identities: HashMap<String, Identity>,
     method_relations: Option<MethodRelations>,
     program_store: Option<Arc<ProgramStore>>,
 }
@@ -183,6 +212,11 @@ impl CompileContext {
 
     pub fn with_identity(mut self, name: impl Into<String>, id: Identity) -> Self {
         self.define_identity(name, id);
+        self
+    }
+
+    pub fn with_program_identity(mut self, method: impl Into<String>, id: Identity) -> Self {
+        self.define_program_identity(method, id);
         self
     }
 
@@ -204,12 +238,20 @@ impl CompileContext {
         self.identities.insert(name.into(), id);
     }
 
+    pub fn define_program_identity(&mut self, method: impl Into<String>, id: Identity) {
+        self.program_identities.insert(method.into(), id);
+    }
+
     pub fn relation(&self, name: &str) -> Option<RelationId> {
         self.relations.get(name).copied()
     }
 
     pub fn identity(&self, name: &str) -> Option<Identity> {
         self.identities.get(name).copied()
+    }
+
+    pub fn program_identity(&self, method: &str) -> Option<Identity> {
+        self.program_identities.get(method).copied()
     }
 
     pub fn method_relations(&self) -> Option<MethodRelations> {
@@ -256,6 +298,10 @@ pub enum CompileError {
     },
     Runtime(mica_runtime::RuntimeError),
     Kernel(mica_relation_kernel::KernelError),
+    InvalidProgramArtifact {
+        program: Value,
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -298,6 +344,7 @@ fn compile_installed_method(
         identity,
         selector,
         clauses,
+        roles,
         body,
         ..
     } = item
@@ -326,7 +373,15 @@ fn compile_installed_method(
             name: identity_name.clone(),
         })
         .map(Value::identity)?;
-    let roles = parse_method_roles(*id, semantic, context, clauses)?;
+    let program_id = context
+        .program_identity(identity_name)
+        .ok_or_else(|| CompileError::UnknownIdentity {
+            node: *id,
+            span: semantic.span(*id).cloned(),
+            name: format!("{identity_name} program"),
+        })
+        .map(Value::identity)?;
+    let roles = lower_installed_roles(*id, semantic, context, roles, clauses)?;
 
     let mut compiler = ProgramCompiler::new(semantic, context);
     compiler.next_register = roles.len() as u16;
@@ -335,26 +390,47 @@ fn compile_installed_method(
             .external_locals
             .insert(role.name.clone(), Register(idx as u16));
     }
-    let program = compiler.compile_items(body)?;
+    let compiled_program = compiler.compile_items(body)?;
     Ok(InstalledMethod {
         method: method.clone(),
-        program: method,
+        program: program_id,
         selector: Value::symbol(Symbol::intern(selector)),
         roles,
         compiled: CompiledProgram {
             semantic: semantic.clone(),
-            program,
+            program: compiled_program,
         },
     })
 }
 
-fn parse_method_roles(
+fn lower_installed_roles(
     id: NodeId,
     semantic: &SemanticProgram,
     context: &CompileContext,
+    roles: &[crate::MethodRole],
     clauses: &[String],
 ) -> Result<Vec<InstalledRole>, CompileError> {
-    let mut roles = Vec::new();
+    if !roles.is_empty() {
+        return roles
+            .iter()
+            .map(|role| {
+                let restriction = context.identity(&role.restriction).ok_or_else(|| {
+                    CompileError::UnknownIdentity {
+                        node: id,
+                        span: semantic.span(id).cloned(),
+                        name: role.restriction.clone(),
+                    }
+                })?;
+                Ok(InstalledRole {
+                    name: role.name.clone(),
+                    role: Value::symbol(Symbol::intern(&role.name)),
+                    restriction: Value::identity(restriction),
+                })
+            })
+            .collect();
+    }
+
+    let mut installed = Vec::new();
     for clause in clauses {
         let clause = clause.trim();
         let clause = clause.strip_prefix("roles").unwrap_or(clause).trim();
@@ -382,14 +458,14 @@ fn parse_method_roles(
                     name: restriction_name.to_owned(),
                 }
             })?;
-            roles.push(InstalledRole {
+            installed.push(InstalledRole {
                 name: name.to_owned(),
                 role: Value::symbol(Symbol::intern(name)),
                 restriction: Value::identity(restriction),
             });
         }
     }
-    Ok(roles)
+    Ok(installed)
 }
 
 fn item_id(item: &HirItem) -> NodeId {
@@ -870,6 +946,7 @@ mod tests {
                 delegates: id(42),
             },
             method_program: id(43),
+            program_bytes: id(44),
         }
     }
 
@@ -901,6 +978,13 @@ mod tests {
             .create_relation(RelationMetadata::new(
                 relations.method_program,
                 Symbol::intern("MethodProgram"),
+                2,
+            ))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                relations.program_bytes,
+                Symbol::intern("ProgramBytes"),
                 2,
             ))
             .unwrap();
@@ -1003,6 +1087,7 @@ mod tests {
     fn installs_method_facts_and_invokes_method_through_dispatch() {
         let located_in = id(1);
         let get_method = id(100);
+        let get_program = id(101);
         let player = id(200);
         let thing = id(201);
         let alice = id(300);
@@ -1022,6 +1107,7 @@ mod tests {
             .with_relation("LocatedIn", located_in)
             .with_method_relations(method_relations)
             .with_identity("get_thing", get_method)
+            .with_program_identity("get_thing", get_program)
             .with_identity("player", player)
             .with_identity("thing", thing);
         let mut install_tx = kernel.begin();
@@ -1062,7 +1148,7 @@ mod tests {
         assert!(
             installation
                 .program_store
-                .contains(&Value::identity(get_method))
+                .contains(&Value::identity(get_program))
         );
         assert_eq!(
             kernel
@@ -1085,17 +1171,19 @@ mod tests {
                     method_relations.method_program,
                     &[
                         Some(Value::identity(get_method)),
-                        Some(Value::identity(get_method))
+                        Some(Value::identity(get_program))
                     ],
                 )
                 .unwrap()
                 .len(),
             1
         );
+        let reloaded_store = load_program_store(&*kernel.snapshot(), method_relations).unwrap();
+        assert!(reloaded_store.contains(&Value::identity(get_program)));
 
         let invoke_context = CompileContext::new()
             .with_method_relations(method_relations)
-            .with_program_store(installation.program_store.clone())
+            .with_program_store(reloaded_store)
             .with_identity("alice", alice)
             .with_identity("coin", coin);
         let mut scheduler = Scheduler::new(kernel);

@@ -44,6 +44,7 @@ pub enum Item {
         identity: Option<String>,
         selector: Option<String>,
         clauses: Vec<String>,
+        roles: Vec<MethodRole>,
         body: Vec<Item>,
     },
 }
@@ -63,6 +64,12 @@ impl Item {
 pub enum MethodKind {
     Method,
     Verb,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MethodRole {
+    pub name: String,
+    pub restriction: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
