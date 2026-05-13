@@ -34,6 +34,19 @@ fn run() -> Result<(), String> {
             print_report(runner.run_source(&source).map_err(format_source_error)?);
             Ok(())
         }
+        "filein" => {
+            args.remove(0);
+            let path = args
+                .first()
+                .ok_or_else(|| "usage: mica filein <file.mica>".to_owned())?;
+            let source = fs::read_to_string(path)
+                .map_err(|error| format!("failed to read {path}: {error}"))?;
+            let mut runner = SourceRunner::new_empty();
+            for report in runner.run_filein(&source).map_err(format_source_error)? {
+                print_report(report);
+            }
+            Ok(())
+        }
         "eval" => {
             args.remove(0);
             if args.is_empty() {
@@ -121,7 +134,7 @@ fn print_help() {
 }
 
 fn help_text() -> &'static str {
-    "usage:\n  mica run <file.mica>\n  mica eval <source>\n  mica repl"
+    "usage:\n  mica run <file.mica>\n  mica filein <file.mica>\n  mica eval <source>\n  mica repl"
 }
 
 fn print_repl_help() {

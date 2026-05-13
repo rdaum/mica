@@ -484,10 +484,11 @@ impl RegisterVm {
                     });
                 }
                 let selector = self.resolve_operand(&selector)?;
-                let roles = roles
+                let mut roles = roles
                     .iter()
                     .map(|(role, value)| Ok((role.clone(), self.resolve_operand(value)?)))
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
+                roles.sort_by(|left, right| left.0.cmp(&right.0));
                 let methods = applicable_methods(tx, relations, selector.clone(), roles.clone())?;
                 let method = match methods.as_slice() {
                     [] => return Err(RuntimeError::NoApplicableMethod { selector }),

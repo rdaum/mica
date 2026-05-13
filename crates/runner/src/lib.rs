@@ -1,7 +1,10 @@
 use mica_compiler::{
-    CompileContext, SourceTaskError, install_rules_from_source, submit_source_task,
+    CompileContext, CompileError, HirItem, MethodInstallation, MethodRelations, SourceTaskError,
+    install_methods, install_rules_from_source, parse, parse_semantic, submit_source_task,
 };
-use mica_relation_kernel::{ConflictPolicy, KernelError, RelationKernel, RelationMetadata, Tuple};
+use mica_relation_kernel::{
+    ConflictPolicy, DispatchRelations, KernelError, RelationKernel, RelationMetadata, Tuple,
+};
 use mica_runtime::{
     Builtin, BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome,
 };
@@ -12,25 +15,45 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const GENERATED_RELATION_ID_START: u64 = 0x00f0_0000_0000_0000;
 const GENERATED_IDENTITY_ID_START: u64 = 0x00e0_0000_0000_0000;
+const GENERATED_METHOD_ID_START: u64 = 0x00d1_0000_0000_0000;
 const NAMED_IDENTITY_RELATION_ID: u64 = 0x00df_ffff_ffff_ffff;
+const METHOD_SELECTOR_RELATION_ID: u64 = 0x00df_ffff_ffff_fffe;
+const PARAM_RELATION_ID: u64 = 0x00df_ffff_ffff_fffd;
+const DELEGATES_RELATION_ID: u64 = 0x00df_ffff_ffff_fffc;
+const METHOD_PROGRAM_RELATION_ID: u64 = 0x00df_ffff_ffff_fffb;
+const PROGRAM_BYTES_RELATION_ID: u64 = 0x00df_ffff_ffff_fffa;
 
 pub struct SourceRunner {
     context: CompileContext,
     scheduler: Scheduler,
+    next_method_identity_id: u64,
 }
 
 impl SourceRunner {
     pub fn new_empty() -> Self {
         let mut runner = Self {
-            context: CompileContext::new(),
+            context: CompileContext::new().with_method_relations(method_relations()),
             scheduler: Scheduler::new(bootstrap_kernel())
                 .with_builtins(Arc::new(default_builtins())),
+            next_method_identity_id: GENERATED_METHOD_ID_START,
         };
         runner.refresh_context_from_catalog();
         runner
     }
 
     pub fn run_source(&mut self, source: &str) -> Result<RunReport, SourceTaskError> {
+        if let Some(installation) = self.install_methods_from_source(source)? {
+            let value = installed_method_value(&installation);
+            let (task_id, outcome) = self.scheduler.complete_immediate(value);
+            self.refresh_context_from_catalog();
+            return Ok(RunReport {
+                task_id,
+                outcome,
+                identity_names: self.identity_names(),
+                relation_names: self.relation_names(),
+            });
+        }
+
         if let Some(installation) =
             install_rules_from_source(source, &self.context, self.scheduler.kernel())?
         {
@@ -52,6 +75,105 @@ impl SourceRunner {
             identity_names: self.identity_names(),
             relation_names: self.relation_names(),
         })
+    }
+
+    pub fn run_filein(&mut self, source: &str) -> Result<Vec<RunReport>, SourceTaskError> {
+        let mut reports = Vec::new();
+        let mut buffer = String::new();
+
+        for line in source.lines() {
+            if line.trim().is_empty() && buffer.trim().is_empty() {
+                continue;
+            }
+            buffer.push_str(line);
+            buffer.push('\n');
+            if parse(&buffer).errors.is_empty() {
+                reports.push(self.run_source(&buffer)?);
+                buffer.clear();
+            }
+        }
+
+        if !buffer.trim().is_empty() {
+            reports.push(self.run_source(&buffer)?);
+        }
+        Ok(reports)
+    }
+
+    fn install_methods_from_source(
+        &mut self,
+        source: &str,
+    ) -> Result<Option<MethodInstallation>, SourceTaskError> {
+        let semantic = parse_semantic(source);
+        if !semantic
+            .hir
+            .items
+            .iter()
+            .any(|item| matches!(item, HirItem::Method { .. }))
+        {
+            return Ok(None);
+        }
+
+        if !semantic.parse_errors.is_empty() {
+            return Err(CompileError::ParseErrors {
+                count: semantic.parse_errors.len(),
+            }
+            .into());
+        }
+        if let Some(diagnostic) = semantic.diagnostics.first() {
+            return Err(CompileError::SemanticDiagnostic {
+                diagnostic: diagnostic.clone(),
+            }
+            .into());
+        }
+
+        if let Some(item) = semantic
+            .hir
+            .items
+            .iter()
+            .find(|item| !matches!(item, HirItem::Method { .. }))
+        {
+            return Err(CompileError::Unsupported {
+                node: item_id(item),
+                span: semantic.span(item_id(item)).cloned(),
+                message: "method definitions cannot be mixed with executable task code yet"
+                    .to_owned(),
+            }
+            .into());
+        }
+
+        let mut install_context = self.context.clone();
+        let mut next_method_identity_id = self.next_method_identity_id;
+        let mut install_tx = self.scheduler.kernel().begin();
+        for item in &semantic.hir.items {
+            let HirItem::Method { identity, .. } = item else {
+                continue;
+            };
+            let identity_name = identity.as_ref().ok_or_else(|| CompileError::Unsupported {
+                node: item_id(item),
+                span: semantic.span(item_id(item)).cloned(),
+                message: "method installation requires an explicit identity".to_owned(),
+            })?;
+            let method_id = ensure_named_identity(
+                &mut install_tx,
+                identity_name,
+                &mut next_method_identity_id,
+            )?;
+            let program_name = format!("{identity_name}_program");
+            let program_id = ensure_named_identity(
+                &mut install_tx,
+                &program_name,
+                &mut next_method_identity_id,
+            )?;
+            install_context.define_identity(identity_name, method_id);
+            install_context.define_identity(&program_name, program_id);
+            install_context.define_program_identity(identity_name, program_id);
+        }
+
+        let installation = install_methods(semantic, &install_context, &mut install_tx)?;
+        install_tx.commit().map_err(CompileError::from)?;
+        self.context = install_context;
+        self.next_method_identity_id = next_method_identity_id;
+        Ok(Some(installation))
     }
 
     fn refresh_context_from_catalog(&mut self) {
@@ -115,6 +237,62 @@ fn installed_rule_value(rules: &[mica_relation_kernel::RuleDefinition]) -> Value
     }
 }
 
+fn installed_method_value(installation: &MethodInstallation) -> Value {
+    match installation.methods.as_slice() {
+        [method] => method.method.clone(),
+        methods => Value::list(
+            methods
+                .iter()
+                .map(|method| method.method.clone())
+                .collect::<Vec<_>>(),
+        ),
+    }
+}
+
+fn ensure_named_identity(
+    tx: &mut mica_relation_kernel::Transaction<'_>,
+    name: &str,
+    next_identity_id: &mut u64,
+) -> Result<Identity, CompileError> {
+    let symbol = Symbol::intern(name);
+    let tuples = tx.scan(
+        named_identity_relation(),
+        &[Some(Value::symbol(symbol)), None],
+    )?;
+    if let Some(identity) = tuples
+        .first()
+        .and_then(|tuple| tuple.values().get(1))
+        .and_then(Value::as_identity)
+    {
+        return Ok(identity);
+    }
+
+    let identity = loop {
+        let Some(identity) = Identity::new(*next_identity_id) else {
+            return Err(CompileError::Unsupported {
+                node: mica_compiler::NodeId(0),
+                span: None,
+                message: "generated method identity exhausted".to_owned(),
+            });
+        };
+        *next_identity_id += 1;
+        if tx
+            .scan(
+                named_identity_relation(),
+                &[None, Some(Value::identity(identity))],
+            )?
+            .is_empty()
+        {
+            break identity;
+        }
+    };
+    tx.assert(
+        named_identity_relation(),
+        Tuple::from([Value::symbol(symbol), Value::identity(identity)]),
+    )?;
+    Ok(identity)
+}
+
 fn bootstrap_kernel() -> RelationKernel {
     let kernel = RelationKernel::new();
     kernel
@@ -129,7 +307,42 @@ fn bootstrap_kernel() -> RelationKernel {
             }),
         )
         .unwrap();
+    for metadata in method_relation_metadata() {
+        kernel.create_relation(metadata).unwrap();
+    }
     kernel
+}
+
+fn method_relations() -> MethodRelations {
+    MethodRelations {
+        dispatch: DispatchRelations {
+            method_selector: method_selector_relation(),
+            param: param_relation(),
+            delegates: delegates_relation(),
+        },
+        method_program: method_program_relation(),
+        program_bytes: program_bytes_relation(),
+    }
+}
+
+fn method_relation_metadata() -> [RelationMetadata; 5] {
+    [
+        RelationMetadata::new(
+            method_selector_relation(),
+            Symbol::intern("MethodSelector"),
+            2,
+        )
+        .with_index([1, 0]),
+        RelationMetadata::new(param_relation(), Symbol::intern("Param"), 3).with_index([0, 1]),
+        RelationMetadata::new(delegates_relation(), Symbol::intern("Delegates"), 3)
+            .with_index([0, 2, 1]),
+        RelationMetadata::new(
+            method_program_relation(),
+            Symbol::intern("MethodProgram"),
+            2,
+        ),
+        RelationMetadata::new(program_bytes_relation(), Symbol::intern("ProgramBytes"), 2),
+    ]
 }
 
 fn default_builtins() -> BuiltinRegistry {
@@ -367,6 +580,35 @@ fn identity_named(
 
 fn named_identity_relation() -> Identity {
     Identity::new(NAMED_IDENTITY_RELATION_ID).unwrap()
+}
+
+fn method_selector_relation() -> Identity {
+    Identity::new(METHOD_SELECTOR_RELATION_ID).unwrap()
+}
+
+fn param_relation() -> Identity {
+    Identity::new(PARAM_RELATION_ID).unwrap()
+}
+
+fn delegates_relation() -> Identity {
+    Identity::new(DELEGATES_RELATION_ID).unwrap()
+}
+
+fn method_program_relation() -> Identity {
+    Identity::new(METHOD_PROGRAM_RELATION_ID).unwrap()
+}
+
+fn program_bytes_relation() -> Identity {
+    Identity::new(PROGRAM_BYTES_RELATION_ID).unwrap()
+}
+
+fn item_id(item: &HirItem) -> mica_compiler::NodeId {
+    match item {
+        HirItem::Expr { id, .. }
+        | HirItem::RelationRule { id, .. }
+        | HirItem::Object { id, .. }
+        | HirItem::Method { id, .. } => *id,
+    }
 }
 
 fn builtin_symbol_arg(name: &str, args: &[Value], index: usize) -> Result<Symbol, RuntimeError> {
@@ -890,6 +1132,69 @@ mod tests {
         assert_eq!(
             query.render(),
             "task 11 complete: [[:obj: $alice]] (retries: 0)"
+        );
+    }
+
+    #[test]
+    fn runner_filein_installs_mud_verbs_and_invokes_dispatch() {
+        let mut runner = SourceRunner::new_empty();
+        let reports = runner
+            .run_filein(
+                "make_identity(:player)\n\
+                 make_identity(:thing)\n\
+                 make_identity(:portable)\n\
+                 make_identity(:container)\n\
+                 make_identity(:alice)\n\
+                 make_identity(:coin)\n\
+                 make_identity(:box)\n\
+                 make_relation(:Delegates, 3)\n\
+                 make_relation(:HeldBy, 2)\n\
+                 make_relation(:In, 2)\n\
+                 make_relation(:Portable, 1)\n\
+                 assert Delegates($portable, $thing, 0)\n\
+                 assert Delegates($coin, $portable, 0)\n\
+                 assert Delegates($alice, $player, 0)\n\
+                 assert Delegates($box, $container, 0)\n\
+                 assert Portable($coin)\n\
+                 method $get_thing :get\n\
+                   roles actor: $player, item: $thing\n\
+                 do\n\
+                   if Portable(item)\n\
+                     assert HeldBy(actor, item)\n\
+                     return true\n\
+                   else\n\
+                     return false\n\
+                   end\n\
+                 end\n\
+                 method $put_thing :put\n\
+                   roles actor: $player, item: $thing, container: $container\n\
+                 do\n\
+                   if HeldBy(actor, item)\n\
+                     assert In(item, container)\n\
+                     return true\n\
+                   else\n\
+                     return false\n\
+                   end\n\
+                 end\n\
+                 :get(item: $coin, actor: $alice)\n\
+                 :put(container: $box, item: $coin, actor: $alice)\n\
+                 return In($coin, ?container)\n",
+            )
+            .unwrap();
+
+        assert_eq!(
+            reports[16].render(),
+            "task 17 complete: $get_thing (retries: 0)"
+        );
+        assert_eq!(
+            reports[17].render(),
+            "task 18 complete: $put_thing (retries: 0)"
+        );
+        assert_eq!(reports[18].render(), "task 19 complete: true (retries: 0)");
+        assert_eq!(reports[19].render(), "task 20 complete: true (retries: 0)");
+        assert_eq!(
+            reports[20].render(),
+            "task 21 complete: [[:container: $box]] (retries: 0)"
         );
     }
 

@@ -1,0 +1,44 @@
+make_identity(:player)
+make_identity(:thing)
+make_identity(:portable)
+make_identity(:container)
+make_identity(:alice)
+make_identity(:coin)
+make_identity(:box)
+
+make_relation(:Delegates, 3)
+make_relation(:HeldBy, 2)
+make_relation(:In, 2)
+make_relation(:Portable, 1)
+
+assert Delegates($portable, $thing, 0)
+assert Delegates($coin, $portable, 0)
+assert Delegates($alice, $player, 0)
+assert Delegates($box, $container, 0)
+assert Portable($coin)
+
+method $get_thing :get
+  roles actor: $player, item: $thing
+do
+  if Portable(item)
+    assert HeldBy(actor, item)
+    return true
+  else
+    return false
+  end
+end
+
+method $put_thing :put
+  roles actor: $player, item: $thing, container: $container
+do
+  if HeldBy(actor, item)
+    assert In(item, container)
+    return true
+  else
+    return false
+  end
+end
+
+:get(item: $coin, actor: $alice)
+:put(container: $box, item: $coin, actor: $alice)
+return In($coin, ?container)

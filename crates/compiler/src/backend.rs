@@ -576,7 +576,8 @@ fn compile_installed_method(
             name: format!("{identity_name} program"),
         })
         .map(Value::identity)?;
-    let roles = lower_installed_roles(*id, semantic, context, roles, clauses)?;
+    let mut roles = lower_installed_roles(*id, semantic, context, roles, clauses)?;
+    roles.sort_by(|left, right| left.role.cmp(&right.role));
 
     let mut compiler = ProgramCompiler::new(semantic, context);
     compiler.next_register = roles.len() as u16;
