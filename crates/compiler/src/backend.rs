@@ -26,6 +26,7 @@ use mica_runtime::{
     RuntimeBinaryOp, RuntimeUnaryOp, Scheduler, SchedulerError, TaskId, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -590,7 +591,7 @@ fn compile_installed_method(
         })
         .map(Value::identity)?;
     let mut roles = lower_installed_roles(*id, semantic, context, roles, clauses)?;
-    roles.sort_by(|left, right| left.role.cmp(&right.role));
+    roles.sort_by(|left, right| compare_role_values(&left.role, &right.role));
 
     let mut compiler = ProgramCompiler::new(semantic, context);
     compiler.next_register = roles.len() as u16;
@@ -610,6 +611,16 @@ fn compile_installed_method(
             program: compiled_program,
         },
     })
+}
+
+fn compare_role_values(left: &Value, right: &Value) -> Ordering {
+    match (
+        left.as_symbol().and_then(Symbol::name),
+        right.as_symbol().and_then(Symbol::name),
+    ) {
+        (Some(left), Some(right)) => left.cmp(right),
+        _ => left.cmp(right),
+    }
 }
 
 fn lower_installed_roles(

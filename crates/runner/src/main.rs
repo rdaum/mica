@@ -31,6 +31,8 @@ struct Cli {
     store: Option<PathBuf>,
     #[arg(long, global = true, value_enum, default_value_t = DurabilityMode::Relaxed)]
     durability: DurabilityMode,
+    #[arg(long, global = true, value_name = "IDENTITY")]
+    actor: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -96,7 +98,7 @@ fn run() -> Result<(), String> {
             let source = fs::read_to_string(file)
                 .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
             let mut runner = open_runner(&cli)?;
-            print_report(runner.run_source(&source).map_err(format_source_error)?);
+            print_report(run_cli_source(&mut runner, &cli, &source)?);
             Ok(())
         }
         Command::Filein {
@@ -104,6 +106,7 @@ fn run() -> Result<(), String> {
             replace,
             file,
         } => {
+            reject_actor(&cli)?;
             let source = fs::read_to_string(file)
                 .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
             let mut runner = open_runner(&cli)?;
@@ -131,6 +134,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         Command::Fileout { unit, output } => {
+            reject_actor(&cli)?;
             let runner = open_runner(&cli)?;
             let source = runner
                 .fileout_unit(Symbol::intern(unit.trim_start_matches(':')))
@@ -146,11 +150,35 @@ fn run() -> Result<(), String> {
         Command::Eval { source } => {
             let source = source.join(" ");
             let mut runner = open_runner(&cli)?;
-            print_report(runner.run_source(&source).map_err(format_source_error)?);
+            print_report(run_cli_source(&mut runner, &cli, &source)?);
             Ok(())
         }
         Command::Repl => repl(&cli),
     }
+}
+
+fn run_cli_source(
+    runner: &mut SourceRunner,
+    cli: &Cli,
+    source: &str,
+) -> Result<mica_runner::RunReport, String> {
+    if let Some(actor) = &cli.actor {
+        return runner
+            .run_source_as(actor_symbol(actor), source)
+            .map_err(format_source_error);
+    }
+    runner.run_source(source).map_err(format_source_error)
+}
+
+fn actor_symbol(actor: &str) -> Symbol {
+    Symbol::intern(actor.trim().trim_start_matches('#').trim_start_matches(':'))
+}
+
+fn reject_actor(cli: &Cli) -> Result<(), String> {
+    if cli.actor.is_some() {
+        return Err("--actor is only supported for run, eval, and repl".to_owned());
+    }
+    Ok(())
 }
 
 fn open_runner(cli: &Cli) -> Result<SourceRunner, String> {
@@ -190,7 +218,7 @@ fn repl(cli: &Cli) -> Result<(), String> {
                 }
                 if trimmed.is_empty() {
                     if !buffer.trim().is_empty() {
-                        evaluate_buffer(&mut runner, &mut buffer);
+                        evaluate_buffer(&mut runner, cli, &mut buffer);
                     }
                     continue;
                 }
@@ -199,7 +227,7 @@ fn repl(cli: &Cli) -> Result<(), String> {
                 buffer.push_str(&line);
                 buffer.push('\n');
                 if parse(&buffer).errors.is_empty() {
-                    evaluate_buffer(&mut runner, &mut buffer);
+                    evaluate_buffer(&mut runner, cli, &mut buffer);
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -212,10 +240,10 @@ fn repl(cli: &Cli) -> Result<(), String> {
     }
 }
 
-fn evaluate_buffer(runner: &mut SourceRunner, buffer: &mut String) {
-    match runner.run_source(buffer) {
+fn evaluate_buffer(runner: &mut SourceRunner, cli: &Cli, buffer: &mut String) {
+    match run_cli_source(runner, cli, buffer) {
         Ok(report) => print_report(report),
-        Err(error) => eprintln!("{}", format_source_error(error)),
+        Err(error) => eprintln!("{error}"),
     }
     buffer.clear();
 }

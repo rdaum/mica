@@ -17,6 +17,7 @@ use crate::{
 };
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Symbol, Value, ValueKind};
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -543,7 +544,7 @@ impl RegisterVm {
                     .iter()
                     .map(|(role, value)| Ok((role.clone(), self.resolve_operand(value)?)))
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
-                roles.sort_by(|left, right| left.0.cmp(&right.0));
+                roles.sort_by(|left, right| compare_role_values(&left.0, &right.0));
                 let methods =
                     applicable_methods(host.tx, relations, selector.clone(), roles.clone())?
                         .into_iter()
@@ -998,6 +999,16 @@ fn one_value(value: &Value) -> Result<Value, Value> {
 fn ordinal_index(index: &Value) -> Option<usize> {
     let index = index.as_int()?;
     usize::try_from(index).ok()
+}
+
+fn compare_role_values(left: &Value, right: &Value) -> Ordering {
+    match (
+        left.as_symbol().and_then(Symbol::name),
+        right.as_symbol().and_then(Symbol::name),
+    ) {
+        (Some(left), Some(right)) => left.cmp(right),
+        _ => left.cmp(right),
+    }
 }
 
 fn require_read(

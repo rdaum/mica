@@ -13,15 +13,16 @@
 
 use mica_compiler::{
     CompileContext, CompileError, HirExpr, HirItem, Literal, MethodInstallation, MethodKind,
-    MethodRelations, SourceTaskError, install_methods, install_rules_from_source, parse,
-    parse_semantic, submit_source_task,
+    MethodRelations, NodeId, SourceTaskError, compile_semantic, install_methods,
+    install_rules_from_source, parse, parse_semantic, submit_source_task,
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
     RelationKernel, RelationMetadata, Tuple,
 };
 use mica_runtime::{
-    Builtin, BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome,
+    AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
+    CapabilityScope, RuntimeError, Scheduler, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -143,6 +144,40 @@ impl SourceRunner {
         })
     }
 
+    pub fn run_source_as(
+        &mut self,
+        actor: Symbol,
+        source: &str,
+    ) -> Result<RunReport, SourceTaskError> {
+        let semantic = parse_semantic(source);
+        if let Some(item) = semantic
+            .hir
+            .items
+            .iter()
+            .find(|item| matches!(item, HirItem::Method { .. } | HirItem::RelationRule { .. }))
+        {
+            return Err(unsupported_runner_error(
+                item_id(item),
+                semantic.span(item_id(item)).cloned(),
+                "actor-scoped execution cannot install methods or rules",
+            ));
+        }
+
+        let actor_id = self.actor_identity(actor)?;
+        let authority = authority_for_actor(self.scheduler.kernel(), actor_id)?;
+        let compiled = compile_semantic(semantic, &self.context)?;
+        let (task_id, outcome) = self
+            .scheduler
+            .submit_with_authority(Arc::new(compiled.program.clone()), authority)?;
+        self.refresh_context_from_catalog();
+        Ok(RunReport {
+            task_id,
+            outcome,
+            identity_names: self.identity_names(),
+            relation_names: self.relation_names(),
+        })
+    }
+
     pub fn run_filein(&mut self, source: &str) -> Result<Vec<RunReport>, SourceTaskError> {
         let mut reports = Vec::new();
         for chunk in source_chunks(source) {
@@ -247,6 +282,19 @@ impl SourceRunner {
 
     pub fn fileout_unit(&self, unit: Symbol) -> Result<String, SourceTaskError> {
         Ok(fileout_unit_source(self.scheduler.kernel(), unit).map_err(CompileError::from)?)
+    }
+
+    fn actor_identity(&self, actor: Symbol) -> Result<Identity, SourceTaskError> {
+        identity_named_in_kernel(self.scheduler.kernel(), actor)?.ok_or_else(|| {
+            unsupported_runner_error(
+                NodeId(0),
+                None,
+                format!(
+                    "unknown actor identity :{}",
+                    actor.name().unwrap_or("<unnamed>")
+                ),
+            )
+        })
     }
 
     fn install_methods_from_source(
@@ -527,7 +575,8 @@ fn collect_declaration_expr(expr: &HirExpr, declarations: &mut SourceDeclaration
                 declarations.identities.insert(name.clone());
             }
         }
-        ("make_relation", [name_arg, arity_arg]) => {
+        ("make_relation", [name_arg, arity_arg])
+        | ("make_functional_relation", [name_arg, arity_arg, _]) => {
             let (HirExpr::Symbol { name, .. }, HirExpr::Literal { value, .. }) =
                 (&name_arg.value, &arity_arg.value)
             else {
@@ -605,9 +654,9 @@ fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, 
         if let Some(metadata) = snapshot
             .relation_metadata()
             .find(|metadata| metadata.id() == relation)
-            && let Some(name) = metadata.name().name()
+            && let Some(declaration) = relation_declaration_source(metadata)
         {
-            relation_declarations.insert((name.to_owned(), metadata.arity()));
+            relation_declarations.insert(declaration);
         }
     }
 
@@ -672,7 +721,6 @@ fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, 
         sections.push(
             relation_declarations
                 .into_iter()
-                .map(|(name, arity)| format!("make_relation(:{name}, {arity})"))
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -705,6 +753,23 @@ fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, 
     }
 
     Ok(sections.join("\n\n"))
+}
+
+fn relation_declaration_source(metadata: &RelationMetadata) -> Option<String> {
+    let name = metadata.name().name()?;
+    Some(match metadata.conflict_policy() {
+        ConflictPolicy::Set => format!("make_relation(:{name}, {})", metadata.arity()),
+        ConflictPolicy::Functional { key_positions } => format!(
+            "make_functional_relation(:{name}, {}, [{}])",
+            metadata.arity(),
+            key_positions
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ConflictPolicy::EventAppend => format!("make_relation(:{name}, {})", metadata.arity()),
+    })
 }
 
 fn identity_name_map(snapshot: &mica_relation_kernel::Snapshot) -> BTreeMap<Identity, String> {
@@ -1011,6 +1076,10 @@ fn default_builtins() -> BuiltinRegistry {
     BuiltinRegistry::new()
         .with_builtin("emit", emit_builtin)
         .with_builtin("make_relation", MakeRelationBuiltin::new())
+        .with_builtin(
+            "make_functional_relation",
+            MakeFunctionalRelationBuiltin::new(),
+        )
         .with_builtin("make_identity", MakeIdentityBuiltin::new())
         .with_builtin("rules", rules_builtin)
         .with_builtin("describe_rule", describe_rule_builtin)
@@ -1026,6 +1095,19 @@ fn emit_builtin(
     let value = args.first().cloned().unwrap_or_else(Value::nothing);
     context.emit(value.clone())?;
     Ok(value)
+}
+
+fn unsupported_runner_error(
+    node: NodeId,
+    span: Option<mica_compiler::Span>,
+    message: impl Into<String>,
+) -> SourceTaskError {
+    CompileError::Unsupported {
+        node,
+        span,
+        message: message.into(),
+    }
+    .into()
 }
 
 fn rules_builtin(
@@ -1126,11 +1208,29 @@ fn disable_rule_builtin(
         ));
     }
     let rule_id = builtin_identity_arg("disable_rule", args, 0)?;
+    require_admin_builtin(context, "disable_rule")?;
     context.kernel().disable_rule(rule_id)?;
     Ok(Value::nothing())
 }
 
+fn require_admin_builtin(
+    context: &BuiltinContext<'_, '_>,
+    name: &'static str,
+) -> Result<(), RuntimeError> {
+    if context.authority().can_grant() {
+        return Ok(());
+    }
+    Err(RuntimeError::PermissionDenied {
+        operation: "grant",
+        target: Value::symbol(Symbol::intern(name)),
+    })
+}
+
 struct MakeRelationBuiltin {
+    next_relation_id: AtomicU64,
+}
+
+struct MakeFunctionalRelationBuiltin {
     next_relation_id: AtomicU64,
 }
 
@@ -1139,6 +1239,14 @@ struct MakeIdentityBuiltin {
 }
 
 impl MakeRelationBuiltin {
+    fn new() -> Self {
+        Self {
+            next_relation_id: AtomicU64::new(GENERATED_RELATION_ID_START),
+        }
+    }
+}
+
+impl MakeFunctionalRelationBuiltin {
     fn new() -> Self {
         Self {
             next_relation_id: AtomicU64::new(GENERATED_RELATION_ID_START),
@@ -1168,6 +1276,7 @@ impl Builtin for MakeRelationBuiltin {
                 "expected make_relation(:Name, arity)",
             ));
         }
+        require_admin_builtin(context, "make_relation")?;
 
         if let Some((relation, existing_arity)) = relation_named(context.kernel(), name) {
             if existing_arity == arity {
@@ -1198,6 +1307,61 @@ impl Builtin for MakeRelationBuiltin {
     }
 }
 
+impl Builtin for MakeFunctionalRelationBuiltin {
+    fn call(
+        &self,
+        context: &mut BuiltinContext<'_, '_>,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        let name = builtin_symbol_arg("make_functional_relation", args, 0)?;
+        let arity = builtin_arity_arg("make_functional_relation", args, 1)?;
+        let key_positions = builtin_key_positions_arg("make_functional_relation", args, 2, arity)?;
+        if args.len() != 3 {
+            return Err(invalid_builtin_call(
+                "make_functional_relation",
+                "expected make_functional_relation(:Name, arity, [key_positions])",
+            ));
+        }
+        require_admin_builtin(context, "make_functional_relation")?;
+
+        if let Some(metadata) = relation_metadata_named(context.kernel(), name) {
+            if metadata.arity() == arity
+                && metadata.conflict_policy()
+                    == &(ConflictPolicy::Functional {
+                        key_positions: key_positions.clone(),
+                    })
+            {
+                return Ok(Value::identity(metadata.id()));
+            }
+            return Err(invalid_builtin_call(
+                "make_functional_relation",
+                "relation name already exists with different metadata",
+            ));
+        }
+
+        loop {
+            let Some(relation) =
+                Identity::new(self.next_relation_id.fetch_add(1, Ordering::Relaxed))
+            else {
+                return Err(invalid_builtin_call(
+                    "make_functional_relation",
+                    "generated relation identity exhausted",
+                ));
+            };
+            let metadata = RelationMetadata::new(relation, name, arity).with_conflict_policy(
+                ConflictPolicy::Functional {
+                    key_positions: key_positions.clone(),
+                },
+            );
+            match context.kernel().create_relation(metadata) {
+                Ok(_) => return Ok(Value::identity(relation)),
+                Err(KernelError::RelationAlreadyExists(_)) => continue,
+                Err(error) => return Err(RuntimeError::Kernel(error)),
+            }
+        }
+    }
+}
+
 impl Builtin for MakeIdentityBuiltin {
     fn call(
         &self,
@@ -1211,6 +1375,7 @@ impl Builtin for MakeIdentityBuiltin {
             ));
         }
         let name = builtin_symbol_arg("make_identity", args, 0)?;
+        require_admin_builtin(context, "make_identity")?;
 
         if let Some(identity) = identity_named(context, name)? {
             return Ok(Value::identity(identity));
@@ -1237,6 +1402,165 @@ fn relation_named(kernel: &RelationKernel, name: Symbol) -> Option<(Identity, u1
         .relation_metadata()
         .find(|metadata| metadata.name() == name)
         .map(|metadata| (metadata.id(), metadata.arity()))
+}
+
+fn relation_metadata_named(kernel: &RelationKernel, name: Symbol) -> Option<RelationMetadata> {
+    let snapshot = kernel.snapshot();
+    snapshot
+        .relation_metadata()
+        .find(|metadata| metadata.name() == name)
+        .cloned()
+}
+
+fn authority_for_actor(
+    kernel: &RelationKernel,
+    actor: Identity,
+) -> Result<AuthorityContext, SourceTaskError> {
+    let mut authority = AuthorityContext::empty();
+    mint_relation_grants(
+        kernel,
+        actor,
+        "GrantRead",
+        CapabilityOp::Read,
+        &mut authority,
+    )?;
+    mint_relation_grants(
+        kernel,
+        actor,
+        "GrantWrite",
+        CapabilityOp::Write,
+        &mut authority,
+    )?;
+    mint_invoke_grants(kernel, actor, &mut authority)?;
+    mint_effect_grants(kernel, actor, &mut authority)?;
+    Ok(authority)
+}
+
+fn mint_relation_grants(
+    kernel: &RelationKernel,
+    actor: Identity,
+    policy_name: &str,
+    op: CapabilityOp,
+    authority: &mut AuthorityContext,
+) -> Result<(), SourceTaskError> {
+    let Some(policy_relation) = policy_relation(kernel, policy_name, 2)? else {
+        return Ok(());
+    };
+    let snapshot = kernel.snapshot();
+    let tuples = snapshot
+        .scan(policy_relation, &[Some(Value::identity(actor)), None])
+        .map_err(CompileError::from)?;
+    for tuple in tuples {
+        let Some(relation_name) = tuple.values().get(1).and_then(Value::as_symbol) else {
+            return Err(invalid_policy_fact(
+                policy_name,
+                "expected relation name symbol",
+            ));
+        };
+        if let Some((relation, _)) = relation_named(kernel, relation_name) {
+            authority.mint(CapabilityGrant::relation(op, relation));
+        }
+    }
+    Ok(())
+}
+
+fn mint_invoke_grants(
+    kernel: &RelationKernel,
+    actor: Identity,
+    authority: &mut AuthorityContext,
+) -> Result<(), SourceTaskError> {
+    let Some(policy_relation) = policy_relation(kernel, "GrantInvoke", 2)? else {
+        return Ok(());
+    };
+    let snapshot = kernel.snapshot();
+    let tuples = snapshot
+        .scan(policy_relation, &[Some(Value::identity(actor)), None])
+        .map_err(CompileError::from)?;
+    for tuple in tuples {
+        let Some(selector) = tuple.values().get(1).and_then(Value::as_symbol) else {
+            return Err(invalid_policy_fact(
+                "GrantInvoke",
+                "expected selector name symbol",
+            ));
+        };
+        for method in snapshot
+            .scan(
+                method_selector_relation(),
+                &[None, Some(Value::symbol(selector))],
+            )
+            .map_err(CompileError::from)?
+        {
+            if let Some(method) = method.values().first() {
+                authority.mint(CapabilityGrant::method(method.clone()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mint_effect_grants(
+    kernel: &RelationKernel,
+    actor: Identity,
+    authority: &mut AuthorityContext,
+) -> Result<(), SourceTaskError> {
+    let Some(policy_relation) = policy_relation(kernel, "GrantEffect", 1)? else {
+        return Ok(());
+    };
+    let snapshot = kernel.snapshot();
+    if !snapshot
+        .scan(policy_relation, &[Some(Value::identity(actor))])
+        .map_err(CompileError::from)?
+        .is_empty()
+    {
+        authority.mint(CapabilityGrant::new(
+            [CapabilityOp::Effect],
+            CapabilityScope::All,
+        ));
+    }
+    Ok(())
+}
+
+fn policy_relation(
+    kernel: &RelationKernel,
+    name: &str,
+    expected_arity: u16,
+) -> Result<Option<Identity>, SourceTaskError> {
+    let Some((relation, arity)) = relation_named(kernel, Symbol::intern(name)) else {
+        return Ok(None);
+    };
+    if arity != expected_arity {
+        return Err(unsupported_runner_error(
+            NodeId(0),
+            None,
+            format!("policy relation {name} has arity {arity}, expected {expected_arity}"),
+        ));
+    }
+    Ok(Some(relation))
+}
+
+fn invalid_policy_fact(relation: &str, message: &str) -> SourceTaskError {
+    unsupported_runner_error(
+        NodeId(0),
+        None,
+        format!("{relation} policy fact is invalid: {message}"),
+    )
+}
+
+fn identity_named_in_kernel(
+    kernel: &RelationKernel,
+    name: Symbol,
+) -> Result<Option<Identity>, SourceTaskError> {
+    let snapshot = kernel.snapshot();
+    let tuples = snapshot
+        .scan(
+            named_identity_relation(),
+            &[Some(Value::symbol(name)), None],
+        )
+        .map_err(CompileError::from)?;
+    Ok(tuples
+        .first()
+        .and_then(|tuple| tuple.values().get(1))
+        .and_then(Value::as_identity))
 }
 
 fn identity_named(
@@ -1337,6 +1661,39 @@ fn builtin_arity_arg(name: &str, args: &[Value], index: usize) -> Result<u16, Ru
         return Err(invalid_builtin_call(name, "expected integer arity"));
     };
     u16::try_from(arity).map_err(|_| invalid_builtin_call(name, "arity must fit in u16"))
+}
+
+fn builtin_key_positions_arg(
+    name: &str,
+    args: &[Value],
+    index: usize,
+    arity: u16,
+) -> Result<Vec<u16>, RuntimeError> {
+    let Some(value) = args.get(index) else {
+        return Err(invalid_builtin_call(name, "expected key position list"));
+    };
+    let Some(positions) = value.with_list(|values| {
+        values
+            .iter()
+            .map(|value| {
+                let Some(position) = value.as_int() else {
+                    return Err(invalid_builtin_call(name, "key positions must be integers"));
+                };
+                let position = u16::try_from(position)
+                    .map_err(|_| invalid_builtin_call(name, "key position must fit in u16"))?;
+                if position >= arity {
+                    return Err(invalid_builtin_call(
+                        name,
+                        "key position is outside relation arity",
+                    ));
+                }
+                Ok(position)
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }) else {
+        return Err(invalid_builtin_call(name, "expected key position list"));
+    };
+    positions
 }
 
 fn invalid_builtin_call(name: &str, message: &str) -> RuntimeError {
@@ -2034,6 +2391,68 @@ mod tests {
                 TaskOutcome::Complete { value: second, .. }
             ) if first == second
         ));
+    }
+
+    #[test]
+    fn runner_mints_actor_authority_from_policy_facts() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../examples/capabilities.mica"))
+            .unwrap();
+
+        let alice = runner
+            .run_source_as(
+                Symbol::intern("alice"),
+                ":polish(actor: #alice, item: #lamp)",
+            )
+            .unwrap();
+        assert!(alice.render().contains("complete: \"polished brass lamp\""));
+        assert!(
+            alice
+                .render()
+                .contains("effect: [\"polished\", #alice, #lamp]")
+        );
+
+        let bob_read = runner
+            .run_source_as(Symbol::intern("bob"), "return #lamp.name")
+            .unwrap();
+        assert!(
+            bob_read
+                .render()
+                .contains("complete: \"polished brass lamp\"")
+        );
+
+        let bob_write = runner
+            .run_source_as(Symbol::intern("bob"), "#lamp.name = \"stolen\"")
+            .unwrap_err();
+        assert!(format!("{bob_write:?}").contains("PermissionDenied"));
+        assert!(format!("{bob_write:?}").contains("operation: \"write\""));
+
+        let bob_dispatch = runner
+            .run_source_as(Symbol::intern("bob"), ":polish(actor: #bob, item: #lamp)")
+            .unwrap_err();
+        assert!(format!("{bob_dispatch:?}").contains("NoApplicableMethod"));
+
+        let bob_catalog = runner
+            .run_source_as(Symbol::intern("bob"), "make_relation(:Escape, 1)")
+            .unwrap_err();
+        assert!(format!("{bob_catalog:?}").contains("operation: \"grant\""));
+    }
+
+    #[test]
+    fn runner_fileout_preserves_functional_relation_declarations() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein_with_unit(
+                Symbol::intern("schema"),
+                "make_functional_relation(:Name, 2, [0])",
+                FileinMode::Add,
+            )
+            .unwrap();
+
+        let source = runner.fileout_unit(Symbol::intern("schema")).unwrap();
+
+        assert!(source.contains("make_functional_relation(:Name, 2, [0])"));
     }
 
     #[test]

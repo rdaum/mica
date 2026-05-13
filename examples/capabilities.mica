@@ -1,0 +1,62 @@
+// This filein seeds ordinary durable world state plus durable policy facts.
+// It does not store capability values. Capabilities are ephemeral task values
+// minted by the runner from Grant* facts when source is run with --actor.
+//
+// Run it with a persistent store:
+//
+//   cargo run --bin mica -- --storage fjall --store demo-db filein --unit caps --replace examples/capabilities.mica
+//   cargo run --bin mica -- --storage fjall --store demo-db --actor alice eval ':polish(actor: #alice, item: #lamp)'
+//   cargo run --bin mica -- --storage fjall --store demo-db --actor bob eval 'return #lamp.name'
+//   cargo run --bin mica -- --storage fjall --store demo-db --actor bob eval '#lamp.name = "stolen"'
+//
+// Alice's invocation succeeds and emits an effect. Bob can read the lamp name,
+// but the final command is denied because Bob has no GrantWrite fact for Name.
+
+// Prototype identities used by dispatch restrictions.
+make_identity(:user)
+make_identity(:thing)
+
+// Concrete actors and an object in the world.
+make_identity(:alice)
+make_identity(:bob)
+make_identity(:lamp)
+
+// Delegates is the prototype-extension relation used by dispatch matching.
+make_relation(:Delegates, 3)
+
+// Name is functional on position 0, so #lamp.name assignment replaces the one
+// current name instead of adding a second Name tuple.
+make_functional_relation(:Name, 2, [0])
+
+// These Grant* relations are just policy data. The runner interprets them at
+// task start and mints an AuthorityContext for the requested actor.
+make_relation(:GrantRead, 2)
+make_relation(:GrantWrite, 2)
+make_relation(:GrantInvoke, 2)
+make_relation(:GrantEffect, 1)
+
+// Dispatch sees Alice and Bob as users, and the lamp as a thing.
+assert Delegates(#alice, #user, 0)
+assert Delegates(#bob, #user, 0)
+assert Delegates(#lamp, #thing, 0)
+
+// Initial world state.
+assert Name(#lamp, "brass lamp")
+
+// Alice can read and write Name, invoke :polish, and emit effects.
+assert GrantRead(#alice, :Name)
+assert GrantWrite(#alice, :Name)
+assert GrantInvoke(#alice, :polish)
+assert GrantEffect(#alice)
+
+// Bob can only read Name. He cannot write it or invoke :polish.
+assert GrantRead(#bob, :Name)
+
+// This verb needs all four pieces of authority under --actor alice:
+// invoke for :polish, write for item.name, effect for emit, and read for the
+// final item.name return.
+verb polish(actor: #user, item: #thing)
+  item.name = "polished brass lamp"
+  emit(["polished", actor, item])
+  return item.name
+end

@@ -91,6 +91,10 @@ impl CapabilityGrant {
     fn allows_effect(&self) -> bool {
         self.ops.contains(&CapabilityOp::Effect) && matches!(self.scope, CapabilityScope::All)
     }
+
+    fn allows_grant(&self) -> bool {
+        self.ops.contains(&CapabilityOp::Grant) && matches!(self.scope, CapabilityScope::All)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -151,6 +155,12 @@ impl AuthorityContext {
         self.capabilities
             .values()
             .any(CapabilityGrant::allows_effect)
+    }
+
+    pub fn can_grant(&self) -> bool {
+        self.capabilities
+            .values()
+            .any(CapabilityGrant::allows_grant)
     }
 
     fn allocate_id(&mut self) -> CapabilityId {
