@@ -211,6 +211,11 @@ dependencies = [
 [[package]]
 name = "mica-compiler"
 version = "0.1.0"
+dependencies = [
+ "mica-relation-kernel",
+ "mica-runtime",
+ "mica-var",
+]
 
 [[package]]
 name = "mica-relation-kernel"

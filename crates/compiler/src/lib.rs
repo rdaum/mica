@@ -6,6 +6,7 @@
 //! concrete syntax tree with source spans and recoverable parse errors.
 
 mod ast;
+mod backend;
 mod hir;
 mod lexer;
 mod lower;
@@ -16,6 +17,10 @@ mod syntax;
 pub use ast::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
     FunctionBody, Item, Literal, MethodKind, NodeId, ObjectClause, Param, ParamMode, Span, UnaryOp,
+};
+pub use backend::{
+    CompileContext, CompileError, CompiledProgram, SourceTaskError, SubmittedSourceTask,
+    compile_semantic, compile_source, submit_source_task,
 };
 pub use hir::{
     HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,
