@@ -485,6 +485,7 @@ const INST_COLLECTION_KEY_AT: u8 = 22;
 const INST_COLLECTION_VALUE_AT: u8 = 23;
 const INST_SET_INDEX: u8 = 24;
 const INST_SCAN_VALUE: u8 = 25;
+const INST_CALL: u8 = 26;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -715,9 +716,12 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             }
             Ok(())
         }
-        Instruction::Call { .. } => Err(artifact_error(
-            "direct call instructions are not serializable in program artifacts yet",
-        )),
+        Instruction::Call { dst, program, args } => {
+            out.push(INST_CALL);
+            write_register(out, *dst);
+            write_bytes(out, &program.to_bytes()?);
+            write_operands(out, args)
+        }
     }
 }
 
@@ -942,6 +946,11 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 relation: self.read_identity()?,
                 key: self.read_operand()?,
+            },
+            INST_CALL => Instruction::Call {
+                dst: self.read_register()?,
+                program: Arc::new(Program::from_bytes(&self.read_bytes()?)?),
+                args: self.read_operands()?,
             },
             INST_ASSERT => Instruction::Assert {
                 relation: self.read_identity()?,

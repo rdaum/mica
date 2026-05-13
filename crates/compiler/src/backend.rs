@@ -1,7 +1,7 @@
 use crate::{
-    BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCollectionItem, HirExpr, HirItem,
-    HirPlace, HirProgram, HirRelationAtom, Literal, NodeId, SemanticProgram, Span, UnaryOp,
-    parse_semantic,
+    BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCollectionItem, HirExpr,
+    HirFunctionBody, HirItem, HirPlace, HirProgram, HirRelationAtom, Literal, LocalKind, NodeId,
+    SemanticProgram, Span, UnaryOp, parse_semantic,
 };
 use mica_relation_kernel::{DispatchRelations, RelationId, Transaction, Tuple};
 use mica_runtime::{
@@ -481,8 +481,15 @@ struct ProgramCompiler<'a> {
     next_register: u16,
     locals: HashMap<BindingId, Register>,
     external_locals: HashMap<String, Register>,
+    functions: HashMap<BindingId, FunctionInfo>,
     loops: Vec<LoopContext>,
     returned: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FunctionInfo {
+    program: Arc<Program>,
+    arity: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -501,6 +508,7 @@ impl<'a> ProgramCompiler<'a> {
             next_register: 0,
             locals: HashMap::new(),
             external_locals: HashMap::new(),
+            functions: HashMap::new(),
             loops: Vec::new(),
             returned: false,
         }
@@ -593,6 +601,18 @@ impl<'a> ProgramCompiler<'a> {
             HirExpr::Binding {
                 binding, value, id, ..
             } => {
+                if let (Some(binding), Some(value)) = (binding, value.as_deref())
+                    && let HirExpr::Function { name: None, .. } = value
+                {
+                    let function = self.compile_function(value, Some(*binding))?;
+                    self.functions.insert(*binding, function);
+                    let dst = self.alloc_register();
+                    self.emit(Instruction::Load {
+                        dst,
+                        value: Value::nothing(),
+                    });
+                    return Ok(dst);
+                }
                 let dst = match value {
                     Some(value) => self.compile_expr_for_value(value)?,
                     None => {
@@ -723,6 +743,7 @@ impl<'a> ProgramCompiler<'a> {
                 elseif,
                 else_items,
             } => self.compile_if(*id, condition, then_items, elseif, else_items),
+            HirExpr::Call { id, callee, args } => self.compile_call(*id, callee, args),
             HirExpr::While {
                 id,
                 condition,
@@ -738,6 +759,25 @@ impl<'a> ProgramCompiler<'a> {
             } => self.compile_for(*id, *key, *value, iter, body),
             HirExpr::Break { id } => self.compile_break(*id),
             HirExpr::Continue { id } => self.compile_continue(*id),
+            HirExpr::Function { id, .. } => {
+                let function = self.compile_function(expr, None)?;
+                let HirExpr::Function { name, .. } = expr else {
+                    unreachable!();
+                };
+                let Some(binding) = name else {
+                    return Err(self.unsupported(
+                        *id,
+                        "anonymous function values are not implemented in the task compiler yet",
+                    ));
+                };
+                self.functions.insert(*binding, function);
+                let dst = self.alloc_register();
+                self.emit(Instruction::Load {
+                    dst,
+                    value: Value::nothing(),
+                });
+                Ok(dst)
+            }
             HirExpr::RoleDispatch { id, selector, args } => {
                 self.compile_dispatch(*id, selector, args, None)
             }
@@ -974,6 +1014,114 @@ impl<'a> ProgramCompiler<'a> {
             values: vec![key, Operand::Register(value)],
         });
         Ok(value)
+    }
+
+    fn compile_function(
+        &self,
+        expr: &HirExpr,
+        binding_override: Option<BindingId>,
+    ) -> Result<FunctionInfo, CompileError> {
+        let HirExpr::Function {
+            id,
+            name,
+            params,
+            captures,
+            body,
+            ..
+        } = expr
+        else {
+            return Err(self.unsupported(expr_id(expr), "expected function expression"));
+        };
+        if !captures.is_empty() {
+            return Err(
+                self.unsupported(*id, "closures are not implemented in the task compiler yet")
+            );
+        }
+        if name.is_none() && binding_override.is_none() {
+            return Err(self.unsupported(
+                *id,
+                "anonymous function values are not implemented in the task compiler yet",
+            ));
+        }
+        for param in params {
+            if param.kind != LocalKind::Param || param.default.is_some() {
+                return Err(self.unsupported(
+                    param.id,
+                    "only required positional function parameters are implemented in the task compiler yet",
+                ));
+            }
+        }
+
+        let mut compiler = ProgramCompiler::new(self.semantic, self.context);
+        compiler.next_register = params.len() as u16;
+        for (idx, param) in params.iter().enumerate() {
+            compiler.locals.insert(param.binding, Register(idx as u16));
+        }
+        let program = match body {
+            HirFunctionBody::Expr(expr) => compiler.compile_function_expr_body(expr)?,
+            HirFunctionBody::Block(items) => compiler.compile_items(items)?,
+        };
+        Ok(FunctionInfo {
+            program: Arc::new(program),
+            arity: params.len(),
+        })
+    }
+
+    fn compile_function_expr_body(mut self, expr: &HirExpr) -> Result<Program, CompileError> {
+        let value = self.compile_expr_for_value(expr)?;
+        if !self.returned {
+            self.emit(Instruction::Return {
+                value: Operand::Register(value),
+            });
+        }
+        Program::new(self.next_register as usize, self.instructions).map_err(Into::into)
+    }
+
+    fn compile_call(
+        &mut self,
+        id: NodeId,
+        callee: &HirExpr,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        let HirExpr::LocalRef { binding, .. } = callee else {
+            return Err(self.unsupported(
+                id,
+                "only direct calls to local functions are implemented in the task compiler yet",
+            ));
+        };
+        let function = self.functions.get(binding).cloned().ok_or_else(|| {
+            self.unsupported(
+                id,
+                "only direct calls to local functions are implemented in the task compiler yet",
+            )
+        })?;
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(
+                id,
+                "direct function calls only support positional arguments",
+            ));
+        }
+        if args.len() != function.arity {
+            return Err(self.unsupported(
+                id,
+                format!(
+                    "function call expected {} arguments but got {}",
+                    function.arity,
+                    args.len()
+                ),
+            ));
+        }
+        let args = args
+            .iter()
+            .map(|arg| self.compile_arg_operand(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::Call {
+            dst,
+            program: function.program,
+            args,
+        });
+        Ok(dst)
     }
 
     fn compile_and(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
@@ -1937,6 +2085,96 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_calls_named_local_functions() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "fn double(x)\n\
+               return x * 2\n\
+             end\n\
+             fn add(left, right)\n\
+               return left + right\n\
+             end\n\
+             return add(double(10), 1)",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(21).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_calls_let_bound_function_literals() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted = submit_source_task(
+            "let triple = fn(x) => x * 3\n\
+             return triple(7)",
+            &context,
+            &mut scheduler,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(21).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn direct_function_calls_validate_arity() {
+        let context = CompileContext::new();
+        let error = compile_source(
+            "fn add(left, right)\n\
+               return left + right\n\
+             end\n\
+             return add(1)",
+            &context,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            CompileError::Unsupported { message, .. }
+                if message == "function call expected 2 arguments but got 1"
+        ));
+    }
+
+    #[test]
+    fn captured_function_locals_are_rejected() {
+        let context = CompileContext::new();
+        let error = compile_source(
+            "let factor = 2\n\
+             fn scale(x)\n\
+               return x * factor\n\
+             end\n\
+             return scale(10)",
+            &context,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            CompileError::Unsupported { message, .. }
+                if message == "closures are not implemented in the task compiler yet"
+        ));
+    }
+
+    #[test]
     fn compiled_task_runs_while_loops() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
@@ -2663,6 +2901,69 @@ mod tests {
             scheduler
                 .resolver()
                 .contains(&Value::identity(rename_program))
+        );
+    }
+
+    #[test]
+    fn persisted_method_can_call_local_function() {
+        let calc_method = id(100);
+        let calc_program = id(101);
+        let player = id(200);
+        let alice = id(300);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("calc", calc_method)
+            .with_program_identity("calc", calc_program)
+            .with_identity("player", player);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method $calc :calc\n\
+               roles actor: $player\n\
+             do\n\
+               fn double(x)\n\
+                 return x * 2\n\
+               end\n\
+               return double(21)\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice);
+        let mut scheduler = Scheduler::new(kernel);
+        let submitted =
+            submit_source_task(":calc(actor: $alice)", &invoke_context, &mut scheduler).unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(42).unwrap(),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert!(
+            scheduler
+                .resolver()
+                .contains(&Value::identity(calc_program))
         );
     }
 
