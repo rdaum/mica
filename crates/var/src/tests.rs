@@ -1,0 +1,159 @@
+use crate::value::{INT_MAX, INT_MIN};
+use crate::{Identity, Symbol, SymbolMetadata, Value, ValueKind};
+use std::mem::{align_of, size_of};
+
+#[test]
+fn value_is_one_word() {
+    assert_eq!(size_of::<Value>(), 8);
+    assert_eq!(align_of::<Value>(), 8);
+}
+
+#[test]
+fn immediate_constructors_round_trip() {
+    assert_eq!(Value::nothing().kind(), ValueKind::Nothing);
+    assert_eq!(Value::bool(true).as_bool(), Some(true));
+    assert_eq!(Value::bool(false).as_bool(), Some(false));
+    assert_eq!(Value::int(INT_MIN).unwrap().as_int(), Some(INT_MIN));
+    assert_eq!(Value::int(INT_MAX).unwrap().as_int(), Some(INT_MAX));
+    assert!(Value::int(INT_MIN - 1).is_err());
+    assert!(Value::int(INT_MAX + 1).is_err());
+
+    let id = Identity::new(0x00ab_cdef).unwrap();
+    assert_eq!(Value::identity(id).as_identity(), Some(id));
+
+    let symbol = Symbol::intern("take");
+    assert_eq!(Value::symbol(symbol).as_symbol(), Some(symbol));
+    assert_eq!(symbol.name(), Some("take"));
+    assert_eq!(
+        symbol.metadata(),
+        Some(SymbolMetadata {
+            byte_len: 4,
+            char_len: 4,
+            is_ascii: true,
+        })
+    );
+    assert_eq!(Symbol::intern("take"), symbol);
+    assert_ne!(Symbol::intern("TAKE"), symbol);
+}
+
+#[test]
+fn symbols_intern_consistently_across_threads() {
+    let handles = (0..8)
+        .map(|_| {
+            std::thread::spawn(|| {
+                for _ in 0..256 {
+                    assert_eq!(Symbol::intern("look"), Symbol::intern("look"));
+                }
+                Symbol::intern("look")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let expected = Symbol::intern("look");
+    for handle in handles {
+        assert_eq!(handle.join().unwrap(), expected);
+    }
+}
+
+#[test]
+fn float_is_reduced_precision_and_canonicalizes_zero() {
+    let value = Value::float(1.25);
+    assert_eq!(value.as_float(), Some(1.25));
+    assert_eq!(Value::float(-0.0), Value::float(0.0));
+}
+
+#[test]
+fn string_list_and_map_are_values() {
+    let string = Value::string("brass lamp");
+    assert_eq!(
+        string.with_str(|s| s.to_string()),
+        Some("brass lamp".to_string())
+    );
+
+    let list = Value::list([Value::int(1).unwrap(), Value::int(2).unwrap()]);
+    assert_eq!(list.with_list(|values| values.len()), Some(2));
+
+    let k = Value::symbol(Symbol::intern("color"));
+    let red = Value::string("red");
+    let blue = Value::string("blue");
+    let map = Value::map([(k.clone(), red), (k.clone(), blue)]);
+    assert_eq!(map.with_map(|entries| entries.len()), Some(1));
+    assert_eq!(
+        map.with_map(|entries| entries[0].1.with_str(|s| s.to_string()).unwrap()),
+        Some("blue".to_string())
+    );
+    assert_eq!(map.map_len(), Some(1));
+    assert_eq!(
+        map.map_get(&k)
+            .and_then(|value| value.with_str(str::to_string)),
+        Some("blue".to_string())
+    );
+}
+
+#[test]
+fn heap_values_are_arc_shared_and_acyclic() {
+    let value = Value::list([
+        Value::string("alpha"),
+        Value::symbol(Symbol::intern("beta")),
+        Value::identity_raw(42).unwrap(),
+    ]);
+    assert_eq!(value.heap_strong_count(), Some(1));
+    let cloned = value.clone();
+    assert_eq!(value.heap_strong_count(), Some(2));
+    assert_eq!(value, cloned);
+    drop(value);
+    assert_eq!(cloned.heap_strong_count(), Some(1));
+    assert_eq!(cloned.list_len(), Some(3));
+    assert_eq!(
+        cloned
+            .list_get(0)
+            .and_then(|value| value.with_str(str::to_string)),
+        Some("alpha".to_string())
+    );
+}
+
+#[test]
+fn total_order_is_stable() {
+    let values = vec![
+        Value::map([]),
+        Value::list([]),
+        Value::string("x"),
+        Value::symbol(Symbol::intern("x")),
+        Value::identity_raw(1).unwrap(),
+        Value::float(1.0),
+        Value::int(1).unwrap(),
+        Value::bool(true),
+        Value::nothing(),
+    ];
+    let mut sorted = values.clone();
+    sorted.sort();
+    for pair in sorted.windows(2) {
+        assert!(pair[0] <= pair[1]);
+    }
+    assert_eq!(sorted.first(), Some(&Value::nothing()));
+    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Map);
+}
+
+#[test]
+fn ordered_encoding_preserves_string_order() {
+    let a = Value::string("a").ordered_key_bytes();
+    let aa = Value::string("aa").ordered_key_bytes();
+    let b = Value::string("b").ordered_key_bytes();
+    assert!(a < aa);
+    assert!(aa < b);
+}
+
+#[test]
+fn arithmetic_fast_path() {
+    assert_eq!(
+        Value::int(41).unwrap().checked_add(&Value::int(1).unwrap()),
+        Some(Value::int(42).unwrap())
+    );
+    assert_eq!(
+        Value::float(1.5)
+            .checked_add(&Value::int(2).unwrap())
+            .unwrap()
+            .as_float(),
+        Some(3.5)
+    );
+}
