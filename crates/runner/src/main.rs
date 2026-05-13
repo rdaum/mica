@@ -11,14 +11,73 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use clap::{Parser, Subcommand, ValueEnum};
 use mica_compiler::parse;
+use mica_relation_kernel::FjallDurabilityMode;
 use mica_runner::{FileinMode, SourceRunner};
 use mica_var::Symbol;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
-use std::env;
 use std::fs;
+use std::path::PathBuf;
 use std::process::ExitCode;
+
+#[derive(Parser)]
+#[command(name = "mica", about = "Run Mica source, fileins, fileouts, and REPLs")]
+struct Cli {
+    #[arg(long, global = true, value_enum, default_value_t = StorageMode::Memory)]
+    storage: StorageMode,
+    #[arg(long, global = true)]
+    store: Option<PathBuf>,
+    #[arg(long, global = true, value_enum, default_value_t = DurabilityMode::Relaxed)]
+    durability: DurabilityMode,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum StorageMode {
+    Memory,
+    Fjall,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum DurabilityMode {
+    Relaxed,
+    Strict,
+}
+
+impl From<DurabilityMode> for FjallDurabilityMode {
+    fn from(value: DurabilityMode) -> Self {
+        match value {
+            DurabilityMode::Relaxed => Self::Relaxed,
+            DurabilityMode::Strict => Self::Strict,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Run {
+        file: PathBuf,
+    },
+    Filein {
+        #[arg(long)]
+        unit: Option<String>,
+        #[arg(long)]
+        replace: bool,
+        file: PathBuf,
+    },
+    Fileout {
+        unit: String,
+        output: Option<PathBuf>,
+    },
+    Eval {
+        #[arg(required = true, trailing_var_arg = true)]
+        source: Vec<String>,
+    },
+    Repl,
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -31,57 +90,35 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let mut args = env::args().skip(1).collect::<Vec<_>>();
-    let Some(command) = args.first().map(String::as_str) else {
-        return repl();
-    };
-
-    match command {
-        "run" => {
-            args.remove(0);
-            let path = args
-                .first()
-                .ok_or_else(|| "usage: mica run <file.mica>".to_owned())?;
-            let source = fs::read_to_string(path)
-                .map_err(|error| format!("failed to read {path}: {error}"))?;
-            let mut runner = SourceRunner::new_empty();
+    let cli = Cli::parse();
+    match cli.command.as_ref().unwrap_or(&Command::Repl) {
+        Command::Run { file } => {
+            let source = fs::read_to_string(file)
+                .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+            let mut runner = open_runner(&cli)?;
             print_report(runner.run_source(&source).map_err(format_source_error)?);
             Ok(())
         }
-        "filein" => {
-            args.remove(0);
-            let mut unit = None;
-            let mut mode = FileinMode::Add;
-            while let Some(flag) = args.first().cloned() {
-                match flag.as_str() {
-                    "--replace" => {
-                        args.remove(0);
-                        mode = FileinMode::Replace;
-                    }
-                    "--unit" => {
-                        args.remove(0);
-                        let name = args
-                            .first()
-                            .ok_or_else(|| {
-                                "usage: mica filein [--unit name] [--replace] <file.mica>"
-                                    .to_owned()
-                            })?
-                            .clone();
-                        args.remove(0);
-                        unit = Some(Symbol::intern(name.trim_start_matches(':')));
-                    }
-                    _ => break,
-                }
-            }
-            let path = args.first().ok_or_else(|| {
-                "usage: mica filein [--unit name] [--replace] <file.mica>".to_owned()
-            })?;
-            let source = fs::read_to_string(path)
-                .map_err(|error| format!("failed to read {path}: {error}"))?;
-            let mut runner = SourceRunner::new_empty();
+        Command::Filein {
+            unit,
+            replace,
+            file,
+        } => {
+            let source = fs::read_to_string(file)
+                .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+            let mut runner = open_runner(&cli)?;
             if let Some(unit) = unit {
+                let mode = if *replace {
+                    FileinMode::Replace
+                } else {
+                    FileinMode::Add
+                };
                 let report = runner
-                    .run_filein_with_unit(unit, &source, mode)
+                    .run_filein_with_unit(
+                        Symbol::intern(unit.trim_start_matches(':')),
+                        &source,
+                        mode,
+                    )
                     .map_err(format_source_error)?;
                 for report in report.reports {
                     print_report(report);
@@ -93,41 +130,45 @@ fn run() -> Result<(), String> {
             }
             Ok(())
         }
-        "fileout" => {
-            args.remove(0);
-            let unit = args
-                .first()
-                .ok_or_else(|| "usage: mica fileout <unit>".to_owned())?;
-            let runner = SourceRunner::new_empty();
+        Command::Fileout { unit, output } => {
+            let runner = open_runner(&cli)?;
             let source = runner
                 .fileout_unit(Symbol::intern(unit.trim_start_matches(':')))
                 .map_err(format_source_error)?;
-            println!("{source}");
+            if let Some(output) = output {
+                fs::write(output, source)
+                    .map_err(|error| format!("failed to write {}: {error}", output.display()))?;
+            } else {
+                println!("{source}");
+            }
             Ok(())
         }
-        "eval" => {
-            args.remove(0);
-            if args.is_empty() {
-                return Err("usage: mica eval <source>".to_owned());
-            }
-            let source = args.join(" ");
-            let mut runner = SourceRunner::new_empty();
+        Command::Eval { source } => {
+            let source = source.join(" ");
+            let mut runner = open_runner(&cli)?;
             print_report(runner.run_source(&source).map_err(format_source_error)?);
             Ok(())
         }
-        "repl" => repl(),
-        "help" | "--help" | "-h" => {
-            print_help();
-            Ok(())
-        }
-        _ => Err(format!("unknown command `{command}`\n\n{}", help_text())),
+        Command::Repl => repl(&cli),
     }
 }
 
-fn repl() -> Result<(), String> {
+fn open_runner(cli: &Cli) -> Result<SourceRunner, String> {
+    let use_fjall = cli.storage == StorageMode::Fjall || cli.store.is_some();
+    if !use_fjall {
+        return Ok(SourceRunner::new_empty());
+    }
+    let store = cli
+        .store
+        .as_ref()
+        .ok_or_else(|| "--store is required with --storage fjall".to_owned())?;
+    SourceRunner::open_fjall(store, cli.durability.into())
+}
+
+fn repl(cli: &Cli) -> Result<(), String> {
     let mut editor =
         DefaultEditor::new().map_err(|error| format!("failed to initialize repl: {error}"))?;
-    let mut runner = SourceRunner::new_empty();
+    let mut runner = open_runner(cli)?;
     let mut buffer = String::new();
 
     println!("Mica REPL. Enter :quit to exit. Blank line forces evaluation.");
@@ -185,14 +226,6 @@ fn print_report(report: mica_runner::RunReport) {
 
 fn format_source_error(error: mica_compiler::SourceTaskError) -> String {
     format!("error: {error:?}")
-}
-
-fn print_help() {
-    println!("{}", help_text());
-}
-
-fn help_text() -> &'static str {
-    "usage:\n  mica run <file.mica>\n  mica filein [--unit name] [--replace] <file.mica>\n  mica fileout <unit>\n  mica eval <source>\n  mica repl"
 }
 
 fn print_repl_help() {

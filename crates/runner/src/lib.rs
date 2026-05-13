@@ -17,13 +17,15 @@ use mica_compiler::{
     parse_semantic, submit_source_task,
 };
 use mica_relation_kernel::{
-    ConflictPolicy, DispatchRelations, KernelError, RelationKernel, RelationMetadata, Tuple,
+    ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
+    RelationKernel, RelationMetadata, Tuple,
 };
 use mica_runtime::{
     Builtin, BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -76,11 +78,30 @@ pub struct SourceRunner {
 
 impl SourceRunner {
     pub fn new_empty() -> Self {
+        Self::with_kernel(bootstrap_kernel())
+    }
+
+    pub fn open_fjall(
+        path: impl AsRef<Path>,
+        durability: FjallDurabilityMode,
+    ) -> Result<Self, String> {
+        let provider = Arc::new(FjallStateProvider::open_with_durability(path, durability)?);
+        let persisted = provider.load_state()?;
+        let kernel = if persisted.version == 0 && persisted.relations.is_empty() {
+            bootstrap_kernel_with_provider(provider)
+        } else {
+            RelationKernel::load_from_state(persisted, provider)
+                .map_err(|error| format!("failed to load relation kernel state: {error:?}"))?
+        };
+        Ok(Self::with_kernel(kernel))
+    }
+
+    pub fn with_kernel(kernel: RelationKernel) -> Self {
+        let next_method_identity_id = next_generated_method_identity_id(&kernel);
         let mut runner = Self {
             context: CompileContext::new().with_method_relations(method_relations()),
-            scheduler: Scheduler::new(bootstrap_kernel())
-                .with_builtins(Arc::new(default_builtins())),
-            next_method_identity_id: GENERATED_METHOD_ID_START,
+            scheduler: Scheduler::new(kernel).with_builtins(Arc::new(default_builtins())),
+            next_method_identity_id,
         };
         runner.refresh_context_from_catalog();
         runner
@@ -149,6 +170,7 @@ impl SourceRunner {
             .facts
             .difference(&before.facts)
             .filter(|(relation, _)| is_ownable_fact_relation(*relation))
+            .filter(|(relation, _)| *relation != named_identity_relation())
             .cloned()
             .collect::<BTreeSet<_>>();
         let owned_rules = after
@@ -894,7 +916,13 @@ fn ensure_named_identity(
 }
 
 fn bootstrap_kernel() -> RelationKernel {
-    let kernel = RelationKernel::new();
+    bootstrap_kernel_with_provider(Arc::new(mica_relation_kernel::InMemoryCommitProvider::new()))
+}
+
+fn bootstrap_kernel_with_provider(
+    provider: Arc<dyn mica_relation_kernel::CommitProvider>,
+) -> RelationKernel {
+    let kernel = RelationKernel::with_provider(provider);
     kernel
         .create_relation(
             RelationMetadata::new(
@@ -911,6 +939,20 @@ fn bootstrap_kernel() -> RelationKernel {
         kernel.create_relation(metadata).unwrap();
     }
     kernel
+}
+
+fn next_generated_method_identity_id(kernel: &RelationKernel) -> u64 {
+    kernel
+        .snapshot()
+        .scan(named_identity_relation(), &[None, None])
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tuple| tuple.values().get(1).and_then(Value::as_identity))
+        .map(|identity| identity.raw())
+        .filter(|raw| *raw >= GENERATED_METHOD_ID_START)
+        .max()
+        .and_then(|raw| raw.checked_add(1))
+        .unwrap_or(GENERATED_METHOD_ID_START)
 }
 
 fn method_relations() -> MethodRelations {
@@ -1836,6 +1878,37 @@ mod tests {
         assert!(query.render().contains("[[:name: \"golden lamp\"]]"));
         assert!(source.contains("assert Name(#lamp, \"golden lamp\")"));
         assert!(!source.contains("brass lamp"));
+    }
+
+    #[test]
+    fn runner_fjall_store_reopens_state() {
+        let path = std::env::temp_dir().join(format!(
+            "mica-runner-fjall-{}-{}",
+            std::process::id(),
+            Symbol::intern("runner_fjall_store_reopens_state").id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+
+        {
+            let mut runner =
+                SourceRunner::open_fjall(&path, mica_relation_kernel::FjallDurabilityMode::Strict)
+                    .unwrap();
+            runner.run_source("make_identity(:lamp)").unwrap();
+            runner.run_source("make_relation(:Name, 2)").unwrap();
+            runner
+                .run_source("assert Name(#lamp, \"brass lamp\")")
+                .unwrap();
+        }
+
+        {
+            let mut runner =
+                SourceRunner::open_fjall(&path, mica_relation_kernel::FjallDurabilityMode::Strict)
+                    .unwrap();
+            let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
+            assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+        }
+
+        let _ = std::fs::remove_dir_all(&path);
     }
 
     #[test]

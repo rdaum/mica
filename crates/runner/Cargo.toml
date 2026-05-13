@@ -10,6 +10,7 @@ name = "mica"
 path = "src/main.rs"
 
 [dependencies]
+clap.workspace = true
 mica-compiler.workspace = true
 mica-relation-kernel.workspace = true
 mica-runtime.workspace = true
