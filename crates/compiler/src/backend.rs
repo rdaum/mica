@@ -497,6 +497,14 @@ fn query_outputs(args: &[HirArg]) -> Vec<QueryBinding> {
         .collect()
 }
 
+fn relation_name_for_dot(name: &str) -> String {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    first.to_ascii_uppercase().to_string() + chars.as_str()
+}
+
 struct ProgramCompiler<'a> {
     semantic: &'a SemanticProgram,
     context: &'a CompileContext,
@@ -770,6 +778,7 @@ impl<'a> ProgramCompiler<'a> {
                 ..
             } => self.compile_raise(error, message.as_deref(), value.as_deref()),
             HirExpr::Recover { id, expr, catches } => self.compile_recover(*id, expr, catches),
+            HirExpr::One { expr, .. } => self.compile_one(expr),
             HirExpr::Block { items, .. } => {
                 let saved = self.locals.clone();
                 let mut last_value = None;
@@ -1214,17 +1223,32 @@ impl<'a> ProgramCompiler<'a> {
             self.emit(Instruction::ErrorField { dst, error, field });
             return Ok(dst);
         }
-        let dot = self
-            .context
-            .dot_relation(name)
-            .ok_or_else(|| self.unsupported(id, format!("dot name `{name}` is not declared")))?;
+        if let Some(dot) = self.context.dot_relation(name) {
+            let key = self.compile_expr_for_operand(base)?;
+            let dst = self.alloc_register();
+            self.emit(Instruction::ScanValue {
+                dst,
+                relation: dot.relation,
+                key,
+            });
+            return Ok(dst);
+        }
+        let Some(relation) = self.conventional_dot_relation(name) else {
+            return Err(self.unsupported(id, format!("dot name `{name}` is not declared")));
+        };
         let key = self.compile_expr_for_operand(base)?;
-        let dst = self.alloc_register();
-        self.emit(Instruction::ScanValue {
-            dst,
-            relation: dot.relation,
-            key,
+        let query = self.alloc_register();
+        self.emit(Instruction::ScanBindings {
+            dst: query,
+            relation,
+            bindings: vec![Some(key), None],
+            outputs: vec![QueryBinding {
+                name: Symbol::intern(name),
+                position: 1,
+            }],
         });
+        let dst = self.alloc_register();
+        self.emit(Instruction::One { dst, src: query });
         Ok(dst)
     }
 
@@ -1238,6 +1262,10 @@ impl<'a> ProgramCompiler<'a> {
         let dot = self
             .context
             .dot_relation(name)
+            .or_else(|| {
+                self.conventional_dot_relation(name)
+                    .map(|relation| DotRelation { relation })
+            })
             .ok_or_else(|| self.unsupported(id, format!("dot name `{name}` is not declared")))?;
         let key = self.compile_expr_for_operand(base)?;
         self.emit(Instruction::ReplaceFunctional {
@@ -1245,6 +1273,10 @@ impl<'a> ProgramCompiler<'a> {
             values: vec![key, Operand::Register(value)],
         });
         Ok(value)
+    }
+
+    fn conventional_dot_relation(&self, name: &str) -> Option<RelationId> {
+        self.context.relation(&relation_name_for_dot(name))
     }
 
     fn compile_function(
@@ -1838,6 +1870,13 @@ impl<'a> ProgramCompiler<'a> {
             dst,
             value: Value::nothing(),
         });
+        Ok(dst)
+    }
+
+    fn compile_one(&mut self, expr: &HirExpr) -> Result<Register, CompileError> {
+        let src = self.compile_expr_for_value(expr)?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::One { dst, src });
         Ok(dst)
     }
 
@@ -2445,6 +2484,7 @@ fn expr_id(expr: &HirExpr) -> NodeId {
         | HirExpr::Return { id, .. }
         | HirExpr::Raise { id, .. }
         | HirExpr::Recover { id, .. }
+        | HirExpr::One { id, .. }
         | HirExpr::Break { id }
         | HirExpr::Continue { id }
         | HirExpr::Try { id, .. }

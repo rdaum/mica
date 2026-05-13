@@ -222,6 +222,11 @@ pub enum Expr {
         expr: Box<Expr>,
         catches: Vec<RecoveryClause>,
     },
+    One {
+        id: NodeId,
+        span: Span,
+        expr: Box<Expr>,
+    },
     Break {
         id: NodeId,
         span: Span,
@@ -283,6 +288,7 @@ impl Expr {
             | Self::Return { id, .. }
             | Self::Raise { id, .. }
             | Self::Recover { id, .. }
+            | Self::One { id, .. }
             | Self::Break { id, .. }
             | Self::Continue { id, .. }
             | Self::Try { id, .. }
@@ -318,6 +324,7 @@ impl Expr {
             | Self::Return { span, .. }
             | Self::Raise { span, .. }
             | Self::Recover { span, .. }
+            | Self::One { span, .. }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
             | Self::Try { span, .. }

@@ -122,6 +122,10 @@ pub enum Instruction {
         error: Register,
         field: ErrorField,
     },
+    One {
+        dst: Register,
+        src: Register,
+    },
     CollectionLen {
         dst: Register,
         collection: Register,
@@ -428,6 +432,10 @@ fn validate_instruction(
             validate_register(register_count, *dst)?;
             validate_register(register_count, *error)
         }
+        Instruction::One { dst, src } => {
+            validate_register(register_count, *dst)?;
+            validate_register(register_count, *src)
+        }
         Instruction::CollectionLen { dst, collection }
         | Instruction::CollectionKeyAt {
             dst, collection, ..
@@ -608,6 +616,7 @@ const INST_RAISE: u8 = 31;
 const INST_ERROR_FIELD: u8 = 32;
 const INST_BUILTIN_CALL: u8 = 33;
 const INST_SCAN_BINDINGS: u8 = 34;
+const INST_ONE: u8 = 35;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -726,6 +735,12 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *dst);
             write_register(out, *error);
             write_error_field(out, *field);
+            Ok(())
+        }
+        Instruction::One { dst, src } => {
+            out.push(INST_ONE);
+            write_register(out, *dst);
+            write_register(out, *src);
             Ok(())
         }
         Instruction::CollectionLen { dst, collection } => {
@@ -1245,6 +1260,10 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 error: self.read_register()?,
                 field: self.read_error_field()?,
+            },
+            INST_ONE => Instruction::One {
+                dst: self.read_register()?,
+                src: self.read_register()?,
             },
             INST_COLLECTION_LEN => Instruction::CollectionLen {
                 dst: self.read_register()?,

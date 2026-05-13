@@ -666,6 +666,10 @@ impl<'a> Analyzer<'a> {
                     .map(|catch| self.lower_recovery(catch, scope))
                     .collect(),
             },
+            Expr::One { id, expr, .. } => HirExpr::One {
+                id: *id,
+                expr: Box::new(self.lower_expr(expr, scope)),
+            },
             Expr::Break { id, .. } => HirExpr::Break { id: *id },
             Expr::Continue { id, .. } => HirExpr::Continue { id: *id },
             Expr::Try {
@@ -1144,6 +1148,7 @@ fn collect_expr_span(expr: &Expr, spans: &mut HashMap<NodeId, Span>) {
                 collect_recovery_span(catch, spans);
             }
         }
+        Expr::One { expr, .. } => collect_expr_span(expr, spans),
         Expr::Try {
             body,
             catches,

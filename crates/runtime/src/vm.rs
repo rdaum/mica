@@ -287,6 +287,15 @@ impl RegisterVm {
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
+            Instruction::One { dst, src } => {
+                let value = match one_value(self.read_register(src)?) {
+                    Ok(value) => value,
+                    Err(error) => return self.begin_raise(error),
+                };
+                self.write_register(dst, value)?;
+                self.advance_ip()?;
+                Ok(VmHostResponse::Continue)
+            }
             Instruction::CollectionLen { dst, collection } => {
                 let value = collection_len(self.read_register(collection)?);
                 self.write_register(dst, value)?;
@@ -899,6 +908,29 @@ fn collection_value_at(collection: &Value, index: &Value) -> Value {
                 .flatten()
         })
         .unwrap_or_else(Value::nothing)
+}
+
+fn one_value(value: &Value) -> Result<Value, Value> {
+    let Some(len) = value.list_len() else {
+        return Ok(Value::nothing());
+    };
+    match len {
+        0 => Ok(Value::nothing()),
+        1 => {
+            let row = value.list_get(0).unwrap_or_else(Value::nothing);
+            if row.map_len() == Some(1) {
+                return Ok(row
+                    .with_map(|entries| entries[0].1.clone())
+                    .unwrap_or_else(Value::nothing));
+            }
+            Ok(row)
+        }
+        _ => Err(Value::error(
+            Symbol::intern("E_AMBIGUOUS"),
+            Some("one expected at most one result"),
+            Some(value.clone()),
+        )),
+    }
 }
 
 fn ordinal_index(index: &Value) -> Option<usize> {

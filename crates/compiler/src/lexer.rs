@@ -246,6 +246,7 @@ fn keyword_kind(text: &str) -> Option<SyntaxKind> {
         "return" => SyntaxKind::ReturnKw,
         "raise" => SyntaxKind::RaiseKw,
         "recover" => SyntaxKind::RecoverKw,
+        "one" => SyntaxKind::OneKw,
         "break" => SyntaxKind::BreakKw,
         "continue" => SyntaxKind::ContinueKw,
         "try" => SyntaxKind::TryKw,

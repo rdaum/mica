@@ -597,6 +597,39 @@ mod tests {
     }
 
     #[test]
+    fn runner_relation_queries_allow_all_positions_free() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:thing)").unwrap();
+        runner.run_source("make_identity(:room)").unwrap();
+        runner.run_source("make_relation(:Location, 2)").unwrap();
+        runner.run_source("assert Location($thing, $room)").unwrap();
+
+        let report = runner.run_source("return Location(?what, ?where)").unwrap();
+
+        assert_eq!(
+            report.render(),
+            "task 5 complete: [[:what: $thing, :where: $room]] (retries: 0)"
+        );
+    }
+
+    #[test]
+    fn runner_one_and_dot_read_project_binary_relations() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:thing)").unwrap();
+        runner.run_source("make_identity(:room)").unwrap();
+        runner.run_source("make_relation(:Location, 2)").unwrap();
+        runner.run_source("assert Location($thing, $room)").unwrap();
+
+        let one = runner
+            .run_source("return one Location($thing, ?room)")
+            .unwrap();
+        let dot = runner.run_source("return $thing.location").unwrap();
+
+        assert_eq!(one.render(), "task 5 complete: $room (retries: 0)");
+        assert_eq!(dot.render(), "task 6 complete: $room (retries: 0)");
+    }
+
+    #[test]
     fn runner_make_identity_is_idempotent_for_matching_name() {
         let mut runner = SourceRunner::new_empty();
         let first = runner.run_source("return make_identity(:root)").unwrap();

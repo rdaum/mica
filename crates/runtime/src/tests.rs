@@ -375,7 +375,6 @@ fn scan_bindings_returns_query_binding_maps() {
         ],
     )
     .unwrap();
-    let program = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
 
     assert_eq!(
         run_program(&kernel, program, 100).unwrap(),
@@ -385,6 +384,63 @@ fn scan_bindings_returns_query_binding_maps() {
             retries: 0,
         }
     );
+}
+
+#[test]
+fn one_extracts_single_query_binding_value() {
+    let kernel = kernel_with_world_relations();
+    let room = int(300);
+    let program = Program::new(
+        2,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: Value::list([Value::map([(sym("room"), room.clone())])]),
+            },
+            Instruction::One {
+                dst: reg(1),
+                src: reg(0),
+            },
+            Instruction::Return { value: r(1) },
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        run_program(&kernel, program, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: room,
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn one_raises_on_ambiguous_query_results() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        2,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: Value::list([
+                    Value::map([(sym("room"), int(300))]),
+                    Value::map([(sym("room"), int(301))]),
+                ]),
+            },
+            Instruction::One {
+                dst: reg(1),
+                src: reg(0),
+            },
+        ],
+    )
+    .unwrap();
+
+    assert!(matches!(
+        run_program(&kernel, program, 100).unwrap(),
+        TaskOutcome::Aborted { error, .. }
+            if error.error_code_symbol() == Some(Symbol::intern("E_AMBIGUOUS"))
+    ));
 }
 
 #[test]

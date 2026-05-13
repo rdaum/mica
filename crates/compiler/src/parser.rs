@@ -243,6 +243,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::ReturnKw => self.parse_return_expr(),
             SyntaxKind::RaiseKw => self.parse_raise_expr(),
             SyntaxKind::RecoverKw => self.parse_recover_expr(),
+            SyntaxKind::OneKw => self.parse_one_expr(),
             SyntaxKind::BreakKw => self.parse_simple_control_expr(SyntaxKind::BreakExpr),
             SyntaxKind::ContinueKw => self.parse_simple_control_expr(SyntaxKind::ContinueExpr),
             SyntaxKind::TryKw => self.parse_try_expr(),
@@ -410,6 +411,12 @@ impl<'a> Parser<'a> {
         }
         children.push(self.expect_token(SyntaxKind::EndKw, "expected end after recover"));
         CstNode::new(SyntaxKind::RecoverExpr, children)
+    }
+
+    fn parse_one_expr(&mut self) -> CstNode {
+        let mut children = vec![self.bump_element()];
+        children.push(CstElement::Node(self.parse_expr(13)));
+        CstNode::new(SyntaxKind::OneExpr, children)
     }
 
     fn parse_recover_clause(&mut self) -> CstNode {
@@ -741,6 +748,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::ReturnKw
                 | SyntaxKind::RaiseKw
                 | SyntaxKind::RecoverKw
+                | SyntaxKind::OneKw
                 | SyntaxKind::BreakKw
                 | SyntaxKind::ContinueKw
                 | SyntaxKind::TryKw
@@ -981,6 +989,14 @@ mod tests {
         let parse = parse("Location($thing, ?room)");
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::CallExpr));
+        assert!(contains(&parse.root, SyntaxKind::QueryVarExpr));
+    }
+
+    #[test]
+    fn parses_one_relation_query_expression() {
+        let parse = parse("one Location($thing, ?room)");
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::OneExpr));
         assert!(contains(&parse.root, SyntaxKind::QueryVarExpr));
     }
 
