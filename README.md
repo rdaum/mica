@@ -238,13 +238,15 @@ cargo test --workspace
 
 ## Repository Map
 
-- `crates/var`: Mica value representation.
-- `crates/relation-kernel`: relation storage, transactions, rules, dispatch
-  matching, and catalogue facts.
-- `crates/runtime`: register VM, scheduler, tasks, builtins, and effects.
-- `crates/compiler`: lexer, parser, lowering, semantic analysis, and bytecode
-  compilation.
-- `crates/runner`: REPL, filein runner, builtins, and rendered reports.
+- [`crates/var`](crates/var/README.md): Mica value representation.
+- [`crates/relation-kernel`](crates/relation-kernel/README.md): relation
+  storage, transactions, rules, dispatch matching, and catalogue facts.
+- [`crates/runtime`](crates/runtime/README.md): register VM, scheduler, tasks,
+  builtins, and effects.
+- [`crates/compiler`](crates/compiler/README.md): lexer, parser, lowering,
+  semantic analysis, and bytecode compilation.
+- [`crates/runner`](crates/runner/README.md): REPL, filein runner, builtins,
+  and rendered reports.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,
   verbs, and dispatch.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,
@@ -252,7 +254,7 @@ cargo test --workspace
 
 ## Licence
 
-Mica is free software licensed under the GNU Affero General Public License v3.0, 
+Mica is free software licensed under the GNU Affero General Public License v3.0,
 as set out in [LICENSE](LICENSE).
 
 ## Direction
