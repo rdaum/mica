@@ -18,6 +18,7 @@ license = "AGPL-3.0-only"
 
 [workspace.dependencies]
 mica-compiler = { path = "crates/compiler" }
+mica-driver = { path = "crates/driver" }
 mica-relation-kernel = { path = "crates/relation-kernel" }
 mica-runtime = { path = "crates/runtime" }
 mica-var = { path = "crates/var" }

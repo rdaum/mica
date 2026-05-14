@@ -13,9 +13,9 @@
 
 use crate::{DriverError, DriverEvent, TaskContext};
 use compio::runtime::{JoinHandle as CompioJoinHandle, spawn, time::sleep};
-use mica_runtime::{SourceRunner, SubmittedTask, TaskInput, TaskRequest};
+use mica_runtime::{RunReport, SourceRunner, SubmittedTask, TaskInput, TaskRequest};
 use mica_runtime::{SuspendKind, TaskId, TaskOutcome};
-use mica_var::{Identity, Value};
+use mica_var::{Identity, Symbol, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -59,6 +59,25 @@ impl CompioTaskDriver {
 
     pub async fn submit_source(&self, request: TaskRequest) -> Result<SubmittedTask, DriverError> {
         self.spawn_source(request)
+            .await
+            .map_err(|error| DriverError::Join(error.to_string()))?
+    }
+
+    pub fn spawn_source_report(
+        &self,
+        actor: Option<Symbol>,
+        source: String,
+    ) -> CompioJoinHandle<Result<RunReport, DriverError>> {
+        let driver = self.clone();
+        spawn(async move { driver.run_source_report(actor, source) })
+    }
+
+    pub async fn submit_source_report(
+        &self,
+        actor: Option<Symbol>,
+        source: String,
+    ) -> Result<RunReport, DriverError> {
+        self.spawn_source_report(actor, source)
             .await
             .map_err(|error| DriverError::Join(error.to_string()))?
     }
@@ -131,6 +150,29 @@ impl CompioTaskDriver {
             .map_err(DriverError::Source)?;
         self.handle_submitted(context, submitted.clone())?;
         Ok(submitted)
+    }
+
+    pub(crate) fn run_source_report(
+        &self,
+        actor: Option<Symbol>,
+        source: String,
+    ) -> Result<RunReport, DriverError> {
+        let request = {
+            let state = self.state.borrow();
+            match actor {
+                Some(actor) => state
+                    .runner
+                    .source_request_as(actor, source)
+                    .map_err(DriverError::Source)?,
+                None => SourceRunner::root_source_request(source),
+            }
+        };
+        let submitted = self.run_source_request(request)?;
+        Ok(self
+            .state
+            .borrow()
+            .runner
+            .report_outcome(submitted.task_id, submitted.outcome))
     }
 
     pub(crate) fn run_invocation_request(
@@ -260,9 +302,21 @@ impl CompioTaskDriver {
         let driver = self.clone();
         spawn(async move {
             sleep(duration).await;
-            let _ = driver.resume(task_id, Value::nothing()).await;
+            if let Err(error) = driver.resume(task_id, Value::nothing()).await {
+                driver.record_task_failure(task_id, error);
+            }
         })
         .detach();
+    }
+
+    fn record_task_failure(&self, task_id: TaskId, error: DriverError) {
+        self.state
+            .borrow_mut()
+            .events
+            .push(DriverEvent::TaskFailed {
+                task_id,
+                error: error.to_string(),
+            });
     }
 }
 

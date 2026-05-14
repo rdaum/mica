@@ -89,6 +89,7 @@ pub struct Task<'a> {
     retry_state: VmState,
     pending_effects: Vec<Emission>,
     committed_effects: Vec<Emission>,
+    task_snapshot: Vec<Value>,
     retries: u8,
     limits: TaskLimits,
 }
@@ -153,6 +154,7 @@ impl<'a> Task<'a> {
             retry_state,
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
+            task_snapshot: Vec::new(),
             retries: 0,
             limits,
         }
@@ -178,6 +180,7 @@ impl<'a> Task<'a> {
             retry_state: state.retry_state,
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
+            task_snapshot: Vec::new(),
             retries: state.retries,
             limits: state.limits,
         }
@@ -185,6 +188,10 @@ impl<'a> Task<'a> {
 
     pub fn task_id(&self) -> TaskId {
         self.task_id
+    }
+
+    pub(crate) fn set_task_snapshot(&mut self, task_snapshot: Vec<Value>) {
+        self.task_snapshot = task_snapshot;
     }
 
     pub fn retries(&self) -> u8 {
@@ -225,6 +232,7 @@ impl<'a> Task<'a> {
                     &self.resolver,
                     &self.builtins,
                     &mut self.pending_effects,
+                    &self.task_snapshot,
                 );
                 self.vm.run_until_host_response(
                     &mut host,

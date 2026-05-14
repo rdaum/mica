@@ -13,9 +13,9 @@
 
 use crate::{CompioTaskDriver, DriverError, DriverEvent, DriverThreadError};
 use compio::runtime::{Runtime, spawn};
-use mica_runtime::{SourceRunner, SubmittedTask, TaskRequest};
+use mica_runtime::{RunReport, SourceRunner, SubmittedTask, TaskRequest};
 use mica_runtime::{TaskId, TaskOutcome};
-use mica_var::{Identity, Value};
+use mica_var::{Identity, Symbol, Value};
 use std::sync::mpsc;
 use std::task::Waker;
 use std::thread::{self, JoinHandle as ThreadJoinHandle};
@@ -30,6 +30,11 @@ enum DriverCommand {
     SubmitSource {
         request: TaskRequest,
         reply: mpsc::Sender<Result<SubmittedTask, DriverError>>,
+    },
+    SubmitSourceReport {
+        actor: Option<Symbol>,
+        source: String,
+        reply: mpsc::Sender<Result<RunReport, DriverError>>,
     },
     SubmitInvocation {
         request: TaskRequest,
@@ -84,6 +89,23 @@ impl CompioTaskDriverThread {
     pub fn submit_source(&self, request: TaskRequest) -> Result<SubmittedTask, DriverThreadError> {
         let (reply, response) = mpsc::channel();
         self.send(DriverCommand::SubmitSource { request, reply })?;
+        response
+            .recv()
+            .map_err(|_| DriverThreadError::Closed)?
+            .map_err(DriverThreadError::Driver)
+    }
+
+    pub fn submit_source_report(
+        &self,
+        actor: Option<Symbol>,
+        source: String,
+    ) -> Result<RunReport, DriverThreadError> {
+        let (reply, response) = mpsc::channel();
+        self.send(DriverCommand::SubmitSourceReport {
+            actor,
+            source,
+            reply,
+        })?;
         response
             .recv()
             .map_err(|_| DriverThreadError::Closed)?
@@ -182,6 +204,17 @@ fn run_thread_driver(
                     })
                     .detach();
                 }
+                DriverCommand::SubmitSourceReport {
+                    actor,
+                    source,
+                    reply,
+                } => {
+                    let driver = driver.clone();
+                    spawn(async move {
+                        let _ = reply.send(driver.run_source_report(actor, source));
+                    })
+                    .detach();
+                }
                 DriverCommand::SubmitInvocation { request, reply } => {
                     let driver = driver.clone();
                     spawn(async move {
@@ -212,6 +245,7 @@ fn run_thread_driver(
                     .detach();
                 }
                 DriverCommand::DrainEvents { reply } => {
+                    while runtime.run() {}
                     let _ = reply.send(driver.drain_events());
                 }
                 DriverCommand::Shutdown => running = false,

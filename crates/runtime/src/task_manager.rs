@@ -13,7 +13,7 @@
 
 use crate::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 use mica_relation_kernel::RelationKernel;
-use mica_var::{Identity, Value};
+use mica_var::{Identity, Symbol, Value};
 use mica_vm::{AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, SuspendKind};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -139,6 +139,7 @@ impl TaskManager {
         authority: AuthorityContext,
     ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
         let task_id = self.allocate_task_id();
+        let task_snapshot = self.task_snapshot_values(Some(task_id));
         let mut task = Task::new_with_authority(
             task_id,
             &self.kernel,
@@ -148,6 +149,7 @@ impl TaskManager {
             authority,
             self.limits,
         );
+        task.set_task_snapshot(task_snapshot);
         let outcome = task.run()?;
         let suspended_state = suspended_state(&outcome, &task);
         drop(task);
@@ -187,6 +189,7 @@ impl TaskManager {
             .suspended
             .remove(&task_id)
             .ok_or(TaskManagerError::UnknownTask(task_id))?;
+        let task_snapshot = self.task_snapshot_values(Some(task_id));
         let mut task = Task::from_state_with_authority(
             task_id,
             &self.kernel,
@@ -195,6 +198,7 @@ impl TaskManager {
             suspended.state,
             authority,
         );
+        task.set_task_snapshot(task_snapshot);
         task.resume_with(value)?;
         let outcome = task.run()?;
         let suspended_state = suspended_state(&outcome, &task);
@@ -223,6 +227,19 @@ impl TaskManager {
         let task_id = self.next_task_id;
         self.next_task_id += 1;
         task_id
+    }
+
+    fn task_snapshot_values(&self, running: Option<TaskId>) -> Vec<Value> {
+        let mut tasks = self
+            .suspended
+            .values()
+            .map(|task| task_status_value(task.task_id, Symbol::intern("suspended")))
+            .collect::<Vec<_>>();
+        if let Some(task_id) = running {
+            tasks.push(task_status_value(task_id, Symbol::intern("running")));
+        }
+        tasks.sort();
+        tasks
     }
 
     fn record_outcome(
@@ -257,6 +274,17 @@ fn suspended_state(outcome: &TaskOutcome, task: &Task<'_>) -> Option<crate::task
     } else {
         None
     }
+}
+
+fn task_status_value(task_id: TaskId, state: Symbol) -> Value {
+    let task_id = i64::try_from(task_id)
+        .ok()
+        .and_then(|task_id| Value::int(task_id).ok())
+        .unwrap_or_else(|| Value::string(task_id.to_string()));
+    Value::map([
+        (Value::symbol(Symbol::intern("id")), task_id),
+        (Value::symbol(Symbol::intern("state")), Value::symbol(state)),
+    ])
 }
 
 pub struct SuspendedTask {

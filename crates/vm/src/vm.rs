@@ -133,6 +133,7 @@ pub struct VmHostContext<'ctx, 'kernel> {
     resolver: &'ctx ProgramResolver,
     builtins: &'ctx BuiltinRegistry,
     pending_effects: &'ctx mut Vec<Emission>,
+    task_snapshot: &'ctx [Value],
 }
 
 impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
@@ -142,6 +143,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
         resolver: &'ctx ProgramResolver,
         builtins: &'ctx BuiltinRegistry,
         pending_effects: &'ctx mut Vec<Emission>,
+        task_snapshot: &'ctx [Value],
     ) -> Self {
         Self {
             tx,
@@ -149,6 +151,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
             resolver,
             builtins,
             pending_effects,
+            task_snapshot,
         }
     }
 }
@@ -537,6 +540,7 @@ impl RegisterVm {
                     host.tx,
                     host.authority,
                     host.pending_effects,
+                    host.task_snapshot,
                 );
                 let value = builtin.call(&mut context, &args)?;
                 self.write_register(dst, value)?;

@@ -162,6 +162,41 @@ fn thread_driver_wakes_timed_suspension() {
 }
 
 #[test]
+fn thread_driver_drain_events_pumps_ready_timer() {
+    let driver = CompioTaskDriverThread::spawn_empty().unwrap();
+    let submitted = driver
+        .submit_source(root_source("suspend(0)\nreturn \"awake\"", None))
+        .unwrap();
+
+    assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+    let events = driver.drain_events().unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DriverEvent::TaskCompleted { task_id, value }
+            if *task_id == submitted.task_id && *value == Value::string("awake")
+    )));
+    driver.shutdown().unwrap();
+}
+
+#[test]
+fn thread_driver_reports_timer_resume_failure() {
+    let driver = CompioTaskDriverThread::spawn_empty().unwrap();
+    let submitted = driver
+        .submit_source(root_source("suspend(0)\nemit(\"missing target\")", None))
+        .unwrap();
+
+    assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+    let events = driver.drain_events().unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DriverEvent::TaskFailed { task_id, error }
+            if *task_id == submitted.task_id
+                && error.contains("emit expects target identity and value")
+    )));
+    driver.shutdown().unwrap();
+}
+
+#[test]
 fn thread_driver_immediately_resumes_commit() {
     let driver = CompioTaskDriverThread::spawn_empty().unwrap();
     let submitted = driver

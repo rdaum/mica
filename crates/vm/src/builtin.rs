@@ -22,6 +22,7 @@ pub struct BuiltinContext<'ctx, 'kernel> {
     tx: &'ctx mut Transaction<'kernel>,
     authority: &'ctx mut AuthorityContext,
     pending_effects: &'ctx mut Vec<Emission>,
+    task_snapshot: &'ctx [Value],
 }
 
 impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
@@ -30,12 +31,14 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         tx: &'ctx mut Transaction<'kernel>,
         authority: &'ctx mut AuthorityContext,
         pending_effects: &'ctx mut Vec<Emission>,
+        task_snapshot: &'ctx [Value],
     ) -> Self {
         Self {
             kernel,
             tx,
             authority,
             pending_effects,
+            task_snapshot,
         }
     }
 
@@ -53,6 +56,10 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
 
     pub fn authority_mut(&mut self) -> &mut AuthorityContext {
         self.authority
+    }
+
+    pub fn task_snapshot(&self) -> &[Value] {
+        self.task_snapshot
     }
 
     pub fn mint_capability(&mut self, grant: CapabilityGrant) -> Value {

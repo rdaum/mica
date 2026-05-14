@@ -29,6 +29,7 @@ pub struct TaskContext {
 pub enum DriverEvent {
     TaskCompleted { task_id: TaskId, value: Value },
     TaskAborted { task_id: TaskId, error: Value },
+    TaskFailed { task_id: TaskId, error: String },
     TaskSuspended { task_id: TaskId, kind: SuspendKind },
     Effect(Effect),
 }

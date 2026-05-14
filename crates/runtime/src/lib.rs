@@ -166,14 +166,34 @@ impl SourceRunner {
     }
 
     pub fn run_source(&mut self, source: &str) -> Result<RunReport, SourceTaskError> {
-        let submitted = self.submit_source(TaskRequest {
+        let submitted = self.submit_source(Self::root_source_request(source))?;
+        Ok(self.report(submitted.task_id, submitted.outcome))
+    }
+
+    pub fn root_source_request(source: impl Into<String>) -> TaskRequest {
+        TaskRequest {
             principal: None,
             actor: None,
             endpoint: None,
             authority: AuthorityContext::root(),
-            input: TaskInput::Source(source.to_owned()),
-        })?;
-        Ok(self.report(submitted.task_id, submitted.outcome))
+            input: TaskInput::Source(source.into()),
+        }
+    }
+
+    pub fn source_request_as(
+        &self,
+        actor: Symbol,
+        source: impl Into<String>,
+    ) -> Result<TaskRequest, SourceTaskError> {
+        let actor_id = self.actor_identity(actor)?;
+        let authority = authority_for_actor(self.task_manager.kernel(), actor_id)?;
+        Ok(TaskRequest {
+            principal: None,
+            actor: Some(actor_id),
+            endpoint: None,
+            authority,
+            input: TaskInput::Source(source.into()),
+        })
     }
 
     pub fn submit_source(
@@ -325,6 +345,10 @@ impl SourceRunner {
         self.task_manager.drain_emissions()
     }
 
+    pub fn report_outcome(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
+        self.report(task_id, outcome)
+    }
+
     fn report(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
         RunReport {
             task_id,
@@ -358,15 +382,8 @@ impl SourceRunner {
         actor: Symbol,
         source: &str,
     ) -> Result<RunReport, SourceTaskError> {
-        let actor_id = self.actor_identity(actor)?;
-        let authority = authority_for_actor(self.task_manager.kernel(), actor_id)?;
-        let submitted = self.submit_source(TaskRequest {
-            principal: None,
-            actor: Some(actor_id),
-            endpoint: None,
-            authority,
-            input: TaskInput::Source(source.to_owned()),
-        })?;
+        let request = self.source_request_as(actor, source)?;
+        let submitted = self.submit_source(request)?;
         Ok(self.report(submitted.task_id, submitted.outcome))
     }
 
@@ -1347,6 +1364,7 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("disable_rule", disable_rule_builtin)
         .with_builtin("fileout", fileout_builtin)
         .with_builtin("fileout_rules", fileout_rules_builtin)
+        .with_builtin("tasks", tasks_builtin)
 }
 
 fn emit_builtin(
@@ -1366,6 +1384,16 @@ fn emit_builtin(
     let value = args[1].clone();
     context.emit(target, value.clone())?;
     Ok(value)
+}
+
+fn tasks_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if !args.is_empty() {
+        return Err(invalid_builtin_call("tasks", "expected tasks()"));
+    }
+    Ok(Value::list(context.task_snapshot().iter().cloned()))
 }
 
 fn unsupported_runner_error(
@@ -2404,6 +2432,28 @@ mod tests {
     }
 
     #[test]
+    fn runner_tasks_builtin_lists_running_and_suspended_tasks() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("suspend(10)").unwrap();
+        let report = runner.run_source("return tasks()").unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("tasks() did not complete");
+        };
+        let tasks = value.with_list(<[Value]>::to_vec).unwrap();
+
+        assert!(
+            tasks
+                .iter()
+                .any(|task| task_status(task) == Some((1, Symbol::intern("suspended"))))
+        );
+        assert!(
+            tasks
+                .iter()
+                .any(|task| task_status(task) == Some((2, Symbol::intern("running"))))
+        );
+    }
+
+    #[test]
     fn runner_read_waits_for_input_and_returns_continuation_value() {
         let mut runner = SourceRunner::new_empty();
         let submitted = runner
@@ -2476,6 +2526,16 @@ mod tests {
                 if error.error_code_symbol() == Some(Symbol::intern("E_DIV"))
                     && effects.is_empty()
         ));
+    }
+
+    fn task_status(value: &Value) -> Option<(i64, Symbol)> {
+        let id = value
+            .map_get(&Value::symbol(Symbol::intern("id")))?
+            .as_int()?;
+        let state = value
+            .map_get(&Value::symbol(Symbol::intern("state")))?
+            .as_symbol()?;
+        Some((id, state))
     }
 
     #[test]
