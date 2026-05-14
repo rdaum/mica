@@ -239,12 +239,18 @@ Mica is an early Rust prototype. The current tree has:
 - a "filein" syntax for bringing in state-as-initial-blueprint;
 - Fjall-backed durable relation state with strict and relaxed commit modes;
 - a simple runner and REPL;
-- a small filein example.
+- small filein examples, including a Mica-authored command parser.
 
 Run the example:
 
 ```sh
 cargo run --bin mica -- filein examples/mud-core.mica
+```
+
+Run the TCP MUD demo:
+
+```sh
+cargo run --bin mica-daemon
 ```
 
 Start the REPL:
@@ -276,6 +282,8 @@ cargo test --workspace
 - [`crates/daemon`](crates/daemon/README.md): minimal TCP endpoint transport.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,
   verbs, and dispatch.
+- `examples/mud-command-parser.mica`: command parsing authored in Mica, using
+  low-level string primitives rather than Rust command matching.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,
   and the relation kernel.
 - [`CODING-STYLE.md`](CODING-STYLE.md): project coding guidelines, including dependency policy.

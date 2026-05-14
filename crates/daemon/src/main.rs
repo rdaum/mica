@@ -28,7 +28,11 @@ use std::thread;
 use std::time::Duration;
 
 const DEFAULT_BIND: &str = "127.0.0.1:7777";
-const DEFAULT_FILEIN: &str = "examples/mud-core.mica";
+const DEFAULT_FILEINS: &[&str] = &[
+    "examples/mud-core.mica",
+    "examples/string.mica",
+    "examples/mud-command-parser.mica",
+];
 const DAEMON_ENDPOINT_ID_START: u64 = 0x00ed_0000_0000_0000;
 const EVENT_POLL_DELAY: Duration = Duration::from_millis(10);
 
@@ -40,8 +44,8 @@ const EVENT_POLL_DELAY: Duration = Duration::from_millis(10);
 struct Cli {
     #[arg(long, default_value = DEFAULT_BIND)]
     bind: SocketAddr,
-    #[arg(long, default_value = DEFAULT_FILEIN)]
-    filein: PathBuf,
+    #[arg(long = "filein", value_name = "FILE")]
+    fileins: Vec<PathBuf>,
     #[arg(long, default_value = "alice", value_name = "IDENTITY")]
     actor: String,
 }
@@ -58,10 +62,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
-    let source = fs::read_to_string(&cli.filein)
-        .map_err(|error| format!("failed to read {}: {error}", cli.filein.display()))?;
     let mut runner = SourceRunner::new_empty();
-    runner.run_filein(&source).map_err(format_source_error)?;
+    for filein in fileins_or_defaults(&cli.fileins) {
+        let source = fs::read_to_string(&filein)
+            .map_err(|error| format!("failed to read {}: {error}", filein.display()))?;
+        runner.run_filein(&source).map_err(format_source_error)?;
+    }
     let actor_name = actor_name(&cli.actor)?;
     let actor_symbol = Symbol::intern(&actor_name);
     let actor = runner
@@ -84,6 +90,13 @@ fn run() -> Result<(), String> {
         },
         None,
     )
+}
+
+fn fileins_or_defaults(fileins: &[PathBuf]) -> Vec<PathBuf> {
+    if fileins.is_empty() {
+        return DEFAULT_FILEINS.iter().map(PathBuf::from).collect();
+    }
+    fileins.to_vec()
 }
 
 #[derive(Clone, Debug)]
@@ -193,7 +206,7 @@ fn read_socket_loop(
         if bytes == 0 {
             return Ok(());
         }
-        let line = line.trim_end_matches(['\r', '\n']).trim().to_owned();
+        let line = line.trim_end_matches(['\r', '\n']).to_owned();
         let outcomes = state
             .driver
             .lock()
@@ -233,15 +246,11 @@ fn handle_command(
     actor_name: &str,
     command: &str,
 ) -> Result<bool, String> {
-    let Some(source) = command_source(command) else {
-        send_line(state, endpoint, "I do not understand that.")?;
-        return Ok(false);
-    };
-    if source == CommandSource::Quit {
+    if is_quit_command(command) {
         send_line(state, endpoint, "Goodbye.")?;
         return Ok(true);
     }
-    let source = source.into_mica_source(actor_name);
+    let source = command_invocation_source(actor_name, command);
     state
         .driver
         .lock()
@@ -252,50 +261,16 @@ fn handle_command(
     Ok(false)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum CommandSource {
-    Look,
-    North,
-    GetCoin,
-    PutCoinBox,
-    Say(String),
-    Quit,
+fn command_invocation_source(actor_name: &str, command: &str) -> String {
+    format!(
+        ":command(actor: #{actor_name}, endpoint: #endpoint, line: {})",
+        mica_string(command)
+    )
 }
 
-impl CommandSource {
-    fn into_mica_source(self, actor_name: &str) -> String {
-        let actor = format!("#{actor_name}");
-        match self {
-            Self::Look => format!(":look(actor: {actor})"),
-            Self::North => format!(":north(actor: {actor})"),
-            Self::GetCoin => format!(":get(actor: {actor}, item: #coin)"),
-            Self::PutCoinBox => format!(":put(actor: {actor}, item: #coin, container: #box)"),
-            Self::Say(message) => {
-                format!(":say(actor: {actor}, message: {})", mica_string(&message))
-            }
-            Self::Quit => unreachable!("quit is handled before source generation"),
-        }
-    }
-}
-
-fn command_source(command: &str) -> Option<CommandSource> {
+fn is_quit_command(command: &str) -> bool {
     let command = command.trim();
-    if command.is_empty() {
-        return None;
-    }
-    let lower = command.to_ascii_lowercase();
-    match lower.as_str() {
-        "look" | "l" => Some(CommandSource::Look),
-        "north" | "n" => Some(CommandSource::North),
-        "get coin" | "take coin" => Some(CommandSource::GetCoin),
-        "put coin box" | "put coin in box" => Some(CommandSource::PutCoinBox),
-        "quit" | "exit" => Some(CommandSource::Quit),
-        _ => lower
-            .strip_prefix("say ")
-            .map(str::trim)
-            .filter(|message| !message.is_empty())
-            .map(|message| CommandSource::Say(message.to_owned())),
-    }
+    command.eq_ignore_ascii_case("quit") || command.eq_ignore_ascii_case("exit")
 }
 
 fn open_endpoint(state: &ServerState, endpoint: Identity, actor: Identity) -> Result<(), String> {
@@ -430,20 +405,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_command_sources() {
-        assert_eq!(command_source("look"), Some(CommandSource::Look));
-        assert_eq!(command_source("n"), Some(CommandSource::North));
-        assert_eq!(command_source("get coin"), Some(CommandSource::GetCoin));
+    fn builds_command_invocation_source() {
         assert_eq!(
-            command_source("put coin in box"),
-            Some(CommandSource::PutCoinBox)
+            command_invocation_source("alice", "say hello"),
+            ":command(actor: #alice, endpoint: #endpoint, line: \"say hello\")"
         );
-        assert_eq!(
-            command_source("say hello"),
-            Some(CommandSource::Say("hello".to_owned()))
-        );
-        assert_eq!(command_source("quit"), Some(CommandSource::Quit));
-        assert_eq!(command_source(""), None);
+        assert!(is_quit_command("quit"));
+        assert!(is_quit_command("EXIT"));
+        assert!(!is_quit_command("look"));
     }
 
     #[test]
@@ -461,6 +430,12 @@ mod tests {
         let mut runner = SourceRunner::new_empty();
         runner
             .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/string.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
             .unwrap();
         let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
         let state = ServerState::new(CompioTaskDriverThread::spawn(runner).unwrap());
@@ -480,6 +455,10 @@ mod tests {
 
         let line = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(line, "hello");
+        assert!(!handle_command(&state, endpoint, "alice", "dance").unwrap());
+
+        let line = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(line, "I do not understand that.");
         let _ = state.driver.lock().unwrap().close_endpoint(endpoint);
     }
 

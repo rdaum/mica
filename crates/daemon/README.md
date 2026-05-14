@@ -8,9 +8,11 @@ effects written back to the matching socket. Its purpose is to pressure-test
 the endpoint/session model before committing to a larger daemon, IPC, or
 multi-protocol architecture.
 
-The daemon currently files in a Mica source file at startup, defaults to
-`examples/mud-core.mica`, and maps a small line command surface onto Mica verb
-invocations.
+The daemon currently files in Mica source files at startup. By default it loads
+`examples/mud-core.mica`, `examples/string.mica`, and
+`examples/mud-command-parser.mica`. Line input is submitted to the in-core
+`:command(...)` verb; the Rust transport only keeps connection-control commands
+such as `quit`.
 
 Try it with:
 

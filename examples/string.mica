@@ -1,0 +1,13 @@
+// String utility surface for example fileins.
+//
+// The current implementation intentionally keeps this file thin. The runtime
+// provides only low-level pieces needed by examples:
+//
+//   string_len(text)
+//   string_chars(text)
+//   string_slice(text, start, end)
+//   string_from_chars(chars)
+//   lower(text)
+//
+// Higher-level parsing policy should live in Mica source, not in Rust
+// transports.

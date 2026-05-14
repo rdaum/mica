@@ -1463,6 +1463,11 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("assert_transient", assert_transient_builtin)
         .with_builtin("retract_transient", retract_transient_builtin)
         .with_builtin("drop_transient_scope", drop_transient_scope_builtin)
+        .with_builtin("string_len", string_len_builtin)
+        .with_builtin("string_chars", string_chars_builtin)
+        .with_builtin("string_slice", string_slice_builtin)
+        .with_builtin("string_from_chars", string_from_chars_builtin)
+        .with_builtin("lower", lower_builtin)
 }
 
 fn emit_builtin(
@@ -1492,6 +1497,102 @@ fn tasks_builtin(
         return Err(invalid_builtin_call("tasks", "expected tasks()"));
     }
     Ok(Value::list(context.task_snapshot().iter().cloned()))
+}
+
+fn string_len_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "string_len",
+            "expected string_len(text)",
+        ));
+    }
+    let value = builtin_string_arg("string_len", args, 0)?;
+    Value::int(value.chars().count() as i64)
+        .map_err(|_| invalid_builtin_call("string_len", "string length is out of range"))
+}
+
+fn string_chars_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "string_chars",
+            "expected string_chars(text)",
+        ));
+    }
+    let value = builtin_string_arg("string_chars", args, 0)?;
+    Ok(Value::list(
+        value.chars().map(|ch| Value::string(ch.to_string())),
+    ))
+}
+
+fn string_slice_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 3 {
+        return Err(invalid_builtin_call(
+            "string_slice",
+            "expected string_slice(text, start, end)",
+        ));
+    }
+    let value = builtin_string_arg("string_slice", args, 0)?;
+    let start = builtin_usize_arg("string_slice", args, 1)?;
+    let end = builtin_usize_arg("string_slice", args, 2)?;
+    Ok(string_slice_chars(&value, start, end)
+        .map(Value::string)
+        .unwrap_or_else(Value::nothing))
+}
+
+fn string_from_chars_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "string_from_chars",
+            "expected string_from_chars(chars)",
+        ));
+    }
+    let chars = builtin_char_list_arg("string_from_chars", args, 0)?;
+    Ok(Value::string(chars.into_iter().collect::<String>()))
+}
+
+fn lower_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("lower", "expected lower(text)"));
+    }
+    Ok(Value::string(
+        builtin_string_arg("lower", args, 0)?.to_lowercase(),
+    ))
+}
+
+fn string_slice_chars(value: &str, start: usize, end: usize) -> Option<&str> {
+    if start > end {
+        return None;
+    }
+    let char_len = value.chars().count();
+    if end > char_len {
+        return None;
+    }
+    let start_byte = value
+        .char_indices()
+        .nth(start)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len());
+    let end_byte = value
+        .char_indices()
+        .nth(end)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len());
+    Some(&value[start_byte..end_byte])
 }
 
 fn actor_builtin(
@@ -2230,6 +2331,44 @@ fn builtin_identity_arg(
         .ok_or_else(|| invalid_builtin_call(name, "expected identity argument"))
 }
 
+fn builtin_string_arg(name: &str, args: &[Value], index: usize) -> Result<String, RuntimeError> {
+    args.get(index)
+        .and_then(|value| value.with_str(str::to_owned))
+        .ok_or_else(|| invalid_builtin_call(name, "expected string argument"))
+}
+
+fn builtin_char_list_arg(
+    name: &str,
+    args: &[Value],
+    index: usize,
+) -> Result<Vec<char>, RuntimeError> {
+    args.get(index)
+        .and_then(|value| {
+            value.with_list(|values| {
+                values
+                    .iter()
+                    .map(|value| {
+                        value.with_str(|text| {
+                            let mut chars = text.chars();
+                            let ch = chars.next()?;
+                            chars.next().is_none().then_some(ch)
+                        })?
+                    })
+                    .collect::<Option<Vec<_>>>()
+            })
+        })
+        .flatten()
+        .ok_or_else(|| invalid_builtin_call(name, "expected single-character string list argument"))
+}
+
+fn builtin_usize_arg(name: &str, args: &[Value], index: usize) -> Result<usize, RuntimeError> {
+    let Some(value) = args.get(index).and_then(Value::as_int) else {
+        return Err(invalid_builtin_call(name, "expected integer argument"));
+    };
+    usize::try_from(value)
+        .map_err(|_| invalid_builtin_call(name, "integer argument is out of range"))
+}
+
 fn builtin_arity_arg(name: &str, args: &[Value], index: usize) -> Result<u16, RuntimeError> {
     let Some(arity) = args.get(index).and_then(Value::as_int) else {
         return Err(invalid_builtin_call(name, "expected integer arity"));
@@ -2575,6 +2714,39 @@ mod tests {
     }
 
     #[test]
+    fn runner_string_primitives_support_character_level_munging() {
+        let mut runner = SourceRunner::new_empty();
+
+        assert!(matches!(
+            runner.run_source("return string_len(\"hé\")").unwrap().outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::int(2).unwrap()
+        ));
+        assert!(matches!(
+            runner.run_source("return string_chars(\"ab\")").unwrap().outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([Value::string("a"), Value::string("b")])
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return string_slice(\"héllo\", 1, 4)")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("éll")
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return string_from_chars([\"h\", \"é\"])")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("hé")
+        ));
+        assert!(matches!(
+            runner.run_source("return lower(\"North\")").unwrap().outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("north")
+        ));
+    }
+
+    #[test]
     fn runner_submit_source_as_exposes_context_and_drains_emissions() {
         let mut runner = SourceRunner::new_empty();
         runner.run_source("make_relation(:GrantEffect, 1)").unwrap();
@@ -2648,6 +2820,51 @@ mod tests {
         assert_eq!(emissions.len(), 1);
         assert_eq!(emissions[0].target, alice);
         assert_eq!(emissions[0].value, Value::string("hello"));
+    }
+
+    #[test]
+    fn runner_mud_command_parser_runs_in_mica() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/string.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
+            .unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let endpoint = SYSTEM_ENDPOINT;
+
+        let report = runner
+            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"say hello\")")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].target, alice);
+        assert_eq!(emissions[0].value, Value::string("hello"));
+
+        let report = runner
+            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"dance\")")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].target, endpoint);
+        assert_eq!(
+            emissions[0].value,
+            Value::string("I do not understand that.")
+        );
     }
 
     #[test]
