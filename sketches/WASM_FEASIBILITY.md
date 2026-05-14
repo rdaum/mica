@@ -48,7 +48,8 @@ It exports smoke functions that deliberately retain:
 
 - projected relation store creation and mutation;
 - Mica source compilation;
-- register VM execution against `ProjectedStore`.
+- register VM execution against `ProjectedStore`;
+- client-only builtin dispatch through `ClientBuiltinContext`.
 
 Commands run:
 
@@ -65,7 +66,7 @@ cargo build --release -p mica-browser --target wasm32-unknown-unknown
 Release artefact size:
 
 ```text
-target/wasm32-unknown-unknown/release/mica_browser.wasm: 831312 bytes
+target/wasm32-unknown-unknown/release/mica_browser.wasm: 848601 bytes
 ```
 
 This is an unstripped, un-`wasm-opt`ed release build. No WASM size tooling was
@@ -80,23 +81,24 @@ Measured exports:
 ```text
 mica_browser_abi_version() -> 1
 mica_browser_projected_store_smoke() -> 1
-mica_browser_compile_vm_smoke() -> 10
+mica_browser_compile_vm_smoke() -> 11
 ```
 
 One run of 1,000 calls each:
 
 ```text
-sum 11000
-projected_ms_per_call 0.0013937589999999994
-compile_vm_ms_per_call 0.010615288999999997
+sum 12000
+projected_ms_per_call 0.001347581999999999
+compile_vm_ms_per_call 0.011092045000000002
 ```
 
 These numbers are only smoke-level evidence. The compile/VM function compiles a
-tiny source fragment that asserts `Name(#lamp, "brass lamp")` and queries it
-back through `one Name(#lamp, ?name)`, all against `ProjectedStore`. The
-projected-store function creates one relation and does one functional replace.
-They show that the package is viable in a browser-class WebAssembly engine, not
-that realistic UI or rule workloads are fast enough yet.
+tiny source fragment that calls a client builtin, writes
+`Name(#lamp, "brass lamp")` through `ProjectedStore`, emits an effect, and
+queries it back through `one Name(#lamp, ?name)`. The projected-store function
+creates one relation and does one functional replace. They show that the package
+is viable in a browser-class WebAssembly engine, not that realistic UI or rule
+workloads are fast enough yet.
 
 ## Browser Smoke Timing
 
@@ -108,10 +110,10 @@ Browser results:
 ```text
 abi 1
 projected 1
-compileVm 10
-byteLength 831312
-projected_ms_per_call 0.005
-compile_vm_ms_per_call 0.047
+compileVm 11
+byteLength 848601
+projected_ms_per_call 0.01
+compile_vm_ms_per_call 0.076
 ```
 
 The browser result is slower than the Node result, but still comfortably small
@@ -123,6 +125,6 @@ WASM artefact.
 ## Remaining Design Work
 
 The VM can now execute bytecode over either a server transaction host or a
-projected workspace host. The next browser/runtime split is builtin policy:
-browser-hosted code should get a deliberately small client builtin surface
-rather than the server runtime builtin registry.
+projected workspace host, and the projected host has a separate client builtin
+surface. The next browser/runtime split is deciding which standard client
+builtins belong in the browser package instead of ad hoc test registration.

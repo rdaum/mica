@@ -17,7 +17,8 @@ use mica_relation_kernel::{
 };
 use mica_var::{Identity, Symbol, Value};
 use mica_vm::{
-    AuthorityContext, ProgramResolver, ProjectedVmHostContext, RegisterVm, VmHostResponse,
+    AuthorityContext, ClientBuiltinContext, ClientBuiltinRegistry, ProgramResolver,
+    ProjectedVmHostContext, RegisterVm, RuntimeError, VmHostResponse,
 };
 use std::sync::Arc;
 
@@ -68,9 +69,10 @@ fn compile_vm_smoke() -> Option<i64> {
     let lamp = Identity::new(0x201)?;
     let context = CompileContext::new()
         .with_relation("Name", relation)
-        .with_identity("lamp", lamp);
+        .with_identity("lamp", lamp)
+        .with_runtime_function("client_note");
     let compiled = compile_source(
-        "assert Name(#lamp, \"brass lamp\")\nreturn one Name(#lamp, ?name)",
+        "client_note(#lamp, \"brass lamp\")\nreturn one Name(#lamp, ?name)",
         &context,
     )
     .ok()?;
@@ -86,12 +88,35 @@ fn compile_vm_smoke() -> Option<i64> {
         .ok()?;
     let mut authority = AuthorityContext::root();
     let resolver = ProgramResolver::new();
+    let builtins = ClientBuiltinRegistry::new().with_builtin(
+        "client_note",
+        move |context: &mut ClientBuiltinContext<'_>, args: &[Value]| {
+            if args.len() != 2 {
+                return Err(RuntimeError::InvalidBuiltinCall {
+                    name: Symbol::intern("client_note"),
+                    message: "client_note expects target identity and name".to_owned(),
+                });
+            }
+            let target = args[0]
+                .as_identity()
+                .ok_or_else(|| RuntimeError::InvalidEffectTarget(args[0].clone()))?;
+            context.replace_functional_tuple(
+                relation,
+                Tuple::from([args[0].clone(), args[1].clone()]),
+            )?;
+            context.emit(target, args[1].clone())?;
+            Ok(Value::nothing())
+        },
+    );
     let mut pending_effects = Vec::new();
     let mut host =
-        ProjectedVmHostContext::new(&mut store, &mut authority, &resolver, &mut pending_effects);
+        ProjectedVmHostContext::new(&mut store, &mut authority, &resolver, &mut pending_effects)
+            .with_builtins(&builtins);
     let mut vm = RegisterVm::new(Arc::new(compiled.program));
     match vm.run_until_host_response(&mut host, 1_000, 8).ok()? {
-        VmHostResponse::Complete(value) => value.with_str(|value| value.len() as i64),
+        VmHostResponse::Complete(value) => {
+            value.with_str(|value| value.len() as i64 + pending_effects.len() as i64)
+        }
         _ => None,
     }
 }
@@ -103,6 +128,6 @@ mod tests {
     #[test]
     fn browser_smokes_retain_compiler_vm_and_projected_store() {
         assert_eq!(projected_store_smoke(), Some(1));
-        assert_eq!(compile_vm_smoke(), Some(10));
+        assert_eq!(compile_vm_smoke(), Some(11));
     }
 }

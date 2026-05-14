@@ -12,9 +12,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    AuthorityContext, BuiltinRegistry, CatchHandler, Emission, ErrorField, Instruction, ListItem,
-    Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeContext, RuntimeError,
-    RuntimeUnaryOp, SuspendKind,
+    AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
+    Emission, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
+    RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{
     ComposedTransactionRead, RelationRead, RelationWorkspace, Transaction, TransientStore, Tuple,
@@ -296,7 +296,9 @@ pub struct ProjectedVmHostContext<'ctx, W> {
     workspace: &'ctx mut W,
     authority: &'ctx mut AuthorityContext,
     resolver: &'ctx ProgramResolver,
+    builtins: Option<&'ctx ClientBuiltinRegistry>,
     pending_effects: &'ctx mut Vec<Emission>,
+    runtime_context: RuntimeContext,
 }
 
 impl<'ctx, W> ProjectedVmHostContext<'ctx, W> {
@@ -310,8 +312,20 @@ impl<'ctx, W> ProjectedVmHostContext<'ctx, W> {
             workspace,
             authority,
             resolver,
+            builtins: None,
             pending_effects,
+            runtime_context: RuntimeContext::default(),
         }
+    }
+
+    pub fn with_builtins(mut self, builtins: &'ctx ClientBuiltinRegistry) -> Self {
+        self.builtins = Some(builtins);
+        self
+    }
+
+    pub fn with_runtime_context(mut self, runtime_context: RuntimeContext) -> Self {
+        self.runtime_context = runtime_context;
+        self
     }
 }
 
@@ -388,8 +402,19 @@ impl<W: RelationWorkspace> VmHost for ProjectedVmHostContext<'_, W> {
             .resolve(self, program_bytes_relation, program_id)
     }
 
-    fn call_builtin(&mut self, name: Symbol, _args: &[Value]) -> Result<Value, RuntimeError> {
-        Err(RuntimeError::UnknownBuiltin { name })
+    fn call_builtin(&mut self, name: Symbol, args: &[Value]) -> Result<Value, RuntimeError> {
+        let builtin = self
+            .builtins
+            .and_then(|builtins| builtins.get(name))
+            .ok_or(RuntimeError::UnknownBuiltin { name })?;
+        let workspace: &mut dyn RelationWorkspace = self.workspace;
+        let mut context = ClientBuiltinContext::new(
+            workspace,
+            self.authority,
+            self.pending_effects,
+            self.runtime_context,
+        );
+        builtin.call(&mut context, args)
     }
 }
 
