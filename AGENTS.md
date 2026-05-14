@@ -35,7 +35,7 @@ This is a Rust Cargo workspace:
 crates/
 ├── var/              # one-word values, heap values, identities, symbols, caps
 ├── relation-kernel/  # MVCC relation store, rules, dispatch support, providers
-├── runtime/          # register VM, tasks, scheduler, authority, effects
+├── runtime/          # register VM, tasks, task manager, authority, effects
 ├── compiler/         # parser, HIR, lowering, bytecode compilation
 └── runner/           # filein/fileout, builtins, examples, CLI/REPL integration
 ```

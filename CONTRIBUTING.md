@@ -48,7 +48,7 @@ crate boundaries as meaningful:
 - `mica-var`: compact value representation.
 - `mica-relation-kernel`: relations, transactions, rules, queries, and
   dispatch matching.
-- `mica-runtime`: register VM, scheduler, tasks, builtins, and effects.
+- `mica-runtime`: register VM, task manager, tasks, builtins, and effects.
 - `mica-compiler`: lexer, parser, lowering, semantic analysis, and bytecode
   compilation.
 - `mica-runner`: REPL, filein runner, builtins, and rendered reports.

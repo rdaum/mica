@@ -229,8 +229,8 @@ Mica is an early Rust prototype. The current tree has:
 - a compact value layer;
 - a relation kernel with base facts, transactions, indexes, catalogue metadata,
   and derived rules;
-- a virtual machine (register-based) runtime
-- a task scheduler (based roughly on mooR's) that manages transaction and execution lifecycle 
+- a virtual machine (register-based) runtime;
+- a task manager that manages transaction and execution lifecycle;
 - compiler for a growing Mica language surface;
 - role-based method dispatch;
 - a "filein" syntax for bringing in state-as-initial-blueprint;
@@ -261,7 +261,7 @@ cargo test --workspace
 - [`crates/var`](crates/var/README.md): Mica value representation.
 - [`crates/relation-kernel`](crates/relation-kernel/README.md): relation
   storage, transactions, rules, dispatch matching, and catalogue facts.
-- [`crates/runtime`](crates/runtime/README.md): register VM, scheduler, tasks,
+- [`crates/runtime`](crates/runtime/README.md): register VM, task manager, tasks,
   builtins, and effects.
 - [`crates/compiler`](crates/compiler/README.md): lexer, parser, lowering,
   semantic analysis, and bytecode compilation.

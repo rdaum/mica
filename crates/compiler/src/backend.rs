@@ -23,7 +23,7 @@ use mica_relation_kernel::{
 };
 use mica_runtime::{
     CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, QueryBinding, Register,
-    RuntimeBinaryOp, RuntimeUnaryOp, Scheduler, SchedulerError, TaskId, TaskOutcome,
+    RuntimeBinaryOp, RuntimeUnaryOp, TaskId, TaskManager, TaskManagerError, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use std::cmp::Ordering;
@@ -61,10 +61,10 @@ pub fn compile_semantic(
 pub fn submit_source_task(
     source: &str,
     context: &CompileContext,
-    scheduler: &mut Scheduler,
+    task_manager: &mut TaskManager,
 ) -> Result<SubmittedSourceTask, SourceTaskError> {
     let compiled = compile_source(source, context)?;
-    let (task_id, outcome) = scheduler.submit(Arc::new(compiled.program.clone()))?;
+    let (task_id, outcome) = task_manager.submit(Arc::new(compiled.program.clone()))?;
     Ok(SubmittedSourceTask {
         compiled,
         task_id,
@@ -380,7 +380,7 @@ pub enum CompileError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceTaskError {
     Compile(CompileError),
-    Scheduler(SchedulerError),
+    TaskManager(TaskManagerError),
 }
 
 impl From<CompileError> for SourceTaskError {
@@ -389,9 +389,9 @@ impl From<CompileError> for SourceTaskError {
     }
 }
 
-impl From<SchedulerError> for SourceTaskError {
-    fn from(value: SchedulerError) -> Self {
-        Self::Scheduler(value)
+impl From<TaskManagerError> for SourceTaskError {
+    fn from(value: TaskManagerError) -> Self {
+        Self::TaskManager(value)
     }
 }
 
@@ -2781,7 +2781,7 @@ mod tests {
     use super::*;
     use mica_relation_kernel::{ConflictPolicy, RelationKernel, RelationMetadata, Tuple};
     use mica_runtime::{
-        BuiltinContext, BuiltinRegistry, Emission, RuntimeError, Scheduler, TaskOutcome,
+        BuiltinContext, BuiltinRegistry, Emission, RuntimeError, TaskManager, TaskOutcome,
     };
     use std::sync::Arc;
 
@@ -2883,7 +2883,7 @@ mod tests {
     fn compiled_task_catches_raised_error_values() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "try\n\
                raise E_NOT_PORTABLE, \"That cannot be taken.\", :lamp\n\
@@ -2891,7 +2891,7 @@ mod tests {
                return err\n\
              end",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -2913,7 +2913,7 @@ mod tests {
     fn compiled_task_supports_code_first_catch_binding_and_error_fields() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "try\n\
                raise E_NOT_PORTABLE, \"That cannot be taken.\", :lamp\n\
@@ -2921,7 +2921,7 @@ mod tests {
                return (err.code == E_NOT_PORTABLE) and (err.message == \"That cannot be taken.\") and (err.value == :lamp)\n\
              end",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -2943,7 +2943,7 @@ mod tests {
             .create_relation(RelationMetadata::new(cleaned, Symbol::intern("Cleaned"), 1))
             .unwrap();
         let context = CompileContext::new().with_relation("Cleaned", cleaned);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "try\n\
                return 7\n\
@@ -2951,7 +2951,7 @@ mod tests {
                assert Cleaned(:done)\n\
              end",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -2964,7 +2964,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scheduler
+            task_manager
                 .kernel()
                 .snapshot()
                 .scan(cleaned, &[Some(Value::symbol(Symbol::intern("done")))])
@@ -2977,7 +2977,7 @@ mod tests {
     fn compiled_task_recovers_expression_errors_inline() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let fallback = recover raise E_NOT_PORTABLE\n\
              catch E_NOT_PORTABLE => 10\n\
@@ -2987,7 +2987,7 @@ mod tests {
              end\n\
              return fallback + untouched",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3005,14 +3005,14 @@ mod tests {
     fn compiled_task_supports_code_first_recover_binding() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let code = recover raise E_NO_EXIT, \"No exit.\"\n\
              catch E_NO_EXIT as err => err.code\n\
              end\n\
              return code == E_NO_EXIT",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3027,7 +3027,7 @@ mod tests {
     }
 
     #[test]
-    fn compiles_source_to_transactional_scheduler_task() {
+    fn compiles_source_to_transactional_task_manager() {
         let located_in = id(1);
         let alice = id(10);
         let room = id(11);
@@ -3043,14 +3043,14 @@ mod tests {
             .with_relation("LocatedIn", located_in)
             .with_identity("alice", alice)
             .with_identity("room", room);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let actor = #alice\n\
              assert LocatedIn(actor, #room)\n\
              require LocatedIn(actor, #room)\n\
              return true",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3062,7 +3062,7 @@ mod tests {
                 retries: 0,
             }
         );
-        let tuples = scheduler
+        let tuples = task_manager
             .kernel()
             .snapshot()
             .scan(
@@ -3100,18 +3100,18 @@ mod tests {
             .with_relation("Visible", visible)
             .with_identity("alice", alice)
             .with_identity("room", room);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "assert LocatedIn(#alice, #room)\n\
              require Visible(#alice, #room)\n\
              return true",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
         assert!(matches!(submitted.outcome, TaskOutcome::Aborted { .. }));
-        let tuples = scheduler
+        let tuples = task_manager
             .kernel()
             .snapshot()
             .scan(located_in, &[None, None])
@@ -3123,13 +3123,13 @@ mod tests {
     fn compiled_task_builds_and_indexes_collections() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let values = [10, 20, 30]\n\
              let labels = {:answer -> values[1]}\n\
              return labels[:answer]",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3147,14 +3147,14 @@ mod tests {
     fn compiled_task_slices_lists_with_ranges() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let values = [0, 1, 2, 3, 4]\n\
              let mid = values[1..3]\n\
              let tail = values[2.._]\n\
              return mid[0] + mid[1] + mid[2] + tail[0] + tail[1] + tail[2]",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3172,13 +3172,13 @@ mod tests {
     fn compiled_task_expands_list_splices() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let rest = [2, 3]\n\
              let values = [1, @rest, 4]\n\
              return values[0] + values[1] + values[2] + values[3]",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3196,12 +3196,12 @@ mod tests {
     fn compiled_task_runs_scatter_assignment_with_required_optional_and_rest_parts() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let [head, ?middle = 10, @tail] = [1, 2, 3, 4]\n\
              return head + middle + tail[0] + tail[1]",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3219,12 +3219,12 @@ mod tests {
     fn compiled_task_uses_scatter_optional_defaults_and_empty_rest() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let [head, ?middle = 10, @tail] = [1]\n\
              return (head == 1) and (middle == 10) and (tail[0] == nothing)",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3242,13 +3242,13 @@ mod tests {
     fn compiled_task_assigns_indexed_list_values() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let values = [10, 20, 30]\n\
              values[1] = 99\n\
              return values[1]",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3266,14 +3266,14 @@ mod tests {
     fn compiled_task_assigns_indexed_map_values() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let counts = {:a -> 1}\n\
              counts[:a] = 2\n\
              counts[:b] = 3\n\
              return counts[:a] + counts[:b]",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3291,7 +3291,7 @@ mod tests {
     fn compiled_task_assigns_indexed_values_inside_loop() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let values = [1, 2, 3]\n\
              for index, item in values\n\
@@ -3299,7 +3299,7 @@ mod tests {
              end\n\
              return values[0] + values[1] + values[2]",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3330,12 +3330,12 @@ mod tests {
         let context = CompileContext::new()
             .with_dot_relation("name", name)
             .with_identity("lamp", lamp);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "#lamp.name = \"brass lamp\"\n\
              return #lamp.name",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3348,7 +3348,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scheduler
+            task_manager
                 .kernel()
                 .snapshot()
                 .scan(name, &[Some(Value::identity(lamp)), None])
@@ -3376,14 +3376,14 @@ mod tests {
     fn compiled_task_runs_scalar_arithmetic() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let a = 20 - 3 * 4\n\
              let b = a / 2\n\
              let c = b % 3\n\
              return -c",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3402,12 +3402,12 @@ mod tests {
         let context = CompileContext::new().with_identity("target", id(99));
         let kernel = RelationKernel::new();
         let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
-        let mut scheduler = Scheduler::new(kernel).with_builtins(Arc::new(builtins));
+        let mut task_manager = TaskManager::new(kernel).with_builtins(Arc::new(builtins));
         let submitted = submit_source_task(
             "let value = emit_first_arg(#target, \"hello\")\n\
              return value",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3425,13 +3425,13 @@ mod tests {
     fn compiled_builtin_call_fails_at_runtime_when_unregistered() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
-        let error =
-            submit_source_task("return missing_builtin()", &context, &mut scheduler).unwrap_err();
+        let mut task_manager = TaskManager::new(kernel);
+        let error = submit_source_task("return missing_builtin()", &context, &mut task_manager)
+            .unwrap_err();
 
         assert!(matches!(
             error,
-            SourceTaskError::Scheduler(mica_runtime::SchedulerError::Task(
+            SourceTaskError::TaskManager(mica_runtime::TaskManagerError::Task(
                 mica_runtime::TaskError::Runtime(RuntimeError::UnknownBuiltin { name })
             )) if name == Symbol::intern("missing_builtin")
         ));
@@ -3441,7 +3441,7 @@ mod tests {
     fn compiled_task_calls_named_local_functions() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "fn double(x)\n\
                return x * 2\n\
@@ -3451,7 +3451,7 @@ mod tests {
              end\n\
              return add(double(10), 1)",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3469,12 +3469,12 @@ mod tests {
     fn compiled_task_calls_let_bound_function_literals() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let triple = fn(x) => x * 3\n\
              return triple(7)",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3492,14 +3492,14 @@ mod tests {
     fn compiled_task_calls_functions_with_optional_params() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "fn pick(value, ?fallback = 10)\n\
                return value + fallback\n\
              end\n\
              return pick(1) + pick(1, 2)",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3517,7 +3517,7 @@ mod tests {
     fn compiled_task_calls_functions_with_rest_params() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "fn sum(first, @rest)\n\
                return first + rest[0] + rest[1]\n\
@@ -3531,7 +3531,7 @@ mod tests {
                0\n\
              end",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3549,7 +3549,7 @@ mod tests {
     fn compiled_task_expands_direct_call_argument_splices() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "fn sum3(a, b, c)\n\
                return a + b + c\n\
@@ -3557,7 +3557,7 @@ mod tests {
              let rest = [2, 3]\n\
              return sum3(1, @rest)",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3575,7 +3575,7 @@ mod tests {
     fn compiled_task_combines_optional_rest_and_call_splices() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "fn total(first, ?second = 10, @rest)\n\
                return first + second + rest[0] + rest[1]\n\
@@ -3583,7 +3583,7 @@ mod tests {
              let extra = [3, 4]\n\
              return total(1, 2, @extra)",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3640,7 +3640,7 @@ mod tests {
     fn compiled_task_runs_while_loops() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let i = 0\n\
              let total = 0\n\
@@ -3650,7 +3650,7 @@ mod tests {
              end\n\
              return total",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3668,7 +3668,7 @@ mod tests {
     fn compiled_task_runs_break_and_continue() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let i = 0\n\
              let total = 0\n\
@@ -3684,7 +3684,7 @@ mod tests {
              end\n\
              return total",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3702,7 +3702,7 @@ mod tests {
     fn compiled_task_runs_for_loop_over_list_values() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let total = 0\n\
              for item in [1, 2, 3]\n\
@@ -3710,7 +3710,7 @@ mod tests {
              end\n\
              return total",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3728,7 +3728,7 @@ mod tests {
     fn compiled_task_runs_for_loop_over_list_indexes_and_values() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let total = 0\n\
              for index, item in [4, 5]\n\
@@ -3736,7 +3736,7 @@ mod tests {
              end\n\
              return total",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3754,7 +3754,7 @@ mod tests {
     fn compiled_task_runs_for_loop_over_map_keys_and_values() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let total = 0\n\
              for key, value in {:a -> 10, :b -> 20}\n\
@@ -3764,7 +3764,7 @@ mod tests {
              end\n\
              return total",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3782,7 +3782,7 @@ mod tests {
     fn compiled_task_runs_for_loop_break_and_continue() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let total = 0\n\
              for item in [1, 2, 3, 4, 5]\n\
@@ -3796,7 +3796,7 @@ mod tests {
              end\n\
              return total",
             &context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -3905,11 +3905,11 @@ mod tests {
             .with_method_relations(method_relations)
             .with_identity("alice", alice)
             .with_identity("coin", coin);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             ":get(actor: #alice, item: #coin)",
             &invoke_context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
         assert_eq!(
@@ -3921,7 +3921,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scheduler
+            task_manager
                 .kernel()
                 .snapshot()
                 .scan(
@@ -3992,11 +3992,11 @@ mod tests {
             .with_method_relations(method_relations)
             .with_identity("alice", alice)
             .with_identity("coin", coin);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             ":inspect(actor: #alice, item: #coin)",
             &invoke_context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -4009,7 +4009,7 @@ mod tests {
             }
         );
         assert!(
-            scheduler
+            task_manager
                 .resolver()
                 .contains(&Value::identity(inspect_program))
         );
@@ -4060,9 +4060,10 @@ mod tests {
         let invoke_context = CompileContext::new()
             .with_method_relations(method_relations)
             .with_identity("alice", alice);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted =
-            submit_source_task(":count(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":count(actor: #alice)", &invoke_context, &mut task_manager)
+                .unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4073,7 +4074,7 @@ mod tests {
             }
         );
         assert!(
-            scheduler
+            task_manager
                 .resolver()
                 .contains(&Value::identity(count_program))
         );
@@ -4124,9 +4125,9 @@ mod tests {
         let invoke_context = CompileContext::new()
             .with_method_relations(method_relations)
             .with_identity("alice", alice);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted =
-            submit_source_task(":sum(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":sum(actor: #alice)", &invoke_context, &mut task_manager).unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4137,7 +4138,7 @@ mod tests {
             }
         );
         assert!(
-            scheduler
+            task_manager
                 .resolver()
                 .contains(&Value::identity(count_program))
         );
@@ -4184,9 +4185,9 @@ mod tests {
         let invoke_context = CompileContext::new()
             .with_method_relations(method_relations)
             .with_identity("alice", alice);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted =
-            submit_source_task(":calc(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":calc(actor: #alice)", &invoke_context, &mut task_manager).unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4197,7 +4198,7 @@ mod tests {
             }
         );
         assert!(
-            scheduler
+            task_manager
                 .resolver()
                 .contains(&Value::identity(calc_program))
         );
@@ -4246,9 +4247,10 @@ mod tests {
         let invoke_context = CompileContext::new()
             .with_method_relations(method_relations)
             .with_identity("alice", alice);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted =
-            submit_source_task(":update(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":update(actor: #alice)", &invoke_context, &mut task_manager)
+                .unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4259,7 +4261,7 @@ mod tests {
             }
         );
         assert!(
-            scheduler
+            task_manager
                 .resolver()
                 .contains(&Value::identity(update_program))
         );
@@ -4332,11 +4334,11 @@ mod tests {
             .with_method_relations(method_relations)
             .with_identity("alice", alice)
             .with_identity("coin", coin);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             ":rename(actor: #alice, item: #coin)",
             &invoke_context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -4349,7 +4351,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scheduler
+            task_manager
                 .kernel()
                 .snapshot()
                 .scan(name, &[Some(Value::identity(coin)), None])
@@ -4360,7 +4362,7 @@ mod tests {
             ])]
         );
         assert!(
-            scheduler
+            task_manager
                 .resolver()
                 .contains(&Value::identity(rename_program))
         );
@@ -4410,9 +4412,9 @@ mod tests {
         let invoke_context = CompileContext::new()
             .with_method_relations(method_relations)
             .with_identity("alice", alice);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted =
-            submit_source_task(":calc(actor: #alice)", &invoke_context, &mut scheduler).unwrap();
+            submit_source_task(":calc(actor: #alice)", &invoke_context, &mut task_manager).unwrap();
 
         assert_eq!(
             submitted.outcome,
@@ -4423,7 +4425,7 @@ mod tests {
             }
         );
         assert!(
-            scheduler
+            task_manager
                 .resolver()
                 .contains(&Value::identity(calc_program))
         );
@@ -4514,11 +4516,11 @@ mod tests {
             .with_method_relations(method_relations)
             .with_identity("alice", alice)
             .with_identity("coin", coin);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             ":get(actor: #alice, item: #coin)",
             &invoke_context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
 
@@ -4530,14 +4532,18 @@ mod tests {
                 retries: 0,
             }
         );
-        assert!(scheduler.resolver().contains(&Value::identity(get_program)));
         assert!(
-            scheduler
+            task_manager
+                .resolver()
+                .contains(&Value::identity(get_program))
+        );
+        assert!(
+            task_manager
                 .resolver()
                 .contains(&Value::identity(mark_program))
         );
         assert_eq!(
-            scheduler
+            task_manager
                 .kernel()
                 .snapshot()
                 .scan(
@@ -4635,11 +4641,11 @@ mod tests {
             .with_method_relations(method_relations)
             .with_identity("alice", alice)
             .with_identity("coin", coin);
-        let mut scheduler = Scheduler::new(kernel);
+        let mut task_manager = TaskManager::new(kernel);
         let first = submit_source_task(
             ":take(actor: #alice, item: #coin)",
             &invoke_context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
         assert_eq!(
@@ -4651,7 +4657,7 @@ mod tests {
             }
         );
         assert_eq!(
-            scheduler
+            task_manager
                 .kernel()
                 .snapshot()
                 .scan(
@@ -4666,7 +4672,7 @@ mod tests {
         let second = submit_source_task(
             ":take(actor: #alice, item: #coin)",
             &invoke_context,
-            &mut scheduler,
+            &mut task_manager,
         )
         .unwrap();
         assert_eq!(

@@ -15,11 +15,11 @@ instructions, exception handling, function calls, dispatch, and builtin calls.
 - `src/vm.rs`: register VM state, frames, instruction execution, and host
   response boundaries.
 - `src/task.rs`: task lifecycle, transaction boundaries, retries, and limits.
-- `src/scheduler.rs`: task submission, immediate completion, effect logging,
+- `src/task_manager.rs`: task submission, immediate completion, effect logging,
   suspended tasks, and kernel ownership.
 - `src/builtin.rs`: builtin function registry and builtin call context.
-- `src/error.rs`: runtime, scheduler, and task error types.
-- `src/tests.rs`: runtime and scheduler tests.
+- `src/error.rs`: runtime, task manager, and task error types.
+- `src/tests.rs`: runtime and task manager tests.
 
 ## Role In Mica
 

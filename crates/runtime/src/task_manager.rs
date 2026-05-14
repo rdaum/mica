@@ -21,13 +21,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SchedulerError {
+pub enum TaskManagerError {
     UnknownTask(TaskId),
     TaskAlreadyCompleted(TaskId),
     Task(TaskError),
 }
 
-impl From<TaskError> for SchedulerError {
+impl From<TaskError> for TaskManagerError {
     fn from(value: TaskError) -> Self {
         Self::Task(value)
     }
@@ -64,7 +64,7 @@ impl EffectLog {
     }
 }
 
-pub struct Scheduler {
+pub struct TaskManager {
     kernel: RelationKernel,
     next_task_id: TaskId,
     suspended: HashMap<TaskId, SuspendedTask>,
@@ -75,7 +75,7 @@ pub struct Scheduler {
     builtins: Arc<BuiltinRegistry>,
 }
 
-impl Scheduler {
+impl TaskManager {
     pub fn new(kernel: RelationKernel) -> Self {
         Self {
             kernel,
@@ -131,7 +131,7 @@ impl Scheduler {
     pub fn submit(
         &mut self,
         program: Arc<Program>,
-    ) -> Result<(TaskId, TaskOutcome), SchedulerError> {
+    ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
         self.submit_with_authority(program, AuthorityContext::root())
     }
 
@@ -139,7 +139,7 @@ impl Scheduler {
         &mut self,
         program: Arc<Program>,
         authority: AuthorityContext,
-    ) -> Result<(TaskId, TaskOutcome), SchedulerError> {
+    ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
         let task_id = self.allocate_task_id();
         let mut task = Task::new_with_authority(
             task_id,
@@ -172,7 +172,7 @@ impl Scheduler {
         &mut self,
         task_id: TaskId,
         authority: AuthorityContext,
-    ) -> Result<TaskOutcome, SchedulerError> {
+    ) -> Result<TaskOutcome, TaskManagerError> {
         self.resume_with_value(task_id, authority, Value::nothing())
     }
 
@@ -181,14 +181,14 @@ impl Scheduler {
         task_id: TaskId,
         authority: AuthorityContext,
         value: Value,
-    ) -> Result<TaskOutcome, SchedulerError> {
+    ) -> Result<TaskOutcome, TaskManagerError> {
         if self.completed.contains_key(&task_id) {
-            return Err(SchedulerError::TaskAlreadyCompleted(task_id));
+            return Err(TaskManagerError::TaskAlreadyCompleted(task_id));
         }
         let suspended = self
             .suspended
             .remove(&task_id)
-            .ok_or(SchedulerError::UnknownTask(task_id))?;
+            .ok_or(TaskManagerError::UnknownTask(task_id))?;
         let mut task = Task::from_state_with_authority(
             task_id,
             &self.kernel,

@@ -23,7 +23,7 @@ use mica_relation_kernel::{
 use mica_runtime::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, Effect, Emission, Instruction, Operand, Program, Register, RuntimeError,
-    Scheduler, TaskId, TaskOutcome,
+    TaskId, TaskManager, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -74,7 +74,7 @@ struct SourceDeclarations {
 
 pub struct SourceRunner {
     context: CompileContext,
-    scheduler: Scheduler,
+    task_manager: TaskManager,
     next_method_identity_id: u64,
 }
 
@@ -130,7 +130,7 @@ impl SourceRunner {
         let next_method_identity_id = next_generated_method_identity_id(&kernel);
         let mut runner = Self {
             context: CompileContext::new().with_method_relations(method_relations()),
-            scheduler: Scheduler::new(kernel).with_builtins(Arc::new(default_builtins())),
+            task_manager: TaskManager::new(kernel).with_builtins(Arc::new(default_builtins())),
             next_method_identity_id,
         };
         runner.refresh_context_from_catalog();
@@ -183,7 +183,7 @@ impl SourceRunner {
             let context = self.context_for_execution(principal, actor, endpoint);
             let compiled = compile_semantic(semantic, &context)?;
             let (task_id, outcome) = self
-                .scheduler
+                .task_manager
                 .submit_with_authority(Arc::new(compiled.program), authority)?;
             self.refresh_context_from_catalog();
             return Ok(SubmittedTask { task_id, outcome });
@@ -191,16 +191,16 @@ impl SourceRunner {
 
         if let Some(installation) = self.install_methods_from_source(&source)? {
             let value = installed_method_value(&installation);
-            let (task_id, outcome) = self.scheduler.complete_immediate(value);
+            let (task_id, outcome) = self.task_manager.complete_immediate(value);
             self.refresh_context_from_catalog();
             return Ok(SubmittedTask { task_id, outcome });
         }
 
         if let Some(installation) =
-            install_rules_from_source(&source, &self.context, self.scheduler.kernel())?
+            install_rules_from_source(&source, &self.context, self.task_manager.kernel())?
         {
             let value = installed_rule_value(&installation.rules);
-            let (task_id, outcome) = self.scheduler.complete_immediate(value);
+            let (task_id, outcome) = self.task_manager.complete_immediate(value);
             self.refresh_context_from_catalog();
             return Ok(SubmittedTask { task_id, outcome });
         }
@@ -208,7 +208,7 @@ impl SourceRunner {
         let context = self.context_for_execution(principal, actor, endpoint);
         let compiled = compile_source(&source, &context)?;
         let (task_id, outcome) = self
-            .scheduler
+            .task_manager
             .submit_with_authority(Arc::new(compiled.program), authority)?;
         self.refresh_context_from_catalog();
         Ok(SubmittedTask { task_id, outcome })
@@ -238,7 +238,7 @@ impl SourceRunner {
         )
         .map_err(CompileError::from)?;
         let (task_id, outcome) = self
-            .scheduler
+            .task_manager
             .submit_with_authority(Arc::new(program), authority)?;
         self.refresh_context_from_catalog();
         Ok(SubmittedTask { task_id, outcome })
@@ -253,7 +253,7 @@ impl SourceRunner {
             ));
         };
         let outcome = self
-            .scheduler
+            .task_manager
             .resume_with_value(task_id, request.authority, value)
             .map_err(SourceTaskError::from)?;
         self.refresh_context_from_catalog();
@@ -266,7 +266,7 @@ impl SourceRunner {
         endpoint: Identity,
         source: impl Into<String>,
     ) -> Result<SubmittedTask, SourceTaskError> {
-        let authority = authority_for_actor(self.scheduler.kernel(), actor)?;
+        let authority = authority_for_actor(self.task_manager.kernel(), actor)?;
         self.submit_source(TaskRequest {
             principal: None,
             actor: Some(actor),
@@ -283,7 +283,7 @@ impl SourceRunner {
         selector: Symbol,
         roles: Vec<(Symbol, Value)>,
     ) -> Result<SubmittedTask, SourceTaskError> {
-        let authority = authority_for_actor(self.scheduler.kernel(), actor)?;
+        let authority = authority_for_actor(self.task_manager.kernel(), actor)?;
         self.submit_invocation(TaskRequest {
             principal: None,
             actor: Some(actor),
@@ -294,7 +294,7 @@ impl SourceRunner {
     }
 
     pub fn drain_emissions(&mut self) -> Vec<Effect> {
-        self.scheduler.drain_emissions()
+        self.task_manager.drain_emissions()
     }
 
     fn report(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
@@ -331,7 +331,7 @@ impl SourceRunner {
         source: &str,
     ) -> Result<RunReport, SourceTaskError> {
         let actor_id = self.actor_identity(actor)?;
-        let authority = authority_for_actor(self.scheduler.kernel(), actor_id)?;
+        let authority = authority_for_actor(self.task_manager.kernel(), actor_id)?;
         let submitted = self.submit_source(TaskRequest {
             principal: None,
             actor: Some(actor_id),
@@ -344,7 +344,7 @@ impl SourceRunner {
 
     pub fn resume_as(&mut self, actor: Symbol, task_id: u64) -> Result<RunReport, SourceTaskError> {
         let actor_id = self.actor_identity(actor)?;
-        let authority = authority_for_actor(self.scheduler.kernel(), actor_id)?;
+        let authority = authority_for_actor(self.task_manager.kernel(), actor_id)?;
         let outcome = self.resume_task(TaskRequest {
             principal: None,
             actor: Some(actor_id),
@@ -402,14 +402,14 @@ impl SourceRunner {
 
         for (name, arity) in declarations.relations {
             if let Some((relation, existing_arity)) =
-                relation_named(self.scheduler.kernel(), Symbol::intern(&name))
+                relation_named(self.task_manager.kernel(), Symbol::intern(&name))
                 && existing_arity == arity
             {
                 owned_relations.insert(relation);
             }
         }
 
-        let mut tx = self.scheduler.kernel().begin();
+        let mut tx = self.task_manager.kernel().begin();
         for identity_name in declarations.identities {
             if let Some(identity) = identity_named_in_tx(&tx, Symbol::intern(&identity_name))
                 .map_err(CompileError::from)?
@@ -461,11 +461,11 @@ impl SourceRunner {
     }
 
     pub fn fileout_unit(&self, unit: Symbol) -> Result<String, SourceTaskError> {
-        Ok(fileout_unit_source(self.scheduler.kernel(), unit).map_err(CompileError::from)?)
+        Ok(fileout_unit_source(self.task_manager.kernel(), unit).map_err(CompileError::from)?)
     }
 
     fn actor_identity(&self, actor: Symbol) -> Result<Identity, SourceTaskError> {
-        identity_named_in_kernel(self.scheduler.kernel(), actor)?.ok_or_else(|| {
+        identity_named_in_kernel(self.task_manager.kernel(), actor)?.ok_or_else(|| {
             unsupported_runner_error(
                 NodeId(0),
                 None,
@@ -522,7 +522,7 @@ impl SourceRunner {
         let mut install_context = self.context.clone();
         let mut next_method_identity_id = self.next_method_identity_id;
         assign_generated_verb_identities(&mut semantic, next_method_identity_id)?;
-        let mut install_tx = self.scheduler.kernel().begin();
+        let mut install_tx = self.task_manager.kernel().begin();
         for item in &semantic.hir.items {
             let HirItem::Method { identity, .. } = item else {
                 continue;
@@ -564,7 +564,7 @@ impl SourceRunner {
     }
 
     fn refresh_context_from_catalog(&mut self) {
-        let snapshot = self.scheduler.kernel().snapshot();
+        let snapshot = self.task_manager.kernel().snapshot();
         for metadata in snapshot.relation_metadata() {
             if let Some(name) = metadata.name().name() {
                 self.context.define_relation(name, metadata.id());
@@ -580,7 +580,7 @@ impl SourceRunner {
     }
 
     fn retract_source_unit(&mut self, unit: Symbol) -> Result<(), SourceTaskError> {
-        let snapshot = self.scheduler.kernel().snapshot();
+        let snapshot = self.task_manager.kernel().snapshot();
         let owned_rules = snapshot
             .scan(
                 source_owns_rule_relation(),
@@ -591,13 +591,13 @@ impl SourceRunner {
             .filter_map(|tuple| tuple.values().get(1).and_then(Value::as_identity))
             .collect::<Vec<_>>();
         for rule in owned_rules {
-            self.scheduler
+            self.task_manager
                 .kernel()
                 .disable_rule(rule)
                 .map_err(CompileError::from)?;
         }
 
-        let mut tx = self.scheduler.kernel().begin();
+        let mut tx = self.task_manager.kernel().begin();
         for ownership in snapshot
             .scan(
                 source_owns_fact_relation(),
@@ -639,7 +639,7 @@ impl SourceRunner {
     }
 
     fn source_projection(&self) -> Result<SourceProjection, SourceTaskError> {
-        let snapshot = self.scheduler.kernel().snapshot();
+        let snapshot = self.task_manager.kernel().snapshot();
         let facts = snapshot
             .extensional_facts()
             .map_err(CompileError::from)?
@@ -663,7 +663,7 @@ impl SourceRunner {
     }
 
     fn identity_names(&self) -> BTreeMap<Identity, String> {
-        let snapshot = self.scheduler.kernel().snapshot();
+        let snapshot = self.task_manager.kernel().snapshot();
         snapshot
             .scan(named_identity_relation(), &[None, None])
             .unwrap_or_default()
@@ -687,7 +687,7 @@ impl SourceRunner {
     }
 
     fn relation_names(&self) -> BTreeMap<Identity, String> {
-        let snapshot = self.scheduler.kernel().snapshot();
+        let snapshot = self.task_manager.kernel().snapshot();
         snapshot
             .relation_metadata()
             .filter_map(|metadata| Some((metadata.id(), metadata.name().name()?.to_owned())))
@@ -2275,7 +2275,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let (task_id, first) = runner.scheduler.submit(program).unwrap();
+        let (task_id, first) = runner.task_manager.submit(program).unwrap();
         assert!(matches!(first, TaskOutcome::Suspended { .. }));
 
         let outcome = runner
@@ -2432,7 +2432,7 @@ mod tests {
         ));
         assert_eq!(
             runner
-                .scheduler
+                .task_manager
                 .kernel()
                 .snapshot()
                 .scan(relation, &[Some(Value::int(1).unwrap())])
@@ -2477,7 +2477,7 @@ mod tests {
         ));
         assert_eq!(
             runner
-                .scheduler
+                .task_manager
                 .kernel()
                 .snapshot()
                 .scan(

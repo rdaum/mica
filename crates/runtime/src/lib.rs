@@ -22,8 +22,8 @@ mod builtin;
 mod effect;
 mod error;
 mod program;
-mod scheduler;
 mod task;
+mod task_manager;
 mod vm;
 
 #[cfg(test)]
@@ -37,6 +37,6 @@ pub use program::{
     CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver,
     QueryBinding, Register, RuntimeBinaryOp, RuntimeUnaryOp, SuspendKind,
 };
-pub use scheduler::{Effect, EffectLog, Scheduler, SchedulerError, SuspendedTask};
 pub use task::{Task, TaskId, TaskLimits, TaskOutcome};
+pub use task_manager::{Effect, EffectLog, SuspendedTask, TaskManager, TaskManagerError};
 pub use vm::{Frame, RegisterVm, VmHostResponse, VmState};

@@ -14,8 +14,8 @@
 use crate::{
     AuthorityContext, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp, Effect,
     ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, QueryBinding, Register,
-    RuntimeBinaryOp, RuntimeError, Scheduler, SchedulerError, SuspendKind, Task, TaskError,
-    TaskLimits, TaskOutcome,
+    RuntimeBinaryOp, RuntimeError, SuspendKind, Task, TaskError, TaskLimits, TaskManager,
+    TaskManagerError, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -789,9 +789,9 @@ fn suspend_value_returns_supplied_resume_value() {
         )
         .unwrap(),
     );
-    let mut scheduler = Scheduler::new(kernel);
+    let mut task_manager = TaskManager::new(kernel);
 
-    let (task_id, first) = scheduler.submit(program).unwrap();
+    let (task_id, first) = task_manager.submit(program).unwrap();
     assert_eq!(
         first,
         TaskOutcome::Suspended {
@@ -801,7 +801,7 @@ fn suspend_value_returns_supplied_resume_value() {
         }
     );
 
-    let second = scheduler
+    let second = task_manager
         .resume_with_value(task_id, AuthorityContext::root(), strv("resumed"))
         .unwrap();
     assert_eq!(
@@ -834,9 +834,9 @@ fn read_commits_effects_and_returns_supplied_input() {
         )
         .unwrap(),
     );
-    let mut scheduler = Scheduler::new(kernel);
+    let mut task_manager = TaskManager::new(kernel);
 
-    let (task_id, first) = scheduler.submit(program).unwrap();
+    let (task_id, first) = task_manager.submit(program).unwrap();
     assert_eq!(
         first,
         TaskOutcome::Suspended {
@@ -846,7 +846,7 @@ fn read_commits_effects_and_returns_supplied_input() {
         }
     );
 
-    let second = scheduler
+    let second = task_manager
         .resume_with_value(task_id, AuthorityContext::root(), strv("north"))
         .unwrap();
     assert_eq!(
@@ -963,7 +963,7 @@ fn explicit_rollback_retry_stops_at_retry_limit() {
 }
 
 #[test]
-fn scheduler_records_completed_task_and_delivers_effects() {
+fn task_manager_records_completed_task_and_delivers_effects() {
     let kernel = kernel_with_world_relations();
     let program = Arc::new(
         Program::new(
@@ -980,9 +980,9 @@ fn scheduler_records_completed_task_and_delivers_effects() {
         )
         .unwrap(),
     );
-    let mut scheduler = Scheduler::new(kernel);
+    let mut task_manager = TaskManager::new(kernel);
 
-    let (task_id, outcome) = scheduler.submit(program).unwrap();
+    let (task_id, outcome) = task_manager.submit(program).unwrap();
     assert_eq!(
         outcome,
         TaskOutcome::Complete {
@@ -991,10 +991,10 @@ fn scheduler_records_completed_task_and_delivers_effects() {
             retries: 0,
         }
     );
-    assert_eq!(scheduler.completed(task_id), Some(&outcome));
-    assert!(scheduler.suspended(task_id).is_none());
+    assert_eq!(task_manager.completed(task_id), Some(&outcome));
+    assert!(task_manager.suspended(task_id).is_none());
     assert_eq!(
-        scheduler.effects().effects(),
+        task_manager.effects().effects(),
         &[Effect {
             task_id,
             target: rel(EFFECT_TARGET),
@@ -1004,7 +1004,7 @@ fn scheduler_records_completed_task_and_delivers_effects() {
 }
 
 #[test]
-fn scheduler_parks_and_resumes_suspended_task() {
+fn task_manager_parks_and_resumes_suspended_task() {
     let kernel = kernel_with_world_relations();
     let program = Arc::new(
         Program::new(
@@ -1028,9 +1028,9 @@ fn scheduler_parks_and_resumes_suspended_task() {
         )
         .unwrap(),
     );
-    let mut scheduler = Scheduler::new(kernel);
+    let mut task_manager = TaskManager::new(kernel);
 
-    let (task_id, first) = scheduler.submit(program).unwrap();
+    let (task_id, first) = task_manager.submit(program).unwrap();
     assert_eq!(
         first,
         TaskOutcome::Suspended {
@@ -1039,13 +1039,13 @@ fn scheduler_parks_and_resumes_suspended_task() {
             retries: 0,
         }
     );
-    assert_eq!(scheduler.suspended_len(), 1);
+    assert_eq!(task_manager.suspended_len(), 1);
     assert_eq!(
-        scheduler.suspended(task_id).map(|task| task.kind()),
+        task_manager.suspended(task_id).map(|task| task.kind()),
         Some(&SuspendKind::TimedMillis(1))
     );
     assert_eq!(
-        scheduler.effects().effects(),
+        task_manager.effects().effects(),
         &[Effect {
             task_id,
             target: rel(EFFECT_TARGET),
@@ -1053,7 +1053,7 @@ fn scheduler_parks_and_resumes_suspended_task() {
         }]
     );
 
-    let second = scheduler
+    let second = task_manager
         .resume_with_authority(task_id, AuthorityContext::root())
         .unwrap();
     assert_eq!(
@@ -1064,10 +1064,10 @@ fn scheduler_parks_and_resumes_suspended_task() {
             retries: 0,
         }
     );
-    assert_eq!(scheduler.suspended_len(), 0);
-    assert_eq!(scheduler.completed(task_id), Some(&second));
+    assert_eq!(task_manager.suspended_len(), 0);
+    assert_eq!(task_manager.completed(task_id), Some(&second));
     assert_eq!(
-        scheduler.effects().effects(),
+        task_manager.effects().effects(),
         &[
             Effect {
                 task_id,
@@ -1084,7 +1084,7 @@ fn scheduler_parks_and_resumes_suspended_task() {
 }
 
 #[test]
-fn scheduler_does_not_deliver_pending_effects_from_abort() {
+fn task_manager_does_not_deliver_pending_effects_from_abort() {
     let kernel = kernel_with_world_relations();
     let program = Arc::new(
         Program::new(
@@ -1101,9 +1101,9 @@ fn scheduler_does_not_deliver_pending_effects_from_abort() {
         )
         .unwrap(),
     );
-    let mut scheduler = Scheduler::new(kernel);
+    let mut task_manager = TaskManager::new(kernel);
 
-    let (task_id, outcome) = scheduler.submit(program).unwrap();
+    let (task_id, outcome) = task_manager.submit(program).unwrap();
     assert_eq!(
         outcome,
         TaskOutcome::Aborted {
@@ -1112,12 +1112,12 @@ fn scheduler_does_not_deliver_pending_effects_from_abort() {
             retries: 0,
         }
     );
-    assert_eq!(scheduler.completed(task_id), Some(&outcome));
-    assert!(scheduler.effects().effects().is_empty());
+    assert_eq!(task_manager.completed(task_id), Some(&outcome));
+    assert!(task_manager.effects().effects().is_empty());
 }
 
 #[test]
-fn scheduler_can_refresh_authority_when_resuming_suspended_task() {
+fn task_manager_can_refresh_authority_when_resuming_suspended_task() {
     let kernel = kernel_with_world_relations();
     let program = Arc::new(
         Program::new(
@@ -1137,9 +1137,9 @@ fn scheduler_can_refresh_authority_when_resuming_suspended_task() {
         )
         .unwrap(),
     );
-    let mut scheduler = Scheduler::new(kernel);
+    let mut task_manager = TaskManager::new(kernel);
 
-    let (task_id, first) = scheduler
+    let (task_id, first) = task_manager
         .submit_with_authority(program, AuthorityContext::empty())
         .unwrap();
     assert_eq!(
@@ -1153,7 +1153,9 @@ fn scheduler_can_refresh_authority_when_resuming_suspended_task() {
 
     let mut refreshed = AuthorityContext::empty();
     refreshed.mint(CapabilityGrant::relation(CapabilityOp::Write, rel(2)));
-    let second = scheduler.resume_with_authority(task_id, refreshed).unwrap();
+    let second = task_manager
+        .resume_with_authority(task_id, refreshed)
+        .unwrap();
 
     assert_eq!(
         second,
@@ -1164,7 +1166,7 @@ fn scheduler_can_refresh_authority_when_resuming_suspended_task() {
         }
     );
     assert_eq!(
-        scheduler
+        task_manager
             .kernel()
             .snapshot()
             .scan(rel(2), &[Some(int(200)), None])
@@ -1174,7 +1176,7 @@ fn scheduler_can_refresh_authority_when_resuming_suspended_task() {
 }
 
 #[test]
-fn scheduler_rejects_unknown_and_completed_resume() {
+fn task_manager_rejects_unknown_and_completed_resume() {
     let kernel = kernel_with_world_relations();
     let program = Arc::new(
         Program::new(
@@ -1185,20 +1187,20 @@ fn scheduler_rejects_unknown_and_completed_resume() {
         )
         .unwrap(),
     );
-    let mut scheduler = Scheduler::new(kernel);
+    let mut task_manager = TaskManager::new(kernel);
 
     assert_eq!(
-        scheduler
+        task_manager
             .resume_with_authority(999, AuthorityContext::root())
             .unwrap_err(),
-        SchedulerError::UnknownTask(999)
+        TaskManagerError::UnknownTask(999)
     );
-    let (task_id, _) = scheduler.submit(program).unwrap();
+    let (task_id, _) = task_manager.submit(program).unwrap();
     assert_eq!(
-        scheduler
+        task_manager
             .resume_with_authority(task_id, AuthorityContext::root())
             .unwrap_err(),
-        SchedulerError::TaskAlreadyCompleted(task_id)
+        TaskManagerError::TaskAlreadyCompleted(task_id)
     );
 }
 
@@ -1779,9 +1781,9 @@ fn suspension_inside_callee_resumes_full_activation_stack() {
         )
         .unwrap(),
     );
-    let mut scheduler = Scheduler::new(kernel);
+    let mut task_manager = TaskManager::new(kernel);
 
-    let (task_id, first) = scheduler.submit(caller).unwrap();
+    let (task_id, first) = task_manager.submit(caller).unwrap();
     assert_eq!(
         first,
         TaskOutcome::Suspended {
@@ -1790,10 +1792,10 @@ fn suspension_inside_callee_resumes_full_activation_stack() {
             retries: 0,
         }
     );
-    assert_eq!(scheduler.suspended(task_id).unwrap().frame_count(), 2);
+    assert_eq!(task_manager.suspended(task_id).unwrap().frame_count(), 2);
 
     assert_eq!(
-        scheduler
+        task_manager
             .resume_with_authority(task_id, AuthorityContext::root())
             .unwrap(),
         TaskOutcome::Complete {

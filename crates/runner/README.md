@@ -46,7 +46,7 @@ cargo run --bin mica
 The runner is where live authoring currently becomes visible. It creates an
 empty kernel, installs builtins like `make_identity` and `make_relation`, keeps
 the compiler context in sync with catalogue facts, installs rules and methods,
-and submits ordinary source chunks to the scheduler.
+and submits ordinary source chunks to the task manager.
 
 ## Licence
 
