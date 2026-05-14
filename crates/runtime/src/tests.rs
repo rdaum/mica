@@ -815,6 +815,58 @@ fn suspend_value_returns_supplied_resume_value() {
 }
 
 #[test]
+fn commit_value_commits_and_resumes_with_nothing() {
+    let kernel = kernel_with_world_relations();
+    let item = int(200);
+    let actor = int(100);
+    let program = Arc::new(
+        Program::new(
+            1,
+            [
+                Instruction::ReplaceFunctional {
+                    relation: rel(2),
+                    values: vec![v(item.clone()), v(actor.clone())],
+                },
+                Instruction::CommitValue { dst: reg(0) },
+                Instruction::Return { value: r(0) },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut task_manager = TaskManager::new(kernel);
+
+    let (task_id, first) = task_manager.submit(program).unwrap();
+    assert_eq!(
+        first,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Commit,
+            effects: vec![],
+            retries: 0,
+        }
+    );
+    assert_eq!(
+        task_manager
+            .kernel()
+            .snapshot()
+            .scan(rel(2), &[Some(item.clone()), None])
+            .unwrap(),
+        vec![Tuple::from([item, actor])]
+    );
+
+    let second = task_manager
+        .resume_with_authority(task_id, AuthorityContext::root())
+        .unwrap();
+    assert_eq!(
+        second,
+        TaskOutcome::Complete {
+            value: Value::nothing(),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
 fn read_commits_effects_and_returns_supplied_input() {
     let kernel = kernel_with_world_relations();
     let program = Arc::new(
@@ -1343,6 +1395,7 @@ fn program_artifact_round_trips_suspend_and_read() {
                 dst: reg(1),
                 metadata: Some(r(0)),
             },
+            Instruction::CommitValue { dst: reg(0) },
             Instruction::Return { value: r(1) },
         ],
     )

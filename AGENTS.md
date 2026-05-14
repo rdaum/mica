@@ -37,7 +37,8 @@ crates/
 ├── relation-kernel/  # MVCC relation store, rules, dispatch support, providers
 ├── runtime/          # register VM, tasks, task manager, authority, effects
 ├── compiler/         # parser, HIR, lowering, bytecode compilation
-└── runner/           # filein/fileout, builtins, examples, CLI/REPL integration
+├── runner/           # filein/fileout, builtins, examples, CLI/REPL integration
+└── driver/           # compio task driver, wakeups, input, emissions
 ```
 
 Supporting material:

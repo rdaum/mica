@@ -52,6 +52,7 @@ crate boundaries as meaningful:
 - `mica-compiler`: lexer, parser, lowering, semantic analysis, and bytecode
   compilation.
 - `mica-runner`: REPL, filein runner, builtins, and rendered reports.
+- `mica-driver`: compio task driver, wakeups, input, and emissions.
 
 Keep design notes, crate READMEs, and examples aligned with implemented syntax.
 When documenting future syntax or semantics, mark it clearly as planned rather

@@ -2337,6 +2337,45 @@ mod tests {
     }
 
     #[test]
+    fn runner_commit_yields_and_resumes_with_nothing() {
+        let mut runner = SourceRunner::new_empty();
+        let submitted = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return commit()".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Commit,
+                ..
+            }
+        ));
+
+        let outcome = runner
+            .resume_task(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Continuation {
+                    task_id: submitted.task_id,
+                    value: Value::nothing(),
+                },
+            })
+            .unwrap();
+
+        assert!(matches!(
+            outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::nothing()
+        ));
+    }
+
+    #[test]
     fn runner_read_waits_for_input_and_returns_continuation_value() {
         let mut runner = SourceRunner::new_empty();
         let submitted = runner

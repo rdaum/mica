@@ -231,6 +231,9 @@ pub enum Instruction {
         dst: Register,
         duration: Option<Operand>,
     },
+    CommitValue {
+        dst: Register,
+    },
     Read {
         dst: Register,
         metadata: Option<Operand>,
@@ -569,6 +572,7 @@ fn validate_instruction(
             validate_register(register_count, *dst)?;
             validate_operands(register_count, duration.iter())
         }
+        Instruction::CommitValue { dst } => validate_register(register_count, *dst),
     }
 }
 
@@ -654,6 +658,7 @@ const INST_SCAN_BINDINGS: u8 = 34;
 const INST_ONE: u8 = 35;
 const INST_SUSPEND_VALUE: u8 = 36;
 const INST_READ: u8 = 37;
+const INST_COMMIT_VALUE: u8 = 38;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -914,6 +919,11 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_SUSPEND_VALUE);
             write_register(out, *dst);
             write_optional_operand(out, duration.as_ref())
+        }
+        Instruction::CommitValue { dst } => {
+            out.push(INST_COMMIT_VALUE);
+            write_register(out, *dst);
+            Ok(())
         }
         Instruction::Read { dst, metadata } => {
             out.push(INST_READ);
@@ -1399,6 +1409,9 @@ impl<'a> ByteReader<'a> {
             INST_SUSPEND_VALUE => Instruction::SuspendValue {
                 dst: self.read_register()?,
                 duration: self.read_optional_operand()?,
+            },
+            INST_COMMIT_VALUE => Instruction::CommitValue {
+                dst: self.read_register()?,
             },
             INST_READ => Instruction::Read {
                 dst: self.read_register()?,

@@ -609,6 +609,11 @@ impl RegisterVm {
                 self.state.pending_resume = Some(dst);
                 Ok(VmHostResponse::Suspend(kind))
             }
+            Instruction::CommitValue { dst } => {
+                self.advance_ip()?;
+                self.state.pending_resume = Some(dst);
+                Ok(VmHostResponse::Suspend(SuspendKind::Commit))
+            }
             Instruction::Read { dst, metadata } => {
                 let metadata = metadata
                     .as_ref()

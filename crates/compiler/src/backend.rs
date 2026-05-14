@@ -1690,6 +1690,7 @@ impl<'a> ProgramCompiler<'a> {
         args: &[HirArg],
     ) -> Result<Register, CompileError> {
         match name {
+            "commit" => return self.compile_commit_call(id, args),
             "suspend" => return self.compile_suspend_call(id, args),
             "read" => return self.compile_read_call(id, args),
             _ => {}
@@ -1708,6 +1709,23 @@ impl<'a> ProgramCompiler<'a> {
             name: Symbol::intern(name),
             args,
         });
+        Ok(dst)
+    }
+
+    fn compile_commit_call(
+        &mut self,
+        id: NodeId,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(id, "commit does not accept named arguments"));
+        }
+        self.ensure_no_arg_splices(args, "commit does not accept argument splices")?;
+        if !args.is_empty() {
+            return Err(self.unsupported(id, "commit expects no arguments"));
+        }
+        let dst = self.alloc_register();
+        self.emit(Instruction::CommitValue { dst });
         Ok(dst)
     }
 

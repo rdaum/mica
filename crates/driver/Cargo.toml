@@ -1,0 +1,14 @@
+[package]
+name = "mica-driver"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Compio-driven task driver for Mica"
+
+[dependencies]
+compio.workspace = true
+mica-compiler.workspace = true
+mica-runner.workspace = true
+mica-runtime.workspace = true
+mica-var.workspace = true
