@@ -1,7 +1,6 @@
 // String utility surface for example fileins.
 //
-// The current implementation intentionally keeps this file thin. The runtime
-// provides only low-level pieces needed by examples:
+// The runtime provides only low-level primitives:
 //
 //   string_len(text)
 //   string_chars(text)
@@ -9,5 +8,77 @@
 //   string_from_chars(chars)
 //   lower(text)
 //
-// Higher-level parsing policy should live in Mica source, not in Rust
-// transports.
+// The higher-level operations below are ordinary Mica verbs. Calls such as
+// split("a b") dispatch against the #string primitive prototype.
+
+verb trim(text @ #string)
+  let chars = string_chars(text)
+  let start = 0
+  let end_index = string_len(text)
+
+  while start < end_index && chars[start] == " "
+    start = start + 1
+  end
+
+  while end_index > start && chars[end_index - 1] == " "
+    end_index = end_index - 1
+  end
+
+  return string_slice(text, start, end_index)
+end
+
+verb split(text @ #string)
+  let words = []
+  let current = []
+
+  for ch in string_chars(trim(text))
+    if ch == " "
+      if current != []
+        words = [@words, string_from_chars(current)]
+        current = []
+      end
+    else
+      current = [@current, ch]
+    end
+  end
+
+  if current != []
+    words = [@words, string_from_chars(current)]
+  end
+
+  return words
+end
+
+verb join(parts @ #list, separator @ #string)
+  let out = []
+  let first = true
+
+  for part in parts
+    if first
+      first = false
+    else
+      for ch in string_chars(separator)
+        out = [@out, ch]
+      end
+    end
+
+    for ch in string_chars(part)
+      out = [@out, ch]
+    end
+  end
+
+  return string_from_chars(out)
+end
+
+verb starts_with(text @ #string, prefix @ #string)
+  string_len(prefix) <= string_len(text) || return false
+  return string_slice(text, 0, string_len(prefix)) == prefix
+end
+
+verb strip_prefix(text @ #string, prefix @ #string)
+  if starts_with(text, prefix)
+    return string_slice(text, string_len(prefix), string_len(text))
+  end
+
+  return nothing
+end

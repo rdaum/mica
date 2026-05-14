@@ -18,6 +18,7 @@ use crate::{
 };
 use mica_relation_kernel::{
     ComposedTransactionRead, RelationRead, Transaction, TransientStore, Tuple, applicable_methods,
+    applicable_positional_methods, ordered_params,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
@@ -627,14 +628,62 @@ impl RegisterVm {
                         method: method.clone(),
                     })?;
                 let program = host.resolver.resolve(host.tx, program_bytes, &program_id)?;
-                let mut params = host.tx.scan(relations.param, &[Some(method), None, None])?;
-                params.sort_by(|left, right| {
-                    compare_role_values(&left.values()[1], &right.values()[1])
-                });
+                let params = host
+                    .tx
+                    .scan(relations.param, &[Some(method), None, None, None])?;
+                let params = ordered_params(&params).ok_or_else(|| {
+                    RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
+                })?;
                 let args = params
                     .iter()
                     .filter_map(|param| role_env.get(&param.values()[1]).cloned())
                     .collect();
+                self.advance_ip()?;
+                self.state
+                    .frames
+                    .push(Frame::new(program, Some(dst), args)?);
+                Ok(VmHostResponse::Continue)
+            }
+            Instruction::PositionalDispatch {
+                dst,
+                relations,
+                program_relation,
+                program_bytes,
+                selector,
+                args,
+            } => {
+                if self.state.frames.len() >= max_call_depth {
+                    return Err(RuntimeError::MaxCallDepthExceeded {
+                        max_depth: max_call_depth,
+                    });
+                }
+                let selector = self.resolve_operand(&selector)?;
+                let args = args
+                    .iter()
+                    .map(|arg| self.resolve_operand(arg))
+                    .collect::<Result<Vec<_>, RuntimeError>>()?;
+                let methods =
+                    applicable_positional_methods(host.tx, relations, selector.clone(), &args)?
+                        .into_iter()
+                        .filter(|method| host.authority.can_invoke_method(method))
+                        .collect::<Vec<_>>();
+                let method = match methods.as_slice() {
+                    [] => return Err(RuntimeError::NoApplicableMethod { selector }),
+                    [method] => method.clone(),
+                    _ => {
+                        return Err(RuntimeError::AmbiguousDispatch { selector, methods });
+                    }
+                };
+                let program_rows = host
+                    .tx
+                    .scan(program_relation, &[Some(method.clone()), None])?;
+                let program_id = program_rows
+                    .first()
+                    .map(|row| row.values()[1].clone())
+                    .ok_or_else(|| RuntimeError::MissingMethodProgram {
+                        method: method.clone(),
+                    })?;
+                let program = host.resolver.resolve(host.tx, program_bytes, &program_id)?;
                 self.advance_ip()?;
                 self.state
                     .frames

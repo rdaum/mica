@@ -4,24 +4,9 @@
 // command vocabulary and maps text to ordinary Mica dispatches.
 
 verb command(actor @ #player, endpoint, line)
-  let text = lower(line)
-  let words = []
-  let current = []
-
-  for ch in string_chars(text)
-    if ch == " "
-      if current != []
-        words = [@words, string_from_chars(current)]
-        current = []
-      end
-    else
-      current = [@current, ch]
-    end
-  end
-
-  if current != []
-    words = [@words, string_from_chars(current)]
-  end
+  let raw = trim(line)
+  let text = lower(raw)
+  let words = split(text)
 
   if words == []
     emit(endpoint, "I do not understand that.")
@@ -29,23 +14,7 @@ verb command(actor @ #player, endpoint, line)
   end
 
   let command = words[0]
-  let message_start = nothing
-  let in_first_word = false
-  let after_first_word = false
-  let index = 0
-
-  for ch in string_chars(line)
-    if !after_first_word
-      if ch != " "
-        in_first_word = true
-      elseif in_first_word
-        after_first_word = true
-      end
-    elseif message_start == nothing && ch != " "
-      message_start = index
-    end
-    index = index + 1
-  end
+  let message = trim(string_slice(raw, string_len(command), string_len(raw)))
 
   if command == "look" || command == "l"
     return :look(actor: actor)
@@ -55,8 +24,8 @@ verb command(actor @ #player, endpoint, line)
     return :get(actor: actor, item: #coin)
   elseif words == ["put", "coin", "box"] || words == ["put", "coin", "in", "box"]
     return :put(actor: actor, item: #coin, container: #box)
-  elseif command == "say" && message_start != nothing
-    return :say(actor: actor, message: string_slice(line, message_start, string_len(line)))
+  elseif command == "say" && message != ""
+    return :say(actor: actor, message: message)
   else
     emit(endpoint, "I do not understand that.")
     return false

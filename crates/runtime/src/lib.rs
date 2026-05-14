@@ -36,7 +36,7 @@ use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
     RelationKernel, RelationMetadata, Tuple,
 };
-use mica_var::{Identity, Symbol, Value, ValueKind};
+use mica_var::{Identity, PRIMITIVE_PROTOTYPES, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -59,6 +59,34 @@ const ENDPOINT_RELATION_ID: u64 = 0x00df_ffff_ffff_fff5;
 const ENDPOINT_ACTOR_RELATION_ID: u64 = 0x00df_ffff_ffff_fff4;
 const ENDPOINT_PROTOCOL_RELATION_ID: u64 = 0x00df_ffff_ffff_fff3;
 const ENDPOINT_OPEN_RELATION_ID: u64 = 0x00df_ffff_ffff_fff2;
+
+const DEFAULT_BUILTIN_NAMES: &[&str] = &[
+    "emit",
+    "commit",
+    "suspend",
+    "read",
+    "make_relation",
+    "make_functional_relation",
+    "make_identity",
+    "rules",
+    "describe_rule",
+    "disable_rule",
+    "fileout",
+    "fileout_rules",
+    "tasks",
+    "actor",
+    "principal",
+    "endpoint",
+    "destroy_identity",
+    "assert_transient",
+    "retract_transient",
+    "drop_transient_scope",
+    "string_len",
+    "string_chars",
+    "string_slice",
+    "string_from_chars",
+    "lower",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileinMode {
@@ -662,6 +690,9 @@ impl SourceRunner {
     fn refresh_context_from_catalog(&mut self) {
         let snapshot = self.task_manager.kernel().snapshot();
         self.context = CompileContext::new().with_method_relations(method_relations());
+        for name in DEFAULT_BUILTIN_NAMES {
+            self.context.define_runtime_function(*name);
+        }
         for metadata in snapshot.relation_metadata() {
             if let Some(name) = metadata.name().name() {
                 self.context.define_relation(name, metadata.id());
@@ -1288,7 +1319,23 @@ fn bootstrap_kernel_with_provider(
     for metadata in endpoint_relation_metadata() {
         kernel.create_relation(metadata).unwrap();
     }
+    seed_primitive_prototype_identities(&kernel);
     kernel
+}
+
+fn seed_primitive_prototype_identities(kernel: &RelationKernel) {
+    let mut tx = kernel.begin();
+    for (name, identity) in PRIMITIVE_PROTOTYPES {
+        tx.assert(
+            named_identity_relation(),
+            Tuple::from([
+                Value::symbol(Symbol::intern(name)),
+                Value::identity(*identity),
+            ]),
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
 }
 
 fn next_generated_method_identity_id(kernel: &RelationKernel) -> u64 {
@@ -1390,7 +1437,7 @@ fn method_relation_metadata() -> Vec<RelationMetadata> {
             2,
         )
         .with_index([1, 0]),
-        RelationMetadata::new(param_relation(), Symbol::intern("Param"), 3).with_index([0, 1]),
+        RelationMetadata::new(param_relation(), Symbol::intern("Param"), 4).with_index([0, 1]),
         RelationMetadata::new(delegates_relation(), Symbol::intern("Delegates"), 3)
             .with_index([0, 2, 1]),
         RelationMetadata::new(
@@ -2743,6 +2790,38 @@ mod tests {
         assert!(matches!(
             runner.run_source("return lower(\"North\")").unwrap().outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("north")
+        ));
+    }
+
+    #[test]
+    fn runner_string_filein_installs_primitive_prototype_verbs() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../examples/string.mica"))
+            .unwrap();
+
+        assert!(matches!(
+            runner.run_source("return trim(\"  hello  \")").unwrap().outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("hello")
+        ));
+        assert!(matches!(
+            runner.run_source("return split(\"a  b\")").unwrap().outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([Value::string("a"), Value::string("b")])
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return join([\"a\", \"b\"], \"-\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("a-b")
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return strip_prefix(\"north\", \"no\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("rth")
         ));
     }
 

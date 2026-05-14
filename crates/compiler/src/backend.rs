@@ -26,8 +26,7 @@ use mica_vm::{
     CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, QueryBinding, Register,
     RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
 };
-use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub fn compile_source(
@@ -186,6 +185,7 @@ pub fn install_methods(
                         method.method.clone(),
                         param.role.clone(),
                         param.restriction.clone(),
+                        Value::int(i64::from(param.position)).unwrap(),
                     ]),
                 )?;
             }
@@ -228,6 +228,7 @@ pub struct InstalledParam {
     pub name: String,
     pub role: Value,
     pub restriction: Value,
+    pub position: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,6 +249,7 @@ pub struct CompileContext {
     dot_relations: HashMap<String, DotRelation>,
     identities: HashMap<String, Identity>,
     program_identities: HashMap<String, Identity>,
+    runtime_functions: HashSet<String>,
     method_relations: Option<MethodRelations>,
 }
 
@@ -276,6 +278,11 @@ impl CompileContext {
         self
     }
 
+    pub fn with_runtime_function(mut self, name: impl Into<String>) -> Self {
+        self.define_runtime_function(name);
+        self
+    }
+
     pub fn with_method_relations(mut self, method_relations: MethodRelations) -> Self {
         self.method_relations = Some(method_relations);
         self
@@ -298,6 +305,10 @@ impl CompileContext {
         self.program_identities.insert(method.into(), id);
     }
 
+    pub fn define_runtime_function(&mut self, name: impl Into<String>) {
+        self.runtime_functions.insert(name.into());
+    }
+
     pub fn relation(&self, name: &str) -> Option<RelationId> {
         self.relations.get(name).copied()
     }
@@ -312,6 +323,10 @@ impl CompileContext {
 
     pub fn program_identity(&self, method: &str) -> Option<Identity> {
         self.program_identities.get(method).copied()
+    }
+
+    pub fn is_runtime_function(&self, name: &str) -> bool {
+        self.runtime_functions.contains(name)
     }
 
     pub fn method_relations(&self) -> Option<MethodRelations> {
@@ -551,8 +566,7 @@ fn compile_installed_method(
             name: format!("{identity_name} program"),
         })
         .map(Value::identity)?;
-    let mut params = lower_installed_params(*id, semantic, context, params, clauses)?;
-    params.sort_by(|left, right| compare_role_values(&left.role, &right.role));
+    let params = lower_installed_params(*id, semantic, context, params, clauses)?;
 
     let mut compiler = ProgramCompiler::new(semantic, context);
     compiler.next_register = params.len() as u16;
@@ -574,16 +588,6 @@ fn compile_installed_method(
     })
 }
 
-fn compare_role_values(left: &Value, right: &Value) -> Ordering {
-    match (
-        left.as_symbol().and_then(Symbol::name),
-        right.as_symbol().and_then(Symbol::name),
-    ) {
-        (Some(left), Some(right)) => left.cmp(right),
-        _ => left.cmp(right),
-    }
-}
-
 fn lower_installed_params(
     id: NodeId,
     semantic: &SemanticProgram,
@@ -594,7 +598,8 @@ fn lower_installed_params(
     if !params.is_empty() {
         return params
             .iter()
-            .map(|param| {
+            .enumerate()
+            .map(|(position, param)| {
                 let restriction = match &param.restriction {
                     Some(restriction) => {
                         let identity = context.identity(restriction).ok_or_else(|| {
@@ -612,6 +617,11 @@ fn lower_installed_params(
                     name: param.name.clone(),
                     role: Value::symbol(Symbol::intern(&param.name)),
                     restriction,
+                    position: u16::try_from(position).map_err(|_| CompileError::Unsupported {
+                        node: id,
+                        span: semantic.span(id).cloned(),
+                        message: "method parameter count exceeds supported limit".to_owned(),
+                    })?,
                 })
             })
             .collect();
@@ -653,6 +663,13 @@ fn lower_installed_params(
                 name: name.to_owned(),
                 role: Value::symbol(Symbol::intern(name)),
                 restriction,
+                position: u16::try_from(installed.len()).map_err(|_| {
+                    CompileError::Unsupported {
+                        node: id,
+                        span: semantic.span(id).cloned(),
+                        message: "method parameter count exceeds supported limit".to_owned(),
+                    }
+                })?,
             });
         }
     }
@@ -1609,7 +1626,11 @@ impl<'a> ProgramCompiler<'a> {
         args: &[HirArg],
     ) -> Result<Register, CompileError> {
         if let HirExpr::ExternalRef { name, .. } = callee {
-            return self.compile_builtin_call(id, name, args);
+            return if self.context.is_runtime_function(name) {
+                self.compile_builtin_call(id, name, args)
+            } else {
+                self.compile_positional_dispatch(id, name, args)
+            };
         }
         let HirExpr::LocalRef { binding, .. } = callee else {
             return Err(self.unsupported(
@@ -1678,6 +1699,39 @@ impl<'a> ProgramCompiler<'a> {
         self.emit(Instruction::BuiltinCall {
             dst,
             name: Symbol::intern(name),
+            args,
+        });
+        Ok(dst)
+    }
+
+    fn compile_positional_dispatch(
+        &mut self,
+        id: NodeId,
+        name: &str,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        let method_relations = self
+            .context
+            .method_relations
+            .ok_or_else(|| self.unsupported(id, "method relation ids are not configured"))?;
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(
+                id,
+                "positional dispatch calls do not accept named arguments",
+            ));
+        }
+        self.ensure_no_arg_splices(args, "dispatch argument splices are not implemented yet")?;
+        let args = args
+            .iter()
+            .map(|arg| self.compile_arg_operand(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::PositionalDispatch {
+            dst,
+            relations: method_relations.dispatch,
+            program_relation: method_relations.method_program,
+            program_bytes: method_relations.program_bytes,
+            selector: Operand::Value(Value::symbol(Symbol::intern(name))),
             args,
         });
         Ok(dst)
@@ -1843,7 +1897,9 @@ impl<'a> ProgramCompiler<'a> {
         let false_target = self.instructions.len();
         self.emit(Instruction::Jump { target: 0 });
         let true_target = self.instructions.len();
+        let saved_returned = self.returned;
         let right = self.compile_expr_for_value(right)?;
+        self.returned = saved_returned;
         self.emit(Instruction::Move { dst, src: right });
         let end = self.instructions.len();
         self.patch_branch(branch, true_target, false_target)?;
@@ -1862,7 +1918,9 @@ impl<'a> ProgramCompiler<'a> {
         let true_target = self.instructions.len();
         self.emit(Instruction::Jump { target: 0 });
         let false_target = self.instructions.len();
+        let saved_returned = self.returned;
         let right = self.compile_expr_for_value(right)?;
+        self.returned = saved_returned;
         self.emit(Instruction::Move { dst, src: right });
         let end = self.instructions.len();
         self.patch_branch(branch, true_target, false_target)?;
@@ -2835,7 +2893,7 @@ mod tests {
             .unwrap();
         kernel
             .create_relation(
-                RelationMetadata::new(relations.dispatch.param, Symbol::intern("Param"), 3)
+                RelationMetadata::new(relations.dispatch.param, Symbol::intern("Param"), 4)
                     .with_index([0, 1]),
             )
             .unwrap();
@@ -3402,8 +3460,41 @@ mod tests {
     }
 
     #[test]
+    fn compiled_short_circuit_guards_can_return_from_one_path() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+
+        let passes = submit_source_task(
+            "true || return false\n\
+             return true",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            passes.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+
+        let returns = submit_source_task(
+            "false || return false\n\
+             return true",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            returns.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+        ));
+    }
+
+    #[test]
     fn compiled_task_calls_registered_runtime_builtin() {
-        let context = CompileContext::new().with_identity("target", id(99));
+        let context = CompileContext::new()
+            .with_identity("target", id(99))
+            .with_runtime_function("emit_first_arg");
         let kernel = RelationKernel::new();
         let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
         let mut task_manager = TaskManager::new(kernel).with_builtins(Arc::new(builtins));
@@ -3427,7 +3518,7 @@ mod tests {
 
     #[test]
     fn compiled_builtin_call_fails_at_runtime_when_unregistered() {
-        let context = CompileContext::new();
+        let context = CompileContext::new().with_runtime_function("missing_builtin");
         let kernel = RelationKernel::new();
         let mut task_manager = TaskManager::new(kernel);
         let error = submit_source_task("return missing_builtin()", &context, &mut task_manager)

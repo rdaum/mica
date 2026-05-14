@@ -45,7 +45,10 @@ use mica_var::Identity;
 
 pub use catalog::{CatalogFact, CatalogPredicate};
 pub use closure::{delegates_star, delegates_star_from, materialize_delegates_star};
-pub use dispatch::{DispatchRelations, applicable_methods};
+pub use dispatch::{
+    DispatchRelations, applicable_methods, applicable_positional_methods, ordered_params,
+    positional_method_args,
+};
 pub use error::{Conflict, ConflictKind, KernelError};
 pub use fact::Fact;
 pub use kernel::RelationKernel;

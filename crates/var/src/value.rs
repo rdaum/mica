@@ -141,6 +141,68 @@ pub enum ValueKind {
     Capability = TAG_CAPABILITY,
 }
 
+pub const NOTHING_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0001);
+pub const BOOL_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0002);
+pub const INTEGER_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0003);
+pub const FLOAT_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0004);
+pub const IDENTITY_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0005);
+pub const SYMBOL_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0006);
+pub const ERROR_CODE_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0007);
+pub const STRING_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0008);
+pub const BYTES_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0009);
+pub const LIST_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000a);
+pub const MAP_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000b);
+pub const RANGE_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000c);
+pub const ERROR_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000d);
+pub const CAPABILITY_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000e);
+
+pub const PRIMITIVE_PROTOTYPES: &[(&str, Identity)] = &[
+    ("nothing", NOTHING_PROTOTYPE),
+    ("bool", BOOL_PROTOTYPE),
+    ("integer", INTEGER_PROTOTYPE),
+    ("float", FLOAT_PROTOTYPE),
+    ("identity", IDENTITY_PROTOTYPE),
+    ("symbol", SYMBOL_PROTOTYPE),
+    ("error_code", ERROR_CODE_PROTOTYPE),
+    ("string", STRING_PROTOTYPE),
+    ("bytes", BYTES_PROTOTYPE),
+    ("list", LIST_PROTOTYPE),
+    ("map", MAP_PROTOTYPE),
+    ("range", RANGE_PROTOTYPE),
+    ("error", ERROR_PROTOTYPE),
+    ("capability", CAPABILITY_PROTOTYPE),
+];
+
+const fn primitive_identity(raw: u64) -> Identity {
+    match Identity::new(raw) {
+        Some(identity) => identity,
+        None => panic!("primitive prototype identity out of range"),
+    }
+}
+
+pub const fn primitive_prototype_for_kind(kind: ValueKind) -> Identity {
+    match kind {
+        ValueKind::Nothing => NOTHING_PROTOTYPE,
+        ValueKind::Bool => BOOL_PROTOTYPE,
+        ValueKind::Int => INTEGER_PROTOTYPE,
+        ValueKind::Float => FLOAT_PROTOTYPE,
+        ValueKind::Identity => IDENTITY_PROTOTYPE,
+        ValueKind::Symbol => SYMBOL_PROTOTYPE,
+        ValueKind::ErrorCode => ERROR_CODE_PROTOTYPE,
+        ValueKind::String => STRING_PROTOTYPE,
+        ValueKind::Bytes => BYTES_PROTOTYPE,
+        ValueKind::List => LIST_PROTOTYPE,
+        ValueKind::Map => MAP_PROTOTYPE,
+        ValueKind::Range => RANGE_PROTOTYPE,
+        ValueKind::Error => ERROR_PROTOTYPE,
+        ValueKind::Capability => CAPABILITY_PROTOTYPE,
+    }
+}
+
+pub const fn primitive_prototype_for_value(value: &Value) -> Identity {
+    primitive_prototype_for_kind(value.kind())
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ValueError {
     IntegerOutOfRange(i64),
