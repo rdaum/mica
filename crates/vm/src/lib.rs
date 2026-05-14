@@ -26,7 +26,7 @@ mod program;
 mod vm;
 
 pub use authority::{AuthorityContext, CapabilityGrant, CapabilityOp, CapabilityScope};
-pub use builtin::{Builtin, BuiltinContext, BuiltinRegistry, RuntimeContext};
+pub use builtin::{Builtin, BuiltinContext, BuiltinRegistry, RuntimeContext, SYSTEM_ENDPOINT};
 pub use effect::Emission;
 pub use error::RuntimeError;
 pub use program::{

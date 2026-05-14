@@ -11,14 +11,20 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
-use mica_relation_kernel::{RelationKernel, TransientStore};
+use crate::{
+    Task, TaskError, TaskId, TaskLimits, TaskOutcome, endpoint_actor_relation,
+    endpoint_open_relation, endpoint_protocol_relation, endpoint_relation,
+    endpoint_relation_metadata,
+};
+use mica_relation_kernel::{
+    KernelError, RelationId, RelationKernel, RelationMetadata, TransientStore, Tuple,
+};
 use mica_var::{Identity, Symbol, Value};
 use mica_vm::{
     AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RuntimeContext,
     SuspendKind,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,6 +135,62 @@ impl TaskManager {
 
     pub fn drain_emissions(&mut self) -> Vec<Effect> {
         self.effects.drain()
+    }
+
+    pub fn drain_routed_emissions(&mut self) -> Vec<Effect> {
+        let effects = self.effects.drain();
+        effects
+            .into_iter()
+            .flat_map(|effect| {
+                self.route_effect_targets(effect.target)
+                    .into_iter()
+                    .map(move |target| Effect {
+                        task_id: effect.task_id,
+                        target,
+                        value: effect.value.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    pub fn open_endpoint(
+        &mut self,
+        endpoint: Identity,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), TaskManagerError> {
+        self.assert_endpoint_fact(
+            endpoint,
+            endpoint_relation(),
+            Tuple::from([Value::identity(endpoint)]),
+        )?;
+        if let Some(actor) = actor {
+            self.assert_endpoint_fact(
+                endpoint,
+                endpoint_actor_relation(),
+                Tuple::from([Value::identity(endpoint), Value::identity(actor)]),
+            )?;
+        }
+        self.assert_endpoint_fact(
+            endpoint,
+            endpoint_protocol_relation(),
+            Tuple::from([Value::identity(endpoint), Value::symbol(protocol)]),
+        )?;
+        self.assert_endpoint_fact(
+            endpoint,
+            endpoint_open_relation(),
+            Tuple::from([Value::identity(endpoint)]),
+        )?;
+        Ok(())
+    }
+
+    pub fn close_endpoint(&mut self, endpoint: Identity) -> usize {
+        self.transient.drop_scope(endpoint)
+    }
+
+    pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
+        self.route_effect_targets_result(target)
+            .unwrap_or_else(|_| vec![target])
     }
 
     pub fn resolver(&self) -> &Arc<ProgramResolver> {
@@ -302,6 +364,66 @@ impl TaskManager {
             }
         }
     }
+
+    fn assert_endpoint_fact(
+        &mut self,
+        scope: Identity,
+        relation: RelationId,
+        tuple: Tuple,
+    ) -> Result<(), TaskManagerError> {
+        let metadata = endpoint_metadata(relation).ok_or_else(|| {
+            TaskManagerError::Task(TaskError::Runtime(mica_vm::RuntimeError::Kernel(
+                KernelError::UnknownRelation(relation),
+            )))
+        })?;
+        self.transient
+            .assert(scope, metadata, tuple)
+            .map(|_| ())
+            .map_err(TaskError::from)
+            .map_err(TaskManagerError::from)
+    }
+
+    fn route_effect_targets_result(&self, target: Identity) -> Result<Vec<Identity>, KernelError> {
+        let scopes = self.transient.scopes().collect::<Vec<_>>();
+        let mut endpoints = BTreeSet::new();
+        for row in self.transient.scan(
+            &scopes,
+            endpoint_actor_relation(),
+            &[None, Some(Value::identity(target))],
+        )? {
+            let Some(endpoint) = row.values().first().and_then(Value::as_identity) else {
+                continue;
+            };
+            if self.endpoint_is_open(endpoint)? {
+                endpoints.insert(endpoint);
+            }
+        }
+        if self.endpoint_is_open(target)? {
+            endpoints.insert(target);
+        }
+        if endpoints.is_empty() {
+            Ok(vec![target])
+        } else {
+            Ok(endpoints.into_iter().collect())
+        }
+    }
+
+    fn endpoint_is_open(&self, endpoint: Identity) -> Result<bool, KernelError> {
+        Ok(!self
+            .transient
+            .scan(
+                &[endpoint],
+                endpoint_open_relation(),
+                &[Some(Value::identity(endpoint))],
+            )?
+            .is_empty())
+    }
+}
+
+fn endpoint_metadata(relation: RelationId) -> Option<RelationMetadata> {
+    endpoint_relation_metadata()
+        .into_iter()
+        .find(|metadata| metadata.id() == relation)
 }
 
 fn suspended_state(outcome: &TaskOutcome, task: &Task<'_>) -> Option<crate::task::TaskState> {
@@ -325,13 +447,10 @@ fn task_status_value(task_id: TaskId, state: Symbol) -> Value {
 
 fn transient_scopes(runtime_context: RuntimeContext) -> Vec<Identity> {
     let mut scopes = Vec::with_capacity(3);
-    for scope in [
-        runtime_context.principal(),
-        runtime_context.actor(),
-        runtime_context.endpoint(),
-    ]
-    .into_iter()
-    .flatten()
+    for scope in [runtime_context.principal(), runtime_context.actor()]
+        .into_iter()
+        .flatten()
+        .chain(std::iter::once(runtime_context.endpoint()))
     {
         if !scopes.contains(&scope) {
             scopes.push(scope);

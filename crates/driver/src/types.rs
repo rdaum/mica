@@ -21,7 +21,7 @@ use std::fmt::{Display, Formatter};
 pub struct TaskContext {
     pub principal: Option<Identity>,
     pub actor: Option<Identity>,
-    pub endpoint: Option<Identity>,
+    pub endpoint: Identity,
     pub authority: AuthorityContext,
 }
 
@@ -39,7 +39,6 @@ pub enum DriverError {
     Source(SourceTaskError),
     Join(String),
     MissingTaskContext(TaskId),
-    MissingEndpoint(TaskId),
 }
 
 #[derive(Debug)]
@@ -50,11 +49,11 @@ pub enum DriverThreadError {
 }
 
 impl TaskContext {
-    pub(crate) fn from_request(request: &TaskRequest) -> Self {
+    pub(crate) fn from_request(request: &TaskRequest, endpoint: Identity) -> Self {
         Self {
             principal: request.principal,
             actor: request.actor,
-            endpoint: request.endpoint,
+            endpoint,
             authority: request.authority.clone(),
         }
     }
@@ -64,7 +63,7 @@ impl DriverError {
     pub fn source(&self) -> Option<&SourceTaskError> {
         match self {
             Self::Source(error) => Some(error),
-            Self::Join(_) | Self::MissingTaskContext(_) | Self::MissingEndpoint(_) => None,
+            Self::Join(_) | Self::MissingTaskContext(_) => None,
         }
     }
 }
@@ -76,9 +75,6 @@ impl Display for DriverError {
             Self::Join(error) => write!(f, "driver task failed: {error}"),
             Self::MissingTaskContext(task_id) => {
                 write!(f, "missing task context for task {task_id}")
-            }
-            Self::MissingEndpoint(task_id) => {
-                write!(f, "task {task_id} is waiting for input without an endpoint")
             }
         }
     }

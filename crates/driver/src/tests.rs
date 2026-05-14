@@ -13,19 +13,17 @@
 
 use crate::{CompioTaskDriver, CompioTaskDriverThread, DriverEvent};
 use compio::runtime::{Runtime, time::sleep};
-use mica_runtime::{AuthorityContext, SuspendKind, TaskOutcome};
-use mica_runtime::{TaskInput, TaskRequest};
-use mica_var::{Identity, Value};
+use mica_runtime::TaskRequest;
+use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
+use mica_var::{Identity, Symbol, Value};
 use std::time::Duration;
 
-fn root_source(source: &str, endpoint: Option<Identity>) -> TaskRequest {
-    TaskRequest {
-        principal: None,
-        actor: None,
-        endpoint,
-        authority: AuthorityContext::root(),
-        input: TaskInput::Source(source.to_owned()),
-    }
+fn endpoint(offset: u64) -> Identity {
+    Identity::new(0x00ee_0000_0000_0000 + offset).unwrap()
+}
+
+fn root_source(source: &str) -> TaskRequest {
+    SourceRunner::root_source_request(source)
 }
 
 #[test]
@@ -33,7 +31,7 @@ fn driver_runs_source_on_compio_task() {
     Runtime::new().unwrap().block_on(async {
         let driver = CompioTaskDriver::empty();
         let submitted = driver
-            .submit_source(root_source("return 1 + 1", None))
+            .submit_source(endpoint(1), root_source("return 1 + 1"))
             .await
             .unwrap();
 
@@ -54,7 +52,7 @@ fn timed_suspend_wakes_and_resumes_task() {
     Runtime::new().unwrap().block_on(async {
         let driver = CompioTaskDriver::empty();
         let submitted = driver
-            .submit_source(root_source("suspend(0.001)\nreturn \"awake\"", None))
+            .submit_source(endpoint(2), root_source("suspend(0.001)\nreturn \"awake\""))
             .await
             .unwrap();
         assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
@@ -74,7 +72,7 @@ fn commit_yields_and_immediately_resumes_task() {
     Runtime::new().unwrap().block_on(async {
         let driver = CompioTaskDriver::empty();
         let submitted = driver
-            .submit_source(root_source("commit()\nreturn \"committed\"", None))
+            .submit_source(endpoint(3), root_source("commit()\nreturn \"committed\""))
             .await
             .unwrap();
         assert!(matches!(
@@ -99,9 +97,9 @@ fn commit_yields_and_immediately_resumes_task() {
 fn endpoint_input_resumes_reading_task() {
     Runtime::new().unwrap().block_on(async {
         let driver = CompioTaskDriver::empty();
-        let endpoint = Identity::new(0x00ee_0000_0000_0001).unwrap();
+        let endpoint = endpoint(4);
         let submitted = driver
-            .submit_source(root_source("return read(:line)", Some(endpoint)))
+            .submit_source(endpoint, root_source("return read(:line)"))
             .await
             .unwrap();
         assert!(matches!(
@@ -123,10 +121,84 @@ fn endpoint_input_resumes_reading_task() {
 }
 
 #[test]
+fn driver_submit_source_sets_endpoint_context() {
+    Runtime::new().unwrap().block_on(async {
+        let driver = CompioTaskDriver::empty();
+        let endpoint = endpoint(5);
+        let submitted = driver
+            .submit_source(endpoint, root_source("return endpoint()"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(endpoint)
+        ));
+    });
+}
+
+#[test]
+fn driver_routes_actor_effects_to_open_endpoints() {
+    Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        let alice = Identity::new(0x00e0_0000_0000_0000).unwrap();
+        let driver = CompioTaskDriver::new(runner);
+        let endpoint = endpoint(10);
+        driver
+            .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+            .unwrap();
+
+        let submitted = driver
+            .submit_source(endpoint, root_source("emit(#alice, \"hello\")"))
+            .await
+            .unwrap();
+
+        assert!(matches!(submitted.outcome, TaskOutcome::Complete { .. }));
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::Effect(effect)
+                if effect.task_id == submitted.task_id
+                    && effect.target == endpoint
+                    && effect.value == Value::string("hello")
+        )));
+    });
+}
+
+#[test]
+fn driver_stops_routing_after_endpoint_close() {
+    Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        let alice = Identity::new(0x00e0_0000_0000_0000).unwrap();
+        let driver = CompioTaskDriver::new(runner);
+        let endpoint = endpoint(11);
+        driver
+            .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+            .unwrap();
+        assert_eq!(driver.close_endpoint(endpoint), 4);
+
+        let submitted = driver
+            .submit_source(endpoint, root_source("emit(#alice, \"hello\")"))
+            .await
+            .unwrap();
+
+        assert!(matches!(submitted.outcome, TaskOutcome::Complete { .. }));
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::Effect(effect)
+                if effect.task_id == submitted.task_id
+                    && effect.target == alice
+                    && effect.value == Value::string("hello")
+        )));
+    });
+}
+
+#[test]
 fn thread_driver_runs_mica_work_on_compio_runtime() {
     let driver = CompioTaskDriverThread::spawn_empty().unwrap();
     let submitted = driver
-        .submit_source(root_source("return 40 + 2", None))
+        .submit_source(endpoint(20), root_source("return 40 + 2"))
         .unwrap();
 
     assert!(matches!(
@@ -146,7 +218,10 @@ fn thread_driver_runs_mica_work_on_compio_runtime() {
 fn thread_driver_wakes_timed_suspension() {
     let driver = CompioTaskDriverThread::spawn_empty().unwrap();
     let submitted = driver
-        .submit_source(root_source("suspend(0.001)\nreturn \"awake\"", None))
+        .submit_source(
+            endpoint(21),
+            root_source("suspend(0.001)\nreturn \"awake\""),
+        )
         .unwrap();
 
     assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
@@ -165,7 +240,7 @@ fn thread_driver_wakes_timed_suspension() {
 fn thread_driver_drain_events_pumps_ready_timer() {
     let driver = CompioTaskDriverThread::spawn_empty().unwrap();
     let submitted = driver
-        .submit_source(root_source("suspend(0)\nreturn \"awake\"", None))
+        .submit_source(endpoint(22), root_source("suspend(0)\nreturn \"awake\""))
         .unwrap();
 
     assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
@@ -182,7 +257,10 @@ fn thread_driver_drain_events_pumps_ready_timer() {
 fn thread_driver_reports_timer_resume_failure() {
     let driver = CompioTaskDriverThread::spawn_empty().unwrap();
     let submitted = driver
-        .submit_source(root_source("suspend(0)\nemit(\"missing target\")", None))
+        .submit_source(
+            endpoint(23),
+            root_source("suspend(0)\nemit(\"missing target\")"),
+        )
         .unwrap();
 
     assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
@@ -200,7 +278,7 @@ fn thread_driver_reports_timer_resume_failure() {
 fn thread_driver_immediately_resumes_commit() {
     let driver = CompioTaskDriverThread::spawn_empty().unwrap();
     let submitted = driver
-        .submit_source(root_source("commit()\nreturn \"committed\"", None))
+        .submit_source(endpoint(24), root_source("commit()\nreturn \"committed\""))
         .unwrap();
 
     assert!(matches!(
@@ -224,9 +302,9 @@ fn thread_driver_immediately_resumes_commit() {
 #[test]
 fn thread_driver_routes_endpoint_input() {
     let driver = CompioTaskDriverThread::spawn_empty().unwrap();
-    let endpoint = Identity::new(0x00ee_0000_0000_0002).unwrap();
+    let endpoint = endpoint(25);
     let submitted = driver
-        .submit_source(root_source("return read(:line)", Some(endpoint)))
+        .submit_source(endpoint, root_source("return read(:line)"))
         .unwrap();
 
     assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
@@ -237,5 +315,33 @@ fn thread_driver_routes_endpoint_input() {
         &outcomes[0],
         TaskOutcome::Complete { value, .. } if *value == Value::string("north")
     ));
+    driver.shutdown().unwrap();
+}
+
+#[test]
+fn thread_driver_routes_actor_effects_to_open_endpoints() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    let alice = Identity::new(0x00e0_0000_0000_0000).unwrap();
+    let driver = CompioTaskDriverThread::spawn(runner).unwrap();
+    let endpoint = endpoint(26);
+    driver
+        .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+        .unwrap();
+
+    let submitted = driver
+        .submit_source(endpoint, root_source("emit(#alice, \"hello\")"))
+        .unwrap();
+
+    assert!(matches!(submitted.outcome, TaskOutcome::Complete { .. }));
+    let events = driver.drain_events().unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DriverEvent::Effect(effect)
+            if effect.task_id == submitted.task_id
+                && effect.target == endpoint
+                && effect.value == Value::string("hello")
+    )));
+    assert_eq!(driver.close_endpoint(endpoint).unwrap(), 4);
     driver.shutdown().unwrap();
 }

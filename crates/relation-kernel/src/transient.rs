@@ -38,6 +38,10 @@ impl TransientStore {
             .unwrap_or(0)
     }
 
+    pub fn scopes(&self) -> impl Iterator<Item = Identity> + '_ {
+        self.scopes.keys().copied()
+    }
+
     pub fn assert(
         &mut self,
         scope: Identity,

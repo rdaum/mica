@@ -51,50 +51,59 @@ impl CompioTaskDriver {
 
     pub fn spawn_source(
         &self,
+        endpoint: Identity,
         request: TaskRequest,
     ) -> CompioJoinHandle<Result<SubmittedTask, DriverError>> {
         let driver = self.clone();
-        spawn(async move { driver.run_source_request(request) })
+        spawn(async move { driver.run_source_request(endpoint, request) })
     }
 
-    pub async fn submit_source(&self, request: TaskRequest) -> Result<SubmittedTask, DriverError> {
-        self.spawn_source(request)
+    pub async fn submit_source(
+        &self,
+        endpoint: Identity,
+        request: TaskRequest,
+    ) -> Result<SubmittedTask, DriverError> {
+        self.spawn_source(endpoint, request)
             .await
             .map_err(|error| DriverError::Join(error.to_string()))?
     }
 
     pub fn spawn_source_report(
         &self,
+        endpoint: Identity,
         actor: Option<Symbol>,
         source: String,
     ) -> CompioJoinHandle<Result<RunReport, DriverError>> {
         let driver = self.clone();
-        spawn(async move { driver.run_source_report(actor, source) })
+        spawn(async move { driver.run_source_report(endpoint, actor, source) })
     }
 
     pub async fn submit_source_report(
         &self,
+        endpoint: Identity,
         actor: Option<Symbol>,
         source: String,
     ) -> Result<RunReport, DriverError> {
-        self.spawn_source_report(actor, source)
+        self.spawn_source_report(endpoint, actor, source)
             .await
             .map_err(|error| DriverError::Join(error.to_string()))?
     }
 
     pub fn spawn_invocation(
         &self,
+        endpoint: Identity,
         request: TaskRequest,
     ) -> CompioJoinHandle<Result<SubmittedTask, DriverError>> {
         let driver = self.clone();
-        spawn(async move { driver.run_invocation_request(request) })
+        spawn(async move { driver.run_invocation_request(endpoint, request) })
     }
 
     pub async fn submit_invocation(
         &self,
+        endpoint: Identity,
         request: TaskRequest,
     ) -> Result<SubmittedTask, DriverError> {
-        self.spawn_invocation(request)
+        self.spawn_invocation(endpoint, request)
             .await
             .map_err(|error| DriverError::Join(error.to_string()))?
     }
@@ -137,11 +146,30 @@ impl CompioTaskDriver {
         std::mem::take(&mut self.state.borrow_mut().events)
     }
 
+    pub fn open_endpoint(
+        &self,
+        endpoint: Identity,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), DriverError> {
+        self.state
+            .borrow_mut()
+            .runner
+            .open_endpoint(endpoint, actor, protocol)
+            .map_err(DriverError::Source)
+    }
+
+    pub fn close_endpoint(&self, endpoint: Identity) -> usize {
+        self.state.borrow_mut().runner.close_endpoint(endpoint)
+    }
+
     pub(crate) fn run_source_request(
         &self,
-        request: TaskRequest,
+        endpoint: Identity,
+        mut request: TaskRequest,
     ) -> Result<SubmittedTask, DriverError> {
-        let context = TaskContext::from_request(&request);
+        request.endpoint = endpoint;
+        let context = TaskContext::from_request(&request, endpoint);
         let submitted = self
             .state
             .borrow_mut()
@@ -154,6 +182,7 @@ impl CompioTaskDriver {
 
     pub(crate) fn run_source_report(
         &self,
+        endpoint: Identity,
         actor: Option<Symbol>,
         source: String,
     ) -> Result<RunReport, DriverError> {
@@ -167,7 +196,7 @@ impl CompioTaskDriver {
                 None => SourceRunner::root_source_request(source),
             }
         };
-        let submitted = self.run_source_request(request)?;
+        let submitted = self.run_source_request(endpoint, request)?;
         Ok(self
             .state
             .borrow()
@@ -177,9 +206,11 @@ impl CompioTaskDriver {
 
     pub(crate) fn run_invocation_request(
         &self,
-        request: TaskRequest,
+        endpoint: Identity,
+        mut request: TaskRequest,
     ) -> Result<SubmittedTask, DriverError> {
-        let context = TaskContext::from_request(&request);
+        request.endpoint = endpoint;
+        let context = TaskContext::from_request(&request, endpoint);
         let submitted = self
             .state
             .borrow_mut()
@@ -279,12 +310,9 @@ impl CompioTaskDriver {
                             timer = Some(Duration::from_millis(*millis));
                         }
                         SuspendKind::WaitingForInput(_) => {
-                            let endpoint = context
-                                .endpoint
-                                .ok_or(DriverError::MissingEndpoint(task_id))?;
                             state
                                 .input_waiters
-                                .entry(endpoint)
+                                .entry(context.endpoint)
                                 .or_default()
                                 .push(task_id);
                         }
@@ -324,7 +352,7 @@ impl DriverState {
     fn drain_effects_into_events(&mut self) {
         self.events.extend(
             self.runner
-                .drain_emissions()
+                .drain_routed_emissions()
                 .into_iter()
                 .map(DriverEvent::Effect),
         );

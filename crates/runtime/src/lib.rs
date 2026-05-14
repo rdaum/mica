@@ -21,7 +21,8 @@ pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem, Operand,
     Program, ProgramResolver, QueryBinding, Register, RegisterVm, RuntimeBinaryOp, RuntimeContext,
-    RuntimeError, RuntimeUnaryOp, SuspendKind, VmHostContext, VmHostResponse, VmState,
+    RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT, SuspendKind, VmHostContext, VmHostResponse,
+    VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{Effect, EffectLog, SuspendedTask, TaskManager, TaskManagerError};
@@ -54,6 +55,10 @@ const METHOD_SOURCE_RELATION_ID: u64 = 0x00df_ffff_ffff_fff9;
 const SOURCE_OWNS_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_fff8;
 const SOURCE_OWNS_RULE_RELATION_ID: u64 = 0x00df_ffff_ffff_fff7;
 const SOURCE_OWNS_RELATION_RELATION_ID: u64 = 0x00df_ffff_ffff_fff6;
+const ENDPOINT_RELATION_ID: u64 = 0x00df_ffff_ffff_fff5;
+const ENDPOINT_ACTOR_RELATION_ID: u64 = 0x00df_ffff_ffff_fff4;
+const ENDPOINT_PROTOCOL_RELATION_ID: u64 = 0x00df_ffff_ffff_fff3;
+const ENDPOINT_OPEN_RELATION_ID: u64 = 0x00df_ffff_ffff_fff2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileinMode {
@@ -92,7 +97,7 @@ pub struct SourceRunner {
 pub struct TaskRequest {
     pub principal: Option<Identity>,
     pub actor: Option<Identity>,
-    pub endpoint: Option<Identity>,
+    pub endpoint: Identity,
     pub authority: AuthorityContext,
     pub input: TaskInput,
 }
@@ -174,7 +179,7 @@ impl SourceRunner {
         TaskRequest {
             principal: None,
             actor: None,
-            endpoint: None,
+            endpoint: SYSTEM_ENDPOINT,
             authority: AuthorityContext::root(),
             input: TaskInput::Source(source.into()),
         }
@@ -190,9 +195,19 @@ impl SourceRunner {
         Ok(TaskRequest {
             principal: None,
             actor: Some(actor_id),
-            endpoint: None,
+            endpoint: SYSTEM_ENDPOINT,
             authority,
             input: TaskInput::Source(source.into()),
+        })
+    }
+
+    pub fn named_identity(&self, name: Symbol) -> Result<Identity, SourceTaskError> {
+        identity_named_in_kernel(self.task_manager.kernel(), name)?.ok_or_else(|| {
+            unsupported_runner_error(
+                NodeId(0),
+                None,
+                format!("unknown identity :{}", name.name().unwrap_or("<unnamed>")),
+            )
         })
     }
 
@@ -214,7 +229,7 @@ impl SourceRunner {
                 "submit_source requires source input",
             ));
         };
-        let contextual = principal.is_some() || actor.is_some() || endpoint.is_some();
+        let contextual = principal.is_some() || actor.is_some();
         if contextual {
             let semantic = parse_semantic(&source);
             if let Some(item) =
@@ -333,7 +348,7 @@ impl SourceRunner {
         self.submit_source(TaskRequest {
             principal: None,
             actor: Some(actor),
-            endpoint: Some(endpoint),
+            endpoint,
             authority,
             input: TaskInput::Source(source.into()),
         })
@@ -350,7 +365,7 @@ impl SourceRunner {
         self.submit_invocation(TaskRequest {
             principal: None,
             actor: Some(actor),
-            endpoint: Some(endpoint),
+            endpoint,
             authority,
             input: TaskInput::Invocation { selector, roles },
         })
@@ -358,6 +373,29 @@ impl SourceRunner {
 
     pub fn drain_emissions(&mut self) -> Vec<Effect> {
         self.task_manager.drain_emissions()
+    }
+
+    pub fn open_endpoint(
+        &mut self,
+        endpoint: Identity,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), SourceTaskError> {
+        self.task_manager
+            .open_endpoint(endpoint, actor, protocol)
+            .map_err(SourceTaskError::from)
+    }
+
+    pub fn close_endpoint(&mut self, endpoint: Identity) -> usize {
+        self.task_manager.close_endpoint(endpoint)
+    }
+
+    pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
+        self.task_manager.route_effect_targets(target)
+    }
+
+    pub fn drain_routed_emissions(&mut self) -> Vec<Effect> {
+        self.task_manager.drain_routed_emissions()
     }
 
     pub fn report_outcome(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
@@ -377,7 +415,7 @@ impl SourceRunner {
         &self,
         principal: Option<Identity>,
         actor: Option<Identity>,
-        endpoint: Option<Identity>,
+        endpoint: Identity,
     ) -> CompileContext {
         let mut context = self.context.clone();
         if let Some(principal) = principal {
@@ -386,9 +424,7 @@ impl SourceRunner {
         if let Some(actor) = actor {
             context.define_identity("actor", actor);
         }
-        if let Some(endpoint) = endpoint {
-            context.define_identity("endpoint", endpoint);
-        }
+        context.define_identity("endpoint", endpoint);
         context
     }
 
@@ -408,7 +444,7 @@ impl SourceRunner {
         let outcome = self.resume_task(TaskRequest {
             principal: None,
             actor: Some(actor_id),
-            endpoint: None,
+            endpoint: SYSTEM_ENDPOINT,
             authority,
             input: TaskInput::Continuation {
                 task_id,
@@ -525,7 +561,7 @@ impl SourceRunner {
     }
 
     fn actor_identity(&self, actor: Symbol) -> Result<Identity, SourceTaskError> {
-        identity_named_in_kernel(self.task_manager.kernel(), actor)?.ok_or_else(|| {
+        self.named_identity(actor).map_err(|_| {
             unsupported_runner_error(
                 NodeId(0),
                 None,
@@ -1249,6 +1285,9 @@ fn bootstrap_kernel_with_provider(
     for metadata in method_relation_metadata() {
         kernel.create_relation(metadata).unwrap();
     }
+    for metadata in endpoint_relation_metadata() {
+        kernel.create_relation(metadata).unwrap();
+    }
     kernel
 }
 
@@ -1307,19 +1346,19 @@ fn invocation_program(
 fn invocation_roles(
     principal: Option<Identity>,
     actor: Option<Identity>,
-    endpoint: Option<Identity>,
+    endpoint: Identity,
     mut roles: Vec<(Symbol, Value)>,
 ) -> Vec<(Symbol, Value)> {
     push_context_role(&mut roles, "principal", principal);
     push_context_role(&mut roles, "actor", actor);
-    push_context_role(&mut roles, "endpoint", endpoint);
+    push_required_context_role(&mut roles, "endpoint", endpoint);
     roles
 }
 
 fn runtime_context(
     principal: Option<Identity>,
     actor: Option<Identity>,
-    endpoint: Option<Identity>,
+    endpoint: Identity,
 ) -> RuntimeContext {
     RuntimeContext::new(principal, actor, endpoint)
 }
@@ -1328,6 +1367,14 @@ fn push_context_role(roles: &mut Vec<(Symbol, Value)>, name: &str, identity: Opt
     let Some(identity) = identity else {
         return;
     };
+    let role = Symbol::intern(name);
+    if roles.iter().any(|(existing, _)| *existing == role) {
+        return;
+    }
+    roles.push((role, Value::identity(identity)));
+}
+
+fn push_required_context_role(roles: &mut Vec<(Symbol, Value)>, name: &str, identity: Identity) {
     let role = Symbol::intern(name);
     if roles.iter().any(|(existing, _)| *existing == role) {
         return;
@@ -1371,6 +1418,26 @@ fn method_relation_metadata() -> Vec<RelationMetadata> {
             Symbol::intern("SourceOwnsRelation"),
             2,
         ),
+    ]
+}
+
+fn endpoint_relation_metadata() -> Vec<RelationMetadata> {
+    vec![
+        RelationMetadata::new(endpoint_relation(), Symbol::intern("Endpoint"), 1),
+        RelationMetadata::new(
+            endpoint_actor_relation(),
+            Symbol::intern("EndpointActor"),
+            2,
+        )
+        .with_index([1, 0])
+        .with_index([0]),
+        RelationMetadata::new(
+            endpoint_protocol_relation(),
+            Symbol::intern("EndpointProtocol"),
+            2,
+        )
+        .with_index([0]),
+        RelationMetadata::new(endpoint_open_relation(), Symbol::intern("EndpointOpen"), 1),
     ]
 }
 
@@ -1445,7 +1512,10 @@ fn endpoint_builtin(
     context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
 ) -> Result<Value, RuntimeError> {
-    runtime_identity_builtin("endpoint", args, context.runtime_context().endpoint())
+    if !args.is_empty() {
+        return Err(invalid_builtin_call("endpoint", "expected endpoint()"));
+    }
+    Ok(Value::identity(context.runtime_context().endpoint()))
 }
 
 fn destroy_identity_builtin(
@@ -1550,14 +1620,11 @@ fn require_transient_scope_drop(
         return Ok(());
     }
     let runtime_context = context.runtime_context();
-    if [
-        runtime_context.principal(),
-        runtime_context.actor(),
-        runtime_context.endpoint(),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|visible_scope| visible_scope == scope)
+    if runtime_context.endpoint() == scope
+        || [runtime_context.principal(), runtime_context.actor()]
+            .into_iter()
+            .flatten()
+            .any(|visible_scope| visible_scope == scope)
     {
         return Ok(());
     }
@@ -2122,6 +2189,22 @@ fn source_owns_relation_relation() -> Identity {
     Identity::new(SOURCE_OWNS_RELATION_RELATION_ID).unwrap()
 }
 
+fn endpoint_relation() -> Identity {
+    Identity::new(ENDPOINT_RELATION_ID).unwrap()
+}
+
+fn endpoint_actor_relation() -> Identity {
+    Identity::new(ENDPOINT_ACTOR_RELATION_ID).unwrap()
+}
+
+fn endpoint_protocol_relation() -> Identity {
+    Identity::new(ENDPOINT_PROTOCOL_RELATION_ID).unwrap()
+}
+
+fn endpoint_open_relation() -> Identity {
+    Identity::new(ENDPOINT_OPEN_RELATION_ID).unwrap()
+}
+
 fn item_id(item: &HirItem) -> mica_compiler::NodeId {
     match item {
         HirItem::Expr { id, .. }
@@ -2443,7 +2526,8 @@ fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthorityContext, Emission, Instruction, Operand, Program, SuspendKind, TaskOutcome,
+        AuthorityContext, Emission, Instruction, Operand, Program, SYSTEM_ENDPOINT, SuspendKind,
+        TaskOutcome,
     };
     use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
     use mica_var::{Identity, Symbol, Value};
@@ -2568,7 +2652,7 @@ mod tests {
             .resume_task(TaskRequest {
                 principal: None,
                 actor: None,
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Continuation {
                     task_id,
@@ -2590,7 +2674,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: None,
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return suspend()".to_owned()),
             })
@@ -2607,7 +2691,7 @@ mod tests {
             .resume_task(TaskRequest {
                 principal: None,
                 actor: None,
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Continuation {
                     task_id: submitted.task_id,
@@ -2629,7 +2713,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: None,
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return commit()".to_owned()),
             })
@@ -2646,7 +2730,7 @@ mod tests {
             .resume_task(TaskRequest {
                 principal: None,
                 actor: None,
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Continuation {
                     task_id: submitted.task_id,
@@ -2694,7 +2778,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: Some(alice),
                 actor: Some(alice),
-                endpoint: Some(endpoint),
+                endpoint,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return [principal(), actor(), endpoint()]".to_owned()),
             })
@@ -2713,7 +2797,7 @@ mod tests {
     }
 
     #[test]
-    fn runner_context_builtins_return_nothing_without_context() {
+    fn runner_context_builtins_return_system_endpoint_without_actor_context() {
         let mut runner = SourceRunner::new_empty();
         let report = runner
             .run_source("return [principal(), actor(), endpoint()]")
@@ -2723,7 +2807,11 @@ mod tests {
             report.outcome,
             TaskOutcome::Complete { value, .. }
                 if value.with_list(<[Value]>::to_vec).unwrap()
-                    == vec![Value::nothing(), Value::nothing(), Value::nothing()]
+                    == vec![
+                        Value::nothing(),
+                        Value::nothing(),
+                        Value::identity(SYSTEM_ENDPOINT),
+                    ]
         ));
     }
 
@@ -2740,7 +2828,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source(
                     "assert_transient(#alice, :Selected, [#lamp])\n\
@@ -2761,7 +2849,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return Selected(?item)".to_owned()),
             })
@@ -2795,7 +2883,7 @@ mod tests {
                 .submit_source(TaskRequest {
                     principal: None,
                     actor: Some(scope),
-                    endpoint: None,
+                    endpoint: SYSTEM_ENDPOINT,
                     authority: AuthorityContext::root(),
                     input: TaskInput::Source(
                         "return assert_transient(actor(), :Selected, [#lamp])".to_owned(),
@@ -2808,7 +2896,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source(
                     "return retract_transient(#alice, :Selected, [#lamp])".to_owned(),
@@ -2824,7 +2912,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return Selected(?item)".to_owned()),
             })
@@ -2838,7 +2926,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(bob),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return drop_transient_scope(#bob)".to_owned()),
             })
@@ -2852,7 +2940,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(bob),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return Selected(?item)".to_owned()),
             })
@@ -2875,7 +2963,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source(
                     "return assert_transient(#alice, :Selected, [#lamp])".to_owned(),
@@ -2887,7 +2975,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::empty(),
                 input: TaskInput::Source("return drop_transient_scope(#alice)".to_owned()),
             })
@@ -2902,7 +2990,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return Selected(?item)".to_owned()),
             })
@@ -2928,7 +3016,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(bob),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source(
                     "return assert_transient(#bob, :Selected, [#lamp])".to_owned(),
@@ -2940,7 +3028,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::empty(),
                 input: TaskInput::Source("return drop_transient_scope(#bob)".to_owned()),
             })
@@ -2951,7 +3039,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(bob),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return Selected(?item)".to_owned()),
             })
@@ -2981,7 +3069,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: Some(alice),
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source(
                     "assert_transient(#alice, :Selected, [#lamp])\n\
@@ -2997,6 +3085,74 @@ mod tests {
                 if value.with_list(<[Value]>::to_vec).unwrap()
                     == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
         ));
+    }
+
+    #[test]
+    fn runner_endpoint_facts_are_transient_and_endpoint_scoped() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0010).unwrap();
+        runner
+            .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+            .unwrap();
+
+        let visible = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return EndpointActor(?endpoint, #alice)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            visible.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_list(<[Value]>::to_vec).unwrap()
+                    == vec![Value::map([(Value::symbol(Symbol::intern("endpoint")), Value::identity(endpoint))])]
+        ));
+
+        let root = runner
+            .run_source("return EndpointActor(?endpoint, #alice)")
+            .unwrap();
+        assert!(matches!(
+            root.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::list([])
+        ));
+
+        assert_eq!(runner.close_endpoint(endpoint), 4);
+        let closed = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return EndpointActor(?endpoint, #alice)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            closed.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::list([])
+        ));
+    }
+
+    #[test]
+    fn runner_routes_actor_effect_targets_to_open_endpoints() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0011).unwrap();
+
+        assert_eq!(runner.route_effect_targets(alice), vec![alice]);
+        runner
+            .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+            .unwrap();
+        assert_eq!(runner.route_effect_targets(alice), vec![endpoint]);
+        assert_eq!(runner.route_effect_targets(endpoint), vec![endpoint]);
+
+        runner.close_endpoint(endpoint);
+        assert_eq!(runner.route_effect_targets(alice), vec![alice]);
     }
 
     #[test]
@@ -3058,7 +3214,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: None,
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return read(:line)".to_owned()),
             })
@@ -3075,7 +3231,7 @@ mod tests {
             .resume_task(TaskRequest {
                 principal: None,
                 actor: None,
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Continuation {
                     task_id: submitted.task_id,
@@ -3097,7 +3253,7 @@ mod tests {
             .submit_source(TaskRequest {
                 principal: None,
                 actor: None,
-                endpoint: None,
+                endpoint: SYSTEM_ENDPOINT,
                 authority: AuthorityContext::root(),
                 input: TaskInput::Source("return suspend(0.5)".to_owned()),
             })

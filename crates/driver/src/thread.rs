@@ -28,15 +28,18 @@ pub struct CompioTaskDriverThread {
 
 enum DriverCommand {
     SubmitSource {
+        endpoint: Identity,
         request: TaskRequest,
         reply: mpsc::Sender<Result<SubmittedTask, DriverError>>,
     },
     SubmitSourceReport {
+        endpoint: Identity,
         actor: Option<Symbol>,
         source: String,
         reply: mpsc::Sender<Result<RunReport, DriverError>>,
     },
     SubmitInvocation {
+        endpoint: Identity,
         request: TaskRequest,
         reply: mpsc::Sender<Result<SubmittedTask, DriverError>>,
     },
@@ -49,6 +52,16 @@ enum DriverCommand {
         endpoint: Identity,
         value: Value,
         reply: mpsc::Sender<Result<Vec<TaskOutcome>, DriverError>>,
+    },
+    OpenEndpoint {
+        endpoint: Identity,
+        actor: Option<Identity>,
+        protocol: Symbol,
+        reply: mpsc::Sender<Result<(), DriverError>>,
+    },
+    CloseEndpoint {
+        endpoint: Identity,
+        reply: mpsc::Sender<usize>,
     },
     DrainEvents {
         reply: mpsc::Sender<Vec<DriverEvent>>,
@@ -86,9 +99,17 @@ impl CompioTaskDriverThread {
         Self::spawn(SourceRunner::new_empty())
     }
 
-    pub fn submit_source(&self, request: TaskRequest) -> Result<SubmittedTask, DriverThreadError> {
+    pub fn submit_source(
+        &self,
+        endpoint: Identity,
+        request: TaskRequest,
+    ) -> Result<SubmittedTask, DriverThreadError> {
         let (reply, response) = mpsc::channel();
-        self.send(DriverCommand::SubmitSource { request, reply })?;
+        self.send(DriverCommand::SubmitSource {
+            endpoint,
+            request,
+            reply,
+        })?;
         response
             .recv()
             .map_err(|_| DriverThreadError::Closed)?
@@ -97,11 +118,13 @@ impl CompioTaskDriverThread {
 
     pub fn submit_source_report(
         &self,
+        endpoint: Identity,
         actor: Option<Symbol>,
         source: String,
     ) -> Result<RunReport, DriverThreadError> {
         let (reply, response) = mpsc::channel();
         self.send(DriverCommand::SubmitSourceReport {
+            endpoint,
             actor,
             source,
             reply,
@@ -114,10 +137,15 @@ impl CompioTaskDriverThread {
 
     pub fn submit_invocation(
         &self,
+        endpoint: Identity,
         request: TaskRequest,
     ) -> Result<SubmittedTask, DriverThreadError> {
         let (reply, response) = mpsc::channel();
-        self.send(DriverCommand::SubmitInvocation { request, reply })?;
+        self.send(DriverCommand::SubmitInvocation {
+            endpoint,
+            request,
+            reply,
+        })?;
         response
             .recv()
             .map_err(|_| DriverThreadError::Closed)?
@@ -152,6 +180,31 @@ impl CompioTaskDriverThread {
             .recv()
             .map_err(|_| DriverThreadError::Closed)?
             .map_err(DriverThreadError::Driver)
+    }
+
+    pub fn open_endpoint(
+        &self,
+        endpoint: Identity,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), DriverThreadError> {
+        let (reply, response) = mpsc::channel();
+        self.send(DriverCommand::OpenEndpoint {
+            endpoint,
+            actor,
+            protocol,
+            reply,
+        })?;
+        response
+            .recv()
+            .map_err(|_| DriverThreadError::Closed)?
+            .map_err(DriverThreadError::Driver)
+    }
+
+    pub fn close_endpoint(&self, endpoint: Identity) -> Result<usize, DriverThreadError> {
+        let (reply, response) = mpsc::channel();
+        self.send(DriverCommand::CloseEndpoint { endpoint, reply })?;
+        response.recv().map_err(|_| DriverThreadError::Closed)
     }
 
     pub fn drain_events(&self) -> Result<Vec<DriverEvent>, DriverThreadError> {
@@ -197,28 +250,37 @@ fn run_thread_driver(
     while running {
         while let Ok(command) = commands.try_recv() {
             match command {
-                DriverCommand::SubmitSource { request, reply } => {
+                DriverCommand::SubmitSource {
+                    endpoint,
+                    request,
+                    reply,
+                } => {
                     let driver = driver.clone();
                     spawn(async move {
-                        let _ = reply.send(driver.run_source_request(request));
+                        let _ = reply.send(driver.run_source_request(endpoint, request));
                     })
                     .detach();
                 }
                 DriverCommand::SubmitSourceReport {
+                    endpoint,
                     actor,
                     source,
                     reply,
                 } => {
                     let driver = driver.clone();
                     spawn(async move {
-                        let _ = reply.send(driver.run_source_report(actor, source));
+                        let _ = reply.send(driver.run_source_report(endpoint, actor, source));
                     })
                     .detach();
                 }
-                DriverCommand::SubmitInvocation { request, reply } => {
+                DriverCommand::SubmitInvocation {
+                    endpoint,
+                    request,
+                    reply,
+                } => {
                     let driver = driver.clone();
                     spawn(async move {
-                        let _ = reply.send(driver.run_invocation_request(request));
+                        let _ = reply.send(driver.run_invocation_request(endpoint, request));
                     })
                     .detach();
                 }
@@ -241,6 +303,25 @@ fn run_thread_driver(
                     let driver = driver.clone();
                     spawn(async move {
                         let _ = reply.send(driver.run_input(endpoint, value));
+                    })
+                    .detach();
+                }
+                DriverCommand::OpenEndpoint {
+                    endpoint,
+                    actor,
+                    protocol,
+                    reply,
+                } => {
+                    let driver = driver.clone();
+                    spawn(async move {
+                        let _ = reply.send(driver.open_endpoint(endpoint, actor, protocol));
+                    })
+                    .detach();
+                }
+                DriverCommand::CloseEndpoint { endpoint, reply } => {
+                    let driver = driver.clone();
+                    spawn(async move {
+                        let _ = reply.send(driver.close_endpoint(endpoint));
                     })
                     .detach();
                 }

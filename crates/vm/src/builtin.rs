@@ -17,19 +17,22 @@ use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+const SYSTEM_ENDPOINT_ID: u64 = 0x00ef_0000_0000_0000;
+
+pub const SYSTEM_ENDPOINT: Identity = match Identity::new(SYSTEM_ENDPOINT_ID) {
+    Some(identity) => identity,
+    None => panic!("system endpoint id is outside the identity payload range"),
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeContext {
     principal: Option<Identity>,
     actor: Option<Identity>,
-    endpoint: Option<Identity>,
+    endpoint: Identity,
 }
 
 impl RuntimeContext {
-    pub fn new(
-        principal: Option<Identity>,
-        actor: Option<Identity>,
-        endpoint: Option<Identity>,
-    ) -> Self {
+    pub fn new(principal: Option<Identity>, actor: Option<Identity>, endpoint: Identity) -> Self {
         Self {
             principal,
             actor,
@@ -45,8 +48,14 @@ impl RuntimeContext {
         self.actor
     }
 
-    pub fn endpoint(&self) -> Option<Identity> {
+    pub fn endpoint(&self) -> Identity {
         self.endpoint
+    }
+}
+
+impl Default for RuntimeContext {
+    fn default() -> Self {
+        Self::new(None, None, SYSTEM_ENDPOINT)
     }
 }
 
