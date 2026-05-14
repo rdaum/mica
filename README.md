@@ -234,6 +234,7 @@ Mica is an early Rust prototype. The current tree has:
   transaction lifecycle;
 - compiler for a growing Mica language surface;
 - a compio-driven task driver for timed wakeups, input resumes, and emissions;
+- a minimal TCP daemon that maps one endpoint identity to each connection;
 - role-based method dispatch;
 - a "filein" syntax for bringing in state-as-initial-blueprint;
 - Fjall-backed durable relation state with strict and relaxed commit modes;
@@ -272,6 +273,7 @@ cargo test --workspace
 - [`crates/driver`](crates/driver/README.md): compio task driver, wakeups,
   input, and emissions.
 - [`crates/runner`](crates/runner/README.md): CLI and REPL binary.
+- [`crates/daemon`](crates/daemon/README.md): minimal TCP endpoint transport.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,
   verbs, and dispatch.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,

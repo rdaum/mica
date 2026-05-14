@@ -39,7 +39,8 @@ crates/
 ├── compiler/         # parser, HIR, lowering, bytecode compilation
 ├── runtime/          # live environment, tasks, builtins, filein/fileout
 ├── driver/           # compio task driver, wakeups, input, emissions
-└── runner/           # CLI and REPL binary
+├── runner/           # CLI and REPL binary
+└── daemon/           # minimal TCP endpoint transport
 ```
 
 Supporting material:

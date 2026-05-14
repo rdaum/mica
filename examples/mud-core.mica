@@ -2,34 +2,75 @@ make_identity(:player)
 make_identity(:thing)
 make_identity(:portable)
 make_identity(:container)
+make_identity(:room)
 make_identity(:alice)
 make_identity(:coin)
 make_identity(:box)
+make_identity(:first_room)
+make_identity(:north_room)
 
 make_relation(:Delegates, 3)
 make_relation(:HeldBy, 2)
 make_relation(:In, 2)
 make_relation(:Portable, 1)
 make_relation(:CanSee, 2)
+make_functional_relation(:Name, 2, [0])
+make_functional_relation(:LocatedIn, 2, [0])
 
 assert Delegates(#portable, #thing, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
 assert Delegates(#box, #container, 0)
+assert Delegates(#first_room, #room, 0)
+assert Delegates(#north_room, #room, 0)
+
 assert Portable(#coin)
+assert Name(#coin, "coin")
+assert Name(#box, "box")
+assert Name(#first_room, "First Room")
+assert Name(#north_room, "North Room")
+assert LocatedIn(#alice, #first_room)
+assert LocatedIn(#coin, #first_room)
+assert LocatedIn(#box, #first_room)
 
 CanSee(actor, item) :-
   HeldBy(actor, item)
 
 CanSee(actor, item) :-
+  LocatedIn(actor, room),
+  LocatedIn(item, room)
+
+CanSee(actor, item) :-
   HeldBy(actor, container),
   In(item, container)
 
+verb look(actor: #player)
+  if LocatedIn(actor, #first_room)
+    emit(actor, "First Room. A coin and a box are here. The only exit is north.")
+  else
+    emit(actor, "North Room. It is quiet here. The exit is south, but the demo only knows north.")
+  end
+  return true
+end
+
+verb north(actor: #player)
+  if LocatedIn(actor, #first_room)
+    assert LocatedIn(actor, #north_room)
+    emit(actor, "You walk north.")
+    emit(actor, "North Room. It is quiet here. The exit is south, but the demo only knows north.")
+  else
+    emit(actor, "You cannot go farther north.")
+  end
+  return true
+end
+
 verb get(actor: #player, item: #thing)
-  if Portable(item)
+  if Portable(item) && CanSee(actor, item)
     assert HeldBy(actor, item)
+    emit(actor, "Taken.")
     return true
   else
+    emit(actor, "You cannot take that.")
     return false
   end
 end
@@ -37,13 +78,10 @@ end
 verb put(actor: #player, item: #thing, container: #container)
   if HeldBy(actor, item)
     assert In(item, container)
+    emit(actor, "Placed.")
     return true
   else
+    emit(actor, "You are not carrying that.")
     return false
   end
 end
-
-:get(item: #coin, actor: #alice)
-:put(container: #box, item: #coin, actor: #alice)
-return In(#coin, ?container)
-return CanSee(#alice, ?item)

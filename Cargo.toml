@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/compiler",
+    "crates/daemon",
     "crates/driver",
     "crates/runner",
     "crates/relation-kernel",

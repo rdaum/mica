@@ -1,7 +1,15 @@
 # Mica Examples
 
-`mud-core.mica` is a small room/object exercise for relations, recursive rules,
-and verb dispatch.
+`mud-core.mica` is a small room/object exercise for relations, rules, and verb
+dispatch. It is also the default filein for `mica-daemon`, so commands such as
+`look`, `get coin`, `put coin box`, `north`, and `say hello` can exercise TCP
+endpoint input and routed effects.
+
+Try the MUD example over TCP:
+
+```sh
+cargo run --bin mica-daemon -- --bind 127.0.0.1:7777
+```
 
 `capabilities.mica` shows the intended bootstrap shape for capabilities. It
 declares `Name` as a functional binary relation, then describes policy through
