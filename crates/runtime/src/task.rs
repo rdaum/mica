@@ -15,7 +15,7 @@ use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
 use mica_var::Value;
 use mica_vm::{
     AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RegisterVm,
-    RuntimeError, SuspendKind, VmHostContext, VmHostResponse, VmState,
+    RuntimeContext, RuntimeError, SuspendKind, VmHostContext, VmHostResponse, VmState,
 };
 use std::sync::Arc;
 
@@ -90,6 +90,7 @@ pub struct Task<'a> {
     pending_effects: Vec<Emission>,
     committed_effects: Vec<Emission>,
     task_snapshot: Vec<Value>,
+    runtime_context: RuntimeContext,
     retries: u8,
     limits: TaskLimits,
 }
@@ -155,6 +156,7 @@ impl<'a> Task<'a> {
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
             task_snapshot: Vec::new(),
+            runtime_context: RuntimeContext::default(),
             retries: 0,
             limits,
         }
@@ -181,6 +183,7 @@ impl<'a> Task<'a> {
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
             task_snapshot: Vec::new(),
+            runtime_context: RuntimeContext::default(),
             retries: state.retries,
             limits: state.limits,
         }
@@ -192,6 +195,10 @@ impl<'a> Task<'a> {
 
     pub(crate) fn set_task_snapshot(&mut self, task_snapshot: Vec<Value>) {
         self.task_snapshot = task_snapshot;
+    }
+
+    pub(crate) fn set_runtime_context(&mut self, runtime_context: RuntimeContext) {
+        self.runtime_context = runtime_context;
     }
 
     pub fn retries(&self) -> u8 {
@@ -233,6 +240,7 @@ impl<'a> Task<'a> {
                     &self.builtins,
                     &mut self.pending_effects,
                     &self.task_snapshot,
+                    self.runtime_context,
                 );
                 self.vm.run_until_host_response(
                     &mut host,

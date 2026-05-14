@@ -17,12 +17,46 @@ use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeContext {
+    principal: Option<Identity>,
+    actor: Option<Identity>,
+    endpoint: Option<Identity>,
+}
+
+impl RuntimeContext {
+    pub fn new(
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        endpoint: Option<Identity>,
+    ) -> Self {
+        Self {
+            principal,
+            actor,
+            endpoint,
+        }
+    }
+
+    pub fn principal(&self) -> Option<Identity> {
+        self.principal
+    }
+
+    pub fn actor(&self) -> Option<Identity> {
+        self.actor
+    }
+
+    pub fn endpoint(&self) -> Option<Identity> {
+        self.endpoint
+    }
+}
+
 pub struct BuiltinContext<'ctx, 'kernel> {
     kernel: &'kernel RelationKernel,
     tx: &'ctx mut Transaction<'kernel>,
     authority: &'ctx mut AuthorityContext,
     pending_effects: &'ctx mut Vec<Emission>,
     task_snapshot: &'ctx [Value],
+    runtime_context: RuntimeContext,
 }
 
 impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
@@ -32,6 +66,7 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         authority: &'ctx mut AuthorityContext,
         pending_effects: &'ctx mut Vec<Emission>,
         task_snapshot: &'ctx [Value],
+        runtime_context: RuntimeContext,
     ) -> Self {
         Self {
             kernel,
@@ -39,6 +74,7 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
             authority,
             pending_effects,
             task_snapshot,
+            runtime_context,
         }
     }
 
@@ -60,6 +96,10 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
 
     pub fn task_snapshot(&self) -> &[Value] {
         self.task_snapshot
+    }
+
+    pub fn runtime_context(&self) -> RuntimeContext {
+        self.runtime_context
     }
 
     pub fn mint_capability(&mut self, grant: CapabilityGrant) -> Value {

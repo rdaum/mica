@@ -20,8 +20,8 @@ mod vm_tests;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem, Operand,
-    Program, ProgramResolver, QueryBinding, Register, RegisterVm, RuntimeBinaryOp, RuntimeError,
-    RuntimeUnaryOp, SuspendKind, VmHostContext, VmHostResponse, VmState,
+    Program, ProgramResolver, QueryBinding, Register, RegisterVm, RuntimeBinaryOp, RuntimeContext,
+    RuntimeError, RuntimeUnaryOp, SuspendKind, VmHostContext, VmHostResponse, VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{Effect, EffectLog, SuspendedTask, TaskManager, TaskManagerError};
@@ -230,9 +230,12 @@ impl SourceRunner {
             }
             let context = self.context_for_execution(principal, actor, endpoint);
             let compiled = compile_semantic(semantic, &context)?;
-            let (task_id, outcome) = self
-                .task_manager
-                .submit_with_authority(Arc::new(compiled.program), authority)?;
+            let runtime_context = runtime_context(principal, actor, endpoint);
+            let (task_id, outcome) = self.task_manager.submit_with_context(
+                Arc::new(compiled.program),
+                authority,
+                runtime_context,
+            )?;
             self.refresh_context_from_catalog();
             return Ok(SubmittedTask { task_id, outcome });
         }
@@ -255,9 +258,12 @@ impl SourceRunner {
 
         let context = self.context_for_execution(principal, actor, endpoint);
         let compiled = compile_source(&source, &context)?;
-        let (task_id, outcome) = self
-            .task_manager
-            .submit_with_authority(Arc::new(compiled.program), authority)?;
+        let runtime_context = runtime_context(principal, actor, endpoint);
+        let (task_id, outcome) = self.task_manager.submit_with_context(
+            Arc::new(compiled.program),
+            authority,
+            runtime_context,
+        )?;
         self.refresh_context_from_catalog();
         Ok(SubmittedTask { task_id, outcome })
     }
@@ -285,24 +291,33 @@ impl SourceRunner {
             invocation_roles(principal, actor, endpoint, roles),
         )
         .map_err(CompileError::from)?;
-        let (task_id, outcome) = self
-            .task_manager
-            .submit_with_authority(Arc::new(program), authority)?;
+        let runtime_context = runtime_context(principal, actor, endpoint);
+        let (task_id, outcome) =
+            self.task_manager
+                .submit_with_context(Arc::new(program), authority, runtime_context)?;
         self.refresh_context_from_catalog();
         Ok(SubmittedTask { task_id, outcome })
     }
 
     pub fn resume_task(&mut self, request: TaskRequest) -> Result<TaskOutcome, SourceTaskError> {
-        let TaskInput::Continuation { task_id, value } = request.input else {
+        let TaskRequest {
+            principal,
+            actor,
+            endpoint,
+            authority,
+            input,
+        } = request;
+        let TaskInput::Continuation { task_id, value } = input else {
             return Err(unsupported_runner_error(
                 NodeId(0),
                 None,
                 "resume_task requires continuation input",
             ));
         };
+        let runtime_context = runtime_context(principal, actor, endpoint);
         let outcome = self
             .task_manager
-            .resume_with_value(task_id, request.authority, value)
+            .resume_with_context(task_id, authority, value, runtime_context)
             .map_err(SourceTaskError::from)?;
         self.refresh_context_from_catalog();
         Ok(outcome)
@@ -1300,6 +1315,14 @@ fn invocation_roles(
     roles
 }
 
+fn runtime_context(
+    principal: Option<Identity>,
+    actor: Option<Identity>,
+    endpoint: Option<Identity>,
+) -> RuntimeContext {
+    RuntimeContext::new(principal, actor, endpoint)
+}
+
 fn push_context_role(roles: &mut Vec<(Symbol, Value)>, name: &str, identity: Option<Identity>) {
     let Some(identity) = identity else {
         return;
@@ -1365,6 +1388,9 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("fileout", fileout_builtin)
         .with_builtin("fileout_rules", fileout_rules_builtin)
         .with_builtin("tasks", tasks_builtin)
+        .with_builtin("actor", actor_builtin)
+        .with_builtin("principal", principal_builtin)
+        .with_builtin("endpoint", endpoint_builtin)
 }
 
 fn emit_builtin(
@@ -1394,6 +1420,38 @@ fn tasks_builtin(
         return Err(invalid_builtin_call("tasks", "expected tasks()"));
     }
     Ok(Value::list(context.task_snapshot().iter().cloned()))
+}
+
+fn actor_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    runtime_identity_builtin("actor", args, context.runtime_context().actor())
+}
+
+fn principal_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    runtime_identity_builtin("principal", args, context.runtime_context().principal())
+}
+
+fn endpoint_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    runtime_identity_builtin("endpoint", args, context.runtime_context().endpoint())
+}
+
+fn runtime_identity_builtin(
+    name: &'static str,
+    args: &[Value],
+    identity: Option<Identity>,
+) -> Result<Value, RuntimeError> {
+    if !args.is_empty() {
+        return Err(invalid_builtin_call(name, &format!("expected {name}()")));
+    }
+    Ok(identity.map(Value::identity).unwrap_or_else(Value::nothing))
 }
 
 fn unsupported_runner_error(
@@ -2451,6 +2509,50 @@ mod tests {
                 .iter()
                 .any(|task| task_status(task) == Some((2, Symbol::intern("running"))))
         );
+    }
+
+    #[test]
+    fn runner_context_builtins_return_runtime_identities() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0003).unwrap();
+
+        let submitted = runner
+            .submit_source(TaskRequest {
+                principal: Some(alice),
+                actor: Some(alice),
+                endpoint: Some(endpoint),
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return [principal(), actor(), endpoint()]".to_owned()),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_list(<[Value]>::to_vec).unwrap()
+                    == vec![
+                        Value::identity(alice),
+                        Value::identity(alice),
+                        Value::identity(endpoint),
+                    ]
+        ));
+    }
+
+    #[test]
+    fn runner_context_builtins_return_nothing_without_context() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source("return [principal(), actor(), endpoint()]")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_list(<[Value]>::to_vec).unwrap()
+                    == vec![Value::nothing(), Value::nothing(), Value::nothing()]
+        ));
     }
 
     #[test]

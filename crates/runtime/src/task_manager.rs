@@ -14,7 +14,10 @@
 use crate::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 use mica_relation_kernel::RelationKernel;
 use mica_var::{Identity, Symbol, Value};
-use mica_vm::{AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, SuspendKind};
+use mica_vm::{
+    AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RuntimeContext,
+    SuspendKind,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -138,6 +141,15 @@ impl TaskManager {
         program: Arc<Program>,
         authority: AuthorityContext,
     ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
+        self.submit_with_context(program, authority, RuntimeContext::default())
+    }
+
+    pub fn submit_with_context(
+        &mut self,
+        program: Arc<Program>,
+        authority: AuthorityContext,
+        runtime_context: RuntimeContext,
+    ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
         let task_id = self.allocate_task_id();
         let task_snapshot = self.task_snapshot_values(Some(task_id));
         let mut task = Task::new_with_authority(
@@ -150,6 +162,7 @@ impl TaskManager {
             self.limits,
         );
         task.set_task_snapshot(task_snapshot);
+        task.set_runtime_context(runtime_context);
         let outcome = task.run()?;
         let suspended_state = suspended_state(&outcome, &task);
         drop(task);
@@ -182,6 +195,16 @@ impl TaskManager {
         authority: AuthorityContext,
         value: Value,
     ) -> Result<TaskOutcome, TaskManagerError> {
+        self.resume_with_context(task_id, authority, value, RuntimeContext::default())
+    }
+
+    pub fn resume_with_context(
+        &mut self,
+        task_id: TaskId,
+        authority: AuthorityContext,
+        value: Value,
+        runtime_context: RuntimeContext,
+    ) -> Result<TaskOutcome, TaskManagerError> {
         if self.completed.contains_key(&task_id) {
             return Err(TaskManagerError::TaskAlreadyCompleted(task_id));
         }
@@ -199,6 +222,7 @@ impl TaskManager {
             authority,
         );
         task.set_task_snapshot(task_snapshot);
+        task.set_runtime_context(runtime_context);
         task.resume_with(value)?;
         let outcome = task.run()?;
         let suspended_state = suspended_state(&outcome, &task);

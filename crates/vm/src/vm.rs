@@ -13,8 +13,8 @@
 
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, Emission, ErrorField, Instruction, ListItem,
-    Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
-    SuspendKind,
+    Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeContext, RuntimeError,
+    RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Symbol, Value, ValueKind};
@@ -134,6 +134,7 @@ pub struct VmHostContext<'ctx, 'kernel> {
     builtins: &'ctx BuiltinRegistry,
     pending_effects: &'ctx mut Vec<Emission>,
     task_snapshot: &'ctx [Value],
+    runtime_context: RuntimeContext,
 }
 
 impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
@@ -144,6 +145,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
         builtins: &'ctx BuiltinRegistry,
         pending_effects: &'ctx mut Vec<Emission>,
         task_snapshot: &'ctx [Value],
+        runtime_context: RuntimeContext,
     ) -> Self {
         Self {
             tx,
@@ -152,6 +154,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
             builtins,
             pending_effects,
             task_snapshot,
+            runtime_context,
         }
     }
 }
@@ -541,6 +544,7 @@ impl RegisterVm {
                     host.authority,
                     host.pending_effects,
                     host.task_snapshot,
+                    host.runtime_context,
                 );
                 let value = builtin.call(&mut context, &args)?;
                 self.write_register(dst, value)?;
