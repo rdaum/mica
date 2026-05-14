@@ -116,6 +116,10 @@ impl Scheduler {
         &mut self.effects
     }
 
+    pub fn drain_emissions(&mut self) -> Vec<Effect> {
+        self.effects.drain()
+    }
+
     pub fn resolver(&self) -> &Arc<ProgramResolver> {
         &self.resolver
     }

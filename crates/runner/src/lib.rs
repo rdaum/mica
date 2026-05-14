@@ -13,8 +13,8 @@
 
 use mica_compiler::{
     CompileContext, CompileError, HirExpr, HirItem, Literal, MethodInstallation, MethodKind,
-    MethodRelations, NodeId, SourceTaskError, compile_semantic, install_methods,
-    install_rules_from_source, parse, parse_semantic, submit_source_task,
+    MethodRelations, NodeId, SourceTaskError, compile_semantic, compile_source, install_methods,
+    install_rules_from_source, parse, parse_semantic,
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
@@ -22,7 +22,8 @@ use mica_relation_kernel::{
 };
 use mica_runtime::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
-    CapabilityScope, Emission, RuntimeError, Scheduler, TaskOutcome,
+    CapabilityScope, Effect, Emission, Instruction, Operand, Program, Register, RuntimeError,
+    Scheduler, TaskId, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -77,6 +78,34 @@ pub struct SourceRunner {
     next_method_identity_id: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskRequest {
+    pub principal: Option<Identity>,
+    pub actor: Option<Identity>,
+    pub endpoint: Option<Identity>,
+    pub authority: AuthorityContext,
+    pub input: TaskInput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TaskInput {
+    Source(String),
+    Invocation {
+        selector: Symbol,
+        roles: Vec<(Symbol, Value)>,
+    },
+    Continuation {
+        task_id: TaskId,
+        value: Value,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubmittedTask {
+    pub task_id: TaskId,
+    pub outcome: TaskOutcome,
+}
+
 impl SourceRunner {
     pub fn new_empty() -> Self {
         Self::with_kernel(bootstrap_kernel())
@@ -109,39 +138,195 @@ impl SourceRunner {
     }
 
     pub fn run_source(&mut self, source: &str) -> Result<RunReport, SourceTaskError> {
-        if let Some(installation) = self.install_methods_from_source(source)? {
+        let submitted = self.submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: None,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(source.to_owned()),
+        })?;
+        Ok(self.report(submitted.task_id, submitted.outcome))
+    }
+
+    pub fn submit_source(
+        &mut self,
+        request: TaskRequest,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let TaskRequest {
+            principal,
+            actor,
+            endpoint,
+            authority,
+            input,
+        } = request;
+        let TaskInput::Source(source) = input else {
+            return Err(unsupported_runner_error(
+                NodeId(0),
+                None,
+                "submit_source requires source input",
+            ));
+        };
+        let contextual = principal.is_some() || actor.is_some() || endpoint.is_some();
+        if contextual {
+            let semantic = parse_semantic(&source);
+            if let Some(item) =
+                semantic.hir.items.iter().find(|item| {
+                    matches!(item, HirItem::Method { .. } | HirItem::RelationRule { .. })
+                })
+            {
+                return Err(unsupported_runner_error(
+                    item_id(item),
+                    semantic.span(item_id(item)).cloned(),
+                    "contextual source submission cannot install methods or rules",
+                ));
+            }
+            let context = self.context_for_execution(principal, actor, endpoint);
+            let compiled = compile_semantic(semantic, &context)?;
+            let (task_id, outcome) = self
+                .scheduler
+                .submit_with_authority(Arc::new(compiled.program), authority)?;
+            self.refresh_context_from_catalog();
+            return Ok(SubmittedTask { task_id, outcome });
+        }
+
+        if let Some(installation) = self.install_methods_from_source(&source)? {
             let value = installed_method_value(&installation);
             let (task_id, outcome) = self.scheduler.complete_immediate(value);
             self.refresh_context_from_catalog();
-            return Ok(RunReport {
-                task_id,
-                outcome,
-                identity_names: self.identity_names(),
-                relation_names: self.relation_names(),
-            });
+            return Ok(SubmittedTask { task_id, outcome });
         }
 
         if let Some(installation) =
-            install_rules_from_source(source, &self.context, self.scheduler.kernel())?
+            install_rules_from_source(&source, &self.context, self.scheduler.kernel())?
         {
             let value = installed_rule_value(&installation.rules);
             let (task_id, outcome) = self.scheduler.complete_immediate(value);
             self.refresh_context_from_catalog();
-            return Ok(RunReport {
-                task_id,
-                outcome,
-                identity_names: self.identity_names(),
-                relation_names: self.relation_names(),
-            });
+            return Ok(SubmittedTask { task_id, outcome });
         }
-        let submitted = submit_source_task(source, &self.context, &mut self.scheduler)?;
+
+        let context = self.context_for_execution(principal, actor, endpoint);
+        let compiled = compile_source(&source, &context)?;
+        let (task_id, outcome) = self
+            .scheduler
+            .submit_with_authority(Arc::new(compiled.program), authority)?;
         self.refresh_context_from_catalog();
-        Ok(RunReport {
-            task_id: submitted.task_id,
-            outcome: submitted.outcome,
+        Ok(SubmittedTask { task_id, outcome })
+    }
+
+    pub fn submit_invocation(
+        &mut self,
+        request: TaskRequest,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let TaskRequest {
+            principal,
+            actor,
+            endpoint,
+            authority,
+            input,
+        } = request;
+        let TaskInput::Invocation { selector, roles } = input else {
+            return Err(unsupported_runner_error(
+                NodeId(0),
+                None,
+                "submit_invocation requires invocation input",
+            ));
+        };
+        let program = invocation_program(
+            selector,
+            invocation_roles(principal, actor, endpoint, roles),
+        )
+        .map_err(CompileError::from)?;
+        let (task_id, outcome) = self
+            .scheduler
+            .submit_with_authority(Arc::new(program), authority)?;
+        self.refresh_context_from_catalog();
+        Ok(SubmittedTask { task_id, outcome })
+    }
+
+    pub fn resume_task(&mut self, request: TaskRequest) -> Result<TaskOutcome, SourceTaskError> {
+        let TaskInput::Continuation {
+            task_id,
+            value: _value,
+        } = request.input
+        else {
+            return Err(unsupported_runner_error(
+                NodeId(0),
+                None,
+                "resume_task requires continuation input",
+            ));
+        };
+        let outcome = self
+            .scheduler
+            .resume_with_authority(task_id, request.authority)
+            .map_err(SourceTaskError::from)?;
+        self.refresh_context_from_catalog();
+        Ok(outcome)
+    }
+
+    pub fn submit_source_as(
+        &mut self,
+        actor: Identity,
+        endpoint: Identity,
+        source: impl Into<String>,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let authority = authority_for_actor(self.scheduler.kernel(), actor)?;
+        self.submit_source(TaskRequest {
+            principal: None,
+            actor: Some(actor),
+            endpoint: Some(endpoint),
+            authority,
+            input: TaskInput::Source(source.into()),
+        })
+    }
+
+    pub fn submit_invocation_as(
+        &mut self,
+        actor: Identity,
+        endpoint: Identity,
+        selector: Symbol,
+        roles: Vec<(Symbol, Value)>,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let authority = authority_for_actor(self.scheduler.kernel(), actor)?;
+        self.submit_invocation(TaskRequest {
+            principal: None,
+            actor: Some(actor),
+            endpoint: Some(endpoint),
+            authority,
+            input: TaskInput::Invocation { selector, roles },
+        })
+    }
+
+    pub fn drain_emissions(&mut self) -> Vec<Effect> {
+        self.scheduler.drain_emissions()
+    }
+
+    fn report(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
+        RunReport {
+            task_id,
+            outcome,
             identity_names: self.identity_names(),
             relation_names: self.relation_names(),
-        })
+        }
+    }
+
+    fn context_for_execution(
+        &self,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        endpoint: Option<Identity>,
+    ) -> CompileContext {
+        let mut context = self.context.clone();
+        if let Some(principal) = principal {
+            context.define_identity("principal", principal);
+        }
+        if let Some(actor) = actor {
+            context.define_identity("actor", actor);
+        }
+        if let Some(endpoint) = endpoint {
+            context.define_identity("endpoint", endpoint);
+        }
+        context
     }
 
     pub fn run_source_as(
@@ -149,49 +334,32 @@ impl SourceRunner {
         actor: Symbol,
         source: &str,
     ) -> Result<RunReport, SourceTaskError> {
-        let semantic = parse_semantic(source);
-        if let Some(item) = semantic
-            .hir
-            .items
-            .iter()
-            .find(|item| matches!(item, HirItem::Method { .. } | HirItem::RelationRule { .. }))
-        {
-            return Err(unsupported_runner_error(
-                item_id(item),
-                semantic.span(item_id(item)).cloned(),
-                "actor-scoped execution cannot install methods or rules",
-            ));
-        }
-
         let actor_id = self.actor_identity(actor)?;
         let authority = authority_for_actor(self.scheduler.kernel(), actor_id)?;
-        let compiled = compile_semantic(semantic, &self.context)?;
-        let (task_id, outcome) = self
-            .scheduler
-            .submit_with_authority(Arc::new(compiled.program.clone()), authority)?;
-        self.refresh_context_from_catalog();
-        Ok(RunReport {
-            task_id,
-            outcome,
-            identity_names: self.identity_names(),
-            relation_names: self.relation_names(),
-        })
+        let submitted = self.submit_source(TaskRequest {
+            principal: None,
+            actor: Some(actor_id),
+            endpoint: None,
+            authority,
+            input: TaskInput::Source(source.to_owned()),
+        })?;
+        Ok(self.report(submitted.task_id, submitted.outcome))
     }
 
     pub fn resume_as(&mut self, actor: Symbol, task_id: u64) -> Result<RunReport, SourceTaskError> {
         let actor_id = self.actor_identity(actor)?;
         let authority = authority_for_actor(self.scheduler.kernel(), actor_id)?;
-        let outcome = self
-            .scheduler
-            .resume_with_authority(task_id, authority)
-            .map_err(SourceTaskError::from)?;
-        self.refresh_context_from_catalog();
-        Ok(RunReport {
-            task_id,
-            outcome,
-            identity_names: self.identity_names(),
-            relation_names: self.relation_names(),
-        })
+        let outcome = self.resume_task(TaskRequest {
+            principal: None,
+            actor: Some(actor_id),
+            endpoint: None,
+            authority,
+            input: TaskInput::Continuation {
+                task_id,
+                value: Value::nothing(),
+            },
+        })?;
+        Ok(self.report(task_id, outcome))
     }
 
     pub fn run_filein(&mut self, source: &str) -> Result<Vec<RunReport>, SourceTaskError> {
@@ -1051,6 +1219,55 @@ fn method_relations() -> MethodRelations {
         method_program: method_program_relation(),
         program_bytes: program_bytes_relation(),
     }
+}
+
+fn invocation_program(
+    selector: Symbol,
+    roles: Vec<(Symbol, Value)>,
+) -> Result<Program, RuntimeError> {
+    let relations = method_relations();
+    Program::new(
+        1,
+        [
+            Instruction::Dispatch {
+                dst: Register(0),
+                relations: relations.dispatch,
+                program_relation: relations.method_program,
+                program_bytes: relations.program_bytes,
+                selector: Operand::Value(Value::symbol(selector)),
+                roles: roles
+                    .into_iter()
+                    .map(|(role, value)| (Value::symbol(role), Operand::Value(value)))
+                    .collect(),
+            },
+            Instruction::Return {
+                value: Operand::Register(Register(0)),
+            },
+        ],
+    )
+}
+
+fn invocation_roles(
+    principal: Option<Identity>,
+    actor: Option<Identity>,
+    endpoint: Option<Identity>,
+    mut roles: Vec<(Symbol, Value)>,
+) -> Vec<(Symbol, Value)> {
+    push_context_role(&mut roles, "principal", principal);
+    push_context_role(&mut roles, "actor", actor);
+    push_context_role(&mut roles, "endpoint", endpoint);
+    roles
+}
+
+fn push_context_role(roles: &mut Vec<(Symbol, Value)>, name: &str, identity: Option<Identity>) {
+    let Some(identity) = identity else {
+        return;
+    };
+    let role = Symbol::intern(name);
+    if roles.iter().any(|(existing, _)| *existing == role) {
+        return;
+    }
+    roles.push((role, Value::identity(identity)));
 }
 
 fn method_relation_metadata() -> Vec<RelationMetadata> {
@@ -1943,9 +2160,12 @@ fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{FileinMode, SourceRunner};
-    use mica_runtime::{Emission, TaskOutcome};
+    use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
+    use mica_runtime::{
+        AuthorityContext, Emission, Instruction, Operand, Program, SuspendKind, TaskOutcome,
+    };
     use mica_var::{Identity, Symbol, Value};
+    use std::sync::Arc;
 
     #[test]
     fn runner_executes_source_against_empty_kernel() {
@@ -1986,6 +2206,99 @@ mod tests {
             .run_source("return emit(:target, \"hello\")")
             .unwrap_err();
         assert!(format!("{non_identity:?}").contains("InvalidEffectTarget"));
+    }
+
+    #[test]
+    fn runner_submit_source_as_exposes_context_and_drains_emissions() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_relation(:GrantEffect, 1)").unwrap();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("assert GrantEffect(#alice)").unwrap();
+        let actor = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0001).unwrap();
+
+        let submitted = runner
+            .submit_source_as(actor, endpoint, "emit(#endpoint, \"hello\")")
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("hello")
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].task_id, submitted.task_id);
+        assert_eq!(emissions[0].target, endpoint);
+        assert_eq!(emissions[0].value, Value::string("hello"));
+        assert!(runner.drain_emissions().is_empty());
+    }
+
+    #[test]
+    fn runner_submit_invocation_as_adds_actor_and_endpoint_roles() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../examples/capabilities.mica"))
+            .unwrap();
+        let actor = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0002).unwrap();
+        let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+
+        let submitted = runner
+            .submit_invocation_as(
+                actor,
+                endpoint,
+                Symbol::intern("polish"),
+                vec![(Symbol::intern("item"), Value::identity(lamp))],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("polished brass lamp")
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].task_id, submitted.task_id);
+        assert_eq!(emissions[0].target, actor);
+    }
+
+    #[test]
+    fn runner_resume_task_uses_continuation_request_authority() {
+        let mut runner = SourceRunner::new_empty();
+        let program = Arc::new(
+            Program::new(
+                0,
+                [
+                    Instruction::Suspend {
+                        kind: SuspendKind::TimedMillis(1),
+                    },
+                    Instruction::Return {
+                        value: Operand::Value(Value::bool(true)),
+                    },
+                ],
+            )
+            .unwrap(),
+        );
+        let (task_id, first) = runner.scheduler.submit(program).unwrap();
+        assert!(matches!(first, TaskOutcome::Suspended { .. }));
+
+        let outcome = runner
+            .resume_task(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Continuation {
+                    task_id,
+                    value: Value::nothing(),
+                },
+            })
+            .unwrap();
+
+        assert!(matches!(
+            outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
     }
 
     #[test]
