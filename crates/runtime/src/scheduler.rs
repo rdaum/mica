@@ -173,6 +173,15 @@ impl Scheduler {
         task_id: TaskId,
         authority: AuthorityContext,
     ) -> Result<TaskOutcome, SchedulerError> {
+        self.resume_with_value(task_id, authority, Value::nothing())
+    }
+
+    pub fn resume_with_value(
+        &mut self,
+        task_id: TaskId,
+        authority: AuthorityContext,
+        value: Value,
+    ) -> Result<TaskOutcome, SchedulerError> {
         if self.completed.contains_key(&task_id) {
             return Err(SchedulerError::TaskAlreadyCompleted(task_id));
         }
@@ -188,6 +197,7 @@ impl Scheduler {
             suspended.state,
             authority,
         );
+        task.resume_with(value)?;
         let outcome = task.run()?;
         let suspended_state = suspended_state(&outcome, &task);
         drop(task);

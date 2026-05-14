@@ -774,6 +774,92 @@ fn suspend_commits_then_resume_continues_in_new_transaction() {
 }
 
 #[test]
+fn suspend_value_returns_supplied_resume_value() {
+    let kernel = kernel_with_world_relations();
+    let program = Arc::new(
+        Program::new(
+            1,
+            [
+                Instruction::SuspendValue {
+                    dst: reg(0),
+                    duration: None,
+                },
+                Instruction::Return { value: r(0) },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut scheduler = Scheduler::new(kernel);
+
+    let (task_id, first) = scheduler.submit(program).unwrap();
+    assert_eq!(
+        first,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Never,
+            effects: vec![],
+            retries: 0,
+        }
+    );
+
+    let second = scheduler
+        .resume_with_value(task_id, AuthorityContext::root(), strv("resumed"))
+        .unwrap();
+    assert_eq!(
+        second,
+        TaskOutcome::Complete {
+            value: strv("resumed"),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn read_commits_effects_and_returns_supplied_input() {
+    let kernel = kernel_with_world_relations();
+    let program = Arc::new(
+        Program::new(
+            1,
+            [
+                Instruction::Emit {
+                    target: v(ident(EFFECT_TARGET)),
+                    value: v(strv("prompt")),
+                },
+                Instruction::Read {
+                    dst: reg(0),
+                    metadata: Some(v(sym("line"))),
+                },
+                Instruction::Return { value: r(0) },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut scheduler = Scheduler::new(kernel);
+
+    let (task_id, first) = scheduler.submit(program).unwrap();
+    assert_eq!(
+        first,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::WaitingForInput(sym("line")),
+            effects: vec![emitted(strv("prompt"))],
+            retries: 0,
+        }
+    );
+
+    let second = scheduler
+        .resume_with_value(task_id, AuthorityContext::root(), strv("north"))
+        .unwrap();
+    assert_eq!(
+        second,
+        TaskOutcome::Complete {
+            value: strv("north"),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+}
+
+#[test]
 fn task_retries_from_last_clean_state_on_commit_conflict() {
     let kernel = kernel_with_world_relations();
     let item = int(200);
@@ -1240,6 +1326,28 @@ fn program_artifact_round_trips_range_slicing() {
             retries: 0,
         }
     );
+}
+
+#[test]
+fn program_artifact_round_trips_suspend_and_read() {
+    let program = Program::new(
+        2,
+        [
+            Instruction::SuspendValue {
+                dst: reg(0),
+                duration: Some(v(Value::float(0.5))),
+            },
+            Instruction::Read {
+                dst: reg(1),
+                metadata: Some(r(0)),
+            },
+            Instruction::Return { value: r(1) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+
+    assert_eq!(restored, program);
 }
 
 #[test]

@@ -180,6 +180,12 @@ impl<'a> Task<'a> {
         &mut self.vm
     }
 
+    pub fn resume_with(&mut self, value: Value) -> Result<(), TaskError> {
+        self.vm.resume_with(value)?;
+        self.retry_state = self.vm.snapshot_state();
+        Ok(())
+    }
+
     pub(crate) fn checkpoint(&self) -> TaskState {
         TaskState {
             program: self.program.clone(),

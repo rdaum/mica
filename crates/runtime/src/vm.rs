@@ -96,6 +96,7 @@ impl Frame {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmState {
     frames: Vec<Frame>,
+    pending_resume: Option<Register>,
 }
 
 impl VmState {
@@ -162,6 +163,7 @@ impl RegisterVm {
         Self {
             state: VmState {
                 frames: vec![Frame::root(program)],
+                pending_resume: None,
             },
         }
     }
@@ -176,6 +178,15 @@ impl RegisterVm {
 
     pub fn restore_state(&mut self, state: &VmState) {
         self.state = state.clone();
+    }
+
+    pub fn resume_with(&mut self, value: Value) -> Result<(), RuntimeError> {
+        let Some(register) = self.state.pending_resume else {
+            return Ok(());
+        };
+        self.write_register(register, value)?;
+        self.state.pending_resume = None;
+        Ok(())
     }
 
     pub fn frame_count(&self) -> usize {
@@ -588,6 +599,28 @@ impl RegisterVm {
                 self.advance_ip()?;
                 Ok(VmHostResponse::Suspend(kind))
             }
+            Instruction::SuspendValue { dst, duration } => {
+                let kind = duration
+                    .as_ref()
+                    .map(|duration| self.suspend_duration(self.resolve_operand(duration)?))
+                    .transpose()?
+                    .unwrap_or(SuspendKind::Never);
+                self.advance_ip()?;
+                self.state.pending_resume = Some(dst);
+                Ok(VmHostResponse::Suspend(kind))
+            }
+            Instruction::Read { dst, metadata } => {
+                let metadata = metadata
+                    .as_ref()
+                    .map(|metadata| self.resolve_operand(metadata))
+                    .transpose()?
+                    .unwrap_or_else(Value::nothing);
+                self.advance_ip()?;
+                self.state.pending_resume = Some(dst);
+                Ok(VmHostResponse::Suspend(SuspendKind::WaitingForInput(
+                    metadata,
+                )))
+            }
             Instruction::RollbackRetry => {
                 self.advance_ip()?;
                 Ok(VmHostResponse::RollbackRetry)
@@ -814,6 +847,24 @@ impl RegisterVm {
                     .transpose()
             })
             .collect()
+    }
+
+    fn suspend_duration(&self, value: Value) -> Result<SuspendKind, RuntimeError> {
+        let seconds = if let Some(seconds) = value.as_int() {
+            seconds as f64
+        } else if let Some(seconds) = value.as_float() {
+            seconds
+        } else {
+            return Err(RuntimeError::InvalidSuspendDuration(value));
+        };
+        if !seconds.is_finite() || seconds < 0.0 {
+            return Err(RuntimeError::InvalidSuspendDuration(value));
+        }
+        let millis = (seconds * 1_000.0).round();
+        if millis > u64::MAX as f64 {
+            return Err(RuntimeError::InvalidSuspendDuration(value));
+        }
+        Ok(SuspendKind::TimedMillis(millis as u64))
     }
 }
 

@@ -245,11 +245,7 @@ impl SourceRunner {
     }
 
     pub fn resume_task(&mut self, request: TaskRequest) -> Result<TaskOutcome, SourceTaskError> {
-        let TaskInput::Continuation {
-            task_id,
-            value: _value,
-        } = request.input
-        else {
+        let TaskInput::Continuation { task_id, value } = request.input else {
             return Err(unsupported_runner_error(
                 NodeId(0),
                 None,
@@ -258,7 +254,7 @@ impl SourceRunner {
         };
         let outcome = self
             .scheduler
-            .resume_with_authority(task_id, request.authority)
+            .resume_with_value(task_id, request.authority, value)
             .map_err(SourceTaskError::from)?;
         self.refresh_context_from_catalog();
         Ok(outcome)
@@ -2298,6 +2294,106 @@ mod tests {
         assert!(matches!(
             outcome,
             TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+    }
+
+    #[test]
+    fn runner_suspend_returns_continuation_value() {
+        let mut runner = SourceRunner::new_empty();
+        let submitted = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return suspend()".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Never,
+                ..
+            }
+        ));
+
+        let outcome = runner
+            .resume_task(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Continuation {
+                    task_id: submitted.task_id,
+                    value: Value::string("awake"),
+                },
+            })
+            .unwrap();
+
+        assert!(matches!(
+            outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("awake")
+        ));
+    }
+
+    #[test]
+    fn runner_read_waits_for_input_and_returns_continuation_value() {
+        let mut runner = SourceRunner::new_empty();
+        let submitted = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return read(:line)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::WaitingForInput(value),
+                ..
+            } if value == Value::symbol(Symbol::intern("line"))
+        ));
+
+        let outcome = runner
+            .resume_task(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Continuation {
+                    task_id: submitted.task_id,
+                    value: Value::string("look"),
+                },
+            })
+            .unwrap();
+
+        assert!(matches!(
+            outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("look")
+        ));
+    }
+
+    #[test]
+    fn runner_suspend_seconds_becomes_timed_suspend() {
+        let mut runner = SourceRunner::new_empty();
+        let submitted = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return suspend(0.5)".to_owned()),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::TimedMillis(500),
+                ..
+            }
         ));
     }
 

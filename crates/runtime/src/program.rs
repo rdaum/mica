@@ -81,6 +81,7 @@ pub enum ErrorField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SuspendKind {
     Commit,
+    Never,
     TimedMillis(u64),
     WaitingForInput(Value),
 }
@@ -225,6 +226,14 @@ pub enum Instruction {
     Commit,
     Suspend {
         kind: SuspendKind,
+    },
+    SuspendValue {
+        dst: Register,
+        duration: Option<Operand>,
+    },
+    Read {
+        dst: Register,
+        metadata: Option<Operand>,
     },
     RollbackRetry,
     Return {
@@ -552,6 +561,14 @@ fn validate_instruction(
             validate_operands(register_count, roles.iter().map(|(_, operand)| operand))
         }
         Instruction::Commit | Instruction::Suspend { .. } | Instruction::RollbackRetry => Ok(()),
+        Instruction::SuspendValue { dst, duration }
+        | Instruction::Read {
+            dst,
+            metadata: duration,
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_operands(register_count, duration.iter())
+        }
     }
 }
 
@@ -635,6 +652,8 @@ const INST_ERROR_FIELD: u8 = 32;
 const INST_BUILTIN_CALL: u8 = 33;
 const INST_SCAN_BINDINGS: u8 = 34;
 const INST_ONE: u8 = 35;
+const INST_SUSPEND_VALUE: u8 = 36;
+const INST_READ: u8 = 37;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -885,10 +904,22 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
                 out.push(INST_SUSPEND_COMMIT);
                 Ok(())
             }
-            SuspendKind::TimedMillis(_) | SuspendKind::WaitingForInput(_) => Err(artifact_error(
-                "only commit suspension is serializable in program artifacts",
-            )),
+            SuspendKind::Never | SuspendKind::TimedMillis(_) | SuspendKind::WaitingForInput(_) => {
+                Err(artifact_error(
+                    "only commit suspension is serializable in program artifacts",
+                ))
+            }
         },
+        Instruction::SuspendValue { dst, duration } => {
+            out.push(INST_SUSPEND_VALUE);
+            write_register(out, *dst);
+            write_optional_operand(out, duration.as_ref())
+        }
+        Instruction::Read { dst, metadata } => {
+            out.push(INST_READ);
+            write_register(out, *dst);
+            write_optional_operand(out, metadata.as_ref())
+        }
         Instruction::RollbackRetry => {
             out.push(INST_ROLLBACK_RETRY);
             Ok(())
@@ -1364,6 +1395,14 @@ impl<'a> ByteReader<'a> {
             INST_COMMIT => Instruction::Commit,
             INST_SUSPEND_COMMIT => Instruction::Suspend {
                 kind: SuspendKind::Commit,
+            },
+            INST_SUSPEND_VALUE => Instruction::SuspendValue {
+                dst: self.read_register()?,
+                duration: self.read_optional_operand()?,
+            },
+            INST_READ => Instruction::Read {
+                dst: self.read_register()?,
+                metadata: self.read_optional_operand()?,
             },
             INST_ROLLBACK_RETRY => Instruction::RollbackRetry,
             INST_RETURN => Instruction::Return {

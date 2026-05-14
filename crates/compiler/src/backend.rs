@@ -1689,6 +1689,11 @@ impl<'a> ProgramCompiler<'a> {
         name: &str,
         args: &[HirArg],
     ) -> Result<Register, CompileError> {
+        match name {
+            "suspend" => return self.compile_suspend_call(id, args),
+            "read" => return self.compile_read_call(id, args),
+            _ => {}
+        }
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(self.unsupported(id, "builtin calls only support positional arguments"));
         }
@@ -1703,6 +1708,44 @@ impl<'a> ProgramCompiler<'a> {
             name: Symbol::intern(name),
             args,
         });
+        Ok(dst)
+    }
+
+    fn compile_suspend_call(
+        &mut self,
+        id: NodeId,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(id, "suspend only supports positional arguments"));
+        }
+        self.ensure_no_arg_splices(args, "suspend argument splices are not implemented yet")?;
+        if args.len() > 1 {
+            return Err(self.unsupported(id, "suspend expects 0 or 1 arguments"));
+        }
+        let duration = args
+            .first()
+            .map(|arg| self.compile_arg_operand(arg))
+            .transpose()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::SuspendValue { dst, duration });
+        Ok(dst)
+    }
+
+    fn compile_read_call(&mut self, id: NodeId, args: &[HirArg]) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(id, "read only supports positional arguments"));
+        }
+        self.ensure_no_arg_splices(args, "read argument splices are not implemented yet")?;
+        if args.len() > 1 {
+            return Err(self.unsupported(id, "read expects 0 or 1 arguments"));
+        }
+        let metadata = args
+            .first()
+            .map(|arg| self.compile_arg_operand(arg))
+            .transpose()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::Read { dst, metadata });
         Ok(dst)
     }
 
