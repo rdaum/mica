@@ -139,12 +139,13 @@ impl<'a> Task<'a> {
         }
     }
 
-    pub(crate) fn from_state(
+    pub(crate) fn from_state_with_authority(
         task_id: TaskId,
         kernel: &'a RelationKernel,
         resolver: Arc<ProgramResolver>,
         builtins: Arc<BuiltinRegistry>,
         state: TaskState,
+        authority: AuthorityContext,
     ) -> Self {
         Self {
             task_id,
@@ -154,7 +155,7 @@ impl<'a> Task<'a> {
             program: state.program,
             resolver,
             builtins,
-            authority: state.authority,
+            authority,
             retry_state: state.retry_state,
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
@@ -184,7 +185,6 @@ impl<'a> Task<'a> {
             program: self.program.clone(),
             vm_state: self.vm.snapshot_state(),
             retry_state: self.retry_state.clone(),
-            authority: self.authority.clone(),
             retries: self.retries,
             limits: self.limits,
         }
@@ -292,7 +292,6 @@ pub(crate) struct TaskState {
     program: Arc<crate::Program>,
     vm_state: VmState,
     retry_state: VmState,
-    authority: AuthorityContext,
     retries: u8,
     limits: TaskLimits,
 }

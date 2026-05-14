@@ -178,6 +178,22 @@ impl SourceRunner {
         })
     }
 
+    pub fn resume_as(&mut self, actor: Symbol, task_id: u64) -> Result<RunReport, SourceTaskError> {
+        let actor_id = self.actor_identity(actor)?;
+        let authority = authority_for_actor(self.scheduler.kernel(), actor_id)?;
+        let outcome = self
+            .scheduler
+            .resume_with_authority(task_id, authority)
+            .map_err(SourceTaskError::from)?;
+        self.refresh_context_from_catalog();
+        Ok(RunReport {
+            task_id,
+            outcome,
+            identity_names: self.identity_names(),
+            relation_names: self.relation_names(),
+        })
+    }
+
     pub fn run_filein(&mut self, source: &str) -> Result<Vec<RunReport>, SourceTaskError> {
         let mut reports = Vec::new();
         for chunk in source_chunks(source) {
@@ -525,15 +541,19 @@ fn source_chunks(source: &str) -> Vec<String> {
         }
         buffer.push_str(line);
         buffer.push('\n');
-        if parse(&buffer).errors.is_empty() {
+        if parse(&buffer).errors.is_empty() && source_has_items(&buffer) {
             chunks.push(std::mem::take(&mut buffer));
         }
     }
 
-    if !buffer.trim().is_empty() {
+    if !buffer.trim().is_empty() && source_has_items(&buffer) {
         chunks.push(buffer);
     }
     chunks
+}
+
+fn source_has_items(source: &str) -> bool {
+    !parse_semantic(source).hir.items.is_empty()
 }
 
 fn collect_source_declarations(source: &str) -> Result<SourceDeclarations, SourceTaskError> {
@@ -1417,22 +1437,30 @@ fn authority_for_actor(
     actor: Identity,
 ) -> Result<AuthorityContext, SourceTaskError> {
     let mut authority = AuthorityContext::empty();
-    mint_relation_grants(
-        kernel,
-        actor,
-        "GrantRead",
-        CapabilityOp::Read,
-        &mut authority,
-    )?;
-    mint_relation_grants(
-        kernel,
-        actor,
-        "GrantWrite",
-        CapabilityOp::Write,
-        &mut authority,
-    )?;
-    mint_invoke_grants(kernel, actor, &mut authority)?;
-    mint_effect_grants(kernel, actor, &mut authority)?;
+    for policy_name in ["CanRead", "GrantRead"] {
+        mint_relation_grants(
+            kernel,
+            actor,
+            policy_name,
+            CapabilityOp::Read,
+            &mut authority,
+        )?;
+    }
+    for policy_name in ["CanWrite", "GrantWrite"] {
+        mint_relation_grants(
+            kernel,
+            actor,
+            policy_name,
+            CapabilityOp::Write,
+            &mut authority,
+        )?;
+    }
+    for policy_name in ["CanInvoke", "GrantInvoke"] {
+        mint_invoke_grants(kernel, actor, policy_name, &mut authority)?;
+    }
+    for policy_name in ["CanEffect", "GrantEffect"] {
+        mint_effect_grants(kernel, actor, policy_name, &mut authority)?;
+    }
     Ok(authority)
 }
 
@@ -1467,9 +1495,10 @@ fn mint_relation_grants(
 fn mint_invoke_grants(
     kernel: &RelationKernel,
     actor: Identity,
+    policy_name: &str,
     authority: &mut AuthorityContext,
 ) -> Result<(), SourceTaskError> {
-    let Some(policy_relation) = policy_relation(kernel, "GrantInvoke", 2)? else {
+    let Some(policy_relation) = policy_relation(kernel, policy_name, 2)? else {
         return Ok(());
     };
     let snapshot = kernel.snapshot();
@@ -1479,7 +1508,7 @@ fn mint_invoke_grants(
     for tuple in tuples {
         let Some(selector) = tuple.values().get(1).and_then(Value::as_symbol) else {
             return Err(invalid_policy_fact(
-                "GrantInvoke",
+                policy_name,
                 "expected selector name symbol",
             ));
         };
@@ -1501,9 +1530,10 @@ fn mint_invoke_grants(
 fn mint_effect_grants(
     kernel: &RelationKernel,
     actor: Identity,
+    policy_name: &str,
     authority: &mut AuthorityContext,
 ) -> Result<(), SourceTaskError> {
-    let Some(policy_relation) = policy_relation(kernel, "GrantEffect", 1)? else {
+    let Some(policy_relation) = policy_relation(kernel, policy_name, 1)? else {
         return Ok(());
     };
     let snapshot = kernel.snapshot();
@@ -2437,6 +2467,71 @@ mod tests {
             .run_source_as(Symbol::intern("bob"), "make_relation(:Escape, 1)")
             .unwrap_err();
         assert!(format!("{bob_catalog:?}").contains("operation: \"grant\""));
+
+        runner
+            .run_source("retract HasRole(#alice, #builder)")
+            .unwrap();
+        runner
+            .run_source("assert HasRole(#alice, #visitor)")
+            .unwrap();
+
+        let alice_read_after_role_change = runner
+            .run_source_as(Symbol::intern("alice"), "return #lamp.name")
+            .unwrap();
+        assert!(
+            alice_read_after_role_change
+                .render()
+                .contains("complete: \"polished brass lamp\"")
+        );
+
+        let alice_dispatch_after_role_change = runner
+            .run_source_as(
+                Symbol::intern("alice"),
+                ":polish(actor: #alice, item: #lamp)",
+            )
+            .unwrap_err();
+        assert!(format!("{alice_dispatch_after_role_change:?}").contains("NoApplicableMethod"));
+    }
+
+    #[test]
+    fn runner_keeps_direct_grant_facts_as_policy_fallback() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "make_identity(:bob)\n\
+                 make_relation(:Name, 2)\n\
+                 make_relation(:GrantRead, 2)\n\
+                 assert Name(#bob, \"Bob\")\n\
+                 assert GrantRead(#bob, :Name)\n",
+            )
+            .unwrap();
+
+        let bob_read = runner
+            .run_source_as(Symbol::intern("bob"), "return #bob.name")
+            .unwrap();
+        assert!(bob_read.render().contains("complete: \"Bob\""));
+
+        let bob_write = runner
+            .run_source_as(Symbol::intern("bob"), "#bob.name = \"Robert\"")
+            .unwrap_err();
+        assert!(format!("{bob_write:?}").contains("PermissionDenied"));
+        assert!(format!("{bob_write:?}").contains("operation: \"write\""));
+    }
+
+    #[test]
+    fn runner_filein_ignores_comment_only_chunks() {
+        let mut runner = SourceRunner::new_empty();
+        let reports = runner
+            .run_filein(
+                "// one comment\n\
+                 // another comment\n\
+                 make_identity(:root)\n\
+                 // trailing comment\n",
+            )
+            .unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].render(), "task 1 complete: #root (retries: 0)");
     }
 
     #[test]

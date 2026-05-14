@@ -1,6 +1,8 @@
 // This filein seeds ordinary durable world state plus durable policy facts.
 // It does not store capability values. Capabilities are ephemeral task values
-// minted by the runner from Grant* facts when source is run with --actor.
+// minted by the runner from effective Can* relations when source is run with
+// --actor. The Can* relations below are derived from roles and policy surfaces,
+// so authors do not need one grant fact for every property or verb.
 //
 // Run it with a persistent store:
 //
@@ -10,11 +12,16 @@
 //   cargo run --bin mica -- --storage fjall --store demo-db --actor bob eval '#lamp.name = "stolen"'
 //
 // Alice's invocation succeeds and emits an effect. Bob can read the lamp name,
-// but the final command is denied because Bob has no GrantWrite fact for Name.
+// but the final command is denied because Bob's role has no write surface for
+// Name.
 
 // Prototype identities used by dispatch restrictions.
 make_identity(:user)
 make_identity(:thing)
+
+// Role identities used by the policy rules.
+make_identity(:builder)
+make_identity(:visitor)
 
 // Concrete actors and an object in the world.
 make_identity(:alice)
@@ -28,12 +35,24 @@ make_relation(:Delegates, 3)
 // current name instead of adding a second Name tuple.
 make_functional_relation(:Name, 2, [0])
 
-// These Grant* relations are just policy data. The runner interprets them at
-// task start and mints an AuthorityContext for the requested actor.
-make_relation(:GrantRead, 2)
-make_relation(:GrantWrite, 2)
-make_relation(:GrantInvoke, 2)
-make_relation(:GrantEffect, 1)
+// Policy is expressed in domain terms: actors have roles, relations and
+// selectors are grouped into surfaces, and roles can use those surfaces.
+make_relation(:HasRole, 2)
+make_relation(:RelationInSurface, 2)
+make_relation(:SelectorInSurface, 2)
+make_relation(:RoleCanRead, 2)
+make_relation(:RoleCanWrite, 2)
+make_relation(:RoleCanInvoke, 2)
+make_relation(:RoleCanEffect, 1)
+
+// These are the effective authority relations consumed by the runner. In this
+// example they are derived from the policy facts above. Direct Grant* facts are
+// still supported by the runtime as low-level bootstrap/escape-hatch policy,
+// but this file deliberately does not use them.
+make_relation(:CanRead, 2)
+make_relation(:CanWrite, 2)
+make_relation(:CanInvoke, 2)
+make_relation(:CanEffect, 1)
 
 // Dispatch sees Alice and Bob as users, and the lamp as a thing.
 assert Delegates(#alice, #user, 0)
@@ -43,14 +62,41 @@ assert Delegates(#lamp, #thing, 0)
 // Initial world state.
 assert Name(#lamp, "brass lamp")
 
-// Alice can read and write Name, invoke :polish, and emit effects.
-assert GrantRead(#alice, :Name)
-assert GrantWrite(#alice, :Name)
-assert GrantInvoke(#alice, :polish)
-assert GrantEffect(#alice)
+// Alice is a builder. Bob is a visitor.
+assert HasRole(#alice, #builder)
+assert HasRole(#bob, #visitor)
 
-// Bob can only read Name. He cannot write it or invoke :polish.
-assert GrantRead(#bob, :Name)
+// Surfaces collect low-level operations into coarse author-facing policy sets.
+assert RelationInSurface(:inspection, :Name)
+assert RelationInSurface(:editing, :Name)
+assert SelectorInSurface(:maintenance, :polish)
+
+// Builders can inspect and edit names, invoke maintenance verbs, and emit
+// effects. Visitors can inspect names only.
+assert RoleCanRead(#builder, :inspection)
+assert RoleCanWrite(#builder, :editing)
+assert RoleCanInvoke(#builder, :maintenance)
+assert RoleCanEffect(#builder)
+assert RoleCanRead(#visitor, :inspection)
+
+CanRead(actor, relation) :-
+  HasRole(actor, role),
+  RoleCanRead(role, surface),
+  RelationInSurface(surface, relation)
+
+CanWrite(actor, relation) :-
+  HasRole(actor, role),
+  RoleCanWrite(role, surface),
+  RelationInSurface(surface, relation)
+
+CanInvoke(actor, selector) :-
+  HasRole(actor, role),
+  RoleCanInvoke(role, surface),
+  SelectorInSurface(surface, selector)
+
+CanEffect(actor) :-
+  HasRole(actor, role),
+  RoleCanEffect(role)
 
 // This verb needs all four pieces of authority under --actor alice:
 // invoke for :polish, write for item.name, effect for emit, and read for the

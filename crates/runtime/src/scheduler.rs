@@ -159,7 +159,11 @@ impl Scheduler {
         (task_id, outcome)
     }
 
-    pub fn resume(&mut self, task_id: TaskId) -> Result<TaskOutcome, SchedulerError> {
+    pub fn resume_with_authority(
+        &mut self,
+        task_id: TaskId,
+        authority: AuthorityContext,
+    ) -> Result<TaskOutcome, SchedulerError> {
         if self.completed.contains_key(&task_id) {
             return Err(SchedulerError::TaskAlreadyCompleted(task_id));
         }
@@ -167,12 +171,13 @@ impl Scheduler {
             .suspended
             .remove(&task_id)
             .ok_or(SchedulerError::UnknownTask(task_id))?;
-        let mut task = Task::from_state(
+        let mut task = Task::from_state_with_authority(
             task_id,
             &self.kernel,
             self.resolver.clone(),
             self.builtins.clone(),
             suspended.state,
+            authority,
         );
         let outcome = task.run()?;
         let suspended_state = suspended_state(&outcome, &task);

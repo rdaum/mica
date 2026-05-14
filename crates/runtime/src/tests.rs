@@ -940,7 +940,9 @@ fn scheduler_parks_and_resumes_suspended_task() {
         }]
     );
 
-    let second = scheduler.resume(task_id).unwrap();
+    let second = scheduler
+        .resume_with_authority(task_id, AuthorityContext::root())
+        .unwrap();
     assert_eq!(
         second,
         TaskOutcome::Complete {
@@ -999,6 +1001,63 @@ fn scheduler_does_not_deliver_pending_effects_from_abort() {
 }
 
 #[test]
+fn scheduler_can_refresh_authority_when_resuming_suspended_task() {
+    let kernel = kernel_with_world_relations();
+    let program = Arc::new(
+        Program::new(
+            0,
+            [
+                Instruction::Suspend {
+                    kind: SuspendKind::TimedMillis(1),
+                },
+                Instruction::ReplaceFunctional {
+                    relation: rel(2),
+                    values: vec![v(int(200)), v(int(300))],
+                },
+                Instruction::Return {
+                    value: v(Value::bool(true)),
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    let mut scheduler = Scheduler::new(kernel);
+
+    let (task_id, first) = scheduler
+        .submit_with_authority(program, AuthorityContext::empty())
+        .unwrap();
+    assert_eq!(
+        first,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::TimedMillis(1),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+
+    let mut refreshed = AuthorityContext::empty();
+    refreshed.mint(CapabilityGrant::relation(CapabilityOp::Write, rel(2)));
+    let second = scheduler.resume_with_authority(task_id, refreshed).unwrap();
+
+    assert_eq!(
+        second,
+        TaskOutcome::Complete {
+            value: Value::bool(true),
+            effects: vec![],
+            retries: 0,
+        }
+    );
+    assert_eq!(
+        scheduler
+            .kernel()
+            .snapshot()
+            .scan(rel(2), &[Some(int(200)), None])
+            .unwrap(),
+        vec![Tuple::from([int(200), int(300)])]
+    );
+}
+
+#[test]
 fn scheduler_rejects_unknown_and_completed_resume() {
     let kernel = kernel_with_world_relations();
     let program = Arc::new(
@@ -1013,12 +1072,16 @@ fn scheduler_rejects_unknown_and_completed_resume() {
     let mut scheduler = Scheduler::new(kernel);
 
     assert_eq!(
-        scheduler.resume(999).unwrap_err(),
+        scheduler
+            .resume_with_authority(999, AuthorityContext::root())
+            .unwrap_err(),
         SchedulerError::UnknownTask(999)
     );
     let (task_id, _) = scheduler.submit(program).unwrap();
     assert_eq!(
-        scheduler.resume(task_id).unwrap_err(),
+        scheduler
+            .resume_with_authority(task_id, AuthorityContext::root())
+            .unwrap_err(),
         SchedulerError::TaskAlreadyCompleted(task_id)
     );
 }
@@ -1589,7 +1652,9 @@ fn suspension_inside_callee_resumes_full_activation_stack() {
     assert_eq!(scheduler.suspended(task_id).unwrap().frame_count(), 2);
 
     assert_eq!(
-        scheduler.resume(task_id).unwrap(),
+        scheduler
+            .resume_with_authority(task_id, AuthorityContext::root())
+            .unwrap(),
         TaskOutcome::Complete {
             value: int(7),
             effects: vec![],
