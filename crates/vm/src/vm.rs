@@ -127,7 +127,7 @@ pub enum VmHostResponse {
     RollbackRetry,
 }
 
-pub(crate) struct VmHostContext<'ctx, 'kernel> {
+pub struct VmHostContext<'ctx, 'kernel> {
     tx: &'ctx mut Transaction<'kernel>,
     authority: &'ctx mut AuthorityContext,
     resolver: &'ctx ProgramResolver,
@@ -136,7 +136,7 @@ pub(crate) struct VmHostContext<'ctx, 'kernel> {
 }
 
 impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
-    pub(crate) fn new(
+    pub fn new(
         tx: &'ctx mut Transaction<'kernel>,
         authority: &'ctx mut AuthorityContext,
         resolver: &'ctx ProgramResolver,
@@ -203,7 +203,7 @@ impl RegisterVm {
         self.write_register(register, value)
     }
 
-    pub(crate) fn run_until_host_response(
+    pub fn run_until_host_response(
         &mut self,
         host: &mut VmHostContext<'_, '_>,
         instruction_budget: usize,

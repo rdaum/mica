@@ -14,7 +14,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use mica_compiler::parse;
 use mica_relation_kernel::FjallDurabilityMode;
-use mica_runner::{FileinMode, SourceRunner};
+use mica_runtime::{FileinMode, SourceRunner};
 use mica_var::Symbol;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -161,7 +161,7 @@ fn run_cli_source(
     runner: &mut SourceRunner,
     cli: &Cli,
     source: &str,
-) -> Result<mica_runner::RunReport, String> {
+) -> Result<mica_runtime::RunReport, String> {
     if let Some(actor) = &cli.actor {
         return runner
             .run_source_as(actor_symbol(actor), source)
@@ -248,11 +248,11 @@ fn evaluate_buffer(runner: &mut SourceRunner, cli: &Cli, buffer: &mut String) {
     buffer.clear();
 }
 
-fn print_report(report: mica_runner::RunReport) {
+fn print_report(report: mica_runtime::RunReport) {
     println!("{}", report.render());
 }
 
-fn format_source_error(error: mica_compiler::SourceTaskError) -> String {
+fn format_source_error(error: mica_runtime::SourceTaskError) -> String {
     format!("error: {error:?}")
 }
 

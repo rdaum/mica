@@ -1,19 +1,15 @@
 # mica-runner
 
-`mica-runner` wires the compiler, runtime, relation kernel, and builtins into a
-small executable environment. It provides the `mica` binary, the REPL, source
-evaluation, and filein support.
+`mica-runner` is the command-line executable crate for Mica. It provides the
+`mica` binary, the REPL, source evaluation, filein, and fileout commands.
 
-This crate is not intended to be the final server. It is the current integration
-surface for exercising the language and live relational model.
+This crate is not the live runtime environment. That code lives in
+`mica-runtime`; this crate is a thin command-line consumer of it.
 
 ## What's Here
 
 - `src/main.rs`: command-line entry point for `mica run`, `mica filein`,
   `mica eval`, and `mica repl`.
-- `src/lib.rs`: `SourceRunner`, builtin registration, bootstrap relations,
-  context refresh, method/rule installation, filein chunking, report rendering,
-  and display name lookup for identities and relations.
 
 ## Commands
 
@@ -43,10 +39,8 @@ cargo run --bin mica
 
 ## Role In Mica
 
-The runner is where live authoring currently becomes visible. It creates an
-empty kernel, installs builtins like `make_identity` and `make_relation`, keeps
-the compiler context in sync with catalogue facts, installs rules and methods,
-and submits ordinary source chunks to the task manager.
+The runner opens a `mica-runtime` `SourceRunner`, feeds it source from files,
+command-line arguments, or the REPL, and renders reports for humans.
 
 ## Licence
 

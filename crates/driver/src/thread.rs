@@ -13,7 +13,7 @@
 
 use crate::{CompioTaskDriver, DriverError, DriverEvent, DriverThreadError};
 use compio::runtime::{Runtime, spawn};
-use mica_runner::{SourceRunner, SubmittedTask, TaskRequest};
+use mica_runtime::{SourceRunner, SubmittedTask, TaskRequest};
 use mica_runtime::{TaskId, TaskOutcome};
 use mica_var::{Identity, Value};
 use std::sync::mpsc;

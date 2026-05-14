@@ -782,6 +782,7 @@ dependencies = [
  "mica-relation-kernel",
  "mica-runtime",
  "mica-var",
+ "mica-vm",
 ]
 
 [[package]]
@@ -790,7 +791,6 @@ version = "0.1.0"
 dependencies = [
  "compio",
  "mica-compiler",
- "mica-runner",
  "mica-runtime",
  "mica-var",
 ]
@@ -820,8 +820,10 @@ dependencies = [
 name = "mica-runtime"
 version = "0.1.0"
 dependencies = [
+ "mica-compiler",
  "mica-relation-kernel",
  "mica-var",
+ "mica-vm",
 ]
 
 [[package]]
@@ -830,6 +832,14 @@ version = "0.1.0"
 dependencies = [
  "micromeasure",
  "proptest",
+]
+
+[[package]]
+name = "mica-vm"
+version = "0.1.0"
+dependencies = [
+ "mica-relation-kernel",
+ "mica-var",
 ]
 
 [[package]]

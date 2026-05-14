@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use mica_relation_kernel::{KernelError, RelationId};
+use mica_relation_kernel::KernelError;
 use mica_var::{Symbol, Value};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,25 +75,5 @@ pub enum RuntimeError {
 impl From<KernelError> for RuntimeError {
     fn from(value: KernelError) -> Self {
         Self::Kernel(value)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TaskError {
-    Runtime(RuntimeError),
-    ConflictRetriesExceeded { retries: u8 },
-    MissingTransaction,
-    UnknownRelation(RelationId),
-}
-
-impl From<RuntimeError> for TaskError {
-    fn from(value: RuntimeError) -> Self {
-        Self::Runtime(value)
-    }
-}
-
-impl From<KernelError> for TaskError {
-    fn from(value: KernelError) -> Self {
-        Self::Runtime(RuntimeError::Kernel(value))
     }
 }

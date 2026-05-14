@@ -1,33 +1,20 @@
 # mica-runtime
 
-`mica-runtime` is Mica's register-based task runtime. It executes compiled
-programs against `mica-relation-kernel` transactions and reports completion,
-commit, retry, suspension, effects, and runtime errors.
+`mica-runtime` is the live Mica runtime environment. It wires the compiler,
+task manager, relation kernel, VM, and core builtins into the programmable
+system that drivers and command-line tools execute against.
 
-The runtime is intentionally register-based rather than stack-based. Programs
-operate over explicit registers, relation instructions, control-flow
-instructions, exception handling, function calls, dispatch, and builtin calls.
+It owns the layer above the bytecode VM and relation kernel, and below drivers
+or command-line tools:
 
-## What's Here
+- `SourceRunner`;
+- task request, continuation, task manager, and task outcome types;
+- bootstrap catalogue relations;
+- builtin registration;
+- method and rule installation;
+- filein/fileout ownership;
+- authority construction for actor execution;
+- report rendering and identity/relation display names.
 
-- `src/program.rs`: bytecode format, `Program`, instructions, operands,
-  registers, serialisation, and validation.
-- `src/vm.rs`: register VM state, frames, instruction execution, and host
-  response boundaries.
-- `src/task.rs`: task lifecycle, transaction boundaries, retries, and limits.
-- `src/task_manager.rs`: task submission, immediate completion, effect logging,
-  suspended tasks, and kernel ownership.
-- `src/builtin.rs`: builtin function registry and builtin call context.
-- `src/error.rs`: runtime, task manager, and task error types.
-- `src/tests.rs`: runtime and task manager tests.
-
-## Role In Mica
-
-The runtime sits between compiled Mica programs and the relation kernel. It
-turns executable source into transactional world changes: relation assertions,
-retractions, queries, dispatch, builtin calls, effects, and return values.
-
-## Licence
-
-Mica is licensed under the GNU Affero General Public License v3.0. See the
-repository root `LICENSE`.
+The bytecode execution core lives in `mica-vm`. The command-line REPL lives in
+`mica-runner`. The compio task driver lives in `mica-driver`.

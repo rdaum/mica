@@ -21,11 +21,11 @@ use mica_relation_kernel::{
     Atom, DispatchRelations, RelationId, RelationKernel, Rule, RuleDefinition, Term, Transaction,
     Tuple,
 };
-use mica_runtime::{
-    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, QueryBinding, Register,
-    RuntimeBinaryOp, RuntimeUnaryOp, TaskId, TaskManager, TaskManagerError, TaskOutcome,
-};
 use mica_var::{Identity, Symbol, Value, ValueError};
+use mica_vm::{
+    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, QueryBinding, Register,
+    RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
+};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -56,20 +56,6 @@ pub fn compile_semantic(
     let compiler = ProgramCompiler::new(&semantic, context);
     let program = compiler.compile_program(&semantic.hir)?;
     Ok(CompiledProgram { semantic, program })
-}
-
-pub fn submit_source_task(
-    source: &str,
-    context: &CompileContext,
-    task_manager: &mut TaskManager,
-) -> Result<SubmittedSourceTask, SourceTaskError> {
-    let compiled = compile_source(source, context)?;
-    let (task_id, outcome) = task_manager.submit(Arc::new(compiled.program.clone()))?;
-    Ok(SubmittedSourceTask {
-        compiled,
-        task_id,
-        outcome,
-    })
 }
 
 pub fn install_rules_from_source(
@@ -214,13 +200,6 @@ pub fn install_methods(
 pub struct CompiledProgram {
     pub semantic: SemanticProgram,
     pub program: Program,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SubmittedSourceTask {
-    pub compiled: CompiledProgram,
-    pub task_id: TaskId,
-    pub outcome: TaskOutcome,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -373,30 +352,12 @@ pub enum CompileError {
         span: Option<Span>,
         binding: BindingId,
     },
-    Runtime(mica_runtime::RuntimeError),
+    Runtime(RuntimeError),
     Kernel(mica_relation_kernel::KernelError),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SourceTaskError {
-    Compile(CompileError),
-    TaskManager(TaskManagerError),
-}
-
-impl From<CompileError> for SourceTaskError {
-    fn from(value: CompileError) -> Self {
-        Self::Compile(value)
-    }
-}
-
-impl From<TaskManagerError> for SourceTaskError {
-    fn from(value: TaskManagerError) -> Self {
-        Self::TaskManager(value)
-    }
-}
-
-impl From<mica_runtime::RuntimeError> for CompileError {
-    fn from(value: mica_runtime::RuntimeError) -> Self {
+impl From<RuntimeError> for CompileError {
+    fn from(value: RuntimeError) -> Self {
         Self::Runtime(value)
     }
 }
@@ -2811,6 +2772,21 @@ mod tests {
         Emission::new(id(99), value)
     }
 
+    #[derive(Debug)]
+    struct SubmittedSourceTask {
+        outcome: TaskOutcome,
+    }
+
+    fn submit_source_task(
+        source: &str,
+        context: &CompileContext,
+        task_manager: &mut TaskManager,
+    ) -> Result<SubmittedSourceTask, mica_runtime::TaskManagerError> {
+        let compiled = compile_source(source, context).unwrap();
+        let (_, outcome) = task_manager.submit(Arc::new(compiled.program.clone()))?;
+        Ok(SubmittedSourceTask { outcome })
+    }
+
     fn emit_first_arg(
         context: &mut BuiltinContext<'_, '_>,
         args: &[Value],
@@ -3449,9 +3425,9 @@ mod tests {
 
         assert!(matches!(
             error,
-            SourceTaskError::TaskManager(mica_runtime::TaskManagerError::Task(
+            mica_runtime::TaskManagerError::Task(
                 mica_runtime::TaskError::Runtime(RuntimeError::UnknownBuiltin { name })
-            )) if name == Symbol::intern("missing_builtin")
+            ) if name == Symbol::intern("missing_builtin")
         ));
     }
 

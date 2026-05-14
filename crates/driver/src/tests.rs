@@ -13,8 +13,8 @@
 
 use crate::{CompioTaskDriver, CompioTaskDriverThread, DriverEvent};
 use compio::runtime::{Runtime, time::sleep};
-use mica_runner::{TaskInput, TaskRequest};
 use mica_runtime::{AuthorityContext, SuspendKind, TaskOutcome};
+use mica_runtime::{TaskInput, TaskRequest};
 use mica_var::{Identity, Value};
 use std::time::Duration;
 

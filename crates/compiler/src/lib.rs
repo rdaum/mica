@@ -34,9 +34,8 @@ pub use ast::{
 };
 pub use backend::{
     CompileContext, CompileError, CompiledProgram, InstalledMethod, InstalledRole,
-    MethodInstallation, MethodRelations, RuleInstallation, SourceTaskError, SubmittedSourceTask,
-    compile_semantic, compile_source, install_methods, install_methods_from_source, install_rules,
-    install_rules_from_source, submit_source_task,
+    MethodInstallation, MethodRelations, RuleInstallation, compile_semantic, compile_source,
+    install_methods, install_methods_from_source, install_rules, install_rules_from_source,
 };
 pub use hir::{
     HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,

@@ -48,11 +48,13 @@ crate boundaries as meaningful:
 - `mica-var`: compact value representation.
 - `mica-relation-kernel`: relations, transactions, rules, queries, and
   dispatch matching.
-- `mica-runtime`: register VM, task manager, tasks, builtins, and effects.
+- `mica-vm`: bytecode format and register VM execution core.
 - `mica-compiler`: lexer, parser, lowering, semantic analysis, and bytecode
   compilation.
-- `mica-runner`: REPL, filein runner, builtins, and rendered reports.
+- `mica-runtime`: live environment, task manager, builtins, filein/fileout, and
+  rendered reports.
 - `mica-driver`: compio task driver, wakeups, input, and emissions.
+- `mica-runner`: CLI and REPL binary.
 
 Keep design notes, crate READMEs, and examples aligned with implemented syntax.
 When documenting future syntax or semantics, mark it clearly as planned rather

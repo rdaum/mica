@@ -1,7 +1,6 @@
 # mica-driver
 
-`mica-driver` is the first event-loop layer above `mica-runtime` and
-`mica-runner`.
+`mica-driver` is the first event-loop layer above `mica-runtime`.
 
 The runtime task manager is synchronous: each call runs a task until
 completion, abort, commit, or suspension. This crate owns the next layer of

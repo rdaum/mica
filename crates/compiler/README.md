@@ -2,10 +2,10 @@
 
 `mica-compiler` is the frontend and bytecode compiler for Mica's surface
 language. It takes source text through lexing, parsing, AST lowering, semantic
-analysis, HIR, and bytecode emission for `mica-runtime`.
+analysis, HIR, and bytecode emission for `mica-vm`.
 
 The compiler also contains installation paths for rules and methods because
-those are live world changes rather than ordinary ephemeral expressions.
+those are live runtime changes rather than ordinary ephemeral expressions.
 
 ## What's Here
 
@@ -19,8 +19,8 @@ those are live world changes rather than ordinary ephemeral expressions.
 - `src/semantics.rs`: name binding, scopes, diagnostics, and AST-to-HIR
   analysis.
 - `src/hir.rs`: semantic intermediate representation used by the backend.
-- `src/backend.rs`: bytecode generation, source task submission, method
-  installation, rule installation, and compile contexts.
+- `src/backend.rs`: bytecode generation, method installation, rule
+  installation, and compile contexts.
 
 ## Role In Mica
 

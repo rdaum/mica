@@ -11,12 +11,10 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{
-    AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, SuspendKind, Task,
-    TaskError, TaskId, TaskLimits, TaskOutcome,
-};
+use crate::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 use mica_relation_kernel::RelationKernel;
 use mica_var::{Identity, Value};
+use mica_vm::{AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, SuspendKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 

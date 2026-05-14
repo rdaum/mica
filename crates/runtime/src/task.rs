@@ -11,13 +11,12 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::vm::VmHostContext;
-use crate::{
-    AuthorityContext, BuiltinRegistry, Emission, ProgramResolver, RegisterVm, SuspendKind,
-    TaskError, VmHostResponse, VmState,
-};
 use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
 use mica_var::Value;
+use mica_vm::{
+    AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RegisterVm,
+    RuntimeError, SuspendKind, VmHostContext, VmHostResponse, VmState,
+};
 use std::sync::Arc;
 
 pub type TaskId = u64;
@@ -58,10 +57,30 @@ pub enum TaskOutcome {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TaskError {
+    Runtime(RuntimeError),
+    ConflictRetriesExceeded { retries: u8 },
+    MissingTransaction,
+    UnknownRelation(mica_relation_kernel::RelationId),
+}
+
+impl From<RuntimeError> for TaskError {
+    fn from(value: RuntimeError) -> Self {
+        Self::Runtime(value)
+    }
+}
+
+impl From<KernelError> for TaskError {
+    fn from(value: KernelError) -> Self {
+        Self::Runtime(RuntimeError::Kernel(value))
+    }
+}
+
 pub struct Task<'a> {
     task_id: TaskId,
     kernel: &'a RelationKernel,
-    program: Arc<crate::Program>,
+    program: Arc<Program>,
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
     authority: AuthorityContext,
@@ -78,7 +97,7 @@ impl<'a> Task<'a> {
     pub fn new(
         task_id: TaskId,
         kernel: &'a RelationKernel,
-        program: Arc<crate::Program>,
+        program: Arc<Program>,
         resolver: Arc<ProgramResolver>,
         limits: TaskLimits,
     ) -> Self {
@@ -95,7 +114,7 @@ impl<'a> Task<'a> {
     pub fn new_with_builtins(
         task_id: TaskId,
         kernel: &'a RelationKernel,
-        program: Arc<crate::Program>,
+        program: Arc<Program>,
         resolver: Arc<ProgramResolver>,
         builtins: Arc<BuiltinRegistry>,
         limits: TaskLimits,
@@ -114,7 +133,7 @@ impl<'a> Task<'a> {
     pub fn new_with_authority(
         task_id: TaskId,
         kernel: &'a RelationKernel,
-        program: Arc<crate::Program>,
+        program: Arc<Program>,
         resolver: Arc<ProgramResolver>,
         builtins: Arc<BuiltinRegistry>,
         authority: AuthorityContext,
@@ -295,7 +314,7 @@ impl<'a> Task<'a> {
 }
 
 pub(crate) struct TaskState {
-    program: Arc<crate::Program>,
+    program: Arc<Program>,
     vm_state: VmState,
     retry_state: VmState,
     retries: u8,

@@ -35,10 +35,11 @@ This is a Rust Cargo workspace:
 crates/
 ├── var/              # one-word values, heap values, identities, symbols, caps
 ├── relation-kernel/  # MVCC relation store, rules, dispatch support, providers
-├── runtime/          # register VM, tasks, task manager, authority, effects
+├── vm/               # bytecode format and register VM execution core
 ├── compiler/         # parser, HIR, lowering, bytecode compilation
-├── runner/           # filein/fileout, builtins, examples, CLI/REPL integration
-└── driver/           # compio task driver, wakeups, input, emissions
+├── runtime/          # live environment, tasks, builtins, filein/fileout
+├── driver/           # compio task driver, wakeups, input, emissions
+└── runner/           # CLI and REPL binary
 ```
 
 Supporting material:
@@ -81,7 +82,7 @@ Performance is a design constraint, not a later cleanup task.
   compiled authority/context can do the work once.
 - Measure optimizations when making performance claims.
 - Be conservative about dependencies, especially in `mica-var`,
-  `mica-relation-kernel`, and `mica-runtime`.
+  `mica-relation-kernel`, `mica-vm`, and `mica-runtime`.
 - Keep dependency versions centralised in the root workspace `Cargo.toml`;
   member crates should use `workspace = true`.
 

@@ -4,8 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Transactional register-based runtime for Mica"
+description = "Live Mica runtime environment"
 
 [dependencies]
+mica-compiler.workspace = true
 mica-relation-kernel.workspace = true
 mica-var.workspace = true
+mica-vm.workspace = true

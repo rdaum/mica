@@ -11,8 +11,8 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use mica_compiler::SourceTaskError;
-use mica_runner::TaskRequest;
+use mica_runtime::SourceTaskError;
+use mica_runtime::TaskRequest;
 use mica_runtime::{AuthorityContext, Effect, SuspendKind, TaskId};
 use mica_var::{Identity, Value};
 use std::fmt::{Display, Formatter};

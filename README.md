@@ -229,8 +229,9 @@ Mica is an early Rust prototype. The current tree has:
 - a compact value layer;
 - a relation kernel with base facts, transactions, indexes, catalogue metadata,
   and derived rules;
-- a virtual machine (register-based) runtime;
-- a task manager that manages transaction and execution lifecycle;
+- a register-based bytecode VM;
+- a runtime environment with task management, builtins, filein/fileout, and
+  transaction lifecycle;
 - compiler for a growing Mica language surface;
 - a compio-driven task driver for timed wakeups, input resumes, and emissions;
 - role-based method dispatch;
@@ -262,14 +263,15 @@ cargo test --workspace
 - [`crates/var`](crates/var/README.md): Mica value representation.
 - [`crates/relation-kernel`](crates/relation-kernel/README.md): relation
   storage, transactions, rules, dispatch matching, and catalogue facts.
-- [`crates/runtime`](crates/runtime/README.md): register VM, task manager, tasks,
-  builtins, and effects.
+- [`crates/vm`](crates/vm/README.md): bytecode format and register VM execution
+  core.
 - [`crates/compiler`](crates/compiler/README.md): lexer, parser, lowering,
   semantic analysis, and bytecode compilation.
-- [`crates/runner`](crates/runner/README.md): REPL, filein runner, builtins,
-  and rendered reports.
+- [`crates/runtime`](crates/runtime/README.md): live environment, task manager,
+  builtins, filein/fileout, and rendered reports.
 - [`crates/driver`](crates/driver/README.md): compio task driver, wakeups,
   input, and emissions.
+- [`crates/runner`](crates/runner/README.md): CLI and REPL binary.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,
   verbs, and dispatch.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,

@@ -9,6 +9,5 @@ description = "Compio-driven task driver for Mica"
 [dependencies]
 compio.workspace = true
 mica-compiler.workspace = true
-mica-runner.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true

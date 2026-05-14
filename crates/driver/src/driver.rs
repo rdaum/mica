@@ -13,7 +13,7 @@
 
 use crate::{DriverError, DriverEvent, TaskContext};
 use compio::runtime::{JoinHandle as CompioJoinHandle, spawn, time::sleep};
-use mica_runner::{SourceRunner, SubmittedTask, TaskInput, TaskRequest};
+use mica_runtime::{SourceRunner, SubmittedTask, TaskInput, TaskRequest};
 use mica_runtime::{SuspendKind, TaskId, TaskOutcome};
 use mica_var::{Identity, Value};
 use std::cell::RefCell;
