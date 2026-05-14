@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
-use mica_relation_kernel::RelationKernel;
+use mica_relation_kernel::{RelationKernel, TransientStore};
 use mica_var::{Identity, Symbol, Value};
 use mica_vm::{
     AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RuntimeContext,
@@ -71,6 +71,7 @@ pub struct TaskManager {
     suspended: HashMap<TaskId, SuspendedTask>,
     completed: HashMap<TaskId, TaskOutcome>,
     effects: EffectLog,
+    transient: TransientStore,
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
@@ -84,6 +85,7 @@ impl TaskManager {
             suspended: HashMap::new(),
             completed: HashMap::new(),
             effects: EffectLog::default(),
+            transient: TransientStore::new(),
             limits: TaskLimits::default(),
             resolver: Arc::new(ProgramResolver::new()),
             builtins: Arc::new(BuiltinRegistry::new()),
@@ -115,6 +117,14 @@ impl TaskManager {
 
     pub fn effects_mut(&mut self) -> &mut EffectLog {
         &mut self.effects
+    }
+
+    pub fn transient(&self) -> &TransientStore {
+        &self.transient
+    }
+
+    pub fn transient_mut(&mut self) -> &mut TransientStore {
+        &mut self.transient
     }
 
     pub fn drain_emissions(&mut self) -> Vec<Effect> {
@@ -163,7 +173,8 @@ impl TaskManager {
         );
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
-        let outcome = task.run()?;
+        let transient_scopes = transient_scopes(runtime_context);
+        let outcome = task.run_with_transient(Some(&mut self.transient), &transient_scopes)?;
         let suspended_state = suspended_state(&outcome, &task);
         drop(task);
         self.record_outcome(task_id, outcome.clone(), suspended_state);
@@ -224,7 +235,8 @@ impl TaskManager {
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
         task.resume_with(value)?;
-        let outcome = task.run()?;
+        let transient_scopes = transient_scopes(runtime_context);
+        let outcome = task.run_with_transient(Some(&mut self.transient), &transient_scopes)?;
         let suspended_state = suspended_state(&outcome, &task);
         drop(task);
         self.record_outcome(task_id, outcome.clone(), suspended_state);
@@ -309,6 +321,23 @@ fn task_status_value(task_id: TaskId, state: Symbol) -> Value {
         (Value::symbol(Symbol::intern("id")), task_id),
         (Value::symbol(Symbol::intern("state")), Value::symbol(state)),
     ])
+}
+
+fn transient_scopes(runtime_context: RuntimeContext) -> Vec<Identity> {
+    let mut scopes = Vec::with_capacity(3);
+    for scope in [
+        runtime_context.principal(),
+        runtime_context.actor(),
+        runtime_context.endpoint(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    scopes
 }
 
 pub struct SuspendedTask {

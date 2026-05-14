@@ -35,6 +35,7 @@ mod query;
 mod rules;
 mod snapshot;
 mod transaction;
+mod transient;
 mod tuple;
 
 #[cfg(test)]
@@ -59,6 +60,7 @@ pub use query::{QueryPlan, RelationRead};
 pub use rules::{Atom, Rule, RuleDefinition, RuleError, RuleEvalError, RuleSet, Term};
 pub use snapshot::{CatalogChange, Commit, CommitResult, FactChange, FactChangeKind, Snapshot};
 pub use transaction::Transaction;
+pub use transient::{ComposedRelationRead, ComposedTransactionRead, TransientStore};
 pub use tuple::Tuple;
 
 pub type RelationId = Identity;

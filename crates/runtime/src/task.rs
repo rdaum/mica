@@ -11,8 +11,8 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
-use mica_var::Value;
+use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction, TransientStore};
+use mica_var::{Identity, Value};
 use mica_vm::{
     AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RegisterVm,
     RuntimeContext, RuntimeError, SuspendKind, VmHostContext, VmHostResponse, VmState,
@@ -230,6 +230,14 @@ impl<'a> Task<'a> {
     }
 
     pub fn run(&mut self) -> Result<TaskOutcome, TaskError> {
+        self.run_with_transient(None, &[])
+    }
+
+    pub(crate) fn run_with_transient(
+        &mut self,
+        mut transient: Option<&mut TransientStore>,
+        transient_scopes: &[Identity],
+    ) -> Result<TaskOutcome, TaskError> {
         loop {
             let response = {
                 let tx = self.tx.as_mut().ok_or(TaskError::MissingTransaction)?;
@@ -242,6 +250,9 @@ impl<'a> Task<'a> {
                     &self.task_snapshot,
                     self.runtime_context,
                 );
+                if let Some(transient) = transient.as_deref_mut() {
+                    host = host.with_transient(transient, transient_scopes);
+                }
                 self.vm.run_until_host_response(
                     &mut host,
                     self.limits.instruction_budget,

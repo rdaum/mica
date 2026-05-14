@@ -1393,6 +1393,9 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("principal", principal_builtin)
         .with_builtin("endpoint", endpoint_builtin)
         .with_builtin("destroy_identity", destroy_identity_builtin)
+        .with_builtin("assert_transient", assert_transient_builtin)
+        .with_builtin("retract_transient", retract_transient_builtin)
+        .with_builtin("drop_transient_scope", drop_transient_scope_builtin)
 }
 
 fn emit_builtin(
@@ -1475,6 +1478,92 @@ fn destroy_identity_builtin(
     }
     Value::int(retracted.len() as i64).map_err(|_| {
         invalid_builtin_call("destroy_identity", "destroyed fact count is out of range")
+    })
+}
+
+fn assert_transient_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 3 {
+        return Err(invalid_builtin_call(
+            "assert_transient",
+            "expected assert_transient(#scope, :Relation, [values])",
+        ));
+    }
+    let scope = builtin_identity_arg("assert_transient", args, 0)?;
+    let metadata = builtin_relation_metadata_arg(context, "assert_transient", args, 1)?;
+    require_relation_write(context.authority(), metadata.id())?;
+    let tuple = builtin_tuple_arg("assert_transient", args, 2, metadata.arity())?;
+    Ok(Value::bool(
+        context.assert_transient(scope, metadata, tuple)?,
+    ))
+}
+
+fn retract_transient_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 3 {
+        return Err(invalid_builtin_call(
+            "retract_transient",
+            "expected retract_transient(#scope, :Relation, [values])",
+        ));
+    }
+    let scope = builtin_identity_arg("retract_transient", args, 0)?;
+    let metadata = builtin_relation_metadata_arg(context, "retract_transient", args, 1)?;
+    require_relation_write(context.authority(), metadata.id())?;
+    let tuple = builtin_tuple_arg("retract_transient", args, 2, metadata.arity())?;
+    Ok(Value::bool(context.retract_transient(
+        scope,
+        metadata.id(),
+        &tuple,
+    )?))
+}
+
+fn drop_transient_scope_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "drop_transient_scope",
+            "expected drop_transient_scope(#scope)",
+        ));
+    }
+    let scope = builtin_identity_arg("drop_transient_scope", args, 0)?;
+    require_transient_scope_drop(context, scope)?;
+    let dropped = context.drop_transient_scope(scope)?;
+    Value::int(dropped as i64).map_err(|_| {
+        invalid_builtin_call(
+            "drop_transient_scope",
+            "dropped tuple count is out of range",
+        )
+    })
+}
+
+fn require_transient_scope_drop(
+    context: &BuiltinContext<'_, '_>,
+    scope: Identity,
+) -> Result<(), RuntimeError> {
+    if context.authority().can_grant() {
+        return Ok(());
+    }
+    let runtime_context = context.runtime_context();
+    if [
+        runtime_context.principal(),
+        runtime_context.actor(),
+        runtime_context.endpoint(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|visible_scope| visible_scope == scope)
+    {
+        return Ok(());
+    }
+    Err(RuntimeError::PermissionDenied {
+        operation: "drop_transient_scope",
+        target: Value::identity(scope),
     })
 }
 
@@ -2098,6 +2187,54 @@ fn builtin_key_positions_arg(
     positions
 }
 
+fn builtin_relation_metadata_arg(
+    context: &BuiltinContext<'_, '_>,
+    name: &str,
+    args: &[Value],
+    index: usize,
+) -> Result<RelationMetadata, RuntimeError> {
+    let relation_name = builtin_symbol_arg(name, args, index)?;
+    relation_metadata_named(context.kernel(), relation_name)
+        .ok_or_else(|| invalid_builtin_call(name, "unknown relation"))
+}
+
+fn builtin_tuple_arg(
+    name: &str,
+    args: &[Value],
+    index: usize,
+    arity: u16,
+) -> Result<Tuple, RuntimeError> {
+    let Some(value) = args.get(index) else {
+        return Err(invalid_builtin_call(name, "expected tuple value list"));
+    };
+    let Some(tuple) = value.with_list(|values| {
+        if values.len() != arity as usize {
+            return Err(invalid_builtin_call(
+                name,
+                "tuple arity does not match relation",
+            ));
+        }
+        Ok(Tuple::new(values.iter().cloned()))
+    }) else {
+        return Err(invalid_builtin_call(name, "expected tuple value list"));
+    };
+    tuple
+}
+
+fn require_relation_write(
+    authority: &AuthorityContext,
+    relation: Identity,
+) -> Result<(), RuntimeError> {
+    if authority.can_write_relation(relation) {
+        Ok(())
+    } else {
+        Err(RuntimeError::PermissionDenied {
+            operation: "write",
+            target: Value::identity(relation),
+        })
+    }
+}
+
 fn invalid_builtin_call(name: &str, message: &str) -> RuntimeError {
     RuntimeError::InvalidBuiltinCall {
         name: Symbol::intern(name),
@@ -2587,6 +2724,278 @@ mod tests {
             TaskOutcome::Complete { value, .. }
                 if value.with_list(<[Value]>::to_vec).unwrap()
                     == vec![Value::nothing(), Value::nothing(), Value::nothing()]
+        ));
+    }
+
+    #[test]
+    fn runner_transient_facts_are_visible_to_runtime_scopes() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_relation(:Selected, 1)").unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+
+        let inserted = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source(
+                    "assert_transient(#alice, :Selected, [#lamp])\n\
+                     return Selected(?item)"
+                        .to_owned(),
+                ),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            inserted.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_list(<[Value]>::to_vec).unwrap()
+                    == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+        ));
+
+        let visible = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return Selected(?item)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            visible.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_list(<[Value]>::to_vec).unwrap()
+                    == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+        ));
+
+        let root = runner.run_source("return Selected(?item)").unwrap();
+        assert!(matches!(
+            root.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::list([])
+        ));
+    }
+
+    #[test]
+    fn runner_transient_retract_and_scope_drop_update_visibility() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:bob)").unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_relation(:Selected, 1)").unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+
+        for scope in [alice, bob] {
+            runner
+                .submit_source(TaskRequest {
+                    principal: None,
+                    actor: Some(scope),
+                    endpoint: None,
+                    authority: AuthorityContext::root(),
+                    input: TaskInput::Source(
+                        "return assert_transient(actor(), :Selected, [#lamp])".to_owned(),
+                    ),
+                })
+                .unwrap();
+        }
+
+        let retracted = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source(
+                    "return retract_transient(#alice, :Selected, [#lamp])".to_owned(),
+                ),
+            })
+            .unwrap();
+        assert!(matches!(
+            retracted.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+
+        let alice_visible = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return Selected(?item)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            alice_visible.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::list([])
+        ));
+
+        let dropped = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(bob),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return drop_transient_scope(#bob)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            dropped.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
+        ));
+
+        let bob_visible = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(bob),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return Selected(?item)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            bob_visible.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::list([])
+        ));
+    }
+
+    #[test]
+    fn runner_can_drop_own_transient_scope_without_admin_authority() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_relation(:Selected, 1)").unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+
+        runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source(
+                    "return assert_transient(#alice, :Selected, [#lamp])".to_owned(),
+                ),
+            })
+            .unwrap();
+
+        let dropped = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::empty(),
+                input: TaskInput::Source("return drop_transient_scope(#alice)".to_owned()),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            dropped.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
+        ));
+
+        let visible = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return Selected(?item)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            visible.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::list([])
+        ));
+    }
+
+    #[test]
+    fn runner_cannot_drop_another_actor_transient_scope_without_admin_authority() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:bob)").unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_relation(:Selected, 1)").unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+        let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+
+        runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(bob),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source(
+                    "return assert_transient(#bob, :Selected, [#lamp])".to_owned(),
+                ),
+            })
+            .unwrap();
+
+        let denied = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::empty(),
+                input: TaskInput::Source("return drop_transient_scope(#bob)".to_owned()),
+            })
+            .unwrap_err();
+        assert!(format!("{denied:?}").contains("PermissionDenied"));
+
+        let visible = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(bob),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source("return Selected(?item)".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(
+            visible.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_list(<[Value]>::to_vec).unwrap()
+                    == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+        ));
+    }
+
+    #[test]
+    fn runner_derived_relations_can_read_transient_facts() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_relation(:Selected, 1)").unwrap();
+        runner.run_source("make_relation(:Visible, 1)").unwrap();
+        runner
+            .run_source("Visible(item) :- Selected(item)")
+            .unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+
+        let visible = runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(alice),
+                endpoint: None,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source(
+                    "assert_transient(#alice, :Selected, [#lamp])\n\
+                     return Visible(?item)"
+                        .to_owned(),
+                ),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            visible.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_list(<[Value]>::to_vec).unwrap()
+                    == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
         ));
     }
 

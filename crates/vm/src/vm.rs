@@ -16,8 +16,10 @@ use crate::{
     Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeContext, RuntimeError,
     RuntimeUnaryOp, SuspendKind,
 };
-use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
-use mica_var::{Symbol, Value, ValueKind};
+use mica_relation_kernel::{
+    ComposedTransactionRead, RelationRead, Transaction, TransientStore, Tuple, applicable_methods,
+};
+use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -135,6 +137,8 @@ pub struct VmHostContext<'ctx, 'kernel> {
     pending_effects: &'ctx mut Vec<Emission>,
     task_snapshot: &'ctx [Value],
     runtime_context: RuntimeContext,
+    transient: Option<&'ctx mut TransientStore>,
+    transient_scopes: &'ctx [Identity],
 }
 
 impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
@@ -155,7 +159,36 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
             pending_effects,
             task_snapshot,
             runtime_context,
+            transient: None,
+            transient_scopes: &[],
         }
+    }
+
+    pub fn with_transient(
+        mut self,
+        transient: &'ctx mut TransientStore,
+        transient_scopes: &'ctx [Identity],
+    ) -> Self {
+        self.transient = Some(transient);
+        self.transient_scopes = transient_scopes;
+        self
+    }
+
+    fn scan_relation(
+        &mut self,
+        relation: mica_relation_kernel::RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, RuntimeError> {
+        let Some(transient) = self.transient.as_deref() else {
+            return self
+                .tx
+                .scan(relation, bindings)
+                .map_err(RuntimeError::Kernel);
+        };
+        let reader = ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
+        reader
+            .scan_relation(relation, bindings)
+            .map_err(RuntimeError::Kernel)
     }
 }
 
@@ -385,7 +418,7 @@ impl RegisterVm {
             } => {
                 require_read(host.authority, relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
-                let exists = !host.tx.scan(relation, &bindings)?.is_empty();
+                let exists = !host.scan_relation(relation, &bindings)?.is_empty();
                 self.write_register(dst, Value::bool(exists))?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
@@ -398,7 +431,7 @@ impl RegisterVm {
             } => {
                 require_read(host.authority, relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
-                let rows = host.tx.scan(relation, &bindings)?;
+                let rows = host.scan_relation(relation, &bindings)?;
                 let mut result = Vec::with_capacity(rows.len());
                 'row: for row in rows {
                     let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
@@ -426,8 +459,7 @@ impl RegisterVm {
                 require_read(host.authority, relation)?;
                 let key = self.resolve_operand(&key)?;
                 let value = host
-                    .tx
-                    .scan(relation, &[Some(key), None])?
+                    .scan_relation(relation, &[Some(key), None])?
                     .first()
                     .map(|row| row.values()[1].clone())
                     .unwrap_or_else(Value::nothing);
@@ -545,6 +577,7 @@ impl RegisterVm {
                     host.pending_effects,
                     host.task_snapshot,
                     host.runtime_context,
+                    host.transient.as_deref_mut(),
                 );
                 let value = builtin.call(&mut context, &args)?;
                 self.write_register(dst, value)?;

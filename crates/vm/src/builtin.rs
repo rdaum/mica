@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{AuthorityContext, CapabilityGrant, Emission, RuntimeError};
-use mica_relation_kernel::{RelationKernel, Transaction};
+use mica_relation_kernel::{RelationKernel, RelationMetadata, Transaction, TransientStore, Tuple};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -57,6 +57,7 @@ pub struct BuiltinContext<'ctx, 'kernel> {
     pending_effects: &'ctx mut Vec<Emission>,
     task_snapshot: &'ctx [Value],
     runtime_context: RuntimeContext,
+    transient: Option<&'ctx mut TransientStore>,
 }
 
 impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
@@ -67,6 +68,7 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         pending_effects: &'ctx mut Vec<Emission>,
         task_snapshot: &'ctx [Value],
         runtime_context: RuntimeContext,
+        transient: Option<&'ctx mut TransientStore>,
     ) -> Self {
         Self {
             kernel,
@@ -75,6 +77,7 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
             pending_effects,
             task_snapshot,
             runtime_context,
+            transient,
         }
     }
 
@@ -115,6 +118,48 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         }
         self.pending_effects.push(Emission::new(target, value));
         Ok(())
+    }
+
+    pub fn assert_transient(
+        &mut self,
+        scope: Identity,
+        metadata: RelationMetadata,
+        tuple: Tuple,
+    ) -> Result<bool, RuntimeError> {
+        let Some(transient) = self.transient.as_deref_mut() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("assert_transient"),
+                message: "transient store is not available".to_owned(),
+            });
+        };
+        transient
+            .assert(scope, metadata, tuple)
+            .map_err(RuntimeError::Kernel)
+    }
+
+    pub fn retract_transient(
+        &mut self,
+        scope: Identity,
+        relation: mica_relation_kernel::RelationId,
+        tuple: &Tuple,
+    ) -> Result<bool, RuntimeError> {
+        let Some(transient) = self.transient.as_deref_mut() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("retract_transient"),
+                message: "transient store is not available".to_owned(),
+            });
+        };
+        Ok(transient.retract(scope, relation, tuple))
+    }
+
+    pub fn drop_transient_scope(&mut self, scope: Identity) -> Result<usize, RuntimeError> {
+        let Some(transient) = self.transient.as_deref_mut() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("drop_transient_scope"),
+                message: "transient store is not available".to_owned(),
+            });
+        };
+        Ok(transient.drop_scope(scope))
     }
 }
 

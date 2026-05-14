@@ -12,10 +12,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider, Conflict,
-    ConflictKind, ConflictPolicy, Fact, FactChange, FactChangeKind, FjallDurabilityMode,
-    FjallFormatStatus, FjallStateProvider, InMemoryCommitProvider, KernelError, MentionedFact,
-    RelationId, RelationKernel, RelationMetadata, Rule, SubjectFact, Term, Tuple,
+    Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider,
+    ComposedRelationRead, ComposedTransactionRead, Conflict, ConflictKind, ConflictPolicy, Fact,
+    FactChange, FactChangeKind, FjallDurabilityMode, FjallFormatStatus, FjallStateProvider,
+    InMemoryCommitProvider, KernelError, MentionedFact, QueryPlan, RelationId, RelationKernel,
+    RelationMetadata, RelationRead, Rule, SubjectFact, Term, TransientStore, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::path::{Path, PathBuf};
@@ -439,6 +440,166 @@ fn stale_retract_of_absent_tuple_does_not_delete_concurrent_assert() {
     assert_eq!(
         kernel.snapshot().scan(rel(1), &[None, None]).unwrap(),
         vec![tuple]
+    );
+}
+
+#[test]
+fn transient_store_scans_only_visible_scopes_and_drops_scope() {
+    let mut transient = TransientStore::new();
+    let scope_a = rel(10);
+    let scope_b = rel(11);
+    let metadata = RelationMetadata::new(rel(20), Symbol::intern("UiText"), 2).with_index([0]);
+    let a_tuple = Tuple::from([int(1), Value::string("left")]);
+    let b_tuple = Tuple::from([int(2), Value::string("right")]);
+
+    assert!(
+        transient
+            .assert(scope_a, metadata.clone(), a_tuple.clone())
+            .unwrap()
+    );
+    assert!(
+        transient
+            .assert(scope_b, metadata.clone(), b_tuple.clone())
+            .unwrap()
+    );
+    assert!(
+        !transient
+            .assert(scope_b, metadata, b_tuple.clone())
+            .unwrap()
+    );
+
+    assert_eq!(transient.scope_len(scope_a), 1);
+    assert_eq!(
+        transient.scan(&[scope_a], rel(20), &[None, None]).unwrap(),
+        vec![a_tuple.clone()]
+    );
+    assert_eq!(
+        transient
+            .scan(&[scope_a, scope_b], rel(20), &[None, None])
+            .unwrap(),
+        vec![a_tuple, b_tuple.clone()]
+    );
+    assert_eq!(transient.drop_scope(scope_b), 1);
+    assert!(
+        transient
+            .scan(&[scope_b], rel(20), &[None, None])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn composed_reader_joins_durable_and_transient_tuples() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(rel(30), Symbol::intern("Actor"), 1))
+        .unwrap();
+    let held = RelationMetadata::new(rel(31), Symbol::intern("Held"), 2)
+        .with_index([0])
+        .with_index([1, 0]);
+    kernel.create_relation(held.clone()).unwrap();
+    let mut tx = kernel.begin();
+    tx.assert(rel(30), Tuple::from([int(1)])).unwrap();
+    tx.commit().unwrap();
+    let scope = rel(40);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(scope, held, Tuple::from([int(1), int(99)]))
+        .unwrap();
+    let snapshot = kernel.snapshot();
+    let scopes = [scope];
+    let reader = ComposedRelationRead::new(snapshot.as_ref(), &transient, &scopes);
+
+    let rows = QueryPlan::join_eq(
+        QueryPlan::scan(rel(30), [None]),
+        QueryPlan::scan(rel(31), [None, None]),
+        [0],
+        [0],
+    )
+    .execute(&reader)
+    .unwrap();
+
+    assert_eq!(rows, vec![Tuple::from([int(1), int(1), int(99)])]);
+}
+
+#[test]
+fn composed_reader_joins_transient_scopes() {
+    let kernel = RelationKernel::new();
+    let selected = RelationMetadata::new(rel(50), Symbol::intern("Selected"), 1);
+    let name = RelationMetadata::new(rel(51), Symbol::intern("Name"), 2).with_index([0]);
+    kernel.create_relation(selected.clone()).unwrap();
+    kernel.create_relation(name.clone()).unwrap();
+    let left_scope = rel(60);
+    let right_scope = rel(61);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(left_scope, selected, Tuple::from([int(7)]))
+        .unwrap();
+    transient
+        .assert(
+            right_scope,
+            name,
+            Tuple::from([int(7), Value::string("lamp")]),
+        )
+        .unwrap();
+    let scopes = [left_scope, right_scope];
+    let snapshot = kernel.snapshot();
+    let reader = ComposedRelationRead::new(snapshot.as_ref(), &transient, &scopes);
+
+    let rows = QueryPlan::join_eq(
+        QueryPlan::scan(rel(50), [None]),
+        QueryPlan::scan(rel(51), [None, None]),
+        [0],
+        [0],
+    )
+    .execute(&reader)
+    .unwrap();
+
+    assert_eq!(
+        rows,
+        vec![Tuple::from([int(7), int(7), Value::string("lamp")])]
+    );
+}
+
+#[test]
+fn composed_transaction_reader_derives_rules_from_transient_inputs() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(70),
+            Symbol::intern("Selected"),
+            1,
+        ))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(rel(71), Symbol::intern("Visible"), 1))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(71),
+                [var("item")],
+                [Atom::positive(rel(70), [var("item")])],
+            ),
+            "Visible(item) :- Selected(item)",
+        )
+        .unwrap();
+    let scope = rel(72);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(
+            scope,
+            RelationMetadata::new(rel(70), Symbol::intern("Selected"), 1),
+            Tuple::from([int(9)]),
+        )
+        .unwrap();
+    let tx = kernel.begin();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        reader.scan_relation(rel(71), &[None]).unwrap(),
+        vec![Tuple::from([int(9)])]
     );
 }
 
