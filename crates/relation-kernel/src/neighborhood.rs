@@ -110,4 +110,28 @@ impl Transaction<'_> {
         }
         Ok(facts)
     }
+
+    pub fn mentioned_extensional_facts(
+        &self,
+        identity: &Value,
+    ) -> Result<Vec<MentionedFact>, KernelError> {
+        let mut facts = Vec::new();
+        for (relation, state) in &self.base.relations {
+            for position in 0..state.metadata().arity() {
+                let mut bindings = vec![None; state.metadata().arity() as usize];
+                bindings[position as usize] = Some(identity.clone());
+                facts.extend(
+                    self.scan_extensional(*relation, &bindings)?
+                        .into_iter()
+                        .map(|tuple| MentionedFact {
+                            identity: identity.clone(),
+                            relation: *relation,
+                            position,
+                            tuple,
+                        }),
+                );
+            }
+        }
+        Ok(facts)
+    }
 }

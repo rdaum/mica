@@ -625,6 +625,7 @@ impl SourceRunner {
 
     fn refresh_context_from_catalog(&mut self) {
         let snapshot = self.task_manager.kernel().snapshot();
+        self.context = CompileContext::new().with_method_relations(method_relations());
         for metadata in snapshot.relation_metadata() {
             if let Some(name) = metadata.name().name() {
                 self.context.define_relation(name, metadata.id());
@@ -1391,6 +1392,7 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("actor", actor_builtin)
         .with_builtin("principal", principal_builtin)
         .with_builtin("endpoint", endpoint_builtin)
+        .with_builtin("destroy_identity", destroy_identity_builtin)
 }
 
 fn emit_builtin(
@@ -1441,6 +1443,39 @@ fn endpoint_builtin(
     args: &[Value],
 ) -> Result<Value, RuntimeError> {
     runtime_identity_builtin("endpoint", args, context.runtime_context().endpoint())
+}
+
+fn destroy_identity_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "destroy_identity",
+            "expected destroy_identity(#identity)",
+        ));
+    }
+    require_admin_builtin(context, "destroy_identity")?;
+    let identity = builtin_identity_arg("destroy_identity", args, 0)?;
+    let value = Value::identity(identity);
+    let facts = context.tx().subject_facts(&value)?;
+    let mut retracted = BTreeSet::new();
+    for fact in facts {
+        if retracted.insert((fact.relation, fact.tuple.clone())) {
+            context.tx().retract(fact.relation, fact.tuple)?;
+        }
+    }
+    let names = context
+        .tx()
+        .scan(named_identity_relation(), &[None, Some(value)])?;
+    for name in names {
+        if retracted.insert((named_identity_relation(), name.clone())) {
+            context.tx().retract(named_identity_relation(), name)?;
+        }
+    }
+    Value::int(retracted.len() as i64).map_err(|_| {
+        invalid_builtin_call("destroy_identity", "destroyed fact count is out of range")
+    })
 }
 
 fn runtime_identity_builtin(
@@ -2553,6 +2588,58 @@ mod tests {
                 if value.with_list(<[Value]>::to_vec).unwrap()
                     == vec![Value::nothing(), Value::nothing(), Value::nothing()]
         ));
+    }
+
+    #[test]
+    fn runner_destroy_identity_retracts_subject_facts_and_name_binding() {
+        let mut runner = SourceRunner::new_empty();
+        let thing = runner.run_source("return make_identity(:thing)").unwrap();
+        let TaskOutcome::Complete {
+            value: thing_value, ..
+        } = thing.outcome
+        else {
+            panic!("make_identity did not complete");
+        };
+        let thing = thing_value.as_identity().unwrap();
+        runner.run_source("make_identity(:room)").unwrap();
+        runner.run_source("make_relation(:Object, 1)").unwrap();
+        runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+        runner.run_source("assert Object(#thing)").unwrap();
+        runner.run_source("assert Object(#room)").unwrap();
+        runner
+            .run_source("assert LocatedIn(#thing, #room)")
+            .unwrap();
+        runner
+            .run_source("assert LocatedIn(#room, #thing)")
+            .unwrap();
+
+        let destroyed = runner
+            .run_source("return destroy_identity(#thing)")
+            .unwrap();
+
+        assert!(matches!(
+            destroyed.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::int(3).unwrap()
+        ));
+        let snapshot = runner.task_manager.kernel().snapshot();
+        assert!(
+            snapshot
+                .subject_facts(&Value::identity(thing))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            snapshot
+                .mentioned_facts(&Value::identity(thing))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            format!("{:?}", runner.run_source("return #thing").unwrap_err())
+                .contains("UnknownIdentity")
+        );
+        assert!(runner.run_source("return #room").is_ok());
     }
 
     #[test]
