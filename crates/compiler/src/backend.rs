@@ -2737,19 +2737,28 @@ fn expr_id(expr: &HirExpr) -> NodeId {
 mod tests {
     use super::*;
     use mica_relation_kernel::{ConflictPolicy, RelationKernel, RelationMetadata, Tuple};
-    use mica_runtime::{BuiltinContext, BuiltinRegistry, RuntimeError, Scheduler, TaskOutcome};
+    use mica_runtime::{
+        BuiltinContext, BuiltinRegistry, Emission, RuntimeError, Scheduler, TaskOutcome,
+    };
     use std::sync::Arc;
 
     fn id(raw: u64) -> Identity {
         Identity::new(raw).unwrap()
     }
 
+    fn emitted(value: Value) -> Emission {
+        Emission::new(id(99), value)
+    }
+
     fn emit_first_arg(
         context: &mut BuiltinContext<'_, '_>,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
-        let value = args.first().cloned().unwrap_or_else(Value::nothing);
-        context.emit(value.clone())?;
+        let target = args[0]
+            .as_identity()
+            .ok_or_else(|| RuntimeError::InvalidEffectTarget(args[0].clone()))?;
+        let value = args[1].clone();
+        context.emit(target, value.clone())?;
         Ok(value)
     }
 
@@ -3347,12 +3356,12 @@ mod tests {
 
     #[test]
     fn compiled_task_calls_registered_runtime_builtin() {
-        let context = CompileContext::new();
+        let context = CompileContext::new().with_identity("target", id(99));
         let kernel = RelationKernel::new();
         let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
         let mut scheduler = Scheduler::new(kernel).with_builtins(Arc::new(builtins));
         let submitted = submit_source_task(
-            "let value = emit_first_arg(\"hello\")\n\
+            "let value = emit_first_arg(#target, \"hello\")\n\
              return value",
             &context,
             &mut scheduler,
@@ -3363,7 +3372,7 @@ mod tests {
             submitted.outcome,
             TaskOutcome::Complete {
                 value: Value::string("hello"),
-                effects: vec![Value::string("hello")],
+                effects: vec![emitted(Value::string("hello"))],
                 retries: 0,
             }
         );

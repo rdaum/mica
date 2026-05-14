@@ -103,6 +103,6 @@ CanEffect(actor) :-
 // final item.name return.
 verb polish(actor: #user, item: #thing)
   item.name = "polished brass lamp"
-  emit(["polished", actor, item])
+  emit(actor, ["polished", actor, item])
   return item.name
 end

@@ -45,6 +45,16 @@ fn strv(value: &str) -> Value {
     Value::string(value)
 }
 
+const EFFECT_TARGET: u64 = 99;
+
+fn ident(raw: u64) -> Value {
+    Value::identity(Identity::new(raw).unwrap())
+}
+
+fn emitted(value: Value) -> crate::Emission {
+    crate::Emission::new(Identity::new(EFFECT_TARGET).unwrap(), value)
+}
+
 fn reg(index: u16) -> Register {
     Register(index)
 }
@@ -140,8 +150,11 @@ fn emit_first_arg(
     context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
 ) -> Result<Value, RuntimeError> {
-    let value = args.first().cloned().unwrap_or_else(Value::nothing);
-    context.emit(value.clone())?;
+    let target = args[0]
+        .as_identity()
+        .ok_or_else(|| RuntimeError::InvalidEffectTarget(args[0].clone()))?;
+    let value = args[1].clone();
+    context.emit(target, value.clone())?;
     Ok(value)
 }
 
@@ -381,12 +394,14 @@ fn task_runs_take_like_method_transactionally() {
                 values: vec![r(0), r(1)],
             },
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("Taken.")),
             },
             Instruction::Return {
                 value: v(Value::bool(true)),
             },
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("You can't take that.")),
             },
             Instruction::Return {
@@ -400,7 +415,7 @@ fn task_runs_take_like_method_transactionally() {
         run_program(&kernel, program, 100).unwrap(),
         TaskOutcome::Complete {
             value: Value::bool(true),
-            effects: vec![strv("Taken.")],
+            effects: vec![emitted(strv("Taken."))],
             retries: 0,
         }
     );
@@ -438,6 +453,7 @@ fn abort_rolls_back_current_transaction_and_pending_effects() {
                 values: vec![r(0), r(1)],
             },
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("Taken.")),
             },
             Instruction::Abort {
@@ -494,6 +510,7 @@ fn explicit_commit_boundary_survives_later_abort() {
                 values: vec![r(0), r(1)],
             },
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("Committed.")),
             },
             Instruction::Commit,
@@ -502,6 +519,7 @@ fn explicit_commit_boundary_survives_later_abort() {
                 values: vec![r(0), r(2)],
             },
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("Rolled back.")),
             },
             Instruction::Abort {
@@ -515,7 +533,7 @@ fn explicit_commit_boundary_survives_later_abort() {
         run_program(&kernel, program, 100).unwrap(),
         TaskOutcome::Aborted {
             error: sym("abort"),
-            effects: vec![strv("Committed.")],
+            effects: vec![emitted(strv("Committed."))],
             retries: 0,
         }
     );
@@ -697,6 +715,7 @@ fn suspend_commits_then_resume_continues_in_new_transaction() {
                 values: vec![r(0), r(1)],
             },
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("phase 1")),
             },
             Instruction::Suspend {
@@ -707,6 +726,7 @@ fn suspend_commits_then_resume_continues_in_new_transaction() {
                 values: vec![r(0), r(2)],
             },
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("phase 2")),
             },
             Instruction::Return {
@@ -727,7 +747,7 @@ fn suspend_commits_then_resume_continues_in_new_transaction() {
         task.run().unwrap(),
         TaskOutcome::Suspended {
             kind: SuspendKind::TimedMillis(10),
-            effects: vec![strv("phase 1")],
+            effects: vec![emitted(strv("phase 1"))],
             retries: 0,
         }
     );
@@ -743,7 +763,7 @@ fn suspend_commits_then_resume_continues_in_new_transaction() {
         task.run().unwrap(),
         TaskOutcome::Complete {
             value: Value::bool(true),
-            effects: vec![strv("phase 2")],
+            effects: vec![emitted(strv("phase 2"))],
             retries: 0,
         }
     );
@@ -782,6 +802,7 @@ fn task_retries_from_last_clean_state_on_commit_conflict() {
                 values: vec![r(0), r(1)],
             },
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("Taken.")),
             },
             Instruction::Return {
@@ -812,7 +833,7 @@ fn task_retries_from_last_clean_state_on_commit_conflict() {
         task.run().unwrap(),
         TaskOutcome::Complete {
             value: Value::bool(true),
-            effects: vec![strv("Taken.")],
+            effects: vec![emitted(strv("Taken."))],
             retries: 1,
         }
     );
@@ -829,6 +850,7 @@ fn explicit_rollback_retry_stops_at_retry_limit() {
         0,
         [
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("discarded")),
             },
             Instruction::RollbackRetry,
@@ -862,6 +884,7 @@ fn scheduler_records_completed_task_and_delivers_effects() {
             0,
             [
                 Instruction::Emit {
+                    target: v(ident(EFFECT_TARGET)),
                     value: v(strv("done")),
                 },
                 Instruction::Return {
@@ -878,7 +901,7 @@ fn scheduler_records_completed_task_and_delivers_effects() {
         outcome,
         TaskOutcome::Complete {
             value: Value::bool(true),
-            effects: vec![strv("done")],
+            effects: vec![emitted(strv("done"))],
             retries: 0,
         }
     );
@@ -888,6 +911,7 @@ fn scheduler_records_completed_task_and_delivers_effects() {
         scheduler.effects().effects(),
         &[Effect {
             task_id,
+            target: rel(EFFECT_TARGET),
             value: strv("done"),
         }]
     );
@@ -901,12 +925,14 @@ fn scheduler_parks_and_resumes_suspended_task() {
             0,
             [
                 Instruction::Emit {
+                    target: v(ident(EFFECT_TARGET)),
                     value: v(strv("before")),
                 },
                 Instruction::Suspend {
                     kind: SuspendKind::TimedMillis(1),
                 },
                 Instruction::Emit {
+                    target: v(ident(EFFECT_TARGET)),
                     value: v(strv("after")),
                 },
                 Instruction::Return {
@@ -923,7 +949,7 @@ fn scheduler_parks_and_resumes_suspended_task() {
         first,
         TaskOutcome::Suspended {
             kind: SuspendKind::TimedMillis(1),
-            effects: vec![strv("before")],
+            effects: vec![emitted(strv("before"))],
             retries: 0,
         }
     );
@@ -936,6 +962,7 @@ fn scheduler_parks_and_resumes_suspended_task() {
         scheduler.effects().effects(),
         &[Effect {
             task_id,
+            target: rel(EFFECT_TARGET),
             value: strv("before"),
         }]
     );
@@ -947,7 +974,7 @@ fn scheduler_parks_and_resumes_suspended_task() {
         second,
         TaskOutcome::Complete {
             value: Value::bool(true),
-            effects: vec![strv("after")],
+            effects: vec![emitted(strv("after"))],
             retries: 0,
         }
     );
@@ -958,10 +985,12 @@ fn scheduler_parks_and_resumes_suspended_task() {
         &[
             Effect {
                 task_id,
+                target: rel(EFFECT_TARGET),
                 value: strv("before"),
             },
             Effect {
                 task_id,
+                target: rel(EFFECT_TARGET),
                 value: strv("after"),
             },
         ]
@@ -976,6 +1005,7 @@ fn scheduler_does_not_deliver_pending_effects_from_abort() {
             0,
             [
                 Instruction::Emit {
+                    target: v(ident(EFFECT_TARGET)),
                     value: v(strv("discarded")),
                 },
                 Instruction::Abort {
@@ -1127,7 +1157,7 @@ fn builtin_call_invokes_registered_host_function() {
             Instruction::BuiltinCall {
                 dst: reg(0),
                 name: Symbol::intern("emit_first_arg"),
-                args: vec![v(strv("hello"))],
+                args: vec![v(ident(EFFECT_TARGET)), v(strv("hello"))],
             },
             Instruction::Return { value: r(0) },
         ],
@@ -1140,7 +1170,7 @@ fn builtin_call_invokes_registered_host_function() {
         run_program_with_builtins(&kernel, restored, builtins).unwrap(),
         TaskOutcome::Complete {
             value: strv("hello"),
-            effects: vec![strv("hello")],
+            effects: vec![emitted(strv("hello"))],
             retries: 0,
         }
     );
@@ -1495,6 +1525,7 @@ fn finally_runs_on_return() {
             Instruction::Return { value: v(int(7)) },
             Instruction::ExitTry,
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("cleanup")),
             },
             Instruction::EndFinally,
@@ -1507,7 +1538,7 @@ fn finally_runs_on_return() {
         run_program(&kernel, program, 100).unwrap(),
         TaskOutcome::Complete {
             value: int(7),
-            effects: vec![strv("cleanup")],
+            effects: vec![emitted(strv("cleanup"))],
             retries: 0,
         }
     );
@@ -1540,6 +1571,7 @@ fn caught_exception_runs_finally_before_continuing() {
             },
             Instruction::ExitTry,
             Instruction::Emit {
+                target: v(ident(EFFECT_TARGET)),
                 value: v(strv("cleanup")),
             },
             Instruction::EndFinally,
@@ -1552,7 +1584,7 @@ fn caught_exception_runs_finally_before_continuing() {
         run_program(&kernel, program, 100).unwrap(),
         TaskOutcome::Complete {
             value: Value::bool(true),
-            effects: vec![strv("cleanup")],
+            effects: vec![emitted(strv("cleanup"))],
             retries: 0,
         }
     );
@@ -1610,6 +1642,7 @@ fn suspension_inside_callee_resumes_full_activation_stack() {
             1,
             [
                 Instruction::Emit {
+                    target: v(ident(EFFECT_TARGET)),
                     value: v(strv("in callee")),
                 },
                 Instruction::Suspend {
@@ -1645,7 +1678,7 @@ fn suspension_inside_callee_resumes_full_activation_stack() {
         first,
         TaskOutcome::Suspended {
             kind: SuspendKind::TimedMillis(1),
-            effects: vec![strv("in callee")],
+            effects: vec![emitted(strv("in callee"))],
             retries: 0,
         }
     );
@@ -1685,6 +1718,7 @@ fn commit_conflict_retries_restore_call_stack() {
                     values: vec![r(0), r(1)],
                 },
                 Instruction::Emit {
+                    target: v(ident(EFFECT_TARGET)),
                     value: v(strv("moved")),
                 },
                 Instruction::Return {
@@ -1738,7 +1772,7 @@ fn commit_conflict_retries_restore_call_stack() {
         task.run().unwrap(),
         TaskOutcome::Complete {
             value: Value::bool(true),
-            effects: vec![strv("moved")],
+            effects: vec![emitted(strv("moved"))],
             retries: 1,
         }
     );

@@ -12,11 +12,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    AuthorityContext, BuiltinRegistry, Program, ProgramResolver, SuspendKind, Task, TaskError,
-    TaskId, TaskLimits, TaskOutcome,
+    AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, SuspendKind, Task,
+    TaskError, TaskId, TaskLimits, TaskOutcome,
 };
 use mica_relation_kernel::RelationKernel;
-use mica_var::Value;
+use mica_var::{Identity, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -36,6 +36,7 @@ impl From<TaskError> for SchedulerError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Effect {
     pub task_id: TaskId,
+    pub target: Identity,
     pub value: Value,
 }
 
@@ -45,9 +46,13 @@ pub struct EffectLog {
 }
 
 impl EffectLog {
-    pub fn emit(&mut self, task_id: TaskId, effects: Vec<Value>) {
+    pub fn emit(&mut self, task_id: TaskId, effects: Vec<Emission>) {
         self.effects
-            .extend(effects.into_iter().map(|value| Effect { task_id, value }));
+            .extend(effects.into_iter().map(|effect| Effect {
+                task_id,
+                target: effect.target(),
+                value: effect.value().clone(),
+            }));
     }
 
     pub fn effects(&self) -> &[Effect] {

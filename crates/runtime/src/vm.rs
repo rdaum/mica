@@ -12,8 +12,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    AuthorityContext, BuiltinRegistry, CatchHandler, ErrorField, Instruction, ListItem, Operand,
-    Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp, SuspendKind,
+    AuthorityContext, BuiltinRegistry, CatchHandler, Emission, ErrorField, Instruction, ListItem,
+    Operand, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
+    SuspendKind,
 };
 use mica_relation_kernel::{Transaction, Tuple, applicable_methods};
 use mica_var::{Symbol, Value, ValueKind};
@@ -130,7 +131,7 @@ pub(crate) struct VmHostContext<'ctx, 'kernel> {
     authority: &'ctx mut AuthorityContext,
     resolver: &'ctx ProgramResolver,
     builtins: &'ctx BuiltinRegistry,
-    pending_effects: &'ctx mut Vec<Value>,
+    pending_effects: &'ctx mut Vec<Emission>,
 }
 
 impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
@@ -139,7 +140,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
         authority: &'ctx mut AuthorityContext,
         resolver: &'ctx ProgramResolver,
         builtins: &'ctx BuiltinRegistry,
-        pending_effects: &'ctx mut Vec<Value>,
+        pending_effects: &'ctx mut Vec<Emission>,
     ) -> Self {
         Self {
             tx,
@@ -479,14 +480,19 @@ impl RegisterVm {
             }
             Instruction::ExitTry => self.exit_try_region(),
             Instruction::EndFinally => self.end_finally(),
-            Instruction::Emit { value } => {
+            Instruction::Emit { target, value } => {
+                let target_value = self.resolve_operand(&target)?;
+                let target = target_value
+                    .as_identity()
+                    .ok_or(RuntimeError::InvalidEffectTarget(target_value))?;
                 if !host.authority.can_effect() {
                     return Err(RuntimeError::PermissionDenied {
                         operation: "effect",
-                        target: Value::symbol(Symbol::intern("Effect")),
+                        target: Value::identity(target),
                     });
                 }
-                host.pending_effects.push(self.resolve_operand(&value)?);
+                host.pending_effects
+                    .push(Emission::new(target, self.resolve_operand(&value)?));
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }

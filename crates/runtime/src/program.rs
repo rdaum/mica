@@ -201,6 +201,7 @@ pub enum Instruction {
     ExitTry,
     EndFinally,
     Emit {
+        target: Operand,
         value: Operand,
     },
     Call {
@@ -509,9 +510,13 @@ fn validate_instruction(
             Ok(())
         }
         Instruction::ExitTry | Instruction::EndFinally => Ok(()),
-        Instruction::Emit { value }
-        | Instruction::Return { value }
-        | Instruction::Abort { error: value } => validate_operand(register_count, value),
+        Instruction::Emit { target, value } => {
+            validate_operand(register_count, target)?;
+            validate_operand(register_count, value)
+        }
+        Instruction::Return { value } | Instruction::Abort { error: value } => {
+            validate_operand(register_count, value)
+        }
         Instruction::Raise {
             error,
             message,
@@ -866,8 +871,9 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_END_FINALLY);
             Ok(())
         }
-        Instruction::Emit { value } => {
+        Instruction::Emit { target, value } => {
             out.push(INST_EMIT);
+            write_operand(out, target)?;
             write_operand(out, value)
         }
         Instruction::Commit => {
@@ -1352,6 +1358,7 @@ impl<'a> ByteReader<'a> {
             INST_EXIT_TRY => Instruction::ExitTry,
             INST_END_FINALLY => Instruction::EndFinally,
             INST_EMIT => Instruction::Emit {
+                target: self.read_operand()?,
                 value: self.read_operand()?,
             },
             INST_COMMIT => Instruction::Commit,

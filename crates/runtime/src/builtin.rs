@@ -11,9 +11,9 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{AuthorityContext, CapabilityGrant, RuntimeError};
+use crate::{AuthorityContext, CapabilityGrant, Emission, RuntimeError};
 use mica_relation_kernel::{RelationKernel, Transaction};
-use mica_var::{Symbol, Value};
+use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ pub struct BuiltinContext<'ctx, 'kernel> {
     kernel: &'kernel RelationKernel,
     tx: &'ctx mut Transaction<'kernel>,
     authority: &'ctx mut AuthorityContext,
-    pending_effects: &'ctx mut Vec<Value>,
+    pending_effects: &'ctx mut Vec<Emission>,
 }
 
 impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
@@ -29,7 +29,7 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         kernel: &'kernel RelationKernel,
         tx: &'ctx mut Transaction<'kernel>,
         authority: &'ctx mut AuthorityContext,
-        pending_effects: &'ctx mut Vec<Value>,
+        pending_effects: &'ctx mut Vec<Emission>,
     ) -> Self {
         Self {
             kernel,
@@ -59,14 +59,14 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         self.authority.mint(grant)
     }
 
-    pub fn emit(&mut self, value: Value) -> Result<(), RuntimeError> {
+    pub fn emit(&mut self, target: Identity, value: Value) -> Result<(), RuntimeError> {
         if !self.authority.can_effect() {
             return Err(RuntimeError::PermissionDenied {
                 operation: "effect",
-                target: Value::symbol(Symbol::intern("Effect")),
+                target: Value::identity(target),
             });
         }
-        self.pending_effects.push(value);
+        self.pending_effects.push(Emission::new(target, value));
         Ok(())
     }
 }

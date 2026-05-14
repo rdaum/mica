@@ -19,6 +19,7 @@
 
 mod authority;
 mod builtin;
+mod effect;
 mod error;
 mod program;
 mod scheduler;
@@ -30,6 +31,7 @@ mod tests;
 
 pub use authority::{AuthorityContext, CapabilityGrant, CapabilityOp, CapabilityScope};
 pub use builtin::{Builtin, BuiltinContext, BuiltinRegistry};
+pub use effect::Emission;
 pub use error::{RuntimeError, TaskError};
 pub use program::{
     CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver,

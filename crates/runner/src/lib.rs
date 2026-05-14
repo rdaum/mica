@@ -22,7 +22,7 @@ use mica_relation_kernel::{
 };
 use mica_runtime::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
-    CapabilityScope, RuntimeError, Scheduler, TaskOutcome,
+    CapabilityScope, Emission, RuntimeError, Scheduler, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1112,8 +1112,18 @@ fn emit_builtin(
     context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
 ) -> Result<Value, RuntimeError> {
-    let value = args.first().cloned().unwrap_or_else(Value::nothing);
-    context.emit(value.clone())?;
+    if args.len() != 2 {
+        return Err(RuntimeError::InvalidBuiltinCall {
+            name: Symbol::intern("emit"),
+            message: "emit expects target identity and value".to_owned(),
+        });
+    }
+    let target_value = args[0].clone();
+    let target = target_value
+        .as_identity()
+        .ok_or(RuntimeError::InvalidEffectTarget(target_value))?;
+    let value = args[1].clone();
+    context.emit(target, value.clone())?;
     Ok(value)
 }
 
@@ -1795,7 +1805,7 @@ fn render_finished(
     label: &str,
     task_id: u64,
     value: &Value,
-    effects: &[Value],
+    effects: &[Emission],
     retries: u8,
     identity_names: &BTreeMap<Identity, String>,
     relation_names: &BTreeMap<Identity, String>,
@@ -1810,13 +1820,23 @@ fn render_finished(
 
 fn render_effects(
     out: &mut String,
-    effects: &[Value],
+    effects: &[Emission],
     identity_names: &BTreeMap<Identity, String>,
     relation_names: &BTreeMap<Identity, String>,
 ) {
     for effect in effects {
-        out.push_str("\neffect: ");
-        out.push_str(&render_value(effect, identity_names, relation_names));
+        out.push_str("\neffect ");
+        out.push_str(&render_value(
+            &Value::identity(effect.target()),
+            identity_names,
+            relation_names,
+        ));
+        out.push_str(": ");
+        out.push_str(&render_value(
+            effect.value(),
+            identity_names,
+            relation_names,
+        ));
     }
 }
 
@@ -1924,8 +1944,8 @@ fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = Stri
 #[cfg(test)]
 mod tests {
     use super::{FileinMode, SourceRunner};
-    use mica_runtime::TaskOutcome;
-    use mica_var::{Symbol, Value};
+    use mica_runtime::{Emission, TaskOutcome};
+    use mica_var::{Identity, Symbol, Value};
 
     #[test]
     fn runner_executes_source_against_empty_kernel() {
@@ -1941,19 +1961,38 @@ mod tests {
     #[test]
     fn runner_installs_default_emit_builtin() {
         let mut runner = SourceRunner::new_empty();
-        let report = runner.run_source("return emit(\"hello\")").unwrap();
+        runner.run_source("make_identity(:target)").unwrap();
+        let report = runner
+            .run_source("return emit(#target, \"hello\")")
+            .unwrap();
+        let target = Identity::new(0x00e0_0000_0000_0000).unwrap();
 
         assert!(matches!(
             report.outcome,
             TaskOutcome::Complete { value, effects, .. }
-                if value == Value::string("hello") && effects == vec![Value::string("hello")]
+                if value == Value::string("hello")
+                    && effects == vec![Emission::new(target, Value::string("hello"))]
         ));
+    }
+
+    #[test]
+    fn runner_emit_requires_target_identity() {
+        let mut runner = SourceRunner::new_empty();
+
+        let missing_target = runner.run_source("return emit(\"hello\")").unwrap_err();
+        assert!(format!("{missing_target:?}").contains("emit expects target identity and value"));
+
+        let non_identity = runner
+            .run_source("return emit(:target, \"hello\")")
+            .unwrap_err();
+        assert!(format!("{non_identity:?}").contains("InvalidEffectTarget"));
     }
 
     #[test]
     fn runner_aborts_on_divide_by_zero_before_builtin_effect() {
         let mut runner = SourceRunner::new_empty();
-        let report = runner.run_source("return emit(1 / 0)").unwrap();
+        runner.run_source("make_identity(:target)").unwrap();
+        let report = runner.run_source("return emit(#target, 1 / 0)").unwrap();
 
         assert!(matches!(
             report.outcome,
@@ -2047,13 +2086,13 @@ mod tests {
         let mut runner = SourceRunner::new_empty();
         let made = runner.run_source("return make_identity(:thing)").unwrap();
         let report = runner
-            .run_source("return emit([#thing, {:owner -> #thing}])")
+            .run_source("return emit(#thing, [#thing, {:owner -> #thing}])")
             .unwrap();
 
         assert_eq!(made.render(), "task 1 complete: #thing (retries: 0)");
         assert_eq!(
             report.render(),
-            "task 2 complete: [#thing, [:owner: #thing]] (retries: 0)\neffect: [#thing, [:owner: #thing]]"
+            "task 2 complete: [#thing, [:owner: #thing]] (retries: 0)\neffect #thing: [#thing, [:owner: #thing]]"
         );
     }
 
@@ -2440,7 +2479,7 @@ mod tests {
         assert!(
             alice
                 .render()
-                .contains("effect: [\"polished\", #alice, #lamp]")
+                .contains("effect #alice: [\"polished\", #alice, #lamp]")
         );
 
         let bob_read = runner

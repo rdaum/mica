@@ -13,8 +13,8 @@
 
 use crate::vm::VmHostContext;
 use crate::{
-    AuthorityContext, BuiltinRegistry, ProgramResolver, RegisterVm, SuspendKind, TaskError,
-    VmHostResponse, VmState,
+    AuthorityContext, BuiltinRegistry, Emission, ProgramResolver, RegisterVm, SuspendKind,
+    TaskError, VmHostResponse, VmState,
 };
 use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
 use mica_var::Value;
@@ -43,17 +43,17 @@ impl Default for TaskLimits {
 pub enum TaskOutcome {
     Complete {
         value: Value,
-        effects: Vec<Value>,
+        effects: Vec<Emission>,
         retries: u8,
     },
     Suspended {
         kind: SuspendKind,
-        effects: Vec<Value>,
+        effects: Vec<Emission>,
         retries: u8,
     },
     Aborted {
         error: Value,
-        effects: Vec<Value>,
+        effects: Vec<Emission>,
         retries: u8,
     },
 }
@@ -68,8 +68,8 @@ pub struct Task<'a> {
     vm: RegisterVm,
     tx: Option<Transaction<'a>>,
     retry_state: VmState,
-    pending_effects: Vec<Value>,
-    committed_effects: Vec<Value>,
+    pending_effects: Vec<Emission>,
+    committed_effects: Vec<Emission>,
     retries: u8,
     limits: TaskLimits,
 }
@@ -283,7 +283,7 @@ impl<'a> Task<'a> {
         Ok(())
     }
 
-    fn take_committed_effects(&mut self) -> Vec<Value> {
+    fn take_committed_effects(&mut self) -> Vec<Emission> {
         std::mem::take(&mut self.committed_effects)
     }
 }

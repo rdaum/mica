@@ -66,6 +66,7 @@ pub enum RuntimeError {
     EmptyTryStack,
     InvalidRaisedValue(Value),
     InvalidErrorMessage(Value),
+    InvalidEffectTarget(Value),
     Kernel(KernelError),
     Aborted(Value),
 }
