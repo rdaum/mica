@@ -1063,7 +1063,7 @@ mod tests {
     fn parses_method_fileout_envelope() {
         let parse = parse(
             "method #move_into :move\n\
-               roles actor: #player, item: #portable\n\
+               roles actor @ #player, item @ #portable\n\
              do\n\
                require CanMove(actor, item)\n\
                assert LocatedIn(item, destination)\n\
@@ -1078,7 +1078,7 @@ mod tests {
     #[test]
     fn parses_verb_sugar_body_without_do() {
         let parse = parse(
-            "verb get(actor: #player, item: #thing)\n\
+            "verb get(actor @ #player, item @ #thing)\n\
                if Portable(item)\n\
                  return true\n\
                else\n\

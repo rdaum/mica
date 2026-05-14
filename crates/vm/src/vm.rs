@@ -21,6 +21,7 @@ use mica_relation_kernel::{
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -603,6 +604,7 @@ impl RegisterVm {
                     .map(|(role, value)| Ok((role.clone(), self.resolve_operand(value)?)))
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
                 roles.sort_by(|left, right| compare_role_values(&left.0, &right.0));
+                let role_env = roles.iter().cloned().collect::<BTreeMap<_, _>>();
                 let methods =
                     applicable_methods(host.tx, relations, selector.clone(), roles.clone())?
                         .into_iter()
@@ -625,7 +627,14 @@ impl RegisterVm {
                         method: method.clone(),
                     })?;
                 let program = host.resolver.resolve(host.tx, program_bytes, &program_id)?;
-                let args = roles.into_iter().map(|(_, value)| value).collect();
+                let mut params = host.tx.scan(relations.param, &[Some(method), None, None])?;
+                params.sort_by(|left, right| {
+                    compare_role_values(&left.values()[1], &right.values()[1])
+                });
+                let args = params
+                    .iter()
+                    .filter_map(|param| role_env.get(&param.values()[1]).cloned())
+                    .collect();
                 self.advance_ip()?;
                 self.state
                     .frames

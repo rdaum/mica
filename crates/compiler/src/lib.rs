@@ -29,11 +29,11 @@ mod syntax;
 
 pub use ast::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
-    FunctionBody, Item, Literal, MethodKind, MethodRole, NodeId, ObjectClause, Param, ParamMode,
+    FunctionBody, Item, Literal, MethodKind, MethodParam, NodeId, ObjectClause, Param, ParamMode,
     RecoveryClause, Span, UnaryOp,
 };
 pub use backend::{
-    CompileContext, CompileError, CompiledProgram, InstalledMethod, InstalledRole,
+    CompileContext, CompileError, CompiledProgram, InstalledMethod, InstalledParam,
     MethodInstallation, MethodRelations, RuleInstallation, compile_semantic, compile_source,
     install_methods, install_methods_from_source, install_rules, install_rules_from_source,
 };

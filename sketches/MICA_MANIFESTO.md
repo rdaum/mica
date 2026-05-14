@@ -91,9 +91,9 @@ bindings it can handle.
 
 ```mica
 method #move_into :move
-  roles actor: #player,
-        item: #portable,
-        destination: #container
+  roles actor @ #player,
+        item @ #portable,
+        destination @ #container
 do
   require CanMove(actor, item)
   require CanContain(destination, item)
@@ -105,7 +105,7 @@ end
 
 Prototype delegation still matters, but it becomes part of matching rather than
 a physical place where behaviour is stored. If `#coin` delegates to `#portable`,
-then a method requiring `item: #portable` can apply to `#coin`.
+then a method requiring `item @ #portable` can apply to `#coin`.
 
 This makes behaviour additive. Different authors can contribute methods that
 match different roles, relations, situations, or subjects without having to

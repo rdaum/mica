@@ -80,7 +80,7 @@ Behaviour is also relational. Instead of finding a method by starting from one
 special receiver object, Mica dispatches over named roles:
 
 ```mica
-verb get(actor: #player, item: #thing)
+verb get(actor @ #player, item @ #thing)
   if Portable(item)
     assert HeldBy(actor, item)
     return true

@@ -270,7 +270,9 @@ impl CommandSource {
             Self::North => format!(":north(actor: {actor})"),
             Self::GetCoin => format!(":get(actor: {actor}, item: #coin)"),
             Self::PutCoinBox => format!(":put(actor: {actor}, item: #coin, container: #box)"),
-            Self::Say(message) => format!("emit({actor}, {})", mica_string(&message)),
+            Self::Say(message) => {
+                format!(":say(actor: {actor}, message: {})", mica_string(&message))
+            }
             Self::Quit => unreachable!("quit is handled before source generation"),
         }
     }
@@ -474,6 +476,10 @@ mod tests {
             line,
             "First Room. A coin and a box are here. The only exit is north."
         );
+        assert!(!handle_command(&state, endpoint, "alice", "say hello").unwrap());
+
+        let line = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(line, "hello");
         let _ = state.driver.lock().unwrap().close_endpoint(endpoint);
     }
 

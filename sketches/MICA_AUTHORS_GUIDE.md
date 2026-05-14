@@ -111,7 +111,7 @@ In image-based systems, a verb is "on" an object. In Mica, a method is an indepe
 Use the `verb` syntax to create behaviour. Instead of a privileged `this`, you name the roles that the method requires.
 
 ```mica
-verb light(actor: #player, target: #brass_lamp)
+verb light(actor @ #player, target @ #brass_lamp)
   require Lit(target, false)
   require HasItem(actor, #matches)
 
@@ -139,7 +139,7 @@ This is not automatic for every relation. Plain relation queries only ask the re
 
 ### Behaviour (Dispatch)
 Methods are **not** found by walking up a parent chain. Instead, when an invocation occurs, the system finds all methods whose **parameters** match the roles of the call. 
-- A method requiring `target: #portable` matches `#brass_lamp` because `#brass_lamp` delegates to `#portable`.
+- A method requiring `target @ #portable` matches `#brass_lamp` because `#brass_lamp` delegates to `#portable`.
 - The method is an independent identity; it is not "inside" the `#portable` object.
 
 ---

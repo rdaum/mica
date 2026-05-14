@@ -2629,6 +2629,28 @@ mod tests {
     }
 
     #[test]
+    fn runner_dispatch_binds_unrestricted_method_params() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+
+        let report = runner
+            .run_source("return :say(actor: #alice, message: \"hello\")")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].target, alice);
+        assert_eq!(emissions[0].value, Value::string("hello"));
+    }
+
+    #[test]
     fn runner_resume_task_uses_continuation_request_authority() {
         let mut runner = SourceRunner::new_empty();
         let program = Arc::new(
@@ -3542,7 +3564,7 @@ mod tests {
                  assert Name(#lamp, \"brass lamp\")\n\
                  assert LocatedIn(#lamp, #room)\n\
                  VisibleTo(actor, obj) :- LocatedIn(obj, actor)\n\
-                 verb look(actor: #room)\n\
+                 verb look(actor @ #room)\n\
                    return \"ok\"\n\
                  end\n",
                 FileinMode::Add,
@@ -3555,7 +3577,7 @@ mod tests {
         assert!(source.contains("make_relation(:Name, 2)"));
         assert!(source.contains("assert Name(#lamp, \"brass lamp\")"));
         assert!(source.contains("VisibleTo(actor, obj) :- LocatedIn(obj, actor)"));
-        assert!(source.contains("verb look(actor: #room)"));
+        assert!(source.contains("verb look(actor @ #room)"));
 
         let mut imported = SourceRunner::new_empty();
         imported
@@ -3686,7 +3708,7 @@ mod tests {
                  CanSee(actor, item) :-\n\
                    HeldBy(actor, container),\n\
                    In(item, container)\n\
-                 verb get(actor: #player, item: #thing)\n\
+                 verb get(actor @ #player, item @ #thing)\n\
                    if Portable(item)\n\
                      assert HeldBy(actor, item)\n\
                      return true\n\
@@ -3694,7 +3716,7 @@ mod tests {
                      return false\n\
                    end\n\
                  end\n\
-                 verb put(actor: #player, item: #thing, container: #container)\n\
+                 verb put(actor @ #player, item @ #thing, container @ #container)\n\
                    if HeldBy(actor, item)\n\
                      assert In(item, container)\n\
                      return true\n\

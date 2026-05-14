@@ -72,6 +72,9 @@ fn matches_restriction(
     value: &Value,
     restriction: &Value,
 ) -> Result<bool, KernelError> {
+    if *restriction == Value::nothing() {
+        return Ok(true);
+    }
     if value == restriction {
         return Ok(true);
     }
@@ -171,6 +174,47 @@ mod tests {
                 dispatch_relations(),
                 sym("take"),
                 [(sym("item"), int(1))]
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn dispatch_requires_unrestricted_params_without_matching_them() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut tx = kernel.begin();
+        tx.assert(rel(40), Tuple::from([int(100), sym("say")]))
+            .unwrap();
+        tx.assert(rel(41), Tuple::from([int(100), sym("actor"), int(11)]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(100), sym("message"), Value::nothing()]),
+        )
+        .unwrap();
+        tx.assert(rel(42), Tuple::from([int(10), int(11), int(0)]))
+            .unwrap();
+
+        assert_eq!(
+            applicable_methods(
+                &tx,
+                dispatch_relations(),
+                sym("say"),
+                [
+                    (sym("actor"), int(10)),
+                    (sym("message"), Value::string("hi"))
+                ]
+            )
+            .unwrap(),
+            vec![int(100)]
+        );
+        assert!(
+            applicable_methods(
+                &tx,
+                dispatch_relations(),
+                sym("say"),
+                [(sym("actor"), int(10))]
             )
             .unwrap()
             .is_empty()

@@ -57,7 +57,7 @@ pub enum Item {
         identity: Option<String>,
         selector: Option<String>,
         clauses: Vec<String>,
-        roles: Vec<MethodRole>,
+        params: Vec<MethodParam>,
         body: Vec<Item>,
     },
 }
@@ -80,9 +80,9 @@ pub enum MethodKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MethodRole {
+pub struct MethodParam {
     pub name: String,
-    pub restriction: String,
+    pub restriction: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

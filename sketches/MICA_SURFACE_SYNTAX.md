@@ -556,9 +556,9 @@ one Location(#thing, ?room) // #room
 
 ```mica
 method #move_into :move
-  roles actor: #player,
-        item: #portable,
-        destination: #container
+  roles actor @ #player,
+        item @ #portable,
+        destination @ #container
 do
   require CanMove(actor, item)
   require CanContain(destination, item)
@@ -574,7 +574,7 @@ top-level source in the REPL/filein compiler; the runner currently installs
 generated method identities such as `#verb_get_1`.
 
 ```mica
-verb move(actor: #player, item: #portable, destination: #container)
+verb move(actor @ #player, item @ #portable, destination @ #container)
   require CanMove(actor, item)
   require CanContain(destination, item)
 
@@ -645,7 +645,7 @@ CanLight(actor, target) :-
   Object(actor),
   Lit(target, false)
 
-verb light(actor: #player, target: #thing)
+verb light(actor @ #player, target @ #thing)
   require CanLight(actor, target)
 
   retract Lit(target, _)

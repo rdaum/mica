@@ -101,7 +101,7 @@ CanEffect(actor) :-
 // This verb needs all four pieces of authority under --actor alice:
 // invoke for :polish, write for item.name, effect for emit, and read for the
 // final item.name return.
-verb polish(actor: #user, item: #thing)
+verb polish(actor @ #user, item @ #thing)
   item.name = "polished brass lamp"
   emit(actor, ["polished", actor, item])
   return item.name

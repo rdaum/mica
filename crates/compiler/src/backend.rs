@@ -179,13 +179,13 @@ pub fn install_methods(
                     Value::bytes(method.compiled.program.to_bytes()?),
                 ]),
             )?;
-            for role in &method.roles {
+            for param in &method.params {
                 tx.assert(
                     method_relations.dispatch.param,
                     Tuple::from([
                         method.method.clone(),
-                        role.role.clone(),
-                        role.restriction.clone(),
+                        param.role.clone(),
+                        param.restriction.clone(),
                     ]),
                 )?;
             }
@@ -219,12 +219,12 @@ pub struct InstalledMethod {
     pub method: Value,
     pub program: Value,
     pub selector: Value,
-    pub roles: Vec<InstalledRole>,
+    pub params: Vec<InstalledParam>,
     pub compiled: CompiledProgram,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InstalledRole {
+pub struct InstalledParam {
     pub name: String,
     pub role: Value,
     pub restriction: Value,
@@ -514,7 +514,7 @@ fn compile_installed_method(
         identity,
         selector,
         clauses,
-        roles,
+        params,
         body,
         ..
     } = item
@@ -551,22 +551,22 @@ fn compile_installed_method(
             name: format!("{identity_name} program"),
         })
         .map(Value::identity)?;
-    let mut roles = lower_installed_roles(*id, semantic, context, roles, clauses)?;
-    roles.sort_by(|left, right| compare_role_values(&left.role, &right.role));
+    let mut params = lower_installed_params(*id, semantic, context, params, clauses)?;
+    params.sort_by(|left, right| compare_role_values(&left.role, &right.role));
 
     let mut compiler = ProgramCompiler::new(semantic, context);
-    compiler.next_register = roles.len() as u16;
-    for (idx, role) in roles.iter().enumerate() {
+    compiler.next_register = params.len() as u16;
+    for (idx, param) in params.iter().enumerate() {
         compiler
             .external_locals
-            .insert(role.name.clone(), Register(idx as u16));
+            .insert(param.name.clone(), Register(idx as u16));
     }
     let compiled_program = compiler.compile_items(body)?;
     Ok(InstalledMethod {
         method: method.clone(),
         program: program_id,
         selector: Value::symbol(Symbol::intern(selector)),
-        roles,
+        params,
         compiled: CompiledProgram {
             semantic: semantic.clone(),
             program: compiled_program,
@@ -584,28 +584,34 @@ fn compare_role_values(left: &Value, right: &Value) -> Ordering {
     }
 }
 
-fn lower_installed_roles(
+fn lower_installed_params(
     id: NodeId,
     semantic: &SemanticProgram,
     context: &CompileContext,
-    roles: &[crate::MethodRole],
+    params: &[crate::MethodParam],
     clauses: &[String],
-) -> Result<Vec<InstalledRole>, CompileError> {
-    if !roles.is_empty() {
-        return roles
+) -> Result<Vec<InstalledParam>, CompileError> {
+    if !params.is_empty() {
+        return params
             .iter()
-            .map(|role| {
-                let restriction = context.identity(&role.restriction).ok_or_else(|| {
-                    CompileError::UnknownIdentity {
-                        node: id,
-                        span: semantic.span(id).cloned(),
-                        name: role.restriction.clone(),
+            .map(|param| {
+                let restriction = match &param.restriction {
+                    Some(restriction) => {
+                        let identity = context.identity(restriction).ok_or_else(|| {
+                            CompileError::UnknownIdentity {
+                                node: id,
+                                span: semantic.span(id).cloned(),
+                                name: restriction.clone(),
+                            }
+                        })?;
+                        Value::identity(identity)
                     }
-                })?;
-                Ok(InstalledRole {
-                    name: role.name.clone(),
-                    role: Value::symbol(Symbol::intern(&role.name)),
-                    restriction: Value::identity(restriction),
+                    None => Value::nothing(),
+                };
+                Ok(InstalledParam {
+                    name: param.name.clone(),
+                    role: Value::symbol(Symbol::intern(&param.name)),
+                    restriction,
                 })
             })
             .collect();
@@ -615,7 +621,7 @@ fn lower_installed_roles(
     for clause in clauses {
         let clause = clause.trim();
         let clause = clause.strip_prefix("roles").unwrap_or(clause).trim();
-        if !clause.contains(':') {
+        if clause.is_empty() {
             continue;
         }
         for part in clause
@@ -623,26 +629,30 @@ fn lower_installed_roles(
             .map(str::trim)
             .filter(|part| !part.is_empty())
         {
-            let Some((name, restriction)) = part.split_once(':') else {
-                continue;
-            };
-            let name = name.trim();
-            let restriction = restriction.trim();
-            if name.is_empty() || !restriction.starts_with('#') {
+            if part.contains(':') {
                 continue;
             }
-            let restriction_name = restriction.trim_start_matches('#').trim();
-            let restriction = context.identity(restriction_name).ok_or_else(|| {
-                CompileError::UnknownIdentity {
-                    node: id,
-                    span: semantic.span(id).cloned(),
-                    name: restriction_name.to_owned(),
+            let (name, restriction) = match part.split_once('@') {
+                Some((name, restriction)) => {
+                    let restriction_name = restriction.trim().trim_start_matches('#').trim();
+                    let restriction = context.identity(restriction_name).ok_or_else(|| {
+                        CompileError::UnknownIdentity {
+                            node: id,
+                            span: semantic.span(id).cloned(),
+                            name: restriction_name.to_owned(),
+                        }
+                    })?;
+                    (name.trim(), Value::identity(restriction))
                 }
-            })?;
-            installed.push(InstalledRole {
+                None => (part, Value::nothing()),
+            };
+            if name.is_empty() {
+                continue;
+            }
+            installed.push(InstalledParam {
                 name: name.to_owned(),
                 role: Value::symbol(Symbol::intern(name)),
-                restriction: Value::identity(restriction),
+                restriction,
             });
         }
     }
@@ -3834,7 +3844,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         let installation = install_methods_from_source(
             "method #get_thing :get\n\
-               roles actor: #player, item: #thing\n\
+               roles actor @ #player, item @ #thing\n\
              do\n\
                assert LocatedIn(item, actor)\n\
                return true\n\
@@ -3950,7 +3960,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         install_methods_from_source(
             "method #inspect_thing :inspect\n\
-               roles actor: #player, item: #thing\n\
+               roles actor @ #player, item @ #thing\n\
              do\n\
                let values = [actor, item]\n\
                let result = {:target -> values[1]}\n\
@@ -4027,7 +4037,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         install_methods_from_source(
             "method #count_loop :count\n\
-               roles actor: #player\n\
+               roles actor @ #player\n\
              do\n\
                let i = 0\n\
                while i < 3\n\
@@ -4092,7 +4102,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         install_methods_from_source(
             "method #sum_loop :sum\n\
-               roles actor: #player\n\
+               roles actor @ #player\n\
              do\n\
                let total = 0\n\
                for item in [2, 3, 4]\n\
@@ -4156,7 +4166,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         install_methods_from_source(
             "method #calc :calc\n\
-               roles actor: #player\n\
+               roles actor @ #player\n\
              do\n\
                return (10 * 3 - 4) / 2\n\
              end",
@@ -4216,7 +4226,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         install_methods_from_source(
             "method #update :update\n\
-               roles actor: #player\n\
+               roles actor @ #player\n\
              do\n\
                let counts = {:seen -> 1}\n\
                counts[:seen] = counts[:seen] + 1\n\
@@ -4293,7 +4303,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         install_methods_from_source(
             "method #rename_thing :rename\n\
-               roles actor: #player, item: #thing\n\
+               roles actor @ #player, item @ #thing\n\
              do\n\
                item.name = \"bright coin\"\n\
                return item.name\n\
@@ -4380,7 +4390,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         install_methods_from_source(
             "method #calc :calc\n\
-               roles actor: #player\n\
+               roles actor @ #player\n\
              do\n\
                fn double(x)\n\
                  return x * 2\n\
@@ -4459,13 +4469,13 @@ mod tests {
         let mut install_tx = kernel.begin();
         let installation = install_methods_from_source(
             "method #mark_thing :mark\n\
-               roles actor: #player, item: #thing\n\
+               roles actor @ #player, item @ #thing\n\
              do\n\
                assert LocatedIn(item, actor)\n\
                return true\n\
              end\n\
              method #get_thing :get\n\
-               roles actor: #player, item: #thing\n\
+               roles actor @ #player, item @ #thing\n\
              do\n\
                :mark(actor: actor, item: item)\n\
                return true\n\
@@ -4590,7 +4600,7 @@ mod tests {
         let mut install_tx = kernel.begin();
         install_methods_from_source(
             "method #take_thing :take\n\
-               roles actor: #player, item: #thing\n\
+               roles actor @ #player, item @ #thing\n\
              do\n\
                if Portable(item, true) && !LocatedIn(item, actor)\n\
                  assert LocatedIn(item, actor)\n\

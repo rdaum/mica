@@ -44,7 +44,7 @@ CanSee(actor, item) :-
   HeldBy(actor, container),
   In(item, container)
 
-verb look(actor: #player)
+verb look(actor @ #player)
   if LocatedIn(actor, #first_room)
     emit(actor, "First Room. A coin and a box are here. The only exit is north.")
   else
@@ -53,7 +53,7 @@ verb look(actor: #player)
   return true
 end
 
-verb north(actor: #player)
+verb north(actor @ #player)
   if LocatedIn(actor, #first_room)
     assert LocatedIn(actor, #north_room)
     emit(actor, "You walk north.")
@@ -64,7 +64,7 @@ verb north(actor: #player)
   return true
 end
 
-verb get(actor: #player, item: #thing)
+verb get(actor @ #player, item @ #thing)
   if Portable(item) && CanSee(actor, item)
     assert HeldBy(actor, item)
     emit(actor, "Taken.")
@@ -75,7 +75,7 @@ verb get(actor: #player, item: #thing)
   end
 end
 
-verb put(actor: #player, item: #thing, container: #container)
+verb put(actor @ #player, item @ #thing, container @ #container)
   if HeldBy(actor, item)
     assert In(item, container)
     emit(actor, "Placed.")
@@ -84,4 +84,9 @@ verb put(actor: #player, item: #thing, container: #container)
     emit(actor, "You are not carrying that.")
     return false
   end
+end
+
+verb say(actor @ #player, message)
+  emit(actor, message)
+  return true
 end

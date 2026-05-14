@@ -379,7 +379,7 @@ impl<'a> Analyzer<'a> {
                 identity,
                 selector,
                 clauses,
-                roles,
+                params,
                 body,
                 ..
             } => {
@@ -396,7 +396,7 @@ impl<'a> Analyzer<'a> {
                     identity: identity.clone(),
                     selector: selector.clone(),
                     clauses: clauses.clone(),
-                    roles: roles.clone(),
+                    params: params.clone(),
                     scope: method_scope,
                     body,
                 }

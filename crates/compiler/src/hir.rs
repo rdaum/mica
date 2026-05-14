@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    BinaryOp, BindingId, BindingKind, EffectKind, Literal, LocalKind, MethodKind, MethodRole,
+    BinaryOp, BindingId, BindingKind, EffectKind, Literal, LocalKind, MethodKind, MethodParam,
     NodeId, ParamMode, ResolvedName, ScopeId, Span, UnaryOp,
 };
 
@@ -44,7 +44,7 @@ pub enum HirItem {
         identity: Option<String>,
         selector: Option<String>,
         clauses: Vec<String>,
-        roles: Vec<MethodRole>,
+        params: Vec<MethodParam>,
         scope: ScopeId,
         body: Vec<HirItem>,
     },

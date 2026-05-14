@@ -13,7 +13,7 @@
 
 use crate::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, CstElement,
-    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, MethodRole,
+    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, MethodParam,
     NodeId, ObjectClause, Param, ParamMode, ParseError, RecoveryClause, SyntaxKind, UnaryOp, parse,
 };
 
@@ -141,7 +141,7 @@ impl<'a> Lower<'a> {
         let header = self
             .node_children(node)
             .find(|child| child.kind == SyntaxKind::MethodHeader);
-        let (identity, selector, header_roles) = header
+        let (identity, selector, header_params) = header
             .map(|header| match kind {
                 MethodKind::Method => {
                     let (identity, selector) = self.lower_method_header(header);
@@ -156,10 +156,16 @@ impl<'a> Lower<'a> {
             .map(|child| self.text(child.span.clone()).trim().to_owned())
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>();
-        let roles = if matches!(kind, MethodKind::Verb) {
-            header_roles
+        if matches!(kind, MethodKind::Method) && method_clauses_use_colon_params(&clauses) {
+            self.error(
+                node,
+                "method parameters use `name @ #prototype`; use bare `name` for unrestricted parameters",
+            );
+        }
+        let params = if matches!(kind, MethodKind::Verb) {
+            header_params
         } else {
-            lower_method_roles(&clauses)
+            lower_method_params(&clauses)
         };
         let body = self
             .node_children(node)
@@ -173,7 +179,7 @@ impl<'a> Lower<'a> {
             identity,
             selector,
             clauses,
-            roles,
+            params,
             body,
         }
     }
@@ -191,21 +197,26 @@ impl<'a> Lower<'a> {
     }
 
     fn lower_verb_header(
-        &self,
+        &mut self,
         node: &CstNode,
-    ) -> (Option<String>, Option<String>, Vec<MethodRole>) {
-        let text = self.text(node.span.clone()).trim();
+    ) -> (Option<String>, Option<String>, Vec<MethodParam>) {
+        let text = self.text(node.span.clone()).trim().to_owned();
         let selector = text
             .chars()
             .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
             .collect::<String>();
         let selector = (!selector.is_empty()).then_some(selector);
-        let roles = text
+        let param_text = text
             .split_once('(')
-            .and_then(|(_, rest)| rest.rsplit_once(')').map(|(roles, _)| roles))
-            .map(parse_verb_roles)
-            .unwrap_or_default();
-        (None, selector, roles)
+            .and_then(|(_, rest)| rest.rsplit_once(')').map(|(params, _)| params));
+        if param_text.is_some_and(|params| params.contains(':')) {
+            self.error(
+                node,
+                "method parameters use `name @ #prototype`; use bare `name` for unrestricted parameters",
+            );
+        }
+        let params = param_text.map(parse_method_param_list).unwrap_or_default();
+        (None, selector, params)
     }
 
     fn lower_expr(&mut self, node: &CstNode) -> Expr {
@@ -1021,53 +1032,54 @@ fn identity_after_hash(source: &str, tokens: &[&CstToken], start: usize) -> Opti
         .map(|token| source[token.span.clone()].to_owned())
 }
 
-fn lower_method_roles(clauses: &[String]) -> Vec<MethodRole> {
-    let mut roles = Vec::new();
+fn lower_method_params(clauses: &[String]) -> Vec<MethodParam> {
+    let mut params = Vec::new();
     for clause in clauses {
         let clause = clause.trim();
         let clause = clause.strip_prefix("roles").unwrap_or(clause).trim();
-        if !clause.contains(':') {
+        if clause.is_empty() {
             continue;
         }
-        for part in clause
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-        {
-            let Some((name, restriction)) = part.split_once(':') else {
-                continue;
-            };
-            let name = name.trim();
-            let restriction = restriction.trim();
-            let Some(restriction) = restriction.strip_prefix('#') else {
-                continue;
-            };
-            if !name.is_empty() && !restriction.is_empty() {
-                roles.push(MethodRole {
-                    name: name.to_owned(),
-                    restriction: restriction.to_owned(),
-                });
-            }
-        }
+        params.extend(parse_method_param_list(clause));
     }
-    roles
+    params
 }
 
-fn parse_verb_roles(text: &str) -> Vec<MethodRole> {
-    text.split(',')
-        .filter_map(|part| {
-            let (name, restriction) = part.trim().split_once(':')?;
-            let name = name.split_whitespace().last().unwrap_or_default().trim();
+fn method_clauses_use_colon_params(clauses: &[String]) -> bool {
+    clauses
+        .iter()
+        .map(|clause| clause.trim())
+        .filter(|clause| clause.starts_with("roles"))
+        .any(|clause| clause.contains(':'))
+}
+
+fn parse_method_param_list(text: &str) -> Vec<MethodParam> {
+    text.split(',').filter_map(parse_method_param).collect()
+}
+
+fn parse_method_param(part: &str) -> Option<MethodParam> {
+    let part = part.trim();
+    if part.is_empty() || part.contains(':') {
+        return None;
+    }
+    let (name, restriction) = match part.split_once('@') {
+        Some((name, restriction)) => {
             let restriction = restriction.trim().strip_prefix('#')?.trim();
-            if name.is_empty() || restriction.is_empty() {
+            if restriction.is_empty() {
                 return None;
             }
-            Some(MethodRole {
-                name: name.to_owned(),
-                restriction: restriction.to_owned(),
-            })
-        })
-        .collect()
+            (name, Some(restriction.to_owned()))
+        }
+        None => (part, None),
+    };
+    let name = name.split_whitespace().last().unwrap_or_default().trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(MethodParam {
+        name: name.to_owned(),
+        restriction,
+    })
 }
 
 fn unquote(text: &str) -> String {
@@ -1221,7 +1233,7 @@ mod tests {
                name = \"brass lamp\"\n\
              end\n\
              method #move_into :move\n\
-               roles actor: #player, item: #portable\n\
+               roles actor @ #player, item @ #portable\n\
              do\n\
                require CanMove(actor, item)\n\
                assert LocatedIn(item, destination)\n\
@@ -1238,7 +1250,7 @@ mod tests {
             identity,
             selector,
             clauses,
-            roles,
+            params,
             body,
             ..
         } = &ast.items[1]
@@ -1249,9 +1261,9 @@ mod tests {
         assert_eq!(identity.as_deref(), Some("move_into"));
         assert_eq!(selector.as_deref(), Some("move"));
         assert_eq!(clauses.len(), 1);
-        assert_eq!(roles.len(), 2);
-        assert_eq!(roles[0].name, "actor");
-        assert_eq!(roles[0].restriction, "player");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "actor");
+        assert_eq!(params[0].restriction.as_deref(), Some("player"));
         assert!(matches!(
             &body[0],
             Item::Expr {
@@ -1267,7 +1279,7 @@ mod tests {
     #[test]
     fn lowers_verb_header_roles() {
         let ast = parse_ast(
-            "verb get(actor: #player, item: #thing)\n\
+            "verb get(actor @ #player, item @ #thing)\n\
                return true\n\
              end",
         );
@@ -1276,7 +1288,7 @@ mod tests {
             kind,
             identity,
             selector,
-            roles,
+            params,
             body,
             ..
         } = &ast.items[0]
@@ -1286,12 +1298,57 @@ mod tests {
         assert_eq!(kind, &MethodKind::Verb);
         assert_eq!(identity, &None);
         assert_eq!(selector.as_deref(), Some("get"));
-        assert_eq!(roles.len(), 2);
-        assert_eq!(roles[0].name, "actor");
-        assert_eq!(roles[0].restriction, "player");
-        assert_eq!(roles[1].name, "item");
-        assert_eq!(roles[1].restriction, "thing");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "actor");
+        assert_eq!(params[0].restriction.as_deref(), Some("player"));
+        assert_eq!(params[1].name, "item");
+        assert_eq!(params[1].restriction.as_deref(), Some("thing"));
         assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn lowers_unrestricted_verb_params() {
+        let ast = parse_ast(
+            "verb say(actor @ #player, message)\n\
+               emit(actor, message)\n\
+             end",
+        );
+        assert_eq!(ast.errors, vec![]);
+        let Item::Method { params, .. } = &ast.items[0] else {
+            panic!("expected verb");
+        };
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].restriction.as_deref(), Some("player"));
+        assert_eq!(params[1].name, "message");
+        assert_eq!(params[1].restriction, None);
+    }
+
+    #[test]
+    fn rejects_colon_method_param_restrictions() {
+        let verb = parse_ast(
+            "verb say(actor: #player, message)\n\
+               emit(actor, message)\n\
+             end",
+        );
+        assert!(
+            verb.errors
+                .iter()
+                .any(|error| error.message.contains("name @ #prototype"))
+        );
+
+        let method = parse_ast(
+            "method #say :say\n\
+               roles actor: #player, message\n\
+             do\n\
+               emit(actor, message)\n\
+             end",
+        );
+        assert!(
+            method
+                .errors
+                .iter()
+                .any(|error| error.message.contains("name @ #prototype"))
+        );
     }
 
     #[test]
