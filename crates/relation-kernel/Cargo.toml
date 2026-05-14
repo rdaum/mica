@@ -6,7 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 description = "MVCC relation kernel for Mica"
 
+[features]
+default = ["fjall-provider"]
+fjall-provider = ["dep:fjall"]
+
 [dependencies]
 arc-swap.workspace = true
-fjall.workspace = true
+fjall = { workspace = true, optional = true }
 mica-var.workspace = true

@@ -1,13 +1,16 @@
 [package]
-name = "mica-runtime"
+name = "mica-browser"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Live Mica runtime environment"
+description = "Browser-oriented Mica compiler, VM, and projected relation package"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 mica-compiler.workspace = true
-mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
+mica-relation-kernel.workspace = true
 mica-var.workspace = true
 mica-vm.workspace = true

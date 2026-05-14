@@ -776,6 +776,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-browser"
+version = "0.1.0"
+dependencies = [
+ "mica-compiler",
+ "mica-relation-kernel",
+ "mica-var",
+ "mica-vm",
+]
+
+[[package]]
 name = "mica-compiler"
 version = "0.1.0"
 dependencies = [

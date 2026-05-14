@@ -30,6 +30,7 @@ mod kernel;
 mod materialized;
 mod metadata;
 mod neighborhood;
+mod projected;
 mod provider;
 mod query;
 mod rules;
@@ -37,6 +38,7 @@ mod snapshot;
 mod transaction;
 mod transient;
 mod tuple;
+mod workspace;
 
 #[cfg(test)]
 mod tests;
@@ -55,16 +57,17 @@ pub use kernel::RelationKernel;
 pub use materialized::materialize_rule_set;
 pub use metadata::{ConflictPolicy, RelationMetadata, RelationSchema, TupleIndexSpec};
 pub use neighborhood::{MentionedFact, SubjectFact};
-pub use provider::{
-    CommitProvider, FjallDurabilityMode, FjallFormatStatus, FjallStateProvider,
-    InMemoryCommitProvider, PersistedKernelState,
-};
+pub use projected::{ProjectedDelta, ProjectedStore};
+pub use provider::{CommitProvider, InMemoryCommitProvider, PersistedKernelState};
+#[cfg(feature = "fjall-provider")]
+pub use provider::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
 pub use query::{QueryPlan, RelationRead};
 pub use rules::{Atom, Rule, RuleDefinition, RuleError, RuleEvalError, RuleSet, Term};
 pub use snapshot::{CatalogChange, Commit, CommitResult, FactChange, FactChangeKind, Snapshot};
 pub use transaction::Transaction;
 pub use transient::{ComposedRelationRead, ComposedTransactionRead, TransientStore};
 pub use tuple::Tuple;
+pub use workspace::RelationWorkspace;
 
 pub type RelationId = Identity;
 pub type FactId = Identity;

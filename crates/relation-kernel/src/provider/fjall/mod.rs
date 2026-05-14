@@ -17,11 +17,8 @@ use self::codec::{
     decode_commit, decode_relation_metadata, decode_rule_definition, decode_tuple, encode_commit,
     encode_relation_metadata_record, encode_rule_definition_record, encode_tuple_record, fact_key,
 };
-use super::CommitProvider;
-use crate::{
-    CatalogChange, Commit, FactChangeKind, RelationId, RelationMetadata, RuleDefinition, Tuple,
-    Version,
-};
+use super::{CommitProvider, PersistedKernelState};
+use crate::{CatalogChange, Commit, FactChangeKind};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use mica_var::Identity;
 use std::path::Path;
@@ -57,14 +54,6 @@ pub enum FjallFormatStatus {
 pub enum FjallDurabilityMode {
     Relaxed,
     Strict,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PersistedKernelState {
-    pub version: Version,
-    pub relations: Vec<RelationMetadata>,
-    pub rules: Vec<RuleDefinition>,
-    pub facts: Vec<(RelationId, Tuple)>,
 }
 
 #[derive(Clone)]

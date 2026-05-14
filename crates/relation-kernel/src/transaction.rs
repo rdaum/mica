@@ -15,8 +15,8 @@ use crate::commit_bloom::CommitBloom;
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{active_rules, empty_derived_cache};
 use crate::{
-    Conflict, ConflictKind, ConflictPolicy, KernelError, RelationId, RelationKernel, RuleSet,
-    Snapshot, Tuple, Version,
+    Conflict, ConflictKind, ConflictPolicy, KernelError, RelationId, RelationKernel,
+    RelationWorkspace, RuleSet, Snapshot, Tuple, Version,
 };
 use mica_var::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -349,6 +349,24 @@ impl<'a> Transaction<'a> {
             }
         }
         Ok(bloom)
+    }
+}
+
+impl RelationWorkspace for Transaction<'_> {
+    fn assert_tuple(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
+        self.assert(relation, tuple)
+    }
+
+    fn retract_tuple(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
+        self.retract(relation, tuple)
+    }
+
+    fn replace_functional_tuple(
+        &mut self,
+        relation: RelationId,
+        tuple: Tuple,
+    ) -> Result<(), KernelError> {
+        self.replace_functional(relation, tuple)
     }
 }
 

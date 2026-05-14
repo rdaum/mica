@@ -21,7 +21,7 @@ use arc_swap::ArcSwap;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-const GENERATED_RULE_ID_START: u64 = 0x00d0_0000_0000_0000;
+pub(crate) const GENERATED_RULE_ID_START: u64 = 0x00d0_0000_0000_0000;
 
 pub struct RelationKernel {
     root: ArcSwap<Snapshot>,

@@ -25,6 +25,10 @@ inspection views.
 - `src/dispatch.rs`: role-based method applicability matching.
 - `src/closure.rs`: delegation closure helpers.
 - `src/neighborhood.rs`: object-neighbourhood inspection views.
+- `src/workspace.rs`: shared mutation interface for transactional and
+  projected relation workspaces.
+- `src/projected.rs`: non-durable projected relation store for single-user or
+  browser-hoisted Mica surfaces.
 - `src/provider/`: commit provider boundary. `memory.rs` contains the
   in-memory provider, `fjall/mod.rs` contains the Fjall-backed durable state
   provider, and `fjall/codec.rs` contains the persisted binary encoding.
@@ -36,6 +40,19 @@ inspection views.
 The kernel is the authoritative world state for the current prototype. The
 runtime opens transactions against it, the compiler installs methods and rules
 into it, and the runner refreshes its compile context from its catalogue facts.
+
+The crate also has a smaller relation-core build shape. The workspace
+dependency disables durable providers by default, so compiler, VM, and browser
+packages can use values, tuples, indexes, query plans, rules, dispatch, and the
+`ProjectedStore` without linking Fjall. Server/runtime crates opt into the
+`fjall-provider` feature explicitly.
+
+`ProjectedStore` is for relation slices that are already selected by a server
+or host environment. It applies commit-shaped deltas, supports immediate local
+workspace mutation through `RelationWorkspace`, and evaluates rules over the
+projected facts. It does not provide multiuser conflict validation, durable
+commit acknowledgement, or restart recovery; those remain `RelationKernel`
+responsibilities.
 
 Persistence stores canonical relation state: relation metadata, rule
 definitions, current extensional facts, and the latest committed version. Each

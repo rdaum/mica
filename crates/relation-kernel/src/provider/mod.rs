@@ -11,13 +11,24 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-mod fjall;
 mod memory;
 
-use crate::Commit;
+#[cfg(feature = "fjall-provider")]
+mod fjall;
 
-pub use fjall::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider, PersistedKernelState};
+use crate::{Commit, RelationId, RelationMetadata, RuleDefinition, Tuple, Version};
+
+#[cfg(feature = "fjall-provider")]
+pub use fjall::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
 pub use memory::InMemoryCommitProvider;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistedKernelState {
+    pub version: Version,
+    pub relations: Vec<RelationMetadata>,
+    pub rules: Vec<RuleDefinition>,
+    pub facts: Vec<(RelationId, Tuple)>,
+}
 
 pub trait CommitProvider: Send + Sync {
     fn persist_commit(&self, commit: &Commit) -> Result<(), String>;

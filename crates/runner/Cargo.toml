@@ -13,7 +13,7 @@ path = "src/main.rs"
 clap.workspace = true
 mica-compiler.workspace = true
 mica-driver.workspace = true
-mica-relation-kernel.workspace = true
+mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
 mica-runtime.workspace = true
 mica-var.workspace = true
 rustyline.workspace = true

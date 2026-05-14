@@ -235,6 +235,8 @@ Mica is an early Rust prototype. The current tree has:
 - compiler for a growing Mica language surface;
 - a compio-driven task driver for timed wakeups, input resumes, and emissions;
 - a minimal TCP daemon that maps one endpoint identity to each connection;
+- a browser-oriented WASM package that links the compiler, VM, and projected
+  relation store without durable providers;
 - role-based method dispatch;
 - a "filein" syntax for bringing in state-as-initial-blueprint;
 - Fjall-backed durable relation state with strict and relaxed commit modes;
@@ -270,6 +272,8 @@ cargo test --workspace
 - [`crates/var`](crates/var/README.md): Mica value representation.
 - [`crates/relation-kernel`](crates/relation-kernel/README.md): relation
   storage, transactions, rules, dispatch matching, and catalogue facts.
+- [`crates/browser`](crates/browser/README.md): browser-oriented compiler, VM,
+  and projected relation package.
 - [`crates/vm`](crates/vm/README.md): bytecode format and register VM execution
   core.
 - [`crates/compiler`](crates/compiler/README.md): lexer, parser, lowering,

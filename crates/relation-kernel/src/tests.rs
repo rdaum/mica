@@ -14,13 +14,17 @@
 use crate::{
     Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider,
     ComposedRelationRead, ComposedTransactionRead, Conflict, ConflictKind, ConflictPolicy, Fact,
-    FactChange, FactChangeKind, FjallDurabilityMode, FjallFormatStatus, FjallStateProvider,
-    InMemoryCommitProvider, KernelError, MentionedFact, QueryPlan, RelationId, RelationKernel,
-    RelationMetadata, RelationRead, Rule, SubjectFact, Term, TransientStore, Tuple,
+    FactChange, FactChangeKind, InMemoryCommitProvider, KernelError, MentionedFact, ProjectedStore,
+    QueryPlan, RelationId, RelationKernel, RelationMetadata, RelationRead, RelationWorkspace, Rule,
+    SubjectFact, Term, TransientStore, Tuple,
 };
+#[cfg(feature = "fjall-provider")]
+use crate::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
 use mica_var::{Identity, Symbol, Value};
+#[cfg(feature = "fjall-provider")]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "fjall-provider")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn rel(id: u64) -> RelationId {
@@ -39,6 +43,7 @@ fn var(name: &str) -> Term {
     Term::Var(Symbol::intern(name))
 }
 
+#[cfg(feature = "fjall-provider")]
 struct TempStore {
     path: PathBuf,
 }
@@ -70,6 +75,7 @@ impl CommitProvider for FailAfterCommitProvider {
     }
 }
 
+#[cfg(feature = "fjall-provider")]
 impl TempStore {
     fn new(name: &str) -> Self {
         let suffix = SystemTime::now()
@@ -89,6 +95,7 @@ impl TempStore {
     }
 }
 
+#[cfg(feature = "fjall-provider")]
 impl Drop for TempStore {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
@@ -604,6 +611,119 @@ fn composed_transaction_reader_derives_rules_from_transient_inputs() {
 }
 
 #[test]
+fn projected_store_applies_server_commits_without_provider() {
+    let kernel = RelationKernel::new();
+    let name = RelationMetadata::new(rel(73), Symbol::intern("Name"), 2)
+        .with_index([0])
+        .with_conflict_policy(ConflictPolicy::Functional {
+            key_positions: vec![0],
+        });
+    let create_snapshot = kernel.create_relation(name.clone()).unwrap();
+    let create_commit = create_snapshot.commits_since(0).last().unwrap().clone();
+    let mut tx = kernel.begin();
+    tx.replace_functional(rel(73), Tuple::from([int(1), Value::string("lamp")]))
+        .unwrap();
+    let write_commit = tx.commit().unwrap().commit().clone();
+
+    let mut projected = ProjectedStore::new();
+    projected.apply_commit(&create_commit).unwrap();
+    projected.apply_commit(&write_commit).unwrap();
+
+    assert_eq!(
+        projected
+            .scan_relation(rel(73), &[Some(int(1)), None])
+            .unwrap(),
+        vec![Tuple::from([int(1), Value::string("lamp")])]
+    );
+}
+
+#[test]
+fn projected_store_implements_workspace_for_local_mutation() {
+    fn rename(
+        workspace: &mut impl RelationWorkspace,
+        relation: RelationId,
+        object: Value,
+        name: &str,
+    ) {
+        workspace
+            .replace_functional_tuple(relation, Tuple::from([object, Value::string(name)]))
+            .unwrap();
+    }
+
+    let mut projected = ProjectedStore::new();
+    projected
+        .create_relation(
+            RelationMetadata::new(rel(74), Symbol::intern("Name"), 2)
+                .with_index([0])
+                .with_conflict_policy(ConflictPolicy::Functional {
+                    key_positions: vec![0],
+                }),
+        )
+        .unwrap();
+
+    rename(&mut projected, rel(74), int(1), "brass lamp");
+    rename(&mut projected, rel(74), int(1), "golden lamp");
+
+    assert_eq!(
+        projected
+            .scan_relation(rel(74), &[Some(int(1)), None])
+            .unwrap(),
+        vec![Tuple::from([int(1), Value::string("golden lamp")])]
+    );
+}
+
+#[test]
+fn projected_store_evaluates_recursive_rules() {
+    let mut projected = ProjectedStore::new();
+    projected
+        .create_relation(RelationMetadata::new(rel(75), Symbol::intern("Edge"), 2))
+        .unwrap();
+    projected
+        .create_relation(RelationMetadata::new(
+            rel(76),
+            Symbol::intern("Reachable"),
+            2,
+        ))
+        .unwrap();
+    projected
+        .install_rule(
+            Rule::new(
+                rel(76),
+                [var("from"), var("to")],
+                [Atom::positive(rel(75), [var("from"), var("to")])],
+            ),
+            "Reachable(from, to) :- Edge(from, to)",
+        )
+        .unwrap();
+    projected
+        .install_rule(
+            Rule::new(
+                rel(76),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(75), [var("from"), var("mid")]),
+                    Atom::positive(rel(76), [var("mid"), var("to")]),
+                ],
+            ),
+            "Reachable(from, to) :- Edge(from, mid), Reachable(mid, to)",
+        )
+        .unwrap();
+    projected
+        .assert_tuple(rel(75), Tuple::from([int(1), int(2)]))
+        .unwrap();
+    projected
+        .assert_tuple(rel(75), Tuple::from([int(2), int(3)]))
+        .unwrap();
+
+    assert_eq!(
+        projected
+            .scan_relation(rel(76), &[Some(int(1)), Some(int(3))])
+            .unwrap(),
+        vec![Tuple::from([int(1), int(3)])]
+    );
+}
+
+#[test]
 fn functional_replace_conflicts_when_key_changes_concurrently() {
     let kernel = RelationKernel::new();
     kernel
@@ -872,6 +992,7 @@ fn kernel_can_replay_catalog_and_fact_commit_log() {
     );
 }
 
+#[cfg(feature = "fjall-provider")]
 #[test]
 fn fjall_provider_persists_and_loads_canonical_state() {
     let store = TempStore::new("canonical-state");
@@ -954,6 +1075,7 @@ fn fjall_provider_persists_and_loads_canonical_state() {
     );
 }
 
+#[cfg(feature = "fjall-provider")]
 #[test]
 fn fjall_provider_reopens_loads_and_continues_committing() {
     let store = TempStore::new("reopen-continue");
@@ -1007,6 +1129,7 @@ fn fjall_provider_reopens_loads_and_continues_committing() {
     );
 }
 
+#[cfg(feature = "fjall-provider")]
 #[test]
 fn fjall_provider_detects_shape_mismatch() {
     let store = TempStore::new("format-mismatch");
