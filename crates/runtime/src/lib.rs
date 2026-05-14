@@ -57,8 +57,9 @@ const SOURCE_OWNS_RULE_RELATION_ID: u64 = 0x00df_ffff_ffff_fff7;
 const SOURCE_OWNS_RELATION_RELATION_ID: u64 = 0x00df_ffff_ffff_fff6;
 const ENDPOINT_RELATION_ID: u64 = 0x00df_ffff_ffff_fff5;
 const ENDPOINT_ACTOR_RELATION_ID: u64 = 0x00df_ffff_ffff_fff4;
-const ENDPOINT_PROTOCOL_RELATION_ID: u64 = 0x00df_ffff_ffff_fff3;
-const ENDPOINT_OPEN_RELATION_ID: u64 = 0x00df_ffff_ffff_fff2;
+const ENDPOINT_PRINCIPAL_RELATION_ID: u64 = 0x00df_ffff_ffff_fff3;
+const ENDPOINT_PROTOCOL_RELATION_ID: u64 = 0x00df_ffff_ffff_fff2;
+const ENDPOINT_OPEN_RELATION_ID: u64 = 0x00df_ffff_ffff_fff1;
 
 const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "emit",
@@ -77,6 +78,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "actor",
     "principal",
     "endpoint",
+    "assume_actor",
     "destroy_identity",
     "assert_transient",
     "retract_transient",
@@ -225,6 +227,21 @@ impl SourceRunner {
             actor: Some(actor_id),
             endpoint: SYSTEM_ENDPOINT,
             authority,
+            input: TaskInput::Source(source.into()),
+        })
+    }
+
+    pub fn source_request_for_endpoint(
+        &self,
+        endpoint: Identity,
+        source: impl Into<String>,
+    ) -> Result<TaskRequest, SourceTaskError> {
+        let runtime_context = self.endpoint_runtime_context(endpoint)?;
+        Ok(TaskRequest {
+            principal: runtime_context.principal(),
+            actor: runtime_context.actor(),
+            endpoint,
+            authority: authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?,
             input: TaskInput::Source(source.into()),
         })
     }
@@ -414,6 +431,18 @@ impl SourceRunner {
             .map_err(SourceTaskError::from)
     }
 
+    pub fn open_endpoint_with_context(
+        &mut self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), SourceTaskError> {
+        self.task_manager
+            .open_endpoint_with_context(endpoint, principal, actor, protocol)
+            .map_err(SourceTaskError::from)
+    }
+
     pub fn close_endpoint(&mut self, endpoint: Identity) -> usize {
         self.task_manager.close_endpoint(endpoint)
     }
@@ -424,6 +453,15 @@ impl SourceRunner {
 
     pub fn drain_routed_emissions(&mut self) -> Vec<Effect> {
         self.task_manager.drain_routed_emissions()
+    }
+
+    fn endpoint_runtime_context(
+        &self,
+        endpoint: Identity,
+    ) -> Result<RuntimeContext, SourceTaskError> {
+        self.task_manager
+            .endpoint_runtime_context(endpoint)
+            .map_err(SourceTaskError::from)
     }
 
     pub fn report_outcome(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
@@ -1479,6 +1517,13 @@ fn endpoint_relation_metadata() -> Vec<RelationMetadata> {
         .with_index([1, 0])
         .with_index([0]),
         RelationMetadata::new(
+            endpoint_principal_relation(),
+            Symbol::intern("EndpointPrincipal"),
+            2,
+        )
+        .with_index([1, 0])
+        .with_index([0]),
+        RelationMetadata::new(
             endpoint_protocol_relation(),
             Symbol::intern("EndpointProtocol"),
             2,
@@ -1486,6 +1531,12 @@ fn endpoint_relation_metadata() -> Vec<RelationMetadata> {
         .with_index([0]),
         RelationMetadata::new(endpoint_open_relation(), Symbol::intern("EndpointOpen"), 1),
     ]
+}
+
+fn endpoint_metadata(relation: Identity) -> Option<RelationMetadata> {
+    endpoint_relation_metadata()
+        .into_iter()
+        .find(|metadata| metadata.id() == relation)
 }
 
 fn default_builtins() -> BuiltinRegistry {
@@ -1506,6 +1557,7 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("actor", actor_builtin)
         .with_builtin("principal", principal_builtin)
         .with_builtin("endpoint", endpoint_builtin)
+        .with_builtin("assume_actor", assume_actor_builtin)
         .with_builtin("destroy_identity", destroy_identity_builtin)
         .with_builtin("assert_transient", assert_transient_builtin)
         .with_builtin("retract_transient", retract_transient_builtin)
@@ -1664,6 +1716,102 @@ fn endpoint_builtin(
         return Err(invalid_builtin_call("endpoint", "expected endpoint()"));
     }
     Ok(Value::identity(context.runtime_context().endpoint()))
+}
+
+fn assume_actor_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "assume_actor",
+            "expected assume_actor(#actor)",
+        ));
+    }
+    let actor = builtin_identity_arg("assume_actor", args, 0)?;
+    require_endpoint_open(context, "assume_actor")?;
+    require_actor_assumption(context, actor)?;
+    replace_endpoint_identity_binding(context, endpoint_actor_relation(), actor)?;
+    Ok(Value::identity(actor))
+}
+
+fn require_endpoint_open(
+    context: &mut BuiltinContext<'_, '_>,
+    operation: &'static str,
+) -> Result<(), RuntimeError> {
+    let endpoint = context.runtime_context().endpoint();
+    let rows = context.scan_transient(
+        &[endpoint],
+        endpoint_open_relation(),
+        &[Some(Value::identity(endpoint))],
+    )?;
+    if rows.is_empty() {
+        return Err(RuntimeError::PermissionDenied {
+            operation,
+            target: Value::identity(endpoint),
+        });
+    }
+    Ok(())
+}
+
+fn require_actor_assumption(
+    context: &mut BuiltinContext<'_, '_>,
+    actor: Identity,
+) -> Result<(), RuntimeError> {
+    if context.authority().can_grant() {
+        return Ok(());
+    }
+    let Some(principal) = context.runtime_context().principal() else {
+        return Err(RuntimeError::PermissionDenied {
+            operation: "assume_actor",
+            target: Value::identity(actor),
+        });
+    };
+    let Some(policy_relation) = runtime_policy_relation(context.kernel(), "CanAssumeActor", 2)?
+    else {
+        return Err(RuntimeError::PermissionDenied {
+            operation: "assume_actor",
+            target: Value::identity(actor),
+        });
+    };
+    let rows = context.tx().scan(
+        policy_relation,
+        &[
+            Some(Value::identity(principal)),
+            Some(Value::identity(actor)),
+        ],
+    )?;
+    if rows.is_empty() {
+        return Err(RuntimeError::PermissionDenied {
+            operation: "assume_actor",
+            target: Value::identity(actor),
+        });
+    }
+    Ok(())
+}
+
+fn replace_endpoint_identity_binding(
+    context: &mut BuiltinContext<'_, '_>,
+    relation: Identity,
+    identity: Identity,
+) -> Result<(), RuntimeError> {
+    let endpoint = context.runtime_context().endpoint();
+    let rows = context.scan_transient(
+        &[endpoint],
+        relation,
+        &[Some(Value::identity(endpoint)), None],
+    )?;
+    for row in rows {
+        context.retract_transient(endpoint, relation, &row)?;
+    }
+    let metadata = endpoint_metadata(relation)
+        .ok_or(RuntimeError::Kernel(KernelError::UnknownRelation(relation)))?;
+    context.assert_transient(
+        endpoint,
+        metadata,
+        Tuple::from([Value::identity(endpoint), Value::identity(identity)]),
+    )?;
+    Ok(())
 }
 
 fn destroy_identity_builtin(
@@ -2140,6 +2288,16 @@ fn authority_for_actor(
     Ok(authority)
 }
 
+fn authority_for_runtime_context(
+    kernel: &RelationKernel,
+    runtime_context: RuntimeContext,
+) -> Result<AuthorityContext, SourceTaskError> {
+    match runtime_context.actor() {
+        Some(actor) => authority_for_actor(kernel, actor),
+        None => Ok(AuthorityContext::empty()),
+    }
+}
+
 fn mint_relation_grants(
     kernel: &RelationKernel,
     actor: Identity,
@@ -2244,6 +2402,23 @@ fn policy_relation(
     Ok(Some(relation))
 }
 
+fn runtime_policy_relation(
+    kernel: &RelationKernel,
+    name: &str,
+    expected_arity: u16,
+) -> Result<Option<Identity>, RuntimeError> {
+    let Some((relation, arity)) = relation_named(kernel, Symbol::intern(name)) else {
+        return Ok(None);
+    };
+    if arity != expected_arity {
+        return Err(RuntimeError::InvalidBuiltinCall {
+            name: Symbol::intern(name),
+            message: format!("policy relation {name} has arity {arity}, expected {expected_arity}"),
+        });
+    }
+    Ok(Some(relation))
+}
+
 fn invalid_policy_fact(relation: &str, message: &str) -> SourceTaskError {
     unsupported_runner_error(
         NodeId(0),
@@ -2343,6 +2518,10 @@ fn endpoint_relation() -> Identity {
 
 fn endpoint_actor_relation() -> Identity {
     Identity::new(ENDPOINT_ACTOR_RELATION_ID).unwrap()
+}
+
+fn endpoint_principal_relation() -> Identity {
+    Identity::new(ENDPOINT_PRINCIPAL_RELATION_ID).unwrap()
 }
 
 fn endpoint_protocol_relation() -> Identity {
@@ -3452,6 +3631,93 @@ mod tests {
         assert!(matches!(
             closed.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::list([])
+        ));
+    }
+
+    #[test]
+    fn runner_assume_actor_requires_principal_specific_policy() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:account)").unwrap();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:bob)").unwrap();
+        runner
+            .run_source("make_relation(:CanAssumeActor, 2)")
+            .unwrap();
+        let account = runner.actor_identity(Symbol::intern("account")).unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0012).unwrap();
+        runner
+            .open_endpoint_with_context(
+                endpoint,
+                Some(account),
+                Some(alice),
+                Symbol::intern("telnet"),
+            )
+            .unwrap();
+
+        let denied_request = runner
+            .source_request_for_endpoint(endpoint, "return assume_actor(#bob)")
+            .unwrap();
+        let denied = runner.submit_source(denied_request).unwrap_err();
+        assert!(format!("{denied:?}").contains("PermissionDenied"));
+
+        runner
+            .run_source("assert CanAssumeActor(#account, #bob)")
+            .unwrap();
+        let allowed_request = runner
+            .source_request_for_endpoint(endpoint, "return assume_actor(#bob)")
+            .unwrap();
+        let switched = runner.submit_source(allowed_request).unwrap();
+        assert!(matches!(
+            switched.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(bob)
+        ));
+
+        let actor_request = runner
+            .source_request_for_endpoint(endpoint, "return actor()")
+            .unwrap();
+        let actor = runner.submit_source(actor_request).unwrap();
+        assert!(matches!(
+            actor.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(bob)
+        ));
+    }
+
+    #[test]
+    fn runner_endpoint_actor_cannot_be_rebound_by_raw_transient_write() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:account)").unwrap();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:bob)").unwrap();
+        let account = runner.actor_identity(Symbol::intern("account")).unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0013).unwrap();
+        runner
+            .open_endpoint_with_context(
+                endpoint,
+                Some(account),
+                Some(alice),
+                Symbol::intern("telnet"),
+            )
+            .unwrap();
+
+        let request = runner
+            .source_request_for_endpoint(
+                endpoint,
+                "return assert_transient(endpoint(), :EndpointActor, [endpoint(), #bob])",
+            )
+            .unwrap();
+        let denied = runner.submit_source(request).unwrap_err();
+        assert!(format!("{denied:?}").contains("PermissionDenied"));
+
+        let actor_request = runner
+            .source_request_for_endpoint(endpoint, "return actor()")
+            .unwrap();
+        let actor = runner.submit_source(actor_request).unwrap();
+        assert!(matches!(
+            actor.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(alice)
         ));
     }
 

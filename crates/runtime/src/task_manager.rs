@@ -13,8 +13,8 @@
 
 use crate::{
     Task, TaskError, TaskId, TaskLimits, TaskOutcome, endpoint_actor_relation,
-    endpoint_open_relation, endpoint_protocol_relation, endpoint_relation,
-    endpoint_relation_metadata,
+    endpoint_open_relation, endpoint_principal_relation, endpoint_protocol_relation,
+    endpoint_relation, endpoint_relation_metadata,
 };
 use mica_relation_kernel::{
     KernelError, RelationId, RelationKernel, RelationMetadata, TransientStore, Tuple,
@@ -37,6 +37,12 @@ pub enum TaskManagerError {
 impl From<TaskError> for TaskManagerError {
     fn from(value: TaskError) -> Self {
         Self::Task(value)
+    }
+}
+
+impl From<KernelError> for TaskManagerError {
+    fn from(value: KernelError) -> Self {
+        Self::Task(TaskError::from(value))
     }
 }
 
@@ -159,17 +165,26 @@ impl TaskManager {
         actor: Option<Identity>,
         protocol: Symbol,
     ) -> Result<(), TaskManagerError> {
+        self.open_endpoint_with_context(endpoint, None, actor, protocol)
+    }
+
+    pub fn open_endpoint_with_context(
+        &mut self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), TaskManagerError> {
         self.assert_endpoint_fact(
             endpoint,
             endpoint_relation(),
             Tuple::from([Value::identity(endpoint)]),
         )?;
+        if let Some(principal) = principal {
+            self.replace_endpoint_binding(endpoint, endpoint_principal_relation(), principal)?;
+        }
         if let Some(actor) = actor {
-            self.assert_endpoint_fact(
-                endpoint,
-                endpoint_actor_relation(),
-                Tuple::from([Value::identity(endpoint), Value::identity(actor)]),
-            )?;
+            self.replace_endpoint_binding(endpoint, endpoint_actor_relation(), actor)?;
         }
         self.assert_endpoint_fact(
             endpoint,
@@ -182,6 +197,15 @@ impl TaskManager {
             Tuple::from([Value::identity(endpoint)]),
         )?;
         Ok(())
+    }
+
+    pub fn endpoint_runtime_context(
+        &self,
+        endpoint: Identity,
+    ) -> Result<RuntimeContext, TaskManagerError> {
+        let principal = self.endpoint_binding(endpoint, endpoint_principal_relation())?;
+        let actor = self.endpoint_binding(endpoint, endpoint_actor_relation())?;
+        Ok(RuntimeContext::new(principal, actor, endpoint))
     }
 
     pub fn close_endpoint(&mut self, endpoint: Identity) -> usize {
@@ -381,6 +405,54 @@ impl TaskManager {
             .map(|_| ())
             .map_err(TaskError::from)
             .map_err(TaskManagerError::from)
+    }
+
+    fn replace_endpoint_binding(
+        &mut self,
+        endpoint: Identity,
+        relation: RelationId,
+        identity: Identity,
+    ) -> Result<(), TaskManagerError> {
+        for row in self.transient.scan(
+            &[endpoint],
+            relation,
+            &[Some(Value::identity(endpoint)), None],
+        )? {
+            self.transient.retract(endpoint, relation, &row);
+        }
+        self.assert_endpoint_fact(
+            endpoint,
+            relation,
+            Tuple::from([Value::identity(endpoint), Value::identity(identity)]),
+        )
+    }
+
+    fn endpoint_binding(
+        &self,
+        endpoint: Identity,
+        relation: RelationId,
+    ) -> Result<Option<Identity>, TaskManagerError> {
+        let rows = self.transient.scan(
+            &[endpoint],
+            relation,
+            &[Some(Value::identity(endpoint)), None],
+        )?;
+        let mut bindings = rows
+            .iter()
+            .filter_map(|row| row.values().get(1).and_then(Value::as_identity))
+            .collect::<Vec<_>>();
+        bindings.sort();
+        bindings.dedup();
+        match bindings.as_slice() {
+            [] => Ok(None),
+            [identity] => Ok(Some(*identity)),
+            _ => Err(TaskManagerError::Task(TaskError::Runtime(
+                mica_vm::RuntimeError::InvalidBuiltinCall {
+                    name: Symbol::intern("endpoint_context"),
+                    message: "endpoint has multiple context bindings".to_owned(),
+                },
+            ))),
+        }
     }
 
     fn route_effect_targets_result(&self, target: Identity) -> Result<Vec<Identity>, KernelError> {

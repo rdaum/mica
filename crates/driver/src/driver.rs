@@ -159,6 +159,20 @@ impl CompioTaskDriver {
             .map_err(DriverError::Source)
     }
 
+    pub fn open_endpoint_with_context(
+        &self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), DriverError> {
+        self.state
+            .borrow_mut()
+            .runner
+            .open_endpoint_with_context(endpoint, principal, actor, protocol)
+            .map_err(DriverError::Source)
+    }
+
     pub fn close_endpoint(&self, endpoint: Identity) -> usize {
         self.state.borrow_mut().runner.close_endpoint(endpoint)
     }
@@ -193,7 +207,10 @@ impl CompioTaskDriver {
                     .runner
                     .source_request_as(actor, source)
                     .map_err(DriverError::Source)?,
-                None => SourceRunner::root_source_request(source),
+                None => state
+                    .runner
+                    .source_request_for_endpoint(endpoint, source)
+                    .map_err(DriverError::Source)?,
             }
         };
         let submitted = self.run_source_request(endpoint, request)?;

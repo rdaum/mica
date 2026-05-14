@@ -55,6 +55,7 @@ enum DriverCommand {
     },
     OpenEndpoint {
         endpoint: Identity,
+        principal: Option<Identity>,
         actor: Option<Identity>,
         protocol: Symbol,
         reply: mpsc::Sender<Result<(), DriverError>>,
@@ -188,9 +189,20 @@ impl CompioTaskDriverThread {
         actor: Option<Identity>,
         protocol: Symbol,
     ) -> Result<(), DriverThreadError> {
+        self.open_endpoint_with_context(endpoint, None, actor, protocol)
+    }
+
+    pub fn open_endpoint_with_context(
+        &self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), DriverThreadError> {
         let (reply, response) = mpsc::channel();
         self.send(DriverCommand::OpenEndpoint {
             endpoint,
+            principal,
             actor,
             protocol,
             reply,
@@ -308,13 +320,16 @@ fn run_thread_driver(
                 }
                 DriverCommand::OpenEndpoint {
                     endpoint,
+                    principal,
                     actor,
                     protocol,
                     reply,
                 } => {
                     let driver = driver.clone();
                     spawn(async move {
-                        let _ = reply.send(driver.open_endpoint(endpoint, actor, protocol));
+                        let _ = reply.send(
+                            driver.open_endpoint_with_context(endpoint, principal, actor, protocol),
+                        );
                     })
                     .detach();
                 }

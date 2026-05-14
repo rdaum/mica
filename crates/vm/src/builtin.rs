@@ -161,6 +161,23 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         Ok(transient.retract(scope, relation, tuple))
     }
 
+    pub fn scan_transient(
+        &mut self,
+        scopes: &[Identity],
+        relation: mica_relation_kernel::RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, RuntimeError> {
+        let Some(transient) = self.transient.as_deref_mut() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("scan_transient"),
+                message: "transient store is not available".to_owned(),
+            });
+        };
+        transient
+            .scan(scopes, relation, bindings)
+            .map_err(RuntimeError::Kernel)
+    }
+
     pub fn drop_transient_scope(&mut self, scope: Identity) -> Result<usize, RuntimeError> {
         let Some(transient) = self.transient.as_deref_mut() else {
             return Err(RuntimeError::InvalidBuiltinCall {
