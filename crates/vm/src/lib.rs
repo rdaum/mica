@@ -33,4 +33,6 @@ pub use program::{
     CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver,
     QueryBinding, Register, RuntimeBinaryOp, RuntimeUnaryOp, SuspendKind,
 };
-pub use vm::{Frame, RegisterVm, VmHostContext, VmHostResponse, VmState};
+pub use vm::{
+    Frame, ProjectedVmHostContext, RegisterVm, VmHost, VmHostContext, VmHostResponse, VmState,
+};

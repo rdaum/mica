@@ -17,8 +17,7 @@ use mica_relation_kernel::{
 };
 use mica_var::{Identity, Symbol, Value};
 use mica_vm::{
-    AuthorityContext, BuiltinRegistry, ProgramResolver, RegisterVm, RuntimeContext, VmHostContext,
-    VmHostResponse,
+    AuthorityContext, ProgramResolver, ProjectedVmHostContext, RegisterVm, VmHostResponse,
 };
 use std::sync::Arc;
 
@@ -65,26 +64,34 @@ fn projected_store_smoke() -> Option<i64> {
 }
 
 fn compile_vm_smoke() -> Option<i64> {
-    let compiled = compile_source("return 40 + 2", &CompileContext::new()).ok()?;
-    let kernel = mica_relation_kernel::RelationKernel::new();
-    let mut tx = kernel.begin();
+    let relation = Identity::new(0x200)?;
+    let lamp = Identity::new(0x201)?;
+    let context = CompileContext::new()
+        .with_relation("Name", relation)
+        .with_identity("lamp", lamp);
+    let compiled = compile_source(
+        "assert Name(#lamp, \"brass lamp\")\nreturn one Name(#lamp, ?name)",
+        &context,
+    )
+    .ok()?;
+    let mut store = ProjectedStore::new();
+    store
+        .create_relation(
+            RelationMetadata::new(relation, Symbol::intern("Name"), 2)
+                .with_index([0])
+                .with_conflict_policy(ConflictPolicy::Functional {
+                    key_positions: vec![0],
+                }),
+        )
+        .ok()?;
     let mut authority = AuthorityContext::root();
     let resolver = ProgramResolver::new();
-    let builtins = BuiltinRegistry::new();
     let mut pending_effects = Vec::new();
-    let task_snapshot = [];
-    let mut host = VmHostContext::new(
-        &mut tx,
-        &mut authority,
-        &resolver,
-        &builtins,
-        &mut pending_effects,
-        &task_snapshot,
-        RuntimeContext::default(),
-    );
+    let mut host =
+        ProjectedVmHostContext::new(&mut store, &mut authority, &resolver, &mut pending_effects);
     let mut vm = RegisterVm::new(Arc::new(compiled.program));
     match vm.run_until_host_response(&mut host, 1_000, 8).ok()? {
-        VmHostResponse::Complete(value) => value.as_int(),
+        VmHostResponse::Complete(value) => value.with_str(|value| value.len() as i64),
         _ => None,
     }
 }
@@ -96,6 +103,6 @@ mod tests {
     #[test]
     fn browser_smokes_retain_compiler_vm_and_projected_store() {
         assert_eq!(projected_store_smoke(), Some(1));
-        assert_eq!(compile_vm_smoke(), Some(42));
+        assert_eq!(compile_vm_smoke(), Some(10));
     }
 }

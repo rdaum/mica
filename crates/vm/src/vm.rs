@@ -17,8 +17,8 @@ use crate::{
     RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{
-    ComposedTransactionRead, RelationRead, Transaction, TransientStore, Tuple, applicable_methods,
-    applicable_positional_methods, ordered_params,
+    ComposedTransactionRead, RelationRead, RelationWorkspace, Transaction, TransientStore, Tuple,
+    applicable_methods, applicable_positional_methods, ordered_params,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
@@ -131,6 +131,22 @@ pub enum VmHostResponse {
     RollbackRetry,
 }
 
+pub trait VmHost: RelationWorkspace {
+    fn authority(&self) -> &AuthorityContext;
+
+    fn authority_mut(&mut self) -> &mut AuthorityContext;
+
+    fn emit(&mut self, target: Identity, value: Value) -> Result<(), RuntimeError>;
+
+    fn resolve_program(
+        &mut self,
+        program_bytes_relation: mica_relation_kernel::RelationId,
+        program_id: &Value,
+    ) -> Result<Arc<Program>, RuntimeError>;
+
+    fn call_builtin(&mut self, name: Symbol, args: &[Value]) -> Result<Value, RuntimeError>;
+}
+
 pub struct VmHostContext<'ctx, 'kernel> {
     tx: &'ctx mut Transaction<'kernel>,
     authority: &'ctx mut AuthorityContext,
@@ -175,22 +191,205 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
         self.transient_scopes = transient_scopes;
         self
     }
+}
 
+impl RelationRead for VmHostContext<'_, '_> {
     fn scan_relation(
+        &self,
+        relation: mica_relation_kernel::RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, mica_relation_kernel::KernelError> {
+        let Some(transient) = self.transient.as_deref() else {
+            return self.tx.scan_relation(relation, bindings);
+        };
+        let reader = ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
+        reader.scan_relation(relation, bindings)
+    }
+}
+
+impl RelationWorkspace for VmHostContext<'_, '_> {
+    fn assert_tuple(
+        &mut self,
+        relation: mica_relation_kernel::RelationId,
+        tuple: Tuple,
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        self.tx.assert_tuple(relation, tuple)
+    }
+
+    fn retract_tuple(
+        &mut self,
+        relation: mica_relation_kernel::RelationId,
+        tuple: Tuple,
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        self.tx.retract_tuple(relation, tuple)
+    }
+
+    fn replace_functional_tuple(
+        &mut self,
+        relation: mica_relation_kernel::RelationId,
+        tuple: Tuple,
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        self.tx.replace_functional_tuple(relation, tuple)
+    }
+
+    fn retract_matching(
         &mut self,
         relation: mica_relation_kernel::RelationId,
         bindings: &[Option<Value>],
-    ) -> Result<Vec<Tuple>, RuntimeError> {
-        let Some(transient) = self.transient.as_deref() else {
-            return self
-                .tx
-                .scan(relation, bindings)
-                .map_err(RuntimeError::Kernel);
-        };
-        let reader = ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
-        reader
-            .scan_relation(relation, bindings)
-            .map_err(RuntimeError::Kernel)
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        let tuples = self.scan_relation(relation, bindings)?;
+        for tuple in tuples {
+            self.retract_tuple(relation, tuple)?;
+        }
+        Ok(())
+    }
+}
+
+impl VmHost for VmHostContext<'_, '_> {
+    fn authority(&self) -> &AuthorityContext {
+        self.authority
+    }
+
+    fn authority_mut(&mut self) -> &mut AuthorityContext {
+        self.authority
+    }
+
+    fn emit(&mut self, target: Identity, value: Value) -> Result<(), RuntimeError> {
+        if !self.authority.can_effect() {
+            return Err(RuntimeError::PermissionDenied {
+                operation: "effect",
+                target: Value::identity(target),
+            });
+        }
+        self.pending_effects.push(Emission::new(target, value));
+        Ok(())
+    }
+
+    fn resolve_program(
+        &mut self,
+        program_bytes_relation: mica_relation_kernel::RelationId,
+        program_id: &Value,
+    ) -> Result<Arc<Program>, RuntimeError> {
+        self.resolver
+            .resolve(self, program_bytes_relation, program_id)
+    }
+
+    fn call_builtin(&mut self, name: Symbol, args: &[Value]) -> Result<Value, RuntimeError> {
+        let builtin = self
+            .builtins
+            .get(name)
+            .ok_or(RuntimeError::UnknownBuiltin { name })?;
+        let mut context = crate::BuiltinContext::new(
+            self.tx.kernel(),
+            self.tx,
+            self.authority,
+            self.pending_effects,
+            self.task_snapshot,
+            self.runtime_context,
+            self.transient.as_deref_mut(),
+        );
+        builtin.call(&mut context, args)
+    }
+}
+
+pub struct ProjectedVmHostContext<'ctx, W> {
+    workspace: &'ctx mut W,
+    authority: &'ctx mut AuthorityContext,
+    resolver: &'ctx ProgramResolver,
+    pending_effects: &'ctx mut Vec<Emission>,
+}
+
+impl<'ctx, W> ProjectedVmHostContext<'ctx, W> {
+    pub fn new(
+        workspace: &'ctx mut W,
+        authority: &'ctx mut AuthorityContext,
+        resolver: &'ctx ProgramResolver,
+        pending_effects: &'ctx mut Vec<Emission>,
+    ) -> Self {
+        Self {
+            workspace,
+            authority,
+            resolver,
+            pending_effects,
+        }
+    }
+}
+
+impl<W: RelationWorkspace> RelationRead for ProjectedVmHostContext<'_, W> {
+    fn scan_relation(
+        &self,
+        relation: mica_relation_kernel::RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, mica_relation_kernel::KernelError> {
+        self.workspace.scan_relation(relation, bindings)
+    }
+}
+
+impl<W: RelationWorkspace> RelationWorkspace for ProjectedVmHostContext<'_, W> {
+    fn assert_tuple(
+        &mut self,
+        relation: mica_relation_kernel::RelationId,
+        tuple: Tuple,
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        self.workspace.assert_tuple(relation, tuple)
+    }
+
+    fn retract_tuple(
+        &mut self,
+        relation: mica_relation_kernel::RelationId,
+        tuple: Tuple,
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        self.workspace.retract_tuple(relation, tuple)
+    }
+
+    fn replace_functional_tuple(
+        &mut self,
+        relation: mica_relation_kernel::RelationId,
+        tuple: Tuple,
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        self.workspace.replace_functional_tuple(relation, tuple)
+    }
+
+    fn retract_matching(
+        &mut self,
+        relation: mica_relation_kernel::RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        self.workspace.retract_matching(relation, bindings)
+    }
+}
+
+impl<W: RelationWorkspace> VmHost for ProjectedVmHostContext<'_, W> {
+    fn authority(&self) -> &AuthorityContext {
+        self.authority
+    }
+
+    fn authority_mut(&mut self) -> &mut AuthorityContext {
+        self.authority
+    }
+
+    fn emit(&mut self, target: Identity, value: Value) -> Result<(), RuntimeError> {
+        if !self.authority.can_effect() {
+            return Err(RuntimeError::PermissionDenied {
+                operation: "effect",
+                target: Value::identity(target),
+            });
+        }
+        self.pending_effects.push(Emission::new(target, value));
+        Ok(())
+    }
+
+    fn resolve_program(
+        &mut self,
+        program_bytes_relation: mica_relation_kernel::RelationId,
+        program_id: &Value,
+    ) -> Result<Arc<Program>, RuntimeError> {
+        self.resolver
+            .resolve(self, program_bytes_relation, program_id)
+    }
+
+    fn call_builtin(&mut self, name: Symbol, _args: &[Value]) -> Result<Value, RuntimeError> {
+        Err(RuntimeError::UnknownBuiltin { name })
     }
 }
 
@@ -244,9 +443,9 @@ impl RegisterVm {
         self.write_register(register, value)
     }
 
-    pub fn run_until_host_response(
+    pub fn run_until_host_response<H: VmHost>(
         &mut self,
-        host: &mut VmHostContext<'_, '_>,
+        host: &mut H,
         instruction_budget: usize,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
@@ -261,9 +460,9 @@ impl RegisterVm {
         })
     }
 
-    fn step(
+    fn step<H: VmHost>(
         &mut self,
-        host: &mut VmHostContext<'_, '_>,
+        host: &mut H,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
         let instruction = {
@@ -418,9 +617,12 @@ impl RegisterVm {
                 relation,
                 bindings,
             } => {
-                require_read(host.authority, relation)?;
+                require_read(host.authority(), relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
-                let exists = !host.scan_relation(relation, &bindings)?.is_empty();
+                let exists = !host
+                    .scan_relation(relation, &bindings)
+                    .map_err(RuntimeError::Kernel)?
+                    .is_empty();
                 self.write_register(dst, Value::bool(exists))?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
@@ -431,9 +633,11 @@ impl RegisterVm {
                 bindings,
                 outputs,
             } => {
-                require_read(host.authority, relation)?;
+                require_read(host.authority(), relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
-                let rows = host.scan_relation(relation, &bindings)?;
+                let rows = host
+                    .scan_relation(relation, &bindings)
+                    .map_err(RuntimeError::Kernel)?;
                 let mut result = Vec::with_capacity(rows.len());
                 'row: for row in rows {
                     let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
@@ -458,7 +662,7 @@ impl RegisterVm {
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ScanValue { dst, relation, key } => {
-                require_read(host.authority, relation)?;
+                require_read(host.authority(), relation)?;
                 let key = self.resolve_operand(&key)?;
                 let value = host
                     .scan_relation(relation, &[Some(key), None])?
@@ -470,32 +674,28 @@ impl RegisterVm {
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Assert { relation, values } => {
-                require_write(host.authority, relation)?;
-                host.tx.assert(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority(), relation)?;
+                host.assert_tuple(relation, self.resolve_tuple(values)?)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Retract { relation, values } => {
-                require_write(host.authority, relation)?;
-                host.tx.retract(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority(), relation)?;
+                host.retract_tuple(relation, self.resolve_tuple(values)?)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::RetractWhere { relation, bindings } => {
-                require_read(host.authority, relation)?;
-                require_write(host.authority, relation)?;
+                require_read(host.authority(), relation)?;
+                require_write(host.authority(), relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
-                let tuples = host.tx.scan(relation, &bindings)?;
-                for tuple in tuples {
-                    host.tx.retract(relation, tuple)?;
-                }
+                host.retract_matching(relation, &bindings)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ReplaceFunctional { relation, values } => {
-                require_write(host.authority, relation)?;
-                host.tx
-                    .replace_functional(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority(), relation)?;
+                host.replace_functional_tuple(relation, self.resolve_tuple(values)?)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
@@ -536,14 +736,8 @@ impl RegisterVm {
                 let target = target_value
                     .as_identity()
                     .ok_or(RuntimeError::InvalidEffectTarget(target_value))?;
-                if !host.authority.can_effect() {
-                    return Err(RuntimeError::PermissionDenied {
-                        operation: "effect",
-                        target: Value::identity(target),
-                    });
-                }
-                host.pending_effects
-                    .push(Emission::new(target, self.resolve_operand(&value)?));
+                let value = self.resolve_operand(&value)?;
+                host.emit(target, value)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
             }
@@ -564,24 +758,11 @@ impl RegisterVm {
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuiltinCall { dst, name, args } => {
-                let builtin = host
-                    .builtins
-                    .get(name)
-                    .ok_or(RuntimeError::UnknownBuiltin { name })?;
                 let args = args
                     .iter()
                     .map(|arg| self.resolve_operand(arg))
                     .collect::<Result<Vec<_>, _>>()?;
-                let mut context = crate::BuiltinContext::new(
-                    host.tx.kernel(),
-                    host.tx,
-                    host.authority,
-                    host.pending_effects,
-                    host.task_snapshot,
-                    host.runtime_context,
-                    host.transient.as_deref_mut(),
-                );
-                let value = builtin.call(&mut context, &args)?;
+                let value = host.call_builtin(name, &args)?;
                 self.write_register(dst, value)?;
                 self.advance_ip()?;
                 Ok(VmHostResponse::Continue)
@@ -606,11 +787,10 @@ impl RegisterVm {
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
                 roles.sort_by(|left, right| compare_role_values(&left.0, &right.0));
                 let role_env = roles.iter().cloned().collect::<BTreeMap<_, _>>();
-                let methods =
-                    applicable_methods(host.tx, relations, selector.clone(), roles.clone())?
-                        .into_iter()
-                        .filter(|method| host.authority.can_invoke_method(method))
-                        .collect::<Vec<_>>();
+                let methods = applicable_methods(host, relations, selector.clone(), roles.clone())?
+                    .into_iter()
+                    .filter(|method| host.authority().can_invoke_method(method))
+                    .collect::<Vec<_>>();
                 let method = match methods.as_slice() {
                     [] => return Err(RuntimeError::NoApplicableMethod { selector }),
                     [method] => method.clone(),
@@ -618,19 +798,17 @@ impl RegisterVm {
                         return Err(RuntimeError::AmbiguousDispatch { selector, methods });
                     }
                 };
-                let program_rows = host
-                    .tx
-                    .scan(program_relation, &[Some(method.clone()), None])?;
+                let program_rows =
+                    host.scan_relation(program_relation, &[Some(method.clone()), None])?;
                 let program_id = program_rows
                     .first()
                     .map(|row| row.values()[1].clone())
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
                         method: method.clone(),
                     })?;
-                let program = host.resolver.resolve(host.tx, program_bytes, &program_id)?;
-                let params = host
-                    .tx
-                    .scan(relations.param, &[Some(method), None, None, None])?;
+                let program = host.resolve_program(program_bytes, &program_id)?;
+                let params =
+                    host.scan_relation(relations.param, &[Some(method), None, None, None])?;
                 let params = ordered_params(&params).ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
                 })?;
@@ -663,9 +841,9 @@ impl RegisterVm {
                     .map(|arg| self.resolve_operand(arg))
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
                 let methods =
-                    applicable_positional_methods(host.tx, relations, selector.clone(), &args)?
+                    applicable_positional_methods(host, relations, selector.clone(), &args)?
                         .into_iter()
-                        .filter(|method| host.authority.can_invoke_method(method))
+                        .filter(|method| host.authority().can_invoke_method(method))
                         .collect::<Vec<_>>();
                 let method = match methods.as_slice() {
                     [] => return Err(RuntimeError::NoApplicableMethod { selector }),
@@ -674,16 +852,15 @@ impl RegisterVm {
                         return Err(RuntimeError::AmbiguousDispatch { selector, methods });
                     }
                 };
-                let program_rows = host
-                    .tx
-                    .scan(program_relation, &[Some(method.clone()), None])?;
+                let program_rows =
+                    host.scan_relation(program_relation, &[Some(method.clone()), None])?;
                 let program_id = program_rows
                     .first()
                     .map(|row| row.values()[1].clone())
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
                         method: method.clone(),
                     })?;
-                let program = host.resolver.resolve(host.tx, program_bytes, &program_id)?;
+                let program = host.resolve_program(program_bytes, &program_id)?;
                 self.advance_ip()?;
                 self.state
                     .frames

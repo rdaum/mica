@@ -48,7 +48,7 @@ It exports smoke functions that deliberately retain:
 
 - projected relation store creation and mutation;
 - Mica source compilation;
-- register VM execution.
+- register VM execution against `ProjectedStore`.
 
 Commands run:
 
@@ -65,7 +65,7 @@ cargo build --release -p mica-browser --target wasm32-unknown-unknown
 Release artefact size:
 
 ```text
-target/wasm32-unknown-unknown/release/mica_browser.wasm: 896208 bytes
+target/wasm32-unknown-unknown/release/mica_browser.wasm: 831312 bytes
 ```
 
 This is an unstripped, un-`wasm-opt`ed release build. No WASM size tooling was
@@ -80,21 +80,23 @@ Measured exports:
 ```text
 mica_browser_abi_version() -> 1
 mica_browser_projected_store_smoke() -> 1
-mica_browser_compile_vm_smoke() -> 42
+mica_browser_compile_vm_smoke() -> 10
 ```
 
 One run of 1,000 calls each:
 
 ```text
+sum 11000
 projected_ms_per_call 0.0013937589999999994
-compile_vm_ms_per_call 0.0034798380000000007
+compile_vm_ms_per_call 0.010615288999999997
 ```
 
 These numbers are only smoke-level evidence. The compile/VM function compiles a
-tiny `return 40 + 2` source and executes it in an in-memory kernel transaction;
-the projected-store function creates one relation and does one functional
-replace. They show that the package is viable in a browser-class WebAssembly
-engine, not that realistic UI or rule workloads are fast enough yet.
+tiny source fragment that asserts `Name(#lamp, "brass lamp")` and queries it
+back through `one Name(#lamp, ?name)`, all against `ProjectedStore`. The
+projected-store function creates one relation and does one functional replace.
+They show that the package is viable in a browser-class WebAssembly engine, not
+that realistic UI or rule workloads are fast enough yet.
 
 ## Browser Smoke Timing
 
@@ -106,26 +108,21 @@ Browser results:
 ```text
 abi 1
 projected 1
-compileVm 42
-byteLength 896208
-projected_ms_per_call 0.004
-compile_vm_ms_per_call 0.013
+compileVm 10
+byteLength 831312
+projected_ms_per_call 0.005
+compile_vm_ms_per_call 0.047
 ```
 
 The browser result is slower than the Node result, but still comfortably small
 for this tiny smoke. The important current finding is not the exact timing; it
 is that the browser can instantiate the package, execute projected relation
-logic, compile source, and run VM bytecode from the same WASM artefact.
+logic, compile source, and run VM bytecode over `ProjectedStore` from the same
+WASM artefact.
 
 ## Remaining Design Work
 
-The VM host still uses the server transaction path for full bytecode execution.
-The relation-kernel side now has the projected workspace interface, but a
-future browser runner should either:
-
-- make the VM host generic over `RelationWorkspace` where builtins are not
-  needed; or
-- introduce a browser host context whose builtins are explicitly limited to
-  client-side operations.
-
-That should be a deliberate API split, not a compatibility layer.
+The VM can now execute bytecode over either a server transaction host or a
+projected workspace host. The next browser/runtime split is builtin policy:
+browser-hosted code should get a deliberately small client builtin surface
+rather than the server runtime builtin registry.
