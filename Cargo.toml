@@ -5,6 +5,7 @@ members = [
     "crates/compiler",
     "crates/daemon",
     "crates/driver",
+    "crates/host-protocol",
     "crates/runner",
     "crates/relation-kernel",
     "crates/runtime",
@@ -22,6 +23,7 @@ license = "AGPL-3.0-only"
 [workspace.dependencies]
 mica-compiler = { path = "crates/compiler" }
 mica-driver = { path = "crates/driver" }
+mica-host-protocol = { path = "crates/host-protocol" }
 mica-relation-kernel = { path = "crates/relation-kernel", default-features = false }
 mica-runtime = { path = "crates/runtime" }
 mica-var = { path = "crates/var" }

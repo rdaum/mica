@@ -906,6 +906,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-host-protocol"
+version = "0.1.0"
+dependencies = [
+ "mica-var",
+]
+
+[[package]]
 name = "mica-load-tools"
 version = "0.1.0"
 dependencies = [
