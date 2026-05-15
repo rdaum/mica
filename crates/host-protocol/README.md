@@ -21,6 +21,18 @@ Unknown message types can be skipped by generic transports using `frame_len`.
 The typed decoder in this crate rejects unknown message types and non-zero
 reserved flags.
 
+## Streaming
+
+Transport code should treat frames as a byte stream, not as one read per
+message. The Rust implementation provides a `FrameDecoder` that buffers partial
+input and exposes a borrowed `FrameRef` when a complete frame is available.
+Callers decode or route that borrowed frame, then explicitly consume it.
+
+For writes, `encode_frame_segments` builds a scatter/gather-friendly frame. It
+keeps fixed-width headers in small scratch segments and borrows string and heap
+value payload bytes where possible, so transports that support vectored writes
+can avoid flattening the frame into one contiguous buffer.
+
 ## Message IDs
 
 ```text
