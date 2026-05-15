@@ -11,13 +11,52 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{Identity, Symbol, Value, ValueKind, ValueRef};
+use crate::value::{
+    PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_ERROR, TAG_ERROR_CODE, TAG_FLOAT,
+    TAG_IDENTITY, TAG_INT, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE, TAG_SHIFT, TAG_STRING,
+    TAG_SYMBOL,
+};
+use crate::{CapabilityId, Identity, Symbol, Value, ValueRef};
 use std::fmt;
+
+const EXTENDED_TAG: u8 = 0xff;
+const EXT_KIND_SHIFT: u64 = 48;
+const EXT_AUX_MASK: u64 = 0x0000_ffff_ffff_ffff;
+const RANGE_HAS_END: u64 = 1;
+const ERROR_HAS_MESSAGE: u64 = 1;
+const ERROR_HAS_VALUE: u64 = 1 << 1;
+
+/// Controls how symbol-like values are encoded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SymbolEncoding {
+    /// Encode symbol names. This is stable across processes and restarts.
+    Name,
+    /// Encode symbol ids. This is compact, but only safe when the symbol table
+    /// is already known to be shared.
+    Id,
+}
+
+/// Options for the owned value codec.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValueCodecOptions {
+    pub symbol_encoding: SymbolEncoding,
+    pub allow_capabilities: bool,
+}
+
+impl Default for ValueCodecOptions {
+    fn default() -> Self {
+        Self {
+            symbol_encoding: SymbolEncoding::Name,
+            allow_capabilities: false,
+        }
+    }
+}
 
 /// Error returned by the owned value codec.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ValueCodecError {
     LengthTooLarge(usize),
+    InlineHeapValue(u8),
     UnnamedSymbol(u32),
     CapabilityNotEncodable,
     CapabilityNotDecodable,
@@ -27,10 +66,17 @@ pub enum ValueCodecError {
         len: usize,
     },
     TrailingBytes(usize),
-    InvalidBool(u8),
+    InvalidBoolPayload(u64),
+    InvalidFloatPayload(u64),
+    InvalidCapabilityPayload(u64),
+    InvalidSymbolPayload(u64),
     InvalidUtf8(String),
     InvalidIdentity(u64),
     InvalidValue(String),
+    InvalidExtendedAux {
+        kind: u8,
+        aux: u64,
+    },
     UnknownValueTag(u8),
     OffsetOverflow,
 }
@@ -38,7 +84,8 @@ pub enum ValueCodecError {
 impl fmt::Display for ValueCodecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LengthTooLarge(len) => write!(f, "length {len} exceeds u32"),
+            Self::LengthTooLarge(len) => write!(f, "length {len} exceeds 48-bit codec limit"),
+            Self::InlineHeapValue(tag) => write!(f, "inline heap value tag {tag} is not decodable"),
             Self::UnnamedSymbol(id) => write!(f, "cannot encode unnamed symbol id {id}"),
             Self::CapabilityNotEncodable => f.write_str("capability values cannot be encoded"),
             Self::CapabilityNotDecodable => f.write_str("capability values cannot be decoded"),
@@ -53,10 +100,24 @@ impl fmt::Display for ValueCodecError {
             Self::TrailingBytes(count) => {
                 write!(f, "trailing bytes in value record: {count}")
             }
-            Self::InvalidBool(value) => write!(f, "invalid boolean byte {value}"),
+            Self::InvalidBoolPayload(payload) => {
+                write!(f, "invalid boolean payload {payload}")
+            }
+            Self::InvalidFloatPayload(payload) => {
+                write!(f, "invalid float payload {payload}")
+            }
+            Self::InvalidCapabilityPayload(payload) => {
+                write!(f, "invalid capability payload {payload}")
+            }
+            Self::InvalidSymbolPayload(payload) => {
+                write!(f, "invalid symbol payload {payload}")
+            }
             Self::InvalidUtf8(error) => write!(f, "invalid utf-8: {error}"),
             Self::InvalidIdentity(raw) => write!(f, "identity {raw} is out of range"),
             Self::InvalidValue(error) => write!(f, "invalid value: {error}"),
+            Self::InvalidExtendedAux { kind, aux } => {
+                write!(f, "invalid extended aux {aux} for value kind tag {kind}")
+            }
             Self::UnknownValueTag(tag) => write!(f, "unknown value kind tag {tag}"),
             Self::OffsetOverflow => f.write_str("value record offset overflow"),
         }
@@ -65,43 +126,58 @@ impl fmt::Display for ValueCodecError {
 
 impl std::error::Error for ValueCodecError {}
 
-/// Encodes a single owned `Value` into the canonical persistence format.
-///
-/// The format is structural: heap values are encoded by content rather than by
-/// process-local pointer bits.
+/// Encodes a single owned `Value` with the default persistence-safe options.
 pub fn encode_value(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueCodecError> {
-    let value_ref = value.as_value_ref();
-    out.push(value_ref.kind() as u8);
-    match value_ref {
-        ValueRef::Nothing => {}
-        ValueRef::Bool(value) => out.push(value as u8),
-        ValueRef::Int(value) => write_i64(out, value),
-        ValueRef::Float(value) => write_u64(out, value.to_bits()),
-        ValueRef::Identity(identity) => write_identity(out, identity),
-        ValueRef::Symbol(symbol) | ValueRef::ErrorCode(symbol) => write_symbol(out, symbol)?,
-        ValueRef::String(value) => write_string(out, value)?,
-        ValueRef::Bytes(value) => write_bytes(out, value)?,
+    encode_value_with_options(value, out, ValueCodecOptions::default())
+}
+
+/// Encodes a single owned `Value`.
+///
+/// Immediate values are emitted as a little-endian `Value` word when they are
+/// valid for the selected options. Heap values and named symbols are emitted as
+/// structural extended records.
+pub fn encode_value_with_options(
+    value: &Value,
+    out: &mut Vec<u8>,
+    options: ValueCodecOptions,
+) -> Result<(), ValueCodecError> {
+    match value.as_value_ref() {
+        ValueRef::Nothing
+        | ValueRef::Bool(_)
+        | ValueRef::Int(_)
+        | ValueRef::Float(_)
+        | ValueRef::Identity(_) => {
+            write_word(out, value.raw_bits());
+        }
+        ValueRef::Symbol(symbol) => encode_symbol_value(TAG_SYMBOL, symbol, out, options)?,
+        ValueRef::ErrorCode(symbol) => encode_symbol_value(TAG_ERROR_CODE, symbol, out, options)?,
+        ValueRef::String(value) => {
+            write_extended_header(out, TAG_STRING, len_aux(value.len())?);
+            out.extend_from_slice(value.as_bytes());
+        }
+        ValueRef::Bytes(value) => {
+            write_extended_header(out, TAG_BYTES, len_aux(value.len())?);
+            out.extend_from_slice(value);
+        }
         ValueRef::List(values) => {
-            write_u32(out, values.len())?;
+            write_extended_header(out, TAG_LIST, len_aux(values.len())?);
             for value in values {
-                encode_value(value, out)?;
+                encode_value_with_options(value, out, options)?;
             }
         }
         ValueRef::Map(entries) => {
-            write_u32(out, entries.len())?;
+            write_extended_header(out, TAG_MAP, len_aux(entries.len())?);
             for (key, value) in entries {
-                encode_value(key, out)?;
-                encode_value(value, out)?;
+                encode_value_with_options(key, out, options)?;
+                encode_value_with_options(value, out, options)?;
             }
         }
         ValueRef::Range { start, end } => {
-            encode_value(start, out)?;
-            match end {
-                Some(end) => {
-                    out.push(1);
-                    encode_value(end, out)?;
-                }
-                None => out.push(0),
+            let flags = if end.is_some() { RANGE_HAS_END } else { 0 };
+            write_extended_header(out, TAG_RANGE, flags);
+            encode_value_with_options(start, out, options)?;
+            if let Some(end) = end {
+                encode_value_with_options(end, out, options)?;
             }
         }
         ValueRef::Error {
@@ -109,93 +185,124 @@ pub fn encode_value(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueCodecEr
             message,
             value,
         } => {
-            write_symbol(out, code)?;
-            write_optional_string(out, message)?;
-            match value {
-                Some(value) => {
-                    out.push(1);
-                    encode_value(value, out)?;
-                }
-                None => out.push(0),
+            let mut flags = 0;
+            if message.is_some() {
+                flags |= ERROR_HAS_MESSAGE;
             }
+            if value.is_some() {
+                flags |= ERROR_HAS_VALUE;
+            }
+            write_extended_header(out, TAG_ERROR, flags);
+            encode_symbol_value(TAG_ERROR_CODE, code, out, options)?;
+            if let Some(message) = message {
+                write_blob(out, message.as_bytes())?;
+            }
+            if let Some(value) = value {
+                encode_value_with_options(value, out, options)?;
+            }
+        }
+        ValueRef::Capability(_) if options.allow_capabilities => {
+            write_word(out, value.raw_bits());
         }
         ValueRef::Capability(_) => return Err(ValueCodecError::CapabilityNotEncodable),
     }
     Ok(())
 }
 
-/// Decodes one value from the beginning of `bytes`, returning the value and the
-/// number of bytes consumed.
+/// Decodes one value with the default persistence-safe options, returning the
+/// value and the number of bytes consumed.
 pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), ValueCodecError> {
-    let mut reader = ValueReader::new(bytes);
-    let value = reader.read_value()?;
-    Ok((value, reader.offset()))
+    decode_value_with_options(bytes, ValueCodecOptions::default())
 }
 
 /// Decodes one value and rejects trailing bytes.
 pub fn decode_value_exact(bytes: &[u8]) -> Result<Value, ValueCodecError> {
-    let mut reader = ValueReader::new(bytes);
+    decode_value_exact_with_options(bytes, ValueCodecOptions::default())
+}
+
+/// Decodes one value with explicit options, returning the value and the number
+/// of bytes consumed.
+pub fn decode_value_with_options(
+    bytes: &[u8],
+    options: ValueCodecOptions,
+) -> Result<(Value, usize), ValueCodecError> {
+    let mut reader = ValueReader::new(bytes, options);
+    let value = reader.read_value()?;
+    Ok((value, reader.offset()))
+}
+
+/// Decodes one value with explicit options and rejects trailing bytes.
+pub fn decode_value_exact_with_options(
+    bytes: &[u8],
+    options: ValueCodecOptions,
+) -> Result<Value, ValueCodecError> {
+    let mut reader = ValueReader::new(bytes, options);
     let value = reader.read_value()?;
     reader.expect_end()?;
     Ok(value)
 }
 
-fn write_identity(out: &mut Vec<u8>, identity: Identity) {
-    write_u64(out, identity.raw());
-}
-
-fn write_symbol(out: &mut Vec<u8>, symbol: Symbol) -> Result<(), ValueCodecError> {
-    let name = symbol
-        .name()
-        .ok_or(ValueCodecError::UnnamedSymbol(symbol.id()))?;
-    write_string(out, name)
-}
-
-fn write_optional_string(out: &mut Vec<u8>, value: Option<&str>) -> Result<(), ValueCodecError> {
-    match value {
-        Some(value) => {
-            out.push(1);
-            write_string(out, value)
-        }
-        None => {
-            out.push(0);
-            Ok(())
+fn encode_symbol_value(
+    tag: u8,
+    symbol: Symbol,
+    out: &mut Vec<u8>,
+    options: ValueCodecOptions,
+) -> Result<(), ValueCodecError> {
+    match options.symbol_encoding {
+        SymbolEncoding::Id => write_word(out, Value::pack(tag, symbol.id() as u64).raw_bits()),
+        SymbolEncoding::Name => {
+            let name = symbol
+                .name()
+                .ok_or(ValueCodecError::UnnamedSymbol(symbol.id()))?;
+            write_extended_header(out, tag, len_aux(name.len())?);
+            out.extend_from_slice(name.as_bytes());
         }
     }
-}
-
-fn write_string(out: &mut Vec<u8>, value: &str) -> Result<(), ValueCodecError> {
-    write_bytes(out, value.as_bytes())
-}
-
-fn write_bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<(), ValueCodecError> {
-    write_u32(out, value.len())?;
-    out.extend_from_slice(value);
     Ok(())
 }
 
-fn write_u32(out: &mut Vec<u8>, value: usize) -> Result<(), ValueCodecError> {
-    let value = u32::try_from(value).map_err(|_| ValueCodecError::LengthTooLarge(value))?;
-    out.extend_from_slice(&value.to_be_bytes());
+fn write_blob(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ValueCodecError> {
+    let len =
+        u64::try_from(bytes.len()).map_err(|_| ValueCodecError::LengthTooLarge(bytes.len()))?;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(bytes);
     Ok(())
 }
 
-fn write_u64(out: &mut Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_be_bytes());
+fn write_extended_header(out: &mut Vec<u8>, kind: u8, aux: u64) {
+    debug_assert!(aux <= EXT_AUX_MASK);
+    write_word(
+        out,
+        ((EXTENDED_TAG as u64) << TAG_SHIFT) | ((kind as u64) << EXT_KIND_SHIFT) | aux,
+    );
 }
 
-fn write_i64(out: &mut Vec<u8>, value: i64) {
-    out.extend_from_slice(&value.to_be_bytes());
+fn write_word(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn len_aux(len: usize) -> Result<u64, ValueCodecError> {
+    let len = u64::try_from(len).map_err(|_| ValueCodecError::LengthTooLarge(len))?;
+    if len <= EXT_AUX_MASK {
+        Ok(len)
+    } else {
+        Err(ValueCodecError::LengthTooLarge(usize::MAX))
+    }
 }
 
 struct ValueReader<'a> {
     bytes: &'a [u8],
     offset: usize,
+    options: ValueCodecOptions,
 }
 
 impl<'a> ValueReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+    fn new(bytes: &'a [u8], options: ValueCodecOptions) -> Self {
+        Self {
+            bytes,
+            offset: 0,
+            options,
+        }
     }
 
     fn offset(&self) -> usize {
@@ -213,116 +320,124 @@ impl<'a> ValueReader<'a> {
     }
 
     fn read_value(&mut self) -> Result<Value, ValueCodecError> {
-        let kind = self.read_u8()?;
-        Ok(match kind {
-            tag if tag == ValueKind::Nothing as u8 => Value::nothing(),
-            tag if tag == ValueKind::Bool as u8 => Value::bool(self.read_bool()?),
-            tag if tag == ValueKind::Int as u8 => Value::int(self.read_i64()?)
-                .map_err(|error| ValueCodecError::InvalidValue(format!("{error:?}")))?,
-            tag if tag == ValueKind::Float as u8 => Value::float(f64::from_bits(self.read_u64()?)),
-            tag if tag == ValueKind::Identity as u8 => Value::identity(self.read_identity()?),
-            tag if tag == ValueKind::Symbol as u8 => Value::symbol(self.read_symbol()?),
-            tag if tag == ValueKind::ErrorCode as u8 => Value::error_code(self.read_symbol()?),
-            tag if tag == ValueKind::String as u8 => Value::string(self.read_string()?),
-            tag if tag == ValueKind::Bytes as u8 => Value::bytes(self.read_bytes()?),
-            tag if tag == ValueKind::List as u8 => {
-                let count = self.read_len()?;
+        let word = self.read_word()?;
+        let tag = word_tag(word);
+        if tag != EXTENDED_TAG {
+            return decode_inline_word(word, self.options);
+        }
+
+        let kind = ((word >> EXT_KIND_SHIFT) & 0xff) as u8;
+        let aux = word & EXT_AUX_MASK;
+        match kind {
+            TAG_SYMBOL => self.read_named_symbol(TAG_SYMBOL, aux, Value::symbol),
+            TAG_ERROR_CODE => self.read_named_symbol(TAG_ERROR_CODE, aux, Value::error_code),
+            TAG_STRING => Ok(Value::string(self.read_string_payload(aux)?)),
+            TAG_BYTES => Ok(Value::bytes(self.read_blob_payload(aux)?)),
+            TAG_LIST => {
+                let count = self.read_count(aux)?;
                 let mut values = Vec::with_capacity(count);
                 for _ in 0..count {
                     values.push(self.read_value()?);
                 }
-                Value::list(values)
+                Ok(Value::list(values))
             }
-            tag if tag == ValueKind::Map as u8 => {
-                let count = self.read_len()?;
+            TAG_MAP => {
+                let count = self.read_count(aux)?;
                 let mut entries = Vec::with_capacity(count);
                 for _ in 0..count {
                     entries.push((self.read_value()?, self.read_value()?));
                 }
-                Value::map(entries)
+                Ok(Value::map(entries))
             }
-            tag if tag == ValueKind::Range as u8 => {
+            TAG_RANGE => {
+                if aux & !RANGE_HAS_END != 0 {
+                    return Err(ValueCodecError::InvalidExtendedAux { kind, aux });
+                }
                 let start = self.read_value()?;
-                let end = if self.read_bool()? {
+                let end = if aux & RANGE_HAS_END != 0 {
                     Some(self.read_value()?)
                 } else {
                     None
                 };
-                Value::range(start, end)
+                Ok(Value::range(start, end))
             }
-            tag if tag == ValueKind::Error as u8 => {
-                let code = self.read_symbol()?;
-                let message = self.read_optional_string()?;
-                let value = if self.read_bool()? {
+            TAG_ERROR => {
+                if aux & !(ERROR_HAS_MESSAGE | ERROR_HAS_VALUE) != 0 {
+                    return Err(ValueCodecError::InvalidExtendedAux { kind, aux });
+                }
+                let code = self.read_value()?.as_error_code().ok_or_else(|| {
+                    ValueCodecError::InvalidValue("rich error code is not an error code".to_owned())
+                })?;
+                let message = if aux & ERROR_HAS_MESSAGE != 0 {
+                    Some(self.read_len_prefixed_string()?)
+                } else {
+                    None
+                };
+                let value = if aux & ERROR_HAS_VALUE != 0 {
                     Some(self.read_value()?)
                 } else {
                     None
                 };
-                Value::error(code, message, value)
+                Ok(Value::error(code, message, value))
             }
-            tag if tag == ValueKind::Capability as u8 => {
-                return Err(ValueCodecError::CapabilityNotDecodable);
+            TAG_CAPABILITY => Err(ValueCodecError::CapabilityNotDecodable),
+            TAG_NOTHING | TAG_BOOL | TAG_INT | TAG_FLOAT | TAG_IDENTITY => {
+                Err(ValueCodecError::InvalidExtendedAux { kind, aux })
             }
-            tag => return Err(ValueCodecError::UnknownValueTag(tag)),
-        })
-    }
-
-    fn read_identity(&mut self) -> Result<Identity, ValueCodecError> {
-        let raw = self.read_u64()?;
-        Identity::new(raw).ok_or(ValueCodecError::InvalidIdentity(raw))
-    }
-
-    fn read_symbol(&mut self) -> Result<Symbol, ValueCodecError> {
-        Ok(Symbol::intern(&self.read_string()?))
-    }
-
-    fn read_optional_string(&mut self) -> Result<Option<String>, ValueCodecError> {
-        if self.read_bool()? {
-            Ok(Some(self.read_string()?))
-        } else {
-            Ok(None)
+            tag => Err(ValueCodecError::UnknownValueTag(tag)),
         }
     }
 
-    fn read_string(&mut self) -> Result<String, ValueCodecError> {
-        String::from_utf8(self.read_bytes()?)
+    fn read_named_symbol(
+        &mut self,
+        kind: u8,
+        len: u64,
+        constructor: fn(Symbol) -> Value,
+    ) -> Result<Value, ValueCodecError> {
+        if self.options.symbol_encoding != SymbolEncoding::Name {
+            return Err(ValueCodecError::InvalidExtendedAux { kind, aux: len });
+        }
+        Ok(constructor(Symbol::intern(&self.read_string_payload(len)?)))
+    }
+
+    fn read_string_payload(&mut self, len: u64) -> Result<String, ValueCodecError> {
+        String::from_utf8(self.read_blob_payload(len)?)
             .map_err(|error| ValueCodecError::InvalidUtf8(error.to_string()))
     }
 
-    fn read_bytes(&mut self) -> Result<Vec<u8>, ValueCodecError> {
-        let len = self.read_len()?;
+    fn read_blob_payload(&mut self, len: u64) -> Result<Vec<u8>, ValueCodecError> {
+        let len = self.len_to_usize(len)?;
         Ok(self.read_exact(len)?.to_vec())
     }
 
-    fn read_bool(&mut self) -> Result<bool, ValueCodecError> {
-        match self.read_u8()? {
-            0 => Ok(false),
-            1 => Ok(true),
-            value => Err(ValueCodecError::InvalidBool(value)),
+    fn read_len_prefixed_string(&mut self) -> Result<String, ValueCodecError> {
+        let len = self.read_word()?;
+        String::from_utf8(self.read_blob_payload(len)?)
+            .map_err(|error| ValueCodecError::InvalidUtf8(error.to_string()))
+    }
+
+    fn read_count(&self, count: u64) -> Result<usize, ValueCodecError> {
+        let count = self.len_to_usize(count)?;
+        let minimum_bytes = count
+            .checked_mul(8)
+            .ok_or(ValueCodecError::OffsetOverflow)?;
+        if self.bytes.len().saturating_sub(self.offset) < minimum_bytes {
+            return Err(ValueCodecError::UnexpectedEnd {
+                needed: minimum_bytes,
+                offset: self.offset,
+                len: self.bytes.len(),
+            });
         }
+        Ok(count)
     }
 
-    fn read_len(&mut self) -> Result<usize, ValueCodecError> {
-        Ok(self.read_u32()? as usize)
+    fn len_to_usize(&self, len: u64) -> Result<usize, ValueCodecError> {
+        usize::try_from(len).map_err(|_| ValueCodecError::LengthTooLarge(usize::MAX))
     }
 
-    fn read_u8(&mut self) -> Result<u8, ValueCodecError> {
-        Ok(self.read_exact(1)?[0])
-    }
-
-    fn read_u32(&mut self) -> Result<u32, ValueCodecError> {
-        let bytes = self.read_exact(4)?;
-        Ok(u32::from_be_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, ValueCodecError> {
+    fn read_word(&mut self) -> Result<u64, ValueCodecError> {
         let bytes = self.read_exact(8)?;
-        Ok(u64::from_be_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn read_i64(&mut self) -> Result<i64, ValueCodecError> {
-        let bytes = self.read_exact(8)?;
-        Ok(i64::from_be_bytes(bytes.try_into().unwrap()))
+        Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
     }
 
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8], ValueCodecError> {
@@ -341,4 +456,76 @@ impl<'a> ValueReader<'a> {
         self.offset = end;
         Ok(bytes)
     }
+}
+
+fn decode_inline_word(word: u64, options: ValueCodecOptions) -> Result<Value, ValueCodecError> {
+    let tag = word_tag(word);
+    let payload = word & PAYLOAD_MASK;
+    match tag {
+        TAG_NOTHING => {
+            if payload == 0 {
+                Ok(Value(word))
+            } else {
+                Err(ValueCodecError::InvalidValue(
+                    "nothing value has non-zero payload".to_owned(),
+                ))
+            }
+        }
+        TAG_BOOL => match payload {
+            0 | 1 => Ok(Value(word)),
+            payload => Err(ValueCodecError::InvalidBoolPayload(payload)),
+        },
+        TAG_INT => Ok(Value(word)),
+        TAG_FLOAT => {
+            if payload <= u32::MAX as u64 {
+                Ok(Value(word))
+            } else {
+                Err(ValueCodecError::InvalidFloatPayload(payload))
+            }
+        }
+        TAG_IDENTITY => Identity::new(payload)
+            .map(Value::identity)
+            .ok_or(ValueCodecError::InvalidIdentity(payload)),
+        TAG_SYMBOL => {
+            if options.symbol_encoding != SymbolEncoding::Id {
+                return Err(ValueCodecError::InvalidValue(
+                    "inline symbol id is disabled by codec options".to_owned(),
+                ));
+            }
+            if payload <= u32::MAX as u64 {
+                Ok(Value::symbol(Symbol::from_id(payload as u32)))
+            } else {
+                Err(ValueCodecError::InvalidSymbolPayload(payload))
+            }
+        }
+        TAG_ERROR_CODE => {
+            if options.symbol_encoding != SymbolEncoding::Id {
+                return Err(ValueCodecError::InvalidValue(
+                    "inline error code id is disabled by codec options".to_owned(),
+                ));
+            }
+            if payload <= u32::MAX as u64 {
+                Ok(Value::error_code(Symbol::from_id(payload as u32)))
+            } else {
+                Err(ValueCodecError::InvalidSymbolPayload(payload))
+            }
+        }
+        TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR => {
+            Err(ValueCodecError::InlineHeapValue(tag))
+        }
+        TAG_CAPABILITY => {
+            if !options.allow_capabilities {
+                return Err(ValueCodecError::CapabilityNotDecodable);
+            }
+            CapabilityId::new(payload)
+                .map(Value::capability)
+                .ok_or(ValueCodecError::InvalidCapabilityPayload(payload))
+        }
+        tag => Err(ValueCodecError::UnknownValueTag(tag)),
+    }
+}
+
+#[inline(always)]
+fn word_tag(word: u64) -> u8 {
+    (word >> TAG_SHIFT) as u8
 }

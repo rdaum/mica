@@ -13,8 +13,9 @@
 
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
-    CapabilityId, Identity, Symbol, SymbolMetadata, Value, ValueCodecError, ValueKind, ValueRef,
-    ValueVisitor, VisitDecision, decode_value, decode_value_exact, encode_value,
+    CapabilityId, Identity, Symbol, SymbolEncoding, SymbolMetadata, Value, ValueCodecError,
+    ValueCodecOptions, ValueKind, ValueRef, ValueVisitor, VisitDecision, decode_value,
+    decode_value_exact, decode_value_exact_with_options, encode_value, encode_value_with_options,
 };
 use std::mem::{align_of, size_of};
 
@@ -429,6 +430,59 @@ fn value_codec_round_trips_persistable_values() {
 }
 
 #[test]
+fn value_codec_uses_little_endian_inline_words() {
+    let values = [
+        Value::nothing(),
+        Value::bool(true),
+        Value::int(-123).unwrap(),
+        Value::float(12.5),
+        Value::identity(Identity::new(99).unwrap()),
+    ];
+
+    for value in values {
+        let mut encoded = Vec::new();
+        encode_value(&value, &mut encoded).unwrap();
+        assert_eq!(encoded, value.raw_bits().to_le_bytes());
+        assert_eq!(decode_value_exact(&encoded).unwrap(), value);
+    }
+}
+
+#[test]
+fn value_codec_defaults_to_named_symbol_records() {
+    let symbol = Value::symbol(Symbol::intern("symbolic"));
+    let mut encoded = Vec::new();
+    encode_value(&symbol, &mut encoded).unwrap();
+
+    assert_ne!(encoded, symbol.raw_bits().to_le_bytes());
+    assert_eq!(encoded.len(), 8 + "symbolic".len());
+    let header = u64::from_le_bytes(encoded[0..8].try_into().unwrap());
+    assert_eq!((header >> 56) as u8, 0xff);
+    assert_eq!(((header >> 48) & 0xff) as u8, ValueKind::Symbol as u8);
+    assert_eq!(
+        decode_value_exact(&encoded).unwrap().as_symbol(),
+        Some(Symbol::intern("symbolic"))
+    );
+}
+
+#[test]
+fn value_codec_can_use_inline_symbol_ids_when_requested() {
+    let options = ValueCodecOptions {
+        symbol_encoding: SymbolEncoding::Id,
+        allow_capabilities: false,
+    };
+    let symbol = Value::symbol(Symbol::from_id(u32::MAX));
+    let mut encoded = Vec::new();
+    encode_value_with_options(&symbol, &mut encoded, options).unwrap();
+
+    assert_eq!(encoded, symbol.raw_bits().to_le_bytes());
+    assert_eq!(
+        decode_value_exact_with_options(&encoded, options).unwrap(),
+        symbol
+    );
+    assert!(decode_value_exact(&encoded).is_err());
+}
+
+#[test]
 fn value_codec_rejects_ephemeral_capabilities() {
     let cap = Value::capability_raw(1).unwrap();
     let mut encoded = Vec::new();
@@ -437,9 +491,20 @@ fn value_codec_rejects_ephemeral_capabilities() {
         Err(ValueCodecError::CapabilityNotEncodable)
     );
 
+    let encoded_cap = cap.raw_bits().to_le_bytes();
     assert_eq!(
-        decode_value(&[ValueKind::Capability as u8]),
+        decode_value(&encoded_cap),
         Err(ValueCodecError::CapabilityNotDecodable)
+    );
+
+    let options = ValueCodecOptions {
+        symbol_encoding: SymbolEncoding::Name,
+        allow_capabilities: true,
+    };
+    encode_value_with_options(&cap, &mut encoded, options).unwrap();
+    assert_eq!(
+        decode_value_exact_with_options(&encoded, options).unwrap(),
+        cap
     );
 }
 
@@ -457,6 +522,22 @@ fn value_codec_rejects_unnamed_symbols_and_trailing_bytes() {
     assert_eq!(
         decode_value_exact(&encoded),
         Err(ValueCodecError::TrailingBytes(1))
+    );
+}
+
+#[test]
+fn value_codec_rejects_malformed_inline_words() {
+    let mut heap_word = 0u64;
+    heap_word |= (ValueKind::String as u64) << 56;
+    assert_eq!(
+        decode_value(&heap_word.to_le_bytes()),
+        Err(ValueCodecError::InlineHeapValue(ValueKind::String as u8))
+    );
+
+    let invalid_bool = ((ValueKind::Bool as u64) << 56) | 2;
+    assert_eq!(
+        decode_value(&invalid_bool.to_le_bytes()),
+        Err(ValueCodecError::InvalidBoolPayload(2))
     );
 }
 
