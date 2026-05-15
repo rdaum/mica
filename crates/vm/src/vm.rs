@@ -549,7 +549,7 @@ impl RegisterVm {
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
         let instruction = {
-            let frame = self.current_frame()?;
+            let frame = self.current_frame_unchecked();
             frame
                 .program
                 .instructions()
@@ -560,24 +560,24 @@ impl RegisterVm {
 
         match instruction {
             Instruction::Load { dst, value } => {
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Move { dst, src } => {
-                let value = self.read_register(src)?.clone();
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                let value = self.read_register_unchecked(src).clone();
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Unary { dst, op, src } => {
-                let value = self.read_register(src)?;
+                let value = self.read_register_unchecked(src);
                 let value = match eval_unary(op, value) {
                     Ok(value) => value,
                     Err(error) => return self.begin_raise(error),
                 };
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Binary {
@@ -586,19 +586,22 @@ impl RegisterVm {
                 left,
                 right,
             } => {
-                let value =
-                    match eval_binary(op, self.read_register(left)?, self.read_register(right)?) {
-                        Ok(value) => value,
-                        Err(error) => return self.begin_raise(error),
-                    };
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                let value = match eval_binary(
+                    op,
+                    self.read_register_unchecked(left),
+                    self.read_register_unchecked(right),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return self.begin_raise(error),
+                };
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuildList { dst, items } => {
                 let value = self.build_list(&items)?;
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuildMap { dst, entries } => {
@@ -608,8 +611,8 @@ impl RegisterVm {
                         Ok((self.resolve_operand(key)?, self.resolve_operand(value)?))
                     })
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
-                self.write_register(dst, Value::map(entries))?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, Value::map(entries));
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuildRange { dst, start, end } => {
@@ -618,8 +621,8 @@ impl RegisterVm {
                     .as_ref()
                     .map(|end| self.resolve_operand(end))
                     .transpose()?;
-                self.write_register(dst, Value::range(start, end))?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, Value::range(start, end));
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Index {
@@ -628,11 +631,11 @@ impl RegisterVm {
                 index,
             } => {
                 let value = index_value(
-                    self.read_register(collection)?,
+                    self.read_register_unchecked(collection),
                     &self.resolve_operand(&index)?,
                 );
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::SetIndex {
@@ -642,33 +645,33 @@ impl RegisterVm {
                 value,
             } => {
                 let value = set_index_value(
-                    self.read_register(collection)?,
+                    self.read_register_unchecked(collection),
                     &self.resolve_operand(&index)?,
                     self.resolve_operand(&value)?,
                 );
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ErrorField { dst, error, field } => {
-                let value = error_field_value(self.read_register(error)?, field);
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                let value = error_field_value(self.read_register_unchecked(error), field);
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::One { dst, src } => {
-                let value = match one_value(self.read_register(src)?) {
+                let value = match one_value(self.read_register_unchecked(src)) {
                     Ok(value) => value,
                     Err(error) => return self.begin_raise(error),
                 };
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::CollectionLen { dst, collection } => {
-                let value = collection_len(self.read_register(collection)?);
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                let value = collection_len(self.read_register_unchecked(collection));
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::CollectionKeyAt {
@@ -676,10 +679,12 @@ impl RegisterVm {
                 collection,
                 index,
             } => {
-                let value =
-                    collection_key_at(self.read_register(collection)?, self.read_register(index)?);
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                let value = collection_key_at(
+                    self.read_register_unchecked(collection),
+                    self.read_register_unchecked(index),
+                );
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::CollectionValueAt {
@@ -688,11 +693,11 @@ impl RegisterVm {
                 index,
             } => {
                 let value = collection_value_at(
-                    self.read_register(collection)?,
-                    self.read_register(index)?,
+                    self.read_register_unchecked(collection),
+                    self.read_register_unchecked(index),
                 );
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ScanExists {
@@ -706,8 +711,8 @@ impl RegisterVm {
                     .scan_relation(relation, &bindings)
                     .map_err(RuntimeError::Kernel)?
                     .is_empty();
-                self.write_register(dst, Value::bool(exists))?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, Value::bool(exists));
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ScanBindings {
@@ -740,8 +745,8 @@ impl RegisterVm {
                     }
                     result.push(Value::map(entries));
                 }
-                self.write_register(dst, Value::list(result))?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, Value::list(result));
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ScanValue { dst, relation, key } => {
@@ -752,20 +757,20 @@ impl RegisterVm {
                     .first()
                     .map(|row| row.values()[1].clone())
                     .unwrap_or_else(Value::nothing);
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Assert { relation, values } => {
                 require_write(host.authority(), relation)?;
                 host.assert_tuple(relation, self.resolve_tuple(values)?)?;
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Retract { relation, values } => {
                 require_write(host.authority(), relation)?;
                 host.retract_tuple(relation, self.resolve_tuple(values)?)?;
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::RetractWhere { relation, bindings } => {
@@ -773,13 +778,13 @@ impl RegisterVm {
                 require_write(host.authority(), relation)?;
                 let bindings = self.resolve_bindings(&bindings)?;
                 host.retract_matching(relation, &bindings)?;
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ReplaceFunctional { relation, values } => {
                 require_write(host.authority(), relation)?;
                 host.replace_functional_tuple(relation, self.resolve_tuple(values)?)?;
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Branch {
@@ -787,16 +792,16 @@ impl RegisterVm {
                 if_true,
                 if_false,
             } => {
-                let target = if truthy(self.read_register(condition)?) {
+                let target = if truthy(self.read_register_unchecked(condition)) {
                     if_true
                 } else {
                     if_false
                 };
-                self.current_frame_mut()?.ip = target;
+                self.current_frame_mut_unchecked().ip = target;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Jump { target } => {
-                self.current_frame_mut()?.ip = target;
+                self.current_frame_mut_unchecked().ip = target;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::EnterTry {
@@ -804,12 +809,14 @@ impl RegisterVm {
                 finally,
                 end,
             } => {
-                self.current_frame_mut()?.try_stack.push(TryRegion {
-                    catches,
-                    finally,
-                    end,
-                });
-                self.advance_ip()?;
+                self.current_frame_mut_unchecked()
+                    .try_stack
+                    .push(TryRegion {
+                        catches,
+                        finally,
+                        end,
+                    });
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ExitTry => self.exit_try_region(),
@@ -821,7 +828,7 @@ impl RegisterVm {
                     .ok_or(RuntimeError::InvalidEffectTarget(target_value))?;
                 let value = self.resolve_operand(&value)?;
                 host.emit(target, value)?;
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Call { dst, program, args } => {
@@ -834,7 +841,7 @@ impl RegisterVm {
                     .iter()
                     .map(|arg| self.resolve_operand(arg))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 self.state
                     .frames
                     .push(Frame::new(program, Some(dst), args)?);
@@ -846,8 +853,8 @@ impl RegisterVm {
                     .map(|arg| self.resolve_operand(arg))
                     .collect::<Result<Vec<_>, _>>()?;
                 let value = host.call_builtin(name, &args)?;
-                self.write_register(dst, value)?;
-                self.advance_ip()?;
+                self.write_register_unchecked(dst, value);
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Dispatch {
@@ -900,7 +907,7 @@ impl RegisterVm {
                 let args = named_method_args(params, &roles).ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
                 })?;
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 self.state
                     .frames
                     .push(Frame::new(program, Some(dst), args)?);
@@ -949,18 +956,18 @@ impl RegisterVm {
                     method: method.clone(),
                 })?;
                 let program = host.resolve_program(program_bytes, &program_id)?;
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 self.state
                     .frames
                     .push(Frame::new(program, Some(dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Commit => {
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Commit)
             }
             Instruction::Suspend { kind } => {
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Suspend(kind))
             }
             Instruction::SuspendValue { dst, duration } => {
@@ -969,12 +976,12 @@ impl RegisterVm {
                     .map(|duration| self.suspend_duration(self.resolve_operand(duration)?))
                     .transpose()?
                     .unwrap_or(SuspendKind::Never);
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 self.state.pending_resume = Some(dst);
                 Ok(VmHostResponse::Suspend(kind))
             }
             Instruction::CommitValue { dst } => {
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 self.state.pending_resume = Some(dst);
                 Ok(VmHostResponse::Suspend(SuspendKind::Commit))
             }
@@ -984,14 +991,14 @@ impl RegisterVm {
                     .map(|metadata| self.resolve_operand(metadata))
                     .transpose()?
                     .unwrap_or_else(Value::nothing);
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 self.state.pending_resume = Some(dst);
                 Ok(VmHostResponse::Suspend(SuspendKind::WaitingForInput(
                     metadata,
                 )))
             }
             Instruction::RollbackRetry => {
-                self.advance_ip()?;
+                self.advance_ip_unchecked();
                 Ok(VmHostResponse::RollbackRetry)
             }
             Instruction::Return { value } => {
@@ -1024,7 +1031,7 @@ impl RegisterVm {
 
     fn return_from_frame(&mut self, value: Value) -> Result<VmHostResponse, RuntimeError> {
         {
-            let frame = self.current_frame_mut()?;
+            let frame = self.current_frame_mut_unchecked();
             if frame.pending_finally.pop().is_some() {
                 // A return from inside a finally body replaces the control flow
                 // that originally entered the finally.
@@ -1048,7 +1055,7 @@ impl RegisterVm {
         let Some(return_register) = frame.return_register else {
             return Ok(VmHostResponse::Complete(value));
         };
-        self.write_register(return_register, value)?;
+        self.write_register_unchecked(return_register, value);
         Ok(VmHostResponse::Continue)
     }
 
@@ -1074,7 +1081,7 @@ impl RegisterVm {
             .ok_or(RuntimeError::EmptyTryStack)?;
         match continuation {
             FinallyContinuation::Normal(target) => {
-                self.current_frame_mut()?.ip = target;
+                self.current_frame_mut_unchecked().ip = target;
                 Ok(VmHostResponse::Continue)
             }
             FinallyContinuation::Raise(error) => self.begin_raise(error),
@@ -1129,13 +1136,17 @@ impl RegisterVm {
         }
     }
 
-    fn advance_ip(&mut self) -> Result<(), RuntimeError> {
-        self.current_frame_mut()?.ip += 1;
-        Ok(())
+    fn advance_ip_unchecked(&mut self) {
+        self.current_frame_mut_unchecked().ip += 1;
     }
 
     fn current_frame(&self) -> Result<&Frame, RuntimeError> {
         self.state.frames.last().ok_or(RuntimeError::EmptyCallStack)
+    }
+
+    fn current_frame_unchecked(&self) -> &Frame {
+        debug_assert!(!self.state.frames.is_empty());
+        self.state.frames.last().unwrap()
     }
 
     fn current_frame_mut(&mut self) -> Result<&mut Frame, RuntimeError> {
@@ -1143,6 +1154,11 @@ impl RegisterVm {
             .frames
             .last_mut()
             .ok_or(RuntimeError::EmptyCallStack)
+    }
+
+    fn current_frame_mut_unchecked(&mut self) -> &mut Frame {
+        debug_assert!(!self.state.frames.is_empty());
+        self.state.frames.last_mut().unwrap()
     }
 
     fn read_register(&self, register: Register) -> Result<&Value, RuntimeError> {
@@ -1156,6 +1172,16 @@ impl RegisterVm {
             })
     }
 
+    fn read_register_unchecked(&self, register: Register) -> &Value {
+        let frame = self
+            .state
+            .frames
+            .last()
+            .expect("validated VM execution requires a current frame");
+        debug_assert!((register.0 as usize) < frame.registers.len());
+        &frame.registers[register.0 as usize]
+    }
+
     fn write_register(&mut self, register: Register, value: Value) -> Result<(), RuntimeError> {
         let frame = self.current_frame_mut()?;
         let register_count = frame.registers.len();
@@ -1167,6 +1193,12 @@ impl RegisterVm {
         )?;
         *slot = value;
         Ok(())
+    }
+
+    fn write_register_unchecked(&mut self, register: Register, value: Value) {
+        let frame = self.current_frame_mut_unchecked();
+        debug_assert!((register.0 as usize) < frame.registers.len());
+        frame.registers[register.0 as usize] = value;
     }
 
     fn resolve_operand(&self, operand: &Operand) -> Result<Value, RuntimeError> {
