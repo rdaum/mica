@@ -4,46 +4,38 @@
   <img src="assets/mica-logo.png" alt="Mica logo" width="320">
 </p>
 
-Mica is a live, programmable system for worlds of people, objects, places,
-rules, knowledge, and behaviour that change over time.
+Mica is a language runtime and application server for building live,
+programmable systems: collaborative worlds, simulations, knowledge bases,
+agent workspaces, games, and operational tools.
 
-The broader goal is a general-purpose language and runtime for domains whose
-shape evolves over time: collaborative worlds, simulations, knowledge bases,
-authoring systems, agent workspaces, games, operational models, and other
-systems where the program and the data are both part of a live environment.
+Its object model is relation-first and rule-aware. Long-lived identities,
+facts, derived relations, verbs, and authority can all change while the system
+is running. The result is closer to an object system with a built-in relational
+logic layer than to a conventional application framework.
 
-It grows out of lessons from [mooR](https://codeberg.org/timbran/moor), my
-modern rewrite of LambdaMOO: a compatibility-focused MOO server with modern
-conveniences, transactional infrastructure, and a much more serious runtime and
-database substrate. Through that lineage, it inherits the model of image-based
-authoring, multiuser worlds, long-lived shared state, and online extension.
+You build a Mica world by creating persistent objects and teaching them new
+facts, rules, and verbs. The code that defines behaviour is part of the world:
+verbs live alongside the identities they operate on, rather than only in an
+external source tree. Mica is designed for many human authors and software
+agents to extend a running world from inside that world, with authority checks
+on reads, writes, invocations, and effects.
 
-Mica also draws from Datalog-style rules, Self-style prototype delegation,
-multimethod dispatch, and tuple-space-like ideas about shared facts that
-independent processes can read, write, and react to.
+> **NOTE**: If you're looking at this on GitHub be aware this is just a mirror
+> from the canonical Codeberg repository at https://codeberg.org/timbran/mica
 
-Mica is less of a nostalgia project than mooR. It has no backwards
-compatibility constraint, so it can be a cleaner canvas for new ideas about
-objects, relations, rules, dispatch, agents, and live programmable systems.
+Try the current telnet demo:
 
-> The name also reaches back to an earlier abandoned project I worked on between
-2001 and 2004: an incomplete prototype-oriented, image-based object system in
-the same broad family of ideas as MOO, ColdMUD, and similar systems. That
-earlier Mica was written in C++, and the last version of its sources appears to
-be lost to time. This project is not a continuation of that code, but it is a
-return to some of the same questions with different tools and a more relational
-foundation.
+```sh
+cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
+telnet 127.0.0.1 7777
+```
 
->**NOTE**: If you're looking at this on GitHub be aware this is just a mirror from 
-the canonical Codeberg repository at https://codeberg.org/timbran/mica
+Then try commands such as `look`, `get coin`, `put coin box`, `north`, and
+`say hello`.
 
 ## Core Idea
 
-Mica is based around the concept of persistent / long-lived objects that
-multiple authors can extend in a live environment over time.
-
-But Mica treats an object as a durable identity described by facts, not as a
-single container that owns all of its fields and methods:
+Mica represents objects as durable identity values described by relation facts:
 
 ```mica
 Object(#lamp)
@@ -53,14 +45,24 @@ Delegates(#lamp, #thing, 0)
 Portable(#lamp)
 ```
 
-`#lamp` is not a record. It is a durable identity value that appears in facts.
-The "object" is the fact neighbourhood around that identity: the facts, derived
-facts, rules, methods, permissions, and history that mention it.
+`#lamp` is a durable identity value. The "object" is the fact neighbourhood
+around that identity: the facts, derived facts, rules, methods, and authority
+policy that mention it.
+
+An object is still something authors can name, browse, extend, invoke
+behaviour on, and keep alive across restarts. Its slots, parent links, methods,
+permissions, and derived state are represented as relations around a durable
+identity rather than fields in one fixed record.
+
+In these examples, `#lamp` is an identity value, `:get(...)` invokes a verb,
+and relation names such as `HeldBy`, `LocatedIn`, and `Name` name stored or
+derived facts.
 
 Many object systems build a few relationships directly into the runtime:
 parent/child, location/contents, ownership, visibility, or method lookup. Mica
 tries to make those relationships authorable. They can be ordinary relations,
-rules, constraints, and behaviours that the world can inspect and extend.
+rules, functional relation metadata, and behaviours that the world can inspect
+and extend.
 
 That means object structure is not fixed by one privileged storage layout. A
 world can add new relations when it needs new concepts:
@@ -72,7 +74,26 @@ WeatherExposed(#garden)
 Believes(#agent7, #door, :locked)
 ```
 
-Relations can be indexed, constrained, queried, derived, and authorised.
+Relations can be indexed, queried, derived, and checked through actor-derived
+authority. Functional relations declare key positions, so assignments such as
+`#lamp.name = "brass lamp"` replace the one matching tuple instead of adding a
+duplicate fact.
+
+For object-system readers:
+
+| Object-system idea | Mica shape |
+| --- | --- |
+| object pointer or object number | durable identity value |
+| slot or property | relation fact mentioning the identity |
+| parent or prototype link | `Delegates(child, parent, order)` |
+| method dictionary | verb/method facts matched by role restrictions |
+| inspector or browser | object-neighbourhood query or outliner |
+
+For database readers: at the storage layer, Mica relations are arity-fixed sets
+of tuples over Mica values. Base relations are mutated transactionally. Derived
+relations are defined by rules and read through the same relation interface.
+Identities such as `#lamp` are values, not rows; relation tuples are the
+durable facts that describe them.
 
 ## Behaviour
 
@@ -97,20 +118,28 @@ An invocation supplies role bindings:
 ```
 
 The dispatch engine finds methods whose role restrictions match the invocation.
+The restriction `item @ #thing` says that the `item` role must be an identity
+that matches `#thing`, either directly or through delegation. Methods are not
+looked up inside a receiver's private method dictionary; they are installed
+into the live world and selected by matching the roles in the invocation.
 
-This is a bit like prototype delegation, but it is actually part of matching:
+Delegation participates in dispatch matching:
 
 ```mica
 Delegates(#coin, #thing, 0)
 Delegates(#alice, #player, 0)
 ```
 
-This is closer to multimethod dispatch than receiver-owned method lookup, but
-keeps the live authoring feel of object systems and opens up more extensibility.
+The third argument is the delegation order. It lets an identity have multiple
+delegates while keeping dispatch and inherited relation lookup deterministic
+where order matters.
+
+Role dispatch gives Mica multimethod-like selection while still allowing verbs
+to be installed and edited in the running world.
 
 ## Rules
 
-Mica also has powerful Datalog-inspired derived relations:
+Mica also has Datalog-inspired derived relations:
 
 ```mica
 CanSee(actor, item) :-
@@ -142,6 +171,10 @@ dependency, graph reachability, or delegation closure in the same relational
 language as the rest of the world. Negation is more restricted: Mica supports
 stratified negation, not arbitrary recursion through `not`.
 
+The current implementation evaluates rules in the relation kernel and exposes
+derived tuples through ordinary relation reads. More complete rule planning and
+incremental evaluation remain active areas of work.
+
 ## Language Shape
 
 Mica's surface language is intended to feel familiar to people who know MOO or
@@ -166,7 +199,9 @@ queries, and calls produce values.
 
 ## Isn't this just a Database?
 
-Mica uses database ideas, but it is not trying to be SQL with a different skin.
+Mica uses transactional relation storage as part of its programming model. A
+Mica task runs against a transaction snapshot and commits its relation changes
+as one unit.
 
 The runtime needs:
 
@@ -184,35 +219,71 @@ Those concerns overlap with databases, object systems, logic languages, and
 interactive programming environments, but none of those models alone is quite
 the intended shape.
 
+In Mica, relations are the author-visible representation of objects, dispatch,
+world rules, and authority. The runtime executes behaviours inside that same
+transactional relation system.
+
 ## For Agents and Tools
 
-Mica is meant to be a good substrate for agents and other software that needs to
-inspect, explain, and change a live domain model.
+Mica gives agents and tools a queryable model of identities, relations, rules,
+verbs, and authority.
 
-There are many systems now described as agentic memory, agent workspaces,
-coordination layers, blackboards, or shared context stores. Mica belongs in
-that conversation, but it is aiming at a stronger foundation than a bag of
-messages, vector memories, task records, and tool calls. It treats the shared
-state as a durable, transactional, queryable world model with identities,
-relations, rules, behaviours, and authority as first-class parts of the system.
+Compared with message logs or vector-memory stores, Mica keeps shared state in
+typed relations with transactions, derived facts, executable behaviours, and
+authority checks. Message records, embeddings, tool calls, and task rows can
+still exist, but they become facts about durable identities.
 
-Agents work best when the world is not opaque. In Mica, the important concepts
-are available as relations, rules, methods, and identities that can be queried
-and edited with the same language authors use. An agent can ask what facts
-mention an identity, why a derived relation is true, which behaviours can apply
-to an invocation, or what authority is needed to make a change.
+```mica
+Agent(#planner)
+Task(#t42)
+Goal(#t42, "prepare release notes")
+AssignedTo(#t42, #planner)
+Observation(#obs9)
+ObservedBy(#obs9, #planner)
+AboutTask(#obs9, #t42)
+Mentions(#obs9, #crate_runtime)
+ToolResult(#obs9, :git_diff, "...")
+
+RelevantTo(agent, item) :-
+  AssignedTo(task, agent),
+  AboutTask(obs, task),
+  Mentions(obs, item)
+```
+
+In this style, an agent workspace is not only a transcript. Tasks,
+observations, tool results, claims, artefacts, and authority policy can be
+facts around durable identities. Rules can derive working context such as
+relevance, readiness, visibility, ownership, or blocked-by relationships, and
+behaviours can operate over those relations transactionally.
+
+This can support:
+
+- shared task and artefact state across humans and agents;
+- blackboard-style coordination with transactional updates;
+- provenance-aware observations and tool results;
+- derived context views for each actor;
+- policy-derived authority for actions and effects.
+
+Agent integrations can query the same relations, rules, methods, and identities
+that authors edit. Explanation APIs for derived facts, applicable behaviours,
+and authority failures are planned tooling work.
 
 That makes Mica useful for systems where human and software authors collaborate:
 knowledge bases, simulations, planning environments, design tools, operational
 models, and long-lived shared workspaces.
 
+Vector indexes, embedding stores, and external tools can be attached as
+providers or tool-facing facts. Mica's core model is the identity / relation /
+rule layer that says what those memories are about and how they may be used.
+
 ## MOO-Like Worlds
 
-Mica can be used to build [MOO-like](https://en.wikipedia.org/wiki/MOO)
-systems: rooms, exits, containers, players, verbs, live authoring, and shared
-programmable spaces.
+The current examples show how Mica can model
+[MOO-like](https://en.wikipedia.org/wiki/MOO) pieces: rooms, containers,
+players, verbs, live source loading, telnet interaction, and shared
+programmable space.
 
-MOO's core insight is still powerful: a running world can be its own authoring
+MOO showed that a running multiuser world can also be its own authoring
 environment. Mica keeps that immediacy while changing the foundation. Object
 state is facts, inheritance is delegation over identities, verbs dispatch over
 roles, and policies like visibility or containment can be relations and rules
@@ -222,9 +293,33 @@ MUD-like examples are useful because rooms, exits, containers, and inventory are
 easy to understand. They are examples of the model, not the boundary of the
 project.
 
+## Background
+
+Mica grows out of lessons from [mooR](https://codeberg.org/timbran/moor), my
+modern rewrite of LambdaMOO: a compatibility-focused MOO server with modern
+conveniences, transactional command execution, durable storage, and a modern
+Rust runtime. Through that lineage, it inherits the model of image-based
+authoring, multiuser worlds, long-lived shared state, and online extension.
+
+Mica also draws from Datalog-style rules, Self-style prototype delegation,
+multimethod dispatch, and tuple-space-like ideas about shared facts that
+independent processes can read, write, and react to.
+
+Mica is less of a nostalgia project than mooR. Without compatibility
+constraints, it can use relations, rules, dispatch, and authority as the
+primary object model.
+
+The name also reaches back to an earlier abandoned project I worked on between
+2001 and 2004: an incomplete prototype-oriented, image-based object system in
+the same broad family of ideas as MOO, ColdMUD, and similar systems. That
+earlier Mica was written in C++, and the last version of its sources appears to
+be lost to time. This project is not a continuation of that code, but it is a
+return to some of the same questions with different tools and a more relational
+foundation.
+
 ## Current Status
 
-Mica is an early Rust prototype. The current tree has:
+Mica's implementation is still early. The current tree has:
 
 - a compact value layer;
 - a relation kernel with base facts, transactions, indexes, catalogue metadata,
@@ -236,13 +331,20 @@ Mica is an early Rust prototype. The current tree has:
 - a compio-driven task driver for timed wakeups, input resumes, and emissions;
 - a telnet host that maps one endpoint identity to each connection and can run
   in process or over the host RPC/IPC protocol;
+- a host protocol console for exercising daemon RPC over ZeroMQ;
 - a browser-oriented WASM package that links the compiler, VM, and projected
   relation store without durable providers;
 - role-based method dispatch;
 - a "filein" syntax for bringing in state-as-initial-blueprint;
+- first-cut fileout for revision-controllable units;
+- actor-derived authority contexts and runtime capability checks;
 - Fjall-backed durable relation state with strict and relaxed commit modes;
 - a simple runner and REPL;
 - small filein examples, including a Mica-authored command parser.
+
+Relaxed durability accepts commits into the provider's ordered writer queue.
+Strict durability waits for the Fjall batch to be applied before the commit
+returns.
 
 Run the example:
 
@@ -296,27 +398,38 @@ cargo test --workspace
   low-level string primitives rather than Rust command matching.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,
   and the relation kernel.
-- [`CODING-STYLE.md`](CODING-STYLE.md): project coding guidelines, including dependency policy.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md): contribution expectations, checks, and licence terms.
+- [`CODING-STYLE.md`](CODING-STYLE.md): project coding guidelines, including
+  dependency policy.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): contribution expectations, checks, and
+  licence terms.
+
+## Direction
+
+The practical target is to build a complete live multiuser server and language
+runtime with the range of capability that mooR has today, without mooR's
+LambdaMOO compatibility constraint. That means Mica needs to support real users
+building, extending, serving, inspecting, exporting, securing, and operating a
+running world.
+
+Near-term work includes:
+
+- a fuller standard library for common world, agent, and application relations;
+- richer method and verb cataloguing so behaviour can be found, inspected, and
+  edited from inside the running system;
+- object neighbourhood and outliner queries for browsing identities as live
+  objects;
+- import/export flows that make live state readable, editable, and
+  revision-controllable outside the running store;
+- authority and capability hardening beyond the current `Can*`/`Grant*`
+  minting path;
+- daemon, host, and client surfaces for telnet, web, agents, and tools;
+- durable storage hardening, compaction, recovery, and operational testing;
+- more complete rule evaluation and query planning.
+
+The long-term aim is a production-quality relational object system for durable
+multiuser worlds and inspectable agent/tool integrations.
 
 ## Licence
 
 Mica is free software licensed under the GNU Affero General Public License v3.0,
 as set out in [LICENSE](LICENSE).
-
-## Direction
-
-Near-term work is about making the live system cohere:
-
-- method and verb source cataloguing;
-- fileout for identities, relations, rules, methods, and facts;
-- richer ontology examples beyond the current MUD-shaped smoke test;
-- object neighbourhood/outliner queries;
-- authority and capability design;
-- durable storage hardening, compaction, and recovery testing;
-- more complete rule evaluation and query planning;
-- a clearer standard library for common relations.
-
-The long-term aim is a practical live relational object system: immediate
-enough for authors, rigorous enough for durable multiuser systems, and explicit
-enough for tools and agents to inspect, explain, and extend.
