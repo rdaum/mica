@@ -4,13 +4,13 @@
 dispatch. `string.mica` documents the low-level string utility surface, and
 `mud-command-parser.mica` parses the demo command language in Mica source. These
 are the default fileins for `mica-daemon`, so commands such as `look`,
-`get coin`, `put coin box`, `north`, and `say hello` can exercise TCP endpoint
+`get coin`, `put coin box`, `north`, and `say hello` can exercise telnet endpoint
 input and routed effects.
 
-Try the MUD example over TCP:
+Try the MUD example over telnet:
 
 ```sh
-cargo run --bin mica-daemon -- --bind 127.0.0.1:7777
+cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
 ```
 
 `capabilities.mica` shows the intended bootstrap shape for capabilities. It

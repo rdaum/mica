@@ -253,7 +253,7 @@ cargo run --bin mica -- filein examples/mud-core.mica
 Run the telnet MUD demo:
 
 ```sh
-cargo run --bin mica-daemon
+cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
 ```
 
 Start the REPL:

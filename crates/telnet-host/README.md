@@ -10,8 +10,8 @@ shape can run in two deployment modes:
 - in process, linked directly to a `CompioTaskDriver`;
 - out of process, talking to a daemon over the host RPC/IPC protocol.
 
-The in-process mode is used by `mica-daemon` by default. The ZeroMQ-backed mode
-is exposed by the `mica-telnet-host` binary:
+The in-process mode is exposed by `mica-daemon --telnet-bind`. The
+ZeroMQ-backed mode is exposed by the `mica-telnet-host` binary:
 
 ```sh
 cargo run --bin mica-daemon -- --rpc-bind ipc:///tmp/mica-rpc.sock

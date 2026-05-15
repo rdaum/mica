@@ -17,9 +17,10 @@ use compio::runtime::Runtime;
 use mica_driver::CompioTaskDriver;
 use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
 use mica_runtime::SourceRunner;
-use mica_telnet_host::{ActorBinding, DEFAULT_BIND, InProcessTelnetHost, serve_in_process};
+use mica_telnet_host::{ActorBinding, InProcessTelnetHost, serve_in_process};
 use mica_var::Symbol;
 use std::fs;
+use std::future;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -37,11 +38,9 @@ const DEFAULT_FILEINS: &[&str] = &[
 #[derive(Parser)]
 #[command(
     name = "mica-daemon",
-    about = "Run Mica with an in-process telnet host"
+    about = "Run a Mica daemon with optional host endpoints"
 )]
 struct Cli {
-    #[arg(long, default_value = DEFAULT_BIND)]
-    bind: SocketAddr,
     #[arg(long = "filein", value_name = "FILE")]
     fileins: Vec<PathBuf>,
     #[arg(long, default_value = "alice", value_name = "IDENTITY")]
@@ -50,6 +49,8 @@ struct Cli {
     driver_threads: Option<NonZeroUsize>,
     #[arg(long, value_name = "URI")]
     rpc_bind: Option<String>,
+    #[arg(long, value_name = "ADDR")]
+    telnet_bind: Option<SocketAddr>,
 }
 
 fn main() -> ExitCode {
@@ -70,38 +71,47 @@ fn run() -> Result<(), String> {
 }
 
 async fn run_async(cli: Cli) -> Result<(), String> {
+    if cli.rpc_bind.is_none() && cli.telnet_bind.is_none() {
+        return Err(
+            "daemon needs at least one endpoint: use --rpc-bind or --telnet-bind".to_owned(),
+        );
+    }
     let mut runner = SourceRunner::new_empty();
     for filein in fileins_or_defaults(&cli.fileins) {
         let source = fs::read_to_string(&filein)
             .map_err(|error| format!("failed to read {}: {error}", filein.display()))?;
         runner.run_filein(&source).map_err(format_source_error)?;
     }
-    let actor_name = actor_name(&cli.actor)?;
-    let actor = runner
-        .named_identity(Symbol::intern(&actor_name))
-        .map_err(format_source_error)?;
-    let listener = TcpListener::bind(cli.bind)
-        .await
-        .map_err(|error| format!("failed to bind {}: {error}", cli.bind))?;
-    println!(
-        "mica-daemon listening on {}",
-        listener.local_addr().unwrap()
-    );
+    let in_process_actor = if cli.telnet_bind.is_some() {
+        let actor_name = actor_name(&cli.actor)?;
+        let actor = runner
+            .named_identity(Symbol::intern(&actor_name))
+            .map_err(format_source_error)?;
+        Some(ActorBinding {
+            name: actor_name,
+            identity: actor,
+        })
+    } else {
+        None
+    };
     let driver = CompioTaskDriver::spawn_with_workers(runner, cli.driver_threads)
         .map_err(format_driver_error)?;
     if let Some(rpc_bind) = cli.rpc_bind {
         start_rpc_server(driver.clone(), rpc_bind)?;
     }
-    serve_in_process(
-        listener,
-        InProcessTelnetHost::new(driver),
-        ActorBinding {
-            name: actor_name,
-            identity: actor,
-        },
-        None,
-    )
-    .await
+    if let Some(telnet_bind) = cli.telnet_bind {
+        let actor = in_process_actor.expect("telnet actor should be resolved before driver spawn");
+        let listener = TcpListener::bind(telnet_bind)
+            .await
+            .map_err(|error| format!("failed to bind telnet listener {telnet_bind}: {error}"))?;
+        println!(
+            "mica-daemon telnet listening on {}",
+            listener.local_addr().unwrap()
+        );
+        return serve_in_process(listener, InProcessTelnetHost::new(driver), actor, None).await;
+    }
+    future::pending::<()>().await;
+    Ok(())
 }
 
 fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), String> {
