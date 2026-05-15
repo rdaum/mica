@@ -548,35 +548,41 @@ impl RegisterVm {
         host: &mut H,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
-        let instruction = {
+        let (instruction, ip) = {
             let frame = self.current_frame_unchecked();
-            frame
+            let ip = frame.ip;
+            let instruction = frame
                 .program
                 .instructions()
-                .get(frame.ip)
-                .cloned()
-                .ok_or(RuntimeError::ProgramCounterOutOfBounds { ip: frame.ip })?
+                .get(ip)
+                .ok_or(RuntimeError::ProgramCounterOutOfBounds { ip })?;
+            (instruction as *const Instruction, ip)
         };
+        debug_assert_eq!(self.current_frame_unchecked().ip, ip);
+        // SAFETY: the pointer comes from the current frame's `Arc<Program>`. The program
+        // allocation is stable while the frame is live, and each arm copies or resolves any
+        // instruction fields it needs before operations that can remove that frame.
+        let instruction = unsafe { &*instruction };
 
         match instruction {
             Instruction::Load { dst, value } => {
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value.clone());
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Move { dst, src } => {
-                let value = self.read_register_unchecked(src).clone();
-                self.write_register_unchecked(dst, value);
+                let value = self.read_register_unchecked(*src).clone();
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Unary { dst, op, src } => {
-                let value = self.read_register_unchecked(src);
-                let value = match eval_unary(op, value) {
+                let value = self.read_register_unchecked(*src);
+                let value = match eval_unary(*op, value) {
                     Ok(value) => value,
                     Err(error) => return self.begin_raise(error),
                 };
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -587,20 +593,20 @@ impl RegisterVm {
                 right,
             } => {
                 let value = match eval_binary(
-                    op,
-                    self.read_register_unchecked(left),
-                    self.read_register_unchecked(right),
+                    *op,
+                    self.read_register_unchecked(*left),
+                    self.read_register_unchecked(*right),
                 ) {
                     Ok(value) => value,
                     Err(error) => return self.begin_raise(error),
                 };
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuildList { dst, items } => {
-                let value = self.build_list(&items)?;
-                self.write_register_unchecked(dst, value);
+                let value = self.build_list(items)?;
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -611,17 +617,17 @@ impl RegisterVm {
                         Ok((self.resolve_operand(key)?, self.resolve_operand(value)?))
                     })
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
-                self.write_register_unchecked(dst, Value::map(entries));
+                self.write_register_unchecked(*dst, Value::map(entries));
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuildRange { dst, start, end } => {
-                let start = self.resolve_operand(&start)?;
+                let start = self.resolve_operand(start)?;
                 let end = end
                     .as_ref()
                     .map(|end| self.resolve_operand(end))
                     .transpose()?;
-                self.write_register_unchecked(dst, Value::range(start, end));
+                self.write_register_unchecked(*dst, Value::range(start, end));
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -631,10 +637,10 @@ impl RegisterVm {
                 index,
             } => {
                 let value = index_value(
-                    self.read_register_unchecked(collection),
-                    &self.resolve_operand(&index)?,
+                    self.read_register_unchecked(*collection),
+                    &self.resolve_operand(index)?,
                 );
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -645,32 +651,32 @@ impl RegisterVm {
                 value,
             } => {
                 let value = set_index_value(
-                    self.read_register_unchecked(collection),
-                    &self.resolve_operand(&index)?,
-                    self.resolve_operand(&value)?,
+                    self.read_register_unchecked(*collection),
+                    &self.resolve_operand(index)?,
+                    self.resolve_operand(value)?,
                 );
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ErrorField { dst, error, field } => {
-                let value = error_field_value(self.read_register_unchecked(error), field);
-                self.write_register_unchecked(dst, value);
+                let value = error_field_value(self.read_register_unchecked(*error), *field);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::One { dst, src } => {
-                let value = match one_value(self.read_register_unchecked(src)) {
+                let value = match one_value(self.read_register_unchecked(*src)) {
                     Ok(value) => value,
                     Err(error) => return self.begin_raise(error),
                 };
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::CollectionLen { dst, collection } => {
-                let value = collection_len(self.read_register_unchecked(collection));
-                self.write_register_unchecked(dst, value);
+                let value = collection_len(self.read_register_unchecked(*collection));
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -680,10 +686,10 @@ impl RegisterVm {
                 index,
             } => {
                 let value = collection_key_at(
-                    self.read_register_unchecked(collection),
-                    self.read_register_unchecked(index),
+                    self.read_register_unchecked(*collection),
+                    self.read_register_unchecked(*index),
                 );
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -693,10 +699,10 @@ impl RegisterVm {
                 index,
             } => {
                 let value = collection_value_at(
-                    self.read_register_unchecked(collection),
-                    self.read_register_unchecked(index),
+                    self.read_register_unchecked(*collection),
+                    self.read_register_unchecked(*index),
                 );
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -705,13 +711,13 @@ impl RegisterVm {
                 relation,
                 bindings,
             } => {
-                require_read(host.authority(), relation)?;
-                let bindings = self.resolve_bindings(&bindings)?;
+                require_read(host.authority(), *relation)?;
+                let bindings = self.resolve_bindings(bindings)?;
                 let exists = !host
-                    .scan_relation(relation, &bindings)
+                    .scan_relation(*relation, &bindings)
                     .map_err(RuntimeError::Kernel)?
                     .is_empty();
-                self.write_register_unchecked(dst, Value::bool(exists));
+                self.write_register_unchecked(*dst, Value::bool(exists));
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -721,15 +727,15 @@ impl RegisterVm {
                 bindings,
                 outputs,
             } => {
-                require_read(host.authority(), relation)?;
-                let bindings = self.resolve_bindings(&bindings)?;
+                require_read(host.authority(), *relation)?;
+                let bindings = self.resolve_bindings(bindings)?;
                 let rows = host
-                    .scan_relation(relation, &bindings)
+                    .scan_relation(*relation, &bindings)
                     .map_err(RuntimeError::Kernel)?;
                 let mut result = Vec::with_capacity(rows.len());
                 'row: for row in rows {
                     let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
-                    for output in &outputs {
+                    for output in outputs {
                         let key = Value::symbol(output.name);
                         let value = row.values()[output.position as usize].clone();
                         if let Some((_, existing)) = entries
@@ -745,45 +751,45 @@ impl RegisterVm {
                     }
                     result.push(Value::map(entries));
                 }
-                self.write_register_unchecked(dst, Value::list(result));
+                self.write_register_unchecked(*dst, Value::list(result));
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ScanValue { dst, relation, key } => {
-                require_read(host.authority(), relation)?;
-                let key = self.resolve_operand(&key)?;
+                require_read(host.authority(), *relation)?;
+                let key = self.resolve_operand(key)?;
                 let value = host
-                    .scan_relation(relation, &[Some(key), None])?
+                    .scan_relation(*relation, &[Some(key), None])?
                     .first()
                     .map(|row| row.values()[1].clone())
                     .unwrap_or_else(Value::nothing);
-                self.write_register_unchecked(dst, value);
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Assert { relation, values } => {
-                require_write(host.authority(), relation)?;
-                host.assert_tuple(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority(), *relation)?;
+                host.assert_tuple(*relation, self.resolve_tuple(values)?)?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Retract { relation, values } => {
-                require_write(host.authority(), relation)?;
-                host.retract_tuple(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority(), *relation)?;
+                host.retract_tuple(*relation, self.resolve_tuple(values)?)?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::RetractWhere { relation, bindings } => {
-                require_read(host.authority(), relation)?;
-                require_write(host.authority(), relation)?;
-                let bindings = self.resolve_bindings(&bindings)?;
-                host.retract_matching(relation, &bindings)?;
+                require_read(host.authority(), *relation)?;
+                require_write(host.authority(), *relation)?;
+                let bindings = self.resolve_bindings(bindings)?;
+                host.retract_matching(*relation, &bindings)?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Instruction::ReplaceFunctional { relation, values } => {
-                require_write(host.authority(), relation)?;
-                host.replace_functional_tuple(relation, self.resolve_tuple(values)?)?;
+                require_write(host.authority(), *relation)?;
+                host.replace_functional_tuple(*relation, self.resolve_tuple(values)?)?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -792,16 +798,16 @@ impl RegisterVm {
                 if_true,
                 if_false,
             } => {
-                let target = if truthy(self.read_register_unchecked(condition)) {
-                    if_true
+                let target = if truthy(self.read_register_unchecked(*condition)) {
+                    *if_true
                 } else {
-                    if_false
+                    *if_false
                 };
                 self.current_frame_mut_unchecked().ip = target;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Jump { target } => {
-                self.current_frame_mut_unchecked().ip = target;
+                self.current_frame_mut_unchecked().ip = *target;
                 Ok(VmHostResponse::Continue)
             }
             Instruction::EnterTry {
@@ -812,9 +818,9 @@ impl RegisterVm {
                 self.current_frame_mut_unchecked()
                     .try_stack
                     .push(TryRegion {
-                        catches,
-                        finally,
-                        end,
+                        catches: catches.clone(),
+                        finally: *finally,
+                        end: *end,
                     });
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
@@ -822,11 +828,11 @@ impl RegisterVm {
             Instruction::ExitTry => self.exit_try_region(),
             Instruction::EndFinally => self.end_finally(),
             Instruction::Emit { target, value } => {
-                let target_value = self.resolve_operand(&target)?;
+                let target_value = self.resolve_operand(target)?;
                 let target = target_value
                     .as_identity()
                     .ok_or(RuntimeError::InvalidEffectTarget(target_value))?;
-                let value = self.resolve_operand(&value)?;
+                let value = self.resolve_operand(value)?;
                 host.emit(target, value)?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
@@ -844,7 +850,7 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 self.state
                     .frames
-                    .push(Frame::new(program, Some(dst), args)?);
+                    .push(Frame::new(Arc::clone(program), Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
             Instruction::BuiltinCall { dst, name, args } => {
@@ -852,8 +858,8 @@ impl RegisterVm {
                     .iter()
                     .map(|arg| self.resolve_operand(arg))
                     .collect::<Result<Vec<_>, _>>()?;
-                let value = host.call_builtin(name, &args)?;
-                self.write_register_unchecked(dst, value);
+                let value = host.call_builtin(*name, &args)?;
+                self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -870,16 +876,17 @@ impl RegisterVm {
                         max_depth: max_call_depth,
                     });
                 }
-                let selector = self.resolve_operand(&selector)?;
+                let selector = self.resolve_operand(selector)?;
                 let mut roles = roles
                     .iter()
                     .map(|(role, value)| Ok((role.clone(), self.resolve_operand(value)?)))
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
                 roles.sort_by(|left, right| compare_role_values(&left.0, &right.0));
-                let methods = applicable_method_entries(host, relations, selector.clone(), &roles)?
-                    .into_iter()
-                    .filter(|entry| host.authority().can_invoke_method(&entry.method))
-                    .collect::<Vec<_>>();
+                let methods =
+                    applicable_method_entries(host, *relations, selector.clone(), &roles)?
+                        .into_iter()
+                        .filter(|entry| host.authority().can_invoke_method(&entry.method))
+                        .collect::<Vec<_>>();
                 let (method, params) = match methods.as_slice() {
                     [] => return Err(RuntimeError::NoApplicableMethod { selector }),
                     [entry] => (&entry.method, &entry.params),
@@ -893,7 +900,7 @@ impl RegisterVm {
                 };
                 let mut program_id = None;
                 host.visit_relation(
-                    program_relation,
+                    *program_relation,
                     &[Some(method.clone()), None],
                     &mut |row| {
                         program_id = Some(row.values()[1].clone());
@@ -903,14 +910,14 @@ impl RegisterVm {
                 let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
                     method: method.clone(),
                 })?;
-                let program = host.resolve_program(program_bytes, &program_id)?;
+                let program = host.resolve_program(*program_bytes, &program_id)?;
                 let args = named_method_args(params, &roles).ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
                 })?;
                 self.advance_ip_unchecked();
                 self.state
                     .frames
-                    .push(Frame::new(program, Some(dst), args)?);
+                    .push(Frame::new(program, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
             Instruction::PositionalDispatch {
@@ -926,13 +933,13 @@ impl RegisterVm {
                         max_depth: max_call_depth,
                     });
                 }
-                let selector = self.resolve_operand(&selector)?;
+                let selector = self.resolve_operand(selector)?;
                 let args = args
                     .iter()
                     .map(|arg| self.resolve_operand(arg))
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
                 let methods =
-                    applicable_positional_methods(host, relations, selector.clone(), &args)?
+                    applicable_positional_methods(host, *relations, selector.clone(), &args)?
                         .into_iter()
                         .filter(|method| host.authority().can_invoke_method(method))
                         .collect::<Vec<_>>();
@@ -945,7 +952,7 @@ impl RegisterVm {
                 };
                 let mut program_id = None;
                 host.visit_relation(
-                    program_relation,
+                    *program_relation,
                     &[Some(method.clone()), None],
                     &mut |row| {
                         program_id = Some(row.values()[1].clone());
@@ -955,11 +962,11 @@ impl RegisterVm {
                 let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
                     method: method.clone(),
                 })?;
-                let program = host.resolve_program(program_bytes, &program_id)?;
+                let program = host.resolve_program(*program_bytes, &program_id)?;
                 self.advance_ip_unchecked();
                 self.state
                     .frames
-                    .push(Frame::new(program, Some(dst), args)?);
+                    .push(Frame::new(program, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
             Instruction::Commit => {
@@ -968,7 +975,7 @@ impl RegisterVm {
             }
             Instruction::Suspend { kind } => {
                 self.advance_ip_unchecked();
-                Ok(VmHostResponse::Suspend(kind))
+                Ok(VmHostResponse::Suspend(kind.clone()))
             }
             Instruction::SuspendValue { dst, duration } => {
                 let kind = duration
@@ -977,12 +984,12 @@ impl RegisterVm {
                     .transpose()?
                     .unwrap_or(SuspendKind::Never);
                 self.advance_ip_unchecked();
-                self.state.pending_resume = Some(dst);
+                self.state.pending_resume = Some(*dst);
                 Ok(VmHostResponse::Suspend(kind))
             }
             Instruction::CommitValue { dst } => {
                 self.advance_ip_unchecked();
-                self.state.pending_resume = Some(dst);
+                self.state.pending_resume = Some(*dst);
                 Ok(VmHostResponse::Suspend(SuspendKind::Commit))
             }
             Instruction::Read { dst, metadata } => {
@@ -992,7 +999,7 @@ impl RegisterVm {
                     .transpose()?
                     .unwrap_or_else(Value::nothing);
                 self.advance_ip_unchecked();
-                self.state.pending_resume = Some(dst);
+                self.state.pending_resume = Some(*dst);
                 Ok(VmHostResponse::Suspend(SuspendKind::WaitingForInput(
                     metadata,
                 )))
@@ -1002,11 +1009,11 @@ impl RegisterVm {
                 Ok(VmHostResponse::RollbackRetry)
             }
             Instruction::Return { value } => {
-                let value = self.resolve_operand(&value)?;
+                let value = self.resolve_operand(value)?;
                 self.return_from_frame(value)
             }
             Instruction::Abort { error } => {
-                let error = self.resolve_operand(&error)?;
+                let error = self.resolve_operand(error)?;
                 Ok(VmHostResponse::Abort(error))
             }
             Instruction::Raise {
@@ -1014,7 +1021,7 @@ impl RegisterVm {
                 message,
                 value,
             } => {
-                let error = self.resolve_operand(&error)?;
+                let error = self.resolve_operand(error)?;
                 let message = message
                     .as_ref()
                     .map(|message| self.resolve_operand(message))
@@ -1226,7 +1233,7 @@ impl RegisterVm {
         Ok(Value::list(values))
     }
 
-    fn resolve_tuple(&self, values: Vec<Operand>) -> Result<Tuple, RuntimeError> {
+    fn resolve_tuple(&self, values: &[Operand]) -> Result<Tuple, RuntimeError> {
         Ok(Tuple::new(
             values
                 .iter()
