@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{DriverError, DriverEvent, TaskContext};
+use crate::{DispatcherConfig, DriverError, DriverEvent, TaskContext, configure_dispatcher};
 use compio::dispatcher::Dispatcher;
 use compio::runtime::Runtime;
 use mica_runtime::{
@@ -56,10 +56,20 @@ impl CompioTaskDriver {
         runner: SourceRunner,
         workers: Option<NonZeroUsize>,
     ) -> Result<Self, DriverError> {
-        let mut builder = Dispatcher::builder();
-        if let Some(workers) = workers {
-            builder = builder.worker_threads(workers);
-        }
+        Self::spawn_with_config(
+            runner,
+            DispatcherConfig {
+                workers,
+                ..DispatcherConfig::default()
+            },
+        )
+    }
+
+    pub fn spawn_with_config(
+        runner: SourceRunner,
+        config: DispatcherConfig,
+    ) -> Result<Self, DriverError> {
+        let (builder, _) = configure_dispatcher(Dispatcher::builder(), config);
         let dispatcher = builder
             .thread_names(|index| format!("mica-driver-pool-{index}"))
             .build()

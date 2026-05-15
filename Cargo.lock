@@ -851,6 +851,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "compio",
+ "mica-driver",
  "mica-relation-kernel",
  "mica-runtime",
  "mica-var",

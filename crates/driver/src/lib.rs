@@ -17,11 +17,15 @@
 //! task-manager work on compio tasks and owns the wake policy for timed
 //! suspensions and endpoint input.
 
+mod affinity;
 mod pool;
 mod types;
 
 #[cfg(test)]
 mod tests;
 
+pub use affinity::{
+    DispatcherAffinity, DispatcherConfig, DispatcherPlacement, configure_dispatcher,
+};
 pub use pool::CompioTaskDriver;
 pub use types::{DriverError, DriverEvent, TaskContext};

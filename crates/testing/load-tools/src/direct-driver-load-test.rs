@@ -22,6 +22,9 @@
 use clap::{Parser, ValueEnum};
 use compio::dispatcher::Dispatcher;
 use compio::runtime::Runtime;
+use mica_driver::{
+    DispatcherAffinity, DispatcherConfig, DispatcherPlacement, configure_dispatcher,
+};
 use mica_relation_kernel::FjallDurabilityMode;
 use mica_runtime::{
     AuthorityContext, SharedSourceRunner, SourceRunner, TaskInput, TaskLimits, TaskOutcome,
@@ -58,6 +61,9 @@ struct Args {
     #[arg(long, help = "Compio dispatcher worker thread count")]
     dispatcher_threads: Option<NonZeroUsize>,
 
+    #[arg(long, value_enum, default_value_t = DispatcherAffinityArg::Auto)]
+    dispatcher_affinity: DispatcherAffinityArg,
+
     #[arg(long, default_value_t = 1)]
     num_objects: usize,
 
@@ -87,6 +93,23 @@ struct Args {
 enum DurabilityMode {
     Relaxed,
     Strict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum DispatcherAffinityArg {
+    Auto,
+    Performance,
+    None,
+}
+
+impl From<DispatcherAffinityArg> for DispatcherAffinity {
+    fn from(value: DispatcherAffinityArg) -> Self {
+        match value {
+            DispatcherAffinityArg::Auto => Self::Auto,
+            DispatcherAffinityArg::Performance => Self::Performance,
+            DispatcherAffinityArg::None => Self::None,
+        }
+    }
 }
 
 impl From<DurabilityMode> for FjallDurabilityMode {
@@ -156,10 +179,8 @@ fn main() -> Result<(), String> {
     };
 
     let runner = Arc::new(runner.into_shared());
-    let mut dispatcher_builder = Dispatcher::builder();
-    if let Some(threads) = args.dispatcher_threads {
-        dispatcher_builder = dispatcher_builder.worker_threads(threads);
-    }
+    let (dispatcher_builder, placement) = configure_load_dispatcher(Dispatcher::builder(), &args);
+    print_dispatcher_placement(&placement);
     let dispatcher = dispatcher_builder
         .thread_names(|index| format!("mica-dispatcher-{index}"))
         .build()
@@ -220,6 +241,34 @@ fn open_runner(args: &Args) -> Result<SourceRunner, String> {
         instruction_budget: args.instruction_budget,
         ..TaskLimits::default()
     }))
+}
+
+fn configure_load_dispatcher(
+    builder: compio::dispatcher::DispatcherBuilder,
+    args: &Args,
+) -> (compio::dispatcher::DispatcherBuilder, DispatcherPlacement) {
+    configure_dispatcher(
+        builder,
+        DispatcherConfig {
+            workers: args.dispatcher_threads,
+            affinity: args.dispatcher_affinity.into(),
+        },
+    )
+}
+
+fn print_dispatcher_placement(placement: &DispatcherPlacement) {
+    let workers = placement
+        .worker_count
+        .map(|workers| workers.get().to_string())
+        .unwrap_or_else(|| "default".to_owned());
+    if let Some(core_ids) = &placement.pinned_core_ids {
+        eprintln!(
+            "dispatcher: workers={} affinity=performance cores={:?}",
+            workers, core_ids
+        );
+    } else {
+        eprintln!("dispatcher: workers={} affinity=none", workers);
+    }
 }
 
 fn load_test_filein(num_objects: usize) -> String {
