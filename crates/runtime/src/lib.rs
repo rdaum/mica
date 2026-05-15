@@ -474,6 +474,33 @@ impl SourceRunner {
         self.task_manager.close_endpoint(endpoint)
     }
 
+    pub fn assert_transient_named(
+        &mut self,
+        scope: Identity,
+        relation: Symbol,
+        values: Vec<Value>,
+    ) -> Result<bool, SourceTaskError> {
+        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
+        let tuple = Tuple::new(values);
+        self.task_manager
+            .assert_transient(scope, metadata, tuple)
+            .map_err(SourceTaskError::from)
+    }
+
+    pub fn retract_transient_named(
+        &mut self,
+        scope: Identity,
+        relation: Symbol,
+        values: Vec<Value>,
+    ) -> Result<bool, SourceTaskError> {
+        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
+        let tuple = Tuple::new(values);
+        ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
+        self.task_manager
+            .retract_transient(scope, metadata.id(), &tuple)
+            .map_err(SourceTaskError::from)
+    }
+
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
         self.task_manager.route_effect_targets(target)
     }
@@ -1082,6 +1109,33 @@ impl SharedSourceRunner {
 
     pub fn close_endpoint(&self, endpoint: Identity) -> usize {
         self.task_manager.close_endpoint(endpoint)
+    }
+
+    pub fn assert_transient_named(
+        &self,
+        scope: Identity,
+        relation: Symbol,
+        values: Vec<Value>,
+    ) -> Result<bool, SourceTaskError> {
+        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
+        let tuple = Tuple::new(values);
+        self.task_manager
+            .assert_transient(scope, metadata, tuple)
+            .map_err(SourceTaskError::from)
+    }
+
+    pub fn retract_transient_named(
+        &self,
+        scope: Identity,
+        relation: Symbol,
+        values: Vec<Value>,
+    ) -> Result<bool, SourceTaskError> {
+        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
+        let tuple = Tuple::new(values);
+        ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
+        self.task_manager
+            .retract_transient(scope, metadata.id(), &tuple)
+            .map_err(SourceTaskError::from)
     }
 
     pub fn drain_emissions(&self) -> Vec<Effect> {
@@ -2567,6 +2621,36 @@ fn relation_metadata_named(kernel: &RelationKernel, name: Symbol) -> Option<Rela
         .relation_metadata()
         .find(|metadata| metadata.name() == name)
         .cloned()
+}
+
+fn relation_metadata_required(
+    kernel: &RelationKernel,
+    name: Symbol,
+) -> Result<RelationMetadata, SourceTaskError> {
+    relation_metadata_named(kernel, name).ok_or_else(|| {
+        unsupported_runner_error(
+            NodeId(0),
+            None,
+            format!("unknown relation {}", name.name().unwrap_or("<unnamed>")),
+        )
+    })
+}
+
+fn ensure_tuple_arity(
+    relation: Identity,
+    expected: u16,
+    actual: usize,
+) -> Result<(), SourceTaskError> {
+    if actual == expected as usize {
+        return Ok(());
+    }
+    Err(SourceTaskError::from(TaskManagerError::from(
+        TaskError::from(KernelError::ArityMismatch {
+            relation,
+            expected,
+            actual,
+        }),
+    )))
 }
 
 fn authority_for_actor(

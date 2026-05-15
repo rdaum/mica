@@ -1095,6 +1095,7 @@ dependencies = [
  "mica-runtime",
  "mica-telnet-host",
  "mica-var",
+ "mica-web-host",
  "zmq",
 ]
 
@@ -1219,6 +1220,9 @@ dependencies = [
  "clap",
  "compio",
  "httparse",
+ "mica-driver",
+ "mica-runtime",
+ "mica-var",
 ]
 
 [[package]]

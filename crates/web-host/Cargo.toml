@@ -10,6 +10,9 @@ description = "HTTP host transport for Mica"
 clap.workspace = true
 compio.workspace = true
 httparse.workspace = true
+mica-driver.workspace = true
+mica-runtime.workspace = true
+mica-var.workspace = true
 
 [[bin]]
 name = "mica-web-host"

@@ -239,6 +239,30 @@ impl CompioTaskDriver {
         self.inner.runner.close_endpoint(endpoint)
     }
 
+    pub fn assert_transient_named(
+        &self,
+        scope: Identity,
+        relation: Symbol,
+        values: Vec<Value>,
+    ) -> Result<bool, DriverError> {
+        self.inner
+            .runner
+            .assert_transient_named(scope, relation, values)
+            .map_err(DriverError::Source)
+    }
+
+    pub fn retract_transient_named(
+        &self,
+        scope: Identity,
+        relation: Symbol,
+        values: Vec<Value>,
+    ) -> Result<bool, DriverError> {
+        self.inner
+            .runner
+            .retract_transient_named(scope, relation, values)
+            .map_err(DriverError::Source)
+    }
+
     pub fn drain_events(&self) -> Vec<DriverEvent> {
         let mut state = self.inner.state.lock().unwrap();
         state.drain_effects_into_events(&self.inner.runner);

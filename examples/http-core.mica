@@ -1,0 +1,38 @@
+// Minimal HTTP surface for the in-process web host.
+//
+// Rust owns HTTP parsing and response encoding. Mica receives each request as a
+// transient identity with facts describing the request, then returns a response
+// value. Emissions are intentionally not used for ordinary request/response
+// HTTP; they are for later streaming endpoints such as SSE or WebSocket.
+
+make_relation(:HttpRequest, 1)
+make_relation(:RequestMethod, 2)
+make_relation(:RequestPath, 2)
+make_relation(:RequestVersion, 2)
+make_relation(:RequestHeader, 3)
+make_relation(:RequestBody, 2)
+
+verb http_response(status, content_type, body)
+  return {:status -> status, :headers -> [["content-type", content_type]], :body -> body}
+end
+
+verb http_text(status, body)
+  return http_response(status, "text/plain; charset=utf-8", body)
+end
+
+verb http_html(status, body)
+  return http_response(status, "text/html; charset=utf-8", body)
+end
+
+verb http_request(request)
+  let http_method = one RequestMethod(request, ?m)
+  let path = one RequestPath(request, ?path)
+
+  if http_method == "GET" && path == "/"
+    return http_html(200, "<!doctype html><title>Mica</title><h1>Mica</h1><p>Hello from Mica.</p>")
+  elseif http_method == "GET" && path == "/hello"
+    return http_text(200, "hello from mica")
+  else
+    return http_text(404, "not found")
+  end
+end

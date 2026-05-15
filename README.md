@@ -331,6 +331,8 @@ Mica's implementation is still early. The current tree has:
 - a compio-driven task driver for timed wakeups, input resumes, and emissions;
 - a telnet host that maps one endpoint identity to each connection and can run
   in process or over the host RPC/IPC protocol;
+- a minimal compio HTTP/1.1 host that can route request/response traffic into
+  Mica verbs;
 - a host protocol console for exercising daemon RPC over ZeroMQ;
 - a browser-oriented WASM package that links the compiler, VM, and projected
   relation store without durable providers;
@@ -356,6 +358,13 @@ Run the telnet MUD demo:
 
 ```sh
 cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
+```
+
+Run the HTTP demo:
+
+```sh
+cargo run --bin mica-daemon -- --web-bind 127.0.0.1:8080
+curl -i http://127.0.0.1:8080/hello
 ```
 
 Start the REPL:
