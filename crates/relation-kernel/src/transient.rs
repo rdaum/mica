@@ -13,7 +13,10 @@
 
 use crate::index::RelationState;
 use crate::snapshot::active_rules;
-use crate::{KernelError, RelationId, RelationMetadata, RelationRead, RuleSet, Transaction, Tuple};
+use crate::{
+    KernelError, RelationId, RelationMetadata, RelationRead, RuleSet, ScanControl, Transaction,
+    Tuple,
+};
 use mica_var::{Identity, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -196,6 +199,23 @@ impl<R: RelationRead> RelationRead for ComposedRelationRead<'_, R> {
     ) -> Result<Vec<Tuple>, KernelError> {
         scan_composed_relation(self.base, self.transient, self.scopes, relation, bindings)
     }
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        if !self.transient.relation_visible(self.scopes, relation) {
+            return self.base.visit_relation(relation, bindings, visitor);
+        }
+        for tuple in self.scan_relation(relation, bindings)? {
+            if visitor(&tuple)? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct ComposedTransactionRead<'a, 'kernel> {
@@ -251,6 +271,23 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
         }
 
         Ok(visible.into_iter().collect())
+    }
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        if !self.transient.relation_visible(self.scopes, relation) {
+            return self.tx.visit_relation(relation, bindings, visitor);
+        }
+        for tuple in self.scan_relation(relation, bindings)? {
+            if visitor(&tuple)? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
     }
 }
 

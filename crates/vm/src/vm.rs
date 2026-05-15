@@ -18,8 +18,9 @@ use crate::{
     RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{
-    ComposedTransactionRead, RelationRead, RelationWorkspace, Transaction, TransientStore, Tuple,
-    applicable_method_entries, applicable_positional_methods, named_method_args,
+    ComposedTransactionRead, RelationRead, RelationWorkspace, ScanControl, Transaction,
+    TransientStore, Tuple, applicable_method_entries, applicable_positional_methods,
+    named_method_args,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
@@ -224,6 +225,28 @@ impl RelationRead for VmHostContext<'_, '_> {
             None => self.tx.scan_relation(relation, bindings),
         }
     }
+
+    fn visit_relation(
+        &self,
+        relation: mica_relation_kernel::RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, mica_relation_kernel::KernelError>,
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        match &self.transient {
+            Some(TransientAccess::Exclusive(transient)) => {
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
+                reader.visit_relation(relation, bindings, visitor)
+            }
+            Some(TransientAccess::Shared(transient)) => {
+                let transient = transient.read().unwrap();
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
+                reader.visit_relation(relation, bindings, visitor)
+            }
+            None => self.tx.visit_relation(relation, bindings, visitor),
+        }
+    }
 }
 
 impl RelationWorkspace for VmHostContext<'_, '_> {
@@ -362,6 +385,15 @@ impl<W: RelationWorkspace> RelationRead for ProjectedVmHostContext<'_, W> {
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, mica_relation_kernel::KernelError> {
         self.workspace.scan_relation(relation, bindings)
+    }
+
+    fn visit_relation(
+        &self,
+        relation: mica_relation_kernel::RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, mica_relation_kernel::KernelError>,
+    ) -> Result<(), mica_relation_kernel::KernelError> {
+        self.workspace.visit_relation(relation, bindings, visitor)
     }
 }
 
@@ -852,14 +884,18 @@ impl RegisterVm {
                         return Err(RuntimeError::AmbiguousDispatch { selector, methods });
                     }
                 };
-                let program_rows =
-                    host.scan_relation(program_relation, &[Some(method.clone()), None])?;
-                let program_id = program_rows
-                    .first()
-                    .map(|row| row.values()[1].clone())
-                    .ok_or_else(|| RuntimeError::MissingMethodProgram {
-                        method: method.clone(),
-                    })?;
+                let mut program_id = None;
+                host.visit_relation(
+                    program_relation,
+                    &[Some(method.clone()), None],
+                    &mut |row| {
+                        program_id = Some(row.values()[1].clone());
+                        Ok(ScanControl::Stop)
+                    },
+                )?;
+                let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
+                    method: method.clone(),
+                })?;
                 let program = host.resolve_program(program_bytes, &program_id)?;
                 let args = named_method_args(params, &roles).ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
@@ -900,14 +936,18 @@ impl RegisterVm {
                         return Err(RuntimeError::AmbiguousDispatch { selector, methods });
                     }
                 };
-                let program_rows =
-                    host.scan_relation(program_relation, &[Some(method.clone()), None])?;
-                let program_id = program_rows
-                    .first()
-                    .map(|row| row.values()[1].clone())
-                    .ok_or_else(|| RuntimeError::MissingMethodProgram {
-                        method: method.clone(),
-                    })?;
+                let mut program_id = None;
+                host.visit_relation(
+                    program_relation,
+                    &[Some(method.clone()), None],
+                    &mut |row| {
+                        program_id = Some(row.values()[1].clone());
+                        Ok(ScanControl::Stop)
+                    },
+                )?;
+                let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
+                    method: method.clone(),
+                })?;
                 let program = host.resolve_program(program_bytes, &program_id)?;
                 self.advance_ip()?;
                 self.state

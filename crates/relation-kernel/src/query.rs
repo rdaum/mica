@@ -16,12 +16,32 @@ use crate::{KernelError, RelationId, Transaction, Tuple};
 use mica_var::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScanControl {
+    Continue,
+    Stop,
+}
+
 pub trait RelationRead {
     fn scan_relation(
         &self,
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError>;
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        for tuple in self.scan_relation(relation, bindings)? {
+            if visitor(&tuple)? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl RelationRead for crate::Snapshot {
@@ -32,6 +52,15 @@ impl RelationRead for crate::Snapshot {
     ) -> Result<Vec<Tuple>, KernelError> {
         self.scan(relation, bindings)
     }
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        self.visit(relation, bindings, visitor)
+    }
 }
 
 impl RelationRead for Transaction<'_> {
@@ -41,6 +70,15 @@ impl RelationRead for Transaction<'_> {
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
         self.scan(relation, bindings)
+    }
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        self.visit(relation, bindings, visitor)
     }
 }
 

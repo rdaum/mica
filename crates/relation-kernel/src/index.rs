@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::ScanControl;
 use crate::error::KernelError;
 use crate::metadata::RelationMetadata;
 use crate::tuple::{Tuple, TupleKey};
@@ -68,6 +69,41 @@ impl RelationState {
             .into_iter()
             .filter(|tuple| tuple.matches_bindings(bindings))
             .collect())
+    }
+
+    pub(crate) fn visit(
+        &self,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        if bindings.len() != self.metadata.arity() as usize {
+            return Err(KernelError::ArityMismatch {
+                relation: self.metadata.id(),
+                expected: self.metadata.arity(),
+                actual: bindings.len(),
+            });
+        }
+
+        let Some((index, bound_count)) = self.best_index(bindings) else {
+            for tuple in self
+                .tuples
+                .iter()
+                .filter(|tuple| tuple.matches_bindings(bindings))
+            {
+                if visitor(tuple)? == ScanControl::Stop {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        };
+
+        index.visit_prefix(bindings, bound_count, &mut |tuple| {
+            if tuple.matches_bindings(bindings) {
+                visitor(tuple)
+            } else {
+                Ok(ScanControl::Continue)
+            }
+        })
     }
 
     pub(crate) fn insert(&mut self, tuple: Tuple) {
@@ -149,6 +185,45 @@ impl TupleIndex {
             .filter(|(key, _)| key.0.len() >= bound_count && key.0[..bound_count] == prefix.0)
             .flat_map(|(_, tuples)| tuples.iter().cloned())
             .collect()
+    }
+
+    fn visit_prefix(
+        &self,
+        bindings: &[Option<Value>],
+        bound_count: usize,
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        for (key, tuples) in &self.entries {
+            if !self.key_matches_prefix(key, bindings, bound_count) {
+                continue;
+            }
+            for tuple in tuples {
+                if visitor(tuple)? == ScanControl::Stop {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn key_matches_prefix(
+        &self,
+        key: &TupleKey,
+        bindings: &[Option<Value>],
+        bound_count: usize,
+    ) -> bool {
+        key.0.len() >= bound_count
+            && self
+                .spec
+                .positions
+                .iter()
+                .take(bound_count)
+                .enumerate()
+                .all(|(index, position)| {
+                    bindings[*position as usize]
+                        .as_ref()
+                        .is_some_and(|value| &key.0[index] == value)
+                })
     }
 }
 

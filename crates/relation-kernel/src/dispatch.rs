@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{KernelError, QueryPlan, RelationId, RelationRead, delegates_reaches};
+use crate::{KernelError, RelationId, RelationRead, ScanControl, delegates_reaches};
 use mica_var::{Value, primitive_prototype_for_value};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,18 +48,28 @@ pub fn applicable_method_entries(
     selector: Value,
     roles: &[(Value, Value)],
 ) -> Result<Vec<ApplicableMethod>, KernelError> {
-    let selector_rows =
-        QueryPlan::scan(relations.method_selector, [None, Some(selector)]).execute(reader)?;
     let mut methods = Vec::new();
 
-    for row in selector_rows {
-        let method = row.values()[0].clone();
-        let params = QueryPlan::scan(relations.param, [Some(method.clone()), None, None, None])
-            .execute(reader)?;
-        if params_match(reader, relations.delegates, roles, &params)? {
-            methods.push(ApplicableMethod { method, params });
-        }
-    }
+    reader.visit_relation(
+        relations.method_selector,
+        &[None, Some(selector)],
+        &mut |row| {
+            let method = row.values()[0].clone();
+            let mut params = Vec::new();
+            reader.visit_relation(
+                relations.param,
+                &[Some(method.clone()), None, None, None],
+                &mut |param| {
+                    params.push(param.clone());
+                    Ok(ScanControl::Continue)
+                },
+            )?;
+            if params_match(reader, relations.delegates, roles, &params)? {
+                methods.push(ApplicableMethod { method, params });
+            }
+            Ok(ScanControl::Continue)
+        },
+    )?;
 
     methods.sort_by(|left, right| left.method.cmp(&right.method));
     methods.dedup_by(|left, right| left.method == right.method);
@@ -72,18 +82,28 @@ pub fn applicable_positional_methods(
     selector: Value,
     args: &[Value],
 ) -> Result<Vec<Value>, KernelError> {
-    let selector_rows =
-        QueryPlan::scan(relations.method_selector, [None, Some(selector)]).execute(reader)?;
     let mut methods = Vec::new();
 
-    for row in selector_rows {
-        let method = row.values()[0].clone();
-        let params = QueryPlan::scan(relations.param, [Some(method.clone()), None, None, None])
-            .execute(reader)?;
-        if positional_params_match(reader, relations.delegates, args, &params)? {
-            methods.push(method);
-        }
-    }
+    reader.visit_relation(
+        relations.method_selector,
+        &[None, Some(selector)],
+        &mut |row| {
+            let method = row.values()[0].clone();
+            let mut params = Vec::new();
+            reader.visit_relation(
+                relations.param,
+                &[Some(method.clone()), None, None, None],
+                &mut |param| {
+                    params.push(param.clone());
+                    Ok(ScanControl::Continue)
+                },
+            )?;
+            if positional_params_match(reader, relations.delegates, args, &params)? {
+                methods.push(method);
+            }
+            Ok(ScanControl::Continue)
+        },
+    )?;
 
     methods.sort();
     methods.dedup();

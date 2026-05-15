@@ -14,8 +14,8 @@
 use crate::commit_bloom::CommitBloom;
 use crate::index::RelationState;
 use crate::{
-    KernelError, RelationId, RelationMetadata, RuleDefinition, RuleEvalError, RuleSet, Tuple,
-    Version,
+    KernelError, RelationId, RelationMetadata, RuleDefinition, RuleEvalError, RuleSet, ScanControl,
+    Tuple, Version,
 };
 use mica_var::{Identity, Value};
 use std::collections::BTreeMap;
@@ -122,6 +122,24 @@ impl Snapshot {
         Ok(visible)
     }
 
+    pub fn visit(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        if self.rules.is_empty() {
+            return self.visit_extensional(relation, bindings, visitor);
+        }
+
+        for tuple in self.scan(relation, bindings)? {
+            if visitor(&tuple)? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub fn contains(&self, relation: RelationId, tuple: &Tuple) -> Result<bool, KernelError> {
         let bindings = tuple.values().iter().cloned().map(Some).collect::<Vec<_>>();
         Ok(!self.scan(relation, &bindings)?.is_empty())
@@ -165,6 +183,15 @@ impl Snapshot {
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
         self.relation(relation)?.scan(bindings)
+    }
+
+    pub(crate) fn visit_extensional(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        self.relation(relation)?.visit(bindings, visitor)
     }
 
     pub(crate) fn relation(&self, relation: RelationId) -> Result<&RelationState, KernelError> {

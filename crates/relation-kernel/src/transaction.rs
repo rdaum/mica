@@ -16,7 +16,7 @@ use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{active_rules, empty_derived_cache};
 use crate::{
     Conflict, ConflictKind, ConflictPolicy, KernelError, RelationId, RelationKernel,
-    RelationWorkspace, RuleSet, Snapshot, Tuple, Version,
+    RelationWorkspace, RuleSet, ScanControl, Snapshot, Tuple, Version,
 };
 use mica_var::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -108,6 +108,24 @@ impl<'a> Transaction<'a> {
         }
 
         Ok(visible.into_iter().collect())
+    }
+
+    pub fn visit(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        if self.base.rules().is_empty() && !self.writes.contains_key(&relation) {
+            return self.base.visit_extensional(relation, bindings, visitor);
+        }
+
+        for tuple in self.scan(relation, bindings)? {
+            if visitor(&tuple)? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn scan_extensional(

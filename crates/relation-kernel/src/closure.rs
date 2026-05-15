@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{KernelError, QueryPlan, RelationId, RelationRead, Transaction, Tuple};
+use crate::{KernelError, QueryPlan, RelationId, RelationRead, ScanControl, Transaction, Tuple};
 use mica_var::Value;
 use std::collections::BTreeSet;
 
@@ -64,22 +64,30 @@ pub fn delegates_reaches(
 ) -> Result<bool, KernelError> {
     let mut seen = BTreeSet::new();
     let mut frontier = vec![child.clone()];
+    let mut found = false;
 
-    while let Some(current) = frontier.pop() {
-        for edge in
-            QueryPlan::scan(delegates_relation, [Some(current), None, None]).execute(reader)?
-        {
-            let proto = edge.values()[1].clone();
-            if &proto == ancestor {
-                return Ok(true);
-            }
-            if seen.insert(proto.clone()) {
-                frontier.push(proto);
-            }
-        }
+    while !found {
+        let Some(current) = frontier.pop() else {
+            break;
+        };
+        reader.visit_relation(
+            delegates_relation,
+            &[Some(current), None, None],
+            &mut |edge| {
+                let proto = edge.values()[1].clone();
+                if &proto == ancestor {
+                    found = true;
+                    return Ok(ScanControl::Stop);
+                }
+                if seen.insert(proto.clone()) {
+                    frontier.push(proto);
+                }
+                Ok(ScanControl::Continue)
+            },
+        )?;
     }
 
-    Ok(false)
+    Ok(found)
 }
 
 pub fn materialize_delegates_star(
