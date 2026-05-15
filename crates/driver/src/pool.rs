@@ -133,6 +133,25 @@ impl CompioTaskDriver {
             .report_outcome(submitted.task_id, submitted.outcome))
     }
 
+    pub fn submit_source_as_actor(
+        &self,
+        endpoint: Identity,
+        actor: Identity,
+        source: String,
+    ) -> Result<SubmittedTask, DriverError> {
+        let mut request = self
+            .inner
+            .runner
+            .source_request_as_identity(actor, source)
+            .map_err(DriverError::Source)?;
+        request.endpoint = endpoint;
+        let context = TaskContext::from_request(&request, endpoint);
+        let runner = Arc::clone(&self.inner.runner);
+        let submitted = self.dispatch(move || async move { runner.submit_source(request) })?;
+        self.handle_submitted(context, submitted.clone())?;
+        Ok(submitted)
+    }
+
     pub fn submit_invocation(
         &self,
         endpoint: Identity,

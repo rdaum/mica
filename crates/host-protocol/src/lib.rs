@@ -14,8 +14,8 @@
 //! Language-neutral host protocol framing for Mica.
 
 use mica_var::{
-    Identity, Value, ValueCodecError, ValueSegment, ValueSegments, decode_value, encode_value,
-    encode_value_segments,
+    Identity, Symbol, Value, ValueCodecError, ValueSegment, ValueSegments, decode_value,
+    encode_value, encode_value_segments,
 };
 use std::fmt;
 use std::io::IoSlice;
@@ -29,6 +29,8 @@ pub const DEFAULT_MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 pub enum MessageType {
     Hello = 0x0001,
     HelloAck = 0x0002,
+    RequestAccepted = 0x0003,
+    RequestRejected = 0x0004,
     OpenEndpoint = 0x0100,
     CloseEndpoint = 0x0101,
     SubmitSource = 0x0200,
@@ -36,6 +38,7 @@ pub enum MessageType {
     OutputReady = 0x0300,
     DrainOutput = 0x0301,
     OutputBatch = 0x0302,
+    EndpointClosed = 0x0303,
     TaskCompleted = 0x0400,
     TaskFailed = 0x0401,
 }
@@ -49,6 +52,8 @@ impl MessageType {
         match raw {
             0x0001 => Some(Self::Hello),
             0x0002 => Some(Self::HelloAck),
+            0x0003 => Some(Self::RequestAccepted),
+            0x0004 => Some(Self::RequestRejected),
             0x0100 => Some(Self::OpenEndpoint),
             0x0101 => Some(Self::CloseEndpoint),
             0x0200 => Some(Self::SubmitSource),
@@ -56,6 +61,7 @@ impl MessageType {
             0x0300 => Some(Self::OutputReady),
             0x0301 => Some(Self::DrainOutput),
             0x0302 => Some(Self::OutputBatch),
+            0x0303 => Some(Self::EndpointClosed),
             0x0400 => Some(Self::TaskCompleted),
             0x0401 => Some(Self::TaskFailed),
             _ => None,
@@ -75,19 +81,33 @@ pub enum HostMessage {
         protocol_version: u16,
         feature_bits: u64,
     },
+    RequestAccepted {
+        request_id: u64,
+        task_id: Option<u64>,
+    },
+    RequestRejected {
+        request_id: u64,
+        code: Symbol,
+        message: String,
+    },
     OpenEndpoint {
+        request_id: u64,
         endpoint: Identity,
         protocol: String,
+        grant_token: Option<String>,
     },
     CloseEndpoint {
+        request_id: u64,
         endpoint: Identity,
     },
     SubmitSource {
+        request_id: u64,
         endpoint: Identity,
         actor: Identity,
         source: String,
     },
     SubmitInput {
+        request_id: u64,
         endpoint: Identity,
         value: Value,
     },
@@ -96,12 +116,17 @@ pub enum HostMessage {
         buffered: u32,
     },
     DrainOutput {
+        request_id: u64,
         endpoint: Identity,
         limit: u32,
     },
     OutputBatch {
         endpoint: Identity,
         values: Vec<Value>,
+    },
+    EndpointClosed {
+        endpoint: Identity,
+        reason: String,
     },
     TaskCompleted {
         task_id: u64,
@@ -118,6 +143,8 @@ impl HostMessage {
         match self {
             Self::Hello { .. } => MessageType::Hello,
             Self::HelloAck { .. } => MessageType::HelloAck,
+            Self::RequestAccepted { .. } => MessageType::RequestAccepted,
+            Self::RequestRejected { .. } => MessageType::RequestRejected,
             Self::OpenEndpoint { .. } => MessageType::OpenEndpoint,
             Self::CloseEndpoint { .. } => MessageType::CloseEndpoint,
             Self::SubmitSource { .. } => MessageType::SubmitSource,
@@ -125,6 +152,7 @@ impl HostMessage {
             Self::OutputReady { .. } => MessageType::OutputReady,
             Self::DrainOutput { .. } => MessageType::DrainOutput,
             Self::OutputBatch { .. } => MessageType::OutputBatch,
+            Self::EndpointClosed { .. } => MessageType::EndpointClosed,
             Self::TaskCompleted { .. } => MessageType::TaskCompleted,
             Self::TaskFailed { .. } => MessageType::TaskFailed,
         }
@@ -149,6 +177,8 @@ pub enum HostProtocolError {
     UnsupportedFlags(u16),
     InvalidUtf8(String),
     InvalidIdentity(u64),
+    InvalidOptionTag(u8),
+    SymbolNameUnavailable(u32),
     UnknownMessageType(u16),
     Value(ValueCodecError),
     OffsetOverflow,
@@ -184,6 +214,10 @@ impl fmt::Display for HostProtocolError {
             }
             Self::InvalidUtf8(error) => write!(f, "invalid utf-8: {error}"),
             Self::InvalidIdentity(raw) => write!(f, "identity {raw} is out of range"),
+            Self::InvalidOptionTag(tag) => write!(f, "invalid option tag {tag}"),
+            Self::SymbolNameUnavailable(symbol_id) => {
+                write!(f, "symbol id {symbol_id} has no name")
+            }
             Self::UnknownMessageType(message_type) => {
                 write!(f, "unknown host message type 0x{message_type:04x}")
             }
@@ -538,23 +572,57 @@ fn encode_payload(message: &HostMessage, out: &mut Vec<u8>) -> Result<(), HostPr
             write_u16(out, *protocol_version);
             write_u64(out, *feature_bits);
         }
-        HostMessage::OpenEndpoint { endpoint, protocol } => {
+        HostMessage::RequestAccepted {
+            request_id,
+            task_id,
+        } => {
+            write_u64(out, *request_id);
+            write_optional_u64(out, *task_id);
+        }
+        HostMessage::RequestRejected {
+            request_id,
+            code,
+            message,
+        } => {
+            write_u64(out, *request_id);
+            write_symbol_name(out, *code)?;
+            write_string(out, message)?;
+        }
+        HostMessage::OpenEndpoint {
+            request_id,
+            endpoint,
+            protocol,
+            grant_token,
+        } => {
+            write_u64(out, *request_id);
             write_identity(out, *endpoint);
             write_string(out, protocol)?;
+            write_optional_string(out, grant_token.as_deref())?;
         }
-        HostMessage::CloseEndpoint { endpoint } => {
+        HostMessage::CloseEndpoint {
+            request_id,
+            endpoint,
+        } => {
+            write_u64(out, *request_id);
             write_identity(out, *endpoint);
         }
         HostMessage::SubmitSource {
+            request_id,
             endpoint,
             actor,
             source,
         } => {
+            write_u64(out, *request_id);
             write_identity(out, *endpoint);
             write_identity(out, *actor);
             write_string(out, source)?;
         }
-        HostMessage::SubmitInput { endpoint, value } => {
+        HostMessage::SubmitInput {
+            request_id,
+            endpoint,
+            value,
+        } => {
+            write_u64(out, *request_id);
             write_identity(out, *endpoint);
             encode_value(value, out)?;
         }
@@ -562,7 +630,12 @@ fn encode_payload(message: &HostMessage, out: &mut Vec<u8>) -> Result<(), HostPr
             write_identity(out, *endpoint);
             write_u32(out, *buffered);
         }
-        HostMessage::DrainOutput { endpoint, limit } => {
+        HostMessage::DrainOutput {
+            request_id,
+            endpoint,
+            limit,
+        } => {
+            write_u64(out, *request_id);
             write_identity(out, *endpoint);
             write_u32(out, *limit);
         }
@@ -572,6 +645,10 @@ fn encode_payload(message: &HostMessage, out: &mut Vec<u8>) -> Result<(), HostPr
             for value in values {
                 encode_value(value, out)?;
             }
+        }
+        HostMessage::EndpointClosed { endpoint, reason } => {
+            write_identity(out, *endpoint);
+            write_string(out, reason)?;
         }
         HostMessage::TaskCompleted { task_id, value } => {
             write_u64(out, *task_id);
@@ -608,23 +685,57 @@ fn encode_payload_segments<'a>(
             push_u16(out, *protocol_version);
             push_u64(out, *feature_bits);
         }
-        HostMessage::OpenEndpoint { endpoint, protocol } => {
+        HostMessage::RequestAccepted {
+            request_id,
+            task_id,
+        } => {
+            push_u64(out, *request_id);
+            push_optional_u64(out, *task_id);
+        }
+        HostMessage::RequestRejected {
+            request_id,
+            code,
+            message,
+        } => {
+            push_u64(out, *request_id);
+            push_symbol_name(out, *code)?;
+            push_string(out, message)?;
+        }
+        HostMessage::OpenEndpoint {
+            request_id,
+            endpoint,
+            protocol,
+            grant_token,
+        } => {
+            push_u64(out, *request_id);
             push_identity(out, *endpoint);
             push_string(out, protocol)?;
+            push_optional_string(out, grant_token.as_deref())?;
         }
-        HostMessage::CloseEndpoint { endpoint } => {
+        HostMessage::CloseEndpoint {
+            request_id,
+            endpoint,
+        } => {
+            push_u64(out, *request_id);
             push_identity(out, *endpoint);
         }
         HostMessage::SubmitSource {
+            request_id,
             endpoint,
             actor,
             source,
         } => {
+            push_u64(out, *request_id);
             push_identity(out, *endpoint);
             push_identity(out, *actor);
             push_string(out, source)?;
         }
-        HostMessage::SubmitInput { endpoint, value } => {
+        HostMessage::SubmitInput {
+            request_id,
+            endpoint,
+            value,
+        } => {
+            push_u64(out, *request_id);
             push_identity(out, *endpoint);
             out.push_value(value)?;
         }
@@ -632,7 +743,12 @@ fn encode_payload_segments<'a>(
             push_identity(out, *endpoint);
             push_u32(out, *buffered);
         }
-        HostMessage::DrainOutput { endpoint, limit } => {
+        HostMessage::DrainOutput {
+            request_id,
+            endpoint,
+            limit,
+        } => {
+            push_u64(out, *request_id);
             push_identity(out, *endpoint);
             push_u32(out, *limit);
         }
@@ -642,6 +758,10 @@ fn encode_payload_segments<'a>(
             for value in values {
                 out.push_value(value)?;
             }
+        }
+        HostMessage::EndpointClosed { endpoint, reason } => {
+            push_identity(out, *endpoint);
+            push_string(out, reason)?;
         }
         HostMessage::TaskCompleted { task_id, value } => {
             push_u64(out, *task_id);
@@ -668,10 +788,50 @@ fn push_string<'a>(
     Ok(())
 }
 
+fn push_symbol_name(
+    out: &mut EncodedFrameSegments<'_>,
+    value: Symbol,
+) -> Result<(), HostProtocolError> {
+    let Some(name) = value.name() else {
+        return Err(HostProtocolError::SymbolNameUnavailable(value.id()));
+    };
+    push_len(out, name.len())?;
+    out.push_borrowed(name.as_bytes());
+    Ok(())
+}
+
+fn push_optional_string<'a>(
+    out: &mut EncodedFrameSegments<'a>,
+    value: Option<&'a str>,
+) -> Result<(), HostProtocolError> {
+    match value {
+        Some(value) => {
+            push_u8(out, 1);
+            push_string(out, value)?;
+        }
+        None => push_u8(out, 0),
+    }
+    Ok(())
+}
+
+fn push_optional_u64(out: &mut EncodedFrameSegments<'_>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            push_u8(out, 1);
+            push_u64(out, value);
+        }
+        None => push_u8(out, 0),
+    }
+}
+
 fn push_len(out: &mut EncodedFrameSegments<'_>, len: usize) -> Result<(), HostProtocolError> {
     let len = u32::try_from(len).map_err(|_| HostProtocolError::FrameTooLarge(len))?;
     push_u32(out, len);
     Ok(())
+}
+
+fn push_u8(out: &mut EncodedFrameSegments<'_>, value: u8) {
+    out.push_scratch(&[value]);
 }
 
 fn push_u16(out: &mut EncodedFrameSegments<'_>, value: u16) {
@@ -696,10 +856,42 @@ fn write_string(out: &mut Vec<u8>, value: &str) -> Result<(), HostProtocolError>
     Ok(())
 }
 
+fn write_symbol_name(out: &mut Vec<u8>, value: Symbol) -> Result<(), HostProtocolError> {
+    let Some(name) = value.name() else {
+        return Err(HostProtocolError::SymbolNameUnavailable(value.id()));
+    };
+    write_string(out, name)
+}
+
+fn write_optional_string(out: &mut Vec<u8>, value: Option<&str>) -> Result<(), HostProtocolError> {
+    match value {
+        Some(value) => {
+            write_u8(out, 1);
+            write_string(out, value)?;
+        }
+        None => write_u8(out, 0),
+    }
+    Ok(())
+}
+
+fn write_optional_u64(out: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            write_u8(out, 1);
+            write_u64(out, value);
+        }
+        None => write_u8(out, 0),
+    }
+}
+
 fn write_len(out: &mut Vec<u8>, len: usize) -> Result<(), HostProtocolError> {
     let len = u32::try_from(len).map_err(|_| HostProtocolError::FrameTooLarge(len))?;
     write_u32(out, len);
     Ok(())
+}
+
+fn write_u8(out: &mut Vec<u8>, value: u8) {
+    out.push(value);
 }
 
 fn write_u16(out: &mut Vec<u8>, value: u16) {
@@ -827,19 +1019,33 @@ impl<'a> Reader<'a> {
                 protocol_version: self.read_u16()?,
                 feature_bits: self.read_u64()?,
             },
+            MessageType::RequestAccepted => HostMessage::RequestAccepted {
+                request_id: self.read_u64()?,
+                task_id: self.read_optional_u64()?,
+            },
+            MessageType::RequestRejected => HostMessage::RequestRejected {
+                request_id: self.read_u64()?,
+                code: self.read_symbol_name()?,
+                message: self.read_string()?,
+            },
             MessageType::OpenEndpoint => HostMessage::OpenEndpoint {
+                request_id: self.read_u64()?,
                 endpoint: self.read_identity()?,
                 protocol: self.read_string()?,
+                grant_token: self.read_optional_string()?,
             },
             MessageType::CloseEndpoint => HostMessage::CloseEndpoint {
+                request_id: self.read_u64()?,
                 endpoint: self.read_identity()?,
             },
             MessageType::SubmitSource => HostMessage::SubmitSource {
+                request_id: self.read_u64()?,
                 endpoint: self.read_identity()?,
                 actor: self.read_identity()?,
                 source: self.read_string()?,
             },
             MessageType::SubmitInput => HostMessage::SubmitInput {
+                request_id: self.read_u64()?,
                 endpoint: self.read_identity()?,
                 value: self.read_value()?,
             },
@@ -848,6 +1054,7 @@ impl<'a> Reader<'a> {
                 buffered: self.read_u32()?,
             },
             MessageType::DrainOutput => HostMessage::DrainOutput {
+                request_id: self.read_u64()?,
                 endpoint: self.read_identity()?,
                 limit: self.read_u32()?,
             },
@@ -860,6 +1067,10 @@ impl<'a> Reader<'a> {
                 }
                 HostMessage::OutputBatch { endpoint, values }
             }
+            MessageType::EndpointClosed => HostMessage::EndpointClosed {
+                endpoint: self.read_identity()?,
+                reason: self.read_string()?,
+            },
             MessageType::TaskCompleted => HostMessage::TaskCompleted {
                 task_id: self.read_u64()?,
                 value: self.read_value()?,
@@ -894,6 +1105,31 @@ impl<'a> Reader<'a> {
         let len = self.read_u32()? as usize;
         String::from_utf8(self.read_exact(len)?.to_vec())
             .map_err(|error| HostProtocolError::InvalidUtf8(error.to_string()))
+    }
+
+    fn read_symbol_name(&mut self) -> Result<Symbol, HostProtocolError> {
+        self.read_string().map(|name| Symbol::intern(&name))
+    }
+
+    fn read_optional_string(&mut self) -> Result<Option<String>, HostProtocolError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_string().map(Some),
+            tag => Err(HostProtocolError::InvalidOptionTag(tag)),
+        }
+    }
+
+    fn read_optional_u64(&mut self) -> Result<Option<u64>, HostProtocolError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_u64().map(Some),
+            tag => Err(HostProtocolError::InvalidOptionTag(tag)),
+        }
+    }
+
+    fn read_u8(&mut self) -> Result<u8, HostProtocolError> {
+        let bytes = self.read_exact(1)?;
+        Ok(bytes[0])
     }
 
     fn read_u16(&mut self) -> Result<u16, HostProtocolError> {
@@ -960,6 +1196,7 @@ mod tests {
     #[test]
     fn submit_input_frame_matches_golden_bytes() {
         let message = HostMessage::SubmitInput {
+            request_id: 9,
             endpoint: id(42),
             value: Value::int(7).unwrap(),
         };
@@ -967,8 +1204,8 @@ mod tests {
         assert_eq!(
             frame,
             vec![
-                b'M', b'H', b'P', b'1', 20, 0, 0, 0, 1, 2, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0,
-                0, 0, 0, 0, 2,
+                b'M', b'H', b'P', b'1', 28, 0, 0, 0, 1, 2, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0,
+                0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 2,
             ]
         );
         assert_eq!(decode_frame(&frame).unwrap(), message);
@@ -977,6 +1214,7 @@ mod tests {
     #[test]
     fn segmented_encoder_matches_contiguous_encoder_and_borrows_payloads() {
         let message = HostMessage::SubmitSource {
+            request_id: 1,
             endpoint: id(1),
             actor: id(2),
             source: "look north".to_owned(),
@@ -1002,6 +1240,7 @@ mod tests {
     #[test]
     fn segmented_encoder_uses_value_segments_for_heap_payloads() {
         let message = HostMessage::SubmitInput {
+            request_id: 1,
             endpoint: id(42),
             value: Value::bytes(b"payload"),
         };
@@ -1023,8 +1262,10 @@ mod tests {
     #[test]
     fn stream_decoder_waits_for_split_frames() {
         let message = HostMessage::OpenEndpoint {
+            request_id: 1,
             endpoint: id(1),
             protocol: "telnet".to_owned(),
+            grant_token: Some("grant".to_owned()),
         };
         let frame = encoded_frame(&message).unwrap();
         let mut decoder = FrameDecoder::default();
@@ -1042,8 +1283,12 @@ mod tests {
 
     #[test]
     fn stream_decoder_handles_multiple_frames_in_one_read() {
-        let first = HostMessage::CloseEndpoint { endpoint: id(1) };
+        let first = HostMessage::CloseEndpoint {
+            request_id: 1,
+            endpoint: id(1),
+        };
         let second = HostMessage::DrainOutput {
+            request_id: 2,
             endpoint: id(1),
             limit: 32,
         };
@@ -1069,7 +1314,10 @@ mod tests {
 
     #[test]
     fn stream_decoder_rejects_oversized_frames() {
-        let message = HostMessage::CloseEndpoint { endpoint: id(1) };
+        let message = HostMessage::CloseEndpoint {
+            request_id: 1,
+            endpoint: id(1),
+        };
         let frame = encoded_frame(&message).unwrap();
         let mut decoder = FrameDecoder::new(4);
         decoder.push_bytes(&frame);
@@ -1087,12 +1335,31 @@ mod tests {
                 protocol_version: 1,
                 feature_bits: 7,
             },
+            HostMessage::RequestAccepted {
+                request_id: 1,
+                task_id: Some(10),
+            },
+            HostMessage::RequestAccepted {
+                request_id: 2,
+                task_id: None,
+            },
+            HostMessage::RequestRejected {
+                request_id: 3,
+                code: Symbol::intern("E_DENIED"),
+                message: "no".to_owned(),
+            },
             HostMessage::OpenEndpoint {
+                request_id: 4,
                 endpoint: id(1),
                 protocol: "telnet".to_owned(),
+                grant_token: None,
             },
-            HostMessage::CloseEndpoint { endpoint: id(1) },
+            HostMessage::CloseEndpoint {
+                request_id: 5,
+                endpoint: id(1),
+            },
             HostMessage::SubmitSource {
+                request_id: 6,
                 endpoint: id(1),
                 actor: id(2),
                 source: "emit(#1, \"hi\")".to_owned(),
@@ -1102,6 +1369,7 @@ mod tests {
                 buffered: 3,
             },
             HostMessage::DrainOutput {
+                request_id: 7,
                 endpoint: id(1),
                 limit: 64,
             },
@@ -1111,6 +1379,10 @@ mod tests {
                     Value::string("hello"),
                     Value::symbol(Symbol::intern("ready")),
                 ],
+            },
+            HostMessage::EndpointClosed {
+                endpoint: id(1),
+                reason: "closed".to_owned(),
             },
             HostMessage::TaskCompleted {
                 task_id: 10,
@@ -1147,7 +1419,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic_and_bad_frame_length() {
-        let message = HostMessage::CloseEndpoint { endpoint: id(1) };
+        let message = HostMessage::CloseEndpoint {
+            request_id: 1,
+            endpoint: id(1),
+        };
         let mut frame = encoded_frame(&message).unwrap();
         frame[0] = b'X';
         assert_eq!(
@@ -1165,7 +1440,10 @@ mod tests {
 
     #[test]
     fn rejects_reserved_flags_and_trailing_frame_bytes() {
-        let message = HostMessage::CloseEndpoint { endpoint: id(1) };
+        let message = HostMessage::CloseEndpoint {
+            request_id: 1,
+            endpoint: id(1),
+        };
         let mut frame = encoded_frame(&message).unwrap();
         frame[10..12].copy_from_slice(&1u16.to_le_bytes());
         assert_eq!(

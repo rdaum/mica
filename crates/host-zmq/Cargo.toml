@@ -1,0 +1,12 @@
+[package]
+name = "mica-host-zmq"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "ZeroMQ carrier for Mica host protocol frames"
+
+[dependencies]
+compio.workspace = true
+mica-host-protocol.workspace = true
+zmq.workspace = true

@@ -10,8 +10,13 @@ description = "Minimal TCP endpoint transport for Mica"
 clap.workspace = true
 compio.workspace = true
 mica-driver.workspace = true
+mica-host-protocol.workspace = true
+mica-host-zmq.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true
+
+[dev-dependencies]
+zmq.workspace = true
 
 [[bin]]
 name = "mica-daemon"

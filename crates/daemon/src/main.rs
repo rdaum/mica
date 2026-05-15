@@ -31,6 +31,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
+#[allow(dead_code)]
+mod rpc;
+
 const DEFAULT_BIND: &str = "127.0.0.1:7777";
 const DEFAULT_FILEINS: &[&str] = &[
     "examples/mud-core.mica",

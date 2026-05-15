@@ -38,6 +38,8 @@ can avoid flattening the frame into one contiguous buffer.
 ```text
 0x0001 Hello
 0x0002 HelloAck
+0x0003 RequestAccepted
+0x0004 RequestRejected
 
 0x0100 OpenEndpoint
 0x0101 CloseEndpoint
@@ -48,6 +50,7 @@ can avoid flattening the frame into one contiguous buffer.
 0x0300 OutputReady
 0x0301 DrainOutput
 0x0302 OutputBatch
+0x0303 EndpointClosed
 
 0x0400 TaskCompleted
 0x0401 TaskFailed
@@ -66,19 +69,35 @@ HelloAck:
   protocol_version u16
   feature_bits u64
 
+RequestAccepted:
+  request_id u64
+  has_task_id u8
+  task_id u64 if has_task_id == 1
+
+RequestRejected:
+  request_id u64
+  code_symbol_name string
+  message string
+
 OpenEndpoint:
+  request_id u64
   endpoint_id u64
   protocol string
+  has_grant_token u8
+  grant_token string if has_grant_token == 1
 
 CloseEndpoint:
+  request_id u64
   endpoint_id u64
 
 SubmitSource:
+  request_id u64
   endpoint_id u64
   actor_id u64
   source string
 
 SubmitInput:
+  request_id u64
   endpoint_id u64
   value mica-value
 
@@ -87,6 +106,7 @@ OutputReady:
   buffered u32
 
 DrainOutput:
+  request_id u64
   endpoint_id u64
   limit u32
 
@@ -94,6 +114,10 @@ OutputBatch:
   endpoint_id u64
   count u32
   value[count] mica-value
+
+EndpointClosed:
+  endpoint_id u64
+  reason string
 
 TaskCompleted:
   task_id u64

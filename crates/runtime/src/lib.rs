@@ -240,10 +240,18 @@ impl SourceRunner {
         source: impl Into<String>,
     ) -> Result<TaskRequest, SourceTaskError> {
         let actor_id = self.actor_identity(actor)?;
-        let authority = authority_for_actor(self.task_manager.kernel(), actor_id)?;
+        self.source_request_as_identity(actor_id, source)
+    }
+
+    pub fn source_request_as_identity(
+        &self,
+        actor: Identity,
+        source: impl Into<String>,
+    ) -> Result<TaskRequest, SourceTaskError> {
+        let authority = authority_for_actor(self.task_manager.kernel(), actor)?;
         Ok(TaskRequest {
             principal: None,
-            actor: Some(actor_id),
+            actor: Some(actor),
             endpoint: SYSTEM_ENDPOINT,
             authority,
             input: TaskInput::Source(source.into()),
@@ -909,10 +917,18 @@ impl SharedSourceRunner {
                     format!("unknown actor :{}", actor.name().unwrap_or("<unnamed>")),
                 )
             })?;
-        let authority = authority_for_actor(self.task_manager.kernel(), actor_id)?;
+        self.source_request_as_identity(actor_id, source)
+    }
+
+    pub fn source_request_as_identity(
+        &self,
+        actor: Identity,
+        source: impl Into<String>,
+    ) -> Result<TaskRequest, SourceTaskError> {
+        let authority = authority_for_actor(self.task_manager.kernel(), actor)?;
         Ok(TaskRequest {
             principal: None,
-            actor: Some(actor_id),
+            actor: Some(actor),
             endpoint: SYSTEM_ENDPOINT,
             authority,
             input: TaskInput::Source(source.into()),
