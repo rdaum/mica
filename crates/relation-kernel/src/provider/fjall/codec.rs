@@ -16,7 +16,10 @@ use crate::{
     Atom, CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, RelationId,
     RelationMetadata, Rule, RuleDefinition, Term, Tuple,
 };
-use mica_var::{Identity, Symbol, Value, ValueKind};
+use mica_var::{
+    Identity, Symbol, Value, decode_value as decode_persisted_value,
+    encode_value as encode_persisted_value,
+};
 
 pub(super) fn fact_key(relation: RelationId, tuple: &Tuple) -> Result<Vec<u8>, String> {
     let mut key = relation.raw().to_be_bytes().to_vec();
@@ -182,7 +185,7 @@ fn encode_terms(terms: &[Term], out: &mut Vec<u8>) -> Result<(), String> {
             }
             Term::Value(value) => {
                 out.push(1);
-                encode_value(value, out)?;
+                encode_persisted_value(value, out).map_err(|error| error.to_string())?;
             }
         }
     }
@@ -202,80 +205,7 @@ fn encode_fact_change(change: &FactChange, out: &mut Vec<u8>) -> Result<(), Stri
 fn encode_tuple(tuple: &Tuple, out: &mut Vec<u8>) -> Result<(), String> {
     write_u32(out, tuple.arity())?;
     for value in tuple.values() {
-        encode_value(value, out)?;
-    }
-    Ok(())
-}
-
-fn encode_value(value: &Value, out: &mut Vec<u8>) -> Result<(), String> {
-    out.push(value.kind() as u8);
-    match value.kind() {
-        ValueKind::Nothing => {}
-        ValueKind::Bool => out.push(value.as_bool().unwrap() as u8),
-        ValueKind::Int => write_i64(out, value.as_int().unwrap()),
-        ValueKind::Float => write_u64(out, value.as_float().unwrap().to_bits()),
-        ValueKind::Identity => write_identity(out, value.as_identity().unwrap()),
-        ValueKind::Symbol => write_symbol(out, value.as_symbol().unwrap())?,
-        ValueKind::ErrorCode => write_symbol(out, value.as_error_code().unwrap())?,
-        ValueKind::String => value
-            .with_str(|string| write_string(out, string))
-            .ok_or_else(|| "string value missing heap payload".to_owned())??,
-        ValueKind::Bytes => value
-            .with_bytes(|bytes| write_bytes(out, bytes))
-            .ok_or_else(|| "bytes value missing heap payload".to_owned())??,
-        ValueKind::List => value
-            .with_list(|values| {
-                write_u32(out, values.len())?;
-                for value in values {
-                    encode_value(value, out)?;
-                }
-                Ok::<(), String>(())
-            })
-            .ok_or_else(|| "list value missing heap payload".to_owned())??,
-        ValueKind::Map => value
-            .with_map(|entries| {
-                write_u32(out, entries.len())?;
-                for (key, value) in entries {
-                    encode_value(key, out)?;
-                    encode_value(value, out)?;
-                }
-                Ok::<(), String>(())
-            })
-            .ok_or_else(|| "map value missing heap payload".to_owned())??,
-        ValueKind::Range => value
-            .with_range(|start, end| {
-                encode_value(start, out)?;
-                match end {
-                    Some(end) => {
-                        out.push(1);
-                        encode_value(end, out)
-                    }
-                    None => {
-                        out.push(0);
-                        Ok(())
-                    }
-                }
-            })
-            .ok_or_else(|| "range value missing heap payload".to_owned())??,
-        ValueKind::Error => value
-            .with_error(|error| {
-                write_symbol(out, error.code())?;
-                write_optional_string(out, error.message())?;
-                match error.value() {
-                    Some(value) => {
-                        out.push(1);
-                        encode_value(value, out)
-                    }
-                    None => {
-                        out.push(0);
-                        Ok(())
-                    }
-                }
-            })
-            .ok_or_else(|| "error value missing heap payload".to_owned())??,
-        ValueKind::Capability => {
-            return Err("capability values cannot be persisted".to_owned());
-        }
+        encode_persisted_value(value, out).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -296,19 +226,6 @@ fn write_optional_symbol(out: &mut Vec<u8>, symbol: Option<Symbol>) -> Result<()
         Some(symbol) => {
             out.push(1);
             write_symbol(out, symbol)
-        }
-        None => {
-            out.push(0);
-            Ok(())
-        }
-    }
-}
-
-fn write_optional_string(out: &mut Vec<u8>, value: Option<&str>) -> Result<(), String> {
-    match value {
-        Some(value) => {
-            out.push(1);
-            write_string(out, value)
         }
         None => {
             out.push(0);
@@ -338,10 +255,6 @@ fn write_u32(out: &mut Vec<u8>, value: usize) -> Result<(), String> {
 }
 
 fn write_u64(out: &mut Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_be_bytes());
-}
-
-fn write_i64(out: &mut Vec<u8>, value: i64) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
@@ -493,54 +406,10 @@ impl<'a> Reader<'a> {
     }
 
     fn read_value(&mut self) -> Result<Value, String> {
-        let kind = self.read_u8()?;
-        Ok(match kind {
-            0 => Value::nothing(),
-            1 => Value::bool(self.read_bool()?),
-            2 => Value::int(self.read_i64()?).map_err(|error| format!("{error:?}"))?,
-            3 => Value::float(f64::from_bits(self.read_u64()?)),
-            4 => Value::identity(self.read_identity()?),
-            5 => Value::symbol(self.read_symbol()?),
-            6 => Value::error_code(self.read_symbol()?),
-            7 => Value::string(self.read_string()?),
-            8 => Value::bytes(self.read_bytes()?),
-            9 => {
-                let count = self.read_len()?;
-                let mut values = Vec::with_capacity(count);
-                for _ in 0..count {
-                    values.push(self.read_value()?);
-                }
-                Value::list(values)
-            }
-            10 => {
-                let count = self.read_len()?;
-                let mut entries = Vec::with_capacity(count);
-                for _ in 0..count {
-                    entries.push((self.read_value()?, self.read_value()?));
-                }
-                Value::map(entries)
-            }
-            11 => {
-                let start = self.read_value()?;
-                let end = if self.read_bool()? {
-                    Some(self.read_value()?)
-                } else {
-                    None
-                };
-                Value::range(start, end)
-            }
-            12 => {
-                let code = self.read_symbol()?;
-                let message = self.read_optional_string()?;
-                let value = if self.read_bool()? {
-                    Some(self.read_value()?)
-                } else {
-                    None
-                };
-                Value::error(code, message, value)
-            }
-            tag => return Err(format!("unknown value kind tag {tag}")),
-        })
+        let (value, consumed) = decode_persisted_value(&self.bytes[self.offset..])
+            .map_err(|error| error.to_string())?;
+        self.offset += consumed;
+        Ok(value)
     }
 
     fn read_identity(&mut self) -> Result<Identity, String> {
@@ -555,14 +424,6 @@ impl<'a> Reader<'a> {
     fn read_optional_symbol(&mut self) -> Result<Option<Symbol>, String> {
         if self.read_bool()? {
             Ok(Some(self.read_symbol()?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn read_optional_string(&mut self) -> Result<Option<String>, String> {
-        if self.read_bool()? {
-            Ok(Some(self.read_string()?))
         } else {
             Ok(None)
         }
@@ -606,11 +467,6 @@ impl<'a> Reader<'a> {
     fn read_u64(&mut self) -> Result<u64, String> {
         let bytes = self.read_exact(8)?;
         Ok(u64::from_be_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn read_i64(&mut self) -> Result<i64, String> {
-        let bytes = self.read_exact(8)?;
-        Ok(i64::from_be_bytes(bytes.try_into().unwrap()))
     }
 
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8], String> {

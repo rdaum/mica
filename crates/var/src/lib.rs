@@ -18,6 +18,7 @@
 //! stay inline; strings, bytes, lists, and maps are immutable heap values shared
 //! with `Arc`.
 
+mod codec;
 mod heap;
 mod symbol;
 mod traits;
@@ -27,6 +28,7 @@ mod visit;
 #[cfg(test)]
 mod tests;
 
+pub use codec::{ValueCodecError, decode_value, decode_value_exact, encode_value};
 pub use symbol::{Symbol, SymbolMetadata};
 pub use value::{
     BOOL_PROTOTYPE, BYTES_PROTOTYPE, CAPABILITY_PROTOTYPE, CapabilityId, ERROR_CODE_PROTOTYPE,

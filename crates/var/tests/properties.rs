@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use mica_var::{Identity, Symbol, Value};
+use mica_var::{Identity, Symbol, Value, decode_value_exact, encode_value};
 use proptest::prelude::*;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
@@ -105,5 +105,12 @@ proptest! {
         let cloned = value.clone();
         prop_assert_eq!(&value, &cloned);
         prop_assert_eq!(hash(&value), hash(&cloned));
+    }
+
+    #[test]
+    fn value_codec_round_trips_generated_values(value in arb_value()) {
+        let mut encoded = Vec::new();
+        encode_value(&value, &mut encoded).unwrap();
+        prop_assert_eq!(decode_value_exact(&encoded).unwrap(), value);
     }
 }

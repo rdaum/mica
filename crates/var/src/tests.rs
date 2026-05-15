@@ -13,8 +13,8 @@
 
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
-    CapabilityId, Identity, Symbol, SymbolMetadata, Value, ValueKind, ValueRef, ValueVisitor,
-    VisitDecision,
+    CapabilityId, Identity, Symbol, SymbolMetadata, Value, ValueCodecError, ValueKind, ValueRef,
+    ValueVisitor, VisitDecision, decode_value, decode_value_exact, encode_value,
 };
 use std::mem::{align_of, size_of};
 
@@ -386,6 +386,77 @@ fn value_walk_pairs_enter_and_leave_events() {
             ("leave", ValueKind::Int),
             ("leave", ValueKind::Range),
         ]
+    );
+}
+
+#[test]
+fn value_codec_round_trips_persistable_values() {
+    let values = [
+        Value::nothing(),
+        Value::bool(true),
+        Value::bool(false),
+        Value::int(INT_MIN).unwrap(),
+        Value::int(INT_MAX).unwrap(),
+        Value::float(12.5),
+        Value::identity(Identity::new(99).unwrap()),
+        Value::symbol(Symbol::intern("symbolic")),
+        Value::error_code(Symbol::intern("E_PERSIST")),
+        Value::string("stored"),
+        Value::bytes([0xde, 0xad, 0xbe, 0xef]),
+        Value::list([
+            Value::int(1).unwrap(),
+            Value::string("two"),
+            Value::bool(false),
+        ]),
+        Value::map([(Value::symbol(Symbol::intern("k")), Value::string("v"))]),
+        Value::range(Value::int(1).unwrap(), Some(Value::int(4).unwrap())),
+        Value::range(Value::int(2).unwrap(), None),
+        Value::error(
+            Symbol::intern("E_RICH"),
+            Some("rich error"),
+            Some(Value::int(7).unwrap()),
+        ),
+    ];
+
+    for value in values {
+        let mut encoded = Vec::new();
+        encode_value(&value, &mut encoded).unwrap();
+        let (decoded, consumed) = decode_value(&encoded).unwrap();
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(decoded, value);
+        assert_eq!(decode_value_exact(&encoded).unwrap(), value);
+    }
+}
+
+#[test]
+fn value_codec_rejects_ephemeral_capabilities() {
+    let cap = Value::capability_raw(1).unwrap();
+    let mut encoded = Vec::new();
+    assert_eq!(
+        encode_value(&cap, &mut encoded),
+        Err(ValueCodecError::CapabilityNotEncodable)
+    );
+
+    assert_eq!(
+        decode_value(&[ValueKind::Capability as u8]),
+        Err(ValueCodecError::CapabilityNotDecodable)
+    );
+}
+
+#[test]
+fn value_codec_rejects_unnamed_symbols_and_trailing_bytes() {
+    let mut encoded = Vec::new();
+    assert_eq!(
+        encode_value(&Value::symbol(Symbol::from_id(u32::MAX)), &mut encoded),
+        Err(ValueCodecError::UnnamedSymbol(u32::MAX))
+    );
+
+    encoded.clear();
+    encode_value(&Value::nothing(), &mut encoded).unwrap();
+    encoded.push(0xff);
+    assert_eq!(
+        decode_value_exact(&encoded),
+        Err(ValueCodecError::TrailingBytes(1))
     );
 }
 

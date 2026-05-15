@@ -12,6 +12,7 @@ lists, and maps live on the heap and are shared with `Arc`.
 
 - `src/value.rs`: `Value`, `ValueKind`, `Identity`, `ErrorValue`, encoding,
   constructors, accessors, display, and ordering.
+- `src/codec.rs`: owned value encoding and decoding for persistence records.
 - `src/heap.rs`: immutable heap-backed strings, bytes, lists, and maps.
 - `src/symbol.rs`: interned symbol representation and symbol metadata.
 - `src/traits.rs`: common conversion and helper traits.
