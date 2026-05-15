@@ -22,6 +22,7 @@ mod heap;
 mod symbol;
 mod traits;
 mod value;
+mod visit;
 
 #[cfg(test)]
 mod tests;
@@ -34,3 +35,4 @@ pub use value::{
     STRING_PROTOTYPE, SYMBOL_PROTOTYPE, Value, ValueError, ValueKind, primitive_prototype_for_kind,
     primitive_prototype_for_value,
 };
+pub use visit::{ValueRef, ValueVisitor, VisitDecision};

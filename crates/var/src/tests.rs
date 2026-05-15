@@ -12,7 +12,10 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::value::{INT_MAX, INT_MIN};
-use crate::{CapabilityId, Identity, Symbol, SymbolMetadata, Value, ValueKind};
+use crate::{
+    CapabilityId, Identity, Symbol, SymbolMetadata, Value, ValueKind, ValueRef, ValueVisitor,
+    VisitDecision,
+};
 use std::mem::{align_of, size_of};
 
 #[test]
@@ -242,6 +245,147 @@ fn heap_values_are_arc_shared_and_acyclic() {
             .list_get(0)
             .and_then(|value| value.with_str(str::to_string)),
         Some("alpha".to_string())
+    );
+}
+
+#[test]
+fn value_refs_borrow_immediate_and_heap_payloads() {
+    let identity = Identity::new(42).unwrap();
+    assert_eq!(
+        Value::identity(identity).as_value_ref(),
+        ValueRef::Identity(identity)
+    );
+
+    let string = Value::string("brass lamp");
+    assert_eq!(string.as_value_ref(), ValueRef::String("brass lamp"));
+    assert_eq!(string.as_value_ref().kind(), ValueKind::String);
+    assert!(string.as_value_ref().is_heap());
+    assert_eq!(string.as_value_ref().child_count(), 0);
+
+    let list = Value::list([Value::int(1).unwrap(), Value::int(2).unwrap()]);
+    match list.as_value_ref() {
+        ValueRef::List(values) => {
+            assert_eq!(values.len(), 2);
+            assert_eq!(values[0].as_int(), Some(1));
+            assert_eq!(values[1].as_int(), Some(2));
+        }
+        value_ref => panic!("expected list ref, got {value_ref:?}"),
+    }
+    assert_eq!(list.as_value_ref().child_count(), 2);
+}
+
+#[test]
+fn value_walk_visits_nested_values_depth_first() {
+    struct KindCollector(Vec<ValueKind>);
+
+    impl ValueVisitor for KindCollector {
+        type Error = std::convert::Infallible;
+
+        fn visit_value(
+            &mut self,
+            _value: &Value,
+            value_ref: ValueRef<'_>,
+        ) -> Result<VisitDecision, Self::Error> {
+            self.0.push(value_ref.kind());
+            Ok(VisitDecision::Descend)
+        }
+    }
+
+    let value = Value::map([(
+        Value::symbol(Symbol::intern("items")),
+        Value::list([
+            Value::string("lamp"),
+            Value::error(
+                Symbol::intern("E_TEST"),
+                Some("nested"),
+                Some(Value::int(7).unwrap()),
+            ),
+        ]),
+    )]);
+    let mut collector = KindCollector(Vec::new());
+    value.walk(&mut collector).unwrap();
+    assert_eq!(
+        collector.0,
+        vec![
+            ValueKind::Map,
+            ValueKind::Symbol,
+            ValueKind::List,
+            ValueKind::String,
+            ValueKind::Error,
+            ValueKind::Int,
+        ]
+    );
+}
+
+#[test]
+fn value_walk_can_skip_children() {
+    struct SkippingCollector(Vec<ValueKind>);
+
+    impl ValueVisitor for SkippingCollector {
+        type Error = std::convert::Infallible;
+
+        fn visit_value(
+            &mut self,
+            _value: &Value,
+            value_ref: ValueRef<'_>,
+        ) -> Result<VisitDecision, Self::Error> {
+            self.0.push(value_ref.kind());
+            if matches!(value_ref, ValueRef::List(_)) {
+                Ok(VisitDecision::SkipChildren)
+            } else {
+                Ok(VisitDecision::Descend)
+            }
+        }
+    }
+
+    let value = Value::list([
+        Value::string("hidden"),
+        Value::list([Value::int(1).unwrap(), Value::int(2).unwrap()]),
+    ]);
+    let mut collector = SkippingCollector(Vec::new());
+    value.walk(&mut collector).unwrap();
+    assert_eq!(collector.0, vec![ValueKind::List]);
+}
+
+#[test]
+fn value_walk_pairs_enter_and_leave_events() {
+    struct EventCollector(Vec<(&'static str, ValueKind)>);
+
+    impl ValueVisitor for EventCollector {
+        type Error = std::convert::Infallible;
+
+        fn visit_value(
+            &mut self,
+            _value: &Value,
+            value_ref: ValueRef<'_>,
+        ) -> Result<VisitDecision, Self::Error> {
+            self.0.push(("enter", value_ref.kind()));
+            Ok(VisitDecision::Descend)
+        }
+
+        fn leave_value(
+            &mut self,
+            _value: &Value,
+            value_ref: ValueRef<'_>,
+        ) -> Result<(), Self::Error> {
+            self.0.push(("leave", value_ref.kind()));
+            Ok(())
+        }
+    }
+
+    let value = Value::range(Value::int(1).unwrap(), Some(Value::int(3).unwrap()));
+    let mut collector = EventCollector(Vec::new());
+    value.walk(&mut collector).unwrap();
+    assert_eq!(
+        collector.0,
+        vec![
+            ("enter", ValueKind::Range),
+            ("enter", ValueKind::Int),
+            ("leave", ValueKind::Int),
+            ("enter", ValueKind::Int),
+            ("leave", ValueKind::Int),
+            ("leave", ValueKind::Range),
+        ]
     );
 }
 

@@ -15,6 +15,7 @@ lists, and maps live on the heap and are shared with `Arc`.
 - `src/heap.rs`: immutable heap-backed strings, bytes, lists, and maps.
 - `src/symbol.rs`: interned symbol representation and symbol metadata.
 - `src/traits.rs`: common conversion and helper traits.
+- `src/visit.rs`: borrowed `ValueRef` views and depth-first value traversal.
 - `src/tests.rs`: unit coverage for core value behaviour.
 - `tests/properties.rs`: property tests for value ordering, equality, and
   collection behaviour.

@@ -640,6 +640,13 @@ impl Value {
         Some(unsafe { f(&*ptr) })
     }
 
+    pub(crate) fn heap_ref(&self) -> Option<&HeapValue> {
+        if self.is_immediate() {
+            return None;
+        }
+        Some(unsafe { &*self.heap_ptr() })
+    }
+
     pub(crate) fn numeric_as_f64(&self) -> Option<f64> {
         if let Some(value) = self.as_int() {
             Some(value as f64)
