@@ -41,13 +41,6 @@ pub enum DriverError {
     MissingTaskContext(TaskId),
 }
 
-#[derive(Debug)]
-pub enum DriverThreadError {
-    Start(String),
-    Closed,
-    Driver(DriverError),
-}
-
 impl TaskContext {
     pub(crate) fn from_request(request: &TaskRequest, endpoint: Identity) -> Self {
         Self {
@@ -81,15 +74,3 @@ impl Display for DriverError {
 }
 
 impl std::error::Error for DriverError {}
-
-impl Display for DriverThreadError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Start(error) => write!(f, "failed to start driver thread: {error}"),
-            Self::Closed => f.write_str("driver thread is closed"),
-            Self::Driver(error) => Display::fmt(error, f),
-        }
-    }
-}
-
-impl std::error::Error for DriverThreadError {}

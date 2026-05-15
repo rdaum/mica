@@ -26,7 +26,7 @@ use std::thread;
 use std::time::Duration;
 
 #[derive(Clone)]
-pub struct CompioTaskDriverPool {
+pub struct CompioTaskDriver {
     inner: Arc<PoolInner>,
 }
 
@@ -43,7 +43,7 @@ struct PoolState {
     events: Vec<DriverEvent>,
 }
 
-impl CompioTaskDriverPool {
+impl CompioTaskDriver {
     pub fn spawn(runner: SourceRunner) -> Result<Self, DriverError> {
         Self::spawn_with_workers(runner, None)
     }

@@ -13,7 +13,7 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use mica_compiler::parse;
-use mica_driver::{CompioTaskDriverThread, DriverEvent, DriverThreadError};
+use mica_driver::{CompioTaskDriver, DriverError, DriverEvent};
 use mica_relation_kernel::FjallDurabilityMode;
 use mica_runtime::{FileinMode, SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol};
@@ -105,7 +105,7 @@ fn run() -> Result<(), String> {
                 .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
             let session = open_cli_session(&cli, Symbol::intern("cli"))?;
             let report = submit_cli_source(&session, &cli, source)?;
-            print_report_and_follow(&session.driver, report)?;
+            print_report_and_follow(&session.driver, report);
             let _ = session.driver.close_endpoint(session.endpoint);
             Ok(())
         }
@@ -159,7 +159,7 @@ fn run() -> Result<(), String> {
             let source = source.join(" ");
             let session = open_cli_session(&cli, Symbol::intern("cli"))?;
             let report = submit_cli_source(&session, &cli, source)?;
-            print_report_and_follow(&session.driver, report)?;
+            print_report_and_follow(&session.driver, report);
             let _ = session.driver.close_endpoint(session.endpoint);
             Ok(())
         }
@@ -168,7 +168,7 @@ fn run() -> Result<(), String> {
 }
 
 struct CliSession {
-    driver: CompioTaskDriverThread,
+    driver: CompioTaskDriver,
     endpoint: Identity,
 }
 
@@ -218,7 +218,7 @@ fn open_cli_session(cli: &Cli, protocol: Symbol) -> Result<CliSession, String> {
         .map(actor_symbol)
         .map(|actor| runner.named_identity(actor).map_err(format_source_error))
         .transpose()?;
-    let driver = CompioTaskDriverThread::spawn(runner).map_err(format_driver_error)?;
+    let driver = CompioTaskDriver::spawn(runner).map_err(format_driver_error)?;
     let endpoint = cli_endpoint();
     driver
         .open_endpoint(endpoint, actor, protocol)
@@ -244,7 +244,7 @@ fn repl_loop(cli: &Cli, session: &CliSession, editor: &mut DefaultEditor) -> Res
 
     println!("Mica REPL. Enter :quit to exit. Blank line forces evaluation.");
     loop {
-        print_driver_events(session.driver.drain_events().map_err(format_driver_error)?);
+        print_driver_events(session.driver.drain_events());
         let prompt = if buffer.is_empty() {
             "mica> "
         } else {
@@ -261,9 +261,7 @@ fn repl_loop(cli: &Cli, session: &CliSession, editor: &mut DefaultEditor) -> Res
                     continue;
                 }
                 if buffer.is_empty() && matches!(trimmed, ":poll" | ":p") {
-                    print_driver_events(
-                        session.driver.drain_events().map_err(format_driver_error)?,
-                    );
+                    print_driver_events(session.driver.drain_events());
                     continue;
                 }
                 if trimmed.is_empty() {
@@ -296,10 +294,11 @@ fn evaluate_buffer(session: &CliSession, cli: &Cli, buffer: &mut String) {
             let task_id = report.task_id;
             let outcome = report.outcome.clone();
             print_report(report);
-            match session.driver.drain_events() {
-                Ok(events) => print_driver_events_without_initial_report(task_id, &outcome, events),
-                Err(error) => eprintln!("{}", format_driver_error(error)),
-            }
+            print_driver_events_without_initial_report(
+                task_id,
+                &outcome,
+                session.driver.drain_events(),
+            );
             settle_repl_task(&session.driver, task_id, &outcome);
         }
         Err(error) => eprintln!("{error}"),
@@ -315,14 +314,11 @@ fn format_source_error(error: mica_runtime::SourceTaskError) -> String {
     format!("error: {error:?}")
 }
 
-fn format_driver_error(error: DriverThreadError) -> String {
+fn format_driver_error(error: DriverError) -> String {
     format!("error: {error}")
 }
 
-fn print_report_and_follow(
-    driver: &CompioTaskDriverThread,
-    report: mica_runtime::RunReport,
-) -> Result<(), String> {
+fn print_report_and_follow(driver: &CompioTaskDriver, report: mica_runtime::RunReport) {
     let task_id = report.task_id;
     let outcome = report.outcome.clone();
     let mut suspended = suspended_kind(&outcome);
@@ -334,7 +330,7 @@ fn print_report_and_follow(
         };
         thread::sleep(duration);
         suspended = None;
-        for event in driver.drain_events().map_err(format_driver_error)? {
+        for event in driver.drain_events() {
             match &event {
                 DriverEvent::TaskSuspended {
                     task_id: event_task,
@@ -355,7 +351,7 @@ fn print_report_and_follow(
                     ..
                 } if *event_task == task_id => {
                     print_driver_event(event);
-                    return Ok(());
+                    return;
                 }
                 DriverEvent::TaskSuspended {
                     task_id: event_task,
@@ -366,15 +362,10 @@ fn print_report_and_follow(
         }
     }
 
-    print_driver_events_without_initial_report(
-        task_id,
-        &outcome,
-        driver.drain_events().map_err(format_driver_error)?,
-    );
-    Ok(())
+    print_driver_events_without_initial_report(task_id, &outcome, driver.drain_events());
 }
 
-fn settle_repl_task(driver: &CompioTaskDriverThread, task_id: u64, outcome: &TaskOutcome) {
+fn settle_repl_task(driver: &CompioTaskDriver, task_id: u64, outcome: &TaskOutcome) {
     let mut suspended = suspended_kind(outcome);
     for _ in 0..8 {
         let Some(kind) = suspended else {
@@ -385,13 +376,7 @@ fn settle_repl_task(driver: &CompioTaskDriverThread, task_id: u64, outcome: &Tas
         };
         thread::sleep(duration);
         suspended = None;
-        let events = match driver.drain_events() {
-            Ok(events) => events,
-            Err(error) => {
-                eprintln!("{}", format_driver_error(error));
-                return;
-            }
-        };
+        let events = driver.drain_events();
         for event in events {
             match &event {
                 DriverEvent::TaskSuspended {

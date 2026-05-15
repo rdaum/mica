@@ -17,15 +17,11 @@
 //! task-manager work on compio tasks and owns the wake policy for timed
 //! suspensions and endpoint input.
 
-mod driver;
 mod pool;
-mod thread;
 mod types;
 
 #[cfg(test)]
 mod tests;
 
-pub use driver::CompioTaskDriver;
-pub use pool::CompioTaskDriverPool;
-pub use thread::CompioTaskDriverThread;
-pub use types::{DriverError, DriverEvent, DriverThreadError, TaskContext};
+pub use pool::CompioTaskDriver;
+pub use types::{DriverError, DriverEvent, TaskContext};
