@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::builtin::TransientAccess;
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
     Emission, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
@@ -23,7 +24,7 @@ use mica_relation_kernel::{
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
@@ -155,7 +156,7 @@ pub struct VmHostContext<'ctx, 'kernel> {
     pending_effects: &'ctx mut Vec<Emission>,
     task_snapshot: &'ctx [Value],
     runtime_context: RuntimeContext,
-    transient: Option<&'ctx mut TransientStore>,
+    transient: Option<TransientAccess<'ctx>>,
     transient_scopes: &'ctx [Identity],
 }
 
@@ -187,7 +188,17 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
         transient: &'ctx mut TransientStore,
         transient_scopes: &'ctx [Identity],
     ) -> Self {
-        self.transient = Some(transient);
+        self.transient = Some(TransientAccess::Exclusive(transient));
+        self.transient_scopes = transient_scopes;
+        self
+    }
+
+    pub fn with_shared_transient(
+        mut self,
+        transient: &'ctx RwLock<TransientStore>,
+        transient_scopes: &'ctx [Identity],
+    ) -> Self {
+        self.transient = Some(TransientAccess::Shared(transient));
         self.transient_scopes = transient_scopes;
         self
     }
@@ -199,11 +210,20 @@ impl RelationRead for VmHostContext<'_, '_> {
         relation: mica_relation_kernel::RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, mica_relation_kernel::KernelError> {
-        let Some(transient) = self.transient.as_deref() else {
-            return self.tx.scan_relation(relation, bindings);
-        };
-        let reader = ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
-        reader.scan_relation(relation, bindings)
+        match &self.transient {
+            Some(TransientAccess::Exclusive(transient)) => {
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
+                reader.scan_relation(relation, bindings)
+            }
+            Some(TransientAccess::Shared(transient)) => {
+                let transient = transient.read().unwrap();
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
+                reader.scan_relation(relation, bindings)
+            }
+            None => self.tx.scan_relation(relation, bindings),
+        }
     }
 }
 
@@ -279,6 +299,13 @@ impl VmHost for VmHostContext<'_, '_> {
             .builtins
             .get(name)
             .ok_or(RuntimeError::UnknownBuiltin { name })?;
+        let transient = match self.transient.as_mut() {
+            Some(TransientAccess::Exclusive(transient)) => {
+                Some(TransientAccess::Exclusive(transient))
+            }
+            Some(TransientAccess::Shared(transient)) => Some(TransientAccess::Shared(transient)),
+            None => None,
+        };
         let mut context = crate::BuiltinContext::new(
             self.tx.kernel(),
             self.tx,
@@ -286,7 +313,7 @@ impl VmHost for VmHostContext<'_, '_> {
             self.pending_effects,
             self.task_snapshot,
             self.runtime_context,
-            self.transient.as_deref_mut(),
+            transient,
         );
         builtin.call(&mut context, args)
     }

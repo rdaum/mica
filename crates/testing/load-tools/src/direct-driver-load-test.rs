@@ -11,23 +11,27 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Direct driver load test for Mica.
+//! Direct dispatcher load test for Mica.
 //!
 //! This bypasses TCP transport and submits role-dispatch invocations directly to
-//! the in-process compio driver thread. Each submitted task runs a Mica method
-//! that repeatedly dispatches to another Mica method, so the hot path is driver
-//! command handling, runtime task execution, VM dispatch, and relation-kernel
-//! method lookup.
+//! a shared Mica runner through compio dispatcher workers. Each submitted task
+//! runs a Mica method that repeatedly dispatches to another Mica method, so the
+//! hot path is dispatcher scheduling, runtime task execution, VM dispatch, and
+//! relation-kernel method lookup.
 
 use clap::{Parser, ValueEnum};
-use mica_driver::{CompioTaskDriverThread, DriverThreadError};
+use compio::dispatcher::Dispatcher;
+use compio::runtime::Runtime;
 use mica_relation_kernel::FjallDurabilityMode;
 use mica_runtime::{
-    AuthorityContext, SourceRunner, TaskInput, TaskLimits, TaskOutcome, TaskRequest,
+    AuthorityContext, SharedSourceRunner, SourceRunner, TaskInput, TaskLimits, TaskOutcome,
+    TaskRequest,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -50,6 +54,9 @@ struct Args {
 
     #[arg(long, default_value_t = 32)]
     max_concurrency: usize,
+
+    #[arg(long, help = "Compio dispatcher worker thread count")]
+    dispatcher_threads: Option<NonZeroUsize>,
 
     #[arg(long, default_value_t = 1)]
     num_objects: usize,
@@ -113,6 +120,12 @@ struct Results {
     invocation_max: Duration,
 }
 
+#[derive(Clone, Copy)]
+struct ExecutionTarget<'a> {
+    runner: &'a Arc<SharedSourceRunner>,
+    dispatcher: &'a Dispatcher,
+}
+
 fn main() -> Result<(), String> {
     let args = Args::parse();
     validate_args(&args)?;
@@ -141,17 +154,29 @@ fn main() -> Result<(), String> {
             .map_err(|error| format!("invalid iteration count: {error:?}"))?,
     };
 
-    let driver =
-        CompioTaskDriverThread::spawn(runner).map_err(|error| format!("driver failed: {error}"))?;
+    let runner = Arc::new(runner.into_shared());
+    let mut dispatcher_builder = Dispatcher::builder();
+    if let Some(threads) = args.dispatcher_threads {
+        dispatcher_builder = dispatcher_builder.worker_threads(threads);
+    }
+    let dispatcher = dispatcher_builder
+        .thread_names(|index| format!("mica-dispatcher-{index}"))
+        .build()
+        .map_err(|error| format!("dispatcher failed: {error}"))?;
+    let target = ExecutionTarget {
+        runner: &runner,
+        dispatcher: &dispatcher,
+    };
     let results = if args.swamp_mode {
-        run_swamp_mode(&args, &workload, &driver)?
+        run_swamp_mode(&args, &workload, target)?
     } else {
-        run_stepped_load(&args, &workload, &driver)?
+        run_stepped_load(&args, &workload, target)?
     };
     write_csv(args.output_file.as_ref(), &results)?;
-    driver
-        .shutdown()
-        .map_err(|error| format!("driver shutdown failed: {error}"))?;
+    Runtime::new()
+        .map_err(|error| format!("failed to create compio runtime: {error}"))?
+        .block_on(dispatcher.join())
+        .map_err(|error| format!("dispatcher shutdown failed: {error}"))?;
     Ok(())
 }
 
@@ -241,9 +266,9 @@ fn load_test_filein(num_objects: usize) -> String {
 fn run_stepped_load(
     args: &Args,
     workload: &WorkloadConfig,
-    driver: &CompioTaskDriverThread,
+    target: ExecutionTarget<'_>,
 ) -> Result<Vec<Results>, String> {
-    warm_up(args, workload, driver)?;
+    warm_up(args, workload, target)?;
 
     let mut rows = Vec::new();
     let mut concurrency = args.min_concurrency as f64;
@@ -256,7 +281,7 @@ fn run_stepped_load(
             args.num_dispatch_iterations,
             args.num_objects,
             workload,
-            driver,
+            target,
         )?;
         print_result(&result);
         rows.push(result);
@@ -270,9 +295,9 @@ fn run_stepped_load(
 fn run_swamp_mode(
     args: &Args,
     workload: &WorkloadConfig,
-    driver: &CompioTaskDriverThread,
+    target: ExecutionTarget<'_>,
 ) -> Result<Vec<Results>, String> {
-    warm_up(args, workload, driver)?;
+    warm_up(args, workload, target)?;
     let result = run_fixed_concurrency(
         args.max_concurrency,
         usize::MAX,
@@ -280,7 +305,7 @@ fn run_swamp_mode(
         args.num_dispatch_iterations,
         args.num_objects,
         workload,
-        driver,
+        target,
     )?;
     print_result(&result);
     Ok(vec![result])
@@ -289,7 +314,7 @@ fn run_swamp_mode(
 fn warm_up(
     args: &Args,
     workload: &WorkloadConfig,
-    driver: &CompioTaskDriverThread,
+    target: ExecutionTarget<'_>,
 ) -> Result<(), String> {
     if args.warmup_invocations == 0 {
         return Ok(());
@@ -301,7 +326,7 @@ fn warm_up(
         args.num_dispatch_iterations,
         args.num_objects,
         workload,
-        driver,
+        target,
     )?;
     eprintln!(
         "warmup: {} invocations in {}",
@@ -318,7 +343,7 @@ fn run_fixed_concurrency(
     iterations: usize,
     object_count: usize,
     workload: &WorkloadConfig,
-    driver: &CompioTaskDriverThread,
+    target: ExecutionTarget<'_>,
 ) -> Result<Results, String> {
     let start = Instant::now();
     let stop_at = duration_limit.map(|duration| start + duration);
@@ -328,8 +353,17 @@ fn run_fixed_concurrency(
         let mut handles = Vec::with_capacity(concurrency);
         for worker in 0..concurrency {
             let endpoint = endpoint(worker);
+            let runner = Arc::clone(target.runner);
+            let dispatcher = target.dispatcher;
             handles.push(scope.spawn(move || {
-                run_worker(driver, workload, endpoint, invocations_per_worker, stop_at)
+                run_worker(
+                    &runner,
+                    dispatcher,
+                    workload,
+                    endpoint,
+                    invocations_per_worker,
+                    stop_at,
+                )
             }));
         }
         for handle in handles {
@@ -384,12 +418,15 @@ struct WorkerResult {
 }
 
 fn run_worker(
-    driver: &CompioTaskDriverThread,
+    runner: &Arc<SharedSourceRunner>,
+    dispatcher: &Dispatcher,
     workload: &WorkloadConfig,
     endpoint: Identity,
     invocation_limit: usize,
     stop_at: Option<Instant>,
 ) -> Result<WorkerResult, String> {
+    let wait_runtime =
+        Runtime::new().map_err(|error| format!("failed to create worker wait runtime: {error}"))?;
     let start = Instant::now();
     let mut latencies = Vec::new();
     let mut invocations = 0;
@@ -397,9 +434,14 @@ fn run_worker(
     while invocations < invocation_limit && stop_at.is_none_or(|stop_at| Instant::now() < stop_at) {
         let request = invocation_request(endpoint, workload);
         let invocation_start = Instant::now();
-        let submitted = driver
-            .submit_invocation(endpoint, request)
-            .map_err(format_driver_error)?;
+        let runner = Arc::clone(runner);
+        let receiver = dispatcher
+            .dispatch(move || async move { runner.submit_invocation(request) })
+            .map_err(|_| "dispatcher is stopped".to_owned())?;
+        let submitted = wait_runtime
+            .block_on(receiver)
+            .map_err(|_| "dispatched invocation was cancelled".to_owned())?
+            .map_err(|error| format!("runtime error: {error:?}"))?;
         latencies.push(invocation_start.elapsed());
         assert_success(submitted.outcome)?;
         invocations += 1;
@@ -517,10 +559,6 @@ fn write_csv(output_file: Option<&PathBuf>, results: &[Results]) -> Result<(), S
     }
     fs::write(output_file, output)
         .map_err(|error| format!("failed to write {}: {error}", output_file.display()))
-}
-
-fn format_driver_error(error: DriverThreadError) -> String {
-    format!("driver error: {error}")
 }
 
 fn format_duration(duration: Duration) -> String {

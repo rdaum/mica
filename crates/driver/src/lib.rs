@@ -18,6 +18,7 @@
 //! suspensions and endpoint input.
 
 mod driver;
+mod pool;
 mod thread;
 mod types;
 
@@ -25,5 +26,6 @@ mod types;
 mod tests;
 
 pub use driver::CompioTaskDriver;
+pub use pool::CompioTaskDriverPool;
 pub use thread::CompioTaskDriverThread;
 pub use types::{DriverError, DriverEvent, DriverThreadError, TaskContext};

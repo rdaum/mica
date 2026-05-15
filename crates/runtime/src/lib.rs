@@ -25,7 +25,9 @@ pub use mica_vm::{
     VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
-pub use task_manager::{Effect, EffectLog, SuspendedTask, TaskManager, TaskManagerError};
+pub use task_manager::{
+    Effect, EffectLog, SharedTaskManager, SuspendedTask, TaskManager, TaskManagerError,
+};
 
 use mica_compiler::{
     CompileContext, CompileError, HirExpr, HirItem, Literal, MethodInstallation, MethodKind,
@@ -34,7 +36,7 @@ use mica_compiler::{
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
-    RelationKernel, RelationMetadata, Tuple,
+    RelationKernel, RelationMetadata, RelationRead, Tuple,
 };
 use mica_var::{Identity, PRIMITIVE_PROTOTYPES, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -123,6 +125,11 @@ pub struct SourceRunner {
     next_method_identity_id: u64,
 }
 
+pub struct SharedSourceRunner {
+    context: CompileContext,
+    task_manager: SharedTaskManager,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskRequest {
     pub principal: Option<Identity>,
@@ -203,6 +210,13 @@ impl SourceRunner {
     pub fn with_task_limits(mut self, limits: TaskLimits) -> Self {
         self.task_manager = self.task_manager.with_limits(limits);
         self
+    }
+
+    pub fn into_shared(self) -> SharedSourceRunner {
+        SharedSourceRunner {
+            context: self.context,
+            task_manager: self.task_manager.into_shared(),
+        }
     }
 
     pub fn run_source(&mut self, source: &str) -> Result<RunReport, SourceTaskError> {
@@ -837,6 +851,272 @@ impl SourceRunner {
         let snapshot = self.task_manager.kernel().snapshot();
         snapshot
             .scan(named_identity_relation(), &[None, None])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|tuple| {
+                let [name, identity] = tuple.values() else {
+                    return None;
+                };
+                let name = name.as_symbol()?.name()?.to_owned();
+                let identity = identity.as_identity()?;
+                Some((identity, name))
+            })
+            .chain(
+                snapshot
+                    .rules()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, rule)| (rule.id(), format!("rule{}", index + 1))),
+            )
+            .collect()
+    }
+
+    fn relation_names(&self) -> BTreeMap<Identity, String> {
+        let snapshot = self.task_manager.kernel().snapshot();
+        snapshot
+            .relation_metadata()
+            .filter_map(|metadata| Some((metadata.id(), metadata.name().name()?.to_owned())))
+            .collect()
+    }
+}
+
+impl SharedSourceRunner {
+    pub fn source_request_for_endpoint(
+        &self,
+        endpoint: Identity,
+        source: impl Into<String>,
+    ) -> Result<TaskRequest, SourceTaskError> {
+        let runtime_context = self.endpoint_runtime_context(endpoint)?;
+        Ok(TaskRequest {
+            principal: runtime_context.principal(),
+            actor: runtime_context.actor(),
+            endpoint,
+            authority: authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?,
+            input: TaskInput::Source(source.into()),
+        })
+    }
+
+    pub fn source_request_as(
+        &self,
+        actor: Symbol,
+        source: impl Into<String>,
+    ) -> Result<TaskRequest, SourceTaskError> {
+        let actor_id =
+            identity_named_in_kernel(self.task_manager.kernel(), actor)?.ok_or_else(|| {
+                unsupported_runner_error(
+                    NodeId(0),
+                    None,
+                    format!("unknown actor :{}", actor.name().unwrap_or("<unnamed>")),
+                )
+            })?;
+        let authority = authority_for_actor(self.task_manager.kernel(), actor_id)?;
+        Ok(TaskRequest {
+            principal: None,
+            actor: Some(actor_id),
+            endpoint: SYSTEM_ENDPOINT,
+            authority,
+            input: TaskInput::Source(source.into()),
+        })
+    }
+
+    pub fn submit_source(&self, request: TaskRequest) -> Result<SubmittedTask, SourceTaskError> {
+        let TaskRequest {
+            principal,
+            actor,
+            endpoint,
+            authority,
+            input,
+        } = request;
+        let TaskInput::Source(source) = input else {
+            return Err(unsupported_runner_error(
+                NodeId(0),
+                None,
+                "submit_source requires source input",
+            ));
+        };
+        let contextual = principal.is_some() || actor.is_some() || endpoint != SYSTEM_ENDPOINT;
+        if !contextual {
+            return Err(unsupported_runner_error(
+                NodeId(0),
+                None,
+                "shared source submission requires endpoint, actor, or principal context",
+            ));
+        }
+        let semantic = parse_semantic(&source);
+        if let Some(item) = semantic
+            .hir
+            .items
+            .iter()
+            .find(|item| matches!(item, HirItem::Method { .. } | HirItem::RelationRule { .. }))
+        {
+            return Err(unsupported_runner_error(
+                item_id(item),
+                semantic.span(item_id(item)).cloned(),
+                "contextual source submission cannot install methods or rules",
+            ));
+        }
+        let context = self.context_for_execution(principal, actor, endpoint);
+        let compiled = compile_semantic(semantic, &context)?;
+        let runtime_context = runtime_context(principal, actor, endpoint);
+        let (task_id, outcome) = self.task_manager.submit_with_context(
+            Arc::new(compiled.program),
+            authority,
+            runtime_context,
+        )?;
+        Ok(SubmittedTask { task_id, outcome })
+    }
+
+    pub fn submit_source_report(
+        &self,
+        endpoint: Identity,
+        actor: Option<Symbol>,
+        source: String,
+    ) -> Result<RunReport, SourceTaskError> {
+        let request = match actor {
+            Some(actor) => self.source_request_as(actor, source)?,
+            None => self.source_request_for_endpoint(endpoint, source)?,
+        };
+        let submitted = self.submit_source(request)?;
+        Ok(self.report(submitted.task_id, submitted.outcome))
+    }
+
+    pub fn submit_invocation(
+        &self,
+        request: TaskRequest,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let TaskRequest {
+            principal,
+            actor,
+            endpoint,
+            authority,
+            input,
+        } = request;
+        let TaskInput::Invocation { selector, roles } = input else {
+            return Err(unsupported_runner_error(
+                NodeId(0),
+                None,
+                "submit_invocation requires invocation input",
+            ));
+        };
+        let program = invocation_program(
+            selector,
+            invocation_roles(principal, actor, endpoint, roles),
+        )
+        .map_err(CompileError::from)?;
+        let runtime_context = runtime_context(principal, actor, endpoint);
+        let (task_id, outcome) =
+            self.task_manager
+                .submit_with_context(Arc::new(program), authority, runtime_context)?;
+        Ok(SubmittedTask { task_id, outcome })
+    }
+
+    pub fn resume_task(&self, request: TaskRequest) -> Result<TaskOutcome, SourceTaskError> {
+        let TaskRequest {
+            principal,
+            actor,
+            endpoint,
+            authority,
+            input,
+        } = request;
+        let TaskInput::Continuation { task_id, value } = input else {
+            return Err(unsupported_runner_error(
+                NodeId(0),
+                None,
+                "resume_task requires continuation input",
+            ));
+        };
+        let runtime_context = runtime_context(principal, actor, endpoint);
+        self.task_manager
+            .resume_with_context(task_id, authority, value, runtime_context)
+            .map_err(SourceTaskError::from)
+    }
+
+    pub fn open_endpoint(
+        &self,
+        endpoint: Identity,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), SourceTaskError> {
+        self.task_manager
+            .open_endpoint(endpoint, actor, protocol)
+            .map_err(SourceTaskError::from)
+    }
+
+    pub fn open_endpoint_with_context(
+        &self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), SourceTaskError> {
+        self.task_manager
+            .open_endpoint_with_context(endpoint, principal, actor, protocol)
+            .map_err(SourceTaskError::from)
+    }
+
+    pub fn close_endpoint(&self, endpoint: Identity) -> usize {
+        self.task_manager.close_endpoint(endpoint)
+    }
+
+    pub fn drain_emissions(&self) -> Vec<Effect> {
+        self.task_manager.drain_emissions()
+    }
+
+    pub fn drain_routed_emissions(&self) -> Vec<Effect> {
+        self.task_manager.drain_routed_emissions()
+    }
+
+    fn endpoint_runtime_context(
+        &self,
+        endpoint: Identity,
+    ) -> Result<RuntimeContext, SourceTaskError> {
+        self.task_manager
+            .endpoint_runtime_context(endpoint)
+            .map_err(SourceTaskError::from)
+    }
+
+    pub fn report_outcome(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
+        self.report(task_id, outcome)
+    }
+
+    pub fn completed_len(&self) -> usize {
+        self.task_manager.completed_len()
+    }
+
+    pub fn suspended_len(&self) -> usize {
+        self.task_manager.suspended_len()
+    }
+
+    fn report(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
+        RunReport {
+            task_id,
+            outcome,
+            identity_names: self.identity_names(),
+            relation_names: self.relation_names(),
+        }
+    }
+
+    fn context_for_execution(
+        &self,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        endpoint: Identity,
+    ) -> CompileContext {
+        let mut context = self.context.clone();
+        if let Some(principal) = principal {
+            context.define_identity("principal", principal);
+        }
+        if let Some(actor) = actor {
+            context.define_identity("actor", actor);
+        }
+        context.define_identity("endpoint", endpoint);
+        context
+    }
+
+    fn identity_names(&self) -> BTreeMap<Identity, String> {
+        let snapshot = self.task_manager.kernel().snapshot();
+        snapshot
+            .scan_relation(named_identity_relation(), &[None, None])
             .unwrap_or_default()
             .into_iter()
             .filter_map(|tuple| {
@@ -3061,6 +3341,111 @@ mod tests {
         assert_eq!(emissions.len(), 1);
         assert_eq!(emissions[0].task_id, submitted.task_id);
         assert_eq!(emissions[0].target, actor);
+    }
+
+    #[test]
+    fn shared_runner_executes_invocations_from_multiple_threads() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "make_identity(:player)\n\
+                 make_identity(:alice)\n\
+                 make_relation(:Delegates, 3)\n\
+                 assert Delegates(#alice, #player, 0)\n\
+                 verb count_up(actor @ #player, count)\n\
+                   let i = 0\n\
+                   while i < count\n\
+                     i = i + 1\n\
+                   end\n\
+                   return i\n\
+                 end\n",
+            )
+            .unwrap();
+        let actor = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let completed_before = runner.task_manager.completed_len();
+        let runner = Arc::new(runner.into_shared());
+
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for worker in 0..4 {
+                let runner = Arc::clone(&runner);
+                handles.push(scope.spawn(move || {
+                    for _ in 0..10 {
+                        let submitted = runner
+                            .submit_invocation(TaskRequest {
+                                principal: None,
+                                actor: None,
+                                endpoint: Identity::new(0x00ee_2000_0000_0000 + worker).unwrap(),
+                                authority: AuthorityContext::root(),
+                                input: TaskInput::Invocation {
+                                    selector: Symbol::intern("count_up"),
+                                    roles: vec![
+                                        (Symbol::intern("actor"), Value::identity(actor)),
+                                        (Symbol::intern("count"), Value::int(100).unwrap()),
+                                    ],
+                                },
+                            })
+                            .unwrap();
+                        assert!(matches!(
+                            submitted.outcome,
+                            TaskOutcome::Complete { value, .. } if value == Value::int(100).unwrap()
+                        ));
+                    }
+                }));
+            }
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+
+        assert_eq!(runner.completed_len(), completed_before + 40);
+    }
+
+    #[test]
+    fn shared_runner_reads_endpoint_transient_state_from_multiple_threads() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:alice)").unwrap();
+        let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        for worker in 0..4 {
+            runner
+                .open_endpoint(
+                    Identity::new(0x00ee_2100_0000_0000 + worker).unwrap(),
+                    Some(alice),
+                    Symbol::intern("telnet"),
+                )
+                .unwrap();
+        }
+        let runner = Arc::new(runner.into_shared());
+
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for worker in 0..4 {
+                let runner = Arc::clone(&runner);
+                handles.push(scope.spawn(move || {
+                    let endpoint = Identity::new(0x00ee_2100_0000_0000 + worker).unwrap();
+                    for _ in 0..10 {
+                        let request = runner
+                            .source_request_for_endpoint(
+                                endpoint,
+                                "return EndpointActor(endpoint(), #alice)",
+                            )
+                            .unwrap();
+                        let request = TaskRequest {
+                            authority: AuthorityContext::root(),
+                            ..request
+                        };
+                        let submitted = runner.submit_source(request).unwrap();
+                        assert!(matches!(
+                            submitted.outcome,
+                            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+                        ));
+                    }
+                }));
+            }
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
     }
 
     #[test]

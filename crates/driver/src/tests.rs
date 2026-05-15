@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{CompioTaskDriver, CompioTaskDriverThread, DriverEvent};
+use crate::{CompioTaskDriver, CompioTaskDriverPool, CompioTaskDriverThread, DriverEvent};
 use compio::runtime::{Runtime, time::sleep};
 use mica_runtime::TaskRequest;
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
@@ -344,4 +344,49 @@ fn thread_driver_routes_actor_effects_to_open_endpoints() {
     )));
     assert_eq!(driver.close_endpoint(endpoint).unwrap(), 4);
     driver.shutdown().unwrap();
+}
+
+#[test]
+fn dispatcher_pool_routes_endpoint_input() {
+    let driver = CompioTaskDriverPool::spawn_empty().unwrap();
+    let endpoint = endpoint(27);
+    let submitted = driver
+        .submit_source(endpoint, root_source("return read(:line)"))
+        .unwrap();
+
+    assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+    let outcomes = driver.input(endpoint, Value::string("north")).unwrap();
+
+    assert_eq!(outcomes.len(), 1);
+    assert!(matches!(
+        &outcomes[0],
+        TaskOutcome::Complete { value, .. } if *value == Value::string("north")
+    ));
+}
+
+#[test]
+fn dispatcher_pool_routes_actor_effects_to_open_endpoints() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    let alice = Identity::new(0x00e0_0000_0000_0000).unwrap();
+    let driver = CompioTaskDriverPool::spawn(runner).unwrap();
+    let endpoint = endpoint(28);
+    driver
+        .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+        .unwrap();
+
+    let submitted = driver
+        .submit_source(endpoint, root_source("emit(#alice, \"hello\")"))
+        .unwrap();
+
+    assert!(matches!(submitted.outcome, TaskOutcome::Complete { .. }));
+    let events = driver.drain_events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DriverEvent::Effect(effect)
+            if effect.task_id == submitted.task_id
+                && effect.target == endpoint
+                && effect.value == Value::string("hello")
+    )));
+    assert_eq!(driver.close_endpoint(endpoint), 4);
 }

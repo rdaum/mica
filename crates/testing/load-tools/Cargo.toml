@@ -12,7 +12,7 @@ path = "src/direct-driver-load-test.rs"
 
 [dependencies]
 clap.workspace = true
-mica-driver.workspace = true
+compio.workspace = true
 mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
 mica-runtime.workspace = true
 mica-var.workspace = true

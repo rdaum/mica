@@ -211,6 +211,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6242aa6428e7ddb40bb94e0bdb0be763910f2958c10b889d0e46257c4dc9b48a"
 dependencies = [
  "compio-buf",
+ "compio-dispatcher",
  "compio-driver",
  "compio-log",
  "compio-runtime",
@@ -223,6 +224,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea3e403b0731a21d1087b5f7247f19afffc9fa3eb7c6296de6603c5d50cdf6c2"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "compio-dispatcher"
+version = "0.11.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4de49029ff0b2ce2bb1b15a9d145c40b634f1ac48ae496fcf0d4ef19e8bc9d0"
+dependencies = [
+ "compio-driver",
+ "compio-runtime",
+ "flume",
+ "futures-channel",
 ]
 
 [[package]]
@@ -461,6 +474,8 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
 dependencies = [
+ "futures-core",
+ "futures-sink",
  "spin",
 ]
 
@@ -475,6 +490,15 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "futures-channel"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
+dependencies = [
+ "futures-core",
+]
 
 [[package]]
 name = "futures-core"
@@ -492,6 +516,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "futures-sink"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
 
 [[package]]
 name = "futures-task"
@@ -820,7 +850,7 @@ name = "mica-load-tools"
 version = "0.1.0"
 dependencies = [
  "clap",
- "mica-driver",
+ "compio",
  "mica-relation-kernel",
  "mica-runtime",
  "mica-var",

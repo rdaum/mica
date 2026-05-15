@@ -12,13 +12,14 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use clap::Parser;
-use mica_driver::{CompioTaskDriverThread, DriverEvent};
+use mica_driver::{CompioTaskDriverPool, DriverEvent};
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,6 +49,8 @@ struct Cli {
     fileins: Vec<PathBuf>,
     #[arg(long, default_value = "alice", value_name = "IDENTITY")]
     actor: String,
+    #[arg(long, value_name = "THREADS")]
+    driver_threads: Option<NonZeroUsize>,
 }
 
 fn main() -> ExitCode {
@@ -79,8 +82,10 @@ fn run() -> Result<(), String> {
         "mica-daemon listening on {}",
         listener.local_addr().unwrap()
     );
-    let state =
-        ServerState::new(CompioTaskDriverThread::spawn(runner).map_err(format_driver_error)?);
+    let state = ServerState::new(
+        CompioTaskDriverPool::spawn_with_workers(runner, cli.driver_threads)
+            .map_err(format_driver_error)?,
+    );
     serve(
         listener,
         state,
@@ -106,15 +111,15 @@ struct ActorBinding {
 }
 
 struct ServerState {
-    driver: Arc<Mutex<CompioTaskDriverThread>>,
+    driver: Arc<CompioTaskDriverPool>,
     endpoints: Arc<Mutex<BTreeMap<Identity, mpsc::Sender<String>>>>,
     stop_events: mpsc::Sender<()>,
     next_endpoint: AtomicU64,
 }
 
 impl ServerState {
-    fn new(driver: CompioTaskDriverThread) -> Self {
-        let driver = Arc::new(Mutex::new(driver));
+    fn new(driver: CompioTaskDriverPool) -> Self {
+        let driver = Arc::new(driver);
         let endpoints = Arc::new(Mutex::new(BTreeMap::new()));
         let (stop_events, stop_rx) = mpsc::channel();
         start_event_pump(driver.clone(), endpoints.clone(), stop_rx);
@@ -184,7 +189,7 @@ fn handle_connection(
 
     let result = read_socket_loop(stream, &state, endpoint, &actor.name);
     state.endpoints.lock().unwrap().remove(&endpoint);
-    let _ = state.driver.lock().unwrap().close_endpoint(endpoint);
+    let _ = state.driver.close_endpoint(endpoint);
     drop_socket_writer(&state, endpoint);
     let _ = writer.join();
     result
@@ -209,8 +214,6 @@ fn read_socket_loop(
         let line = line.trim_end_matches(['\r', '\n']).to_owned();
         let outcomes = state
             .driver
-            .lock()
-            .unwrap()
             .input(endpoint, Value::string(line.clone()))
             .map_err(format_driver_error)?;
         for outcome in outcomes {
@@ -227,8 +230,6 @@ fn read_socket_loop(
 fn start_read_task(state: &ServerState, endpoint: Identity) -> Result<(), String> {
     let report = state
         .driver
-        .lock()
-        .unwrap()
         .submit_source_report(endpoint, None, "return read(:line)".to_owned())
         .map_err(format_driver_error)?;
     match report.outcome {
@@ -253,8 +254,6 @@ fn handle_command(
     let source = command_invocation_source(actor_name, command);
     state
         .driver
-        .lock()
-        .unwrap()
         .submit_source_report(endpoint, None, source)
         .map_err(format_driver_error)?;
     flush_routed_effects(state)?;
@@ -276,8 +275,6 @@ fn is_quit_command(command: &str) -> bool {
 fn open_endpoint(state: &ServerState, endpoint: Identity, actor: Identity) -> Result<(), String> {
     state
         .driver
-        .lock()
-        .unwrap()
         .open_endpoint(endpoint, Some(actor), Symbol::intern("tcp"))
         .map_err(format_driver_error)
 }
@@ -309,19 +306,13 @@ fn write_socket_loop(mut stream: TcpStream, rx: mpsc::Receiver<String>) {
 }
 
 fn start_event_pump(
-    driver: Arc<Mutex<CompioTaskDriverThread>>,
+    driver: Arc<CompioTaskDriverPool>,
     endpoints: Arc<Mutex<BTreeMap<Identity, mpsc::Sender<String>>>>,
     stop_rx: mpsc::Receiver<()>,
 ) {
     thread::spawn(move || {
         while stop_rx.try_recv().is_err() {
-            let events = match driver.lock().unwrap().drain_events() {
-                Ok(events) => events,
-                Err(error) => {
-                    eprintln!("{}", format_driver_error(error));
-                    Vec::new()
-                }
-            };
+            let events = driver.drain_events();
             for event in events {
                 route_driver_event(&endpoints, event);
             }
@@ -331,12 +322,7 @@ fn start_event_pump(
 }
 
 fn flush_routed_effects(state: &ServerState) -> Result<(), String> {
-    let events = state
-        .driver
-        .lock()
-        .unwrap()
-        .drain_events()
-        .map_err(format_driver_error)?;
+    let events = state.driver.drain_events();
     for event in events {
         route_driver_event(&state.endpoints, event);
     }
@@ -396,7 +382,7 @@ fn format_source_error(error: mica_runtime::SourceTaskError) -> String {
     format!("error: {error:?}")
 }
 
-fn format_driver_error(error: mica_driver::DriverThreadError) -> String {
+fn format_driver_error(error: mica_driver::DriverError) -> String {
     format!("error: {error}")
 }
 
@@ -438,7 +424,7 @@ mod tests {
             .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
             .unwrap();
         let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
-        let state = ServerState::new(CompioTaskDriverThread::spawn(runner).unwrap());
+        let state = ServerState::new(CompioTaskDriverPool::spawn(runner).unwrap());
         let endpoint = state.allocate_endpoint().unwrap();
         let (tx, rx) = mpsc::channel();
         state.endpoints.lock().unwrap().insert(endpoint, tx);
@@ -459,30 +445,25 @@ mod tests {
 
         let line = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(line, "I do not understand that.");
-        let _ = state.driver.lock().unwrap().close_endpoint(endpoint);
+        let _ = state.driver.close_endpoint(endpoint);
     }
 
     #[test]
     fn endpoint_read_task_accepts_driver_input() {
         let runner = SourceRunner::new_empty();
-        let state = ServerState::new(CompioTaskDriverThread::spawn(runner).unwrap());
+        let state = ServerState::new(CompioTaskDriverPool::spawn(runner).unwrap());
         let endpoint = state.allocate_endpoint().unwrap();
         let (tx, _rx) = mpsc::channel();
         state.endpoints.lock().unwrap().insert(endpoint, tx);
         open_endpoint(&state, endpoint, endpoint).unwrap();
 
         start_read_task(&state, endpoint).unwrap();
-        let outcomes = state
-            .driver
-            .lock()
-            .unwrap()
-            .input(endpoint, Value::string("look"))
-            .unwrap();
+        let outcomes = state.driver.input(endpoint, Value::string("look")).unwrap();
 
         assert!(matches!(
             outcomes.as_slice(),
             [TaskOutcome::Complete { value, .. }] if *value == Value::string("look")
         ));
-        let _ = state.driver.lock().unwrap().close_endpoint(endpoint);
+        let _ = state.driver.close_endpoint(endpoint);
     }
 }

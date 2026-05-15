@@ -17,7 +17,7 @@ use mica_vm::{
     AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RegisterVm,
     RuntimeContext, RuntimeError, SuspendKind, VmHostContext, VmHostResponse, VmState,
 };
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub type TaskId = u64;
 
@@ -260,43 +260,85 @@ impl<'a> Task<'a> {
                 )?
             };
 
-            match response {
-                VmHostResponse::Continue => {}
-                VmHostResponse::Commit => {
-                    if self.commit_boundary()? == BoundaryResult::Retried {
-                        continue;
-                    }
+            if let Some(outcome) = self.outcome_from_host_response(response)? {
+                return Ok(outcome);
+            }
+        }
+    }
+
+    pub(crate) fn run_with_shared_transient(
+        &mut self,
+        transient: &RwLock<TransientStore>,
+        transient_scopes: &[Identity],
+    ) -> Result<TaskOutcome, TaskError> {
+        loop {
+            let response = {
+                let tx = self.tx.as_mut().ok_or(TaskError::MissingTransaction)?;
+                let mut host = VmHostContext::new(
+                    tx,
+                    &mut self.authority,
+                    &self.resolver,
+                    &self.builtins,
+                    &mut self.pending_effects,
+                    &self.task_snapshot,
+                    self.runtime_context,
+                )
+                .with_shared_transient(transient, transient_scopes);
+                self.vm.run_until_host_response(
+                    &mut host,
+                    self.limits.instruction_budget,
+                    self.limits.max_call_depth,
+                )?
+            };
+
+            if let Some(outcome) = self.outcome_from_host_response(response)? {
+                return Ok(outcome);
+            }
+        }
+    }
+
+    fn outcome_from_host_response(
+        &mut self,
+        response: VmHostResponse,
+    ) -> Result<Option<TaskOutcome>, TaskError> {
+        match response {
+            VmHostResponse::Continue => Ok(None),
+            VmHostResponse::Commit => {
+                self.commit_boundary()?;
+                Ok(None)
+            }
+            VmHostResponse::Suspend(kind) => {
+                if self.commit_boundary()? == BoundaryResult::Retried {
+                    return Ok(None);
                 }
-                VmHostResponse::Suspend(kind) => {
-                    if self.commit_boundary()? == BoundaryResult::Retried {
-                        continue;
-                    }
-                    return Ok(TaskOutcome::Suspended {
-                        kind,
-                        effects: self.take_committed_effects(),
-                        retries: self.retries,
-                    });
+                Ok(Some(TaskOutcome::Suspended {
+                    kind,
+                    effects: self.take_committed_effects(),
+                    retries: self.retries,
+                }))
+            }
+            VmHostResponse::Complete(value) => {
+                if self.commit_boundary()? == BoundaryResult::Retried {
+                    return Ok(None);
                 }
-                VmHostResponse::Complete(value) => {
-                    if self.commit_boundary()? == BoundaryResult::Retried {
-                        continue;
-                    }
-                    return Ok(TaskOutcome::Complete {
-                        value,
-                        effects: self.take_committed_effects(),
-                        retries: self.retries,
-                    });
-                }
-                VmHostResponse::Abort(error) => {
-                    self.pending_effects.clear();
-                    self.tx = Some(self.kernel.begin());
-                    return Ok(TaskOutcome::Aborted {
-                        error,
-                        effects: self.take_committed_effects(),
-                        retries: self.retries,
-                    });
-                }
-                VmHostResponse::RollbackRetry => self.retry_from_boundary()?,
+                Ok(Some(TaskOutcome::Complete {
+                    value,
+                    effects: self.take_committed_effects(),
+                    retries: self.retries,
+                }))
+            }
+            VmHostResponse::Abort(error) => {
+                self.pending_effects.clear();
+                self.tx = Some(self.kernel.begin());
+                Ok(Some(TaskOutcome::Aborted {
+                    error,
+                    effects: self.take_committed_effects(),
+                    retries: self.retries,
+                }))
+            }
+            VmHostResponse::RollbackRetry => {
+                self.retry_from_boundary()?;
+                Ok(None)
             }
         }
     }

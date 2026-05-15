@@ -25,7 +25,8 @@ use mica_vm::{
     SuspendKind,
 };
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TaskManagerError {
@@ -87,6 +88,23 @@ pub struct TaskManager {
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
+}
+
+pub struct SharedTaskManager {
+    kernel: Arc<RelationKernel>,
+    next_task_id: AtomicU64,
+    state: Mutex<SharedTaskState>,
+    transient: RwLock<TransientStore>,
+    limits: TaskLimits,
+    resolver: Arc<ProgramResolver>,
+    builtins: Arc<BuiltinRegistry>,
+}
+
+#[derive(Default)]
+struct SharedTaskState {
+    suspended: HashMap<TaskId, SuspendedTask>,
+    completed: HashMap<TaskId, TaskOutcome>,
+    effects: EffectLog,
 }
 
 impl TaskManager {
@@ -223,6 +241,22 @@ impl TaskManager {
 
     pub fn builtins(&self) -> &Arc<BuiltinRegistry> {
         &self.builtins
+    }
+
+    pub fn into_shared(self) -> SharedTaskManager {
+        SharedTaskManager {
+            kernel: Arc::new(self.kernel),
+            next_task_id: AtomicU64::new(self.next_task_id),
+            state: Mutex::new(SharedTaskState {
+                suspended: self.suspended,
+                completed: self.completed,
+                effects: self.effects,
+            }),
+            transient: RwLock::new(self.transient),
+            limits: self.limits,
+            resolver: self.resolver,
+            builtins: self.builtins,
+        }
     }
 
     pub fn submit(
@@ -395,16 +429,7 @@ impl TaskManager {
         relation: RelationId,
         tuple: Tuple,
     ) -> Result<(), TaskManagerError> {
-        let metadata = endpoint_metadata(relation).ok_or_else(|| {
-            TaskManagerError::Task(TaskError::Runtime(mica_vm::RuntimeError::Kernel(
-                KernelError::UnknownRelation(relation),
-            )))
-        })?;
-        self.transient
-            .assert(scope, metadata, tuple)
-            .map(|_| ())
-            .map_err(TaskError::from)
-            .map_err(TaskManagerError::from)
+        assert_endpoint_fact_in(&mut self.transient, scope, relation, tuple)
     }
 
     fn replace_endpoint_binding(
@@ -413,18 +438,7 @@ impl TaskManager {
         relation: RelationId,
         identity: Identity,
     ) -> Result<(), TaskManagerError> {
-        for row in self.transient.scan(
-            &[endpoint],
-            relation,
-            &[Some(Value::identity(endpoint)), None],
-        )? {
-            self.transient.retract(endpoint, relation, &row);
-        }
-        self.assert_endpoint_fact(
-            endpoint,
-            relation,
-            Tuple::from([Value::identity(endpoint), Value::identity(identity)]),
-        )
+        replace_endpoint_binding_in(&mut self.transient, endpoint, relation, identity)
     }
 
     fn endpoint_binding(
@@ -432,63 +446,250 @@ impl TaskManager {
         endpoint: Identity,
         relation: RelationId,
     ) -> Result<Option<Identity>, TaskManagerError> {
-        let rows = self.transient.scan(
-            &[endpoint],
-            relation,
-            &[Some(Value::identity(endpoint)), None],
+        endpoint_binding_in(&self.transient, endpoint, relation)
+    }
+
+    fn route_effect_targets_result(&self, target: Identity) -> Result<Vec<Identity>, KernelError> {
+        route_effect_targets_in(&self.transient, target)
+    }
+}
+
+impl SharedTaskManager {
+    pub fn kernel(&self) -> &RelationKernel {
+        &self.kernel
+    }
+
+    pub fn submit_with_context(
+        &self,
+        program: Arc<Program>,
+        authority: AuthorityContext,
+        runtime_context: RuntimeContext,
+    ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
+        let task_id = self.allocate_task_id();
+        let task_snapshot = self.task_snapshot_values(Some(task_id));
+        let mut task = Task::new_with_authority(
+            task_id,
+            &self.kernel,
+            program,
+            self.resolver.clone(),
+            self.builtins.clone(),
+            authority,
+            self.limits,
+        );
+        task.set_task_snapshot(task_snapshot);
+        task.set_runtime_context(runtime_context);
+        let transient_scopes = transient_scopes(runtime_context);
+        let use_transient = !self.transient.read().unwrap().is_empty();
+        let outcome = if use_transient {
+            task.run_with_shared_transient(&self.transient, &transient_scopes)?
+        } else {
+            task.run()?
+        };
+        let suspended_state = suspended_state(&outcome, &task);
+        drop(task);
+        self.record_outcome(task_id, outcome.clone(), suspended_state);
+        Ok((task_id, outcome))
+    }
+
+    pub fn resume_with_context(
+        &self,
+        task_id: TaskId,
+        authority: AuthorityContext,
+        value: Value,
+        runtime_context: RuntimeContext,
+    ) -> Result<TaskOutcome, TaskManagerError> {
+        let (suspended, task_snapshot) = {
+            let mut state = self.state.lock().unwrap();
+            if state.completed.contains_key(&task_id) {
+                return Err(TaskManagerError::TaskAlreadyCompleted(task_id));
+            }
+            let suspended = state
+                .suspended
+                .remove(&task_id)
+                .ok_or(TaskManagerError::UnknownTask(task_id))?;
+            let mut tasks = state
+                .suspended
+                .values()
+                .map(|task| task_status_value(task.task_id, Symbol::intern("suspended")))
+                .collect::<Vec<_>>();
+            tasks.push(task_status_value(task_id, Symbol::intern("running")));
+            tasks.sort();
+            (suspended, tasks)
+        };
+
+        let mut task = Task::from_state_with_authority(
+            task_id,
+            self.kernel.as_ref(),
+            self.resolver.clone(),
+            self.builtins.clone(),
+            suspended.state,
+            authority,
+        );
+        task.set_task_snapshot(task_snapshot);
+        task.set_runtime_context(runtime_context);
+        task.resume_with(value)?;
+        let transient_scopes = transient_scopes(runtime_context);
+        let use_transient = !self.transient.read().unwrap().is_empty();
+        let outcome = if use_transient {
+            task.run_with_shared_transient(&self.transient, &transient_scopes)?
+        } else {
+            task.run()?
+        };
+        let suspended_state = suspended_state(&outcome, &task);
+        drop(task);
+        self.record_outcome(task_id, outcome.clone(), suspended_state);
+        Ok(outcome)
+    }
+
+    pub fn drain_emissions(&self) -> Vec<Effect> {
+        self.state.lock().unwrap().effects.drain()
+    }
+
+    pub fn drain_routed_emissions(&self) -> Vec<Effect> {
+        let effects = self.state.lock().unwrap().effects.drain();
+        effects
+            .into_iter()
+            .flat_map(|effect| {
+                self.route_effect_targets(effect.target)
+                    .into_iter()
+                    .map(move |target| Effect {
+                        task_id: effect.task_id,
+                        target,
+                        value: effect.value.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    pub fn open_endpoint(
+        &self,
+        endpoint: Identity,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), TaskManagerError> {
+        self.open_endpoint_with_context(endpoint, None, actor, protocol)
+    }
+
+    pub fn open_endpoint_with_context(
+        &self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+    ) -> Result<(), TaskManagerError> {
+        let mut transient = self.transient.write().unwrap();
+        assert_endpoint_fact_in(
+            &mut transient,
+            endpoint,
+            endpoint_relation(),
+            Tuple::from([Value::identity(endpoint)]),
         )?;
-        let mut bindings = rows
-            .iter()
-            .filter_map(|row| row.values().get(1).and_then(Value::as_identity))
-            .collect::<Vec<_>>();
-        bindings.sort();
-        bindings.dedup();
-        match bindings.as_slice() {
-            [] => Ok(None),
-            [identity] => Ok(Some(*identity)),
-            _ => Err(TaskManagerError::Task(TaskError::Runtime(
-                mica_vm::RuntimeError::InvalidBuiltinCall {
-                    name: Symbol::intern("endpoint_context"),
-                    message: "endpoint has multiple context bindings".to_owned(),
-                },
-            ))),
+        if let Some(principal) = principal {
+            replace_endpoint_binding_in(
+                &mut transient,
+                endpoint,
+                endpoint_principal_relation(),
+                principal,
+            )?;
+        }
+        if let Some(actor) = actor {
+            replace_endpoint_binding_in(
+                &mut transient,
+                endpoint,
+                endpoint_actor_relation(),
+                actor,
+            )?;
+        }
+        assert_endpoint_fact_in(
+            &mut transient,
+            endpoint,
+            endpoint_protocol_relation(),
+            Tuple::from([Value::identity(endpoint), Value::symbol(protocol)]),
+        )?;
+        assert_endpoint_fact_in(
+            &mut transient,
+            endpoint,
+            endpoint_open_relation(),
+            Tuple::from([Value::identity(endpoint)]),
+        )
+    }
+
+    pub fn endpoint_runtime_context(
+        &self,
+        endpoint: Identity,
+    ) -> Result<RuntimeContext, TaskManagerError> {
+        let transient = self.transient.read().unwrap();
+        let principal = endpoint_binding_in(&transient, endpoint, endpoint_principal_relation())?;
+        let actor = endpoint_binding_in(&transient, endpoint, endpoint_actor_relation())?;
+        Ok(RuntimeContext::new(principal, actor, endpoint))
+    }
+
+    pub fn close_endpoint(&self, endpoint: Identity) -> usize {
+        self.transient.write().unwrap().drop_scope(endpoint)
+    }
+
+    pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
+        self.route_effect_targets_result(target)
+            .unwrap_or_else(|_| vec![target])
+    }
+
+    pub fn completed_len(&self) -> usize {
+        self.state.lock().unwrap().completed.len()
+    }
+
+    pub fn suspended_len(&self) -> usize {
+        self.state.lock().unwrap().suspended.len()
+    }
+
+    fn allocate_task_id(&self) -> TaskId {
+        self.next_task_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn task_snapshot_values(&self, running: Option<TaskId>) -> Vec<Value> {
+        let mut tasks = {
+            let state = self.state.lock().unwrap();
+            state
+                .suspended
+                .values()
+                .map(|task| task_status_value(task.task_id, Symbol::intern("suspended")))
+                .collect::<Vec<_>>()
+        };
+        if let Some(task_id) = running {
+            tasks.push(task_status_value(task_id, Symbol::intern("running")));
+        }
+        tasks.sort();
+        tasks
+    }
+
+    fn record_outcome(
+        &self,
+        task_id: TaskId,
+        outcome: TaskOutcome,
+        suspended_state: Option<crate::task::TaskState>,
+    ) {
+        let mut state = self.state.lock().unwrap();
+        match &outcome {
+            TaskOutcome::Complete { effects, .. } | TaskOutcome::Aborted { effects, .. } => {
+                state.effects.emit(task_id, effects.clone());
+                state.completed.insert(task_id, outcome);
+            }
+            TaskOutcome::Suspended { kind, effects, .. } => {
+                state.effects.emit(task_id, effects.clone());
+                state.suspended.insert(
+                    task_id,
+                    SuspendedTask {
+                        task_id,
+                        kind: kind.clone(),
+                        state: suspended_state.expect("suspended task state is present"),
+                    },
+                );
+            }
         }
     }
 
     fn route_effect_targets_result(&self, target: Identity) -> Result<Vec<Identity>, KernelError> {
-        let scopes = self.transient.scopes().collect::<Vec<_>>();
-        let mut endpoints = BTreeSet::new();
-        for row in self.transient.scan(
-            &scopes,
-            endpoint_actor_relation(),
-            &[None, Some(Value::identity(target))],
-        )? {
-            let Some(endpoint) = row.values().first().and_then(Value::as_identity) else {
-                continue;
-            };
-            if self.endpoint_is_open(endpoint)? {
-                endpoints.insert(endpoint);
-            }
-        }
-        if self.endpoint_is_open(target)? {
-            endpoints.insert(target);
-        }
-        if endpoints.is_empty() {
-            Ok(vec![target])
-        } else {
-            Ok(endpoints.into_iter().collect())
-        }
-    }
-
-    fn endpoint_is_open(&self, endpoint: Identity) -> Result<bool, KernelError> {
-        Ok(!self
-            .transient
-            .scan(
-                &[endpoint],
-                endpoint_open_relation(),
-                &[Some(Value::identity(endpoint))],
-            )?
-            .is_empty())
+        let transient = self.transient.read().unwrap();
+        route_effect_targets_in(&transient, target)
     }
 }
 
@@ -504,6 +705,114 @@ fn suspended_state(outcome: &TaskOutcome, task: &Task<'_>) -> Option<crate::task
     } else {
         None
     }
+}
+
+fn assert_endpoint_fact_in(
+    transient: &mut TransientStore,
+    scope: Identity,
+    relation: RelationId,
+    tuple: Tuple,
+) -> Result<(), TaskManagerError> {
+    let metadata = endpoint_metadata(relation).ok_or_else(|| {
+        TaskManagerError::Task(TaskError::Runtime(mica_vm::RuntimeError::Kernel(
+            KernelError::UnknownRelation(relation),
+        )))
+    })?;
+    transient
+        .assert(scope, metadata, tuple)
+        .map(|_| ())
+        .map_err(TaskError::from)
+        .map_err(TaskManagerError::from)
+}
+
+fn replace_endpoint_binding_in(
+    transient: &mut TransientStore,
+    endpoint: Identity,
+    relation: RelationId,
+    identity: Identity,
+) -> Result<(), TaskManagerError> {
+    for row in transient.scan(
+        &[endpoint],
+        relation,
+        &[Some(Value::identity(endpoint)), None],
+    )? {
+        transient.retract(endpoint, relation, &row);
+    }
+    assert_endpoint_fact_in(
+        transient,
+        endpoint,
+        relation,
+        Tuple::from([Value::identity(endpoint), Value::identity(identity)]),
+    )
+}
+
+fn endpoint_binding_in(
+    transient: &TransientStore,
+    endpoint: Identity,
+    relation: RelationId,
+) -> Result<Option<Identity>, TaskManagerError> {
+    let rows = transient.scan(
+        &[endpoint],
+        relation,
+        &[Some(Value::identity(endpoint)), None],
+    )?;
+    let mut bindings = rows
+        .iter()
+        .filter_map(|row| row.values().get(1).and_then(Value::as_identity))
+        .collect::<Vec<_>>();
+    bindings.sort();
+    bindings.dedup();
+    match bindings.as_slice() {
+        [] => Ok(None),
+        [identity] => Ok(Some(*identity)),
+        _ => Err(TaskManagerError::Task(TaskError::Runtime(
+            mica_vm::RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("endpoint_context"),
+                message: "endpoint has multiple context bindings".to_owned(),
+            },
+        ))),
+    }
+}
+
+fn route_effect_targets_in(
+    transient: &TransientStore,
+    target: Identity,
+) -> Result<Vec<Identity>, KernelError> {
+    let scopes = transient.scopes().collect::<Vec<_>>();
+    let mut endpoints = BTreeSet::new();
+    for row in transient.scan(
+        &scopes,
+        endpoint_actor_relation(),
+        &[None, Some(Value::identity(target))],
+    )? {
+        let Some(endpoint) = row.values().first().and_then(Value::as_identity) else {
+            continue;
+        };
+        if endpoint_is_open_in(transient, endpoint)? {
+            endpoints.insert(endpoint);
+        }
+    }
+    if endpoint_is_open_in(transient, target)? {
+        endpoints.insert(target);
+    }
+    if endpoints.is_empty() {
+        Ok(vec![target])
+    } else {
+        Ok(endpoints.into_iter().collect())
+    }
+}
+
+fn endpoint_is_open_in(
+    transient: &TransientStore,
+    endpoint: Identity,
+) -> Result<bool, KernelError> {
+    Ok(!transient
+        .scan(
+            &[endpoint],
+            endpoint_open_relation(),
+            &[Some(Value::identity(endpoint))],
+        )?
+        .is_empty())
 }
 
 fn task_status_value(task_id: TaskId, state: Symbol) -> Value {

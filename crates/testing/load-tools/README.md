@@ -4,9 +4,9 @@
 
 `direct-driver-load-test` is the Mica equivalent of a direct scheduler load
 test: it bypasses TCP transport, seeds a small world in-process, and submits
-role-dispatch invocations directly through `mica-driver`. The measured path is
-driver command handling, runtime task execution, VM dispatch, and relation
-kernel method lookup.
+role-dispatch invocations directly through compio dispatcher workers. The
+measured path is dispatcher scheduling, runtime task execution, VM dispatch,
+and relation kernel method lookup.
 
 By default the tool uses an in-memory runner. Pass `--store <path>` to use a
 fresh Fjall store for setup and commits.
@@ -20,5 +20,6 @@ cargo run --release --bin direct-driver-load-test -- \
   --num-objects 1 \
   --num-dispatch-iterations 7000 \
   --num-invocations 200 \
-  --instruction-budget 1000000000
+  --instruction-budget 1000000000 \
+  --dispatcher-threads 8
 ```
