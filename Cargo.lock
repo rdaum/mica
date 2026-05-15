@@ -1213,6 +1213,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-web-host"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "compio",
+ "httparse",
+]
+
+[[package]]
 name = "micromeasure"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

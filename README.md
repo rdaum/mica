@@ -390,6 +390,8 @@ cargo test --workspace
   telnet host in process and expose host RPC over IPC.
 - [`crates/host-console`](crates/host-console/README.md): interactive console
   for testing the host protocol over ZeroMQ.
+- [`crates/web-host`](crates/web-host/README.md): minimal compio HTTP/1.1
+  host and `httparse`-based codec.
 - [`crates/telnet-host`](crates/telnet-host/README.md): telnet listener,
   telnet codec, and host-side endpoint session handling.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,

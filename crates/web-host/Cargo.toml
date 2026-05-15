@@ -1,0 +1,16 @@
+[package]
+name = "mica-web-host"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "HTTP host transport for Mica"
+
+[dependencies]
+clap.workspace = true
+compio.workspace = true
+httparse.workspace = true
+
+[[bin]]
+name = "mica-web-host"
+path = "src/bin/mica-web-host.rs"
