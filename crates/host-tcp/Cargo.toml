@@ -1,0 +1,13 @@
+[package]
+name = "mica-host-tcp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Line-oriented TCP host transport for Mica"
+
+[dependencies]
+compio.workspace = true
+mica-driver.workspace = true
+mica-runtime.workspace = true
+mica-var.workspace = true

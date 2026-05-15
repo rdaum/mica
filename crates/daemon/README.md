@@ -1,12 +1,11 @@
 # mica-daemon
 
-`mica-daemon` is the first concrete network transport for Mica.
+`mica-daemon` starts a Mica runtime and, for now, links the line-oriented TCP
+host in process.
 
-It is intentionally small: one compio TCP listener, one endpoint identity per
-connection, line input delivered through the driver `read()` path, and routed
-effects written back to the matching socket. Its purpose is to pressure-test the
-endpoint/session model before committing to a larger daemon, IPC, or
-multi-protocol architecture.
+The TCP listener itself lives in `mica-host-tcp`. Keeping it outside the daemon
+lets the same host shape run either linked in process or, later, as an
+out-of-process host over the host RPC/IPC protocol.
 
 The daemon currently files in Mica source files at startup. By default it loads
 `examples/mud-core.mica`, `examples/string.mica`, and

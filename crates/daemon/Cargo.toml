@@ -11,6 +11,7 @@ clap.workspace = true
 compio.workspace = true
 mica-driver.workspace = true
 mica-host-protocol.workspace = true
+mica-host-tcp.workspace = true
 mica-host-zmq.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true

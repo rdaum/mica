@@ -1091,6 +1091,7 @@ dependencies = [
  "compio",
  "mica-driver",
  "mica-host-protocol",
+ "mica-host-tcp",
  "mica-host-zmq",
  "mica-runtime",
  "mica-var",
@@ -1111,6 +1112,16 @@ dependencies = [
 name = "mica-host-protocol"
 version = "0.1.0"
 dependencies = [
+ "mica-var",
+]
+
+[[package]]
+name = "mica-host-tcp"
+version = "0.1.0"
+dependencies = [
+ "compio",
+ "mica-driver",
+ "mica-runtime",
  "mica-var",
 ]
 
