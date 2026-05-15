@@ -1,0 +1,20 @@
+[package]
+name = "mica-host-console"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Interactive console for the Mica host protocol"
+
+[dependencies]
+clap.workspace = true
+compio.workspace = true
+mica-host-protocol.workspace = true
+mica-host-zmq.workspace = true
+mica-var.workspace = true
+rustyline.workspace = true
+zmq.workspace = true
+
+[[bin]]
+name = "mica-host-console"
+path = "src/main.rs"

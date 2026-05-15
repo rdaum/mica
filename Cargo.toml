@@ -7,6 +7,7 @@ members = [
     "crates/driver",
     "crates/host-zmq",
     "crates/host-protocol",
+    "crates/host-console",
     "crates/telnet-host",
     "crates/runner",
     "crates/relation-kernel",
@@ -26,6 +27,7 @@ license = "AGPL-3.0-only"
 mica-compiler = { path = "crates/compiler" }
 mica-driver = { path = "crates/driver" }
 mica-host-protocol = { path = "crates/host-protocol" }
+mica-host-console = { path = "crates/host-console" }
 mica-telnet-host = { path = "crates/telnet-host" }
 mica-host-zmq = { path = "crates/host-zmq" }
 mica-relation-kernel = { path = "crates/relation-kernel", default-features = false }

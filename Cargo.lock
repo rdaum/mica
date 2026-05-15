@@ -1109,6 +1109,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-host-console"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "compio",
+ "mica-host-protocol",
+ "mica-host-zmq",
+ "mica-var",
+ "rustyline",
+ "zmq",
+]
+
+[[package]]
 name = "mica-host-protocol"
 version = "0.1.0"
 dependencies = [

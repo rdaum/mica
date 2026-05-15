@@ -286,6 +286,8 @@ cargo test --workspace
 - [`crates/runner`](crates/runner/README.md): CLI and REPL binary.
 - [`crates/daemon`](crates/daemon/README.md): runtime daemon that can link the
   telnet host in process and expose host RPC over IPC.
+- [`crates/host-console`](crates/host-console/README.md): interactive console
+  for testing the host protocol over ZeroMQ.
 - [`crates/telnet-host`](crates/telnet-host/README.md): telnet listener,
   telnet codec, and host-side endpoint session handling.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,
