@@ -12,20 +12,23 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use clap::Parser;
+use compio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use compio::net::{OwnedReadHalf, OwnedWriteHalf, TcpListener, TcpStream};
+use compio::runtime::{ResumeUnwind, Runtime};
+use compio::time::sleep;
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io::ErrorKind;
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 const DEFAULT_BIND: &str = "127.0.0.1:7777";
@@ -65,6 +68,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
+    Runtime::new()
+        .map_err(|error| format!("failed to start compio runtime: {error}"))?
+        .block_on(run_async(cli))
+}
+
+async fn run_async(cli: Cli) -> Result<(), String> {
     let mut runner = SourceRunner::new_empty();
     for filein in fileins_or_defaults(&cli.fileins) {
         let source = fs::read_to_string(&filein)
@@ -77,6 +86,7 @@ fn run() -> Result<(), String> {
         .named_identity(actor_symbol)
         .map_err(format_source_error)?;
     let listener = TcpListener::bind(cli.bind)
+        .await
         .map_err(|error| format!("failed to bind {}: {error}", cli.bind))?;
     println!(
         "mica-daemon listening on {}",
@@ -95,6 +105,7 @@ fn run() -> Result<(), String> {
         },
         None,
     )
+    .await
 }
 
 fn fileins_or_defaults(fileins: &[PathBuf]) -> Vec<PathBuf> {
@@ -113,7 +124,7 @@ struct ActorBinding {
 struct ServerState {
     driver: Arc<CompioTaskDriver>,
     endpoints: Arc<Mutex<BTreeMap<Identity, mpsc::Sender<String>>>>,
-    stop_events: mpsc::Sender<()>,
+    stop_events: Arc<AtomicBool>,
     next_endpoint: AtomicU64,
 }
 
@@ -121,12 +132,22 @@ impl ServerState {
     fn new(driver: CompioTaskDriver) -> Self {
         let driver = Arc::new(driver);
         let endpoints = Arc::new(Mutex::new(BTreeMap::new()));
-        let (stop_events, stop_rx) = mpsc::channel();
-        start_event_pump(driver.clone(), endpoints.clone(), stop_rx);
+        let stop_events = Arc::new(AtomicBool::new(false));
+        start_event_pump(driver.clone(), endpoints.clone(), stop_events.clone());
         Self {
             driver,
             endpoints,
             stop_events,
+            next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_without_event_pump(driver: CompioTaskDriver) -> Self {
+        Self {
+            driver: Arc::new(driver),
+            endpoints: Arc::new(Mutex::new(BTreeMap::new())),
+            stop_events: Arc::new(AtomicBool::new(false)),
             next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
         }
     }
@@ -139,34 +160,40 @@ impl ServerState {
 
 impl Drop for ServerState {
     fn drop(&mut self) {
-        let _ = self.stop_events.send(());
+        self.stop_events.store(true, Ordering::Relaxed);
     }
 }
 
-fn serve(
+async fn serve(
     listener: TcpListener,
     state: ServerState,
     actor: ActorBinding,
     max_connections: Option<usize>,
 ) -> Result<(), String> {
     let state = Arc::new(state);
-    for (accepted, stream) in listener.incoming().enumerate() {
-        let stream = stream.map_err(|error| format!("failed to accept connection: {error}"))?;
+    let mut accepted = 0usize;
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("failed to accept connection: {error}"))?;
         let state = state.clone();
         let actor = actor.clone();
-        thread::spawn(move || {
-            if let Err(error) = handle_connection(stream, state, actor) {
+        compio::runtime::spawn(async move {
+            if let Err(error) = handle_connection(stream, state, actor).await {
                 eprintln!("connection failed: {error}");
             }
-        });
-        if max_connections.is_some_and(|max| accepted + 1 >= max) {
+        })
+        .detach();
+        accepted += 1;
+        if max_connections.is_some_and(|max| accepted >= max) {
             break;
         }
     }
     Ok(())
 }
 
-fn handle_connection(
+async fn handle_connection(
     stream: TcpStream,
     state: Arc<ServerState>,
     actor: ActorBinding,
@@ -176,10 +203,8 @@ fn handle_connection(
     state.endpoints.lock().unwrap().insert(endpoint, out_tx);
     open_endpoint(&state, endpoint, actor.identity)?;
 
-    let writer = stream
-        .try_clone()
-        .map_err(|error| format!("failed to clone connection stream: {error}"))?;
-    let writer = thread::spawn(move || write_socket_loop(writer, out_rx));
+    let (read_half, write_half) = stream.into_split();
+    let writer = compio::runtime::spawn(write_socket_loop(write_half, out_rx));
     send_line(&state, endpoint, "Connected to Mica.")?;
     send_line(
         &state,
@@ -187,31 +212,27 @@ fn handle_connection(
         "Try: look, get coin, put coin box, north, say hello, quit.",
     )?;
 
-    let result = read_socket_loop(stream, &state, endpoint, &actor.name);
+    let result = read_socket_loop(read_half, &state, endpoint, &actor.name).await;
     state.endpoints.lock().unwrap().remove(&endpoint);
     let _ = state.driver.close_endpoint(endpoint);
     drop_socket_writer(&state, endpoint);
-    let _ = writer.join();
+    let _ = writer.await.resume_unwind();
     result
 }
 
-fn read_socket_loop(
-    stream: TcpStream,
+async fn read_socket_loop(
+    mut stream: OwnedReadHalf<TcpStream>,
     state: &ServerState,
     endpoint: Identity,
     actor_name: &str,
 ) -> Result<(), String> {
-    let mut reader = BufReader::new(stream);
+    let mut pending = Vec::new();
     loop {
         start_read_task(state, endpoint)?;
-        let mut line = String::new();
-        let bytes = reader
-            .read_line(&mut line)
-            .map_err(|error| format!("failed to read from connection: {error}"))?;
-        if bytes == 0 {
+        let line = read_line(&mut stream, &mut pending).await?;
+        let Some(line) = line else {
             return Ok(());
-        }
-        let line = line.trim_end_matches(['\r', '\n']).to_owned();
+        };
         let outcomes = state
             .driver
             .input(endpoint, Value::string(line.clone()))
@@ -225,6 +246,37 @@ fn read_socket_loop(
             }
         }
     }
+}
+
+async fn read_line(
+    stream: &mut OwnedReadHalf<TcpStream>,
+    pending: &mut Vec<u8>,
+) -> Result<Option<String>, String> {
+    loop {
+        if let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
+            let line = pending.drain(..=index).collect::<Vec<_>>();
+            return String::from_utf8(trim_line_end(&line).to_vec())
+                .map(Some)
+                .map_err(|error| format!("connection sent invalid UTF-8: {error}"));
+        }
+        let (result, buffer) = stream.read([0u8; 4096]).await.into();
+        let bytes = result.map_err(|error| format!("failed to read from connection: {error}"))?;
+        if bytes == 0 {
+            if pending.is_empty() {
+                return Ok(None);
+            }
+            let line = String::from_utf8(trim_line_end(pending).to_vec())
+                .map_err(|error| format!("connection sent invalid UTF-8: {error}"))?;
+            pending.clear();
+            return Ok(Some(line));
+        }
+        pending.extend_from_slice(&buffer[..bytes]);
+    }
+}
+
+fn trim_line_end(line: &[u8]) -> &[u8] {
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    line.strip_suffix(b"\r").unwrap_or(line)
 }
 
 fn start_read_task(state: &ServerState, endpoint: Identity) -> Result<(), String> {
@@ -296,29 +348,48 @@ fn drop_socket_writer(state: &ServerState, endpoint: Identity) {
     state.endpoints.lock().unwrap().remove(&endpoint);
 }
 
-fn write_socket_loop(mut stream: TcpStream, rx: mpsc::Receiver<String>) {
-    for line in rx {
-        if writeln!(stream, "{line}").is_err() {
-            break;
+async fn write_socket_loop(
+    mut stream: OwnedWriteHalf<TcpStream>,
+    rx: mpsc::Receiver<String>,
+) -> Result<(), String> {
+    loop {
+        match rx.try_recv() {
+            Ok(line) => {
+                let mut bytes = line.into_bytes();
+                bytes.push(b'\n');
+                let (result, _) = stream.write_all(bytes).await.into();
+                if result.is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => sleep(EVENT_POLL_DELAY).await,
+            Err(mpsc::TryRecvError::Disconnected) => break,
         }
-        let _ = stream.flush();
+    }
+    match stream.shutdown().await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotConnected => Ok(()),
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
+        Err(error) if error.kind() == ErrorKind::ConnectionReset => Ok(()),
+        Err(error) => Err(format!("failed to shut down connection writer: {error}")),
     }
 }
 
 fn start_event_pump(
     driver: Arc<CompioTaskDriver>,
     endpoints: Arc<Mutex<BTreeMap<Identity, mpsc::Sender<String>>>>,
-    stop_rx: mpsc::Receiver<()>,
+    stop_events: Arc<AtomicBool>,
 ) {
-    thread::spawn(move || {
-        while stop_rx.try_recv().is_err() {
+    compio::runtime::spawn(async move {
+        while !stop_events.load(Ordering::Relaxed) {
             let events = driver.drain_events();
             for event in events {
                 route_driver_event(&endpoints, event);
             }
-            thread::sleep(EVENT_POLL_DELAY);
+            sleep(EVENT_POLL_DELAY).await;
         }
-    });
+    })
+    .detach();
 }
 
 fn flush_routed_effects(state: &ServerState) -> Result<(), String> {
@@ -424,7 +495,7 @@ mod tests {
             .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
             .unwrap();
         let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
-        let state = ServerState::new(CompioTaskDriver::spawn(runner).unwrap());
+        let state = ServerState::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
         let endpoint = state.allocate_endpoint().unwrap();
         let (tx, rx) = mpsc::channel();
         state.endpoints.lock().unwrap().insert(endpoint, tx);
@@ -451,7 +522,7 @@ mod tests {
     #[test]
     fn endpoint_read_task_accepts_driver_input() {
         let runner = SourceRunner::new_empty();
-        let state = ServerState::new(CompioTaskDriver::spawn(runner).unwrap());
+        let state = ServerState::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
         let endpoint = state.allocate_endpoint().unwrap();
         let (tx, _rx) = mpsc::channel();
         state.endpoints.lock().unwrap().insert(endpoint, tx);

@@ -2,10 +2,10 @@
 
 `mica-daemon` is the first concrete network transport for Mica.
 
-It is intentionally small: one blocking TCP listener, one endpoint identity per
+It is intentionally small: one compio TCP listener, one endpoint identity per
 connection, line input delivered through the driver `read()` path, and routed
-effects written back to the matching socket. Its purpose is to pressure-test
-the endpoint/session model before committing to a larger daemon, IPC, or
+effects written back to the matching socket. Its purpose is to pressure-test the
+endpoint/session model before committing to a larger daemon, IPC, or
 multi-protocol architecture.
 
 The daemon currently files in Mica source files at startup. By default it loads
