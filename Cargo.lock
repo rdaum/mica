@@ -816,6 +816,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-load-tools"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "mica-driver",
+ "mica-relation-kernel",
+ "mica-runtime",
+ "mica-var",
+]
+
+[[package]]
 name = "mica-relation-kernel"
 version = "0.1.0"
 dependencies = [

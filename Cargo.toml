@@ -8,6 +8,7 @@ members = [
     "crates/runner",
     "crates/relation-kernel",
     "crates/runtime",
+    "crates/testing/load-tools",
     "crates/var",
     "crates/vm",
 ]

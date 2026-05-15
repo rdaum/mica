@@ -1,0 +1,18 @@
+[package]
+name = "mica-load-tools"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Load testing tools for Mica"
+
+[[bin]]
+name = "direct-driver-load-test"
+path = "src/direct-driver-load-test.rs"
+
+[dependencies]
+clap.workspace = true
+mica-driver.workspace = true
+mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
+mica-runtime.workspace = true
+mica-var.workspace = true

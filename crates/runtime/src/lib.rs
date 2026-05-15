@@ -200,6 +200,11 @@ impl SourceRunner {
         runner
     }
 
+    pub fn with_task_limits(mut self, limits: TaskLimits) -> Self {
+        self.task_manager = self.task_manager.with_limits(limits);
+        self
+    }
+
     pub fn run_source(&mut self, source: &str) -> Result<RunReport, SourceTaskError> {
         let submitted = self.submit_source(Self::root_source_request(source))?;
         Ok(self.report(submitted.task_id, submitted.outcome))
