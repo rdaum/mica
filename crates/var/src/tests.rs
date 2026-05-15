@@ -14,8 +14,9 @@
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
     CapabilityId, Identity, Symbol, SymbolEncoding, SymbolMetadata, Value, ValueCodecError,
-    ValueCodecOptions, ValueKind, ValueRef, ValueSink, ValueVisitor, VisitDecision, decode_value,
-    decode_value_exact, decode_value_exact_with_options, encode_value, encode_value_to_sink,
+    ValueCodecOptions, ValueKind, ValueRef, ValueSegment, ValueSink, ValueVisitor, VisitDecision,
+    decode_value, decode_value_exact, decode_value_exact_with_options, encode_value,
+    encode_value_segments, encode_value_segments_with_options, encode_value_to_sink,
     encode_value_with_options,
 };
 use std::mem::{align_of, size_of};
@@ -483,6 +484,69 @@ fn value_codec_sink_matches_vec_encoder() {
         let actual = sink.0.concat();
         assert_eq!(actual, expected);
     }
+}
+
+#[test]
+fn value_codec_segments_match_vec_encoder_and_borrow_payloads() {
+    let values = [
+        Value::identity(Identity::new(42).unwrap()),
+        Value::string("brass lamp"),
+        Value::bytes([1, 2, 3, 4]),
+        Value::list([
+            Value::symbol(Symbol::intern("item")),
+            Value::error(
+                Symbol::intern("E_TEST"),
+                Some("nested"),
+                Some(Value::int(7).unwrap()),
+            ),
+        ]),
+    ];
+
+    for value in values {
+        let mut expected = Vec::new();
+        encode_value(&value, &mut expected).unwrap();
+
+        let segments = encode_value_segments(&value).unwrap();
+        assert_eq!(segments.to_vec(), expected);
+        assert_eq!(segments.len(), expected.len());
+        assert!(!segments.is_empty());
+    }
+
+    let string = Value::string("brass lamp");
+    let string_segments = encode_value_segments(&string).unwrap();
+    assert!(matches!(
+        string_segments.segments(),
+        [
+            ValueSegment::Scratch(_),
+            ValueSegment::Borrowed(b"brass lamp")
+        ]
+    ));
+
+    let bytes = Value::bytes([1, 2, 3, 4]);
+    let byte_segments = encode_value_segments(&bytes).unwrap();
+    assert!(matches!(
+        byte_segments.segments(),
+        [
+            ValueSegment::Scratch(_),
+            ValueSegment::Borrowed([1, 2, 3, 4])
+        ]
+    ));
+}
+
+#[test]
+fn value_codec_segments_support_inline_symbol_ids() {
+    let options = ValueCodecOptions {
+        symbol_encoding: SymbolEncoding::Id,
+        allow_capabilities: false,
+    };
+    let symbol = Value::symbol(Symbol::from_id(123));
+
+    let mut expected = Vec::new();
+    encode_value_with_options(&symbol, &mut expected, options).unwrap();
+
+    let segments = encode_value_segments_with_options(&symbol, options).unwrap();
+    assert_eq!(segments.to_vec(), expected);
+    assert!(matches!(segments.segments(), [ValueSegment::Scratch(_)]));
 }
 
 #[test]

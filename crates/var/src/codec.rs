@@ -138,6 +138,70 @@ impl ValueSink for Vec<u8> {
     }
 }
 
+/// Borrowed and owned byte segments for an encoded value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValueSegment<'a> {
+    Borrowed(&'a [u8]),
+    Scratch(usize),
+}
+
+/// Segmented encoding of a value.
+///
+/// Headers and length words live in `scratch`; string and bytes payloads can be
+/// borrowed from the source value.
+#[derive(Debug, Default)]
+pub struct ValueSegments<'a> {
+    scratch: Vec<[u8; 8]>,
+    segments: Vec<ValueSegment<'a>>,
+}
+
+impl<'a> ValueSegments<'a> {
+    pub fn segments(&self) -> &[ValueSegment<'a>] {
+        &self.segments
+    }
+
+    pub fn scratch(&self, index: usize) -> &[u8; 8] {
+        &self.scratch[index]
+    }
+
+    pub fn len(&self) -> usize {
+        self.segments
+            .iter()
+            .map(|segment| match segment {
+                ValueSegment::Borrowed(bytes) => bytes.len(),
+                ValueSegment::Scratch(_) => 8,
+            })
+            .sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.len());
+        for segment in &self.segments {
+            match segment {
+                ValueSegment::Borrowed(bytes) => out.extend_from_slice(bytes),
+                ValueSegment::Scratch(index) => out.extend_from_slice(&self.scratch[*index]),
+            }
+        }
+        out
+    }
+
+    fn push_scratch_word(&mut self, word: u64) {
+        let index = self.scratch.len();
+        self.scratch.push(word.to_le_bytes());
+        self.segments.push(ValueSegment::Scratch(index));
+    }
+
+    fn push_borrowed(&mut self, bytes: &'a [u8]) {
+        if !bytes.is_empty() {
+            self.segments.push(ValueSegment::Borrowed(bytes));
+        }
+    }
+}
+
 /// Encodes a single owned `Value` with the default persistence-safe options.
 pub fn encode_value(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueCodecError> {
     encode_value_with_options(value, out, ValueCodecOptions::default())
@@ -230,6 +294,22 @@ pub fn encode_value_to_sink<S: ValueSink>(
     Ok(())
 }
 
+/// Encodes a value as borrowed byte segments with default persistence-safe
+/// options.
+pub fn encode_value_segments(value: &Value) -> Result<ValueSegments<'_>, ValueCodecError> {
+    encode_value_segments_with_options(value, ValueCodecOptions::default())
+}
+
+/// Encodes a value as borrowed byte segments.
+pub fn encode_value_segments_with_options<'a>(
+    value: &'a Value,
+    options: ValueCodecOptions,
+) -> Result<ValueSegments<'a>, ValueCodecError> {
+    let mut segments = ValueSegments::default();
+    encode_value_to_segments(value, &mut segments, options)?;
+    Ok(segments)
+}
+
 /// Decodes one value with the default persistence-safe options, returning the
 /// value and the number of bytes consumed.
 pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), ValueCodecError> {
@@ -282,6 +362,107 @@ fn encode_symbol_value(
     Ok(())
 }
 
+fn encode_value_to_segments<'a>(
+    value: &'a Value,
+    segments: &mut ValueSegments<'a>,
+    options: ValueCodecOptions,
+) -> Result<(), ValueCodecError> {
+    match value.as_value_ref() {
+        ValueRef::Nothing
+        | ValueRef::Bool(_)
+        | ValueRef::Int(_)
+        | ValueRef::Float(_)
+        | ValueRef::Identity(_) => {
+            segments.push_scratch_word(value.raw_bits());
+        }
+        ValueRef::Symbol(symbol) => {
+            encode_symbol_to_segments(TAG_SYMBOL, symbol, segments, options)?;
+        }
+        ValueRef::ErrorCode(symbol) => {
+            encode_symbol_to_segments(TAG_ERROR_CODE, symbol, segments, options)?;
+        }
+        ValueRef::String(value) => {
+            segments.push_scratch_word(extended_header_word(TAG_STRING, len_aux(value.len())?));
+            segments.push_borrowed(value.as_bytes());
+        }
+        ValueRef::Bytes(value) => {
+            segments.push_scratch_word(extended_header_word(TAG_BYTES, len_aux(value.len())?));
+            segments.push_borrowed(value);
+        }
+        ValueRef::List(values) => {
+            segments.push_scratch_word(extended_header_word(TAG_LIST, len_aux(values.len())?));
+            for value in values {
+                encode_value_to_segments(value, segments, options)?;
+            }
+        }
+        ValueRef::Map(entries) => {
+            segments.push_scratch_word(extended_header_word(TAG_MAP, len_aux(entries.len())?));
+            for (key, value) in entries {
+                encode_value_to_segments(key, segments, options)?;
+                encode_value_to_segments(value, segments, options)?;
+            }
+        }
+        ValueRef::Range { start, end } => {
+            let flags = if end.is_some() { RANGE_HAS_END } else { 0 };
+            segments.push_scratch_word(extended_header_word(TAG_RANGE, flags));
+            encode_value_to_segments(start, segments, options)?;
+            if let Some(end) = end {
+                encode_value_to_segments(end, segments, options)?;
+            }
+        }
+        ValueRef::Error {
+            code,
+            message,
+            value,
+        } => {
+            let mut flags = 0;
+            if message.is_some() {
+                flags |= ERROR_HAS_MESSAGE;
+            }
+            if value.is_some() {
+                flags |= ERROR_HAS_VALUE;
+            }
+            segments.push_scratch_word(extended_header_word(TAG_ERROR, flags));
+            encode_symbol_to_segments(TAG_ERROR_CODE, code, segments, options)?;
+            if let Some(message) = message {
+                let len = u64::try_from(message.len())
+                    .map_err(|_| ValueCodecError::LengthTooLarge(message.len()))?;
+                segments.push_scratch_word(len);
+                segments.push_borrowed(message.as_bytes());
+            }
+            if let Some(value) = value {
+                encode_value_to_segments(value, segments, options)?;
+            }
+        }
+        ValueRef::Capability(_) if options.allow_capabilities => {
+            segments.push_scratch_word(value.raw_bits());
+        }
+        ValueRef::Capability(_) => return Err(ValueCodecError::CapabilityNotEncodable),
+    }
+    Ok(())
+}
+
+fn encode_symbol_to_segments<'a>(
+    tag: u8,
+    symbol: Symbol,
+    segments: &mut ValueSegments<'a>,
+    options: ValueCodecOptions,
+) -> Result<(), ValueCodecError> {
+    match options.symbol_encoding {
+        SymbolEncoding::Id => {
+            segments.push_scratch_word(Value::pack(tag, symbol.id() as u64).raw_bits());
+        }
+        SymbolEncoding::Name => {
+            let name = symbol
+                .name()
+                .ok_or(ValueCodecError::UnnamedSymbol(symbol.id()))?;
+            segments.push_scratch_word(extended_header_word(tag, len_aux(name.len())?));
+            segments.push_borrowed(name.as_bytes());
+        }
+    }
+    Ok(())
+}
+
 fn write_blob(sink: &mut impl ValueSink, bytes: &[u8]) -> Result<(), ValueCodecError> {
     let len =
         u64::try_from(bytes.len()).map_err(|_| ValueCodecError::LengthTooLarge(bytes.len()))?;
@@ -296,14 +477,16 @@ fn write_extended_header(
     aux: u64,
 ) -> Result<(), ValueCodecError> {
     debug_assert!(aux <= EXT_AUX_MASK);
-    write_word(
-        sink,
-        ((EXTENDED_TAG as u64) << TAG_SHIFT) | ((kind as u64) << EXT_KIND_SHIFT) | aux,
-    )
+    write_word(sink, extended_header_word(kind, aux))
 }
 
 fn write_word(sink: &mut impl ValueSink, value: u64) -> Result<(), ValueCodecError> {
     sink.write_bytes(&value.to_le_bytes())
+}
+
+fn extended_header_word(kind: u8, aux: u64) -> u64 {
+    debug_assert!(aux <= EXT_AUX_MASK);
+    ((EXTENDED_TAG as u64) << TAG_SHIFT) | ((kind as u64) << EXT_KIND_SHIFT) | aux
 }
 
 fn len_aux(len: usize) -> Result<u64, ValueCodecError> {

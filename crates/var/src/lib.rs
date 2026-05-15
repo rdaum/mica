@@ -29,9 +29,10 @@ mod visit;
 mod tests;
 
 pub use codec::{
-    SymbolEncoding, ValueCodecError, ValueCodecOptions, ValueSink, decode_value,
-    decode_value_exact, decode_value_exact_with_options, decode_value_with_options, encode_value,
-    encode_value_to_sink, encode_value_with_options,
+    SymbolEncoding, ValueCodecError, ValueCodecOptions, ValueSegment, ValueSegments, ValueSink,
+    decode_value, decode_value_exact, decode_value_exact_with_options, decode_value_with_options,
+    encode_value, encode_value_segments, encode_value_segments_with_options, encode_value_to_sink,
+    encode_value_with_options,
 };
 pub use symbol::{Symbol, SymbolMetadata};
 pub use value::{
