@@ -8,6 +8,10 @@ role-dispatch invocations directly through compio dispatcher workers. The
 measured path is dispatcher scheduling, runtime task execution, VM dispatch,
 and relation kernel method lookup.
 
+The text output reports `per_dispatch` from cumulative worker execution time,
+matching Moor's `Per-Verb` column. `amort_dispatch` is the wall-clock
+amortized value across all workers.
+
 By default the tool uses an in-memory runner. Pass `--store <path>` to use a
 fresh Fjall store for setup and commits.
 

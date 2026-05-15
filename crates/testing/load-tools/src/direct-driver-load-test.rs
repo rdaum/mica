@@ -112,7 +112,8 @@ struct Results {
     dispatch_calls: usize,
     wall_time: Duration,
     cumulative_time: Duration,
-    per_dispatch_wall: Duration,
+    per_dispatch: Duration,
+    amortized_per_dispatch: Duration,
     throughput: f64,
     invocation_p50: Duration,
     invocation_p95: Duration,
@@ -387,7 +388,8 @@ fn run_fixed_concurrency(
         .flat_map(|result| result.latencies)
         .collect::<Vec<_>>();
     let dispatch_calls = invocations * ((iterations * object_count) + 1);
-    let per_dispatch_wall = duration_per_count(wall_time, dispatch_calls);
+    let per_dispatch = duration_per_count(cumulative_time, dispatch_calls);
+    let amortized_per_dispatch = duration_per_count(wall_time, dispatch_calls);
     let throughput = if wall_time.is_zero() {
         0.0
     } else {
@@ -401,7 +403,8 @@ fn run_fixed_concurrency(
         dispatch_calls,
         wall_time,
         cumulative_time,
-        per_dispatch_wall,
+        per_dispatch,
+        amortized_per_dispatch,
         throughput,
         invocation_p50: p50,
         invocation_p95: p95,
@@ -520,12 +523,13 @@ fn percentile(sorted: &[Duration], percentile: f64) -> Duration {
 
 fn print_result(result: &Results) {
     println!(
-        "conc={} invocations={} dispatch_calls={} wall={} per_dispatch={} throughput={:.2}/s invocation_p50={} p95={} p99={} max={}",
+        "conc={} invocations={} dispatch_calls={} wall={} per_dispatch={} amort_dispatch={} throughput={:.2}/s invocation_p50={} p95={} p99={} max={}",
         result.concurrency,
         result.invocations,
         result.dispatch_calls,
         format_duration(result.wall_time),
-        format_duration(result.per_dispatch_wall),
+        format_duration(result.per_dispatch),
+        format_duration(result.amortized_per_dispatch),
         result.throughput,
         format_duration(result.invocation_p50),
         format_duration(result.invocation_p95),
@@ -539,17 +543,18 @@ fn write_csv(output_file: Option<&PathBuf>, results: &[Results]) -> Result<(), S
         return Ok(());
     };
     let mut output =
-        "concurrency,invocations,dispatch_calls,wall_time_ns,cumulative_time_ns,per_dispatch_wall_ns,throughput_per_sec,invocation_p50_ns,invocation_p95_ns,invocation_p99_ns,invocation_max_ns\n"
+        "concurrency,invocations,dispatch_calls,wall_time_ns,cumulative_time_ns,per_dispatch_ns,amortized_per_dispatch_ns,throughput_per_sec,invocation_p50_ns,invocation_p95_ns,invocation_p99_ns,invocation_max_ns\n"
             .to_owned();
     for result in results {
         output.push_str(&format!(
-            "{},{},{},{},{},{},{:.0},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{:.0},{},{},{},{}\n",
             result.concurrency,
             result.invocations,
             result.dispatch_calls,
             result.wall_time.as_nanos(),
             result.cumulative_time.as_nanos(),
-            result.per_dispatch_wall.as_nanos(),
+            result.per_dispatch.as_nanos(),
+            result.amortized_per_dispatch.as_nanos(),
             result.throughput,
             result.invocation_p50.as_nanos(),
             result.invocation_p95.as_nanos(),
