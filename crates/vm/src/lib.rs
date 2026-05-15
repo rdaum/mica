@@ -33,8 +33,8 @@ pub use builtin::{
 pub use effect::Emission;
 pub use error::RuntimeError;
 pub use program::{
-    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver,
-    QueryBinding, Register, RuntimeBinaryOp, RuntimeUnaryOp, SuspendKind,
+    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramBuilder,
+    ProgramResolver, QueryBinding, Register, RuntimeBinaryOp, RuntimeUnaryOp, SuspendKind,
 };
 pub use vm::{
     Frame, ProjectedVmHostContext, RegisterVm, VmHost, VmHostContext, VmHostResponse, VmState,

@@ -261,6 +261,226 @@ pub enum Instruction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ConstId(pub(crate) u16);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProgramId(pub(crate) u16);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RelationRef(pub(crate) u16);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DispatchSpecId(pub(crate) u16);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SuspendKindId(pub(crate) u16);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Target(pub(crate) u16);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TableRange {
+    start: u16,
+    len: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OperandRef {
+    Register(Register),
+    Constant(ConstId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompactListItem {
+    Value(OperandRef),
+    Splice(OperandRef),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CompactCatchHandler {
+    pub(crate) code: Option<ConstId>,
+    pub(crate) binding: Option<Register>,
+    pub(crate) target: Target,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DispatchSpec {
+    pub(crate) relations: DispatchRelations,
+    pub(crate) program_relation: RelationId,
+    pub(crate) program_bytes: RelationId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Opcode {
+    Load {
+        dst: Register,
+        value: ConstId,
+    },
+    Move {
+        dst: Register,
+        src: Register,
+    },
+    Unary {
+        dst: Register,
+        op: RuntimeUnaryOp,
+        src: Register,
+    },
+    Binary {
+        dst: Register,
+        op: RuntimeBinaryOp,
+        left: Register,
+        right: Register,
+    },
+    BuildList {
+        dst: Register,
+        items: TableRange,
+    },
+    BuildMap {
+        dst: Register,
+        entries: TableRange,
+    },
+    BuildRange {
+        dst: Register,
+        start: OperandRef,
+        end: Option<OperandRef>,
+    },
+    Index {
+        dst: Register,
+        collection: Register,
+        index: OperandRef,
+    },
+    SetIndex {
+        dst: Register,
+        collection: Register,
+        index: OperandRef,
+        value: OperandRef,
+    },
+    ErrorField {
+        dst: Register,
+        error: Register,
+        field: ErrorField,
+    },
+    One {
+        dst: Register,
+        src: Register,
+    },
+    CollectionLen {
+        dst: Register,
+        collection: Register,
+    },
+    CollectionKeyAt {
+        dst: Register,
+        collection: Register,
+        index: Register,
+    },
+    CollectionValueAt {
+        dst: Register,
+        collection: Register,
+        index: Register,
+    },
+    ScanExists {
+        dst: Register,
+        relation: RelationRef,
+        bindings: TableRange,
+    },
+    ScanBindings {
+        dst: Register,
+        relation: RelationRef,
+        bindings: TableRange,
+        outputs: TableRange,
+    },
+    ScanValue {
+        dst: Register,
+        relation: RelationRef,
+        key: OperandRef,
+    },
+    Assert {
+        relation: RelationRef,
+        values: TableRange,
+    },
+    Retract {
+        relation: RelationRef,
+        values: TableRange,
+    },
+    RetractWhere {
+        relation: RelationRef,
+        bindings: TableRange,
+    },
+    ReplaceFunctional {
+        relation: RelationRef,
+        values: TableRange,
+    },
+    Branch {
+        condition: Register,
+        if_true: Target,
+        if_false: Target,
+    },
+    Jump {
+        target: Target,
+    },
+    EnterTry {
+        catches: TableRange,
+        finally: Option<Target>,
+        end: Target,
+    },
+    ExitTry,
+    EndFinally,
+    Emit {
+        target: OperandRef,
+        value: OperandRef,
+    },
+    Call {
+        dst: Register,
+        program: ProgramId,
+        args: TableRange,
+    },
+    BuiltinCall {
+        dst: Register,
+        name: Symbol,
+        args: TableRange,
+    },
+    Dispatch {
+        dst: Register,
+        spec: DispatchSpecId,
+        selector: OperandRef,
+        roles: TableRange,
+    },
+    PositionalDispatch {
+        dst: Register,
+        spec: DispatchSpecId,
+        selector: OperandRef,
+        args: TableRange,
+    },
+    Commit,
+    Suspend {
+        kind: SuspendKindId,
+    },
+    SuspendValue {
+        dst: Register,
+        duration: Option<OperandRef>,
+    },
+    CommitValue {
+        dst: Register,
+    },
+    Read {
+        dst: Register,
+        metadata: Option<OperandRef>,
+    },
+    RollbackRetry,
+    Return {
+        value: OperandRef,
+    },
+    Abort {
+        error: OperandRef,
+    },
+    Raise {
+        error: OperandRef,
+        message: Option<OperandRef>,
+        value: Option<OperandRef>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeUnaryOp {
     Not,
     Neg,
@@ -284,7 +504,19 @@ pub enum RuntimeBinaryOp {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
     register_count: usize,
-    instructions: Arc<[Instruction]>,
+    opcodes: Arc<[Opcode]>,
+    constants: Arc<[Value]>,
+    list_items: Arc<[CompactListItem]>,
+    map_entries: Arc<[(OperandRef, OperandRef)]>,
+    operands: Arc<[OperandRef]>,
+    bindings: Arc<[Option<OperandRef>]>,
+    query_bindings: Arc<[QueryBinding]>,
+    catches: Arc<[CompactCatchHandler]>,
+    roles: Arc<[(ConstId, OperandRef)]>,
+    programs: Arc<[Arc<Program>]>,
+    relations: Arc<[RelationId]>,
+    dispatch_specs: Arc<[DispatchSpec]>,
+    suspend_kinds: Arc<[SuspendKind]>,
 }
 
 impl Program {
@@ -292,31 +524,97 @@ impl Program {
         register_count: usize,
         instructions: impl IntoIterator<Item = Instruction>,
     ) -> Result<Self, RuntimeError> {
-        let instructions = instructions.into_iter().collect::<Vec<_>>();
-        for instruction in &instructions {
-            validate_instruction(register_count, instructions.len(), instruction)?;
+        let mut builder = ProgramBuilder::new();
+        for instruction in instructions {
+            builder.emit(instruction)?;
         }
-        Ok(Self {
-            register_count,
-            instructions: instructions.into(),
-        })
+        builder.finish(register_count)
     }
 
     pub fn register_count(&self) -> usize {
         self.register_count
     }
 
-    pub fn instructions(&self) -> &[Instruction] {
-        &self.instructions
+    #[inline]
+    pub fn instructions(&self) -> Vec<Instruction> {
+        self.opcodes
+            .iter()
+            .map(|opcode| self.decode_instruction(opcode))
+            .collect()
+    }
+
+    #[inline]
+    pub(crate) fn opcodes(&self) -> &[Opcode] {
+        &self.opcodes
+    }
+
+    #[inline]
+    pub(crate) fn constant(&self, id: ConstId) -> &Value {
+        &self.constants[id.0 as usize]
+    }
+
+    #[inline]
+    pub(crate) fn list_items(&self, range: TableRange) -> &[CompactListItem] {
+        table_range(&self.list_items, range)
+    }
+
+    #[inline]
+    pub(crate) fn map_entries(&self, range: TableRange) -> &[(OperandRef, OperandRef)] {
+        table_range(&self.map_entries, range)
+    }
+
+    #[inline]
+    pub(crate) fn operands(&self, range: TableRange) -> &[OperandRef] {
+        table_range(&self.operands, range)
+    }
+
+    #[inline]
+    pub(crate) fn bindings(&self, range: TableRange) -> &[Option<OperandRef>] {
+        table_range(&self.bindings, range)
+    }
+
+    #[inline]
+    pub(crate) fn query_bindings(&self, range: TableRange) -> &[QueryBinding] {
+        table_range(&self.query_bindings, range)
+    }
+
+    #[inline]
+    pub(crate) fn catches(&self, range: TableRange) -> &[CompactCatchHandler] {
+        table_range(&self.catches, range)
+    }
+
+    #[inline]
+    pub(crate) fn roles(&self, range: TableRange) -> &[(ConstId, OperandRef)] {
+        table_range(&self.roles, range)
+    }
+
+    #[inline]
+    pub(crate) fn program(&self, id: ProgramId) -> &Arc<Program> {
+        &self.programs[id.0 as usize]
+    }
+
+    #[inline]
+    pub(crate) fn relation(&self, id: RelationRef) -> RelationId {
+        self.relations[id.0 as usize]
+    }
+
+    #[inline]
+    pub(crate) fn dispatch_spec(&self, id: DispatchSpecId) -> DispatchSpec {
+        self.dispatch_specs[id.0 as usize]
+    }
+
+    #[inline]
+    pub(crate) fn suspend_kind(&self, id: SuspendKindId) -> &SuspendKind {
+        &self.suspend_kinds[id.0 as usize]
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Vec::new();
         out.extend_from_slice(b"MICAPRG1");
         write_u32(&mut out, self.register_count as u32);
-        write_u32(&mut out, self.instructions.len() as u32);
-        for instruction in self.instructions.iter() {
-            write_instruction(&mut out, instruction)?;
+        write_u32(&mut out, self.opcodes.len() as u32);
+        for instruction in self.instructions() {
+            write_instruction(&mut out, &instruction)?;
         }
         Ok(out)
     }
@@ -335,6 +633,836 @@ impl Program {
         }
         Self::new(register_count, instructions)
     }
+
+    fn decode_operand(&self, operand: OperandRef) -> Operand {
+        match operand {
+            OperandRef::Register(register) => Operand::Register(register),
+            OperandRef::Constant(id) => Operand::Value(self.constant(id).clone()),
+        }
+    }
+
+    fn decode_instruction(&self, opcode: &Opcode) -> Instruction {
+        match opcode {
+            Opcode::Load { dst, value } => Instruction::Load {
+                dst: *dst,
+                value: self.constant(*value).clone(),
+            },
+            Opcode::Move { dst, src } => Instruction::Move {
+                dst: *dst,
+                src: *src,
+            },
+            Opcode::Unary { dst, op, src } => Instruction::Unary {
+                dst: *dst,
+                op: *op,
+                src: *src,
+            },
+            Opcode::Binary {
+                dst,
+                op,
+                left,
+                right,
+            } => Instruction::Binary {
+                dst: *dst,
+                op: *op,
+                left: *left,
+                right: *right,
+            },
+            Opcode::BuildList { dst, items } => Instruction::BuildList {
+                dst: *dst,
+                items: self
+                    .list_items(*items)
+                    .iter()
+                    .map(|item| match item {
+                        CompactListItem::Value(operand) => {
+                            ListItem::Value(self.decode_operand(*operand))
+                        }
+                        CompactListItem::Splice(operand) => {
+                            ListItem::Splice(self.decode_operand(*operand))
+                        }
+                    })
+                    .collect(),
+            },
+            Opcode::BuildMap { dst, entries } => Instruction::BuildMap {
+                dst: *dst,
+                entries: self
+                    .map_entries(*entries)
+                    .iter()
+                    .map(|(key, value)| (self.decode_operand(*key), self.decode_operand(*value)))
+                    .collect(),
+            },
+            Opcode::BuildRange { dst, start, end } => Instruction::BuildRange {
+                dst: *dst,
+                start: self.decode_operand(*start),
+                end: end.map(|operand| self.decode_operand(operand)),
+            },
+            Opcode::Index {
+                dst,
+                collection,
+                index,
+            } => Instruction::Index {
+                dst: *dst,
+                collection: *collection,
+                index: self.decode_operand(*index),
+            },
+            Opcode::SetIndex {
+                dst,
+                collection,
+                index,
+                value,
+            } => Instruction::SetIndex {
+                dst: *dst,
+                collection: *collection,
+                index: self.decode_operand(*index),
+                value: self.decode_operand(*value),
+            },
+            Opcode::ErrorField { dst, error, field } => Instruction::ErrorField {
+                dst: *dst,
+                error: *error,
+                field: *field,
+            },
+            Opcode::One { dst, src } => Instruction::One {
+                dst: *dst,
+                src: *src,
+            },
+            Opcode::CollectionLen { dst, collection } => Instruction::CollectionLen {
+                dst: *dst,
+                collection: *collection,
+            },
+            Opcode::CollectionKeyAt {
+                dst,
+                collection,
+                index,
+            } => Instruction::CollectionKeyAt {
+                dst: *dst,
+                collection: *collection,
+                index: *index,
+            },
+            Opcode::CollectionValueAt {
+                dst,
+                collection,
+                index,
+            } => Instruction::CollectionValueAt {
+                dst: *dst,
+                collection: *collection,
+                index: *index,
+            },
+            Opcode::ScanExists {
+                dst,
+                relation,
+                bindings,
+            } => Instruction::ScanExists {
+                dst: *dst,
+                relation: self.relation(*relation),
+                bindings: self
+                    .bindings(*bindings)
+                    .iter()
+                    .map(|binding| binding.map(|operand| self.decode_operand(operand)))
+                    .collect(),
+            },
+            Opcode::ScanBindings {
+                dst,
+                relation,
+                bindings,
+                outputs,
+            } => Instruction::ScanBindings {
+                dst: *dst,
+                relation: self.relation(*relation),
+                bindings: self
+                    .bindings(*bindings)
+                    .iter()
+                    .map(|binding| binding.map(|operand| self.decode_operand(operand)))
+                    .collect(),
+                outputs: self.query_bindings(*outputs).to_vec(),
+            },
+            Opcode::ScanValue { dst, relation, key } => Instruction::ScanValue {
+                dst: *dst,
+                relation: self.relation(*relation),
+                key: self.decode_operand(*key),
+            },
+            Opcode::Assert { relation, values } => Instruction::Assert {
+                relation: self.relation(*relation),
+                values: self
+                    .operands(*values)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+            },
+            Opcode::Retract { relation, values } => Instruction::Retract {
+                relation: self.relation(*relation),
+                values: self
+                    .operands(*values)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+            },
+            Opcode::RetractWhere { relation, bindings } => Instruction::RetractWhere {
+                relation: self.relation(*relation),
+                bindings: self
+                    .bindings(*bindings)
+                    .iter()
+                    .map(|binding| binding.map(|operand| self.decode_operand(operand)))
+                    .collect(),
+            },
+            Opcode::ReplaceFunctional { relation, values } => Instruction::ReplaceFunctional {
+                relation: self.relation(*relation),
+                values: self
+                    .operands(*values)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+            },
+            Opcode::Branch {
+                condition,
+                if_true,
+                if_false,
+            } => Instruction::Branch {
+                condition: *condition,
+                if_true: if_true.0 as usize,
+                if_false: if_false.0 as usize,
+            },
+            Opcode::Jump { target } => Instruction::Jump {
+                target: target.0 as usize,
+            },
+            Opcode::EnterTry {
+                catches,
+                finally,
+                end,
+            } => Instruction::EnterTry {
+                catches: self
+                    .catches(*catches)
+                    .iter()
+                    .map(|catch| CatchHandler {
+                        code: catch.code.map(|id| self.constant(id).clone()),
+                        binding: catch.binding,
+                        target: catch.target.0 as usize,
+                    })
+                    .collect(),
+                finally: finally.map(|target| target.0 as usize),
+                end: end.0 as usize,
+            },
+            Opcode::ExitTry => Instruction::ExitTry,
+            Opcode::EndFinally => Instruction::EndFinally,
+            Opcode::Emit { target, value } => Instruction::Emit {
+                target: self.decode_operand(*target),
+                value: self.decode_operand(*value),
+            },
+            Opcode::Call { dst, program, args } => Instruction::Call {
+                dst: *dst,
+                program: Arc::clone(self.program(*program)),
+                args: self
+                    .operands(*args)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+            },
+            Opcode::BuiltinCall { dst, name, args } => Instruction::BuiltinCall {
+                dst: *dst,
+                name: *name,
+                args: self
+                    .operands(*args)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+            },
+            Opcode::Dispatch {
+                dst,
+                spec,
+                selector,
+                roles,
+            } => {
+                let spec = self.dispatch_spec(*spec);
+                Instruction::Dispatch {
+                    dst: *dst,
+                    relations: spec.relations,
+                    program_relation: spec.program_relation,
+                    program_bytes: spec.program_bytes,
+                    selector: self.decode_operand(*selector),
+                    roles: self
+                        .roles(*roles)
+                        .iter()
+                        .map(|(role, operand)| {
+                            (self.constant(*role).clone(), self.decode_operand(*operand))
+                        })
+                        .collect(),
+                }
+            }
+            Opcode::PositionalDispatch {
+                dst,
+                spec,
+                selector,
+                args,
+            } => {
+                let spec = self.dispatch_spec(*spec);
+                Instruction::PositionalDispatch {
+                    dst: *dst,
+                    relations: spec.relations,
+                    program_relation: spec.program_relation,
+                    program_bytes: spec.program_bytes,
+                    selector: self.decode_operand(*selector),
+                    args: self
+                        .operands(*args)
+                        .iter()
+                        .map(|operand| self.decode_operand(*operand))
+                        .collect(),
+                }
+            }
+            Opcode::Commit => Instruction::Commit,
+            Opcode::Suspend { kind } => Instruction::Suspend {
+                kind: self.suspend_kind(*kind).clone(),
+            },
+            Opcode::SuspendValue { dst, duration } => Instruction::SuspendValue {
+                dst: *dst,
+                duration: duration.map(|operand| self.decode_operand(operand)),
+            },
+            Opcode::CommitValue { dst } => Instruction::CommitValue { dst: *dst },
+            Opcode::Read { dst, metadata } => Instruction::Read {
+                dst: *dst,
+                metadata: metadata.map(|operand| self.decode_operand(operand)),
+            },
+            Opcode::RollbackRetry => Instruction::RollbackRetry,
+            Opcode::Return { value } => Instruction::Return {
+                value: self.decode_operand(*value),
+            },
+            Opcode::Abort { error } => Instruction::Abort {
+                error: self.decode_operand(*error),
+            },
+            Opcode::Raise {
+                error,
+                message,
+                value,
+            } => Instruction::Raise {
+                error: self.decode_operand(*error),
+                message: message.map(|operand| self.decode_operand(operand)),
+                value: value.map(|operand| self.decode_operand(operand)),
+            },
+        }
+    }
+}
+
+#[inline]
+fn table_range<T>(table: &[T], range: TableRange) -> &[T] {
+    let start = range.start as usize;
+    let end = start + range.len as usize;
+    &table[start..end]
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProgramBuilder {
+    opcodes: Vec<Opcode>,
+    constants: Vec<Value>,
+    constant_ids: BTreeMap<Value, ConstId>,
+    list_items: Vec<CompactListItem>,
+    map_entries: Vec<(OperandRef, OperandRef)>,
+    operands: Vec<OperandRef>,
+    bindings: Vec<Option<OperandRef>>,
+    query_bindings: Vec<QueryBinding>,
+    catches: Vec<CompactCatchHandler>,
+    roles: Vec<(ConstId, OperandRef)>,
+    programs: Vec<Arc<Program>>,
+    relations: Vec<RelationId>,
+    relation_ids: BTreeMap<RelationId, RelationRef>,
+    dispatch_specs: Vec<DispatchSpec>,
+    suspend_kinds: Vec<SuspendKind>,
+}
+
+impl ProgramBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.opcodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.opcodes.is_empty()
+    }
+
+    pub fn emit(&mut self, instruction: Instruction) -> Result<usize, RuntimeError> {
+        let index = self.opcodes.len();
+        if index > u16::MAX as usize {
+            return Err(artifact_error("program has too many instructions"));
+        }
+        let opcode = self.encode_instruction(instruction)?;
+        self.opcodes.push(opcode);
+        Ok(index)
+    }
+
+    pub fn emit_branch(
+        &mut self,
+        condition: Register,
+        if_true: usize,
+        if_false: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.emit(Instruction::Branch {
+            condition,
+            if_true,
+            if_false,
+        })
+    }
+
+    pub fn emit_jump(&mut self, target: usize) -> Result<usize, RuntimeError> {
+        self.emit(Instruction::Jump { target })
+    }
+
+    pub fn patch_branch(
+        &mut self,
+        index: usize,
+        if_true: usize,
+        if_false: usize,
+    ) -> Result<(), RuntimeError> {
+        let true_target = self.target(if_true)?;
+        let false_target = self.target(if_false)?;
+        let Some(Opcode::Branch {
+            if_true, if_false, ..
+        }) = self.opcodes.get_mut(index)
+        else {
+            return Err(artifact_error("expected branch opcode"));
+        };
+        *if_true = true_target;
+        *if_false = false_target;
+        Ok(())
+    }
+
+    pub fn patch_true_target(&mut self, index: usize, target: usize) -> Result<(), RuntimeError> {
+        let target = self.target(target)?;
+        let Some(Opcode::Branch { if_true, .. }) = self.opcodes.get_mut(index) else {
+            return Err(artifact_error("expected branch opcode"));
+        };
+        *if_true = target;
+        Ok(())
+    }
+
+    pub fn patch_false_target(&mut self, index: usize, target: usize) -> Result<(), RuntimeError> {
+        let target = self.target(target)?;
+        let Some(Opcode::Branch { if_false, .. }) = self.opcodes.get_mut(index) else {
+            return Err(artifact_error("expected branch opcode"));
+        };
+        *if_false = target;
+        Ok(())
+    }
+
+    pub fn patch_jump(&mut self, index: usize, target: usize) -> Result<(), RuntimeError> {
+        let target = self.target(target)?;
+        let Some(Opcode::Jump { target: slot }) = self.opcodes.get_mut(index) else {
+            return Err(artifact_error("expected jump opcode"));
+        };
+        *slot = target;
+        Ok(())
+    }
+
+    pub fn patch_enter_try(
+        &mut self,
+        index: usize,
+        new_catches: Vec<CatchHandler>,
+        new_finally: Option<usize>,
+        new_end: usize,
+    ) -> Result<(), RuntimeError> {
+        let catches = self.catches(new_catches)?;
+        let finally = new_finally.map(|target| self.target(target)).transpose()?;
+        let end = self.target(new_end)?;
+        let Some(Opcode::EnterTry {
+            catches: catch_slot,
+            finally: finally_slot,
+            end: end_slot,
+        }) = self.opcodes.get_mut(index)
+        else {
+            return Err(artifact_error("expected enter-try opcode"));
+        };
+        *catch_slot = catches;
+        *finally_slot = finally;
+        *end_slot = end;
+        Ok(())
+    }
+
+    pub fn finish(self, register_count: usize) -> Result<Program, RuntimeError> {
+        let program = Program {
+            register_count,
+            opcodes: self.opcodes.into(),
+            constants: self.constants.into(),
+            list_items: self.list_items.into(),
+            map_entries: self.map_entries.into(),
+            operands: self.operands.into(),
+            bindings: self.bindings.into(),
+            query_bindings: self.query_bindings.into(),
+            catches: self.catches.into(),
+            roles: self.roles.into(),
+            programs: self.programs.into(),
+            relations: self.relations.into(),
+            dispatch_specs: self.dispatch_specs.into(),
+            suspend_kinds: self.suspend_kinds.into(),
+        };
+        let instructions = program.instructions();
+        for instruction in &instructions {
+            validate_instruction(register_count, instructions.len(), instruction)?;
+        }
+        Ok(program)
+    }
+
+    fn encode_instruction(&mut self, instruction: Instruction) -> Result<Opcode, RuntimeError> {
+        Ok(match instruction {
+            Instruction::Load { dst, value } => Opcode::Load {
+                dst,
+                value: self.constant(value)?,
+            },
+            Instruction::Move { dst, src } => Opcode::Move { dst, src },
+            Instruction::Unary { dst, op, src } => Opcode::Unary { dst, op, src },
+            Instruction::Binary {
+                dst,
+                op,
+                left,
+                right,
+            } => Opcode::Binary {
+                dst,
+                op,
+                left,
+                right,
+            },
+            Instruction::BuildList { dst, items } => Opcode::BuildList {
+                dst,
+                items: self.list_items(items)?,
+            },
+            Instruction::BuildMap { dst, entries } => Opcode::BuildMap {
+                dst,
+                entries: self.map_entries(entries)?,
+            },
+            Instruction::BuildRange { dst, start, end } => Opcode::BuildRange {
+                dst,
+                start: self.operand(start)?,
+                end: end.map(|operand| self.operand(operand)).transpose()?,
+            },
+            Instruction::Index {
+                dst,
+                collection,
+                index,
+            } => Opcode::Index {
+                dst,
+                collection,
+                index: self.operand(index)?,
+            },
+            Instruction::SetIndex {
+                dst,
+                collection,
+                index,
+                value,
+            } => Opcode::SetIndex {
+                dst,
+                collection,
+                index: self.operand(index)?,
+                value: self.operand(value)?,
+            },
+            Instruction::ErrorField { dst, error, field } => {
+                Opcode::ErrorField { dst, error, field }
+            }
+            Instruction::One { dst, src } => Opcode::One { dst, src },
+            Instruction::CollectionLen { dst, collection } => {
+                Opcode::CollectionLen { dst, collection }
+            }
+            Instruction::CollectionKeyAt {
+                dst,
+                collection,
+                index,
+            } => Opcode::CollectionKeyAt {
+                dst,
+                collection,
+                index,
+            },
+            Instruction::CollectionValueAt {
+                dst,
+                collection,
+                index,
+            } => Opcode::CollectionValueAt {
+                dst,
+                collection,
+                index,
+            },
+            Instruction::ScanExists {
+                dst,
+                relation,
+                bindings,
+            } => Opcode::ScanExists {
+                dst,
+                relation: self.relation(relation)?,
+                bindings: self.bindings(bindings)?,
+            },
+            Instruction::ScanBindings {
+                dst,
+                relation,
+                bindings,
+                outputs,
+            } => Opcode::ScanBindings {
+                dst,
+                relation: self.relation(relation)?,
+                bindings: self.bindings(bindings)?,
+                outputs: self.query_bindings(outputs)?,
+            },
+            Instruction::ScanValue { dst, relation, key } => Opcode::ScanValue {
+                dst,
+                relation: self.relation(relation)?,
+                key: self.operand(key)?,
+            },
+            Instruction::Assert { relation, values } => Opcode::Assert {
+                relation: self.relation(relation)?,
+                values: self.operands(values)?,
+            },
+            Instruction::Retract { relation, values } => Opcode::Retract {
+                relation: self.relation(relation)?,
+                values: self.operands(values)?,
+            },
+            Instruction::RetractWhere { relation, bindings } => Opcode::RetractWhere {
+                relation: self.relation(relation)?,
+                bindings: self.bindings(bindings)?,
+            },
+            Instruction::ReplaceFunctional { relation, values } => Opcode::ReplaceFunctional {
+                relation: self.relation(relation)?,
+                values: self.operands(values)?,
+            },
+            Instruction::Branch {
+                condition,
+                if_true,
+                if_false,
+            } => Opcode::Branch {
+                condition,
+                if_true: self.target(if_true)?,
+                if_false: self.target(if_false)?,
+            },
+            Instruction::Jump { target } => Opcode::Jump {
+                target: self.target(target)?,
+            },
+            Instruction::EnterTry {
+                catches,
+                finally,
+                end,
+            } => Opcode::EnterTry {
+                catches: self.catches(catches)?,
+                finally: finally.map(|target| self.target(target)).transpose()?,
+                end: self.target(end)?,
+            },
+            Instruction::ExitTry => Opcode::ExitTry,
+            Instruction::EndFinally => Opcode::EndFinally,
+            Instruction::Emit { target, value } => Opcode::Emit {
+                target: self.operand(target)?,
+                value: self.operand(value)?,
+            },
+            Instruction::Call { dst, program, args } => Opcode::Call {
+                dst,
+                program: self.program(program)?,
+                args: self.operands(args)?,
+            },
+            Instruction::BuiltinCall { dst, name, args } => Opcode::BuiltinCall {
+                dst,
+                name,
+                args: self.operands(args)?,
+            },
+            Instruction::Dispatch {
+                dst,
+                relations,
+                program_relation,
+                program_bytes,
+                selector,
+                roles,
+            } => Opcode::Dispatch {
+                dst,
+                spec: self.dispatch_spec(DispatchSpec {
+                    relations,
+                    program_relation,
+                    program_bytes,
+                })?,
+                selector: self.operand(selector)?,
+                roles: self.roles(roles)?,
+            },
+            Instruction::PositionalDispatch {
+                dst,
+                relations,
+                program_relation,
+                program_bytes,
+                selector,
+                args,
+            } => Opcode::PositionalDispatch {
+                dst,
+                spec: self.dispatch_spec(DispatchSpec {
+                    relations,
+                    program_relation,
+                    program_bytes,
+                })?,
+                selector: self.operand(selector)?,
+                args: self.operands(args)?,
+            },
+            Instruction::Commit => Opcode::Commit,
+            Instruction::Suspend { kind } => Opcode::Suspend {
+                kind: self.suspend_kind(kind)?,
+            },
+            Instruction::SuspendValue { dst, duration } => Opcode::SuspendValue {
+                dst,
+                duration: duration.map(|operand| self.operand(operand)).transpose()?,
+            },
+            Instruction::CommitValue { dst } => Opcode::CommitValue { dst },
+            Instruction::Read { dst, metadata } => Opcode::Read {
+                dst,
+                metadata: metadata.map(|operand| self.operand(operand)).transpose()?,
+            },
+            Instruction::RollbackRetry => Opcode::RollbackRetry,
+            Instruction::Return { value } => Opcode::Return {
+                value: self.operand(value)?,
+            },
+            Instruction::Abort { error } => Opcode::Abort {
+                error: self.operand(error)?,
+            },
+            Instruction::Raise {
+                error,
+                message,
+                value,
+            } => Opcode::Raise {
+                error: self.operand(error)?,
+                message: message.map(|operand| self.operand(operand)).transpose()?,
+                value: value.map(|operand| self.operand(operand)).transpose()?,
+            },
+        })
+    }
+
+    fn constant(&mut self, value: Value) -> Result<ConstId, RuntimeError> {
+        if let Some(id) = self.constant_ids.get(&value).copied() {
+            return Ok(id);
+        }
+        let id = ConstId(narrow_index(self.constants.len(), "constant table")?);
+        self.constants.push(value.clone());
+        self.constant_ids.insert(value, id);
+        Ok(id)
+    }
+
+    fn operand(&mut self, operand: Operand) -> Result<OperandRef, RuntimeError> {
+        match operand {
+            Operand::Register(register) => Ok(OperandRef::Register(register)),
+            Operand::Value(value) => Ok(OperandRef::Constant(self.constant(value)?)),
+        }
+    }
+
+    fn target(&self, target: usize) -> Result<Target, RuntimeError> {
+        Ok(Target(narrow_index(target, "instruction target")?))
+    }
+
+    fn relation(&mut self, relation: RelationId) -> Result<RelationRef, RuntimeError> {
+        if let Some(id) = self.relation_ids.get(&relation).copied() {
+            return Ok(id);
+        }
+        let id = RelationRef(narrow_index(self.relations.len(), "relation table")?);
+        self.relations.push(relation);
+        self.relation_ids.insert(relation, id);
+        Ok(id)
+    }
+
+    fn program(&mut self, program: Arc<Program>) -> Result<ProgramId, RuntimeError> {
+        let id = ProgramId(narrow_index(self.programs.len(), "program table")?);
+        self.programs.push(program);
+        Ok(id)
+    }
+
+    fn dispatch_spec(&mut self, spec: DispatchSpec) -> Result<DispatchSpecId, RuntimeError> {
+        let id = DispatchSpecId(narrow_index(
+            self.dispatch_specs.len(),
+            "dispatch spec table",
+        )?);
+        self.dispatch_specs.push(spec);
+        Ok(id)
+    }
+
+    fn suspend_kind(&mut self, kind: SuspendKind) -> Result<SuspendKindId, RuntimeError> {
+        let id = SuspendKindId(narrow_index(
+            self.suspend_kinds.len(),
+            "suspend kind table",
+        )?);
+        self.suspend_kinds.push(kind);
+        Ok(id)
+    }
+
+    fn operands(&mut self, operands: Vec<Operand>) -> Result<TableRange, RuntimeError> {
+        let start = self.operands.len();
+        for operand in operands {
+            let operand = self.operand(operand)?;
+            self.operands.push(operand);
+        }
+        table_range_for(start, self.operands.len(), "operand table")
+    }
+
+    fn list_items(&mut self, items: Vec<ListItem>) -> Result<TableRange, RuntimeError> {
+        let start = self.list_items.len();
+        for item in items {
+            let item = match item {
+                ListItem::Value(operand) => CompactListItem::Value(self.operand(operand)?),
+                ListItem::Splice(operand) => CompactListItem::Splice(self.operand(operand)?),
+            };
+            self.list_items.push(item);
+        }
+        table_range_for(start, self.list_items.len(), "list item table")
+    }
+
+    fn map_entries(
+        &mut self,
+        entries: Vec<(Operand, Operand)>,
+    ) -> Result<TableRange, RuntimeError> {
+        let start = self.map_entries.len();
+        for (key, value) in entries {
+            let key = self.operand(key)?;
+            let value = self.operand(value)?;
+            self.map_entries.push((key, value));
+        }
+        table_range_for(start, self.map_entries.len(), "map entry table")
+    }
+
+    fn bindings(&mut self, bindings: Vec<Option<Operand>>) -> Result<TableRange, RuntimeError> {
+        let start = self.bindings.len();
+        for binding in bindings {
+            let binding = binding.map(|operand| self.operand(operand)).transpose()?;
+            self.bindings.push(binding);
+        }
+        table_range_for(start, self.bindings.len(), "binding table")
+    }
+
+    fn query_bindings(&mut self, outputs: Vec<QueryBinding>) -> Result<TableRange, RuntimeError> {
+        let start = self.query_bindings.len();
+        self.query_bindings.extend(outputs);
+        table_range_for(start, self.query_bindings.len(), "query binding table")
+    }
+
+    fn catches(&mut self, catches: Vec<CatchHandler>) -> Result<TableRange, RuntimeError> {
+        let start = self.catches.len();
+        for catch in catches {
+            let code = catch.code.map(|code| self.constant(code)).transpose()?;
+            let target = self.target(catch.target)?;
+            self.catches.push(CompactCatchHandler {
+                code,
+                binding: catch.binding,
+                target,
+            });
+        }
+        table_range_for(start, self.catches.len(), "catch table")
+    }
+
+    fn roles(&mut self, roles: Vec<(Value, Operand)>) -> Result<TableRange, RuntimeError> {
+        let start = self.roles.len();
+        for (role, operand) in roles {
+            let role = self.constant(role)?;
+            let operand = self.operand(operand)?;
+            self.roles.push((role, operand));
+        }
+        table_range_for(start, self.roles.len(), "role table")
+    }
+}
+
+fn narrow_index(index: usize, table: &'static str) -> Result<u16, RuntimeError> {
+    u16::try_from(index).map_err(|_| artifact_error(format!("{table} exceeds u16 capacity")))
+}
+
+fn table_range_for(
+    start: usize,
+    end: usize,
+    table: &'static str,
+) -> Result<TableRange, RuntimeError> {
+    let len = end - start;
+    Ok(TableRange {
+        start: narrow_index(start, table)?,
+        len: narrow_index(len, table)?,
+    })
 }
 
 #[derive(Debug, Default)]

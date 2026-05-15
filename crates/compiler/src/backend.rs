@@ -23,8 +23,8 @@ use mica_relation_kernel::{
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use mica_vm::{
-    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, QueryBinding, Register,
-    RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
+    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramBuilder,
+    QueryBinding, Register, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -732,10 +732,18 @@ fn relation_name_for_dot(name: &str) -> String {
     first.to_ascii_uppercase().to_string() + chars.as_str()
 }
 
+fn internal_bytecode_error(error: RuntimeError) -> CompileError {
+    CompileError::Unsupported {
+        node: NodeId(0),
+        span: None,
+        message: format!("internal compiler error: {error:?}"),
+    }
+}
+
 struct ProgramCompiler<'a> {
     semantic: &'a SemanticProgram,
     context: &'a CompileContext,
-    instructions: Vec<Instruction>,
+    instructions: ProgramBuilder,
     next_register: u16,
     locals: HashMap<BindingId, Register>,
     external_locals: HashMap<String, Register>,
@@ -771,7 +779,7 @@ impl<'a> ProgramCompiler<'a> {
         Self {
             semantic,
             context,
-            instructions: Vec::new(),
+            instructions: ProgramBuilder::new(),
             next_register: 0,
             locals: HashMap::new(),
             external_locals: HashMap::new(),
@@ -796,7 +804,9 @@ impl<'a> ProgramCompiler<'a> {
                 .unwrap_or_else(|| Operand::Value(Value::nothing()));
             self.emit(Instruction::Return { value });
         }
-        Program::new(self.next_register as usize, self.instructions).map_err(Into::into)
+        self.instructions
+            .finish(self.next_register as usize)
+            .map_err(Into::into)
     }
 
     fn compile_item(&mut self, item: &HirItem) -> Result<Option<Register>, CompileError> {
@@ -1616,7 +1626,9 @@ impl<'a> ProgramCompiler<'a> {
                 value: Operand::Register(value),
             });
         }
-        Program::new(self.next_register as usize, self.instructions).map_err(Into::into)
+        self.instructions
+            .finish(self.next_register as usize)
+            .map_err(Into::into)
     }
 
     fn compile_call(
@@ -2668,23 +2680,21 @@ impl<'a> ProgramCompiler<'a> {
     }
 
     fn emit(&mut self, instruction: Instruction) {
-        self.instructions.push(instruction);
+        self.instructions
+            .emit(instruction)
+            .expect("compiler emitted bytecode within compact table limits");
     }
 
     fn emit_branch(&mut self, condition: Register, if_true: usize, if_false: usize) -> usize {
-        let index = self.instructions.len();
-        self.emit(Instruction::Branch {
-            condition,
-            if_true,
-            if_false,
-        });
-        index
+        self.instructions
+            .emit_branch(condition, if_true, if_false)
+            .expect("compiler emitted bytecode within compact table limits")
     }
 
     fn emit_jump(&mut self, target: usize) -> usize {
-        let index = self.instructions.len();
-        self.emit(Instruction::Jump { target });
-        index
+        self.instructions
+            .emit_jump(target)
+            .expect("compiler emitted bytecode within compact table limits")
     }
 
     fn patch_branch(
@@ -2693,57 +2703,27 @@ impl<'a> ProgramCompiler<'a> {
         if_true: usize,
         if_false: usize,
     ) -> Result<(), CompileError> {
-        let Some(Instruction::Branch {
-            if_true: true_slot,
-            if_false: false_slot,
-            ..
-        }) = self.instructions.get_mut(index)
-        else {
-            return Err(CompileError::Unsupported {
-                node: NodeId(0),
-                span: None,
-                message: "internal compiler error: expected branch instruction".to_owned(),
-            });
-        };
-        *true_slot = if_true;
-        *false_slot = if_false;
-        Ok(())
+        self.instructions
+            .patch_branch(index, if_true, if_false)
+            .map_err(internal_bytecode_error)
     }
 
     fn patch_true_target(&mut self, index: usize, target: usize) -> Result<(), CompileError> {
-        let Some(Instruction::Branch { if_true, .. }) = self.instructions.get_mut(index) else {
-            return Err(CompileError::Unsupported {
-                node: NodeId(0),
-                span: None,
-                message: "internal compiler error: expected branch instruction".to_owned(),
-            });
-        };
-        *if_true = target;
-        Ok(())
+        self.instructions
+            .patch_true_target(index, target)
+            .map_err(internal_bytecode_error)
     }
 
     fn patch_false_target(&mut self, index: usize, target: usize) -> Result<(), CompileError> {
-        let Some(Instruction::Branch { if_false, .. }) = self.instructions.get_mut(index) else {
-            return Err(CompileError::Unsupported {
-                node: NodeId(0),
-                span: None,
-                message: "internal compiler error: expected branch instruction".to_owned(),
-            });
-        };
-        *if_false = target;
-        Ok(())
+        self.instructions
+            .patch_false_target(index, target)
+            .map_err(internal_bytecode_error)
     }
 
     fn patch_jump(&mut self, index: usize, target: usize) -> Result<(), CompileError> {
-        let Some(Instruction::Jump { target: slot }) = self.instructions.get_mut(index) else {
-            return Err(CompileError::Unsupported {
-                node: NodeId(0),
-                span: None,
-                message: "internal compiler error: expected jump instruction".to_owned(),
-            });
-        };
-        *slot = target;
-        Ok(())
+        self.instructions
+            .patch_jump(index, target)
+            .map_err(internal_bytecode_error)
     }
 
     fn patch_enter_try(
@@ -2753,22 +2733,9 @@ impl<'a> ProgramCompiler<'a> {
         new_finally: Option<usize>,
         new_end: usize,
     ) -> Result<(), CompileError> {
-        let Some(Instruction::EnterTry {
-            catches,
-            finally,
-            end,
-        }) = self.instructions.get_mut(index)
-        else {
-            return Err(CompileError::Unsupported {
-                node: NodeId(0),
-                span: None,
-                message: "internal compiler error: expected enter-try instruction".to_owned(),
-            });
-        };
-        *catches = new_catches;
-        *finally = new_finally;
-        *end = new_end;
-        Ok(())
+        self.instructions
+            .patch_enter_try(index, new_catches, new_finally, new_end)
+            .map_err(internal_bytecode_error)
     }
 
     fn unsupported(&self, node: NodeId, message: impl Into<String>) -> CompileError {

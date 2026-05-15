@@ -12,10 +12,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::builtin::TransientAccess;
+use crate::program::{CompactListItem, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
-    Emission, ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, Register,
-    RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SuspendKind,
+    Emission, ErrorField, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeContext,
+    RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{
     ComposedTransactionRead, RelationRead, RelationWorkspace, ScanControl, Transaction,
@@ -548,35 +549,37 @@ impl RegisterVm {
         host: &mut H,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
-        let (instruction, ip) = {
+        let (opcode, program, ip) = {
             let frame = self.current_frame_unchecked();
             let ip = frame.ip;
-            let instruction = frame
+            let program = Arc::as_ptr(&frame.program);
+            let opcode = frame
                 .program
-                .instructions()
+                .opcodes()
                 .get(ip)
                 .ok_or(RuntimeError::ProgramCounterOutOfBounds { ip })?;
-            (instruction as *const Instruction, ip)
+            (opcode as *const Opcode, program, ip)
         };
         debug_assert_eq!(self.current_frame_unchecked().ip, ip);
-        // SAFETY: the pointer comes from the current frame's `Arc<Program>`. The program
-        // allocation is stable while the frame is live, and each arm copies or resolves any
-        // instruction fields it needs before operations that can remove that frame.
-        let instruction = unsafe { &*instruction };
+        // SAFETY: both pointers come from the current frame's `Arc<Program>`. The program
+        // allocation is stable while the frame is live, and each arm copies or resolves any table
+        // values it needs before operations that can remove that frame.
+        let program = unsafe { &*program };
+        let opcode = unsafe { &*opcode };
 
-        match instruction {
-            Instruction::Load { dst, value } => {
-                self.write_register_unchecked(*dst, value.clone());
+        match opcode {
+            Opcode::Load { dst, value } => {
+                self.write_register_unchecked(*dst, program.constant(*value).clone());
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Move { dst, src } => {
+            Opcode::Move { dst, src } => {
                 let value = self.read_register_unchecked(*src).clone();
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Unary { dst, op, src } => {
+            Opcode::Unary { dst, op, src } => {
                 let value = self.read_register_unchecked(*src);
                 let value = match eval_unary(*op, value) {
                     Ok(value) => value,
@@ -586,7 +589,7 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Binary {
+            Opcode::Binary {
                 dst,
                 op,
                 left,
@@ -604,47 +607,48 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::BuildList { dst, items } => {
-                let value = self.build_list(items)?;
+            Opcode::BuildList { dst, items } => {
+                let value = self.build_list(program, program.list_items(*items));
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::BuildMap { dst, entries } => {
-                let entries = entries
+            Opcode::BuildMap { dst, entries } => {
+                let entries = program
+                    .map_entries(*entries)
                     .iter()
                     .map(|(key, value)| {
-                        Ok((self.resolve_operand(key)?, self.resolve_operand(value)?))
+                        (
+                            self.resolve_operand_ref(program, *key),
+                            self.resolve_operand_ref(program, *value),
+                        )
                     })
-                    .collect::<Result<Vec<_>, RuntimeError>>()?;
+                    .collect::<Vec<_>>();
                 self.write_register_unchecked(*dst, Value::map(entries));
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::BuildRange { dst, start, end } => {
-                let start = self.resolve_operand(start)?;
-                let end = end
-                    .as_ref()
-                    .map(|end| self.resolve_operand(end))
-                    .transpose()?;
+            Opcode::BuildRange { dst, start, end } => {
+                let start = self.resolve_operand_ref(program, *start);
+                let end = end.map(|end| self.resolve_operand_ref(program, end));
                 self.write_register_unchecked(*dst, Value::range(start, end));
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Index {
+            Opcode::Index {
                 dst,
                 collection,
                 index,
             } => {
                 let value = index_value(
                     self.read_register_unchecked(*collection),
-                    &self.resolve_operand(index)?,
+                    &self.resolve_operand_ref(program, *index),
                 );
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::SetIndex {
+            Opcode::SetIndex {
                 dst,
                 collection,
                 index,
@@ -652,20 +656,20 @@ impl RegisterVm {
             } => {
                 let value = set_index_value(
                     self.read_register_unchecked(*collection),
-                    &self.resolve_operand(index)?,
-                    self.resolve_operand(value)?,
+                    &self.resolve_operand_ref(program, *index),
+                    self.resolve_operand_ref(program, *value),
                 );
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::ErrorField { dst, error, field } => {
+            Opcode::ErrorField { dst, error, field } => {
                 let value = error_field_value(self.read_register_unchecked(*error), *field);
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::One { dst, src } => {
+            Opcode::One { dst, src } => {
                 let value = match one_value(self.read_register_unchecked(*src)) {
                     Ok(value) => value,
                     Err(error) => return self.begin_raise(error),
@@ -674,13 +678,13 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::CollectionLen { dst, collection } => {
+            Opcode::CollectionLen { dst, collection } => {
                 let value = collection_len(self.read_register_unchecked(*collection));
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::CollectionKeyAt {
+            Opcode::CollectionKeyAt {
                 dst,
                 collection,
                 index,
@@ -693,7 +697,7 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::CollectionValueAt {
+            Opcode::CollectionValueAt {
                 dst,
                 collection,
                 index,
@@ -706,32 +710,35 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::ScanExists {
+            Opcode::ScanExists {
                 dst,
                 relation,
                 bindings,
             } => {
-                require_read(host.authority(), *relation)?;
-                let bindings = self.resolve_bindings(bindings)?;
+                let relation = program.relation(*relation);
+                require_read(host.authority(), relation)?;
+                let bindings = self.resolve_bindings(program, program.bindings(*bindings));
                 let exists = !host
-                    .scan_relation(*relation, &bindings)
+                    .scan_relation(relation, &bindings)
                     .map_err(RuntimeError::Kernel)?
                     .is_empty();
                 self.write_register_unchecked(*dst, Value::bool(exists));
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::ScanBindings {
+            Opcode::ScanBindings {
                 dst,
                 relation,
                 bindings,
                 outputs,
             } => {
-                require_read(host.authority(), *relation)?;
-                let bindings = self.resolve_bindings(bindings)?;
+                let relation = program.relation(*relation);
+                require_read(host.authority(), relation)?;
+                let bindings = self.resolve_bindings(program, program.bindings(*bindings));
                 let rows = host
-                    .scan_relation(*relation, &bindings)
+                    .scan_relation(relation, &bindings)
                     .map_err(RuntimeError::Kernel)?;
+                let outputs = program.query_bindings(*outputs);
                 let mut result = Vec::with_capacity(rows.len());
                 'row: for row in rows {
                     let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
@@ -755,11 +762,12 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::ScanValue { dst, relation, key } => {
-                require_read(host.authority(), *relation)?;
-                let key = self.resolve_operand(key)?;
+            Opcode::ScanValue { dst, relation, key } => {
+                let relation = program.relation(*relation);
+                require_read(host.authority(), relation)?;
+                let key = self.resolve_operand_ref(program, *key);
                 let value = host
-                    .scan_relation(*relation, &[Some(key), None])?
+                    .scan_relation(relation, &[Some(key), None])?
                     .first()
                     .map(|row| row.values()[1].clone())
                     .unwrap_or_else(Value::nothing);
@@ -767,107 +775,127 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Assert { relation, values } => {
-                require_write(host.authority(), *relation)?;
-                host.assert_tuple(*relation, self.resolve_tuple(values)?)?;
+            Opcode::Assert { relation, values } => {
+                let relation = program.relation(*relation);
+                require_write(host.authority(), relation)?;
+                host.assert_tuple(
+                    relation,
+                    self.resolve_tuple(program, program.operands(*values)),
+                )?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Retract { relation, values } => {
-                require_write(host.authority(), *relation)?;
-                host.retract_tuple(*relation, self.resolve_tuple(values)?)?;
+            Opcode::Retract { relation, values } => {
+                let relation = program.relation(*relation);
+                require_write(host.authority(), relation)?;
+                host.retract_tuple(
+                    relation,
+                    self.resolve_tuple(program, program.operands(*values)),
+                )?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::RetractWhere { relation, bindings } => {
-                require_read(host.authority(), *relation)?;
-                require_write(host.authority(), *relation)?;
-                let bindings = self.resolve_bindings(bindings)?;
-                host.retract_matching(*relation, &bindings)?;
+            Opcode::RetractWhere { relation, bindings } => {
+                let relation = program.relation(*relation);
+                require_read(host.authority(), relation)?;
+                require_write(host.authority(), relation)?;
+                let bindings = self.resolve_bindings(program, program.bindings(*bindings));
+                host.retract_matching(relation, &bindings)?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::ReplaceFunctional { relation, values } => {
-                require_write(host.authority(), *relation)?;
-                host.replace_functional_tuple(*relation, self.resolve_tuple(values)?)?;
+            Opcode::ReplaceFunctional { relation, values } => {
+                let relation = program.relation(*relation);
+                require_write(host.authority(), relation)?;
+                host.replace_functional_tuple(
+                    relation,
+                    self.resolve_tuple(program, program.operands(*values)),
+                )?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Branch {
+            Opcode::Branch {
                 condition,
                 if_true,
                 if_false,
             } => {
                 let target = if truthy(self.read_register_unchecked(*condition)) {
-                    *if_true
+                    if_true.0 as usize
                 } else {
-                    *if_false
+                    if_false.0 as usize
                 };
                 self.current_frame_mut_unchecked().ip = target;
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Jump { target } => {
-                self.current_frame_mut_unchecked().ip = *target;
+            Opcode::Jump { target } => {
+                self.current_frame_mut_unchecked().ip = target.0 as usize;
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::EnterTry {
+            Opcode::EnterTry {
                 catches,
                 finally,
                 end,
             } => {
+                let catches = program
+                    .catches(*catches)
+                    .iter()
+                    .map(|catch| CatchHandler {
+                        code: catch.code.map(|id| program.constant(id).clone()),
+                        binding: catch.binding,
+                        target: catch.target.0 as usize,
+                    })
+                    .collect();
                 self.current_frame_mut_unchecked()
                     .try_stack
                     .push(TryRegion {
-                        catches: catches.clone(),
-                        finally: *finally,
-                        end: *end,
+                        catches,
+                        finally: finally.map(|target| target.0 as usize),
+                        end: end.0 as usize,
                     });
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::ExitTry => self.exit_try_region(),
-            Instruction::EndFinally => self.end_finally(),
-            Instruction::Emit { target, value } => {
-                let target_value = self.resolve_operand(target)?;
+            Opcode::ExitTry => self.exit_try_region(),
+            Opcode::EndFinally => self.end_finally(),
+            Opcode::Emit { target, value } => {
+                let target_value = self.resolve_operand_ref(program, *target);
                 let target = target_value
                     .as_identity()
                     .ok_or(RuntimeError::InvalidEffectTarget(target_value))?;
-                let value = self.resolve_operand(value)?;
+                let value = self.resolve_operand_ref(program, *value);
                 host.emit(target, value)?;
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Call { dst, program, args } => {
+            Opcode::Call {
+                dst,
+                program: callee,
+                args,
+            } => {
                 if self.state.frames.len() >= max_call_depth {
                     return Err(RuntimeError::MaxCallDepthExceeded {
                         max_depth: max_call_depth,
                     });
                 }
-                let args = args
-                    .iter()
-                    .map(|arg| self.resolve_operand(arg))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let args = self.resolve_operands(program, program.operands(*args));
                 self.advance_ip_unchecked();
-                self.state
-                    .frames
-                    .push(Frame::new(Arc::clone(program), Some(*dst), args)?);
+                self.state.frames.push(Frame::new(
+                    Arc::clone(program.program(*callee)),
+                    Some(*dst),
+                    args,
+                )?);
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::BuiltinCall { dst, name, args } => {
-                let args = args
-                    .iter()
-                    .map(|arg| self.resolve_operand(arg))
-                    .collect::<Result<Vec<_>, _>>()?;
+            Opcode::BuiltinCall { dst, name, args } => {
+                let args = self.resolve_operands(program, program.operands(*args));
                 let value = host.call_builtin(*name, &args)?;
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Dispatch {
+            Opcode::Dispatch {
                 dst,
-                relations,
-                program_relation,
-                program_bytes,
+                spec,
                 selector,
                 roles,
             } => {
@@ -876,14 +904,21 @@ impl RegisterVm {
                         max_depth: max_call_depth,
                     });
                 }
-                let selector = self.resolve_operand(selector)?;
-                let mut roles = roles
+                let selector = self.resolve_operand_ref(program, *selector);
+                let mut roles = program
+                    .roles(*roles)
                     .iter()
-                    .map(|(role, value)| Ok((role.clone(), self.resolve_operand(value)?)))
-                    .collect::<Result<Vec<_>, RuntimeError>>()?;
+                    .map(|(role, value)| {
+                        (
+                            program.constant(*role).clone(),
+                            self.resolve_operand_ref(program, *value),
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 roles.sort_by(|left, right| compare_role_values(&left.0, &right.0));
+                let spec = program.dispatch_spec(*spec);
                 let methods =
-                    applicable_method_entries(host, *relations, selector.clone(), &roles)?
+                    applicable_method_entries(host, spec.relations, selector.clone(), &roles)?
                         .into_iter()
                         .filter(|entry| host.authority().can_invoke_method(&entry.method))
                         .collect::<Vec<_>>();
@@ -900,7 +935,7 @@ impl RegisterVm {
                 };
                 let mut program_id = None;
                 host.visit_relation(
-                    *program_relation,
+                    spec.program_relation,
                     &[Some(method.clone()), None],
                     &mut |row| {
                         program_id = Some(row.values()[1].clone());
@@ -910,21 +945,19 @@ impl RegisterVm {
                 let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
                     method: method.clone(),
                 })?;
-                let program = host.resolve_program(*program_bytes, &program_id)?;
+                let callee = host.resolve_program(spec.program_bytes, &program_id)?;
                 let args = named_method_args(params, &roles).ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
                 })?;
                 self.advance_ip_unchecked();
                 self.state
                     .frames
-                    .push(Frame::new(program, Some(*dst), args)?);
+                    .push(Frame::new(callee, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::PositionalDispatch {
+            Opcode::PositionalDispatch {
                 dst,
-                relations,
-                program_relation,
-                program_bytes,
+                spec,
                 selector,
                 args,
             } => {
@@ -933,13 +966,11 @@ impl RegisterVm {
                         max_depth: max_call_depth,
                     });
                 }
-                let selector = self.resolve_operand(selector)?;
-                let args = args
-                    .iter()
-                    .map(|arg| self.resolve_operand(arg))
-                    .collect::<Result<Vec<_>, RuntimeError>>()?;
+                let selector = self.resolve_operand_ref(program, *selector);
+                let args = self.resolve_operands(program, program.operands(*args));
+                let spec = program.dispatch_spec(*spec);
                 let methods =
-                    applicable_positional_methods(host, *relations, selector.clone(), &args)?
+                    applicable_positional_methods(host, spec.relations, selector.clone(), &args)?
                         .into_iter()
                         .filter(|method| host.authority().can_invoke_method(method))
                         .collect::<Vec<_>>();
@@ -952,7 +983,7 @@ impl RegisterVm {
                 };
                 let mut program_id = None;
                 host.visit_relation(
-                    *program_relation,
+                    spec.program_relation,
                     &[Some(method.clone()), None],
                     &mut |row| {
                         program_id = Some(row.values()[1].clone());
@@ -962,41 +993,40 @@ impl RegisterVm {
                 let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
                     method: method.clone(),
                 })?;
-                let program = host.resolve_program(*program_bytes, &program_id)?;
+                let callee = host.resolve_program(spec.program_bytes, &program_id)?;
                 self.advance_ip_unchecked();
                 self.state
                     .frames
-                    .push(Frame::new(program, Some(*dst), args)?);
+                    .push(Frame::new(callee, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
-            Instruction::Commit => {
+            Opcode::Commit => {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Commit)
             }
-            Instruction::Suspend { kind } => {
+            Opcode::Suspend { kind } => {
                 self.advance_ip_unchecked();
-                Ok(VmHostResponse::Suspend(kind.clone()))
+                Ok(VmHostResponse::Suspend(program.suspend_kind(*kind).clone()))
             }
-            Instruction::SuspendValue { dst, duration } => {
+            Opcode::SuspendValue { dst, duration } => {
                 let kind = duration
-                    .as_ref()
-                    .map(|duration| self.suspend_duration(self.resolve_operand(duration)?))
+                    .map(|duration| {
+                        self.suspend_duration(self.resolve_operand_ref(program, duration))
+                    })
                     .transpose()?
                     .unwrap_or(SuspendKind::Never);
                 self.advance_ip_unchecked();
                 self.state.pending_resume = Some(*dst);
                 Ok(VmHostResponse::Suspend(kind))
             }
-            Instruction::CommitValue { dst } => {
+            Opcode::CommitValue { dst } => {
                 self.advance_ip_unchecked();
                 self.state.pending_resume = Some(*dst);
                 Ok(VmHostResponse::Suspend(SuspendKind::Commit))
             }
-            Instruction::Read { dst, metadata } => {
+            Opcode::Read { dst, metadata } => {
                 let metadata = metadata
-                    .as_ref()
-                    .map(|metadata| self.resolve_operand(metadata))
-                    .transpose()?
+                    .map(|metadata| self.resolve_operand_ref(program, metadata))
                     .unwrap_or_else(Value::nothing);
                 self.advance_ip_unchecked();
                 self.state.pending_resume = Some(*dst);
@@ -1004,32 +1034,26 @@ impl RegisterVm {
                     metadata,
                 )))
             }
-            Instruction::RollbackRetry => {
+            Opcode::RollbackRetry => {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::RollbackRetry)
             }
-            Instruction::Return { value } => {
-                let value = self.resolve_operand(value)?;
+            Opcode::Return { value } => {
+                let value = self.resolve_operand_ref(program, *value);
                 self.return_from_frame(value)
             }
-            Instruction::Abort { error } => {
-                let error = self.resolve_operand(error)?;
+            Opcode::Abort { error } => {
+                let error = self.resolve_operand_ref(program, *error);
                 Ok(VmHostResponse::Abort(error))
             }
-            Instruction::Raise {
+            Opcode::Raise {
                 error,
                 message,
                 value,
             } => {
-                let error = self.resolve_operand(error)?;
-                let message = message
-                    .as_ref()
-                    .map(|message| self.resolve_operand(message))
-                    .transpose()?;
-                let value = value
-                    .as_ref()
-                    .map(|value| self.resolve_operand(value))
-                    .transpose()?;
+                let error = self.resolve_operand_ref(program, *error);
+                let message = message.map(|message| self.resolve_operand_ref(program, message));
+                let value = value.map(|value| self.resolve_operand_ref(program, value));
                 let error = normalize_raised_error(error, message, value)?;
                 self.begin_raise(error)
             }
@@ -1168,17 +1192,6 @@ impl RegisterVm {
         self.state.frames.last_mut().unwrap()
     }
 
-    fn read_register(&self, register: Register) -> Result<&Value, RuntimeError> {
-        let frame = self.current_frame()?;
-        frame
-            .registers
-            .get(register.0 as usize)
-            .ok_or(RuntimeError::RegisterOutOfBounds {
-                register: register.0,
-                register_count: frame.registers.len(),
-            })
-    }
-
     fn read_register_unchecked(&self, register: Register) -> &Value {
         let frame = self
             .state
@@ -1208,52 +1221,57 @@ impl RegisterVm {
         frame.registers[register.0 as usize] = value;
     }
 
-    fn resolve_operand(&self, operand: &Operand) -> Result<Value, RuntimeError> {
+    #[inline]
+    fn resolve_operand_ref(&self, program: &Program, operand: OperandRef) -> Value {
         match operand {
-            Operand::Register(register) => Ok(self.read_register(*register)?.clone()),
-            Operand::Value(value) => Ok(value.clone()),
+            OperandRef::Register(register) => self.read_register_unchecked(register).clone(),
+            OperandRef::Constant(id) => program.constant(id).clone(),
         }
     }
 
-    fn build_list(&self, items: &[ListItem]) -> Result<Value, RuntimeError> {
+    #[inline]
+    fn resolve_operands(&self, program: &Program, operands: &[OperandRef]) -> Vec<Value> {
+        operands
+            .iter()
+            .map(|operand| self.resolve_operand_ref(program, *operand))
+            .collect()
+    }
+
+    #[inline]
+    fn build_list(&self, program: &Program, items: &[CompactListItem]) -> Value {
         let mut values = Vec::new();
         for item in items {
             match item {
-                ListItem::Value(operand) => values.push(self.resolve_operand(operand)?),
-                ListItem::Splice(operand) => {
-                    let splice = self.resolve_operand(operand)?;
+                CompactListItem::Value(operand) => {
+                    values.push(self.resolve_operand_ref(program, *operand));
+                }
+                CompactListItem::Splice(operand) => {
+                    let splice = self.resolve_operand_ref(program, *operand);
                     let Some(()) = splice.with_list(|items| {
                         values.extend(items.iter().cloned());
                     }) else {
-                        return Ok(Value::nothing());
+                        return Value::nothing();
                     };
                 }
             }
         }
-        Ok(Value::list(values))
+        Value::list(values)
     }
 
-    fn resolve_tuple(&self, values: &[Operand]) -> Result<Tuple, RuntimeError> {
-        Ok(Tuple::new(
-            values
-                .iter()
-                .map(|value| self.resolve_operand(value))
-                .collect::<Result<Vec<_>, _>>()?,
-        ))
+    #[inline]
+    fn resolve_tuple(&self, program: &Program, values: &[OperandRef]) -> Tuple {
+        Tuple::new(self.resolve_operands(program, values))
     }
 
+    #[inline]
     fn resolve_bindings(
         &self,
-        bindings: &[Option<Operand>],
-    ) -> Result<Vec<Option<Value>>, RuntimeError> {
+        program: &Program,
+        bindings: &[Option<OperandRef>],
+    ) -> Vec<Option<Value>> {
         bindings
             .iter()
-            .map(|binding| {
-                binding
-                    .as_ref()
-                    .map(|operand| self.resolve_operand(operand))
-                    .transpose()
-            })
+            .map(|binding| binding.map(|operand| self.resolve_operand_ref(program, operand)))
             .collect()
     }
 
