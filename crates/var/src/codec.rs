@@ -126,6 +126,18 @@ impl fmt::Display for ValueCodecError {
 
 impl std::error::Error for ValueCodecError {}
 
+/// Output target for value encoding.
+pub trait ValueSink {
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), ValueCodecError>;
+}
+
+impl ValueSink for Vec<u8> {
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), ValueCodecError> {
+        self.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
 /// Encodes a single owned `Value` with the default persistence-safe options.
 pub fn encode_value(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueCodecError> {
     encode_value_with_options(value, out, ValueCodecOptions::default())
@@ -141,43 +153,52 @@ pub fn encode_value_with_options(
     out: &mut Vec<u8>,
     options: ValueCodecOptions,
 ) -> Result<(), ValueCodecError> {
+    encode_value_to_sink(value, out, options)
+}
+
+/// Encodes a single owned `Value` into a caller-provided sink.
+pub fn encode_value_to_sink<S: ValueSink>(
+    value: &Value,
+    sink: &mut S,
+    options: ValueCodecOptions,
+) -> Result<(), ValueCodecError> {
     match value.as_value_ref() {
         ValueRef::Nothing
         | ValueRef::Bool(_)
         | ValueRef::Int(_)
         | ValueRef::Float(_)
         | ValueRef::Identity(_) => {
-            write_word(out, value.raw_bits());
+            write_word(sink, value.raw_bits())?;
         }
-        ValueRef::Symbol(symbol) => encode_symbol_value(TAG_SYMBOL, symbol, out, options)?,
-        ValueRef::ErrorCode(symbol) => encode_symbol_value(TAG_ERROR_CODE, symbol, out, options)?,
+        ValueRef::Symbol(symbol) => encode_symbol_value(TAG_SYMBOL, symbol, sink, options)?,
+        ValueRef::ErrorCode(symbol) => encode_symbol_value(TAG_ERROR_CODE, symbol, sink, options)?,
         ValueRef::String(value) => {
-            write_extended_header(out, TAG_STRING, len_aux(value.len())?);
-            out.extend_from_slice(value.as_bytes());
+            write_extended_header(sink, TAG_STRING, len_aux(value.len())?)?;
+            sink.write_bytes(value.as_bytes())?;
         }
         ValueRef::Bytes(value) => {
-            write_extended_header(out, TAG_BYTES, len_aux(value.len())?);
-            out.extend_from_slice(value);
+            write_extended_header(sink, TAG_BYTES, len_aux(value.len())?)?;
+            sink.write_bytes(value)?;
         }
         ValueRef::List(values) => {
-            write_extended_header(out, TAG_LIST, len_aux(values.len())?);
+            write_extended_header(sink, TAG_LIST, len_aux(values.len())?)?;
             for value in values {
-                encode_value_with_options(value, out, options)?;
+                encode_value_to_sink(value, sink, options)?;
             }
         }
         ValueRef::Map(entries) => {
-            write_extended_header(out, TAG_MAP, len_aux(entries.len())?);
+            write_extended_header(sink, TAG_MAP, len_aux(entries.len())?)?;
             for (key, value) in entries {
-                encode_value_with_options(key, out, options)?;
-                encode_value_with_options(value, out, options)?;
+                encode_value_to_sink(key, sink, options)?;
+                encode_value_to_sink(value, sink, options)?;
             }
         }
         ValueRef::Range { start, end } => {
             let flags = if end.is_some() { RANGE_HAS_END } else { 0 };
-            write_extended_header(out, TAG_RANGE, flags);
-            encode_value_with_options(start, out, options)?;
+            write_extended_header(sink, TAG_RANGE, flags)?;
+            encode_value_to_sink(start, sink, options)?;
             if let Some(end) = end {
-                encode_value_with_options(end, out, options)?;
+                encode_value_to_sink(end, sink, options)?;
             }
         }
         ValueRef::Error {
@@ -192,17 +213,17 @@ pub fn encode_value_with_options(
             if value.is_some() {
                 flags |= ERROR_HAS_VALUE;
             }
-            write_extended_header(out, TAG_ERROR, flags);
-            encode_symbol_value(TAG_ERROR_CODE, code, out, options)?;
+            write_extended_header(sink, TAG_ERROR, flags)?;
+            encode_symbol_value(TAG_ERROR_CODE, code, sink, options)?;
             if let Some(message) = message {
-                write_blob(out, message.as_bytes())?;
+                write_blob(sink, message.as_bytes())?;
             }
             if let Some(value) = value {
-                encode_value_with_options(value, out, options)?;
+                encode_value_to_sink(value, sink, options)?;
             }
         }
         ValueRef::Capability(_) if options.allow_capabilities => {
-            write_word(out, value.raw_bits());
+            write_word(sink, value.raw_bits())?;
         }
         ValueRef::Capability(_) => return Err(ValueCodecError::CapabilityNotEncodable),
     }
@@ -245,40 +266,44 @@ pub fn decode_value_exact_with_options(
 fn encode_symbol_value(
     tag: u8,
     symbol: Symbol,
-    out: &mut Vec<u8>,
+    sink: &mut impl ValueSink,
     options: ValueCodecOptions,
 ) -> Result<(), ValueCodecError> {
     match options.symbol_encoding {
-        SymbolEncoding::Id => write_word(out, Value::pack(tag, symbol.id() as u64).raw_bits()),
+        SymbolEncoding::Id => write_word(sink, Value::pack(tag, symbol.id() as u64).raw_bits())?,
         SymbolEncoding::Name => {
             let name = symbol
                 .name()
                 .ok_or(ValueCodecError::UnnamedSymbol(symbol.id()))?;
-            write_extended_header(out, tag, len_aux(name.len())?);
-            out.extend_from_slice(name.as_bytes());
+            write_extended_header(sink, tag, len_aux(name.len())?)?;
+            sink.write_bytes(name.as_bytes())?;
         }
     }
     Ok(())
 }
 
-fn write_blob(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ValueCodecError> {
+fn write_blob(sink: &mut impl ValueSink, bytes: &[u8]) -> Result<(), ValueCodecError> {
     let len =
         u64::try_from(bytes.len()).map_err(|_| ValueCodecError::LengthTooLarge(bytes.len()))?;
-    out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(bytes);
+    sink.write_bytes(&len.to_le_bytes())?;
+    sink.write_bytes(bytes)?;
     Ok(())
 }
 
-fn write_extended_header(out: &mut Vec<u8>, kind: u8, aux: u64) {
+fn write_extended_header(
+    sink: &mut impl ValueSink,
+    kind: u8,
+    aux: u64,
+) -> Result<(), ValueCodecError> {
     debug_assert!(aux <= EXT_AUX_MASK);
     write_word(
-        out,
+        sink,
         ((EXTENDED_TAG as u64) << TAG_SHIFT) | ((kind as u64) << EXT_KIND_SHIFT) | aux,
-    );
+    )
 }
 
-fn write_word(out: &mut Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_le_bytes());
+fn write_word(sink: &mut impl ValueSink, value: u64) -> Result<(), ValueCodecError> {
+    sink.write_bytes(&value.to_le_bytes())
 }
 
 fn len_aux(len: usize) -> Result<u64, ValueCodecError> {

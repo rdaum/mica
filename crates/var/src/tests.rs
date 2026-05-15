@@ -14,8 +14,9 @@
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
     CapabilityId, Identity, Symbol, SymbolEncoding, SymbolMetadata, Value, ValueCodecError,
-    ValueCodecOptions, ValueKind, ValueRef, ValueVisitor, VisitDecision, decode_value,
-    decode_value_exact, decode_value_exact_with_options, encode_value, encode_value_with_options,
+    ValueCodecOptions, ValueKind, ValueRef, ValueSink, ValueVisitor, VisitDecision, decode_value,
+    decode_value_exact, decode_value_exact_with_options, encode_value, encode_value_to_sink,
+    encode_value_with_options,
 };
 use std::mem::{align_of, size_of};
 
@@ -444,6 +445,43 @@ fn value_codec_uses_little_endian_inline_words() {
         encode_value(&value, &mut encoded).unwrap();
         assert_eq!(encoded, value.raw_bits().to_le_bytes());
         assert_eq!(decode_value_exact(&encoded).unwrap(), value);
+    }
+}
+
+#[test]
+fn value_codec_sink_matches_vec_encoder() {
+    #[derive(Default)]
+    struct ChunkSink(Vec<Vec<u8>>);
+
+    impl ValueSink for ChunkSink {
+        fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), ValueCodecError> {
+            self.0.push(bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    let values = [
+        Value::identity(Identity::new(42).unwrap()),
+        Value::string("brass lamp"),
+        Value::bytes([1, 2, 3, 4]),
+        Value::list([
+            Value::symbol(Symbol::intern("item")),
+            Value::error(
+                Symbol::intern("E_TEST"),
+                Some("nested"),
+                Some(Value::int(7).unwrap()),
+            ),
+        ]),
+    ];
+
+    for value in values {
+        let mut expected = Vec::new();
+        encode_value(&value, &mut expected).unwrap();
+
+        let mut sink = ChunkSink::default();
+        encode_value_to_sink(&value, &mut sink, ValueCodecOptions::default()).unwrap();
+        let actual = sink.0.concat();
+        assert_eq!(actual, expected);
     }
 }
 
