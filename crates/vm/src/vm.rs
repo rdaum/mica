@@ -20,8 +20,7 @@ use crate::{
 };
 use mica_relation_kernel::{
     ComposedTransactionRead, RelationRead, RelationWorkspace, ScanControl, Transaction,
-    TransientStore, Tuple, applicable_method_entries, applicable_positional_methods,
-    named_method_args,
+    TransientStore, Tuple, applicable_method_calls, applicable_positional_methods,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
@@ -918,13 +917,13 @@ impl RegisterVm {
                 roles.sort_by(|left, right| compare_role_values(&left.0, &right.0));
                 let spec = program.dispatch_spec(*spec);
                 let methods =
-                    applicable_method_entries(host, spec.relations, selector.clone(), &roles)?
+                    applicable_method_calls(host, spec.relations, selector.clone(), &roles)?
                         .into_iter()
                         .filter(|entry| host.authority().can_invoke_method(&entry.method))
                         .collect::<Vec<_>>();
-                let (method, params) = match methods.as_slice() {
+                let (method, args) = match methods.as_slice() {
                     [] => return Err(RuntimeError::NoApplicableMethod { selector }),
-                    [entry] => (&entry.method, &entry.params),
+                    [entry] => (&entry.method, &entry.args),
                     _ => {
                         let methods = methods
                             .into_iter()
@@ -946,7 +945,7 @@ impl RegisterVm {
                     method: method.clone(),
                 })?;
                 let callee = host.resolve_program(spec.program_bytes, &program_id)?;
-                let args = named_method_args(params, &roles).ok_or_else(|| {
+                let args = args.clone().ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
                 })?;
                 self.advance_ip_unchecked();

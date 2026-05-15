@@ -24,7 +24,7 @@ use mica_vm::{
     AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RuntimeContext,
     SuspendKind,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -103,7 +103,7 @@ pub struct SharedTaskManager {
 #[derive(Default)]
 struct SharedTaskState {
     suspended: HashMap<TaskId, SuspendedTask>,
-    completed: HashMap<TaskId, TaskOutcome>,
+    completed: HashSet<TaskId>,
     effects: EffectLog,
 }
 
@@ -249,7 +249,7 @@ impl TaskManager {
             next_task_id: AtomicU64::new(self.next_task_id),
             state: Mutex::new(SharedTaskState {
                 suspended: self.suspended,
-                completed: self.completed,
+                completed: self.completed.into_keys().collect(),
                 effects: self.effects,
             }),
             transient: RwLock::new(self.transient),
@@ -500,7 +500,7 @@ impl SharedTaskManager {
     ) -> Result<TaskOutcome, TaskManagerError> {
         let (suspended, task_snapshot) = {
             let mut state = self.state.lock().unwrap();
-            if state.completed.contains_key(&task_id) {
+            if state.completed.contains(&task_id) {
                 return Err(TaskManagerError::TaskAlreadyCompleted(task_id));
             }
             let suspended = state
@@ -671,7 +671,7 @@ impl SharedTaskManager {
         match &outcome {
             TaskOutcome::Complete { effects, .. } | TaskOutcome::Aborted { effects, .. } => {
                 state.effects.emit(task_id, effects.clone());
-                state.completed.insert(task_id, outcome);
+                state.completed.insert(task_id);
             }
             TaskOutcome::Suspended { kind, effects, .. } => {
                 state.effects.emit(task_id, effects.clone());

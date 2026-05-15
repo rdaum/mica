@@ -901,6 +901,7 @@ dependencies = [
 name = "mica-vm"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "mica-relation-kernel",
  "mica-var",
 ]

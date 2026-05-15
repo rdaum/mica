@@ -12,10 +12,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::RuntimeError;
+use arc_swap::ArcSwap;
 use mica_relation_kernel::{DispatchRelations, RelationId, RelationRead};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Register(pub u16);
@@ -1465,9 +1466,17 @@ fn table_range_for(
     })
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ProgramResolver {
-    cache: RwLock<BTreeMap<Value, Arc<Program>>>,
+    cache: ArcSwap<BTreeMap<Value, Arc<Program>>>,
+}
+
+impl Default for ProgramResolver {
+    fn default() -> Self {
+        Self {
+            cache: ArcSwap::new(Arc::new(BTreeMap::new())),
+        }
+    }
 }
 
 impl ProgramResolver {
@@ -1481,26 +1490,26 @@ impl ProgramResolver {
     }
 
     pub fn insert(&mut self, method: Value, program: Program) -> Option<Arc<Program>> {
-        self.cache
-            .write()
-            .unwrap()
-            .insert(method, Arc::new(program))
+        let mut next = self.cache.load_full().as_ref().clone();
+        let previous = next.insert(method, Arc::new(program));
+        self.cache.store(Arc::new(next));
+        previous
     }
 
     pub fn get(&self, method: &Value) -> Option<Arc<Program>> {
-        self.cache.read().unwrap().get(method).cloned()
+        self.cache.load().get(method).cloned()
     }
 
     pub fn contains(&self, method: &Value) -> bool {
-        self.cache.read().unwrap().contains_key(method)
+        self.cache.load().contains_key(method)
     }
 
     pub fn len(&self) -> usize {
-        self.cache.read().unwrap().len()
+        self.cache.load().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cache.read().unwrap().is_empty()
+        self.cache.load().is_empty()
     }
 
     pub fn resolve(
@@ -1522,10 +1531,14 @@ impl ProgramResolver {
                 program: program_id.clone(),
             })?;
         let program = Arc::new(Program::from_bytes(&bytes)?);
-        self.cache
-            .write()
-            .unwrap()
-            .insert(program_id.clone(), program.clone());
+        self.cache.rcu(|current| {
+            if current.contains_key(program_id) {
+                return Arc::clone(current);
+            }
+            let mut next = current.as_ref().clone();
+            next.insert(program_id.clone(), Arc::clone(&program));
+            Arc::new(next)
+        });
         Ok(program)
     }
 }

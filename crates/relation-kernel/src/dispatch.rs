@@ -27,6 +27,12 @@ pub struct ApplicableMethod {
     pub params: Vec<crate::Tuple>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicableMethodCall {
+    pub method: Value,
+    pub args: Option<Vec<Value>>,
+}
+
 pub fn applicable_methods(
     reader: &impl RelationRead,
     relations: DispatchRelations,
@@ -76,6 +82,31 @@ pub fn applicable_method_entries(
     Ok(methods)
 }
 
+pub fn applicable_method_calls(
+    reader: &impl RelationRead,
+    relations: DispatchRelations,
+    selector: Value,
+    roles: &[(Value, Value)],
+) -> Result<Vec<ApplicableMethodCall>, KernelError> {
+    let mut methods = Vec::new();
+
+    reader.visit_relation(
+        relations.method_selector,
+        &[None, Some(selector)],
+        &mut |row| {
+            let method = row.values()[0].clone();
+            if let Some(args) = method_call_args(reader, relations, &method, roles)? {
+                methods.push(ApplicableMethodCall { method, args });
+            }
+            Ok(ScanControl::Continue)
+        },
+    )?;
+
+    methods.sort_by(|left, right| left.method.cmp(&right.method));
+    methods.dedup_by(|left, right| left.method == right.method);
+    Ok(methods)
+}
+
 pub fn applicable_positional_methods(
     reader: &impl RelationRead,
     relations: DispatchRelations,
@@ -108,6 +139,52 @@ pub fn applicable_positional_methods(
     methods.sort();
     methods.dedup();
     Ok(methods)
+}
+
+fn method_call_args(
+    reader: &impl RelationRead,
+    relations: DispatchRelations,
+    method: &Value,
+    roles: &[(Value, Value)],
+) -> Result<Option<Option<Vec<Value>>>, KernelError> {
+    let mut args = Vec::new();
+    let mut matched = true;
+    let mut invalid_position = false;
+
+    reader.visit_relation(
+        relations.param,
+        &[Some(method.clone()), None, None, None],
+        &mut |param| {
+            let Some(position) = param_position(param) else {
+                invalid_position = true;
+                return Ok(ScanControl::Stop);
+            };
+            let role = &param.values()[1];
+            let restriction = &param.values()[2];
+            let Some(value) = role_value(roles, role) else {
+                matched = false;
+                return Ok(ScanControl::Stop);
+            };
+            if !matches_restriction(reader, relations.delegates, value, restriction)? {
+                matched = false;
+                return Ok(ScanControl::Stop);
+            }
+            args.push((position, value.clone()));
+            Ok(ScanControl::Continue)
+        },
+    )?;
+
+    if !matched {
+        return Ok(None);
+    }
+    if invalid_position {
+        return Ok(Some(None));
+    }
+
+    args.sort_by_key(|(position, _)| *position);
+    Ok(Some(Some(
+        args.into_iter().map(|(_, value)| value).collect(),
+    )))
 }
 
 fn params_match(
