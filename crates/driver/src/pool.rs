@@ -20,8 +20,11 @@ use mica_runtime::{
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 use std::thread;
 use std::time::Duration;
 
@@ -41,6 +44,11 @@ struct PoolState {
     contexts: BTreeMap<TaskId, TaskContext>,
     input_waiters: BTreeMap<Identity, Vec<TaskId>>,
     events: Vec<DriverEvent>,
+    event_waker: Option<Waker>,
+}
+
+pub struct DriverEvents<'a> {
+    driver: &'a CompioTaskDriver,
 }
 
 impl CompioTaskDriver {
@@ -211,6 +219,10 @@ impl CompioTaskDriver {
         std::mem::take(&mut state.events)
     }
 
+    pub fn wait_events(&self) -> DriverEvents<'_> {
+        DriverEvents { driver: self }
+    }
+
     fn dispatch<F, Fut, T>(&self, f: F) -> Result<T, DriverError>
     where
         F: FnOnce() -> Fut + Send + 'static,
@@ -244,6 +256,7 @@ impl CompioTaskDriver {
         outcome: TaskOutcome,
     ) -> Result<(), DriverError> {
         let mut timer = None;
+        let event_waker;
         {
             let mut state = self.inner.state.lock().unwrap();
             state.drain_effects_into_events(&self.inner.runner);
@@ -282,6 +295,10 @@ impl CompioTaskDriver {
                     }
                 }
             }
+            event_waker = state.event_waker.take();
+        }
+        if let Some(waker) = event_waker {
+            waker.wake();
         }
         if let Some(duration) = timer {
             self.spawn_timer_resume(task_id, duration);
@@ -300,15 +317,31 @@ impl CompioTaskDriver {
     }
 
     fn record_task_failure(&self, task_id: TaskId, error: DriverError) {
-        self.inner
-            .state
-            .lock()
-            .unwrap()
-            .events
-            .push(DriverEvent::TaskFailed {
+        let event_waker = {
+            let mut state = self.inner.state.lock().unwrap();
+            state.events.push(DriverEvent::TaskFailed {
                 task_id,
                 error: error.to_string(),
             });
+            state.event_waker.take()
+        };
+        if let Some(waker) = event_waker {
+            waker.wake();
+        }
+    }
+}
+
+impl Future for DriverEvents<'_> {
+    type Output = Vec<DriverEvent>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut state = self.driver.inner.state.lock().unwrap();
+        state.drain_effects_into_events(&self.driver.inner.runner);
+        if !state.events.is_empty() {
+            return Poll::Ready(std::mem::take(&mut state.events));
+        }
+        state.event_waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 

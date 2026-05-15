@@ -15,21 +15,21 @@ use clap::Parser;
 use compio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use compio::net::{OwnedReadHalf, OwnedWriteHalf, TcpListener, TcpStream};
 use compio::runtime::{ResumeUnwind, Runtime};
-use compio::time::sleep;
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
+use std::future::Future;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::task::{Context, Poll, Waker};
 
 const DEFAULT_BIND: &str = "127.0.0.1:7777";
 const DEFAULT_FILEINS: &[&str] = &[
@@ -38,7 +38,8 @@ const DEFAULT_FILEINS: &[&str] = &[
     "examples/mud-command-parser.mica",
 ];
 const DAEMON_ENDPOINT_ID_START: u64 = 0x00ed_0000_0000_0000;
-const EVENT_POLL_DELAY: Duration = Duration::from_millis(10);
+const ENDPOINT_OUTPUT_HIGH_WATER_LINES: usize = 128;
+const ENDPOINT_OUTPUT_DRAIN_LINES: usize = 64;
 
 #[derive(Parser)]
 #[command(
@@ -123,9 +124,109 @@ struct ActorBinding {
 
 struct ServerState {
     driver: Arc<CompioTaskDriver>,
-    endpoints: Arc<Mutex<BTreeMap<Identity, mpsc::Sender<String>>>>,
+    endpoints: Arc<Mutex<BTreeMap<Identity, Arc<EndpointOutput>>>>,
     stop_events: Arc<AtomicBool>,
     next_endpoint: AtomicU64,
+}
+
+#[derive(Default)]
+struct EndpointOutput {
+    state: Mutex<EndpointOutputState>,
+}
+
+#[derive(Default)]
+struct EndpointOutputState {
+    lines: VecDeque<String>,
+    closed: bool,
+    waker: Option<Waker>,
+}
+
+struct EndpointOutputRecv<'a> {
+    output: &'a EndpointOutput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum EndpointOutputReady {
+    Ready { buffered: usize },
+    HighWater { buffered: usize },
+    Closed,
+}
+
+impl EndpointOutput {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn send(&self, line: String) -> Result<(), String> {
+        let waker = {
+            let mut state = self.state.lock().unwrap();
+            if state.closed {
+                return Err("endpoint writer is closed".to_owned());
+            }
+            state.lines.push_back(line);
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        Ok(())
+    }
+
+    fn close(&self) {
+        let waker = {
+            let mut state = self.state.lock().unwrap();
+            state.closed = true;
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn recv(&self) -> EndpointOutputRecv<'_> {
+        EndpointOutputRecv { output: self }
+    }
+
+    fn drain_batch(&self, max_lines: usize) -> Vec<String> {
+        let mut state = self.state.lock().unwrap();
+        let count = max_lines.min(state.lines.len());
+        let mut lines = Vec::with_capacity(count);
+        for _ in 0..count {
+            let Some(line) = state.lines.pop_front() else {
+                break;
+            };
+            lines.push(line);
+        }
+        lines
+    }
+
+    #[cfg(test)]
+    fn try_recv(&self) -> Option<String> {
+        self.state.lock().unwrap().lines.pop_front()
+    }
+}
+
+impl Future for EndpointOutputRecv<'_> {
+    type Output = EndpointOutputReady;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut state = self.output.state.lock().unwrap();
+        if state.lines.len() >= ENDPOINT_OUTPUT_HIGH_WATER_LINES {
+            return Poll::Ready(EndpointOutputReady::HighWater {
+                buffered: state.lines.len(),
+            });
+        }
+        if !state.lines.is_empty() {
+            return Poll::Ready(EndpointOutputReady::Ready {
+                buffered: state.lines.len(),
+            });
+        }
+        if state.closed {
+            return Poll::Ready(EndpointOutputReady::Closed);
+        }
+        state.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
 }
 
 impl ServerState {
@@ -199,12 +300,16 @@ async fn handle_connection(
     actor: ActorBinding,
 ) -> Result<(), String> {
     let endpoint = state.allocate_endpoint()?;
-    let (out_tx, out_rx) = mpsc::channel();
-    state.endpoints.lock().unwrap().insert(endpoint, out_tx);
+    let output = EndpointOutput::new();
+    state
+        .endpoints
+        .lock()
+        .unwrap()
+        .insert(endpoint, output.clone());
     open_endpoint(&state, endpoint, actor.identity)?;
 
     let (read_half, write_half) = stream.into_split();
-    let writer = compio::runtime::spawn(write_socket_loop(write_half, out_rx));
+    let writer = compio::runtime::spawn(write_socket_loop(write_half, output));
     send_line(&state, endpoint, "Connected to Mica.")?;
     send_line(
         &state,
@@ -213,7 +318,6 @@ async fn handle_connection(
     )?;
 
     let result = read_socket_loop(read_half, &state, endpoint, &actor.name).await;
-    state.endpoints.lock().unwrap().remove(&endpoint);
     let _ = state.driver.close_endpoint(endpoint);
     drop_socket_writer(&state, endpoint);
     let _ = writer.await.resume_unwind();
@@ -339,33 +443,35 @@ fn send_line(state: &ServerState, endpoint: Identity, line: &str) -> Result<(), 
         .get(&endpoint)
         .cloned()
         .ok_or_else(|| "endpoint is not connected".to_owned())?;
-    sender
-        .send(line.to_owned())
-        .map_err(|_| "endpoint writer is closed".to_owned())
+    sender.send(line.to_owned())
 }
 
 fn drop_socket_writer(state: &ServerState, endpoint: Identity) {
-    state.endpoints.lock().unwrap().remove(&endpoint);
+    if let Some(output) = state.endpoints.lock().unwrap().remove(&endpoint) {
+        output.close();
+    }
 }
 
 async fn write_socket_loop(
     mut stream: OwnedWriteHalf<TcpStream>,
-    rx: mpsc::Receiver<String>,
+    output: Arc<EndpointOutput>,
 ) -> Result<(), String> {
-    loop {
-        match rx.try_recv() {
-            Ok(line) => {
-                let mut bytes = line.into_bytes();
-                bytes.push(b'\n');
-                let (result, _) = stream.write_all(bytes).await.into();
-                if result.is_err() {
-                    break;
-                }
+    while let EndpointOutputReady::Ready { .. } | EndpointOutputReady::HighWater { .. } =
+        output.recv().await
+    {
+        for line in output.drain_batch(ENDPOINT_OUTPUT_DRAIN_LINES) {
+            let mut bytes = line.into_bytes();
+            bytes.push(b'\n');
+            let (result, _) = stream.write_all(bytes).await.into();
+            if result.is_err() {
+                return shutdown_socket_writer(stream).await;
             }
-            Err(mpsc::TryRecvError::Empty) => sleep(EVENT_POLL_DELAY).await,
-            Err(mpsc::TryRecvError::Disconnected) => break,
         }
     }
+    shutdown_socket_writer(stream).await
+}
+
+async fn shutdown_socket_writer(mut stream: OwnedWriteHalf<TcpStream>) -> Result<(), String> {
     match stream.shutdown().await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotConnected => Ok(()),
@@ -377,16 +483,15 @@ async fn write_socket_loop(
 
 fn start_event_pump(
     driver: Arc<CompioTaskDriver>,
-    endpoints: Arc<Mutex<BTreeMap<Identity, mpsc::Sender<String>>>>,
+    endpoints: Arc<Mutex<BTreeMap<Identity, Arc<EndpointOutput>>>>,
     stop_events: Arc<AtomicBool>,
 ) {
     compio::runtime::spawn(async move {
         while !stop_events.load(Ordering::Relaxed) {
-            let events = driver.drain_events();
+            let events = driver.wait_events().await;
             for event in events {
                 route_driver_event(&endpoints, event);
             }
-            sleep(EVENT_POLL_DELAY).await;
         }
     })
     .detach();
@@ -401,7 +506,7 @@ fn flush_routed_effects(state: &ServerState) -> Result<(), String> {
 }
 
 fn route_driver_event(
-    endpoints: &Arc<Mutex<BTreeMap<Identity, mpsc::Sender<String>>>>,
+    endpoints: &Arc<Mutex<BTreeMap<Identity, Arc<EndpointOutput>>>>,
     event: DriverEvent,
 ) {
     if let DriverEvent::Effect(effect) = event {
@@ -483,6 +588,37 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_output_wait_reports_buffer_state_without_dequeueing() {
+        let output = EndpointOutput::new();
+        output.send("first".to_owned()).unwrap();
+        output.send("second".to_owned()).unwrap();
+
+        let ready = compio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(output.recv());
+
+        assert_eq!(ready, EndpointOutputReady::Ready { buffered: 2 });
+        assert_eq!(
+            output.drain_batch(ENDPOINT_OUTPUT_DRAIN_LINES),
+            vec!["first".to_owned(), "second".to_owned()]
+        );
+
+        for index in 0..ENDPOINT_OUTPUT_HIGH_WATER_LINES {
+            output.send(format!("line {index}")).unwrap();
+        }
+        let ready = compio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(output.recv());
+
+        assert_eq!(
+            ready,
+            EndpointOutputReady::HighWater {
+                buffered: ENDPOINT_OUTPUT_HIGH_WATER_LINES
+            }
+        );
+    }
+
+    #[test]
     fn routed_command_effect_reaches_endpoint_sender() {
         let mut runner = SourceRunner::new_empty();
         runner
@@ -497,24 +633,28 @@ mod tests {
         let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
         let state = ServerState::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
         let endpoint = state.allocate_endpoint().unwrap();
-        let (tx, rx) = mpsc::channel();
-        state.endpoints.lock().unwrap().insert(endpoint, tx);
+        let output = EndpointOutput::new();
+        state
+            .endpoints
+            .lock()
+            .unwrap()
+            .insert(endpoint, output.clone());
         open_endpoint(&state, endpoint, alice).unwrap();
 
         assert!(!handle_command(&state, endpoint, "alice", "look").unwrap());
 
-        let line = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let line = output.try_recv().unwrap();
         assert_eq!(
             line,
             "First Room. A coin and a box are here. The only exit is north."
         );
         assert!(!handle_command(&state, endpoint, "alice", "say hello").unwrap());
 
-        let line = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let line = output.try_recv().unwrap();
         assert_eq!(line, "hello");
         assert!(!handle_command(&state, endpoint, "alice", "dance").unwrap());
 
-        let line = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let line = output.try_recv().unwrap();
         assert_eq!(line, "I do not understand that.");
         let _ = state.driver.close_endpoint(endpoint);
     }
@@ -524,8 +664,11 @@ mod tests {
         let runner = SourceRunner::new_empty();
         let state = ServerState::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
         let endpoint = state.allocate_endpoint().unwrap();
-        let (tx, _rx) = mpsc::channel();
-        state.endpoints.lock().unwrap().insert(endpoint, tx);
+        state
+            .endpoints
+            .lock()
+            .unwrap()
+            .insert(endpoint, EndpointOutput::new());
         open_endpoint(&state, endpoint, endpoint).unwrap();
 
         start_read_task(&state, endpoint).unwrap();

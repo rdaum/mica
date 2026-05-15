@@ -44,6 +44,24 @@ fn driver_runs_source_on_compio_task() {
 }
 
 #[test]
+fn driver_events_can_be_awaited() {
+    let driver = CompioTaskDriver::spawn_empty().unwrap();
+    let submitted = driver
+        .submit_source(endpoint(29), root_source("return 3 + 4"))
+        .unwrap();
+
+    let events = compio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(driver.wait_events());
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DriverEvent::TaskCompleted { task_id, value }
+            if *task_id == submitted.task_id && *value == Value::int(7).unwrap()
+    )));
+}
+
+#[test]
 fn timed_suspend_wakes_and_resumes_task() {
     let driver = CompioTaskDriver::spawn_empty().unwrap();
     let submitted = driver
