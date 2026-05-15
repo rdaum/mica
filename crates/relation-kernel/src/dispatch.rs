@@ -11,9 +11,8 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{KernelError, QueryPlan, RelationId, RelationRead, delegates_star_from};
+use crate::{KernelError, QueryPlan, RelationId, RelationRead, delegates_reaches};
 use mica_var::{Value, primitive_prototype_for_value};
-use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DispatchRelations {
@@ -22,13 +21,33 @@ pub struct DispatchRelations {
     pub delegates: RelationId,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicableMethod {
+    pub method: Value,
+    pub params: Vec<crate::Tuple>,
+}
+
 pub fn applicable_methods(
     reader: &impl RelationRead,
     relations: DispatchRelations,
     selector: Value,
     roles: impl IntoIterator<Item = (Value, Value)>,
 ) -> Result<Vec<Value>, KernelError> {
-    let role_env = roles.into_iter().collect::<BTreeMap<_, _>>();
+    let roles = roles.into_iter().collect::<Vec<_>>();
+    Ok(
+        applicable_method_entries(reader, relations, selector, &roles)?
+            .into_iter()
+            .map(|entry| entry.method)
+            .collect(),
+    )
+}
+
+pub fn applicable_method_entries(
+    reader: &impl RelationRead,
+    relations: DispatchRelations,
+    selector: Value,
+    roles: &[(Value, Value)],
+) -> Result<Vec<ApplicableMethod>, KernelError> {
     let selector_rows =
         QueryPlan::scan(relations.method_selector, [None, Some(selector)]).execute(reader)?;
     let mut methods = Vec::new();
@@ -37,13 +56,13 @@ pub fn applicable_methods(
         let method = row.values()[0].clone();
         let params = QueryPlan::scan(relations.param, [Some(method.clone()), None, None, None])
             .execute(reader)?;
-        if params_match(reader, relations.delegates, &role_env, &params)? {
-            methods.push(method);
+        if params_match(reader, relations.delegates, roles, &params)? {
+            methods.push(ApplicableMethod { method, params });
         }
     }
 
-    methods.sort();
-    methods.dedup();
+    methods.sort_by(|left, right| left.method.cmp(&right.method));
+    methods.dedup_by(|left, right| left.method == right.method);
     Ok(methods)
 }
 
@@ -74,13 +93,13 @@ pub fn applicable_positional_methods(
 fn params_match(
     reader: &impl RelationRead,
     delegates_relation: RelationId,
-    role_env: &BTreeMap<Value, Value>,
+    roles: &[(Value, Value)],
     params: &[crate::Tuple],
 ) -> Result<bool, KernelError> {
     for param in params {
         let role = &param.values()[1];
         let restriction = &param.values()[2];
-        let Some(value) = role_env.get(role) else {
+        let Some(value) = role_value(roles, role) else {
             return Ok(false);
         };
         if !matches_restriction(reader, delegates_relation, value, restriction)? {
@@ -88,6 +107,12 @@ fn params_match(
         }
     }
     Ok(true)
+}
+
+pub fn role_value<'a>(roles: &'a [(Value, Value)], role: &Value) -> Option<&'a Value> {
+    roles
+        .iter()
+        .find_map(|(candidate, value)| (candidate == role).then_some(value))
 }
 
 pub fn positional_method_args(
@@ -114,6 +139,33 @@ pub fn ordered_params(params: &[crate::Tuple]) -> Option<Vec<crate::Tuple>> {
         return None;
     }
     Some(params)
+}
+
+pub fn named_method_args(params: &[crate::Tuple], roles: &[(Value, Value)]) -> Option<Vec<Value>> {
+    let mut args = Vec::with_capacity(params.len());
+
+    if params.len() <= 1 {
+        for param in params {
+            param_position(param)?;
+            if let Some(value) = role_value(roles, &param.values()[1]) {
+                args.push(value.clone());
+            }
+        }
+        return Some(args);
+    }
+
+    let mut ordered = params.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|param| param_position(param).unwrap_or(u16::MAX));
+    if ordered.iter().any(|param| param_position(param).is_none()) {
+        return None;
+    }
+
+    for param in ordered {
+        if let Some(value) = role_value(roles, &param.values()[1]) {
+            args.push(value.clone());
+        }
+    }
+    Some(args)
 }
 
 fn positional_params_match(
@@ -154,10 +206,7 @@ fn matches_restriction(
         return Ok(true);
     }
 
-    if delegates_star_from(reader, delegates_relation, value)?
-        .iter()
-        .any(|proto| proto == restriction)
-    {
+    if delegates_reaches(reader, delegates_relation, value, restriction)? {
         return Ok(true);
     }
 
@@ -165,9 +214,7 @@ fn matches_restriction(
     if &prototype == restriction {
         return Ok(true);
     }
-    Ok(delegates_star_from(reader, delegates_relation, &prototype)?
-        .iter()
-        .any(|proto| proto == restriction))
+    delegates_reaches(reader, delegates_relation, &prototype, restriction)
 }
 
 #[cfg(test)]
@@ -350,6 +397,19 @@ mod tests {
             applicable_positional_methods(&tx, dispatch_relations(), sym("split"), &[int(1)])
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn named_method_args_follow_param_positions() {
+        let params = vec![
+            Tuple::from([int(100), sym("item"), Value::nothing(), int(1)]),
+            Tuple::from([int(100), sym("actor"), Value::nothing(), int(0)]),
+        ];
+
+        assert_eq!(
+            named_method_args(&params, &[(sym("actor"), int(10)), (sym("item"), int(1))]).unwrap(),
+            vec![int(10), int(1)]
         );
     }
 }

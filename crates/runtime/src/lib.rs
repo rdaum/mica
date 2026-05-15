@@ -1767,8 +1767,10 @@ fn method_relation_metadata() -> Vec<RelationMetadata> {
             method_program_relation(),
             Symbol::intern("MethodProgram"),
             2,
-        ),
-        RelationMetadata::new(program_bytes_relation(), Symbol::intern("ProgramBytes"), 2),
+        )
+        .with_index([0]),
+        RelationMetadata::new(program_bytes_relation(), Symbol::intern("ProgramBytes"), 2)
+            .with_index([0]),
         RelationMetadata::new(method_source_relation(), Symbol::intern("MethodSource"), 2)
             .with_conflict_policy(ConflictPolicy::Functional {
                 key_positions: vec![0],

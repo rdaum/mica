@@ -46,10 +46,13 @@ mod tests;
 use mica_var::Identity;
 
 pub use catalog::{CatalogFact, CatalogPredicate};
-pub use closure::{delegates_star, delegates_star_from, materialize_delegates_star};
+pub use closure::{
+    delegates_reaches, delegates_star, delegates_star_from, materialize_delegates_star,
+};
 pub use dispatch::{
-    DispatchRelations, applicable_methods, applicable_positional_methods, ordered_params,
-    positional_method_args,
+    ApplicableMethod, DispatchRelations, applicable_method_entries, applicable_methods,
+    applicable_positional_methods, named_method_args, ordered_params, positional_method_args,
+    role_value,
 };
 pub use error::{Conflict, ConflictKind, KernelError};
 pub use fact::Fact;

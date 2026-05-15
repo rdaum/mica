@@ -19,11 +19,10 @@ use crate::{
 };
 use mica_relation_kernel::{
     ComposedTransactionRead, RelationRead, RelationWorkspace, Transaction, TransientStore, Tuple,
-    applicable_methods, applicable_positional_methods, ordered_params,
+    applicable_method_entries, applicable_positional_methods, named_method_args,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -838,15 +837,18 @@ impl RegisterVm {
                     .map(|(role, value)| Ok((role.clone(), self.resolve_operand(value)?)))
                     .collect::<Result<Vec<_>, RuntimeError>>()?;
                 roles.sort_by(|left, right| compare_role_values(&left.0, &right.0));
-                let role_env = roles.iter().cloned().collect::<BTreeMap<_, _>>();
-                let methods = applicable_methods(host, relations, selector.clone(), roles.clone())?
+                let methods = applicable_method_entries(host, relations, selector.clone(), &roles)?
                     .into_iter()
-                    .filter(|method| host.authority().can_invoke_method(method))
+                    .filter(|entry| host.authority().can_invoke_method(&entry.method))
                     .collect::<Vec<_>>();
-                let method = match methods.as_slice() {
+                let (method, params) = match methods.as_slice() {
                     [] => return Err(RuntimeError::NoApplicableMethod { selector }),
-                    [method] => method.clone(),
+                    [entry] => (&entry.method, &entry.params),
                     _ => {
+                        let methods = methods
+                            .into_iter()
+                            .map(|entry| entry.method)
+                            .collect::<Vec<_>>();
                         return Err(RuntimeError::AmbiguousDispatch { selector, methods });
                     }
                 };
@@ -859,15 +861,9 @@ impl RegisterVm {
                         method: method.clone(),
                     })?;
                 let program = host.resolve_program(program_bytes, &program_id)?;
-                let params =
-                    host.scan_relation(relations.param, &[Some(method), None, None, None])?;
-                let params = ordered_params(&params).ok_or_else(|| {
+                let args = named_method_args(params, &roles).ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
                 })?;
-                let args = params
-                    .iter()
-                    .filter_map(|param| role_env.get(&param.values()[1]).cloned())
-                    .collect();
                 self.advance_ip()?;
                 self.state
                     .frames
