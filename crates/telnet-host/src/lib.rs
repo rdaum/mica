@@ -27,6 +27,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
+pub mod codec;
+
+use crate::codec::{TelnetCodec, TelnetCodecError, TelnetItem, encode_telnet_line};
+
 pub const DEFAULT_BIND: &str = "127.0.0.1:7777";
 pub const DAEMON_ENDPOINT_ID_START: u64 = 0x00ed_0000_0000_0000;
 
@@ -39,14 +43,14 @@ pub struct ActorBinding {
     pub identity: Identity,
 }
 
-pub struct InProcessTcpHost {
+pub struct InProcessTelnetHost {
     driver: Arc<CompioTaskDriver>,
     endpoints: Arc<Mutex<BTreeMap<Identity, Arc<EndpointOutput>>>>,
     stop_events: Arc<AtomicBool>,
     next_endpoint: AtomicU64,
 }
 
-pub struct ZmqTcpHost {
+pub struct ZmqTelnetHost {
     context: Arc<zmq::Context>,
     rpc_endpoint: String,
     options: ZmqSocketOptions,
@@ -84,7 +88,7 @@ struct ZmqSession {
     next_request: u64,
 }
 
-impl InProcessTcpHost {
+impl InProcessTelnetHost {
     pub fn new(driver: CompioTaskDriver) -> Self {
         let driver = Arc::new(driver);
         let endpoints = Arc::new(Mutex::new(BTreeMap::new()));
@@ -114,19 +118,19 @@ impl InProcessTcpHost {
     }
 }
 
-impl Drop for InProcessTcpHost {
+impl Drop for InProcessTelnetHost {
     fn drop(&mut self) {
         self.stop_events.store(true, Ordering::Relaxed);
     }
 }
 
-impl ZmqTcpHost {
+impl ZmqTelnetHost {
     pub fn new(rpc_endpoint: impl Into<String>) -> Self {
         Self::with_context(
             Arc::new(zmq::Context::new()),
             rpc_endpoint,
             ZmqSocketOptions::default(),
-            "mica-host-tcp",
+            "mica-telnet-host",
         )
     }
 
@@ -174,7 +178,7 @@ impl ZmqTcpHost {
 
 pub async fn serve_in_process(
     listener: TcpListener,
-    host: InProcessTcpHost,
+    host: InProcessTelnetHost,
     actor: ActorBinding,
     max_connections: Option<usize>,
 ) -> Result<(), String> {
@@ -201,9 +205,9 @@ pub async fn serve_in_process(
     Ok(())
 }
 
-pub async fn serve_zmq(
+pub async fn serve_zmq_telnet(
     listener: TcpListener,
-    host: ZmqTcpHost,
+    host: ZmqTelnetHost,
     actor_name: String,
     max_connections: Option<usize>,
 ) -> Result<(), String> {
@@ -309,7 +313,7 @@ impl Future for EndpointOutputRecv<'_> {
 
 async fn handle_connection(
     stream: TcpStream,
-    host: Arc<InProcessTcpHost>,
+    host: Arc<InProcessTelnetHost>,
     actor: ActorBinding,
 ) -> Result<(), String> {
     let endpoint = host.allocate_endpoint()?;
@@ -338,7 +342,7 @@ async fn handle_connection(
 
 async fn handle_zmq_connection(
     stream: TcpStream,
-    host: Arc<ZmqTcpHost>,
+    host: Arc<ZmqTelnetHost>,
     actor_name: String,
 ) -> Result<(), String> {
     let endpoint = host.allocate_endpoint()?;
@@ -359,14 +363,15 @@ async fn handle_zmq_connection(
 
 async fn read_socket_loop(
     mut stream: OwnedReadHalf<TcpStream>,
-    host: &InProcessTcpHost,
+    host: &InProcessTelnetHost,
     endpoint: Identity,
     actor_name: &str,
 ) -> Result<(), String> {
-    let mut pending = Vec::new();
+    let mut codec = TelnetCodec::new();
+    let mut pending = VecDeque::new();
     loop {
         start_read_task(host, endpoint)?;
-        let line = read_line(&mut stream, &mut pending).await?;
+        let line = read_telnet_line(&mut stream, &mut codec, &mut pending).await?;
         let Some(line) = line else {
             return Ok(());
         };
@@ -391,10 +396,11 @@ async fn read_zmq_socket_loop(
     output: Arc<EndpointOutput>,
     actor_name: &str,
 ) -> Result<(), String> {
-    let mut pending = Vec::new();
+    let mut codec = TelnetCodec::new();
+    let mut pending = VecDeque::new();
     loop {
         session.start_read_task(&output).await?;
-        let line = read_line(&mut stream, &mut pending).await?;
+        let line = read_telnet_line(&mut stream, &mut codec, &mut pending).await?;
         let Some(line) = line else {
             return Ok(());
         };
@@ -409,38 +415,32 @@ async fn read_zmq_socket_loop(
     }
 }
 
-async fn read_line(
+async fn read_telnet_line(
     stream: &mut OwnedReadHalf<TcpStream>,
-    pending: &mut Vec<u8>,
+    codec: &mut TelnetCodec,
+    pending: &mut VecDeque<TelnetItem>,
 ) -> Result<Option<String>, String> {
     loop {
-        if let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
-            let line = pending.drain(..=index).collect::<Vec<_>>();
-            return String::from_utf8(trim_line_end(&line).to_vec())
-                .map(Some)
-                .map_err(|error| format!("connection sent invalid UTF-8: {error}"));
+        while let Some(item) = pending.pop_front() {
+            match item {
+                TelnetItem::Line(line) => return Ok(Some(line)),
+                TelnetItem::Bytes(_) | TelnetItem::Command(_) => {}
+            }
         }
         let (result, buffer) = stream.read([0u8; 4096]).await.into();
         let bytes = result.map_err(|error| format!("failed to read from connection: {error}"))?;
         if bytes == 0 {
-            if pending.is_empty() {
-                return Ok(None);
-            }
-            let line = String::from_utf8(trim_line_end(pending).to_vec())
-                .map_err(|error| format!("connection sent invalid UTF-8: {error}"))?;
-            pending.clear();
-            return Ok(Some(line));
+            return Ok(None);
         }
-        pending.extend_from_slice(&buffer[..bytes]);
+        pending.extend(
+            codec
+                .decode(&buffer[..bytes])
+                .map_err(format_telnet_codec_error)?,
+        );
     }
 }
 
-fn trim_line_end(line: &[u8]) -> &[u8] {
-    let line = line.strip_suffix(b"\n").unwrap_or(line);
-    line.strip_suffix(b"\r").unwrap_or(line)
-}
-
-fn start_read_task(host: &InProcessTcpHost, endpoint: Identity) -> Result<(), String> {
+fn start_read_task(host: &InProcessTelnetHost, endpoint: Identity) -> Result<(), String> {
     let report = host
         .driver
         .submit_source_report(endpoint, None, "return read(:line)".to_owned())
@@ -505,7 +505,7 @@ impl ZmqSession {
                 request_id,
                 endpoint: self.endpoint,
                 actor: Some(self.actor),
-                protocol: "tcp".to_owned(),
+                protocol: "telnet".to_owned(),
                 grant_token: None,
             })
             .await?;
@@ -708,7 +708,7 @@ fn is_terminal_response(request_id: u64, message: &HostMessage) -> bool {
 }
 
 fn handle_command(
-    host: &InProcessTcpHost,
+    host: &InProcessTelnetHost,
     endpoint: Identity,
     actor_name: &str,
     command: &str,
@@ -738,16 +738,16 @@ fn is_quit_command(command: &str) -> bool {
 }
 
 fn open_endpoint(
-    host: &InProcessTcpHost,
+    host: &InProcessTelnetHost,
     endpoint: Identity,
     actor: Identity,
 ) -> Result<(), String> {
     host.driver
-        .open_endpoint(endpoint, Some(actor), Symbol::intern("tcp"))
+        .open_endpoint(endpoint, Some(actor), Symbol::intern("telnet"))
         .map_err(format_driver_error)
 }
 
-fn send_line(host: &InProcessTcpHost, endpoint: Identity, line: &str) -> Result<(), String> {
+fn send_line(host: &InProcessTelnetHost, endpoint: Identity, line: &str) -> Result<(), String> {
     let sender = host
         .endpoints
         .lock()
@@ -758,7 +758,7 @@ fn send_line(host: &InProcessTcpHost, endpoint: Identity, line: &str) -> Result<
     sender.send(line.to_owned())
 }
 
-fn drop_socket_writer(host: &InProcessTcpHost, endpoint: Identity) {
+fn drop_socket_writer(host: &InProcessTelnetHost, endpoint: Identity) {
     if let Some(output) = host.endpoints.lock().unwrap().remove(&endpoint) {
         output.close();
     }
@@ -772,8 +772,8 @@ async fn write_socket_loop(
         output.recv().await
     {
         for line in output.drain_batch(ENDPOINT_OUTPUT_DRAIN_LINES) {
-            let mut bytes = line.into_bytes();
-            bytes.push(b'\n');
+            let mut bytes = Vec::with_capacity(line.len() + 2);
+            encode_telnet_line(&line, &mut bytes);
             let (result, _) = stream.write_all(bytes).await.into();
             if result.is_err() {
                 return shutdown_socket_writer(stream).await;
@@ -809,7 +809,7 @@ fn start_event_pump(
     .detach();
 }
 
-fn flush_routed_effects(host: &InProcessTcpHost) {
+fn flush_routed_effects(host: &InProcessTelnetHost) {
     let events = host.driver.drain_events();
     for event in events {
         route_driver_event(&host.endpoints, event);
@@ -861,6 +861,10 @@ fn mica_string(value: &str) -> String {
 
 fn format_driver_error(error: mica_driver::DriverError) -> String {
     format!("error: {error}")
+}
+
+fn format_telnet_codec_error(error: TelnetCodecError) -> String {
+    format!("telnet codec error: {error}")
 }
 
 fn format_zmq_error(error: mica_host_zmq::ZmqTransportError) -> String {
@@ -938,7 +942,7 @@ mod tests {
             .unwrap();
         let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
         let host =
-            InProcessTcpHost::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
+            InProcessTelnetHost::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
         let endpoint = host.allocate_endpoint().unwrap();
         let output = EndpointOutput::new();
         host.endpoints
@@ -969,7 +973,7 @@ mod tests {
     fn endpoint_read_task_accepts_driver_input() {
         let runner = SourceRunner::new_empty();
         let host =
-            InProcessTcpHost::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
+            InProcessTelnetHost::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
         let endpoint = host.allocate_endpoint().unwrap();
         host.endpoints
             .lock()

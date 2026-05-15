@@ -15,9 +15,9 @@ use clap::Parser;
 use compio::net::TcpListener;
 use compio::runtime::Runtime;
 use mica_driver::CompioTaskDriver;
-use mica_host_tcp::{ActorBinding, DEFAULT_BIND, InProcessTcpHost, serve_in_process};
 use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
 use mica_runtime::SourceRunner;
+use mica_telnet_host::{ActorBinding, DEFAULT_BIND, InProcessTelnetHost, serve_in_process};
 use mica_var::Symbol;
 use std::fs;
 use std::net::SocketAddr;
@@ -37,7 +37,7 @@ const DEFAULT_FILEINS: &[&str] = &[
 #[derive(Parser)]
 #[command(
     name = "mica-daemon",
-    about = "Run Mica with an in-process line-oriented TCP host"
+    about = "Run Mica with an in-process telnet host"
 )]
 struct Cli {
     #[arg(long, default_value = DEFAULT_BIND)]
@@ -94,7 +94,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     }
     serve_in_process(
         listener,
-        InProcessTcpHost::new(driver),
+        InProcessTelnetHost::new(driver),
         ActorBinding {
             name: actor_name,
             identity: actor,

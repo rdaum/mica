@@ -14,14 +14,14 @@
 use clap::Parser;
 use compio::net::TcpListener;
 use compio::runtime::Runtime;
-use mica_host_tcp::{DEFAULT_BIND, ZmqTcpHost, serve_zmq};
+use mica_telnet_host::{DEFAULT_BIND, ZmqTelnetHost, serve_zmq_telnet};
 use std::net::SocketAddr;
 use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(
-    name = "mica-tcp-host",
-    about = "Run a line-oriented TCP host connected to a Mica daemon RPC socket"
+    name = "mica-telnet-host",
+    about = "Run a telnet host connected to a Mica daemon RPC socket"
 )]
 struct Cli {
     #[arg(long, default_value = DEFAULT_BIND)]
@@ -55,11 +55,11 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         .await
         .map_err(|error| format!("failed to bind {}: {error}", cli.bind))?;
     println!(
-        "mica-tcp-host listening on {}, RPC {}",
+        "mica-telnet-host listening on {}, RPC {}",
         listener.local_addr().unwrap(),
         cli.rpc
     );
-    serve_zmq(listener, ZmqTcpHost::new(cli.rpc), actor, None).await
+    serve_zmq_telnet(listener, ZmqTelnetHost::new(cli.rpc), actor, None).await
 }
 
 fn actor_name(actor: &str) -> Result<String, String> {

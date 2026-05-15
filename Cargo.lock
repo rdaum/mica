@@ -1091,9 +1091,9 @@ dependencies = [
  "compio",
  "mica-driver",
  "mica-host-protocol",
- "mica-host-tcp",
  "mica-host-zmq",
  "mica-runtime",
+ "mica-telnet-host",
  "mica-var",
  "zmq",
 ]
@@ -1113,20 +1113,6 @@ name = "mica-host-protocol"
 version = "0.1.0"
 dependencies = [
  "mica-var",
-]
-
-[[package]]
-name = "mica-host-tcp"
-version = "0.1.0"
-dependencies = [
- "clap",
- "compio",
- "mica-driver",
- "mica-host-protocol",
- "mica-host-zmq",
- "mica-runtime",
- "mica-var",
- "zmq",
 ]
 
 [[package]]
@@ -1180,6 +1166,20 @@ dependencies = [
  "mica-relation-kernel",
  "mica-var",
  "mica-vm",
+]
+
+[[package]]
+name = "mica-telnet-host"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "compio",
+ "mica-driver",
+ "mica-host-protocol",
+ "mica-host-zmq",
+ "mica-runtime",
+ "mica-var",
+ "zmq",
 ]
 
 [[package]]

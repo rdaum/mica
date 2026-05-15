@@ -234,7 +234,8 @@ Mica is an early Rust prototype. The current tree has:
   transaction lifecycle;
 - compiler for a growing Mica language surface;
 - a compio-driven task driver for timed wakeups, input resumes, and emissions;
-- a minimal TCP daemon that maps one endpoint identity to each connection;
+- a telnet host that maps one endpoint identity to each connection and can run
+  in process or over the host RPC/IPC protocol;
 - a browser-oriented WASM package that links the compiler, VM, and projected
   relation store without durable providers;
 - role-based method dispatch;
@@ -249,7 +250,7 @@ Run the example:
 cargo run --bin mica -- filein examples/mud-core.mica
 ```
 
-Run the TCP MUD demo:
+Run the telnet MUD demo:
 
 ```sh
 cargo run --bin mica-daemon
@@ -283,7 +284,10 @@ cargo test --workspace
 - [`crates/driver`](crates/driver/README.md): compio task driver, wakeups,
   input, and emissions.
 - [`crates/runner`](crates/runner/README.md): CLI and REPL binary.
-- [`crates/daemon`](crates/daemon/README.md): minimal TCP endpoint transport.
+- [`crates/daemon`](crates/daemon/README.md): runtime daemon that can link the
+  telnet host in process and expose host RPC over IPC.
+- [`crates/telnet-host`](crates/telnet-host/README.md): telnet listener,
+  telnet codec, and host-side endpoint session handling.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,
   verbs, and dispatch.
 - `examples/mud-command-parser.mica`: command parsing authored in Mica, using

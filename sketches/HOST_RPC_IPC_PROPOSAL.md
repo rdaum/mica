@@ -21,7 +21,7 @@ The handler should support:
 
 - out-of-process hosts for telnet, web, tools, agents, and future protocols;
 - same-host IPC without requiring a TCP listener;
-- remote TCP hosts when explicitly configured;
+- remote ZeroMQ hosts over TCP when explicitly configured;
 - non-Rust clients and hosts;
 - bounded output delivery without assuming every consumer wants FIFO-only
   semantics;

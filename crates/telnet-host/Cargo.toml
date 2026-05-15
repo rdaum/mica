@@ -1,10 +1,10 @@
 [package]
-name = "mica-host-tcp"
+name = "mica-telnet-host"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Line-oriented TCP host transport for Mica"
+description = "Telnet host transport for Mica"
 
 [dependencies]
 clap.workspace = true
@@ -17,5 +17,5 @@ mica-var.workspace = true
 zmq.workspace = true
 
 [[bin]]
-name = "mica-tcp-host"
-path = "src/bin/mica-tcp-host.rs"
+name = "mica-telnet-host"
+path = "src/bin/mica-telnet-host.rs"

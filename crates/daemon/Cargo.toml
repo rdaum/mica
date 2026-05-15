@@ -4,14 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Minimal TCP endpoint transport for Mica"
+description = "Mica daemon with an in-process telnet host"
 
 [dependencies]
 clap.workspace = true
 compio.workspace = true
 mica-driver.workspace = true
 mica-host-protocol.workspace = true
-mica-host-tcp.workspace = true
+mica-telnet-host.workspace = true
 mica-host-zmq.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true
