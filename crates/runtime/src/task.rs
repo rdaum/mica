@@ -345,6 +345,12 @@ impl<'a> Task<'a> {
 
     fn commit_boundary(&mut self) -> Result<BoundaryResult, TaskError> {
         let tx = self.tx.take().ok_or(TaskError::MissingTransaction)?;
+        if tx.is_read_only() {
+            self.committed_effects.append(&mut self.pending_effects);
+            self.retry_state = self.vm.snapshot_state();
+            self.tx = Some(self.kernel.begin());
+            return Ok(BoundaryResult::Committed);
+        }
         match tx.commit() {
             Ok(_) => {
                 self.committed_effects.append(&mut self.pending_effects);

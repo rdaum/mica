@@ -19,16 +19,17 @@ use crate::{
     RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{
-    ComposedTransactionRead, RelationRead, RelationWorkspace, ScanControl, Transaction,
+    ComposedTransactionRead, RelationId, RelationRead, RelationWorkspace, ScanControl, Transaction,
     TransientStore, Tuple, applicable_method_calls, applicable_positional_methods,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
-    program: Arc<Program>,
+    program: usize,
     ip: usize,
     registers: Vec<Value>,
     return_register: Option<Register>,
@@ -51,23 +52,24 @@ enum FinallyContinuation {
 }
 
 impl Frame {
-    fn root(program: Arc<Program>) -> Self {
-        Self::new(program, None, Vec::new()).expect("root frame has no arguments")
+    fn root(program: usize, register_count: usize) -> Self {
+        Self::new(program, register_count, None, Vec::new()).expect("root frame has no arguments")
     }
 
     fn new(
-        program: Arc<Program>,
+        program: usize,
+        register_count: usize,
         return_register: Option<Register>,
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
-        if args.len() > program.register_count() {
+        if args.len() > register_count {
             return Err(RuntimeError::InvalidCallArity {
-                expected_at_most: program.register_count(),
+                expected_at_most: register_count,
                 actual: args.len(),
             });
         }
 
-        let mut registers = vec![Value::nothing(); program.register_count()];
+        let mut registers = vec![Value::nothing(); register_count];
         for (slot, arg) in registers.iter_mut().zip(args) {
             *slot = arg;
         }
@@ -81,8 +83,8 @@ impl Frame {
         })
     }
 
-    pub fn program(&self) -> &Arc<Program> {
-        &self.program
+    pub fn program_index(&self) -> usize {
+        self.program
     }
 
     pub fn ip(&self) -> usize {
@@ -100,6 +102,8 @@ impl Frame {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmState {
+    programs: Vec<Arc<Program>>,
+    resolved_programs: BTreeMap<Value, usize>,
     frames: Vec<Frame>,
     pending_resume: Option<Register>,
 }
@@ -483,9 +487,12 @@ pub struct RegisterVm {
 
 impl RegisterVm {
     pub fn new(program: Arc<Program>) -> Self {
+        let register_count = program.register_count();
         Self {
             state: VmState {
-                frames: vec![Frame::root(program)],
+                programs: vec![program],
+                resolved_programs: BTreeMap::new(),
+                frames: vec![Frame::root(0, register_count)],
                 pending_resume: None,
             },
         }
@@ -551,18 +558,18 @@ impl RegisterVm {
         let (opcode, program, ip) = {
             let frame = self.current_frame_unchecked();
             let ip = frame.ip;
-            let program = Arc::as_ptr(&frame.program);
-            let opcode = frame
-                .program
+            let frame_program = &self.state.programs[frame.program];
+            let program = Arc::as_ptr(frame_program);
+            let opcode = frame_program
                 .opcodes()
                 .get(ip)
                 .ok_or(RuntimeError::ProgramCounterOutOfBounds { ip })?;
             (opcode as *const Opcode, program, ip)
         };
         debug_assert_eq!(self.current_frame_unchecked().ip, ip);
-        // SAFETY: both pointers come from the current frame's `Arc<Program>`. The program
-        // allocation is stable while the frame is live, and each arm copies or resolves any table
-        // values it needs before operations that can remove that frame.
+        // SAFETY: both pointers come from an `Arc<Program>` owned by the VM state's program table.
+        // The program allocation is stable while that table entry is live, and each arm copies or
+        // resolves any table values it needs before operations that can remove the current frame.
         let program = unsafe { &*program };
         let opcode = unsafe { &*opcode };
 
@@ -877,12 +884,13 @@ impl RegisterVm {
                     });
                 }
                 let args = self.resolve_operands(program, program.operands(*args));
+                let callee = program.program(*callee);
+                let callee_id = self.intern_program(Arc::clone(callee));
+                let register_count = callee.register_count();
                 self.advance_ip_unchecked();
-                self.state.frames.push(Frame::new(
-                    Arc::clone(program.program(*callee)),
-                    Some(*dst),
-                    args,
-                )?);
+                self.state
+                    .frames
+                    .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
             Opcode::BuiltinCall { dst, name, args } => {
@@ -944,14 +952,15 @@ impl RegisterVm {
                 let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
                     method: method.clone(),
                 })?;
-                let callee = host.resolve_program(spec.program_bytes, &program_id)?;
+                let callee_id = self.resolve_program_id(host, spec.program_bytes, &program_id)?;
+                let register_count = self.program_unchecked(callee_id).register_count();
                 let args = args.clone().ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
                 })?;
                 self.advance_ip_unchecked();
                 self.state
                     .frames
-                    .push(Frame::new(callee, Some(*dst), args)?);
+                    .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
             Opcode::PositionalDispatch {
@@ -992,11 +1001,12 @@ impl RegisterVm {
                 let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
                     method: method.clone(),
                 })?;
-                let callee = host.resolve_program(spec.program_bytes, &program_id)?;
+                let callee_id = self.resolve_program_id(host, spec.program_bytes, &program_id)?;
+                let register_count = self.program_unchecked(callee_id).register_count();
                 self.advance_ip_unchecked();
                 self.state
                     .frames
-                    .push(Frame::new(callee, Some(*dst), args)?);
+                    .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
             Opcode::Commit => {
@@ -1168,6 +1178,42 @@ impl RegisterVm {
 
     fn advance_ip_unchecked(&mut self) {
         self.current_frame_mut_unchecked().ip += 1;
+    }
+
+    fn intern_program(&mut self, program: Arc<Program>) -> usize {
+        if let Some((index, _)) = self
+            .state
+            .programs
+            .iter()
+            .enumerate()
+            .find(|(_, loaded)| Arc::ptr_eq(loaded, &program))
+        {
+            return index;
+        }
+        let index = self.state.programs.len();
+        self.state.programs.push(program);
+        index
+    }
+
+    fn resolve_program_id<H: VmHost>(
+        &mut self,
+        host: &mut H,
+        program_bytes_relation: RelationId,
+        program_id: &Value,
+    ) -> Result<usize, RuntimeError> {
+        if let Some(index) = self.state.resolved_programs.get(program_id) {
+            return Ok(*index);
+        }
+        let program = host.resolve_program(program_bytes_relation, program_id)?;
+        let index = self.intern_program(program);
+        self.state
+            .resolved_programs
+            .insert(program_id.clone(), index);
+        Ok(index)
+    }
+
+    fn program_unchecked(&self, program: usize) -> &Program {
+        self.state.programs[program].as_ref()
     }
 
     fn current_frame(&self) -> Result<&Frame, RuntimeError> {

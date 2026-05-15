@@ -1059,6 +1059,26 @@ fn task_manager_records_completed_task_and_delivers_effects() {
 }
 
 #[test]
+fn task_manager_does_not_publish_read_only_task_completion() {
+    let kernel = kernel_with_world_relations();
+    let version = kernel.snapshot().version();
+    let program = Arc::new(Program::new(0, [Instruction::Return { value: v(int(1)) }]).unwrap());
+    let mut task_manager = TaskManager::new(kernel);
+
+    let (_, outcome) = task_manager.submit(program).unwrap();
+
+    assert_eq!(
+        outcome,
+        TaskOutcome::Complete {
+            value: int(1),
+            effects: Vec::new(),
+            retries: 0,
+        }
+    );
+    assert_eq!(task_manager.kernel().snapshot().version(), version);
+}
+
+#[test]
 fn task_manager_parks_and_resumes_suspended_task() {
     let kernel = kernel_with_world_relations();
     let program = Arc::new(

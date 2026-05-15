@@ -45,6 +45,10 @@ impl<'a> Transaction<'a> {
         self.kernel
     }
 
+    pub fn is_read_only(&self) -> bool {
+        self.writes.is_empty()
+    }
+
     pub fn assert(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
         self.validate_tuple(relation, &tuple)?;
         self.writes
