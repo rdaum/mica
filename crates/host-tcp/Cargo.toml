@@ -7,7 +7,15 @@ license.workspace = true
 description = "Line-oriented TCP host transport for Mica"
 
 [dependencies]
+clap.workspace = true
 compio.workspace = true
 mica-driver.workspace = true
+mica-host-protocol.workspace = true
+mica-host-zmq.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true
+zmq.workspace = true
+
+[[bin]]
+name = "mica-tcp-host"
+path = "src/bin/mica-tcp-host.rs"

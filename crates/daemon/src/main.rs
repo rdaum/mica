@@ -16,6 +16,7 @@ use compio::net::TcpListener;
 use compio::runtime::Runtime;
 use mica_driver::CompioTaskDriver;
 use mica_host_tcp::{ActorBinding, DEFAULT_BIND, InProcessTcpHost, serve_in_process};
+use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
 use mica_runtime::SourceRunner;
 use mica_var::Symbol;
 use std::fs;
@@ -47,6 +48,8 @@ struct Cli {
     actor: String,
     #[arg(long, value_name = "THREADS")]
     driver_threads: Option<NonZeroUsize>,
+    #[arg(long, value_name = "URI")]
+    rpc_bind: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -86,6 +89,9 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     );
     let driver = CompioTaskDriver::spawn_with_workers(runner, cli.driver_threads)
         .map_err(format_driver_error)?;
+    if let Some(rpc_bind) = cli.rpc_bind {
+        start_rpc_server(driver.clone(), rpc_bind)?;
+    }
     serve_in_process(
         listener,
         InProcessTcpHost::new(driver),
@@ -96,6 +102,27 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         None,
     )
     .await
+}
+
+fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), String> {
+    let context = zmq::Context::new();
+    let socket = ZmqHostSocket::bind(
+        &context,
+        zmq::ROUTER,
+        &endpoint,
+        ZmqSocketOptions::default(),
+    )
+    .map_err(|error| format!("failed to bind RPC socket {endpoint}: {error}"))?;
+    println!("mica-daemon RPC listening on {endpoint}");
+    compio::runtime::spawn(async move {
+        let _context = context;
+        let mut handler = rpc::RpcHandler::new(driver);
+        if let Err(error) = rpc::serve_zmq_rpc_forever(&socket, &mut handler).await {
+            eprintln!("RPC server failed: {error}");
+        }
+    })
+    .detach();
+    Ok(())
 }
 
 fn fileins_or_defaults(fileins: &[PathBuf]) -> Vec<PathBuf> {

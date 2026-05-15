@@ -15,6 +15,8 @@ use compio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use compio::net::{OwnedReadHalf, OwnedWriteHalf, TcpListener, TcpStream};
 use compio::runtime::ResumeUnwind;
 use mica_driver::{CompioTaskDriver, DriverEvent};
+use mica_host_protocol::{HostMessage, PROTOCOL_VERSION};
+use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
 use mica_runtime::{SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -44,6 +46,14 @@ pub struct InProcessTcpHost {
     next_endpoint: AtomicU64,
 }
 
+pub struct ZmqTcpHost {
+    context: Arc<zmq::Context>,
+    rpc_endpoint: String,
+    options: ZmqSocketOptions,
+    host_name: String,
+    next_endpoint: AtomicU64,
+}
+
 #[derive(Default)]
 struct EndpointOutput {
     state: Mutex<EndpointOutputState>,
@@ -65,6 +75,13 @@ enum EndpointOutputReady {
     Ready { buffered: usize },
     HighWater { buffered: usize },
     Closed,
+}
+
+struct ZmqSession {
+    socket: ZmqHostSocket,
+    endpoint: Identity,
+    actor: Identity,
+    next_request: u64,
 }
 
 impl InProcessTcpHost {
@@ -103,6 +120,58 @@ impl Drop for InProcessTcpHost {
     }
 }
 
+impl ZmqTcpHost {
+    pub fn new(rpc_endpoint: impl Into<String>) -> Self {
+        Self::with_context(
+            Arc::new(zmq::Context::new()),
+            rpc_endpoint,
+            ZmqSocketOptions::default(),
+            "mica-host-tcp",
+        )
+    }
+
+    pub fn with_context(
+        context: Arc<zmq::Context>,
+        rpc_endpoint: impl Into<String>,
+        options: ZmqSocketOptions,
+        host_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            context,
+            rpc_endpoint: rpc_endpoint.into(),
+            options,
+            host_name: host_name.into(),
+            next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
+        }
+    }
+
+    fn allocate_endpoint(&self) -> Result<Identity, String> {
+        let raw = self.next_endpoint.fetch_add(1, Ordering::Relaxed);
+        Identity::new(raw).ok_or_else(|| "endpoint identity space is exhausted".to_owned())
+    }
+
+    async fn connect_session(
+        &self,
+        endpoint: Identity,
+        actor_name: &str,
+    ) -> Result<ZmqSession, String> {
+        let socket =
+            ZmqHostSocket::connect(&self.context, zmq::DEALER, &self.rpc_endpoint, self.options)
+                .map_err(|error| format!("failed to connect RPC socket: {error}"))?;
+        let mut session = ZmqSession {
+            socket,
+            endpoint,
+            actor: endpoint,
+            next_request: 1,
+        };
+        session.hello(&self.host_name).await?;
+        let actor = session.resolve_identity(actor_name).await?;
+        session.actor = actor;
+        session.open_endpoint().await?;
+        Ok(session)
+    }
+}
+
 pub async fn serve_in_process(
     listener: TcpListener,
     host: InProcessTcpHost,
@@ -120,6 +189,35 @@ pub async fn serve_in_process(
         let actor = actor.clone();
         compio::runtime::spawn(async move {
             if let Err(error) = handle_connection(stream, host, actor).await {
+                eprintln!("connection failed: {error}");
+            }
+        })
+        .detach();
+        accepted += 1;
+        if max_connections.is_some_and(|max| accepted >= max) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub async fn serve_zmq(
+    listener: TcpListener,
+    host: ZmqTcpHost,
+    actor_name: String,
+    max_connections: Option<usize>,
+) -> Result<(), String> {
+    let host = Arc::new(host);
+    let mut accepted = 0usize;
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("failed to accept connection: {error}"))?;
+        let host = host.clone();
+        let actor_name = actor_name.clone();
+        compio::runtime::spawn(async move {
+            if let Err(error) = handle_zmq_connection(stream, host, actor_name).await {
                 eprintln!("connection failed: {error}");
             }
         })
@@ -238,6 +336,27 @@ async fn handle_connection(
     result
 }
 
+async fn handle_zmq_connection(
+    stream: TcpStream,
+    host: Arc<ZmqTcpHost>,
+    actor_name: String,
+) -> Result<(), String> {
+    let endpoint = host.allocate_endpoint()?;
+    let mut session = host.connect_session(endpoint, &actor_name).await?;
+    let output = EndpointOutput::new();
+
+    let (read_half, write_half) = stream.into_split();
+    let writer = compio::runtime::spawn(write_socket_loop(write_half, output.clone()));
+    output.send("Connected to Mica.".to_owned())?;
+    output.send("Try: look, get coin, put coin box, north, say hello, quit.".to_owned())?;
+
+    let result = read_zmq_socket_loop(read_half, &mut session, output.clone(), &actor_name).await;
+    let _ = session.close_endpoint().await;
+    output.close();
+    let _ = writer.await.resume_unwind();
+    result
+}
+
 async fn read_socket_loop(
     mut stream: OwnedReadHalf<TcpStream>,
     host: &InProcessTcpHost,
@@ -262,6 +381,30 @@ async fn read_socket_loop(
                     return Ok(());
                 }
             }
+        }
+    }
+}
+
+async fn read_zmq_socket_loop(
+    mut stream: OwnedReadHalf<TcpStream>,
+    session: &mut ZmqSession,
+    output: Arc<EndpointOutput>,
+    actor_name: &str,
+) -> Result<(), String> {
+    let mut pending = Vec::new();
+    loop {
+        session.start_read_task(&output).await?;
+        let line = read_line(&mut stream, &mut pending).await?;
+        let Some(line) = line else {
+            return Ok(());
+        };
+        for command in session.submit_input(line.clone(), &output).await? {
+            if is_quit_command(&command) {
+                output.send("Goodbye.".to_owned())?;
+                return Ok(());
+            }
+            let source = command_invocation_source(actor_name, &command);
+            session.submit_source(source, &output).await?;
         }
     }
 }
@@ -311,6 +454,259 @@ fn start_read_task(host: &InProcessTcpHost, endpoint: Identity) -> Result<(), St
     }
 }
 
+impl ZmqSession {
+    async fn hello(&mut self, host_name: &str) -> Result<(), String> {
+        self.socket
+            .send_message(&HostMessage::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                min_protocol_version: PROTOCOL_VERSION,
+                feature_bits: 0,
+                host_name: host_name.to_owned(),
+            })
+            .await
+            .map_err(format_zmq_error)?;
+        match self.socket.recv_message().await.map_err(format_zmq_error)? {
+            HostMessage::HelloAck { .. } => Ok(()),
+            other => Err(format!("unexpected hello response: {other:?}")),
+        }
+    }
+
+    async fn resolve_identity(&mut self, actor_name: &str) -> Result<Identity, String> {
+        let request_id = self.next_request_id();
+        self.socket
+            .send_message(&HostMessage::ResolveIdentity {
+                request_id,
+                name: Symbol::intern(actor_name),
+            })
+            .await
+            .map_err(format_zmq_error)?;
+        match self.socket.recv_message().await.map_err(format_zmq_error)? {
+            HostMessage::IdentityResolved {
+                request_id: actual,
+                identity,
+                ..
+            } if actual == request_id => Ok(identity),
+            HostMessage::RequestRejected {
+                request_id: actual,
+                code,
+                message,
+            } if actual == request_id => Err(format!(
+                "identity resolution rejected with {}: {message}",
+                code.name().unwrap_or("<unnamed>")
+            )),
+            other => Err(format!("unexpected identity response: {other:?}")),
+        }
+    }
+
+    async fn open_endpoint(&mut self) -> Result<(), String> {
+        let request_id = self.next_request_id();
+        let messages = self
+            .request(HostMessage::OpenEndpoint {
+                request_id,
+                endpoint: self.endpoint,
+                actor: Some(self.actor),
+                protocol: "tcp".to_owned(),
+                grant_token: None,
+            })
+            .await?;
+        expect_request_accepted(request_id, &messages)
+    }
+
+    async fn close_endpoint(&mut self) -> Result<(), String> {
+        let request_id = self.next_request_id();
+        let messages = self
+            .request(HostMessage::CloseEndpoint {
+                request_id,
+                endpoint: self.endpoint,
+            })
+            .await?;
+        expect_request_accepted(request_id, &messages)
+    }
+
+    async fn start_read_task(&mut self, output: &EndpointOutput) -> Result<(), String> {
+        self.submit_source("return read(:line)".to_owned(), output)
+            .await
+            .map(|_| ())
+    }
+
+    async fn submit_input(
+        &mut self,
+        line: String,
+        output: &EndpointOutput,
+    ) -> Result<Vec<String>, String> {
+        let request_id = self.next_request_id();
+        let messages = self
+            .request(HostMessage::SubmitInput {
+                request_id,
+                endpoint: self.endpoint,
+                value: Value::string(line.clone()),
+            })
+            .await?;
+        expect_request_accepted(request_id, &messages)?;
+        let values = self.route_messages(messages, output).await?;
+        Ok(values
+            .into_iter()
+            .map(|value| value.with_str(str::to_owned).unwrap_or(line.clone()))
+            .collect())
+    }
+
+    async fn submit_source(
+        &mut self,
+        source: String,
+        output: &EndpointOutput,
+    ) -> Result<Vec<Value>, String> {
+        let request_id = self.next_request_id();
+        let messages = self
+            .request(HostMessage::SubmitSource {
+                request_id,
+                endpoint: self.endpoint,
+                actor: self.actor,
+                source,
+            })
+            .await?;
+        expect_request_accepted(request_id, &messages)?;
+        self.route_messages(messages, output).await
+    }
+
+    async fn request(&mut self, message: HostMessage) -> Result<Vec<HostMessage>, String> {
+        let request_id = request_id_for(&message)
+            .ok_or_else(|| format!("message is not a request: {message:?}"))?;
+        self.socket
+            .send_message(&message)
+            .await
+            .map_err(format_zmq_error)?;
+        let mut messages = Vec::new();
+        loop {
+            let message = self.socket.recv_message().await.map_err(format_zmq_error)?;
+            let terminal = is_terminal_response(request_id, &message);
+            messages.push(message);
+            if terminal {
+                break;
+            }
+        }
+        while let Some(message) = self.socket.try_recv_message().map_err(format_zmq_error)? {
+            messages.push(message);
+        }
+        Ok(messages)
+    }
+
+    async fn route_messages(
+        &mut self,
+        messages: Vec<HostMessage>,
+        output: &EndpointOutput,
+    ) -> Result<Vec<Value>, String> {
+        let mut completed = Vec::new();
+        for message in messages {
+            match message {
+                HostMessage::RequestAccepted { .. } => {}
+                HostMessage::RequestRejected { code, message, .. } => {
+                    return Err(format!(
+                        "request rejected with {}: {message}",
+                        code.name().unwrap_or("<unnamed>")
+                    ));
+                }
+                HostMessage::OutputReady { endpoint, .. } if endpoint == self.endpoint => {
+                    self.drain_output(output).await?;
+                }
+                HostMessage::OutputBatch { endpoint, values } if endpoint == self.endpoint => {
+                    write_output_values(output, values)?;
+                }
+                HostMessage::TaskCompleted { value, .. } => completed.push(value),
+                HostMessage::TaskFailed { error, .. } => output.send(effect_text(&error))?,
+                HostMessage::EndpointClosed { endpoint, .. } if endpoint == self.endpoint => {
+                    output.close();
+                }
+                _ => {}
+            }
+        }
+        Ok(completed)
+    }
+
+    async fn drain_output(&mut self, output: &EndpointOutput) -> Result<(), String> {
+        let request_id = self.next_request_id();
+        let messages = self
+            .request(HostMessage::DrainOutput {
+                request_id,
+                endpoint: self.endpoint,
+                limit: ENDPOINT_OUTPUT_DRAIN_LINES as u32,
+            })
+            .await?;
+        expect_request_accepted(request_id, &messages)?;
+        for message in messages {
+            match message {
+                HostMessage::OutputBatch { endpoint, values } if endpoint == self.endpoint => {
+                    write_output_values(output, values)?;
+                }
+                HostMessage::RequestRejected { code, message, .. } => {
+                    return Err(format!(
+                        "output drain rejected with {}: {message}",
+                        code.name().unwrap_or("<unnamed>")
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn next_request_id(&mut self) -> u64 {
+        let request_id = self.next_request;
+        self.next_request = self.next_request.saturating_add(1);
+        request_id
+    }
+}
+
+fn expect_request_accepted(request_id: u64, messages: &[HostMessage]) -> Result<(), String> {
+    for message in messages {
+        match message {
+            HostMessage::RequestAccepted {
+                request_id: actual, ..
+            } if *actual == request_id => return Ok(()),
+            HostMessage::RequestRejected {
+                request_id: actual,
+                code,
+                message,
+            } if *actual == request_id => {
+                return Err(format!(
+                    "request rejected with {}: {message}",
+                    code.name().unwrap_or("<unnamed>")
+                ));
+            }
+            _ => {}
+        }
+    }
+    Err(format!(
+        "request {request_id} did not receive an accepted reply"
+    ))
+}
+
+fn request_id_for(message: &HostMessage) -> Option<u64> {
+    match message {
+        HostMessage::OpenEndpoint { request_id, .. }
+        | HostMessage::CloseEndpoint { request_id, .. }
+        | HostMessage::ResolveIdentity { request_id, .. }
+        | HostMessage::SubmitSource { request_id, .. }
+        | HostMessage::SubmitInput { request_id, .. }
+        | HostMessage::DrainOutput { request_id, .. } => Some(*request_id),
+        _ => None,
+    }
+}
+
+fn is_terminal_response(request_id: u64, message: &HostMessage) -> bool {
+    match message {
+        HostMessage::RequestAccepted {
+            request_id: actual, ..
+        }
+        | HostMessage::RequestRejected {
+            request_id: actual, ..
+        }
+        | HostMessage::IdentityResolved {
+            request_id: actual, ..
+        } => *actual == request_id,
+        _ => false,
+    }
+}
+
 fn handle_command(
     host: &InProcessTcpHost,
     endpoint: Identity,
@@ -331,7 +727,7 @@ fn handle_command(
 
 fn command_invocation_source(actor_name: &str, command: &str) -> String {
     format!(
-        ":command(actor: #{actor_name}, endpoint: #endpoint, line: {})",
+        ":command(actor: #{actor_name}, endpoint: endpoint(), line: {})",
         mica_string(command)
     )
 }
@@ -438,6 +834,13 @@ fn effect_text(value: &Value) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
+fn write_output_values(output: &EndpointOutput, values: Vec<Value>) -> Result<(), String> {
+    for value in values {
+        output.send(effect_text(&value))?;
+    }
+    Ok(())
+}
+
 fn mica_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -460,6 +863,10 @@ fn format_driver_error(error: mica_driver::DriverError) -> String {
     format!("error: {error}")
 }
 
+fn format_zmq_error(error: mica_host_zmq::ZmqTransportError) -> String {
+    format!("RPC transport error: {error}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,7 +876,7 @@ mod tests {
     fn builds_command_invocation_source() {
         assert_eq!(
             command_invocation_source("alice", "say hello"),
-            ":command(actor: #alice, endpoint: #endpoint, line: \"say hello\")"
+            ":command(actor: #alice, endpoint: endpoint(), line: \"say hello\")"
         );
         assert!(is_quit_command("quit"));
         assert!(is_quit_command("EXIT"));

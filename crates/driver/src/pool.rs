@@ -91,6 +91,13 @@ impl CompioTaskDriver {
         })
     }
 
+    pub fn named_identity(&self, name: Symbol) -> Result<Identity, DriverError> {
+        self.inner
+            .runner
+            .named_identity(name)
+            .map_err(DriverError::Source)
+    }
+
     pub fn submit_source(
         &self,
         endpoint: Identity,

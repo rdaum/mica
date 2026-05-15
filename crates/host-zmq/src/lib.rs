@@ -186,6 +186,24 @@ impl ZmqHostSocket {
         decode_frame(&frame).map_err(Into::into)
     }
 
+    pub fn try_recv_message(&self) -> Result<Option<HostMessage>, ZmqTransportError> {
+        if !self.socket.get_events()?.contains(zmq::POLLIN) {
+            return Ok(None);
+        }
+        match self.socket.recv_multipart(zmq::DONTWAIT) {
+            Ok(parts) if parts.is_empty() => Err(ZmqTransportError::EmptyMessage),
+            Ok(parts) => {
+                let frame = parts
+                    .into_iter()
+                    .last()
+                    .ok_or(ZmqTransportError::EmptyMessage)?;
+                decode_frame(&frame).map(Some).map_err(Into::into)
+            }
+            Err(zmq::Error::EAGAIN) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub async fn send_message(&self, message: &HostMessage) -> Result<(), ZmqTransportError> {
         let frame = encoded_frame(message)?;
         self.send_frame(&frame).await
@@ -283,11 +301,13 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
                 feature_bits: 1,
             };
+            assert_eq!(dealer.try_recv_message().unwrap(), None);
             router
                 .send_routed_message(&routed.peer, &ack)
                 .await
                 .unwrap();
             assert_eq!(dealer.recv_message().await.unwrap(), ack);
+            assert_eq!(dealer.try_recv_message().unwrap(), None);
         });
     }
 

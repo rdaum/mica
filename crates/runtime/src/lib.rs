@@ -889,6 +889,16 @@ impl SourceRunner {
 }
 
 impl SharedSourceRunner {
+    pub fn named_identity(&self, name: Symbol) -> Result<Identity, SourceTaskError> {
+        identity_named_in_kernel(self.task_manager.kernel(), name)?.ok_or_else(|| {
+            unsupported_runner_error(
+                NodeId(0),
+                None,
+                format!("unknown identity :{}", name.name().unwrap_or("<unnamed>")),
+            )
+        })
+    }
+
     pub fn source_request_for_endpoint(
         &self,
         endpoint: Identity,

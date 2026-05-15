@@ -1119,10 +1119,14 @@ dependencies = [
 name = "mica-host-tcp"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "compio",
  "mica-driver",
+ "mica-host-protocol",
+ "mica-host-zmq",
  "mica-runtime",
  "mica-var",
+ "zmq",
 ]
 
 [[package]]

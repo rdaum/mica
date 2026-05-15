@@ -33,6 +33,8 @@ pub enum MessageType {
     RequestRejected = 0x0004,
     OpenEndpoint = 0x0100,
     CloseEndpoint = 0x0101,
+    ResolveIdentity = 0x0102,
+    IdentityResolved = 0x0103,
     SubmitSource = 0x0200,
     SubmitInput = 0x0201,
     OutputReady = 0x0300,
@@ -56,6 +58,8 @@ impl MessageType {
             0x0004 => Some(Self::RequestRejected),
             0x0100 => Some(Self::OpenEndpoint),
             0x0101 => Some(Self::CloseEndpoint),
+            0x0102 => Some(Self::ResolveIdentity),
+            0x0103 => Some(Self::IdentityResolved),
             0x0200 => Some(Self::SubmitSource),
             0x0201 => Some(Self::SubmitInput),
             0x0300 => Some(Self::OutputReady),
@@ -93,12 +97,22 @@ pub enum HostMessage {
     OpenEndpoint {
         request_id: u64,
         endpoint: Identity,
+        actor: Option<Identity>,
         protocol: String,
         grant_token: Option<String>,
     },
     CloseEndpoint {
         request_id: u64,
         endpoint: Identity,
+    },
+    ResolveIdentity {
+        request_id: u64,
+        name: Symbol,
+    },
+    IdentityResolved {
+        request_id: u64,
+        name: Symbol,
+        identity: Identity,
     },
     SubmitSource {
         request_id: u64,
@@ -147,6 +161,8 @@ impl HostMessage {
             Self::RequestRejected { .. } => MessageType::RequestRejected,
             Self::OpenEndpoint { .. } => MessageType::OpenEndpoint,
             Self::CloseEndpoint { .. } => MessageType::CloseEndpoint,
+            Self::ResolveIdentity { .. } => MessageType::ResolveIdentity,
+            Self::IdentityResolved { .. } => MessageType::IdentityResolved,
             Self::SubmitSource { .. } => MessageType::SubmitSource,
             Self::SubmitInput { .. } => MessageType::SubmitInput,
             Self::OutputReady { .. } => MessageType::OutputReady,
@@ -591,11 +607,13 @@ fn encode_payload(message: &HostMessage, out: &mut Vec<u8>) -> Result<(), HostPr
         HostMessage::OpenEndpoint {
             request_id,
             endpoint,
+            actor,
             protocol,
             grant_token,
         } => {
             write_u64(out, *request_id);
             write_identity(out, *endpoint);
+            write_optional_identity(out, *actor);
             write_string(out, protocol)?;
             write_optional_string(out, grant_token.as_deref())?;
         }
@@ -605,6 +623,19 @@ fn encode_payload(message: &HostMessage, out: &mut Vec<u8>) -> Result<(), HostPr
         } => {
             write_u64(out, *request_id);
             write_identity(out, *endpoint);
+        }
+        HostMessage::ResolveIdentity { request_id, name } => {
+            write_u64(out, *request_id);
+            write_symbol_name(out, *name)?;
+        }
+        HostMessage::IdentityResolved {
+            request_id,
+            name,
+            identity,
+        } => {
+            write_u64(out, *request_id);
+            write_symbol_name(out, *name)?;
+            write_identity(out, *identity);
         }
         HostMessage::SubmitSource {
             request_id,
@@ -704,11 +735,13 @@ fn encode_payload_segments<'a>(
         HostMessage::OpenEndpoint {
             request_id,
             endpoint,
+            actor,
             protocol,
             grant_token,
         } => {
             push_u64(out, *request_id);
             push_identity(out, *endpoint);
+            push_optional_identity(out, *actor);
             push_string(out, protocol)?;
             push_optional_string(out, grant_token.as_deref())?;
         }
@@ -718,6 +751,19 @@ fn encode_payload_segments<'a>(
         } => {
             push_u64(out, *request_id);
             push_identity(out, *endpoint);
+        }
+        HostMessage::ResolveIdentity { request_id, name } => {
+            push_u64(out, *request_id);
+            push_symbol_name(out, *name)?;
+        }
+        HostMessage::IdentityResolved {
+            request_id,
+            name,
+            identity,
+        } => {
+            push_u64(out, *request_id);
+            push_symbol_name(out, *name)?;
+            push_identity(out, *identity);
         }
         HostMessage::SubmitSource {
             request_id,
@@ -814,6 +860,16 @@ fn push_optional_string<'a>(
     Ok(())
 }
 
+fn push_optional_identity(out: &mut EncodedFrameSegments<'_>, value: Option<Identity>) {
+    match value {
+        Some(value) => {
+            push_u8(out, 1);
+            push_identity(out, value);
+        }
+        None => push_u8(out, 0),
+    }
+}
+
 fn push_optional_u64(out: &mut EncodedFrameSegments<'_>, value: Option<u64>) {
     match value {
         Some(value) => {
@@ -872,6 +928,16 @@ fn write_optional_string(out: &mut Vec<u8>, value: Option<&str>) -> Result<(), H
         None => write_u8(out, 0),
     }
     Ok(())
+}
+
+fn write_optional_identity(out: &mut Vec<u8>, value: Option<Identity>) {
+    match value {
+        Some(value) => {
+            write_u8(out, 1);
+            write_identity(out, value);
+        }
+        None => write_u8(out, 0),
+    }
 }
 
 fn write_optional_u64(out: &mut Vec<u8>, value: Option<u64>) {
@@ -1031,12 +1097,22 @@ impl<'a> Reader<'a> {
             MessageType::OpenEndpoint => HostMessage::OpenEndpoint {
                 request_id: self.read_u64()?,
                 endpoint: self.read_identity()?,
+                actor: self.read_optional_identity()?,
                 protocol: self.read_string()?,
                 grant_token: self.read_optional_string()?,
             },
             MessageType::CloseEndpoint => HostMessage::CloseEndpoint {
                 request_id: self.read_u64()?,
                 endpoint: self.read_identity()?,
+            },
+            MessageType::ResolveIdentity => HostMessage::ResolveIdentity {
+                request_id: self.read_u64()?,
+                name: self.read_symbol_name()?,
+            },
+            MessageType::IdentityResolved => HostMessage::IdentityResolved {
+                request_id: self.read_u64()?,
+                name: self.read_symbol_name()?,
+                identity: self.read_identity()?,
             },
             MessageType::SubmitSource => HostMessage::SubmitSource {
                 request_id: self.read_u64()?,
@@ -1115,6 +1191,14 @@ impl<'a> Reader<'a> {
         match self.read_u8()? {
             0 => Ok(None),
             1 => self.read_string().map(Some),
+            tag => Err(HostProtocolError::InvalidOptionTag(tag)),
+        }
+    }
+
+    fn read_optional_identity(&mut self) -> Result<Option<Identity>, HostProtocolError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => self.read_identity().map(Some),
             tag => Err(HostProtocolError::InvalidOptionTag(tag)),
         }
     }
@@ -1264,6 +1348,7 @@ mod tests {
         let message = HostMessage::OpenEndpoint {
             request_id: 1,
             endpoint: id(1),
+            actor: None,
             protocol: "telnet".to_owned(),
             grant_token: Some("grant".to_owned()),
         };
@@ -1351,6 +1436,7 @@ mod tests {
             HostMessage::OpenEndpoint {
                 request_id: 4,
                 endpoint: id(1),
+                actor: None,
                 protocol: "telnet".to_owned(),
                 grant_token: None,
             },
@@ -1358,8 +1444,17 @@ mod tests {
                 request_id: 5,
                 endpoint: id(1),
             },
-            HostMessage::SubmitSource {
+            HostMessage::ResolveIdentity {
                 request_id: 6,
+                name: Symbol::intern("alice"),
+            },
+            HostMessage::IdentityResolved {
+                request_id: 7,
+                name: Symbol::intern("alice"),
+                identity: id(2),
+            },
+            HostMessage::SubmitSource {
+                request_id: 8,
                 endpoint: id(1),
                 actor: id(2),
                 source: "emit(#1, \"hi\")".to_owned(),
@@ -1369,7 +1464,7 @@ mod tests {
                 buffered: 3,
             },
             HostMessage::DrainOutput {
-                request_id: 7,
+                request_id: 9,
                 endpoint: id(1),
                 limit: 64,
             },

@@ -33,6 +33,7 @@ pub(crate) enum RpcServerError {
 
 #[derive(Default)]
 struct EndpointState {
+    actor: Option<Identity>,
     output: VecDeque<Value>,
 }
 
@@ -75,6 +76,15 @@ pub(crate) async fn serve_zmq_rpc_n(
     Ok(())
 }
 
+pub(crate) async fn serve_zmq_rpc_forever(
+    socket: &ZmqHostSocket,
+    handler: &mut RpcHandler,
+) -> Result<(), RpcServerError> {
+    loop {
+        serve_zmq_rpc_once(socket, handler).await?;
+    }
+}
+
 impl RpcHandler {
     pub(crate) fn new(driver: CompioTaskDriver) -> Self {
         Self {
@@ -84,6 +94,7 @@ impl RpcHandler {
     }
 
     pub(crate) fn handle_message(&mut self, message: HostMessage) -> Vec<HostMessage> {
+        let is_request = is_request_message(&message);
         let mut replies = match message {
             HostMessage::Hello { .. } => vec![HostMessage::HelloAck {
                 protocol_version: PROTOCOL_VERSION,
@@ -92,6 +103,7 @@ impl RpcHandler {
             HostMessage::HelloAck { .. }
             | HostMessage::RequestAccepted { .. }
             | HostMessage::RequestRejected { .. }
+            | HostMessage::IdentityResolved { .. }
             | HostMessage::OutputReady { .. }
             | HostMessage::OutputBatch { .. }
             | HostMessage::EndpointClosed { .. }
@@ -104,13 +116,17 @@ impl RpcHandler {
             HostMessage::OpenEndpoint {
                 request_id,
                 endpoint,
+                actor,
                 protocol,
                 grant_token,
-            } => self.open_endpoint(request_id, endpoint, protocol, grant_token),
+            } => self.open_endpoint(request_id, endpoint, actor, protocol, grant_token),
             HostMessage::CloseEndpoint {
                 request_id,
                 endpoint,
             } => self.close_endpoint(request_id, endpoint),
+            HostMessage::ResolveIdentity { request_id, name } => {
+                self.resolve_identity(request_id, name)
+            }
             HostMessage::SubmitSource {
                 request_id,
                 endpoint,
@@ -128,7 +144,11 @@ impl RpcHandler {
                 limit,
             } => self.drain_output(request_id, endpoint, limit),
         };
-        replies.extend(self.drain_driver_messages());
+        if is_request {
+            let mut events = self.drain_driver_messages();
+            events.append(&mut replies);
+            return events;
+        }
         replies
     }
 
@@ -136,6 +156,7 @@ impl RpcHandler {
         &mut self,
         request_id: u64,
         endpoint: Identity,
+        actor: Option<Identity>,
         protocol: String,
         grant_token: Option<String>,
     ) -> Vec<HostMessage> {
@@ -148,10 +169,16 @@ impl RpcHandler {
         }
         match self
             .driver
-            .open_endpoint(endpoint, None, Symbol::intern(&protocol))
+            .open_endpoint(endpoint, actor, Symbol::intern(&protocol))
         {
             Ok(()) => {
-                self.endpoints.entry(endpoint).or_default();
+                self.endpoints
+                    .entry(endpoint)
+                    .and_modify(|state| state.actor = actor)
+                    .or_insert_with(|| EndpointState {
+                        actor,
+                        output: VecDeque::new(),
+                    });
                 vec![accepted(request_id, None)]
             }
             Err(error) => vec![rejected(request_id, "E_OPEN_ENDPOINT", error.to_string())],
@@ -162,12 +189,27 @@ impl RpcHandler {
         let closed = self.driver.close_endpoint(endpoint);
         self.endpoints.remove(&endpoint);
         vec![
-            accepted(request_id, None),
             HostMessage::EndpointClosed {
                 endpoint,
                 reason: format!("closed {closed} task endpoint bindings"),
             },
+            accepted(request_id, None),
         ]
+    }
+
+    fn resolve_identity(&self, request_id: u64, name: Symbol) -> Vec<HostMessage> {
+        match self.driver.named_identity(name) {
+            Ok(identity) => vec![HostMessage::IdentityResolved {
+                request_id,
+                name,
+                identity,
+            }],
+            Err(error) => vec![rejected(
+                request_id,
+                "E_UNKNOWN_IDENTITY",
+                error.to_string(),
+            )],
+        }
     }
 
     fn submit_source(
@@ -232,8 +274,8 @@ impl RpcHandler {
             values.push(value);
         }
         vec![
-            accepted(request_id, None),
             HostMessage::OutputBatch { endpoint, values },
+            accepted(request_id, None),
         ]
     }
 
@@ -241,32 +283,50 @@ impl RpcHandler {
         self.driver
             .drain_events()
             .into_iter()
-            .filter_map(|event| self.route_driver_event(event))
+            .flat_map(|event| self.route_driver_event(event))
             .collect()
     }
 
-    fn route_driver_event(&mut self, event: DriverEvent) -> Option<HostMessage> {
+    fn route_driver_event(&mut self, event: DriverEvent) -> Vec<HostMessage> {
         match event {
             DriverEvent::TaskCompleted { task_id, value } => {
-                Some(HostMessage::TaskCompleted { task_id, value })
+                vec![HostMessage::TaskCompleted { task_id, value }]
             }
             DriverEvent::TaskAborted { task_id, error } => {
-                Some(HostMessage::TaskFailed { task_id, error })
+                vec![HostMessage::TaskFailed { task_id, error }]
             }
-            DriverEvent::TaskFailed { task_id, error } => Some(HostMessage::TaskFailed {
+            DriverEvent::TaskFailed { task_id, error } => vec![HostMessage::TaskFailed {
                 task_id,
                 error: Value::error(Symbol::intern("E_DRIVER"), Some(error), None),
-            }),
-            DriverEvent::TaskSuspended { .. } => None,
+            }],
+            DriverEvent::TaskSuspended { .. } => Vec::new(),
             DriverEvent::Effect(effect) => {
-                let state = self.endpoints.entry(effect.target).or_default();
-                state.output.push_back(effect.value);
-                Some(HostMessage::OutputReady {
-                    endpoint: effect.target,
-                    buffered: state.output.len().try_into().unwrap_or(u32::MAX),
-                })
+                let targets = self.effect_targets(effect.target);
+                let mut messages = Vec::with_capacity(targets.len());
+                for target in targets {
+                    let state = self.endpoints.entry(target).or_default();
+                    state.output.push_back(effect.value.clone());
+                    messages.push(HostMessage::OutputReady {
+                        endpoint: target,
+                        buffered: state.output.len().try_into().unwrap_or(u32::MAX),
+                    });
+                }
+                messages
             }
         }
+    }
+
+    fn effect_targets(&self, target: Identity) -> Vec<Identity> {
+        let mut targets = Vec::new();
+        if self.endpoints.contains_key(&target) {
+            targets.push(target);
+        }
+        for (endpoint, state) in &self.endpoints {
+            if state.actor == Some(target) && !targets.contains(endpoint) {
+                targets.push(*endpoint);
+            }
+        }
+        targets
     }
 }
 
@@ -275,6 +335,18 @@ fn accepted(request_id: u64, task_id: Option<u64>) -> HostMessage {
         request_id,
         task_id,
     }
+}
+
+fn is_request_message(message: &HostMessage) -> bool {
+    matches!(
+        message,
+        HostMessage::OpenEndpoint { .. }
+            | HostMessage::CloseEndpoint { .. }
+            | HostMessage::ResolveIdentity { .. }
+            | HostMessage::SubmitSource { .. }
+            | HostMessage::SubmitInput { .. }
+            | HostMessage::DrainOutput { .. }
+    )
 }
 
 fn rejected(request_id: u64, code: &str, message: impl Into<String>) -> HostMessage {
@@ -325,6 +397,7 @@ mod tests {
             handler.handle_message(HostMessage::OpenEndpoint {
                 request_id: 1,
                 endpoint,
+                actor: None,
                 protocol: "test".to_owned(),
                 grant_token: None,
             }),
@@ -340,12 +413,12 @@ mod tests {
         assert!(matches!(
             &replies[..],
             [
+                HostMessage::OutputReady { endpoint: target, buffered: 1 },
+                HostMessage::TaskCompleted { value, .. },
                 HostMessage::RequestAccepted {
                     request_id: 2,
                     task_id: Some(_),
                 },
-                HostMessage::OutputReady { endpoint: target, buffered: 1 },
-                HostMessage::TaskCompleted { value, .. },
             ] if *target == endpoint && *value == Value::identity(actor)
         ));
 
@@ -357,11 +430,11 @@ mod tests {
         assert_eq!(
             replies,
             vec![
-                accepted(3, None),
                 HostMessage::OutputBatch {
                     endpoint,
                     values: vec![Value::string("hello")],
                 },
+                accepted(3, None),
             ]
         );
     }
@@ -374,6 +447,7 @@ mod tests {
             handler.handle_message(HostMessage::OpenEndpoint {
                 request_id: 1,
                 endpoint: endpoint(0x00ef_0000_0000_0002),
+                actor: None,
                 protocol: "test".to_owned(),
                 grant_token: Some("token".to_owned()),
             }),
@@ -393,6 +467,7 @@ mod tests {
         handler.handle_message(HostMessage::OpenEndpoint {
             request_id: 1,
             endpoint,
+            actor: None,
             protocol: "test".to_owned(),
             grant_token: None,
         });
@@ -406,12 +481,83 @@ mod tests {
         assert!(matches!(
             &replies[..],
             [
+                HostMessage::TaskFailed { error, .. },
                 HostMessage::RequestAccepted {
                     request_id: 2,
                     task_id: Some(_),
                 },
-                HostMessage::TaskFailed { error, .. },
             ] if error.error_code_symbol() == Some(Symbol::intern("E_DIV"))
+        ));
+    }
+
+    #[test]
+    fn rpc_handler_routes_actor_effects_to_actor_endpoint() {
+        let (driver, actor) = seeded_driver();
+        let endpoint = endpoint(0x00ef_0000_0000_0007);
+        let mut handler = RpcHandler::new(driver);
+        handler.handle_message(HostMessage::OpenEndpoint {
+            request_id: 1,
+            endpoint,
+            actor: Some(actor),
+            protocol: "test".to_owned(),
+            grant_token: None,
+        });
+
+        let replies = handler.handle_message(HostMessage::SubmitSource {
+            request_id: 2,
+            endpoint,
+            actor,
+            source: "emit(#alice, \"hello actor\")".to_owned(),
+        });
+        assert!(matches!(
+            &replies[..],
+            [
+                HostMessage::OutputReady { endpoint: target, buffered: 1 },
+                HostMessage::TaskCompleted { .. },
+                HostMessage::RequestAccepted { request_id: 2, .. },
+            ] if *target == endpoint
+        ));
+        let replies = handler.handle_message(HostMessage::DrainOutput {
+            request_id: 3,
+            endpoint,
+            limit: 1,
+        });
+        assert_eq!(
+            replies,
+            vec![
+                HostMessage::OutputBatch {
+                    endpoint,
+                    values: vec![Value::string("hello actor")],
+                },
+                accepted(3, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn rpc_handler_resolves_named_identity() {
+        let (driver, actor) = seeded_driver();
+        let mut handler = RpcHandler::new(driver);
+
+        assert_eq!(
+            handler.handle_message(HostMessage::ResolveIdentity {
+                request_id: 12,
+                name: Symbol::intern("alice"),
+            }),
+            vec![HostMessage::IdentityResolved {
+                request_id: 12,
+                name: Symbol::intern("alice"),
+                identity: actor,
+            }]
+        );
+
+        assert!(matches!(
+            handler.handle_message(HostMessage::ResolveIdentity {
+                request_id: 13,
+                name: Symbol::intern("missing"),
+            }).as_slice(),
+            [HostMessage::RequestRejected { request_id: 13, code, .. }]
+                if *code == Symbol::intern("E_UNKNOWN_IDENTITY")
         ));
     }
 
@@ -521,6 +667,7 @@ mod tests {
                 .send_message(&HostMessage::OpenEndpoint {
                     request_id: 42,
                     endpoint,
+                    actor: None,
                     protocol: "test".to_owned(),
                     grant_token: None,
                 })
@@ -545,6 +692,7 @@ mod tests {
         handler.handle_message(HostMessage::OpenEndpoint {
             request_id: 1,
             endpoint,
+            actor: None,
             protocol: "test".to_owned(),
             grant_token: None,
         });

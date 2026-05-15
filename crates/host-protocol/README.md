@@ -43,6 +43,8 @@ can avoid flattening the frame into one contiguous buffer.
 
 0x0100 OpenEndpoint
 0x0101 CloseEndpoint
+0x0102 ResolveIdentity
+0x0103 IdentityResolved
 
 0x0200 SubmitSource
 0x0201 SubmitInput
@@ -82,6 +84,8 @@ RequestRejected:
 OpenEndpoint:
   request_id u64
   endpoint_id u64
+  has_actor_id u8
+  actor_id u64 if has_actor_id == 1
   protocol string
   has_grant_token u8
   grant_token string if has_grant_token == 1
@@ -89,6 +93,15 @@ OpenEndpoint:
 CloseEndpoint:
   request_id u64
   endpoint_id u64
+
+ResolveIdentity:
+  request_id u64
+  name_symbol_name string
+
+IdentityResolved:
+  request_id u64
+  name_symbol_name string
+  identity_id u64
 
 SubmitSource:
   request_id u64

@@ -15,8 +15,6 @@ mica-host-tcp.workspace = true
 mica-host-zmq.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true
-
-[dev-dependencies]
 zmq.workspace = true
 
 [[bin]]
