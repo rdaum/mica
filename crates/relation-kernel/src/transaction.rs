@@ -88,6 +88,10 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
+        if self.base.rules().is_empty() && !self.writes.contains_key(&relation) {
+            return self.base.scan_extensional(relation, bindings);
+        }
+
         let mut visible = self.scan_extensional(relation, bindings)?;
 
         if !self.base.rules().is_empty() {
