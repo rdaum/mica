@@ -1,11 +1,12 @@
 # Mica Examples
 
 `mud-core.mica` is a small room/object exercise for relations, rules, and verb
-dispatch. `string.mica` documents the low-level string utility surface, and
-`mud-command-parser.mica` parses the demo command language in Mica source. These
-are the default fileins for `mica-daemon`, so commands such as `look`,
-`get coin`, `put coin box`, `north`, and `say hello` can exercise telnet endpoint
-input and routed effects.
+dispatch. `string.mica` documents the low-level string utility surface,
+`event-substitutions.mica` and `events.mica` define narrative event rendering,
+and `mud-command-parser.mica` parses the demo command language in Mica source.
+These are the default fileins for `mica-daemon`, so commands such as `look`,
+`get coin`, `put coin box`, `north`, and `say hello` can exercise telnet
+endpoint input and routed effects.
 
 Try the MUD example over telnet:
 

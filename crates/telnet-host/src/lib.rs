@@ -932,10 +932,13 @@ mod tests {
     fn routed_command_effect_reaches_endpoint_sender() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../examples/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../examples/events.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/mud-core.mica"))
             .unwrap();
         runner
             .run_filein(include_str!("../../../examples/event-substitutions.mica"))

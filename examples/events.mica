@@ -1,0 +1,30 @@
+// Generic narrative event values.
+//
+// This layer deliberately keeps events as ordinary Mica values. An event is a
+// frob whose delegate describes the event kind and whose payload carries a
+// compiled template plus named bindings. Domain-specific cores can define their
+// own event delegates and delivery policy.
+
+make_identity(:event)
+
+make_relation(:Delegates, 3)
+
+verb narrative_event(delegate @ #identity, template_source @ #string, bindings @ #map)
+  return frob(delegate, {:template -> compile_template(template_source), :bindings -> bindings})
+end
+
+verb event_bindings(event @ #event<_>)
+  return frob_value(event)[:bindings]
+end
+
+verb event_template(event @ #event<_>)
+  return frob_value(event)[:template]
+end
+
+verb render_event(event @ #event<_>, viewer)
+  return render_template(event_template(event), event_bindings(event), viewer)
+end
+
+verb event_literal(event @ #event<_>)
+  return to_literal(event)
+end

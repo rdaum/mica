@@ -8,10 +8,11 @@ shape run either linked in process or as an out-of-process host over the host
 RPC/IPC protocol.
 
 The daemon currently files in Mica source files at startup. By default it loads
-`examples/mud-core.mica`, `examples/string.mica`, and
-`examples/mud-command-parser.mica`, and `examples/http-core.mica`. Line input is
-submitted to the in-core `:command(...)` verb; HTTP requests are submitted to
-the in-core `:http_request(...)` verb. The Rust transports only own protocol
+`examples/string.mica`, `examples/events.mica`, `examples/mud-core.mica`,
+`examples/event-substitutions.mica`,
+`examples/mud-command-parser.mica`, and `examples/http-core.mica`. Line input
+is submitted to the in-core `:command(...)` verb; HTTP requests are submitted
+to the in-core `:http_request(...)` verb. The Rust transports only own protocol
 parsing and connection control.
 
 Run the daemon with an in-process telnet listener:

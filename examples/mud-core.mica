@@ -9,6 +9,13 @@ make_identity(:thing)
 make_identity(:portable)
 make_identity(:container)
 make_identity(:room)
+make_identity(:movement_event)
+make_identity(:arrival_event)
+make_identity(:take_event)
+make_identity(:take_from_event)
+make_identity(:drop_event)
+make_identity(:put_event)
+make_identity(:say_event)
 
 make_identity(:alice)
 make_identity(:coin)
@@ -77,6 +84,13 @@ make_relation(:CanEffect, 1)
 
 assert Delegates(#portable, #thing, 0)
 assert Delegates(#container, #thing, 0)
+assert Delegates(#movement_event, #event, 0)
+assert Delegates(#arrival_event, #event, 0)
+assert Delegates(#take_event, #event, 0)
+assert Delegates(#take_from_event, #event, 0)
+assert Delegates(#drop_event, #event, 0)
+assert Delegates(#put_event, #event, 0)
+assert Delegates(#say_event, #event, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
 assert Delegates(#bob, #player, 0)
@@ -262,6 +276,11 @@ assert CanInvoke(#alice, :north)
 assert CanInvoke(#alice, :south)
 assert CanInvoke(#alice, :up)
 assert CanInvoke(#alice, :down)
+assert CanInvoke(#alice, :narrative_event)
+assert CanInvoke(#alice, :event_bindings)
+assert CanInvoke(#alice, :event_template)
+assert CanInvoke(#alice, :render_event)
+assert CanInvoke(#alice, :event_literal)
 assert CanInvoke(#alice, :emit_room_event)
 assert CanInvoke(#alice, :emit_room_event_except)
 assert CanInvoke(#alice, :get)
@@ -281,8 +300,12 @@ assert CanInvoke(#alice, :binding_name)
 assert CanInvoke(#alice, :binding_value_text)
 assert CanInvoke(#alice, :render_template_part)
 assert CanInvoke(#alice, :render_template)
+assert CanInvoke(#alice, :template_literal)
 assert CanInvoke(#alice, :decompile_template_part)
 assert CanInvoke(#alice, :decompile_template)
+assert CanInvoke(#alice, :frob)
+assert CanInvoke(#alice, :frob_value)
+assert CanInvoke(#alice, :to_literal)
 assert CanInvoke(#alice, :trim)
 assert CanInvoke(#alice, :split)
 assert CanInvoke(#alice, :string_chars)
@@ -353,24 +376,20 @@ CommandHandlerScope(actor, actor) :-
 CommandHandlerScope(actor, room) :-
   LocatedIn(actor, room)
 
-verb emit_room_event(room @ #room, template_source @ #string, bindings @ #map)
-  let template = compile_template(template_source)
-
+verb emit_room_event(room @ #room, event @ #event<_>)
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
-    emit(listener, render_template(template, bindings, listener))
+    emit(listener, render_event(event, listener))
   end
 
   return true
 end
 
-verb emit_room_event_except(room @ #room, skipped @ #identity, template_source @ #string, bindings @ #map)
-  let template = compile_template(template_source)
-
+verb emit_room_event_except(room @ #room, skipped @ #identity, event @ #event<_>)
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
     if listener != skipped
-      emit(listener, render_template(template, bindings, listener))
+      emit(listener, render_event(event, listener))
     end
   end
 
@@ -451,10 +470,10 @@ verb go(actor @ #player, direction, leave, arrive)
   end
 
   let bindings = {:actor -> actor}
-  :emit_room_event(room: room, template_source: leave, bindings: bindings)
+  :emit_room_event(room: room, event: narrative_event(#movement_event, leave, bindings))
   retract LocatedIn(actor, _)
   assert LocatedIn(actor, destination)
-  :emit_room_event_except(room: destination, skipped: actor, template_source: arrive, bindings: bindings)
+  :emit_room_event_except(room: destination, skipped: actor, event: narrative_event(#arrival_event, arrive, bindings))
   emit(actor, one Description(destination, ?text))
   return true
 end
@@ -469,7 +488,7 @@ verb get(actor @ #player, item @ #thing)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, actor)
-    :emit_room_event(room: room, template_source: "{Actor} {take|takes} {the item}.", bindings: {:actor -> actor, :item -> item})
+    :emit_room_event(room: room, event: narrative_event(#take_event, "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
 
@@ -492,7 +511,7 @@ verb get_from(actor @ #player, item @ #thing, container @ #container)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, actor)
-    :emit_room_event(room: room, template_source: "{Actor} {take|takes} {the item} from {the container}.", bindings: {:actor -> actor, :item -> item, :container -> container})
+    :emit_room_event(room: room, event: narrative_event(#take_from_event, "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
 
@@ -506,7 +525,7 @@ verb drop(actor @ #player, item @ #thing)
   if Carrying(actor, item)
     retract LocatedIn(item, _)
     assert LocatedIn(item, room)
-    :emit_room_event(room: room, template_source: "{Actor} {drop|drops} {the item}.", bindings: {:actor -> actor, :item -> item})
+    :emit_room_event(room: room, event: narrative_event(#drop_event, "{Actor} {drop|drops} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
 
@@ -519,7 +538,7 @@ verb put(actor @ #player, item @ #thing, container @ #container)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, container)
-    :emit_room_event(room: room, template_source: "{Actor} {put|puts} {the item} in {the container}.", bindings: {:actor -> actor, :item -> item, :container -> container})
+    :emit_room_event(room: room, event: narrative_event(#put_event, "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
 
@@ -529,13 +548,7 @@ end
 
 verb say(actor @ #player, message)
   let room = one LocatedIn(actor, ?room)
-  let template = compile_template("{Actor} {say|says}, \"{message}\"")
-  let bindings = {:actor -> actor, :message -> message}
-
-  for found in PresentActor(room, ?listener)
-    let listener = found[:listener]
-    emit(listener, render_template(template, bindings, listener))
-  end
-
+  let event = narrative_event(#say_event, "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message})
+  :emit_room_event(room: room, event: event)
   return true
 end

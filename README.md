@@ -351,7 +351,7 @@ returns.
 Run the example:
 
 ```sh
-cargo run --bin mica -- filein examples/mud-core.mica
+cargo run --bin mica -- filein examples/capabilities.mica
 ```
 
 Run the telnet MUD demo:
@@ -405,6 +405,8 @@ cargo test --workspace
   telnet codec, and host-side endpoint session handling.
 - `examples/mud-core.mica`: small ontology proving relations, rules, filein,
   verbs, and dispatch.
+- `examples/event-substitutions.mica` and `examples/events.mica`: compiled
+  narrative substitutions and structured event values.
 - `examples/mud-command-parser.mica`: command parsing authored in Mica, using
   low-level string primitives rather than Rust command matching.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,

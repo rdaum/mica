@@ -3981,6 +3981,9 @@ mod tests {
             .run_filein(include_str!("../../../examples/string.mica"))
             .unwrap();
         runner
+            .run_filein(include_str!("../../../examples/events.mica"))
+            .unwrap();
+        runner
             .run_filein(include_str!("../../../examples/mud-core.mica"))
             .unwrap();
         runner
@@ -4194,10 +4197,13 @@ mod tests {
     fn runner_dispatch_binds_unrestricted_method_params() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../examples/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../examples/events.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/mud-core.mica"))
             .unwrap();
         runner
             .run_filein(include_str!("../../../examples/event-substitutions.mica"))
@@ -4225,10 +4231,13 @@ mod tests {
     fn runner_mud_command_parser_runs_in_mica() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../examples/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../examples/events.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/mud-core.mica"))
             .unwrap();
         runner
             .run_filein(include_str!("../../../examples/event-substitutions.mica"))
@@ -4456,10 +4465,13 @@ mod tests {
     fn runner_mud_core_derives_exits_and_recursive_location() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../examples/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../examples/events.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/mud-core.mica"))
             .unwrap();
         runner
             .run_filein(include_str!("../../../examples/event-substitutions.mica"))

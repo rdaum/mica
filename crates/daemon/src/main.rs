@@ -35,8 +35,9 @@ use std::process::ExitCode;
 mod rpc;
 
 const DEFAULT_FILEINS: &[&str] = &[
-    "examples/mud-core.mica",
     "examples/string.mica",
+    "examples/events.mica",
+    "examples/mud-core.mica",
     "examples/event-substitutions.mica",
     "examples/mud-command-parser.mica",
     "examples/http-core.mica",

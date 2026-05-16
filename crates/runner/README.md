@@ -25,7 +25,7 @@ cargo run --bin mica -- run path/to/file.mica
 File in a source file as a sequence of chunks:
 
 ```sh
-cargo run --bin mica -- filein examples/mud-core.mica
+cargo run --bin mica -- filein examples/capabilities.mica
 ```
 
 Evaluate a one-line source string:
