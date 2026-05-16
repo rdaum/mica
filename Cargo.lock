@@ -1558,9 +1558,9 @@ dependencies = [
 
 [[package]]
 name = "rart"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c4852ab3c7586b8cf881ba2dc57319b7c5dde822561d8fb5f9d35032e31e70d"
+checksum = "19087bab094578a3e932bf449dfd52336c3cad7cc6462db77172e31cc01ba0c9"
 dependencies = [
  "num-traits",
 ]

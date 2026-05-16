@@ -16,9 +16,12 @@ use crate::error::KernelError;
 use crate::metadata::RelationMetadata;
 use crate::tuple::{Tuple, TupleKey};
 use mica_var::{OrderedKeySink, Value};
-use rart::{OverflowKey, OverflowKeyBuilder, VersionedAdaptiveRadixTree, VisitControl};
+use rart::{
+    OverflowKey, OverflowKeyBuilder, Slot, SlotUpdate, VersionedAdaptiveRadixTree, VisitControl,
+};
 use std::collections::BTreeSet;
 use std::fmt;
+use std::slice;
 use std::sync::Arc;
 
 pub(crate) type RadixTupleKey = OverflowKey<64, 16>;
@@ -209,12 +212,16 @@ impl RelationState {
 
 struct TupleIndex {
     spec: crate::TupleIndexSpec,
-    entries: VersionedAdaptiveRadixTree<RadixTupleKey, BTreeSet<Tuple>>,
+    entries: VersionedAdaptiveRadixTree<RadixTupleKey, TupleBucket>,
 }
 
 impl fmt::Debug for TupleIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let tuple_count = self.entries.values_iter().map(BTreeSet::len).sum::<usize>();
+        let tuple_count = self
+            .entries
+            .values_iter()
+            .map(TupleBucket::len)
+            .sum::<usize>();
         f.debug_struct("TupleIndex")
             .field("spec", &self.spec)
             .field("tuple_count", &tuple_count)
@@ -241,24 +248,28 @@ impl TupleIndex {
 
     fn insert(&mut self, tuple: Tuple) {
         let key = self.tuple_key(&tuple);
-        if let Some(bucket) = self.entries.get_mut_k(&key) {
-            bucket.insert(tuple);
-            return;
-        }
-        let mut bucket = BTreeSet::new();
-        bucket.insert(tuple);
-        self.entries.insert_k(&key, bucket);
+        self.entries.update_k(&key, |slot| match slot {
+            Slot::Vacant => SlotUpdate::Insert(TupleBucket::one(tuple)),
+            Slot::Occupied(bucket) => {
+                bucket.insert(tuple);
+                SlotUpdate::Keep
+            }
+        });
     }
 
     fn remove(&mut self, tuple: &Tuple) {
         let key = self.tuple_key(tuple);
-        let Some(bucket) = self.entries.get_mut_k(&key) else {
-            return;
-        };
-        bucket.remove(tuple);
-        if bucket.is_empty() {
-            self.entries.remove_k(&key);
-        }
+        self.entries.update_k(&key, |slot| match slot {
+            Slot::Vacant => SlotUpdate::Keep,
+            Slot::Occupied(bucket) => {
+                bucket.remove(tuple);
+                if bucket.is_empty() {
+                    SlotUpdate::Remove
+                } else {
+                    SlotUpdate::Keep
+                }
+            }
+        });
     }
 
     fn scan_prefix(
@@ -297,8 +308,8 @@ impl TupleIndex {
     ) -> Result<(), KernelError> {
         let prefix = self.binding_prefix_key(bindings, bound_count);
         self.entries
-            .try_prefix_values_for_each_k(&prefix, |tuples| {
-                for tuple in tuples {
+            .try_prefix_values_for_each_k(&prefix, |bucket| {
+                for tuple in bucket {
                     if !tuple.matches_bindings(bindings) {
                         continue;
                     }
@@ -338,7 +349,7 @@ impl TupleIndex {
 
 #[derive(Clone)]
 pub(crate) struct ProjectedTupleIndex {
-    entries: VersionedAdaptiveRadixTree<RadixTupleKey, BTreeSet<Tuple>>,
+    entries: VersionedAdaptiveRadixTree<RadixTupleKey, TupleBucket>,
 }
 
 impl ProjectedTupleIndex {
@@ -355,7 +366,7 @@ impl ProjectedTupleIndex {
     pub(crate) fn intersect_values_with(
         &self,
         other: &Self,
-        visit: impl FnMut(&BTreeSet<Tuple>, &BTreeSet<Tuple>),
+        visit: impl FnMut(&TupleBucket, &TupleBucket),
     ) {
         self.entries.intersect_values_with(&other.entries, visit);
     }
@@ -374,13 +385,122 @@ impl ProjectedTupleIndex {
                 .iter()
                 .map(|position| &tuple.values()[*position as usize]),
         );
-        if let Some(bucket) = self.entries.get_mut_k(&key) {
-            bucket.insert(tuple);
-            return;
+        self.entries.update_k(&key, |slot| match slot {
+            Slot::Vacant => SlotUpdate::Insert(TupleBucket::one(tuple)),
+            Slot::Occupied(bucket) => {
+                bucket.insert(tuple);
+                SlotUpdate::Keep
+            }
+        });
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TupleBucket {
+    Empty,
+    One(Tuple),
+    Many(Vec<Tuple>),
+}
+
+impl TupleBucket {
+    fn one(tuple: Tuple) -> Self {
+        Self::One(tuple)
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::One(_) => 1,
+            Self::Many(tuples) => tuples.len(),
         }
-        let mut bucket = BTreeSet::new();
-        bucket.insert(tuple);
-        self.entries.insert_k(&key, bucket);
+    }
+
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    fn insert(&mut self, tuple: Tuple) -> bool {
+        match self {
+            Self::Empty => {
+                *self = Self::One(tuple);
+                true
+            }
+            Self::One(existing) if *existing == tuple => false,
+            Self::One(existing) => {
+                let tuples = if tuple < *existing {
+                    vec![tuple, existing.clone()]
+                } else {
+                    vec![existing.clone(), tuple]
+                };
+                *self = Self::Many(tuples);
+                true
+            }
+            Self::Many(tuples) => match tuples.binary_search(&tuple) {
+                Ok(_) => false,
+                Err(index) => {
+                    tuples.insert(index, tuple);
+                    true
+                }
+            },
+        }
+    }
+
+    fn remove(&mut self, tuple: &Tuple) -> bool {
+        match self {
+            Self::Empty => false,
+            Self::One(existing) if existing == tuple => {
+                *self = Self::Empty;
+                true
+            }
+            Self::One(_) => false,
+            Self::Many(tuples) => {
+                let Ok(index) = tuples.binary_search(tuple) else {
+                    return false;
+                };
+                tuples.remove(index);
+                match tuples.len() {
+                    0 => *self = Self::Empty,
+                    1 => *self = Self::One(tuples.pop().expect("one tuple remains")),
+                    _ => {}
+                }
+                true
+            }
+        }
+    }
+
+    fn iter(&self) -> TupleBucketIter<'_> {
+        match self {
+            Self::Empty => TupleBucketIter::Empty,
+            Self::One(tuple) => TupleBucketIter::One(Some(tuple)),
+            Self::Many(tuples) => TupleBucketIter::Many(tuples.iter()),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a TupleBucket {
+    type Item = &'a Tuple;
+    type IntoIter = TupleBucketIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+pub(crate) enum TupleBucketIter<'a> {
+    Empty,
+    One(Option<&'a Tuple>),
+    Many(slice::Iter<'a, Tuple>),
+}
+
+impl<'a> Iterator for TupleBucketIter<'a> {
+    type Item = &'a Tuple;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::One(tuple) => tuple.take(),
+            Self::Many(iter) => iter.next(),
+        }
     }
 }
 
