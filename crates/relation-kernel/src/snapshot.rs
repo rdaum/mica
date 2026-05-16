@@ -47,6 +47,54 @@ impl Commit {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CommitHistory {
+    head: Option<Arc<CommitHistoryNode>>,
+}
+
+#[derive(Debug)]
+struct CommitHistoryNode {
+    commit: Commit,
+    previous: Option<Arc<CommitHistoryNode>>,
+}
+
+impl CommitHistory {
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn from_commits(commits: impl IntoIterator<Item = Commit>) -> Self {
+        let mut history = Self::empty();
+        for commit in commits {
+            history = history.append(commit);
+        }
+        history
+    }
+
+    pub(crate) fn append(&self, commit: Commit) -> Self {
+        Self {
+            head: Some(Arc::new(CommitHistoryNode {
+                commit,
+                previous: self.head.clone(),
+            })),
+        }
+    }
+
+    pub(crate) fn since(&self, version: Version) -> Vec<Commit> {
+        let mut commits = Vec::new();
+        let mut current = self.head.as_ref();
+        while let Some(node) = current {
+            if node.commit.version() <= version {
+                break;
+            }
+            commits.push(node.commit.clone());
+            current = node.previous.as_ref();
+        }
+        commits.reverse();
+        commits
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogChange {
     RelationCreated(RelationMetadata),
@@ -95,7 +143,7 @@ pub struct Snapshot {
     pub(crate) derived_cache: DerivedCache,
     pub(crate) dispatch_cache: DispatchCache,
     pub(crate) method_program_cache: MethodProgramCache,
-    pub(crate) commits: Arc<[Commit]>,
+    pub(crate) commits: CommitHistory,
 }
 
 impl Snapshot {
@@ -149,13 +197,8 @@ impl Snapshot {
         Ok(!self.scan(relation, &bindings)?.is_empty())
     }
 
-    pub fn commits_since(&self, version: Version) -> &[Commit] {
-        let first = self
-            .commits
-            .iter()
-            .position(|commit| commit.version() > version)
-            .unwrap_or(self.commits.len());
-        &self.commits[first..]
+    pub fn commits_since(&self, version: Version) -> Vec<Commit> {
+        self.commits.since(version)
     }
 
     pub fn relation_metadata(&self) -> impl Iterator<Item = &RelationMetadata> {

@@ -129,6 +129,12 @@ struct WorkloadConfig {
     objects: Vec<Identity>,
     properties: Vec<Symbol>,
     read_ratio: f64,
+    read_selector: Symbol,
+    update_selector: Symbol,
+    actor_role: Symbol,
+    item_role: Symbol,
+    property_role: Symbol,
+    value_role: Symbol,
 }
 
 #[derive(Clone, Debug)]
@@ -181,6 +187,12 @@ fn main() -> Result<(), String> {
             .map(|index| Symbol::intern(&format!("prop_{index}")))
             .collect(),
         read_ratio: args.read_ratio,
+        read_selector: Symbol::intern("read_property"),
+        update_selector: Symbol::intern("update_property"),
+        actor_role: Symbol::intern("actor"),
+        item_role: Symbol::intern("item"),
+        property_role: Symbol::intern("property"),
+        value_role: Symbol::intern("value"),
     };
 
     let runner = Arc::new(runner.into_shared());
@@ -486,8 +498,7 @@ fn run_worker(
         let object = workload.objects[rng.next_index(workload.objects.len())];
         let property = workload.properties[rng.next_index(workload.properties.len())];
         let value = rng.next_i64(1_000_000);
-        let request =
-            invocation_request(endpoint, workload.actor, object, property, value, is_read);
+        let request = invocation_request(endpoint, workload, object, property, value, is_read);
         let op_start = Instant::now();
         let runner = Arc::clone(runner);
         let receiver = dispatcher
@@ -520,25 +531,25 @@ fn run_worker(
 
 fn invocation_request(
     endpoint: Identity,
-    actor: Identity,
+    workload: &WorkloadConfig,
     object: Identity,
     property: Symbol,
     value: i64,
     is_read: bool,
 ) -> TaskRequest {
     let selector = if is_read {
-        Symbol::intern("read_property")
+        workload.read_selector
     } else {
-        Symbol::intern("update_property")
+        workload.update_selector
     };
     let mut roles = vec![
-        (Symbol::intern("actor"), Value::identity(actor)),
-        (Symbol::intern("item"), Value::identity(object)),
-        (Symbol::intern("property"), Value::symbol(property)),
+        (workload.actor_role, Value::identity(workload.actor)),
+        (workload.item_role, Value::identity(object)),
+        (workload.property_role, Value::symbol(property)),
     ];
     if !is_read {
         roles.push((
-            Symbol::intern("value"),
+            workload.value_role,
             Value::int(value).expect("generated value out of range"),
         ));
     }

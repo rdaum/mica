@@ -13,7 +13,8 @@
 
 use crate::index::RelationState;
 use crate::snapshot::{
-    active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
+    CommitHistory, active_rules, empty_derived_cache, empty_dispatch_cache,
+    empty_method_program_cache,
 };
 use crate::{
     CatalogChange, Commit, CommitProvider, FactChangeKind, KernelError, RelationMetadata, Rule,
@@ -45,7 +46,7 @@ impl RelationKernel {
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
                 method_program_cache: empty_method_program_cache(),
-                commits: Arc::from([]),
+                commits: CommitHistory::empty(),
             })),
             provider,
             commit_lock: Mutex::new(()),
@@ -105,7 +106,7 @@ impl RelationKernel {
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
                 method_program_cache: empty_method_program_cache(),
-                commits: commits.into(),
+                commits: CommitHistory::from_commits(commits),
             })),
             provider,
             commit_lock: Mutex::new(()),
@@ -167,7 +168,7 @@ impl RelationKernel {
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
                 method_program_cache: empty_method_program_cache(),
-                commits: commits.into(),
+                commits: CommitHistory::from_commits(commits),
             })),
             provider,
             commit_lock: Mutex::new(()),
@@ -212,7 +213,7 @@ impl RelationKernel {
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
                 method_program_cache: empty_method_program_cache(),
-                commits: Arc::from([]),
+                commits: CommitHistory::empty(),
             })),
             provider,
             commit_lock: Mutex::new(()),
@@ -246,10 +247,7 @@ impl RelationKernel {
             changes: Arc::from([]),
             bloom: crate::commit_bloom::CommitBloom::new(),
         };
-        let mut commits = Vec::with_capacity(current.commits.len() + 1);
-        commits.extend(current.commits.iter().cloned());
-        commits.push(commit.clone());
-        next.commits = commits.into();
+        next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
 
         self.persist_commit(&commit)?;
@@ -290,10 +288,7 @@ impl RelationKernel {
             changes: Arc::from([]),
             bloom: crate::commit_bloom::CommitBloom::new(),
         };
-        let mut commits = Vec::with_capacity(current.commits.len() + 1);
-        commits.extend(current.commits.iter().cloned());
-        commits.push(commit.clone());
-        next.commits = commits.into();
+        next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
 
         self.persist_commit(&commit)?;
@@ -326,10 +321,7 @@ impl RelationKernel {
             changes: Arc::from([]),
             bloom: crate::commit_bloom::CommitBloom::new(),
         };
-        let mut commits = Vec::with_capacity(current.commits.len() + 1);
-        commits.extend(current.commits.iter().cloned());
-        commits.push(commit.clone());
-        next.commits = commits.into();
+        next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
 
         self.persist_commit(&commit)?;

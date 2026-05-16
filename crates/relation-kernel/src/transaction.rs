@@ -416,10 +416,7 @@ impl<'a> Transaction<'a> {
             changes: changes.into(),
             bloom,
         };
-        let mut commits = Vec::with_capacity(current.commits.len() + 1);
-        commits.extend(current.commits.iter().cloned());
-        commits.push(commit.clone());
-        next.commits = commits.into();
+        next.commits = current.commits.append(commit.clone());
         Ok((Arc::new(next), commit))
     }
 

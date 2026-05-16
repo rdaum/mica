@@ -19,6 +19,7 @@ use mica_var::{OrderedKeySink, Value};
 use rart::{OverflowKey, OverflowKeyBuilder, VersionedAdaptiveRadixTree, VisitControl};
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::Arc;
 
 pub(crate) type RadixTupleKey = OverflowKey<64, 16>;
 
@@ -47,7 +48,7 @@ impl OrderedKeySink for RadixTupleKeyBuilder {
 #[derive(Clone, Debug)]
 pub(crate) struct RelationState {
     metadata: RelationMetadata,
-    pub(crate) tuples: BTreeSet<Tuple>,
+    pub(crate) tuples: Arc<BTreeSet<Tuple>>,
     indexes: Vec<TupleIndex>,
 }
 
@@ -62,7 +63,7 @@ impl RelationState {
             .collect();
         Ok(Self {
             metadata,
-            tuples: BTreeSet::new(),
+            tuples: Arc::new(BTreeSet::new()),
             indexes,
         })
     }
@@ -158,7 +159,7 @@ impl RelationState {
     }
 
     pub(crate) fn insert(&mut self, tuple: Tuple) {
-        if self.tuples.insert(tuple.clone()) {
+        if Arc::make_mut(&mut self.tuples).insert(tuple.clone()) {
             for index in &mut self.indexes {
                 index.insert(tuple.clone());
             }
@@ -166,7 +167,7 @@ impl RelationState {
     }
 
     pub(crate) fn remove(&mut self, tuple: &Tuple) {
-        if self.tuples.remove(tuple) {
+        if Arc::make_mut(&mut self.tuples).remove(tuple) {
             for index in &mut self.indexes {
                 index.remove(tuple);
             }
@@ -183,10 +184,18 @@ impl RelationState {
         positions: &[u16],
         key: &TupleKey,
     ) -> Option<Tuple> {
-        self.tuples
-            .iter()
-            .find(|tuple| tuple.project(positions) == *key)
-            .cloned()
+        let mut bindings = vec![None; self.metadata.arity() as usize];
+        for (position, value) in positions.iter().zip(&key.0) {
+            bindings[*position as usize] = Some(value.clone());
+        }
+
+        let mut found = None;
+        self.visit(&bindings, &mut |tuple| {
+            found = Some(tuple.clone());
+            Ok(ScanControl::Stop)
+        })
+        .ok()?;
+        found
     }
 
     fn best_index(&self, bindings: &[Option<Value>]) -> Option<(&TupleIndex, usize)> {
