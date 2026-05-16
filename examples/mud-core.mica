@@ -105,6 +105,7 @@ assert CanInvoke(#alice, :trim)
 assert CanInvoke(#alice, :split)
 assert CanInvoke(#alice, :string_chars)
 assert CanInvoke(#alice, :string_from_chars)
+assert CanInvoke(#alice, :string_concat)
 
 assert CanEffect(#alice)
 
@@ -230,25 +231,7 @@ end
 
 verb say(actor @ #player, message)
   let room = one LocatedIn(actor, ?room)
-  let line = []
-
-  for ch in string_chars(one Name(actor, ?name))
-    line = [@line, ch]
-  end
-
-  for ch in string_chars(" says, \"")
-    line = [@line, ch]
-  end
-
-  for ch in string_chars(message)
-    line = [@line, ch]
-  end
-
-  for ch in string_chars("\"")
-    line = [@line, ch]
-  end
-
-  let text = string_from_chars(line)
+  let text = string_concat(one Name(actor, ?name), " says, \"", message, "\"")
 
   for found in PresentActor(room, ?listener)
     emit(found[:listener], text)

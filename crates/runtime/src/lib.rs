@@ -90,6 +90,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "string_chars",
     "string_slice",
     "string_from_chars",
+    "string_concat",
     "lower",
 ];
 
@@ -1968,6 +1969,7 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("string_chars", string_chars_builtin)
         .with_builtin("string_slice", string_slice_builtin)
         .with_builtin("string_from_chars", string_from_chars_builtin)
+        .with_builtin("string_concat", string_concat_builtin)
         .with_builtin("lower", lower_builtin)
 }
 
@@ -2061,6 +2063,22 @@ fn string_from_chars_builtin(
     }
     let chars = builtin_char_list_arg("string_from_chars", args, 0)?;
     Ok(Value::string(chars.into_iter().collect::<String>()))
+}
+
+fn string_concat_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    let mut out = String::new();
+    for (index, value) in args.iter().enumerate() {
+        let Some(()) = value.with_str(|value| out.push_str(value)) else {
+            return Err(invalid_builtin_call(
+                "string_concat",
+                format!("argument {} is not a string", index + 1),
+            ));
+        };
+    }
+    Ok(Value::string(out))
 }
 
 fn lower_builtin(
@@ -3115,10 +3133,10 @@ fn require_relation_write(
     }
 }
 
-fn invalid_builtin_call(name: &str, message: &str) -> RuntimeError {
+fn invalid_builtin_call(name: &str, message: impl Into<String>) -> RuntimeError {
     RuntimeError::InvalidBuiltinCall {
         name: Symbol::intern(name),
-        message: message.to_owned(),
+        message: message.into(),
     }
 }
 
@@ -3397,6 +3415,13 @@ mod tests {
                 .unwrap()
                 .outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("hé")
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return string_concat(\"ab\", \"cd\", \"é\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("abcdé")
         ));
         assert!(matches!(
             runner.run_source("return lower(\"North\")").unwrap().outcome,

@@ -6,6 +6,7 @@
 //   string_chars(text)
 //   string_slice(text, start, end)
 //   string_from_chars(chars)
+//   string_concat(parts...)
 //   lower(text)
 //
 // The higher-level operations below are ordinary Mica verbs. Calls such as
