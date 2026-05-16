@@ -315,6 +315,29 @@ impl<R: RelationRead> RelationRead for DerivedReader<'_, R> {
         }
         Ok(rows.into_iter().collect())
     }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        let base_estimate = match self.base.estimate_relation_scan(relation, bindings) {
+            Ok(estimate) => estimate,
+            Err(KernelError::UnknownRelation(unknown)) if unknown == relation => Some(0),
+            Err(error) => return Err(error),
+        };
+        let derived_estimate = self
+            .derived
+            .get(&relation)
+            .map(|tuples| {
+                tuples
+                    .iter()
+                    .filter(|tuple| tuple.matches_bindings(bindings))
+                    .count()
+            })
+            .unwrap_or(0);
+        Ok(base_estimate.map(|estimate| estimate + derived_estimate))
+    }
 }
 
 fn evaluate_rules_once(
@@ -334,7 +357,10 @@ fn evaluate_rules_once(
 
 fn evaluate_body(reader: &impl RelationRead, body: &[Atom]) -> Result<Vec<Binding>, RuleEvalError> {
     let mut bindings = vec![Binding::new()];
-    for atom in body {
+    let mut remaining = body.iter().collect::<Vec<_>>();
+    while !remaining.is_empty() {
+        let next = select_next_atom(reader, &bindings, &remaining)?;
+        let atom = remaining.remove(next);
         bindings = if atom.negated {
             apply_negated_atom(reader, atom, bindings)?
         } else {
@@ -342,6 +368,78 @@ fn evaluate_body(reader: &impl RelationRead, body: &[Atom]) -> Result<Vec<Bindin
         };
     }
     Ok(bindings)
+}
+
+fn select_next_atom(
+    reader: &impl RelationRead,
+    bindings: &[Binding],
+    atoms: &[&Atom],
+) -> Result<usize, RuleEvalError> {
+    let mut best = None;
+    for (index, atom) in atoms.iter().enumerate() {
+        if atom.negated
+            && !bindings
+                .iter()
+                .all(|binding| negated_atom_is_safe(atom, binding))
+        {
+            continue;
+        }
+        let estimate = atom_estimate(reader, atom, bindings)?;
+        let bound_terms = bindings
+            .iter()
+            .map(|binding| bound_term_count(atom, binding))
+            .max()
+            .unwrap_or(0);
+        let rank = (
+            estimate,
+            usize::from(atom.negated),
+            usize::MAX - bound_terms,
+            index,
+        );
+        if best.is_none_or(|(_, best_rank)| rank < best_rank) {
+            best = Some((index, rank));
+        }
+    }
+    best.map(|(index, _)| index).ok_or_else(|| {
+        RuleError::UnsafeNegation {
+            relation: atoms[0].relation,
+        }
+        .into()
+    })
+}
+
+fn atom_estimate(
+    reader: &impl RelationRead,
+    atom: &Atom,
+    bindings: &[Binding],
+) -> Result<usize, RuleEvalError> {
+    let mut total = 0usize;
+    for binding in bindings {
+        let scan_bindings = scan_bindings(atom, binding)?;
+        total = total.saturating_add(
+            reader
+                .estimate_relation_scan(atom.relation, &scan_bindings)?
+                .unwrap_or(usize::MAX / 4),
+        );
+    }
+    Ok(total)
+}
+
+fn bound_term_count(atom: &Atom, binding: &Binding) -> usize {
+    atom.terms
+        .iter()
+        .filter(|term| match term {
+            Term::Value(_) => true,
+            Term::Var(variable) => binding.contains_key(variable),
+        })
+        .count()
+}
+
+fn negated_atom_is_safe(atom: &Atom, binding: &Binding) -> bool {
+    atom.terms.iter().all(|term| match term {
+        Term::Value(_) => true,
+        Term::Var(variable) => binding.contains_key(variable),
+    })
 }
 
 fn apply_positive_atom(
@@ -412,10 +510,7 @@ fn unify_tuple(atom: &Atom, binding: &Binding, tuple: &Tuple) -> Option<Binding>
 }
 
 fn ensure_negation_safe(atom: &Atom, binding: &Binding) -> Result<(), RuleEvalError> {
-    if atom.terms.iter().all(|term| match term {
-        Term::Value(_) => true,
-        Term::Var(variable) => binding.contains_key(variable),
-    }) {
+    if negated_atom_is_safe(atom, binding) {
         return Ok(());
     }
 
@@ -448,6 +543,7 @@ mod tests {
     use super::*;
     use crate::{RelationKernel, RelationMetadata};
     use mica_var::Identity;
+    use std::cell::RefCell;
 
     fn rel(id: u64) -> RelationId {
         Identity::new(id).unwrap()
@@ -575,6 +671,63 @@ mod tests {
                 relation: rel(52)
             }))
         );
+    }
+
+    struct PlanningReader {
+        scanned: RefCell<Vec<RelationId>>,
+    }
+
+    impl RelationRead for PlanningReader {
+        fn scan_relation(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+        ) -> Result<Vec<Tuple>, KernelError> {
+            self.scanned.borrow_mut().push(relation);
+            match relation {
+                relation if relation == rel(80) => {
+                    assert_eq!(bindings, &[None]);
+                    Ok(vec![Tuple::from([int(1)])])
+                }
+                relation if relation == rel(81) => {
+                    assert_eq!(bindings, &[Some(int(1)), None]);
+                    Ok(vec![Tuple::from([int(1), int(2)])])
+                }
+                _ => panic!("unexpected relation scan: {relation:?}"),
+            }
+        }
+
+        fn estimate_relation_scan(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+        ) -> Result<Option<usize>, KernelError> {
+            let estimate = match relation {
+                relation if relation == rel(80) => 1,
+                relation if relation == rel(81) && bindings == [None, None] => 1_000,
+                relation if relation == rel(81) => 1,
+                _ => 1_000,
+            };
+            Ok(Some(estimate))
+        }
+    }
+
+    #[test]
+    fn rule_body_planner_starts_with_selective_atom_not_source_order() {
+        let reader = PlanningReader {
+            scanned: RefCell::new(Vec::new()),
+        };
+        let bindings = evaluate_body(
+            &reader,
+            &[
+                Atom::positive(rel(81), [var("x"), var("y")]),
+                Atom::positive(rel(80), [var("x")]),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(reader.scanned.borrow().as_slice(), &[rel(80), rel(81)]);
+        assert_eq!(bindings[0][&Symbol::intern("y")], int(2));
     }
 
     #[test]

@@ -20,16 +20,16 @@ use rart::{OverflowKey, OverflowKeyBuilder, VersionedAdaptiveRadixTree, VisitCon
 use std::collections::BTreeSet;
 use std::fmt;
 
-type RadixTupleKey = OverflowKey<64, 16>;
+pub(crate) type RadixTupleKey = OverflowKey<64, 16>;
 
-struct RadixTupleKeyBuilder(OverflowKeyBuilder<64, 16>);
+pub(crate) struct RadixTupleKeyBuilder(OverflowKeyBuilder<64, 16>);
 
 impl RadixTupleKeyBuilder {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(RadixTupleKey::builder())
     }
 
-    fn finish(self) -> RadixTupleKey {
+    pub(crate) fn finish(self) -> RadixTupleKey {
         self.0.finish()
     }
 }
@@ -69,6 +69,36 @@ impl RelationState {
 
     pub(crate) fn metadata(&self) -> &RelationMetadata {
         &self.metadata
+    }
+
+    pub(crate) fn cardinality(&self) -> usize {
+        self.tuples.len()
+    }
+
+    pub(crate) fn estimate_scan_count(
+        &self,
+        bindings: &[Option<Value>],
+    ) -> Result<usize, KernelError> {
+        if bindings.len() != self.metadata.arity() as usize {
+            return Err(KernelError::ArityMismatch {
+                relation: self.metadata.id(),
+                expected: self.metadata.arity(),
+                actual: bindings.len(),
+            });
+        }
+
+        let Some((index, bound_count)) = self.best_index(bindings) else {
+            if bindings.iter().any(Option::is_some) {
+                return Ok(self
+                    .tuples
+                    .iter()
+                    .filter(|tuple| tuple.matches_bindings(bindings))
+                    .count());
+            }
+            return Ok(self.cardinality());
+        };
+
+        index.estimate_prefix_count(bindings, bound_count)
     }
 
     pub(crate) fn scan(&self, bindings: &[Option<Value>]) -> Result<Vec<Tuple>, KernelError> {
@@ -235,6 +265,21 @@ impl TupleIndex {
         Ok(out)
     }
 
+    fn estimate_prefix_count(
+        &self,
+        bindings: &[Option<Value>],
+        bound_count: usize,
+    ) -> Result<usize, KernelError> {
+        let mut count = 0usize;
+        self.visit_prefix(bindings, bound_count, &mut |tuple| {
+            if tuple.matches_bindings(bindings) {
+                count += 1;
+            }
+            Ok(ScanControl::Continue)
+        })?;
+        Ok(count)
+    }
+
     fn visit_prefix(
         &self,
         bindings: &[Option<Value>],
@@ -278,12 +323,64 @@ impl TupleIndex {
     }
 
     fn key_from_values<'a>(&self, values: impl IntoIterator<Item = &'a Value>) -> RadixTupleKey {
-        let mut key = RadixTupleKeyBuilder::new();
-        for value in values {
-            value.encode_ordered_into(&mut key);
-        }
-        key.finish()
+        key_from_values(values)
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct ProjectedTupleIndex {
+    entries: VersionedAdaptiveRadixTree<RadixTupleKey, BTreeSet<Tuple>>,
+}
+
+impl ProjectedTupleIndex {
+    pub(crate) fn from_rows(rows: impl IntoIterator<Item = Tuple>, positions: &[u16]) -> Self {
+        let mut index = Self {
+            entries: VersionedAdaptiveRadixTree::new(),
+        };
+        for row in rows {
+            index.insert(row, positions);
+        }
+        index
+    }
+
+    pub(crate) fn intersect_values_with(
+        &self,
+        other: &Self,
+        visit: impl FnMut(&BTreeSet<Tuple>, &BTreeSet<Tuple>),
+    ) {
+        self.entries.intersect_values_with(&other.entries, visit);
+    }
+
+    pub(crate) fn matching_left_rows(&self, other: &Self, mut visit: impl FnMut(&Tuple)) {
+        self.intersect_values_with(other, |left, _right| {
+            for tuple in left {
+                visit(tuple);
+            }
+        });
+    }
+
+    fn insert(&mut self, tuple: Tuple, positions: &[u16]) {
+        let key = key_from_values(
+            positions
+                .iter()
+                .map(|position| &tuple.values()[*position as usize]),
+        );
+        if let Some(bucket) = self.entries.get_mut_k(&key) {
+            bucket.insert(tuple);
+            return;
+        }
+        let mut bucket = BTreeSet::new();
+        bucket.insert(tuple);
+        self.entries.insert_k(&key, bucket);
+    }
+}
+
+pub(crate) fn key_from_values<'a>(values: impl IntoIterator<Item = &'a Value>) -> RadixTupleKey {
+    let mut key = RadixTupleKeyBuilder::new();
+    for value in values {
+        value.encode_ordered_into(&mut key);
+    }
+    key.finish()
 }
 
 fn validate_metadata(metadata: &RelationMetadata) -> Result<(), KernelError> {

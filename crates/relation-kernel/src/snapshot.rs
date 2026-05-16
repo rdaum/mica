@@ -185,6 +185,31 @@ impl Snapshot {
         self.relation(relation)?.scan(bindings)
     }
 
+    pub(crate) fn estimate_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<usize, KernelError> {
+        let mut estimate = self.relation(relation)?.estimate_scan_count(bindings)?;
+        if !self.rules.is_empty()
+            && let Some(rows) = self.derived_tuples()?.get(&relation)
+        {
+            estimate += rows
+                .iter()
+                .filter(|tuple| tuple.matches_bindings(bindings))
+                .count();
+        }
+        Ok(estimate)
+    }
+
+    pub(crate) fn estimate_extensional_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<usize, KernelError> {
+        self.relation(relation)?.estimate_scan_count(bindings)
+    }
+
     pub(crate) fn visit_extensional(
         &self,
         relation: RelationId,
@@ -244,5 +269,15 @@ impl crate::RelationRead for ExtensionalSnapshotReader<'_> {
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
         self.snapshot.scan_extensional(relation, bindings)
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.snapshot
+            .estimate_extensional_scan(relation, bindings)
+            .map(Some)
     }
 }

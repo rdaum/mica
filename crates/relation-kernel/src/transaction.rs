@@ -114,6 +114,28 @@ impl<'a> Transaction<'a> {
         Ok(visible.into_iter().collect())
     }
 
+    pub(crate) fn estimate_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<usize, KernelError> {
+        if self.base.rules().is_empty() && !self.writes.contains_key(&relation) {
+            return self.base.estimate_extensional_scan(relation, bindings);
+        }
+        Ok(self.scan(relation, bindings)?.len())
+    }
+
+    pub(crate) fn estimate_extensional_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<usize, KernelError> {
+        if !self.writes.contains_key(&relation) {
+            return self.base.estimate_extensional_scan(relation, bindings);
+        }
+        Ok(self.scan_extensional(relation, bindings)?.len())
+    }
+
     pub fn visit(
         &self,
         relation: RelationId,
@@ -411,6 +433,16 @@ impl crate::RelationRead for ExtensionalTransactionReader<'_, '_> {
             .scan_extensional(relation, bindings)?
             .into_iter()
             .collect())
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.tx
+            .estimate_extensional_scan(relation, bindings)
+            .map(Some)
     }
 }
 

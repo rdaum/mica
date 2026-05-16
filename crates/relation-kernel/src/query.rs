@@ -11,10 +11,12 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::tuple::TupleKey;
+use crate::index::ProjectedTupleIndex;
 use crate::{KernelError, RelationId, Transaction, Tuple};
 use mica_var::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+
+const PROBE_JOIN_LEFT_ROW_LIMIT: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScanControl {
@@ -42,6 +44,26 @@ pub trait RelationRead {
         }
         Ok(())
     }
+
+    fn estimate_relation_scan(
+        &self,
+        _relation: RelationId,
+        _bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        Ok(None)
+    }
+
+    fn join_relation_scans(
+        &self,
+        _left_relation: RelationId,
+        _left_bindings: &[Option<Value>],
+        _left_positions: &[u16],
+        _right_relation: RelationId,
+        _right_bindings: &[Option<Value>],
+        _right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        Ok(None)
+    }
 }
 
 impl RelationRead for crate::Snapshot {
@@ -61,6 +83,33 @@ impl RelationRead for crate::Snapshot {
     ) -> Result<(), KernelError> {
         self.visit(relation, bindings, visitor)
     }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.estimate_scan(relation, bindings).map(Some)
+    }
+
+    fn join_relation_scans(
+        &self,
+        left_relation: RelationId,
+        left_bindings: &[Option<Value>],
+        left_positions: &[u16],
+        right_relation: RelationId,
+        right_bindings: &[Option<Value>],
+        right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        let left_rows = self.scan(left_relation, left_bindings)?;
+        let right_rows = self.scan(right_relation, right_bindings)?;
+        Ok(Some(join_eq(
+            left_rows,
+            right_rows,
+            left_positions,
+            right_positions,
+        )))
+    }
 }
 
 impl RelationRead for Transaction<'_> {
@@ -79,6 +128,33 @@ impl RelationRead for Transaction<'_> {
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
         self.visit(relation, bindings, visitor)
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.estimate_scan(relation, bindings).map(Some)
+    }
+
+    fn join_relation_scans(
+        &self,
+        left_relation: RelationId,
+        left_bindings: &[Option<Value>],
+        left_positions: &[u16],
+        right_relation: RelationId,
+        right_bindings: &[Option<Value>],
+        right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        let left_rows = self.scan(left_relation, left_bindings)?;
+        let right_rows = self.scan(right_relation, right_bindings)?;
+        Ok(Some(join_eq(
+            left_rows,
+            right_rows,
+            left_positions,
+            right_positions,
+        )))
     }
 }
 
@@ -210,12 +286,40 @@ impl QueryPlan {
                 right_positions,
             } => {
                 validate_join_positions(left_positions, right_positions);
-                if let Some(rows) =
-                    indexed_nested_loop_join(left, right, left_positions, right_positions, reader)?
+                if let (
+                    QueryPlan::Scan {
+                        relation: left_relation,
+                        bindings: left_bindings,
+                    },
+                    QueryPlan::Scan {
+                        relation: right_relation,
+                        bindings: right_bindings,
+                    },
+                ) = (left.as_ref(), right.as_ref())
+                    && let Some(rows) = reader.join_relation_scans(
+                        *left_relation,
+                        left_bindings,
+                        left_positions,
+                        *right_relation,
+                        right_bindings,
+                        right_positions,
+                    )?
                 {
                     return Ok(rows);
                 }
                 let left_rows = left.execute(reader)?;
+                if let Some((relation, bindings)) = scan_parts(right)
+                    && should_probe_join(left_rows.len(), reader, relation, bindings)?
+                {
+                    return indexed_nested_loop_join_rows(
+                        left_rows,
+                        relation,
+                        bindings,
+                        left_positions,
+                        right_positions,
+                        reader,
+                    );
+                }
                 let right_rows = right.execute(reader)?;
                 Ok(join_eq(
                     left_rows,
@@ -231,17 +335,20 @@ impl QueryPlan {
                 right_positions,
             } => {
                 validate_join_positions(left_positions, right_positions);
-                if let Some(rows) = indexed_nested_loop_semi_join(
-                    left,
-                    right,
-                    left_positions,
-                    right_positions,
-                    reader,
-                    true,
-                )? {
-                    return Ok(rows);
-                }
                 let left_rows = left.execute(reader)?;
+                if let Some((relation, bindings)) = scan_parts(right)
+                    && should_probe_join(left_rows.len(), reader, relation, bindings)?
+                {
+                    return indexed_nested_loop_semi_join_rows(
+                        left_rows,
+                        relation,
+                        bindings,
+                        left_positions,
+                        right_positions,
+                        reader,
+                        true,
+                    );
+                }
                 let right_rows = right.execute(reader)?;
                 Ok(semi_join(
                     left_rows,
@@ -258,17 +365,20 @@ impl QueryPlan {
                 right_positions,
             } => {
                 validate_join_positions(left_positions, right_positions);
-                if let Some(rows) = indexed_nested_loop_semi_join(
-                    left,
-                    right,
-                    left_positions,
-                    right_positions,
-                    reader,
-                    false,
-                )? {
-                    return Ok(rows);
-                }
                 let left_rows = left.execute(reader)?;
+                if let Some((relation, bindings)) = scan_parts(right)
+                    && should_probe_join(left_rows.len(), reader, relation, bindings)?
+                {
+                    return indexed_nested_loop_semi_join_rows(
+                        left_rows,
+                        relation,
+                        bindings,
+                        left_positions,
+                        right_positions,
+                        reader,
+                        false,
+                    );
+                }
                 let right_rows = right.execute(reader)?;
                 Ok(semi_join(
                     left_rows,
@@ -294,49 +404,68 @@ impl QueryPlan {
     }
 }
 
-fn indexed_nested_loop_join(
-    left: &QueryPlan,
-    right: &QueryPlan,
+fn scan_parts(plan: &QueryPlan) -> Option<(RelationId, &[Option<Value>])> {
+    let QueryPlan::Scan { relation, bindings } = plan else {
+        return None;
+    };
+    Some((*relation, bindings))
+}
+
+fn should_probe_join(
+    left_len: usize,
+    reader: &impl RelationRead,
+    right_relation: RelationId,
+    right_bindings: &[Option<Value>],
+) -> Result<bool, KernelError> {
+    if left_len <= PROBE_JOIN_LEFT_ROW_LIMIT {
+        return Ok(true);
+    }
+    let Some(right_estimate) = reader.estimate_relation_scan(right_relation, right_bindings)?
+    else {
+        return Ok(false);
+    };
+    Ok(left_len.saturating_mul(4) < right_estimate)
+}
+
+fn indexed_nested_loop_join_rows(
+    left_rows: Vec<Tuple>,
+    right_relation: RelationId,
+    right_bindings: &[Option<Value>],
     left_positions: &[u16],
     right_positions: &[u16],
     reader: &impl RelationRead,
-) -> Result<Option<Vec<Tuple>>, KernelError> {
-    let QueryPlan::Scan { relation, bindings } = right else {
-        return Ok(None);
-    };
-
+) -> Result<Vec<Tuple>, KernelError> {
     let mut out = BTreeSet::new();
-    for left_row in left.execute(reader)? {
+    for left_row in left_rows {
         let Some(probe_bindings) =
-            probe_bindings(bindings, &left_row, left_positions, right_positions)
+            probe_bindings(right_bindings, &left_row, left_positions, right_positions)
         else {
             continue;
         };
-        for right_row in reader.scan_relation(*relation, &probe_bindings)? {
+        for right_row in reader.scan_relation(right_relation, &probe_bindings)? {
             out.insert(left_row.concat(&right_row));
         }
     }
-    Ok(Some(out.into_iter().collect()))
+    Ok(out.into_iter().collect())
 }
 
-fn indexed_nested_loop_semi_join(
-    left: &QueryPlan,
-    right: &QueryPlan,
+fn indexed_nested_loop_semi_join_rows(
+    left_rows: Vec<Tuple>,
+    right_relation: RelationId,
+    right_bindings: &[Option<Value>],
     left_positions: &[u16],
     right_positions: &[u16],
     reader: &impl RelationRead,
     keep_matches: bool,
-) -> Result<Option<Vec<Tuple>>, KernelError> {
-    let QueryPlan::Scan { relation, bindings } = right else {
-        return Ok(None);
-    };
-
+) -> Result<Vec<Tuple>, KernelError> {
     let mut out = Vec::new();
-    for left_row in left.execute(reader)? {
+    for left_row in left_rows {
         let matched = if let Some(probe_bindings) =
-            probe_bindings(bindings, &left_row, left_positions, right_positions)
+            probe_bindings(right_bindings, &left_row, left_positions, right_positions)
         {
-            !reader.scan_relation(*relation, &probe_bindings)?.is_empty()
+            !reader
+                .scan_relation(right_relation, &probe_bindings)?
+                .is_empty()
         } else {
             false
         };
@@ -345,7 +474,7 @@ fn indexed_nested_loop_semi_join(
             out.push(left_row);
         }
     }
-    Ok(Some(out))
+    Ok(out)
 }
 
 fn probe_bindings(
@@ -372,22 +501,16 @@ fn join_eq(
     left_positions: &[u16],
     right_positions: &[u16],
 ) -> Vec<Tuple> {
-    let mut right_index: BTreeMap<TupleKey, Vec<Tuple>> = BTreeMap::new();
-    for row in right_rows {
-        right_index
-            .entry(row.project(right_positions))
-            .or_default()
-            .push(row);
-    }
-
+    let left_index = ProjectedTupleIndex::from_rows(left_rows, left_positions);
+    let right_index = ProjectedTupleIndex::from_rows(right_rows, right_positions);
     let mut out = BTreeSet::new();
-    for left in left_rows {
-        if let Some(matches) = right_index.get(&left.project(left_positions)) {
-            for right in matches {
+    left_index.intersect_values_with(&right_index, |left_bucket, right_bucket| {
+        for left in left_bucket {
+            for right in right_bucket {
                 out.insert(left.concat(right));
             }
         }
-    }
+    });
     out.into_iter().collect()
 }
 
@@ -398,13 +521,15 @@ fn semi_join(
     right_positions: &[u16],
     keep_matches: bool,
 ) -> Vec<Tuple> {
-    let right_keys = right_rows
-        .iter()
-        .map(|row| row.project(right_positions))
-        .collect::<BTreeSet<_>>();
+    let left_index = ProjectedTupleIndex::from_rows(left_rows.iter().cloned(), left_positions);
+    let right_index = ProjectedTupleIndex::from_rows(right_rows, right_positions);
+    let mut matches = BTreeSet::new();
+    left_index.matching_left_rows(&right_index, |tuple| {
+        matches.insert(tuple.clone());
+    });
     left_rows
         .into_iter()
-        .filter(|row| right_keys.contains(&row.project(left_positions)) == keep_matches)
+        .filter(|row| matches.contains(row) == keep_matches)
         .collect()
 }
 
@@ -421,6 +546,7 @@ mod tests {
     use super::*;
     use crate::{RelationKernel, RelationMetadata};
     use mica_var::{Identity, Symbol, Value};
+    use std::cell::Cell;
 
     fn rel(id: u64) -> RelationId {
         Identity::new(id).unwrap()
@@ -471,6 +597,39 @@ mod tests {
         }
     }
 
+    struct DirectJoinReader {
+        called: Cell<bool>,
+    }
+
+    impl RelationRead for DirectJoinReader {
+        fn scan_relation(
+            &self,
+            _relation: RelationId,
+            _bindings: &[Option<Value>],
+        ) -> Result<Vec<Tuple>, KernelError> {
+            panic!("direct relation join should avoid ordinary scans")
+        }
+
+        fn join_relation_scans(
+            &self,
+            left_relation: RelationId,
+            left_bindings: &[Option<Value>],
+            left_positions: &[u16],
+            right_relation: RelationId,
+            right_bindings: &[Option<Value>],
+            right_positions: &[u16],
+        ) -> Result<Option<Vec<Tuple>>, KernelError> {
+            assert_eq!(left_relation, rel(30));
+            assert_eq!(left_bindings, &[None]);
+            assert_eq!(left_positions, &[0]);
+            assert_eq!(right_relation, rel(31));
+            assert_eq!(right_bindings, &[None]);
+            assert_eq!(right_positions, &[0]);
+            self.called.set(true);
+            Ok(Some(vec![Tuple::from([int(1), int(1)])]))
+        }
+    }
+
     #[test]
     fn query_plan_executes_projected_join_against_transaction_overlay() {
         let kernel = kernel_with_edges();
@@ -509,6 +668,25 @@ mod tests {
                 Tuple::from([int(2), int(200)])
             ]
         );
+    }
+
+    #[test]
+    fn query_plan_uses_relation_join_hook_for_scan_equality_join() {
+        let reader = DirectJoinReader {
+            called: Cell::new(false),
+        };
+        let path = QueryPlan::join_eq(
+            QueryPlan::scan(rel(30), [None]),
+            QueryPlan::scan(rel(31), [None]),
+            [0],
+            [0],
+        );
+
+        assert_eq!(
+            path.execute(&reader).unwrap(),
+            vec![Tuple::from([int(1), int(1)])]
+        );
+        assert!(reader.called.get());
     }
 
     #[test]
