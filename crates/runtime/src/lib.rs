@@ -69,6 +69,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "commit",
     "suspend",
     "read",
+    "invoke",
     "make_relation",
     "make_functional_relation",
     "make_identity",
@@ -91,6 +92,13 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "string_slice",
     "string_from_chars",
     "string_concat",
+    "string_join",
+    "words",
+    "string_starts_with",
+    "string_contains",
+    "string_equal_fold",
+    "edit_distance",
+    "parse_ordinal",
     "lower",
 ];
 
@@ -1970,6 +1978,13 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("string_slice", string_slice_builtin)
         .with_builtin("string_from_chars", string_from_chars_builtin)
         .with_builtin("string_concat", string_concat_builtin)
+        .with_builtin("string_join", string_join_builtin)
+        .with_builtin("words", words_builtin)
+        .with_builtin("string_starts_with", string_starts_with_builtin)
+        .with_builtin("string_contains", string_contains_builtin)
+        .with_builtin("string_equal_fold", string_equal_fold_builtin)
+        .with_builtin("edit_distance", edit_distance_builtin)
+        .with_builtin("parse_ordinal", parse_ordinal_builtin)
         .with_builtin("lower", lower_builtin)
 }
 
@@ -2081,6 +2096,132 @@ fn string_concat_builtin(
     Ok(Value::string(out))
 }
 
+fn string_join_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "string_join",
+            "expected string_join(parts, separator)",
+        ));
+    }
+    let Some(parts) = args[0].with_list(|values| {
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                value.with_str(str::to_owned).ok_or_else(|| {
+                    invalid_builtin_call(
+                        "string_join",
+                        format!("part {} is not a string", index + 1),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }) else {
+        return Err(invalid_builtin_call(
+            "string_join",
+            "expected string list as first argument",
+        ));
+    };
+    let separator = builtin_string_arg("string_join", args, 1)?;
+    Ok(Value::string(parts?.join(&separator)))
+}
+
+fn words_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("words", "expected words(text)"));
+    }
+    Ok(Value::list(
+        parse_words(&builtin_string_arg("words", args, 0)?)
+            .into_iter()
+            .map(Value::string),
+    ))
+}
+
+fn string_starts_with_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "string_starts_with",
+            "expected string_starts_with(text, prefix)",
+        ));
+    }
+    let text = builtin_string_arg("string_starts_with", args, 0)?;
+    let prefix = builtin_string_arg("string_starts_with", args, 1)?;
+    Ok(Value::bool(text.starts_with(&prefix)))
+}
+
+fn string_contains_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "string_contains",
+            "expected string_contains(text, subject)",
+        ));
+    }
+    let text = builtin_string_arg("string_contains", args, 0)?;
+    let subject = builtin_string_arg("string_contains", args, 1)?;
+    Ok(Value::bool(text.contains(&subject)))
+}
+
+fn string_equal_fold_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "string_equal_fold",
+            "expected string_equal_fold(left, right)",
+        ));
+    }
+    let left = builtin_string_arg("string_equal_fold", args, 0)?;
+    let right = builtin_string_arg("string_equal_fold", args, 1)?;
+    Ok(Value::bool(left.to_lowercase() == right.to_lowercase()))
+}
+
+fn edit_distance_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "edit_distance",
+            "expected edit_distance(left, right)",
+        ));
+    }
+    let left = builtin_string_arg("edit_distance", args, 0)?;
+    let right = builtin_string_arg("edit_distance", args, 1)?;
+    Value::int(levenshtein_chars(&left, &right) as i64)
+        .map_err(|_| invalid_builtin_call("edit_distance", "distance is out of range"))
+}
+
+fn parse_ordinal_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "parse_ordinal",
+            "expected parse_ordinal(text)",
+        ));
+    }
+    let text = builtin_string_arg("parse_ordinal", args, 0)?;
+    match parse_ordinal_text(&text) {
+        Some(value) => Value::int(value)
+            .map_err(|_| invalid_builtin_call("parse_ordinal", "ordinal is out of range")),
+        None => Ok(Value::nothing()),
+    }
+}
+
 fn lower_builtin(
     _context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
@@ -2091,6 +2232,127 @@ fn lower_builtin(
     Ok(Value::string(
         builtin_string_arg("lower", args, 0)?.to_lowercase(),
     ))
+}
+
+fn parse_words(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut escaped = false;
+
+    for ch in value.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            in_quotes = !in_quotes;
+            continue;
+        }
+        if ch.is_whitespace() && !in_quotes {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(ch);
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn levenshtein_chars(left: &str, right: &str) -> usize {
+    let left = left.chars().collect::<Vec<_>>();
+    let right = right.chars().collect::<Vec<_>>();
+    if left.is_empty() {
+        return right.len();
+    }
+    if right.is_empty() {
+        return left.len();
+    }
+
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_ch) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_ch) in right.iter().enumerate() {
+            let substitution = usize::from(left_ch != right_ch);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + substitution);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
+fn parse_ordinal_text(value: &str) -> Option<i64> {
+    let value = value.trim().to_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(number) = parse_numeric_ordinal(&value) {
+        return Some(number);
+    }
+    let mut total = 0;
+    for part in value.split('-') {
+        total += simple_ordinal_value(part)?;
+    }
+    (total > 0).then_some(total)
+}
+
+fn parse_numeric_ordinal(value: &str) -> Option<i64> {
+    let trimmed = value
+        .strip_suffix("st")
+        .or_else(|| value.strip_suffix("nd"))
+        .or_else(|| value.strip_suffix("rd"))
+        .or_else(|| value.strip_suffix("th"))
+        .or_else(|| value.strip_suffix('.'))
+        .unwrap_or(value);
+    trimmed.parse::<i64>().ok().filter(|value| *value > 0)
+}
+
+fn simple_ordinal_value(value: &str) -> Option<i64> {
+    match value {
+        "first" => Some(1),
+        "second" => Some(2),
+        "third" => Some(3),
+        "fourth" => Some(4),
+        "fifth" => Some(5),
+        "sixth" => Some(6),
+        "seventh" => Some(7),
+        "eighth" => Some(8),
+        "ninth" => Some(9),
+        "tenth" => Some(10),
+        "eleventh" => Some(11),
+        "twelfth" => Some(12),
+        "thirteenth" => Some(13),
+        "fourteenth" => Some(14),
+        "fifteenth" => Some(15),
+        "sixteenth" => Some(16),
+        "seventeenth" => Some(17),
+        "eighteenth" => Some(18),
+        "nineteenth" => Some(19),
+        "twenty" | "twentieth" => Some(20),
+        "thirty" | "thirtieth" => Some(30),
+        "forty" | "fortieth" => Some(40),
+        "fifty" | "fiftieth" => Some(50),
+        "sixty" | "sixtieth" => Some(60),
+        "seventy" | "seventieth" => Some(70),
+        "eighty" | "eightieth" => Some(80),
+        "ninety" | "ninetieth" => Some(90),
+        _ => None,
+    }
 }
 
 fn string_slice_chars(value: &str, start: usize, end: usize) -> Option<&str> {
@@ -2356,7 +2618,7 @@ fn runtime_identity_builtin(
     identity: Option<Identity>,
 ) -> Result<Value, RuntimeError> {
     if !args.is_empty() {
-        return Err(invalid_builtin_call(name, &format!("expected {name}()")));
+        return Err(invalid_builtin_call(name, format!("expected {name}()")));
     }
     Ok(identity.map(Value::identity).unwrap_or_else(Value::nothing))
 }
@@ -3424,6 +3686,60 @@ mod tests {
             TaskOutcome::Complete { value, .. } if value == Value::string("abcdé")
         ));
         assert!(matches!(
+            runner
+                .run_source("return string_join([\"a\", \"b\", \"c\"], \"/\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("a/b/c")
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return words(\"say \\\"hello world\\\" north\\\\ east\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([
+                    Value::string("say"),
+                    Value::string("hello world"),
+                    Value::string("north east"),
+                ])
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return string_equal_fold(\"North\", \"north\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return string_starts_with(\"north\", \"nor\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return string_contains(\"brass coin\", \"coin\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return edit_distance(\"coin\", \"coiin\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return parse_ordinal(\"twenty-first\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::int(21).unwrap()
+        ));
+        assert!(matches!(
             runner.run_source("return lower(\"North\")").unwrap().outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("north")
         ));
@@ -3660,6 +3976,17 @@ mod tests {
         let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
         let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
         let endpoint = SYSTEM_ENDPOINT;
+
+        runner.run_source("make_identity(:polluted_coin)").unwrap();
+        runner
+            .run_source("assert Delegates(#polluted_coin, #thing, 0)")
+            .unwrap();
+        runner
+            .run_source("assert ParserNoun(#polluted_coin, \"coin\")")
+            .unwrap();
+        runner
+            .run_source("assert LocatedIn(#polluted_coin, #first_room)")
+            .unwrap();
 
         let report = runner
             .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"say hello\")")

@@ -954,14 +954,23 @@ mod tests {
         assert!(!handle_command(&host, endpoint, "alice", "look").unwrap());
 
         let line = output.try_recv().unwrap();
+        assert_eq!(line, "First Room. You are standing in a plain stone room.");
         assert_eq!(
-            line,
-            "First Room. A coin and a box are here. The only exit is north."
+            output.try_recv().unwrap(),
+            "A tarnished brass coin catches the light."
+        );
+        assert_eq!(
+            output.try_recv().unwrap(),
+            "A small wooden box rests here, open and empty."
+        );
+        assert_eq!(
+            output.try_recv().unwrap(),
+            "Bob is here, looking faintly puzzled."
         );
         assert!(!handle_command(&host, endpoint, "alice", "say hello").unwrap());
 
         let line = output.try_recv().unwrap();
-        assert_eq!(line, "hello");
+        assert_eq!(line, "Alice says, \"hello\"");
         assert!(!handle_command(&host, endpoint, "alice", "dance").unwrap());
 
         let line = output.try_recv().unwrap();

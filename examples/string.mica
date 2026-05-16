@@ -7,6 +7,13 @@
 //   string_slice(text, start, end)
 //   string_from_chars(chars)
 //   string_concat(parts...)
+//   string_join(parts, separator)
+//   words(text)
+//   string_equal_fold(left, right)
+//   string_starts_with(text, prefix)
+//   string_contains(text, subject)
+//   edit_distance(left, right)
+//   parse_ordinal(text)
 //   lower(text)
 //
 // The higher-level operations below are ordinary Mica verbs. Calls such as

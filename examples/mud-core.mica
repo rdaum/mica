@@ -37,6 +37,21 @@ make_relation(:Carrying, 2)
 make_relation(:CanSee, 2)
 make_relation(:PresentActor, 2)
 
+// Parser-facing state is separate from display state. A thing can be visible
+// without being allowed to pollute the command parser.
+make_relation(:CommandAlias, 2)
+make_relation(:CommandForm, 1)
+make_relation(:CommandRole, 3)
+make_relation(:ParserNoun, 2)
+make_relation(:ParserAlias, 2)
+make_relation(:ParserName, 2)
+make_relation(:VisibleTo, 2)
+make_relation(:TrustedForNameParsing, 2)
+make_relation(:NameMatchable, 2)
+make_relation(:TrustedForCommandGrammar, 2)
+make_relation(:CommandGrammarSource, 2)
+make_relation(:CommandHandlerScope, 2)
+
 make_relation(:CanRead, 2)
 make_relation(:CanWrite, 2)
 make_relation(:CanInvoke, 2)
@@ -76,6 +91,59 @@ assert LocatedIn(#box, #first_room)
 assert BidirectionalExit(#first_room, :north, :south, #north_room)
 assert BidirectionalExit(#north_room, :up, :down, #attic)
 
+assert CommandAlias("l", :look)
+assert CommandAlias("look", :look)
+assert CommandAlias("n", :north)
+assert CommandAlias("north", :north)
+assert CommandAlias("s", :south)
+assert CommandAlias("south", :south)
+assert CommandAlias("u", :up)
+assert CommandAlias("up", :up)
+assert CommandAlias("d", :down)
+assert CommandAlias("down", :down)
+assert CommandAlias("get", :get)
+assert CommandAlias("take", :get)
+assert CommandAlias("drop", :drop)
+assert CommandAlias("put", :put)
+assert CommandAlias("say", :say)
+
+assert CommandForm(:look)
+assert CommandForm(:north)
+assert CommandForm(:south)
+assert CommandForm(:up)
+assert CommandForm(:down)
+assert CommandForm(:get)
+assert CommandForm(:drop)
+assert CommandForm(:put)
+assert CommandForm(:say)
+
+assert CommandRole(:look, :actor, :identity)
+assert CommandRole(:north, :actor, :identity)
+assert CommandRole(:south, :actor, :identity)
+assert CommandRole(:up, :actor, :identity)
+assert CommandRole(:down, :actor, :identity)
+assert CommandRole(:get, :actor, :identity)
+assert CommandRole(:get, :item, :thing)
+assert CommandRole(:drop, :actor, :identity)
+assert CommandRole(:drop, :item, :thing)
+assert CommandRole(:put, :actor, :identity)
+assert CommandRole(:put, :item, :thing)
+assert CommandRole(:put, :container, :thing)
+assert CommandRole(:say, :actor, :identity)
+assert CommandRole(:say, :message, :string)
+
+assert ParserNoun(#coin, "coin")
+assert ParserAlias(#coin, "brass coin")
+assert ParserNoun(#box, "box")
+assert ParserAlias(#box, "wooden box")
+
+assert TrustedForNameParsing(#alice, #coin)
+assert TrustedForNameParsing(#alice, #box)
+assert TrustedForCommandGrammar(#alice, #alice)
+assert TrustedForCommandGrammar(#alice, #first_room)
+assert TrustedForCommandGrammar(#alice, #north_room)
+assert TrustedForCommandGrammar(#alice, #attic)
+
 assert CanRead(#alice, :Name)
 assert CanRead(#alice, :Description)
 assert CanRead(#alice, :LocatedIn)
@@ -87,10 +155,23 @@ assert CanRead(#alice, :Contents)
 assert CanRead(#alice, :Carrying)
 assert CanRead(#alice, :CanSee)
 assert CanRead(#alice, :PresentActor)
+assert CanRead(#alice, :CommandAlias)
+assert CanRead(#alice, :CommandForm)
+assert CanRead(#alice, :CommandRole)
+assert CanRead(#alice, :ParserNoun)
+assert CanRead(#alice, :ParserAlias)
+assert CanRead(#alice, :ParserName)
+assert CanRead(#alice, :VisibleTo)
+assert CanRead(#alice, :TrustedForNameParsing)
+assert CanRead(#alice, :NameMatchable)
+assert CanRead(#alice, :TrustedForCommandGrammar)
+assert CanRead(#alice, :CommandGrammarSource)
+assert CanRead(#alice, :CommandHandlerScope)
 
 assert CanWrite(#alice, :LocatedIn)
 
 assert CanInvoke(#alice, :command)
+assert CanInvoke(#alice, :match_object)
 assert CanInvoke(#alice, :look)
 assert CanInvoke(#alice, :go)
 assert CanInvoke(#alice, :north)
@@ -106,6 +187,13 @@ assert CanInvoke(#alice, :split)
 assert CanInvoke(#alice, :string_chars)
 assert CanInvoke(#alice, :string_from_chars)
 assert CanInvoke(#alice, :string_concat)
+assert CanInvoke(#alice, :string_join)
+assert CanInvoke(#alice, :words)
+assert CanInvoke(#alice, :string_equal_fold)
+assert CanInvoke(#alice, :string_starts_with)
+assert CanInvoke(#alice, :string_contains)
+assert CanInvoke(#alice, :parse_ordinal)
+assert CanInvoke(#alice, :edit_distance)
 
 assert CanEffect(#alice)
 
@@ -135,8 +223,33 @@ CanSee(actor, item) :-
   LocatedIn(actor, room),
   Within(item, room)
 
+CanSee(actor, item) :-
+  Carrying(actor, item)
+
 PresentActor(room, actor) :-
   Delegates(actor, #player, depth),
+  LocatedIn(actor, room)
+
+ParserName(obj, name) :-
+  ParserNoun(obj, name)
+
+ParserName(obj, parser_alias) :-
+  ParserAlias(obj, parser_alias)
+
+VisibleTo(actor, obj) :-
+  CanSee(actor, obj)
+
+NameMatchable(actor, obj) :-
+  VisibleTo(actor, obj),
+  TrustedForNameParsing(actor, obj)
+
+CommandGrammarSource(actor, provider) :-
+  TrustedForCommandGrammar(actor, provider)
+
+CommandHandlerScope(actor, actor) :-
+  TrustedForCommandGrammar(actor, actor)
+
+CommandHandlerScope(actor, room) :-
   LocatedIn(actor, room)
 
 verb look(actor @ #player)

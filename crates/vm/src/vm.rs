@@ -993,6 +993,46 @@ impl RegisterVm {
                     .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
+            Opcode::DynamicDispatch {
+                dst,
+                spec,
+                selector,
+                roles,
+            } => {
+                if self.state.frames.len() >= max_call_depth {
+                    return Err(RuntimeError::MaxCallDepthExceeded {
+                        max_depth: max_call_depth,
+                    });
+                }
+                let selector = self.resolve_operand_ref(program, *selector);
+                let roles = self.resolve_operand_ref(program, *roles);
+                let mut roles = dynamic_dispatch_roles(&roles)?;
+                normalize_dispatch_roles(&mut roles);
+                let spec = program.dispatch_spec(*spec);
+                let methods = applicable_method_calls_normalized(
+                    host,
+                    spec.relations,
+                    selector.clone(),
+                    &roles,
+                )?;
+                let entry =
+                    select_authorized_method_call(host.authority(), selector.clone(), methods)?;
+                let method = &entry.method;
+                let program_id = method_program_id(host, spec.program_relation, method)?
+                    .ok_or_else(|| RuntimeError::MissingMethodProgram {
+                        method: method.clone(),
+                    })?;
+                let callee_id = self.resolve_program_id(host, spec.program_bytes, &program_id)?;
+                let register_count = self.program_unchecked(callee_id).register_count();
+                let args = entry.args.ok_or_else(|| {
+                    RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
+                })?;
+                self.advance_ip_unchecked();
+                self.state
+                    .frames
+                    .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
+                Ok(VmHostResponse::Continue)
+            }
             Opcode::PositionalDispatch {
                 dst,
                 spec,
@@ -1567,6 +1607,15 @@ fn select_authorized_method_call(
         });
     }
     selected.ok_or(RuntimeError::NoApplicableMethod { selector })
+}
+
+fn dynamic_dispatch_roles(value: &Value) -> Result<Vec<(Value, Value)>, RuntimeError> {
+    value
+        .with_map(|entries| entries.to_vec())
+        .ok_or_else(|| RuntimeError::InvalidBuiltinCall {
+            name: Symbol::intern("invoke"),
+            message: "invoke expects roles to be a map".to_owned(),
+        })
 }
 
 fn select_authorized_method(

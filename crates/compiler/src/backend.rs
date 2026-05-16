@@ -1697,6 +1697,7 @@ impl<'a> ProgramCompiler<'a> {
             "commit" => return self.compile_commit_call(id, args),
             "suspend" => return self.compile_suspend_call(id, args),
             "read" => return self.compile_read_call(id, args),
+            "invoke" => return self.compile_dynamic_invoke_call(id, args),
             _ => {}
         }
         if args.iter().any(|arg| arg.role.is_some()) {
@@ -1712,6 +1713,36 @@ impl<'a> ProgramCompiler<'a> {
             dst,
             name: Symbol::intern(name),
             args,
+        });
+        Ok(dst)
+    }
+
+    fn compile_dynamic_invoke_call(
+        &mut self,
+        id: NodeId,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        let method_relations = self
+            .context
+            .method_relations
+            .ok_or_else(|| self.unsupported(id, "method relation ids are not configured"))?;
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(id, "invoke does not accept named arguments"));
+        }
+        self.ensure_no_arg_splices(args, "invoke does not accept argument splices")?;
+        if args.len() != 2 {
+            return Err(self.unsupported(id, "invoke expects selector and role map"));
+        }
+        let selector = self.compile_arg_operand(&args[0])?;
+        let roles = self.compile_arg_operand(&args[1])?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::DynamicDispatch {
+            dst,
+            relations: method_relations.dispatch,
+            program_relation: method_relations.method_program,
+            program_bytes: method_relations.program_bytes,
+            selector,
+            roles,
         });
         Ok(dst)
     }

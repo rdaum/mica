@@ -224,6 +224,14 @@ pub enum Instruction {
         selector: Operand,
         roles: Vec<(Value, Operand)>,
     },
+    DynamicDispatch {
+        dst: Register,
+        relations: DispatchRelations,
+        program_relation: RelationId,
+        program_bytes: RelationId,
+        selector: Operand,
+        roles: Operand,
+    },
     PositionalDispatch {
         dst: Register,
         relations: DispatchRelations,
@@ -445,6 +453,12 @@ pub(crate) enum Opcode {
         spec: DispatchSpecId,
         selector: OperandRef,
         roles: TableRange,
+    },
+    DynamicDispatch {
+        dst: Register,
+        spec: DispatchSpecId,
+        selector: OperandRef,
+        roles: OperandRef,
     },
     PositionalDispatch {
         dst: Register,
@@ -887,6 +901,22 @@ impl Program {
                         .collect(),
                 }
             }
+            Opcode::DynamicDispatch {
+                dst,
+                spec,
+                selector,
+                roles,
+            } => {
+                let spec = self.dispatch_spec(*spec);
+                Instruction::DynamicDispatch {
+                    dst: *dst,
+                    relations: spec.relations,
+                    program_relation: spec.program_relation,
+                    program_bytes: spec.program_bytes,
+                    selector: self.decode_operand(*selector),
+                    roles: self.decode_operand(*roles),
+                }
+            }
             Opcode::PositionalDispatch {
                 dst,
                 spec,
@@ -1271,6 +1301,23 @@ impl ProgramBuilder {
                 })?,
                 selector: self.operand(selector)?,
                 roles: self.roles(roles)?,
+            },
+            Instruction::DynamicDispatch {
+                dst,
+                relations,
+                program_relation,
+                program_bytes,
+                selector,
+                roles,
+            } => Opcode::DynamicDispatch {
+                dst,
+                spec: self.dispatch_spec(DispatchSpec {
+                    relations,
+                    program_relation,
+                    program_bytes,
+                })?,
+                selector: self.operand(selector)?,
+                roles: self.operand(roles)?,
             },
             Instruction::PositionalDispatch {
                 dst,
@@ -1712,6 +1759,16 @@ fn validate_instruction(
             validate_operand(register_count, selector)?;
             validate_operands(register_count, roles.iter().map(|(_, operand)| operand))
         }
+        Instruction::DynamicDispatch {
+            dst,
+            selector,
+            roles,
+            ..
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, selector)?;
+            validate_operand(register_count, roles)
+        }
         Instruction::PositionalDispatch {
             dst,
             selector,
@@ -1819,6 +1876,7 @@ const INST_SUSPEND_VALUE: u8 = 36;
 const INST_READ: u8 = 37;
 const INST_COMMIT_VALUE: u8 = 38;
 const INST_POSITIONAL_DISPATCH: u8 = 39;
+const INST_DYNAMIC_DISPATCH: u8 = 40;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2134,6 +2192,24 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
                 write_operand(out, operand)?;
             }
             Ok(())
+        }
+        Instruction::DynamicDispatch {
+            dst,
+            relations,
+            program_relation,
+            program_bytes,
+            selector,
+            roles,
+        } => {
+            out.push(INST_DYNAMIC_DISPATCH);
+            write_register(out, *dst);
+            write_identity(out, relations.method_selector);
+            write_identity(out, relations.param);
+            write_identity(out, relations.delegates);
+            write_identity(out, *program_relation);
+            write_identity(out, *program_bytes);
+            write_operand(out, selector)?;
+            write_operand(out, roles)
         }
         Instruction::PositionalDispatch {
             dst,
@@ -2618,6 +2694,18 @@ impl<'a> ByteReader<'a> {
                 program_bytes: self.read_identity()?,
                 selector: self.read_operand()?,
                 roles: self.read_dispatch_roles()?,
+            },
+            INST_DYNAMIC_DISPATCH => Instruction::DynamicDispatch {
+                dst: self.read_register()?,
+                relations: DispatchRelations {
+                    method_selector: self.read_identity()?,
+                    param: self.read_identity()?,
+                    delegates: self.read_identity()?,
+                },
+                program_relation: self.read_identity()?,
+                program_bytes: self.read_identity()?,
+                selector: self.read_operand()?,
+                roles: self.read_operand()?,
             },
             INST_POSITIONAL_DISPATCH => Instruction::PositionalDispatch {
                 dst: self.read_register()?,

@@ -1,41 +1,92 @@
-// Minimal in-core command parser for the MUD example.
+// Relation-backed command parser for the MUD example.
 //
-// The TCP daemon passes raw input lines to :command. This file owns the demo
-// command vocabulary and maps text to ordinary Mica dispatches.
+// The TCP daemon passes raw input lines to :command. This file keeps command
+// parsing in Mica: command words, object parser names, visibility, and trust
+// policy are world facts/rules from mud-core.mica. Rust supplies only string
+// primitives and dynamic role-map dispatch through invoke(selector, roles).
+
+verb match_object(actor @ #player, token @ #string)
+  let lowered = lower(token)
+
+  for found in ParserName(?obj, lowered)
+    let obj = found[:obj]
+    if NameMatchable(actor, obj)
+      return obj
+    end
+  end
+
+  return nothing
+end
 
 verb command(actor @ #player, endpoint, line)
   let raw = trim(line)
-  let text = lower(raw)
-  let words = split(text)
+  let tokens = words(lower(raw))
 
-  if words == []
+  if tokens == []
     emit(endpoint, "I do not understand that.")
     return false
   end
 
-  let command = words[0]
-  let message = trim(string_slice(raw, string_len(command), string_len(raw)))
-
-  if command == "look" || command == "l"
-    return :look(actor: actor)
-  elseif command == "north" || command == "n"
-    return :north(actor: actor)
-  elseif command == "south" || command == "s"
-    return :south(actor: actor)
-  elseif command == "up" || command == "u"
-    return :up(actor: actor)
-  elseif command == "down" || command == "d"
-    return :down(actor: actor)
-  elseif words == ["get", "coin"] || words == ["take", "coin"]
-    return :get(actor: actor, item: #coin)
-  elseif words == ["drop", "coin"]
-    return :drop(actor: actor, item: #coin)
-  elseif words == ["put", "coin", "box"] || words == ["put", "coin", "in", "box"]
-    return :put(actor: actor, item: #coin, container: #box)
-  elseif command == "say" && message != ""
-    return :say(actor: actor, message: message)
-  else
+  let selector = one CommandAlias(tokens[0], ?selector)
+  if selector == nothing
     emit(endpoint, "I do not understand that.")
     return false
   end
+
+  if selector == :look || selector == :north || selector == :south || selector == :up || selector == :down
+    return invoke(selector, {:actor -> actor})
+  end
+
+  if selector == :say
+    let message = trim(string_slice(raw, string_len(tokens[0]), string_len(raw)))
+    if message == ""
+      emit(endpoint, "I do not understand that.")
+      return false
+    end
+    return invoke(selector, {:actor -> actor, :message -> message})
+  end
+
+  if selector == :get || selector == :drop
+    if tokens[1] == nothing
+      emit(endpoint, "I do not understand that.")
+      return false
+    end
+
+    let item = match_object(actor, tokens[1])
+    if item == nothing
+      emit(endpoint, "I do not see that.")
+      return false
+    end
+
+    return invoke(selector, {:actor -> actor, :item -> item})
+  end
+
+  if selector == :put
+    if tokens[1] == nothing || tokens[2] == nothing
+      emit(endpoint, "I do not understand that.")
+      return false
+    end
+
+    let container_token = tokens[2]
+    if tokens[2] == "in" || tokens[2] == "into"
+      container_token = tokens[3]
+    end
+
+    if container_token == nothing
+      emit(endpoint, "I do not understand that.")
+      return false
+    end
+
+    let item = match_object(actor, tokens[1])
+    let container = match_object(actor, container_token)
+    if item == nothing || container == nothing
+      emit(endpoint, "I do not see that.")
+      return false
+    end
+
+    return invoke(selector, {:actor -> actor, :item -> item, :container -> container})
+  end
+
+  emit(endpoint, "I do not understand that.")
+  return false
 end
