@@ -2578,14 +2578,39 @@ impl<'a> ProgramCompiler<'a> {
             &atom.args,
             "relation argument splices are not implemented yet",
         )?;
-        let values = atom
-            .args
-            .iter()
-            .map(|arg| self.compile_arg_operand(arg))
-            .collect::<Result<Vec<_>, _>>()?;
         match kind {
-            EffectKind::Assert => self.emit(Instruction::Assert { relation, values }),
-            EffectKind::Retract => self.emit(Instruction::Retract { relation, values }),
+            EffectKind::Assert => {
+                let values = atom
+                    .args
+                    .iter()
+                    .map(|arg| self.compile_arg_operand(arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.emit(Instruction::Assert { relation, values });
+            }
+            EffectKind::Retract => {
+                if atom
+                    .args
+                    .iter()
+                    .any(|arg| matches!(arg.value, HirExpr::QueryVar { .. } | HirExpr::Hole { .. }))
+                {
+                    let bindings = atom
+                        .args
+                        .iter()
+                        .map(|arg| match &arg.value {
+                            HirExpr::QueryVar { .. } | HirExpr::Hole { .. } => Ok(None),
+                            _ => self.compile_arg_operand(arg).map(Some),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.emit(Instruction::RetractWhere { relation, bindings });
+                } else {
+                    let values = atom
+                        .args
+                        .iter()
+                        .map(|arg| self.compile_arg_operand(arg))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.emit(Instruction::Retract { relation, values });
+                }
+            }
             EffectKind::Require => {
                 return Err(self.unsupported(atom.id, "require is not a fact change instruction"));
             }
@@ -3104,6 +3129,75 @@ mod tests {
             vec![Tuple::from(
                 [Value::identity(alice), Value::identity(room),]
             )]
+        );
+    }
+
+    #[test]
+    fn retract_with_hole_removes_matching_tuples() {
+        let located_in = id(1);
+        let alice = id(10);
+        let room = id(11);
+        let hallway = id(12);
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(
+                located_in,
+                Symbol::intern("LocatedIn"),
+                2,
+            ))
+            .unwrap();
+        let mut seed = kernel.begin();
+        seed.assert(
+            located_in,
+            Tuple::from([Value::identity(alice), Value::identity(room)]),
+        )
+        .unwrap();
+        seed.assert(
+            located_in,
+            Tuple::from([Value::identity(hallway), Value::identity(room)]),
+        )
+        .unwrap();
+        seed.commit().unwrap();
+        let context = CompileContext::new()
+            .with_relation("LocatedIn", located_in)
+            .with_identity("alice", alice)
+            .with_identity("room", room)
+            .with_identity("hallway", hallway);
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "retract LocatedIn(#alice, _)\n\
+             return true",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(true),
+                effects: vec![],
+                retries: 0,
+            }
+        );
+        assert!(
+            task_manager
+                .kernel()
+                .snapshot()
+                .scan(located_in, &[Some(Value::identity(alice)), None])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            task_manager
+                .kernel()
+                .snapshot()
+                .scan(located_in, &[Some(Value::identity(hallway)), None])
+                .unwrap(),
+            vec![Tuple::from([
+                Value::identity(hallway),
+                Value::identity(room)
+            ])]
         );
     }
 
