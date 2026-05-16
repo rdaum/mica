@@ -19,11 +19,11 @@ use crate::{
     RuntimeError, RuntimeUnaryOp, SuspendKind,
 };
 use mica_relation_kernel::{
-    ComposedTransactionRead, RelationId, RelationRead, RelationWorkspace, ScanControl, Transaction,
-    TransientStore, Tuple, applicable_method_calls, applicable_positional_methods,
+    ApplicableMethodCall, ComposedTransactionRead, DispatchRelations, RelationId, RelationRead,
+    RelationWorkspace, ScanControl, Transaction, TransientStore, Tuple,
+    applicable_method_calls_normalized, applicable_positional_methods, normalize_dispatch_roles,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -249,6 +249,30 @@ impl RelationRead for VmHostContext<'_, '_> {
                 reader.visit_relation(relation, bindings, visitor)
             }
             None => self.tx.visit_relation(relation, bindings, visitor),
+        }
+    }
+
+    fn cached_applicable_method_calls(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, mica_relation_kernel::KernelError> {
+        match &self.transient {
+            Some(TransientAccess::Exclusive(transient)) => {
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
+                reader.cached_applicable_method_calls(relations, selector, roles)
+            }
+            Some(TransientAccess::Shared(transient)) => {
+                let transient = transient.read().unwrap();
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
+                reader.cached_applicable_method_calls(relations, selector, roles)
+            }
+            None => self
+                .tx
+                .cached_applicable_method_calls(relations, selector, roles),
         }
     }
 }
@@ -922,13 +946,17 @@ impl RegisterVm {
                         )
                     })
                     .collect::<Vec<_>>();
-                roles.sort_by(|left, right| compare_role_values(&left.0, &right.0));
+                normalize_dispatch_roles(&mut roles);
                 let spec = program.dispatch_spec(*spec);
-                let methods =
-                    applicable_method_calls(host, spec.relations, selector.clone(), &roles)?
-                        .into_iter()
-                        .filter(|entry| host.authority().can_invoke_method(&entry.method))
-                        .collect::<Vec<_>>();
+                let methods = applicable_method_calls_normalized(
+                    host,
+                    spec.relations,
+                    selector.clone(),
+                    &roles,
+                )?
+                .into_iter()
+                .filter(|entry| host.authority().can_invoke_method(&entry.method))
+                .collect::<Vec<_>>();
                 let (method, args) = match methods.as_slice() {
                     [] => return Err(RuntimeError::NoApplicableMethod { selector }),
                     [entry] => (&entry.method, &entry.args),
@@ -1527,16 +1555,6 @@ fn one_value(value: &Value) -> Result<Value, Value> {
 fn ordinal_index(index: &Value) -> Option<usize> {
     let index = index.as_int()?;
     usize::try_from(index).ok()
-}
-
-fn compare_role_values(left: &Value, right: &Value) -> Ordering {
-    match (
-        left.as_symbol().and_then(Symbol::name),
-        right.as_symbol().and_then(Symbol::name),
-    ) {
-        (Some(left), Some(right)) => left.cmp(right),
-        _ => left.cmp(right),
-    }
 }
 
 fn require_read(

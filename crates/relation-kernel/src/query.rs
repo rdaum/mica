@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::ProjectedTupleIndex;
-use crate::{KernelError, RelationId, Transaction, Tuple};
+use crate::{ApplicableMethodCall, DispatchRelations, KernelError, RelationId, Transaction, Tuple};
 use mica_var::Value;
 use std::collections::BTreeSet;
 
@@ -64,6 +64,24 @@ pub trait RelationRead {
     ) -> Result<Option<Vec<Tuple>>, KernelError> {
         Ok(None)
     }
+
+    fn cached_applicable_method_calls(
+        &self,
+        _relations: DispatchRelations,
+        _selector: &Value,
+        _roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        Ok(None)
+    }
+
+    fn cached_applicable_method_calls_normalized(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls(relations, selector, roles)
+    }
 }
 
 impl RelationRead for crate::Snapshot {
@@ -110,6 +128,26 @@ impl RelationRead for crate::Snapshot {
             right_positions,
         )))
     }
+
+    fn cached_applicable_method_calls(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls(relations, selector, roles)
+            .map(Some)
+    }
+
+    fn cached_applicable_method_calls_normalized(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls_normalized(relations, selector, roles)
+            .map(Some)
+    }
 }
 
 impl RelationRead for Transaction<'_> {
@@ -155,6 +193,26 @@ impl RelationRead for Transaction<'_> {
             left_positions,
             right_positions,
         )))
+    }
+
+    fn cached_applicable_method_calls(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls(relations, selector, roles)
+            .map(Some)
+    }
+
+    fn cached_applicable_method_calls_normalized(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls_normalized(relations, selector, roles)
+            .map(Some)
     }
 }
 

@@ -88,11 +88,37 @@ pub fn applicable_method_calls(
     selector: Value,
     roles: &[(Value, Value)],
 ) -> Result<Vec<ApplicableMethodCall>, KernelError> {
+    if let Some(methods) = reader.cached_applicable_method_calls(relations, &selector, roles)? {
+        return Ok(methods);
+    }
+    applicable_method_calls_uncached(reader, relations, &selector, roles)
+}
+
+pub fn applicable_method_calls_normalized(
+    reader: &impl RelationRead,
+    relations: DispatchRelations,
+    selector: Value,
+    roles: &[(Value, Value)],
+) -> Result<Vec<ApplicableMethodCall>, KernelError> {
+    if let Some(methods) =
+        reader.cached_applicable_method_calls_normalized(relations, &selector, roles)?
+    {
+        return Ok(methods);
+    }
+    applicable_method_calls_uncached(reader, relations, &selector, roles)
+}
+
+pub(crate) fn applicable_method_calls_uncached(
+    reader: &impl RelationRead,
+    relations: DispatchRelations,
+    selector: &Value,
+    roles: &[(Value, Value)],
+) -> Result<Vec<ApplicableMethodCall>, KernelError> {
     let mut methods = Vec::new();
 
     reader.visit_relation(
         relations.method_selector,
-        &[None, Some(selector)],
+        &[None, Some(selector.clone())],
         &mut |row| {
             let method = row.values()[0].clone();
             if let Some(args) = method_call_args(reader, relations, &method, roles)? {
@@ -212,6 +238,10 @@ pub fn role_value<'a>(roles: &'a [(Value, Value)], role: &Value) -> Option<&'a V
         .find_map(|(candidate, value)| (candidate == role).then_some(value))
 }
 
+pub fn normalize_dispatch_roles(roles: &mut [(Value, Value)]) {
+    roles.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+}
+
 pub fn positional_method_args(
     params: &[crate::Tuple],
     args: &[Value],
@@ -317,7 +347,7 @@ fn matches_restriction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RelationKernel, RelationMetadata, Tuple};
+    use crate::{ComposedTransactionRead, RelationKernel, RelationMetadata, TransientStore, Tuple};
     use mica_var::{Identity, STRING_PROTOTYPE, Symbol, Value};
 
     fn rel(id: u64) -> RelationId {
@@ -494,6 +524,86 @@ mod tests {
             applicable_positional_methods(&tx, dispatch_relations(), sym("split"), &[int(1)])
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn snapshot_dispatch_cache_is_scoped_to_snapshot_version() {
+        let kernel = kernel_with_dispatch_relations();
+        let snapshot = kernel.snapshot();
+        assert!(
+            applicable_method_calls(&*snapshot, dispatch_relations(), sym("look"), &[])
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(40), Tuple::from([int(100), sym("look")]))
+            .unwrap();
+        let next = tx.commit().unwrap().into_snapshot();
+
+        assert_eq!(
+            applicable_method_calls(&*next, dispatch_relations(), sym("look"), &[]).unwrap(),
+            vec![ApplicableMethodCall {
+                method: int(100),
+                args: Some(Vec::new())
+            }]
+        );
+    }
+
+    #[test]
+    fn transaction_dispatch_bypasses_snapshot_cache_after_local_writes() {
+        let kernel = kernel_with_dispatch_relations();
+        let snapshot = kernel.snapshot();
+        assert!(
+            applicable_method_calls(&*snapshot, dispatch_relations(), sym("look"), &[])
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(40), Tuple::from([int(100), sym("look")]))
+            .unwrap();
+
+        assert_eq!(
+            applicable_method_calls(&tx, dispatch_relations(), sym("look"), &[]).unwrap(),
+            vec![ApplicableMethodCall {
+                method: int(100),
+                args: Some(Vec::new())
+            }]
+        );
+    }
+
+    #[test]
+    fn composed_dispatch_bypasses_snapshot_cache_for_transient_dispatch_facts() {
+        let kernel = kernel_with_dispatch_relations();
+        let snapshot = kernel.snapshot();
+        assert!(
+            applicable_method_calls(&*snapshot, dispatch_relations(), sym("look"), &[])
+                .unwrap()
+                .is_empty()
+        );
+
+        let tx = kernel.begin();
+        let mut transient = TransientStore::new();
+        let scope = rel(90);
+        transient
+            .assert(
+                scope,
+                RelationMetadata::new(rel(40), Symbol::intern("MethodSelector"), 2)
+                    .with_index([1, 0]),
+                Tuple::from([int(100), sym("look")]),
+            )
+            .unwrap();
+        let scopes = [scope];
+        let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+        assert_eq!(
+            applicable_method_calls(&reader, dispatch_relations(), sym("look"), &[]).unwrap(),
+            vec![ApplicableMethodCall {
+                method: int(100),
+                args: Some(Vec::new())
+            }]
         );
     }
 

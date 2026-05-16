@@ -12,10 +12,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::commit_bloom::CommitBloom;
+use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
 use crate::{
-    KernelError, RelationId, RelationMetadata, RuleDefinition, RuleEvalError, RuleSet, ScanControl,
-    Tuple, Version,
+    ApplicableMethodCall, DispatchRelations, KernelError, RelationId, RelationMetadata,
+    RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple, Version,
 };
 use mica_var::{Identity, Value};
 use std::collections::BTreeMap;
@@ -91,6 +92,7 @@ pub struct Snapshot {
     pub(crate) relations: BTreeMap<RelationId, RelationState>,
     pub(crate) rules: Vec<RuleDefinition>,
     pub(crate) derived_cache: DerivedCache,
+    pub(crate) dispatch_cache: DispatchCache,
     pub(crate) commits: Arc<[Commit]>,
 }
 
@@ -235,10 +237,51 @@ impl Snapshot {
             .as_ref()
             .map_err(Clone::clone)
     }
+
+    pub(crate) fn cached_applicable_method_calls(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Vec<ApplicableMethodCall>, KernelError> {
+        if let Some(methods) = self.dispatch_cache.get(relations, selector, roles) {
+            return Ok(methods);
+        }
+
+        let methods =
+            crate::dispatch::applicable_method_calls_uncached(self, relations, selector, roles)?;
+        self.dispatch_cache
+            .insert(relations, selector, roles, methods.clone());
+        Ok(methods)
+    }
+
+    pub(crate) fn cached_applicable_method_calls_normalized(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Vec<ApplicableMethodCall>, KernelError> {
+        if let Some(methods) = self
+            .dispatch_cache
+            .get_normalized(relations, selector, roles)
+        {
+            return Ok(methods);
+        }
+
+        let methods =
+            crate::dispatch::applicable_method_calls_uncached(self, relations, selector, roles)?;
+        self.dispatch_cache
+            .insert_normalized(relations, selector, roles, methods.clone());
+        Ok(methods)
+    }
 }
 
 pub(crate) fn empty_derived_cache() -> DerivedCache {
     Arc::new(OnceLock::new())
+}
+
+pub(crate) fn empty_dispatch_cache() -> DispatchCache {
+    DispatchCache::new()
 }
 
 pub(crate) fn active_rules(rules: &[RuleDefinition]) -> Vec<crate::Rule> {

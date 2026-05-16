@@ -14,8 +14,8 @@
 use crate::index::RelationState;
 use crate::snapshot::active_rules;
 use crate::{
-    KernelError, RelationId, RelationMetadata, RelationRead, RuleSet, ScanControl, Transaction,
-    Tuple,
+    ApplicableMethodCall, DispatchRelations, KernelError, RelationId, RelationMetadata,
+    RelationRead, RuleSet, ScanControl, Transaction, Tuple,
 };
 use mica_var::{Identity, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -289,6 +289,34 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
         }
         Ok(())
     }
+
+    fn cached_applicable_method_calls(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        if self.dispatch_cache_is_transient(relations) {
+            return Ok(None);
+        }
+        self.tx
+            .cached_applicable_method_calls(relations, selector, roles)
+            .map(Some)
+    }
+
+    fn cached_applicable_method_calls_normalized(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        if self.dispatch_cache_is_transient(relations) {
+            return Ok(None);
+        }
+        self.tx
+            .cached_applicable_method_calls_normalized(relations, selector, roles)
+            .map(Some)
+    }
 }
 
 struct ComposedExtensionalTransactionRead<'a, 'kernel> {
@@ -360,4 +388,34 @@ fn scan_composed_transaction_extensional(
         return Err(KernelError::UnknownRelation(relation));
     }
     Ok(rows)
+}
+
+fn dispatch_relation_can_be_derived(tx: &Transaction<'_>, relations: DispatchRelations) -> bool {
+    let dispatch_relations = [
+        relations.method_selector,
+        relations.param,
+        relations.delegates,
+    ];
+    tx.base
+        .rules()
+        .iter()
+        .any(|rule| rule.active() && dispatch_relations.contains(&rule.rule().head_relation()))
+}
+
+impl ComposedTransactionRead<'_, '_> {
+    fn dispatch_cache_is_transient(&self, relations: DispatchRelations) -> bool {
+        let dispatch_relations = [
+            relations.method_selector,
+            relations.param,
+            relations.delegates,
+        ];
+        dispatch_relations
+            .iter()
+            .any(|relation| self.transient.relation_visible(self.scopes, *relation))
+            || dispatch_relation_can_be_derived(self.tx, relations)
+                && self
+                    .scopes
+                    .iter()
+                    .any(|scope| self.transient.scope_len(*scope) > 0)
+    }
 }

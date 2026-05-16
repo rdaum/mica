@@ -23,6 +23,7 @@ mod catalog;
 mod closure;
 mod commit_bloom;
 mod dispatch;
+mod dispatch_cache;
 mod error;
 mod fact;
 mod index;
@@ -51,8 +52,9 @@ pub use closure::{
 };
 pub use dispatch::{
     ApplicableMethod, ApplicableMethodCall, DispatchRelations, applicable_method_calls,
-    applicable_method_entries, applicable_methods, applicable_positional_methods,
-    named_method_args, ordered_params, positional_method_args, role_value,
+    applicable_method_calls_normalized, applicable_method_entries, applicable_methods,
+    applicable_positional_methods, named_method_args, normalize_dispatch_roles, ordered_params,
+    positional_method_args, role_value,
 };
 pub use error::{Conflict, ConflictKind, KernelError};
 pub use fact::Fact;
