@@ -14,13 +14,22 @@
 use crate::codec::{HttpRequest, HttpResponse};
 use crate::response::{internal_error_response, response_from_submitted, route_request};
 use crate::{InProcessWebHost, format_driver_error};
-use mica_runtime::{TaskInput, TaskRequest};
+use mica_runtime::{TaskInput, TaskRequest, Tuple};
 use mica_var::{Identity, Symbol, Value};
 
 #[derive(Clone, Debug)]
 pub(crate) struct RequestFact {
     relation: Symbol,
-    values: Vec<Value>,
+    tuple: Tuple,
+}
+
+impl RequestFact {
+    fn new(relation: Symbol, values: impl IntoIterator<Item = Value>) -> Self {
+        Self {
+            relation,
+            tuple: Tuple::new(values),
+        }
+    }
 }
 
 pub(crate) fn handle_in_process_request(
@@ -37,15 +46,16 @@ pub(crate) fn handle_in_process_request(
         Ok(request_id) => request_id,
         Err(error) => return internal_error_response(error, close),
     };
-    let facts = request_facts(request_id, request);
-    for fact in &facts {
-        if let Err(error) =
-            host.driver
-                .assert_transient_named(endpoint, fact.relation, fact.values.clone())
-        {
-            cleanup_request_facts(host, endpoint, &facts);
-            return internal_error_response(format_driver_error(error), close);
-        }
+    let mut asserted_facts = Vec::new();
+    let assert_result = visit_request_facts(request_id, request, |fact| {
+        host.driver
+            .assert_transient_tuple_named(endpoint, fact.relation, fact.tuple.clone())?;
+        asserted_facts.push(fact);
+        Ok(())
+    });
+    if let Err(error) = assert_result {
+        cleanup_request_facts(host, endpoint, &asserted_facts);
+        return internal_error_response(format_driver_error(error), close);
     }
 
     let submitted = host.driver.submit_invocation(
@@ -61,7 +71,7 @@ pub(crate) fn handle_in_process_request(
             },
         },
     );
-    cleanup_request_facts(host, endpoint, &facts);
+    cleanup_request_facts(host, endpoint, &asserted_facts);
 
     match submitted {
         Ok(submitted) => response_from_submitted(submitted, close),
@@ -69,59 +79,72 @@ pub(crate) fn handle_in_process_request(
     }
 }
 
-pub(crate) fn request_facts(request_id: Identity, request: &HttpRequest) -> Vec<RequestFact> {
+fn visit_request_facts<E>(
+    request_id: Identity,
+    request: &HttpRequest,
+    mut visit: impl FnMut(RequestFact) -> Result<(), E>,
+) -> Result<(), E> {
     let request_value = Value::identity(request_id);
-    let mut facts = vec![
-        RequestFact {
-            relation: Symbol::intern("HttpRequest"),
-            values: vec![request_value.clone()],
-        },
-        RequestFact {
-            relation: Symbol::intern("RequestMethod"),
-            values: vec![request_value.clone(), Value::string(&request.method)],
-        },
-        RequestFact {
-            relation: Symbol::intern("RequestPath"),
-            values: vec![request_value.clone(), Value::string(&request.path)],
-        },
-        RequestFact {
-            relation: Symbol::intern("RequestVersion"),
-            values: vec![
-                request_value.clone(),
-                Value::int(i64::from(request.version)).unwrap(),
-            ],
-        },
-    ];
+    visit(RequestFact::new(
+        Symbol::intern("HttpRequest"),
+        [request_value.clone()],
+    ))?;
+    visit(RequestFact::new(
+        Symbol::intern("RequestMethod"),
+        [request_value.clone(), Value::string(&request.method)],
+    ))?;
+    visit(RequestFact::new(
+        Symbol::intern("RequestPath"),
+        [request_value.clone(), Value::string(&request.path)],
+    ))?;
+    visit(RequestFact::new(
+        Symbol::intern("RequestVersion"),
+        [
+            request_value.clone(),
+            Value::int(i64::from(request.version)).unwrap(),
+        ],
+    ))?;
     for header in &request.headers {
-        facts.push(RequestFact {
-            relation: Symbol::intern("RequestHeader"),
-            values: vec![
+        visit(RequestFact::new(
+            Symbol::intern("RequestHeader"),
+            [
                 request_value.clone(),
                 Value::string(header.name.to_ascii_lowercase()),
                 Value::bytes(&header.value),
             ],
-        });
+        ))?;
     }
     if !request.body.is_empty() {
-        facts.push(RequestFact {
-            relation: Symbol::intern("RequestBody"),
-            values: vec![request_value, Value::bytes(&request.body)],
-        });
+        visit(RequestFact::new(
+            Symbol::intern("RequestBody"),
+            [request_value, Value::bytes(&request.body)],
+        ))?;
     }
-    facts
+    Ok(())
 }
 
 fn cleanup_request_facts(host: &InProcessWebHost, endpoint: Identity, facts: &[RequestFact]) {
     for fact in facts.iter().rev() {
         let _ = host
             .driver
-            .retract_transient_named(endpoint, fact.relation, fact.values.clone());
+            .retract_transient_tuple_named(endpoint, fact.relation, &fact.tuple);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::Infallible;
+
+    fn request_facts(request_id: Identity, request: &HttpRequest) -> Vec<RequestFact> {
+        let mut facts = Vec::new();
+        visit_request_facts(request_id, request, |fact| {
+            facts.push(fact);
+            Ok::<_, Infallible>(())
+        })
+        .unwrap();
+        facts
+    }
 
     #[test]
     fn request_facts_include_core_request_neighbourhood() {
@@ -141,20 +164,21 @@ mod tests {
             facts
                 .iter()
                 .any(|fact| fact.relation == Symbol::intern("HttpRequest")
-                    && fact.values == vec![Value::identity(request_id)])
+                    && fact.tuple.values() == [Value::identity(request_id)])
         );
         assert!(
             facts
                 .iter()
                 .any(|fact| fact.relation == Symbol::intern("RequestPath")
-                    && fact.values == vec![Value::identity(request_id), Value::string("/hello")])
+                    && fact.tuple.values()
+                        == [Value::identity(request_id), Value::string("/hello")])
         );
         assert!(
             facts
                 .iter()
                 .any(|fact| fact.relation == Symbol::intern("RequestHeader")
-                    && fact.values
-                        == vec![
+                    && fact.tuple.values()
+                        == [
                             Value::identity(request_id),
                             Value::string("accept"),
                             Value::bytes(b"text/plain")

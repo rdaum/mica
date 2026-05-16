@@ -17,6 +17,7 @@ mod task_manager;
 #[cfg(test)]
 mod vm_tests;
 
+pub use mica_relation_kernel::Tuple;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem, Operand,
@@ -36,7 +37,7 @@ use mica_compiler::{
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
-    RelationKernel, RelationMetadata, RelationRead, Tuple,
+    RelationKernel, RelationMetadata, RelationRead,
 };
 use mica_var::{Identity, PRIMITIVE_PROTOTYPES, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -480,8 +481,16 @@ impl SourceRunner {
         relation: Symbol,
         values: Vec<Value>,
     ) -> Result<bool, SourceTaskError> {
+        self.assert_transient_tuple_named(scope, relation, Tuple::new(values))
+    }
+
+    pub fn assert_transient_tuple_named(
+        &mut self,
+        scope: Identity,
+        relation: Symbol,
+        tuple: Tuple,
+    ) -> Result<bool, SourceTaskError> {
         let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
-        let tuple = Tuple::new(values);
         self.task_manager
             .assert_transient(scope, metadata, tuple)
             .map_err(SourceTaskError::from)
@@ -493,11 +502,20 @@ impl SourceRunner {
         relation: Symbol,
         values: Vec<Value>,
     ) -> Result<bool, SourceTaskError> {
-        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
         let tuple = Tuple::new(values);
+        self.retract_transient_tuple_named(scope, relation, &tuple)
+    }
+
+    pub fn retract_transient_tuple_named(
+        &mut self,
+        scope: Identity,
+        relation: Symbol,
+        tuple: &Tuple,
+    ) -> Result<bool, SourceTaskError> {
+        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
         ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
         self.task_manager
-            .retract_transient(scope, metadata.id(), &tuple)
+            .retract_transient(scope, metadata.id(), tuple)
             .map_err(SourceTaskError::from)
     }
 
@@ -1117,8 +1135,16 @@ impl SharedSourceRunner {
         relation: Symbol,
         values: Vec<Value>,
     ) -> Result<bool, SourceTaskError> {
+        self.assert_transient_tuple_named(scope, relation, Tuple::new(values))
+    }
+
+    pub fn assert_transient_tuple_named(
+        &self,
+        scope: Identity,
+        relation: Symbol,
+        tuple: Tuple,
+    ) -> Result<bool, SourceTaskError> {
         let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
-        let tuple = Tuple::new(values);
         self.task_manager
             .assert_transient(scope, metadata, tuple)
             .map_err(SourceTaskError::from)
@@ -1130,11 +1156,20 @@ impl SharedSourceRunner {
         relation: Symbol,
         values: Vec<Value>,
     ) -> Result<bool, SourceTaskError> {
-        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
         let tuple = Tuple::new(values);
+        self.retract_transient_tuple_named(scope, relation, &tuple)
+    }
+
+    pub fn retract_transient_tuple_named(
+        &self,
+        scope: Identity,
+        relation: Symbol,
+        tuple: &Tuple,
+    ) -> Result<bool, SourceTaskError> {
+        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
         ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
         self.task_manager
-            .retract_transient(scope, metadata.id(), &tuple)
+            .retract_transient(scope, metadata.id(), tuple)
             .map_err(SourceTaskError::from)
     }
 

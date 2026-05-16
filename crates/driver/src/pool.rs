@@ -16,7 +16,7 @@ use compio::dispatcher::Dispatcher;
 use compio::runtime::Runtime;
 use mica_runtime::{
     RunReport, SharedSourceRunner, SourceRunner, SubmittedTask, SuspendKind, TaskId, TaskInput,
-    TaskOutcome, TaskRequest,
+    TaskOutcome, TaskRequest, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
@@ -251,6 +251,18 @@ impl CompioTaskDriver {
             .map_err(DriverError::Source)
     }
 
+    pub fn assert_transient_tuple_named(
+        &self,
+        scope: Identity,
+        relation: Symbol,
+        tuple: Tuple,
+    ) -> Result<bool, DriverError> {
+        self.inner
+            .runner
+            .assert_transient_tuple_named(scope, relation, tuple)
+            .map_err(DriverError::Source)
+    }
+
     pub fn retract_transient_named(
         &self,
         scope: Identity,
@@ -260,6 +272,18 @@ impl CompioTaskDriver {
         self.inner
             .runner
             .retract_transient_named(scope, relation, values)
+            .map_err(DriverError::Source)
+    }
+
+    pub fn retract_transient_tuple_named(
+        &self,
+        scope: Identity,
+        relation: Symbol,
+        tuple: &Tuple,
+    ) -> Result<bool, DriverError> {
+        self.inner
+            .runner
+            .retract_transient_tuple_named(scope, relation, tuple)
             .map_err(DriverError::Source)
     }
 
