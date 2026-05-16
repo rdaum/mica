@@ -13,7 +13,7 @@
 
 use mica_relation_kernel::RelationId;
 use mica_var::{CapabilityId, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum CapabilityOp {
@@ -33,14 +33,14 @@ pub enum CapabilityScope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityGrant {
-    ops: BTreeSet<CapabilityOp>,
+    ops: CapabilityOps,
     scope: CapabilityScope,
 }
 
 impl CapabilityGrant {
     pub fn new(ops: impl IntoIterator<Item = CapabilityOp>, scope: CapabilityScope) -> Self {
         Self {
-            ops: ops.into_iter().collect(),
+            ops: CapabilityOps::new(ops),
             scope,
         }
     }
@@ -67,7 +67,7 @@ impl CapabilityGrant {
     }
 
     fn allows_relation(&self, op: CapabilityOp, relation: RelationId) -> bool {
-        if !self.ops.contains(&op) {
+        if !self.ops.contains(op) {
             return false;
         }
         match &self.scope {
@@ -78,7 +78,7 @@ impl CapabilityGrant {
     }
 
     fn allows_method(&self, method: &Value) -> bool {
-        if !self.ops.contains(&CapabilityOp::Invoke) {
+        if !self.ops.contains(CapabilityOp::Invoke) {
             return false;
         }
         match &self.scope {
@@ -89,16 +89,50 @@ impl CapabilityGrant {
     }
 
     fn allows_effect(&self) -> bool {
-        self.ops.contains(&CapabilityOp::Effect) && matches!(self.scope, CapabilityScope::All)
+        self.ops.contains(CapabilityOp::Effect) && matches!(self.scope, CapabilityScope::All)
     }
 
     fn allows_grant(&self) -> bool {
-        self.ops.contains(&CapabilityOp::Grant) && matches!(self.scope, CapabilityScope::All)
+        self.ops.contains(CapabilityOp::Grant) && matches!(self.scope, CapabilityScope::All)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CapabilityOps(u8);
+
+impl CapabilityOps {
+    const READ: u8 = 1 << 0;
+    const WRITE: u8 = 1 << 1;
+    const INVOKE: u8 = 1 << 2;
+    const EFFECT: u8 = 1 << 3;
+    const GRANT: u8 = 1 << 4;
+
+    fn new(ops: impl IntoIterator<Item = CapabilityOp>) -> Self {
+        let mut bits = 0;
+        for op in ops {
+            bits |= Self::bit(op);
+        }
+        Self(bits)
+    }
+
+    fn contains(self, op: CapabilityOp) -> bool {
+        self.0 & Self::bit(op) != 0
+    }
+
+    const fn bit(op: CapabilityOp) -> u8 {
+        match op {
+            CapabilityOp::Read => Self::READ,
+            CapabilityOp::Write => Self::WRITE,
+            CapabilityOp::Invoke => Self::INVOKE,
+            CapabilityOp::Effect => Self::EFFECT,
+            CapabilityOp::Grant => Self::GRANT,
+        }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityContext {
+    root: bool,
     capabilities: BTreeMap<CapabilityId, CapabilityGrant>,
     next_id: u64,
 }
@@ -112,15 +146,18 @@ impl Default for AuthorityContext {
 impl AuthorityContext {
     pub fn empty() -> Self {
         Self {
+            root: false,
             capabilities: BTreeMap::new(),
             next_id: 1,
         }
     }
 
     pub fn root() -> Self {
-        let mut context = Self::empty();
-        context.mint(CapabilityGrant::all());
-        context
+        Self {
+            root: true,
+            capabilities: BTreeMap::new(),
+            next_id: 1,
+        }
     }
 
     pub fn mint(&mut self, grant: CapabilityGrant) -> Value {
@@ -134,30 +171,45 @@ impl AuthorityContext {
     }
 
     pub fn can_read_relation(&self, relation: RelationId) -> bool {
+        if self.root {
+            return true;
+        }
         self.capabilities
             .values()
             .any(|grant| grant.allows_relation(CapabilityOp::Read, relation))
     }
 
     pub fn can_write_relation(&self, relation: RelationId) -> bool {
+        if self.root {
+            return true;
+        }
         self.capabilities
             .values()
             .any(|grant| grant.allows_relation(CapabilityOp::Write, relation))
     }
 
     pub fn can_invoke_method(&self, method: &Value) -> bool {
+        if self.root {
+            return true;
+        }
         self.capabilities
             .values()
             .any(|grant| grant.allows_method(method))
     }
 
     pub fn can_effect(&self) -> bool {
+        if self.root {
+            return true;
+        }
         self.capabilities
             .values()
             .any(CapabilityGrant::allows_effect)
     }
 
     pub fn can_grant(&self) -> bool {
+        if self.root {
+            return true;
+        }
         self.capabilities
             .values()
             .any(CapabilityGrant::allows_grant)

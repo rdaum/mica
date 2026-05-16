@@ -25,7 +25,6 @@ use mica_relation_kernel::{
     normalize_dispatch_roles,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
-use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,7 +103,7 @@ impl Frame {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmState {
     programs: Vec<Arc<Program>>,
-    resolved_programs: BTreeMap<Value, usize>,
+    resolved_programs: Vec<(Value, usize)>,
     frames: Vec<Frame>,
     pending_resume: Option<Register>,
 }
@@ -537,7 +536,7 @@ impl RegisterVm {
         Self {
             state: VmState {
                 programs: vec![program],
-                resolved_programs: BTreeMap::new(),
+                resolved_programs: Vec::new(),
                 frames: vec![Frame::root(0, register_count)],
                 pending_resume: None,
             },
@@ -975,28 +974,17 @@ impl RegisterVm {
                     spec.relations,
                     selector.clone(),
                     &roles,
-                )?
-                .into_iter()
-                .filter(|entry| host.authority().can_invoke_method(&entry.method))
-                .collect::<Vec<_>>();
-                let (method, args) = match methods.as_slice() {
-                    [] => return Err(RuntimeError::NoApplicableMethod { selector }),
-                    [entry] => (&entry.method, &entry.args),
-                    _ => {
-                        let methods = methods
-                            .into_iter()
-                            .map(|entry| entry.method)
-                            .collect::<Vec<_>>();
-                        return Err(RuntimeError::AmbiguousDispatch { selector, methods });
-                    }
-                };
+                )?;
+                let entry =
+                    select_authorized_method_call(host.authority(), selector.clone(), methods)?;
+                let method = &entry.method;
                 let program_id = method_program_id(host, spec.program_relation, method)?
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
                         method: method.clone(),
                     })?;
                 let callee_id = self.resolve_program_id(host, spec.program_bytes, &program_id)?;
                 let register_count = self.program_unchecked(callee_id).register_count();
-                let args = args.clone().ok_or_else(|| {
+                let args = entry.args.ok_or_else(|| {
                     RuntimeError::ProgramArtifact("method parameter position is invalid".to_owned())
                 })?;
                 self.advance_ip_unchecked();
@@ -1020,17 +1008,8 @@ impl RegisterVm {
                 let args = self.resolve_operands(program, program.operands(*args));
                 let spec = program.dispatch_spec(*spec);
                 let methods =
-                    applicable_positional_methods(host, spec.relations, selector.clone(), &args)?
-                        .into_iter()
-                        .filter(|method| host.authority().can_invoke_method(method))
-                        .collect::<Vec<_>>();
-                let method = match methods.as_slice() {
-                    [] => return Err(RuntimeError::NoApplicableMethod { selector }),
-                    [method] => method.clone(),
-                    _ => {
-                        return Err(RuntimeError::AmbiguousDispatch { selector, methods });
-                    }
-                };
+                    applicable_positional_methods(host, spec.relations, selector.clone(), &args)?;
+                let method = select_authorized_method(host.authority(), selector.clone(), methods)?;
                 let program_id = method_program_id(host, spec.program_relation, &method)?
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
                         method: method.clone(),
@@ -1235,14 +1214,19 @@ impl RegisterVm {
         program_bytes_relation: RelationId,
         program_id: &Value,
     ) -> Result<usize, RuntimeError> {
-        if let Some(index) = self.state.resolved_programs.get(program_id) {
+        if let Some((_, index)) = self
+            .state
+            .resolved_programs
+            .iter()
+            .find(|(resolved, _)| resolved == program_id)
+        {
             return Ok(*index);
         }
         let program = host.resolve_program(program_bytes_relation, program_id)?;
         let index = self.intern_program(program);
         self.state
             .resolved_programs
-            .insert(program_id.clone(), index);
+            .push((program_id.clone(), index));
         Ok(index)
     }
 
@@ -1556,6 +1540,60 @@ fn one_value(value: &Value) -> Result<Value, Value> {
             Some(value.clone()),
         )),
     }
+}
+
+fn select_authorized_method_call(
+    authority: &AuthorityContext,
+    selector: Value,
+    methods: Vec<ApplicableMethodCall>,
+) -> Result<ApplicableMethodCall, RuntimeError> {
+    let mut selected = None;
+    let mut ambiguous = Vec::new();
+    for entry in methods {
+        if !authority.can_invoke_method(&entry.method) {
+            continue;
+        }
+        if let Some(previous) = selected.replace(entry) {
+            if ambiguous.is_empty() {
+                ambiguous.push(previous.method);
+            }
+            ambiguous.push(selected.as_ref().unwrap().method.clone());
+        }
+    }
+    if !ambiguous.is_empty() {
+        return Err(RuntimeError::AmbiguousDispatch {
+            selector,
+            methods: ambiguous,
+        });
+    }
+    selected.ok_or(RuntimeError::NoApplicableMethod { selector })
+}
+
+fn select_authorized_method(
+    authority: &AuthorityContext,
+    selector: Value,
+    methods: Vec<Value>,
+) -> Result<Value, RuntimeError> {
+    let mut selected = None;
+    let mut ambiguous = Vec::new();
+    for method in methods {
+        if !authority.can_invoke_method(&method) {
+            continue;
+        }
+        if let Some(previous) = selected.replace(method) {
+            if ambiguous.is_empty() {
+                ambiguous.push(previous);
+            }
+            ambiguous.push(selected.as_ref().unwrap().clone());
+        }
+    }
+    if !ambiguous.is_empty() {
+        return Err(RuntimeError::AmbiguousDispatch {
+            selector,
+            methods: ambiguous,
+        });
+    }
+    selected.ok_or(RuntimeError::NoApplicableMethod { selector })
 }
 
 fn ordinal_index(index: &Value) -> Option<usize> {
