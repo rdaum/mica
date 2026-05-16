@@ -11,9 +11,9 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{KernelError, RelationId, RelationRead, Tuple};
+use crate::{KernelError, RelationId, RelationRead, ScanControl, Tuple};
 use mica_var::{Identity, Symbol, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Term {
@@ -155,6 +155,7 @@ impl RuleSet {
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
 
         for rules in strata {
+            let rules = compile_rules(&rules);
             let overlay = DerivedReader {
                 base: reader,
                 derived: &derived,
@@ -180,6 +181,7 @@ impl RuleSet {
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
 
         for rules in strata {
+            let rules = compile_rules(&rules);
             loop {
                 let overlay = DerivedReader {
                     base: reader,
@@ -287,7 +289,28 @@ impl From<KernelError> for RuleEvalError {
     }
 }
 
-type Binding = BTreeMap<Symbol, Value>;
+type Binding = Vec<Option<Value>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledRule {
+    head_relation: RelationId,
+    head_terms: Vec<CompiledTerm>,
+    body: Vec<CompiledAtom>,
+    slot_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledAtom {
+    relation: RelationId,
+    terms: Vec<CompiledTerm>,
+    negated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CompiledTerm {
+    Var { symbol: Symbol, slot: usize },
+    Value(Value),
+}
 
 struct DerivedReader<'a, R> {
     base: &'a R,
@@ -316,6 +339,28 @@ impl<R: RelationRead> RelationRead for DerivedReader<'_, R> {
         Ok(rows.into_iter().collect())
     }
 
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        if !self.derived.contains_key(&relation) {
+            return match self.base.visit_relation(relation, bindings, visitor) {
+                Ok(()) => Ok(()),
+                Err(KernelError::UnknownRelation(unknown)) if unknown == relation => Ok(()),
+                Err(error) => Err(error),
+            };
+        }
+
+        for tuple in self.scan_relation(relation, bindings)? {
+            if visitor(&tuple)? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     fn estimate_relation_scan(
         &self,
         relation: RelationId,
@@ -342,11 +387,11 @@ impl<R: RelationRead> RelationRead for DerivedReader<'_, R> {
 
 fn evaluate_rules_once(
     reader: &impl RelationRead,
-    rules: &[&Rule],
+    rules: &[CompiledRule],
     out: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
 ) -> Result<(), RuleEvalError> {
     for rule in rules {
-        for binding in evaluate_body(reader, &rule.body)? {
+        for binding in evaluate_body(reader, rule)? {
             out.entry(rule.head_relation)
                 .or_default()
                 .insert(instantiate_head(rule, &binding)?);
@@ -355,9 +400,58 @@ fn evaluate_rules_once(
     Ok(())
 }
 
-fn evaluate_body(reader: &impl RelationRead, body: &[Atom]) -> Result<Vec<Binding>, RuleEvalError> {
-    let mut bindings = vec![Binding::new()];
-    let mut remaining = body.iter().collect::<Vec<_>>();
+fn compile_rules(rules: &[&Rule]) -> Vec<CompiledRule> {
+    rules.iter().map(|rule| compile_rule(rule)).collect()
+}
+
+fn compile_rule(rule: &Rule) -> CompiledRule {
+    let mut variables = HashMap::new();
+    let head_terms = rule
+        .head_terms
+        .iter()
+        .map(|term| compile_term(term, &mut variables))
+        .collect();
+    let body = rule
+        .body
+        .iter()
+        .map(|atom| CompiledAtom {
+            relation: atom.relation,
+            terms: atom
+                .terms
+                .iter()
+                .map(|term| compile_term(term, &mut variables))
+                .collect(),
+            negated: atom.negated,
+        })
+        .collect();
+    CompiledRule {
+        head_relation: rule.head_relation,
+        head_terms,
+        body,
+        slot_count: variables.len(),
+    }
+}
+
+fn compile_term(term: &Term, variables: &mut HashMap<Symbol, usize>) -> CompiledTerm {
+    match term {
+        Term::Value(value) => CompiledTerm::Value(value.clone()),
+        Term::Var(symbol) => {
+            let next_slot = variables.len();
+            let slot = *variables.entry(*symbol).or_insert(next_slot);
+            CompiledTerm::Var {
+                symbol: *symbol,
+                slot,
+            }
+        }
+    }
+}
+
+fn evaluate_body(
+    reader: &impl RelationRead,
+    rule: &CompiledRule,
+) -> Result<Vec<Binding>, RuleEvalError> {
+    let mut bindings = vec![vec![None; rule.slot_count]];
+    let mut remaining = rule.body.iter().collect::<Vec<_>>();
     while !remaining.is_empty() {
         let next = select_next_atom(reader, &bindings, &remaining)?;
         let atom = remaining.remove(next);
@@ -373,7 +467,7 @@ fn evaluate_body(reader: &impl RelationRead, body: &[Atom]) -> Result<Vec<Bindin
 fn select_next_atom(
     reader: &impl RelationRead,
     bindings: &[Binding],
-    atoms: &[&Atom],
+    atoms: &[&CompiledAtom],
 ) -> Result<usize, RuleEvalError> {
     let mut best = None;
     for (index, atom) in atoms.iter().enumerate() {
@@ -410,7 +504,7 @@ fn select_next_atom(
 
 fn atom_estimate(
     reader: &impl RelationRead,
-    atom: &Atom,
+    atom: &CompiledAtom,
     bindings: &[Binding],
 ) -> Result<usize, RuleEvalError> {
     let mut total = 0usize;
@@ -425,83 +519,89 @@ fn atom_estimate(
     Ok(total)
 }
 
-fn bound_term_count(atom: &Atom, binding: &Binding) -> usize {
+fn bound_term_count(atom: &CompiledAtom, binding: &Binding) -> usize {
     atom.terms
         .iter()
         .filter(|term| match term {
-            Term::Value(_) => true,
-            Term::Var(variable) => binding.contains_key(variable),
+            CompiledTerm::Value(_) => true,
+            CompiledTerm::Var { slot, .. } => binding[*slot].is_some(),
         })
         .count()
 }
 
-fn negated_atom_is_safe(atom: &Atom, binding: &Binding) -> bool {
+fn negated_atom_is_safe(atom: &CompiledAtom, binding: &Binding) -> bool {
     atom.terms.iter().all(|term| match term {
-        Term::Value(_) => true,
-        Term::Var(variable) => binding.contains_key(variable),
+        CompiledTerm::Value(_) => true,
+        CompiledTerm::Var { slot, .. } => binding[*slot].is_some(),
     })
 }
 
 fn apply_positive_atom(
     reader: &impl RelationRead,
-    atom: &Atom,
+    atom: &CompiledAtom,
     bindings: Vec<Binding>,
 ) -> Result<Vec<Binding>, RuleEvalError> {
     let mut out = Vec::new();
     for binding in bindings {
         let scan_bindings = scan_bindings(atom, &binding)?;
-        for tuple in reader.scan_relation(atom.relation, &scan_bindings)? {
-            if let Some(next) = unify_tuple(atom, &binding, &tuple) {
+        reader.visit_relation(atom.relation, &scan_bindings, &mut |tuple| {
+            if let Some(next) = unify_tuple(atom, &binding, tuple) {
                 out.push(next);
             }
-        }
+            Ok(ScanControl::Continue)
+        })?;
     }
     Ok(out)
 }
 
 fn apply_negated_atom(
     reader: &impl RelationRead,
-    atom: &Atom,
+    atom: &CompiledAtom,
     bindings: Vec<Binding>,
 ) -> Result<Vec<Binding>, RuleEvalError> {
     let mut out = Vec::new();
     for binding in bindings {
         ensure_negation_safe(atom, &binding)?;
         let scan_bindings = scan_bindings(atom, &binding)?;
-        if reader
-            .scan_relation(atom.relation, &scan_bindings)?
-            .is_empty()
-        {
+        let mut found = false;
+        reader.visit_relation(atom.relation, &scan_bindings, &mut |_| {
+            found = true;
+            Ok(ScanControl::Stop)
+        })?;
+        if !found {
             out.push(binding);
         }
     }
     Ok(out)
 }
 
-fn scan_bindings(atom: &Atom, binding: &Binding) -> Result<Vec<Option<Value>>, RuleEvalError> {
+fn scan_bindings(
+    atom: &CompiledAtom,
+    binding: &Binding,
+) -> Result<Vec<Option<Value>>, RuleEvalError> {
     let mut out = Vec::with_capacity(atom.terms.len());
     for term in &atom.terms {
         out.push(match term {
-            Term::Value(value) => Some(value.clone()),
-            Term::Var(variable) => binding.get(variable).cloned(),
+            CompiledTerm::Value(value) => Some(value.clone()),
+            CompiledTerm::Var { slot, .. } => binding[*slot].clone(),
         });
     }
     Ok(out)
 }
 
-fn unify_tuple(atom: &Atom, binding: &Binding, tuple: &Tuple) -> Option<Binding> {
+fn unify_tuple(atom: &CompiledAtom, binding: &Binding, tuple: &Tuple) -> Option<Binding> {
     let mut next = binding.clone();
     for (term, value) in atom.terms.iter().zip(tuple.values()) {
         match term {
-            Term::Value(expected) if expected != value => return None,
-            Term::Value(_) => {}
-            Term::Var(variable) => {
-                if let Some(bound) = next.get(variable) {
+            CompiledTerm::Value(expected) if expected != value => return None,
+            CompiledTerm::Value(_) => {}
+            CompiledTerm::Var { slot, .. } => {
+                if let Some(bound) = &next[*slot] {
                     if bound != value {
                         return None;
                     }
                 } else {
-                    next.insert(*variable, value.clone());
+                    next[*slot] = Some(value.clone());
                 }
             }
         }
@@ -509,7 +609,7 @@ fn unify_tuple(atom: &Atom, binding: &Binding, tuple: &Tuple) -> Option<Binding>
     Some(next)
 }
 
-fn ensure_negation_safe(atom: &Atom, binding: &Binding) -> Result<(), RuleEvalError> {
+fn ensure_negation_safe(atom: &CompiledAtom, binding: &Binding) -> Result<(), RuleEvalError> {
     if negated_atom_is_safe(atom, binding) {
         return Ok(());
     }
@@ -520,19 +620,14 @@ fn ensure_negation_safe(atom: &Atom, binding: &Binding) -> Result<(), RuleEvalEr
     .into())
 }
 
-fn instantiate_head(rule: &Rule, binding: &Binding) -> Result<Tuple, RuleEvalError> {
+fn instantiate_head(rule: &CompiledRule, binding: &Binding) -> Result<Tuple, RuleEvalError> {
     let mut values = Vec::with_capacity(rule.head_terms.len());
     for term in &rule.head_terms {
         values.push(match term {
-            Term::Value(value) => value.clone(),
-            Term::Var(variable) => {
-                binding
-                    .get(variable)
-                    .cloned()
-                    .ok_or(RuleError::UnboundHeadVariable {
-                        variable: *variable,
-                    })?
-            }
+            CompiledTerm::Value(value) => value.clone(),
+            CompiledTerm::Var { symbol, slot } => binding[*slot]
+                .clone()
+                .ok_or(RuleError::UnboundHeadVariable { variable: *symbol })?,
         });
     }
     Ok(Tuple::new(values))
@@ -717,17 +812,100 @@ mod tests {
         let reader = PlanningReader {
             scanned: RefCell::new(Vec::new()),
         };
-        let bindings = evaluate_body(
-            &reader,
-            &[
+        let rule = compile_rule(&Rule::new(
+            rel(82),
+            [var("y")],
+            [
                 Atom::positive(rel(81), [var("x"), var("y")]),
                 Atom::positive(rel(80), [var("x")]),
             ],
-        )
-        .unwrap();
+        ));
+        let bindings = evaluate_body(&reader, &rule).unwrap();
 
         assert_eq!(reader.scanned.borrow().as_slice(), &[rel(80), rel(81)]);
-        assert_eq!(bindings[0][&Symbol::intern("y")], int(2));
+        assert_eq!(
+            instantiate_head(&rule, &bindings[0]).unwrap(),
+            Tuple::from([int(2)])
+        );
+    }
+
+    #[test]
+    fn rule_evaluation_enforces_repeated_variables_in_one_atom() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(90), Symbol::intern("Pair"), 2))
+            .unwrap();
+        let mut tx = kernel.begin();
+        tx.assert(rel(90), Tuple::from([int(1), int(1)])).unwrap();
+        tx.assert(rel(90), Tuple::from([int(1), int(2)])).unwrap();
+
+        let same = Rule::new(
+            rel(91),
+            [var("x")],
+            [Atom::positive(rel(90), [var("x"), var("x")])],
+        );
+
+        assert_eq!(
+            RuleSet::new([same]).evaluate(&tx).unwrap()[&rel(91)],
+            vec![Tuple::from([int(1)])]
+        );
+    }
+
+    #[test]
+    fn rule_evaluation_rejects_unbound_head_variable() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(92), Symbol::intern("Source"), 1))
+            .unwrap();
+        let mut tx = kernel.begin();
+        tx.assert(rel(92), Tuple::from([int(1)])).unwrap();
+
+        let invalid = Rule::new(
+            rel(93),
+            [var("missing")],
+            [Atom::positive(rel(92), [var("present")])],
+        );
+
+        assert_eq!(
+            RuleSet::new([invalid]).evaluate(&tx),
+            Err(RuleEvalError::Rule(RuleError::UnboundHeadVariable {
+                variable: Symbol::intern("missing")
+            }))
+        );
+    }
+
+    struct VisitOnlyReader;
+
+    impl RelationRead for VisitOnlyReader {
+        fn scan_relation(
+            &self,
+            _relation: RelationId,
+            _bindings: &[Option<Value>],
+        ) -> Result<Vec<Tuple>, KernelError> {
+            panic!("rule atom application should use visit_relation")
+        }
+
+        fn visit_relation(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+            visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+        ) -> Result<(), KernelError> {
+            assert_eq!(relation, rel(94));
+            assert_eq!(bindings, &[None]);
+            visitor(&Tuple::from([int(1)]))?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rule_atom_application_streams_relation_visits() {
+        let rule = Rule::new(rel(95), [var("x")], [Atom::positive(rel(94), [var("x")])]);
+
+        assert_eq!(
+            RuleSet::new([rule]).evaluate(&VisitOnlyReader).unwrap()[&rel(95)],
+            vec![Tuple::from([int(1)])]
+        );
     }
 
     #[test]
