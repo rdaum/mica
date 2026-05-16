@@ -37,6 +37,7 @@ mod rpc;
 const DEFAULT_FILEINS: &[&str] = &[
     "examples/mud-core.mica",
     "examples/string.mica",
+    "examples/event-substitutions.mica",
     "examples/mud-command-parser.mica",
     "examples/http-core.mica",
 ];

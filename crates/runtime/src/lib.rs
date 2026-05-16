@@ -3778,6 +3778,46 @@ mod tests {
     }
 
     #[test]
+    fn runner_event_substitution_filein_renders_per_viewer() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../examples/string.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+            .unwrap();
+
+        assert!(matches!(
+            runner
+                .run_source("return substitution_demo(#alice)")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("You pick up the coin.")
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return substitution_demo(#bob)")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("Alice picks up the coin.")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "let template = compile_template(\"{Actor} {pick|picks} up {the item}.\")\n\
+                     return decompile_template(template)",
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("{Actor} {pick|picks} up {the item}.")
+        ));
+    }
+
+    #[test]
     fn runner_submit_source_as_exposes_context_and_drains_emissions() {
         let mut runner = SourceRunner::new_empty();
         runner.run_source("make_relation(:GrantEffect, 1)").unwrap();
@@ -3942,6 +3982,12 @@ mod tests {
         runner
             .run_filein(include_str!("../../../examples/mud-core.mica"))
             .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/string.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+            .unwrap();
         let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
         let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
 
@@ -3956,7 +4002,7 @@ mod tests {
         let emissions = runner.drain_emissions();
         assert_eq!(emissions.len(), 2);
         assert_eq!(emissions[0].target, alice);
-        assert_eq!(emissions[0].value, Value::string("Alice says, \"hello\""));
+        assert_eq!(emissions[0].value, Value::string("You say, \"hello\""));
         assert_eq!(emissions[1].target, bob);
         assert_eq!(emissions[1].value, Value::string("Alice says, \"hello\""));
     }
@@ -3969,6 +4015,9 @@ mod tests {
             .unwrap();
         runner
             .run_filein(include_str!("../../../examples/string.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
             .unwrap();
         runner
             .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
@@ -3999,7 +4048,7 @@ mod tests {
         let emissions = runner.drain_emissions();
         assert_eq!(emissions.len(), 2);
         assert_eq!(emissions[0].target, alice);
-        assert_eq!(emissions[0].value, Value::string("Alice says, \"hello\""));
+        assert_eq!(emissions[0].value, Value::string("You say, \"hello\""));
         assert_eq!(emissions[1].target, bob);
         assert_eq!(emissions[1].value, Value::string("Alice says, \"hello\""));
 
@@ -4023,9 +4072,11 @@ mod tests {
             TaskOutcome::Complete { value, .. } if value == Value::bool(true)
         ));
         let emissions = runner.drain_emissions();
-        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions.len(), 2);
         assert_eq!(emissions[0].target, alice);
-        assert_eq!(emissions[0].value, Value::string("Taken."));
+        assert_eq!(emissions[0].value, Value::string("You take the coin."));
+        assert_eq!(emissions[1].target, bob);
+        assert_eq!(emissions[1].value, Value::string("Alice takes the coin."));
 
         let report = runner
             .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"look\")")
@@ -4094,9 +4145,17 @@ mod tests {
             TaskOutcome::Complete { value, .. } if value == Value::bool(true)
         ));
         let emissions = runner.drain_emissions();
-        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions.len(), 2);
         assert_eq!(emissions[0].target, alice);
-        assert_eq!(emissions[0].value, Value::string("Placed."));
+        assert_eq!(
+            emissions[0].value,
+            Value::string("You put the coin in the box.")
+        );
+        assert_eq!(emissions[1].target, bob);
+        assert_eq!(
+            emissions[1].value,
+            Value::string("Alice puts the coin in the box.")
+        );
 
         let report = runner
             .run_source(
@@ -4124,9 +4183,17 @@ mod tests {
             TaskOutcome::Complete { value, .. } if value == Value::bool(true)
         ));
         let emissions = runner.drain_emissions();
-        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions.len(), 2);
         assert_eq!(emissions[0].target, alice);
-        assert_eq!(emissions[0].value, Value::string("Taken."));
+        assert_eq!(
+            emissions[0].value,
+            Value::string("You take the coin from the box.")
+        );
+        assert_eq!(emissions[1].target, bob);
+        assert_eq!(
+            emissions[1].value,
+            Value::string("Alice takes the coin from the box.")
+        );
 
         let report = runner
             .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"get coin\")")
@@ -4148,9 +4215,11 @@ mod tests {
             TaskOutcome::Complete { value, .. } if value == Value::bool(true)
         ));
         let emissions = runner.drain_emissions();
-        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions.len(), 2);
         assert_eq!(emissions[0].target, alice);
-        assert_eq!(emissions[0].value, Value::string("Dropped."));
+        assert_eq!(emissions[0].value, Value::string("You drop the coin."));
+        assert_eq!(emissions[1].target, bob);
+        assert_eq!(emissions[1].value, Value::string("Alice drops the coin."));
 
         let report = runner
             .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"dance\")")
@@ -4174,6 +4243,12 @@ mod tests {
         let mut runner = SourceRunner::new_empty();
         runner
             .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/string.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
             .unwrap();
         let first_room = runner.named_identity(Symbol::intern("first_room")).unwrap();
         let north_room = runner.named_identity(Symbol::intern("north_room")).unwrap();

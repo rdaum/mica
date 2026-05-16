@@ -938,6 +938,9 @@ mod tests {
             .run_filein(include_str!("../../../examples/string.mica"))
             .unwrap();
         runner
+            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+            .unwrap();
+        runner
             .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
             .unwrap();
         let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
@@ -970,7 +973,7 @@ mod tests {
         assert!(!handle_command(&host, endpoint, "alice", "say hello").unwrap());
 
         let line = output.try_recv().unwrap();
-        assert_eq!(line, "Alice says, \"hello\"");
+        assert_eq!(line, "You say, \"hello\"");
         assert!(!handle_command(&host, endpoint, "alice", "dance").unwrap());
 
         let line = output.try_recv().unwrap();

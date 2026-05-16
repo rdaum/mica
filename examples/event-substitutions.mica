@@ -1,0 +1,363 @@
+// Perspective-sensitive event text built entirely as ordinary Mica code.
+//
+// This file deliberately does not require compiler, runtime, or filein support.
+// File in examples/string.mica first; this library uses its trim() helper.
+// The world using this library should provide Name, ProperNoun, and Plural
+// relations.
+// Template source strings are compiled into plain list/map values:
+//
+//   "{Actor} {pick|picks} up {the item}."
+//
+// becomes roughly:
+//
+//   [
+//     {:op -> :name, :binding -> :actor, :cap -> true},
+//     " ",
+//     {:op -> :self_alt, :self -> "pick", :other -> "picks"},
+//     " up ",
+//     {:op -> :article, :article -> :the, :binding -> :item},
+//     "."
+//   ]
+//
+// The source string is the authoring form. The list/map value is the execution
+// form. Call compile_template() when a string is set or loaded, keep the
+// compiled value, and render it per viewer.
+
+verb template_error(message @ #string)
+  raise E_TEMPLATE, message
+end
+
+verb capitalize(text @ #string)
+  string_len(text) == 0 && return text
+  let first = string_slice(text, 0, 1)
+  let rest = string_slice(text, 1, string_len(text))
+
+  if first == "a"
+    return string_concat("A", rest)
+  elseif first == "b"
+    return string_concat("B", rest)
+  elseif first == "c"
+    return string_concat("C", rest)
+  elseif first == "d"
+    return string_concat("D", rest)
+  elseif first == "e"
+    return string_concat("E", rest)
+  elseif first == "f"
+    return string_concat("F", rest)
+  elseif first == "g"
+    return string_concat("G", rest)
+  elseif first == "h"
+    return string_concat("H", rest)
+  elseif first == "i"
+    return string_concat("I", rest)
+  elseif first == "j"
+    return string_concat("J", rest)
+  elseif first == "k"
+    return string_concat("K", rest)
+  elseif first == "l"
+    return string_concat("L", rest)
+  elseif first == "m"
+    return string_concat("M", rest)
+  elseif first == "n"
+    return string_concat("N", rest)
+  elseif first == "o"
+    return string_concat("O", rest)
+  elseif first == "p"
+    return string_concat("P", rest)
+  elseif first == "q"
+    return string_concat("Q", rest)
+  elseif first == "r"
+    return string_concat("R", rest)
+  elseif first == "s"
+    return string_concat("S", rest)
+  elseif first == "t"
+    return string_concat("T", rest)
+  elseif first == "u"
+    return string_concat("U", rest)
+  elseif first == "v"
+    return string_concat("V", rest)
+  elseif first == "w"
+    return string_concat("W", rest)
+  elseif first == "x"
+    return string_concat("X", rest)
+  elseif first == "y"
+    return string_concat("Y", rest)
+  elseif first == "z"
+    return string_concat("Z", rest)
+  end
+
+  return text
+end
+
+verb symbol_from_token(token @ #string)
+  let lowered = lower(trim(token))
+
+  if lowered == "actor"
+    return :actor
+  elseif lowered == "this"
+    return :this
+  elseif lowered == "dobj"
+    return :dobj
+  elseif lowered == "iobj"
+    return :iobj
+  elseif lowered == "location"
+    return :location
+  elseif lowered == "item"
+    return :item
+  elseif lowered == "container"
+    return :container
+  elseif lowered == "target"
+    return :target
+  elseif lowered == "message"
+    return :message
+  end
+
+  return template_error(string_concat("unknown template binding: ", token))
+end
+
+verb binding_token(binding)
+  if binding == :actor
+    return "actor"
+  elseif binding == :this
+    return "this"
+  elseif binding == :dobj
+    return "dobj"
+  elseif binding == :iobj
+    return "iobj"
+  elseif binding == :location
+    return "location"
+  elseif binding == :item
+    return "item"
+  elseif binding == :container
+    return "container"
+  elseif binding == :target
+    return "target"
+  elseif binding == :message
+    return "message"
+  end
+
+  return "?"
+end
+
+verb split_once(text @ #string, separator @ #string)
+  let index = 0
+  let limit = string_len(text) - string_len(separator)
+
+  while index <= limit
+    if string_slice(text, index, index + string_len(separator)) == separator
+      return [string_slice(text, 0, index), string_slice(text, index + string_len(separator), string_len(text))]
+    end
+    index = index + 1
+  end
+
+  return []
+end
+
+verb article_for(noun @ #string)
+  let lowered = lower(noun)
+  string_len(lowered) == 0 && return "a"
+
+  if string_starts_with(lowered, "uni") || string_starts_with(lowered, "unu")
+    return "a"
+  end
+
+  let first = string_slice(lowered, 0, 1)
+  if first == "a" || first == "e" || first == "i" || first == "o" || first == "u"
+    return "an"
+  end
+
+  return "a"
+end
+
+verb parse_template_token(token @ #string)
+  let trimmed = trim(token)
+  let branches = split_once(trimmed, "|")
+  if branches != []
+    return {:op -> :self_alt, :self -> trim(branches[0]), :other -> trim(branches[1])}
+  end
+
+  if string_starts_with(trimmed, "the ")
+    return {:op -> :article, :article -> :the, :binding -> symbol_from_token(string_slice(trimmed, 4, string_len(trimmed))), :cap -> false}
+  elseif string_starts_with(trimmed, "The ")
+    return {:op -> :article, :article -> :the, :binding -> symbol_from_token(string_slice(trimmed, 4, string_len(trimmed))), :cap -> true}
+  elseif string_starts_with(trimmed, "a ")
+    return {:op -> :article, :article -> :a, :binding -> symbol_from_token(string_slice(trimmed, 2, string_len(trimmed))), :cap -> false}
+  elseif string_starts_with(trimmed, "A ")
+    return {:op -> :article, :article -> :a, :binding -> symbol_from_token(string_slice(trimmed, 2, string_len(trimmed))), :cap -> true}
+  end
+
+  let cap = false
+  let first = string_slice(trimmed, 0, 1)
+  if first != lower(first)
+    cap = true
+  end
+
+  return {:op -> :name, :binding -> symbol_from_token(trimmed), :cap -> cap}
+end
+
+verb compile_template(source @ #string)
+  let parts = []
+  let literal = []
+  let token = []
+  let in_token = false
+
+  for ch in string_chars(source)
+    if in_token
+      if ch == "}"
+        parts = [@parts, parse_template_token(string_from_chars(token))]
+        token = []
+        in_token = false
+      else
+        token = [@token, ch]
+      end
+    elseif ch == "{"
+      if literal != []
+        parts = [@parts, string_from_chars(literal)]
+        literal = []
+      end
+      in_token = true
+    else
+      literal = [@literal, ch]
+    end
+  end
+
+  if in_token
+    return template_error("unclosed template token")
+  end
+
+  if literal != []
+    parts = [@parts, string_from_chars(literal)]
+  end
+
+  return parts
+end
+
+verb binding_name(bindings @ #map, binding, viewer)
+  let value = bindings[binding]
+  if value == nothing
+    return "<no-binding>"
+  end
+
+  return binding_value_text(value, viewer)
+end
+
+verb binding_value_text(value @ #string, viewer)
+  return value
+end
+
+verb binding_value_text(value @ #identity, viewer)
+  if value == viewer
+    return "you"
+  end
+
+  let name = one Name(value, ?name)
+  if name != nothing
+    return name
+  end
+
+  return "<unnamed>"
+end
+
+verb render_template_part(part @ #map, bindings @ #map, viewer)
+  let op = part[:op]
+
+  if op == :name
+    let name = binding_name(bindings, part[:binding], viewer)
+    if part[:cap]
+      return capitalize(name)
+    end
+    return name
+  elseif op == :self_alt
+    if bindings[:actor] == viewer
+      return part[:self]
+    end
+    return part[:other]
+  elseif op == :article
+    let value = bindings[part[:binding]]
+    if value == nothing
+      return "<no-binding>"
+    end
+
+    let name = binding_name(bindings, part[:binding], viewer)
+    let article = ""
+    if value != viewer && ProperNoun(value) == false
+      if part[:article] == :the
+        article = "the"
+      elseif part[:article] == :a && Plural(value) == false
+        article = article_for(name)
+      end
+    end
+
+    if part[:cap] && article != ""
+      article = capitalize(article)
+    elseif part[:cap]
+      name = capitalize(name)
+    end
+
+    if article == ""
+      return name
+    end
+
+    return string_concat(article, " ", name)
+  end
+
+  return "<invalid-template-part>"
+end
+
+verb render_template_part(part @ #string, bindings @ #map, viewer)
+  return part
+end
+
+verb render_template(parts @ #list, bindings @ #map, viewer)
+  let rendered = []
+
+  for part in parts
+    rendered = [@rendered, render_template_part(part, bindings, viewer)]
+  end
+
+  return string_join(rendered, "")
+end
+
+verb decompile_template_part(part @ #map)
+  let op = part[:op]
+  if op == :name
+    let name = binding_token(part[:binding])
+    if part[:cap]
+      name = capitalize(name)
+    end
+    return string_concat("{", name, "}")
+  elseif op == :self_alt
+    return string_concat("{", part[:self], "|", part[:other], "}")
+  elseif op == :article
+    let article = "a"
+    if part[:article] == :the
+      article = "the"
+    end
+    if part[:cap]
+      article = capitalize(article)
+    end
+    return string_concat("{", article, " ", binding_token(part[:binding]), "}")
+  end
+
+  return "{?}"
+end
+
+verb decompile_template_part(part @ #string)
+  return part
+end
+
+verb decompile_template(parts @ #list)
+  let rendered = []
+
+  for part in parts
+    rendered = [@rendered, decompile_template_part(part)]
+  end
+
+  return string_join(rendered, "")
+end
+
+verb substitution_demo(viewer)
+  let template = compile_template("{Actor} {pick|picks} up {the item}.")
+  let bindings = {:actor -> #alice, :item -> #coin}
+  return render_template(template, bindings, viewer)
+end

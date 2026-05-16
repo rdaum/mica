@@ -37,6 +37,8 @@ make_relation(:Portable, 1)
 make_functional_relation(:Name, 2, [0])
 make_functional_relation(:Description, 2, [0])
 make_functional_relation(:LocatedIn, 2, [0])
+make_relation(:ProperNoun, 1)
+make_relation(:Plural, 1)
 
 // A durable bidirectional-exit fact records one author-facing connection. The
 // derived Exit relation exposes both directions for command handling and query.
@@ -92,6 +94,8 @@ assert Name(#box, "box")
 assert Name(#first_room, "First Room")
 assert Name(#north_room, "North Room")
 assert Name(#attic, "Dusty Attic")
+assert ProperNoun(#alice)
+assert ProperNoun(#bob)
 
 assert Description(#coin, "A tarnished brass coin catches the light.")
 assert Description(#bob, "Bob is here, looking faintly puzzled.")
@@ -219,6 +223,8 @@ assert TrustedForCommandGrammar(#alice, #attic)
 assert CanRead(#alice, :Name)
 assert CanRead(#alice, :Description)
 assert CanRead(#alice, :LocatedIn)
+assert CanRead(#alice, :ProperNoun)
+assert CanRead(#alice, :Plural)
 assert CanRead(#alice, :Portable)
 assert CanRead(#alice, :BidirectionalExit)
 assert CanRead(#alice, :Exit)
@@ -256,11 +262,27 @@ assert CanInvoke(#alice, :north)
 assert CanInvoke(#alice, :south)
 assert CanInvoke(#alice, :up)
 assert CanInvoke(#alice, :down)
+assert CanInvoke(#alice, :emit_room_event)
+assert CanInvoke(#alice, :emit_room_event_except)
 assert CanInvoke(#alice, :get)
 assert CanInvoke(#alice, :get_from)
 assert CanInvoke(#alice, :drop)
 assert CanInvoke(#alice, :put)
 assert CanInvoke(#alice, :say)
+assert CanInvoke(#alice, :template_error)
+assert CanInvoke(#alice, :capitalize)
+assert CanInvoke(#alice, :symbol_from_token)
+assert CanInvoke(#alice, :binding_token)
+assert CanInvoke(#alice, :split_once)
+assert CanInvoke(#alice, :article_for)
+assert CanInvoke(#alice, :parse_template_token)
+assert CanInvoke(#alice, :compile_template)
+assert CanInvoke(#alice, :binding_name)
+assert CanInvoke(#alice, :binding_value_text)
+assert CanInvoke(#alice, :render_template_part)
+assert CanInvoke(#alice, :render_template)
+assert CanInvoke(#alice, :decompile_template_part)
+assert CanInvoke(#alice, :decompile_template)
 assert CanInvoke(#alice, :trim)
 assert CanInvoke(#alice, :split)
 assert CanInvoke(#alice, :string_chars)
@@ -331,6 +353,30 @@ CommandHandlerScope(actor, actor) :-
 CommandHandlerScope(actor, room) :-
   LocatedIn(actor, room)
 
+verb emit_room_event(room @ #room, template_source @ #string, bindings @ #map)
+  let template = compile_template(template_source)
+
+  for found in PresentActor(room, ?listener)
+    let listener = found[:listener]
+    emit(listener, render_template(template, bindings, listener))
+  end
+
+  return true
+end
+
+verb emit_room_event_except(room @ #room, skipped @ #identity, template_source @ #string, bindings @ #map)
+  let template = compile_template(template_source)
+
+  for found in PresentActor(room, ?listener)
+    let listener = found[:listener]
+    if listener != skipped
+      emit(listener, render_template(template, bindings, listener))
+    end
+  end
+
+  return true
+end
+
 verb look(actor @ #player)
   let room = one LocatedIn(actor, ?room)
   emit(actor, one Description(room, ?text))
@@ -380,22 +426,22 @@ verb look_in(actor @ #player, target @ #container)
 end
 
 verb north(actor @ #player)
-  return :go(actor: actor, direction: :north, message: "You walk north.")
+  return :go(actor: actor, direction: :north, leave: "{Actor} {walk|walks} north.", arrive: "{Actor} {arrive|arrives} from the south.")
 end
 
 verb south(actor @ #player)
-  return :go(actor: actor, direction: :south, message: "You walk south.")
+  return :go(actor: actor, direction: :south, leave: "{Actor} {walk|walks} south.", arrive: "{Actor} {arrive|arrives} from the north.")
 end
 
 verb up(actor @ #player)
-  return :go(actor: actor, direction: :up, message: "You climb up.")
+  return :go(actor: actor, direction: :up, leave: "{Actor} {climb|climbs} up.", arrive: "{Actor} {arrive|arrives} from below.")
 end
 
 verb down(actor @ #player)
-  return :go(actor: actor, direction: :down, message: "You climb down.")
+  return :go(actor: actor, direction: :down, leave: "{Actor} {climb|climbs} down.", arrive: "{Actor} {arrive|arrives} from above.")
 end
 
-verb go(actor @ #player, direction, message)
+verb go(actor @ #player, direction, leave, arrive)
   let room = one LocatedIn(actor, ?room)
   let destination = one Exit(room, direction, ?destination)
 
@@ -404,9 +450,11 @@ verb go(actor @ #player, direction, message)
     return false
   end
 
+  let bindings = {:actor -> actor}
+  :emit_room_event(room: room, template_source: leave, bindings: bindings)
   retract LocatedIn(actor, _)
   assert LocatedIn(actor, destination)
-  emit(actor, message)
+  :emit_room_event_except(room: destination, skipped: actor, template_source: arrive, bindings: bindings)
   emit(actor, one Description(destination, ?text))
   return true
 end
@@ -418,9 +466,10 @@ verb get(actor @ #player, item @ #thing)
   end
 
   if Portable(item) && CanSee(actor, item)
+    let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, actor)
-    emit(actor, "Taken.")
+    :emit_room_event(room: room, template_source: "{Actor} {take|takes} {the item}.", bindings: {:actor -> actor, :item -> item})
     return true
   end
 
@@ -440,9 +489,10 @@ verb get_from(actor @ #player, item @ #thing, container @ #container)
   end
 
   if LocatedIn(item, container) && Portable(item)
+    let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, actor)
-    emit(actor, "Taken.")
+    :emit_room_event(room: room, template_source: "{Actor} {take|takes} {the item} from {the container}.", bindings: {:actor -> actor, :item -> item, :container -> container})
     return true
   end
 
@@ -456,7 +506,7 @@ verb drop(actor @ #player, item @ #thing)
   if Carrying(actor, item)
     retract LocatedIn(item, _)
     assert LocatedIn(item, room)
-    emit(actor, "Dropped.")
+    :emit_room_event(room: room, template_source: "{Actor} {drop|drops} {the item}.", bindings: {:actor -> actor, :item -> item})
     return true
   end
 
@@ -466,9 +516,10 @@ end
 
 verb put(actor @ #player, item @ #thing, container @ #container)
   if Carrying(actor, item) && CanSee(actor, container)
+    let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, container)
-    emit(actor, "Placed.")
+    :emit_room_event(room: room, template_source: "{Actor} {put|puts} {the item} in {the container}.", bindings: {:actor -> actor, :item -> item, :container -> container})
     return true
   end
 
@@ -478,10 +529,12 @@ end
 
 verb say(actor @ #player, message)
   let room = one LocatedIn(actor, ?room)
-  let text = string_concat(one Name(actor, ?name), " says, \"", message, "\"")
+  let template = compile_template("{Actor} {say|says}, \"{message}\"")
+  let bindings = {:actor -> actor, :message -> message}
 
   for found in PresentActor(room, ?listener)
-    emit(found[:listener], text)
+    let listener = found[:listener]
+    emit(listener, render_template(template, bindings, listener))
   end
 
   return true
