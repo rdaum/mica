@@ -14,3 +14,11 @@ fjall-provider = ["dep:fjall"]
 arc-swap.workspace = true
 fjall = { workspace = true, optional = true }
 mica-var.workspace = true
+rart.workspace = true
+
+[dev-dependencies]
+micromeasure.workspace = true
+
+[[bench]]
+name = "relation_index_benches"
+harness = false

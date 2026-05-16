@@ -36,6 +36,7 @@ mica-relation-kernel = { path = "crates/relation-kernel", default-features = fal
 mica-runtime = { path = "crates/runtime" }
 mica-var = { path = "crates/var" }
 mica-vm = { path = "crates/vm" }
+rart = { version = "0.9", default-features = false }
 
 # core
 arc-swap = "1.9"

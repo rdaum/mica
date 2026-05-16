@@ -19,6 +19,22 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
+pub trait OrderedKeySink {
+    fn push_byte(&mut self, byte: u8);
+
+    fn extend_from_slice(&mut self, bytes: &[u8]);
+}
+
+impl OrderedKeySink for Vec<u8> {
+    fn push_byte(&mut self, byte: u8) {
+        self.push(byte);
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        Vec::extend_from_slice(self, bytes);
+    }
+}
+
 impl Value {
     pub fn ordered_key_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -27,10 +43,14 @@ impl Value {
     }
 
     pub fn encode_ordered(&self, out: &mut Vec<u8>) {
-        out.push(self.tag());
+        self.encode_ordered_into(out);
+    }
+
+    pub fn encode_ordered_into(&self, out: &mut impl OrderedKeySink) {
+        out.push_byte(self.tag());
         match self.kind() {
             ValueKind::Nothing => {}
-            ValueKind::Bool => out.push(self.payload() as u8),
+            ValueKind::Bool => out.push_byte(self.payload() as u8),
             ValueKind::Int => {
                 let normalized = self.as_int().unwrap() ^ i64::MIN;
                 out.extend_from_slice(&normalized.to_be_bytes());
@@ -55,31 +75,31 @@ impl Value {
             ValueKind::List => {
                 let _ = self.with_list(|values| {
                     for value in values {
-                        out.push(1);
-                        value.encode_ordered(out);
+                        out.push_byte(1);
+                        value.encode_ordered_into(out);
                     }
-                    out.push(0);
+                    out.push_byte(0);
                 });
             }
             ValueKind::Map => {
                 let _ = self.with_map(|entries| {
                     for (key, value) in entries {
-                        out.push(1);
-                        key.encode_ordered(out);
-                        value.encode_ordered(out);
+                        out.push_byte(1);
+                        key.encode_ordered_into(out);
+                        value.encode_ordered_into(out);
                     }
-                    out.push(0);
+                    out.push_byte(0);
                 });
             }
             ValueKind::Range => {
                 let _ = self.with_range(|start, end| {
-                    start.encode_ordered(out);
+                    start.encode_ordered_into(out);
                     match end {
                         Some(end) => {
-                            out.push(1);
-                            end.encode_ordered(out);
+                            out.push_byte(1);
+                            end.encode_ordered_into(out);
                         }
-                        None => out.push(0),
+                        None => out.push_byte(0),
                     }
                 });
             }
@@ -88,17 +108,17 @@ impl Value {
                     out.extend_from_slice(&(error.code().id() as u64).to_be_bytes());
                     match error.message() {
                         Some(message) => {
-                            out.push(1);
+                            out.push_byte(1);
                             encode_bytes_terminated(message.as_bytes(), out);
                         }
-                        None => out.push(0),
+                        None => out.push_byte(0),
                     }
                     match error.value() {
                         Some(value) => {
-                            out.push(1);
-                            value.encode_ordered(out);
+                            out.push_byte(1);
+                            value.encode_ordered_into(out);
                         }
-                        None => out.push(0),
+                        None => out.push_byte(0),
                     }
                 });
             }
@@ -396,12 +416,12 @@ fn write_error_value(error: &crate::ErrorValue, f: &mut fmt::Formatter<'_>) -> f
     f.write_str(")")
 }
 
-fn encode_bytes_terminated(bytes: &[u8], out: &mut Vec<u8>) {
+fn encode_bytes_terminated(bytes: &[u8], out: &mut impl OrderedKeySink) {
     for byte in bytes {
         if *byte == 0 {
             out.extend_from_slice(&[0, 0xff]);
         } else {
-            out.push(*byte);
+            out.push_byte(*byte);
         }
     }
     out.extend_from_slice(&[0, 0]);

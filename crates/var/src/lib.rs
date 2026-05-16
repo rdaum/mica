@@ -35,6 +35,7 @@ pub use codec::{
     encode_value_with_options,
 };
 pub use symbol::{Symbol, SymbolMetadata};
+pub use traits::OrderedKeySink;
 pub use value::{
     BOOL_PROTOTYPE, BYTES_PROTOTYPE, CAPABILITY_PROTOTYPE, CapabilityId, ERROR_CODE_PROTOTYPE,
     ERROR_PROTOTYPE, ErrorValue, FLOAT_PROTOTYPE, IDENTITY_PROTOTYPE, INTEGER_PROTOTYPE, Identity,

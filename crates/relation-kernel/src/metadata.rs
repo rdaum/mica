@@ -12,7 +12,6 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::RelationId;
-use crate::tuple::TupleKey;
 use mica_var::{Symbol, Value};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,16 +127,6 @@ impl TupleIndexSpec {
             .iter()
             .take_while(|position| bindings[**position as usize].is_some())
             .count()
-    }
-
-    pub(crate) fn prefix(&self, bindings: &[Option<Value>], count: usize) -> TupleKey {
-        TupleKey(
-            self.positions
-                .iter()
-                .take(count)
-                .map(|position| bindings[*position as usize].as_ref().unwrap().clone())
-                .collect(),
-        )
     }
 }
 

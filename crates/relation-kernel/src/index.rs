@@ -15,8 +15,34 @@ use crate::ScanControl;
 use crate::error::KernelError;
 use crate::metadata::RelationMetadata;
 use crate::tuple::{Tuple, TupleKey};
-use mica_var::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use mica_var::{OrderedKeySink, Value};
+use rart::{OverflowKey, OverflowKeyBuilder, VersionedAdaptiveRadixTree, VisitControl};
+use std::collections::BTreeSet;
+use std::fmt;
+
+type RadixTupleKey = OverflowKey<64, 16>;
+
+struct RadixTupleKeyBuilder(OverflowKeyBuilder<64, 16>);
+
+impl RadixTupleKeyBuilder {
+    fn new() -> Self {
+        Self(RadixTupleKey::builder())
+    }
+
+    fn finish(self) -> RadixTupleKey {
+        self.0.finish()
+    }
+}
+
+impl OrderedKeySink for RadixTupleKeyBuilder {
+    fn push_byte(&mut self, byte: u8) {
+        self.0.push(byte);
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct RelationState {
@@ -63,12 +89,7 @@ impl RelationState {
                 .collect());
         };
 
-        let prefix = index.spec.prefix(bindings, bound_count);
-        Ok(index
-            .scan_prefix(&prefix, bound_count)
-            .into_iter()
-            .filter(|tuple| tuple.matches_bindings(bindings))
-            .collect())
+        index.scan_prefix(bindings, bound_count)
     }
 
     pub(crate) fn visit(
@@ -147,44 +168,71 @@ impl RelationState {
     }
 }
 
-#[derive(Clone, Debug)]
 struct TupleIndex {
     spec: crate::TupleIndexSpec,
-    entries: BTreeMap<TupleKey, BTreeSet<Tuple>>,
+    entries: VersionedAdaptiveRadixTree<RadixTupleKey, BTreeSet<Tuple>>,
+}
+
+impl fmt::Debug for TupleIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let tuple_count = self.entries.values_iter().map(BTreeSet::len).sum::<usize>();
+        f.debug_struct("TupleIndex")
+            .field("spec", &self.spec)
+            .field("tuple_count", &tuple_count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Clone for TupleIndex {
+    fn clone(&self) -> Self {
+        Self {
+            spec: self.spec.clone(),
+            entries: self.entries.clone(),
+        }
+    }
 }
 
 impl TupleIndex {
     fn empty(spec: crate::TupleIndexSpec) -> Self {
         Self {
             spec,
-            entries: BTreeMap::new(),
+            entries: VersionedAdaptiveRadixTree::new(),
         }
     }
 
     fn insert(&mut self, tuple: Tuple) {
-        self.entries
-            .entry(tuple.project(&self.spec.positions))
-            .or_default()
-            .insert(tuple);
+        let key = self.tuple_key(&tuple);
+        if let Some(bucket) = self.entries.get_mut_k(&key) {
+            bucket.insert(tuple);
+            return;
+        }
+        let mut bucket = BTreeSet::new();
+        bucket.insert(tuple);
+        self.entries.insert_k(&key, bucket);
     }
 
     fn remove(&mut self, tuple: &Tuple) {
-        let key = tuple.project(&self.spec.positions);
-        let Some(bucket) = self.entries.get_mut(&key) else {
+        let key = self.tuple_key(tuple);
+        let Some(bucket) = self.entries.get_mut_k(&key) else {
             return;
         };
         bucket.remove(tuple);
         if bucket.is_empty() {
-            self.entries.remove(&key);
+            self.entries.remove_k(&key);
         }
     }
 
-    fn scan_prefix(&self, prefix: &TupleKey, bound_count: usize) -> Vec<Tuple> {
-        self.entries
-            .iter()
-            .filter(|(key, _)| key.0.len() >= bound_count && key.0[..bound_count] == prefix.0)
-            .flat_map(|(_, tuples)| tuples.iter().cloned())
-            .collect()
+    fn scan_prefix(
+        &self,
+        bindings: &[Option<Value>],
+        bound_count: usize,
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let mut out = Vec::new();
+        self.visit_prefix(bindings, bound_count, &mut |tuple| {
+            out.push(tuple.clone());
+            Ok(ScanControl::Continue)
+        })?;
+        Ok(out)
     }
 
     fn visit_prefix(
@@ -193,37 +241,48 @@ impl TupleIndex {
         bound_count: usize,
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
-        for (key, tuples) in &self.entries {
-            if !self.key_matches_prefix(key, bindings, bound_count) {
-                continue;
-            }
-            for tuple in tuples {
-                if visitor(tuple)? == ScanControl::Stop {
-                    return Ok(());
+        let prefix = self.binding_prefix_key(bindings, bound_count);
+        self.entries
+            .try_prefix_values_for_each_k(&prefix, |tuples| {
+                for tuple in tuples {
+                    if !tuple.matches_bindings(bindings) {
+                        continue;
+                    }
+                    match visitor(tuple) {
+                        Ok(ScanControl::Continue) => {}
+                        Ok(ScanControl::Stop) => return Ok(VisitControl::Stop),
+                        Err(error) => return Err(error),
+                    }
                 }
-            }
-        }
-        Ok(())
+                Ok(VisitControl::Continue)
+            })
     }
 
-    fn key_matches_prefix(
-        &self,
-        key: &TupleKey,
-        bindings: &[Option<Value>],
-        bound_count: usize,
-    ) -> bool {
-        key.0.len() >= bound_count
-            && self
-                .spec
+    fn tuple_key(&self, tuple: &Tuple) -> RadixTupleKey {
+        self.key_from_values(
+            self.spec
+                .positions
+                .iter()
+                .map(|position| &tuple.values()[*position as usize]),
+        )
+    }
+
+    fn binding_prefix_key(&self, bindings: &[Option<Value>], bound_count: usize) -> RadixTupleKey {
+        self.key_from_values(
+            self.spec
                 .positions
                 .iter()
                 .take(bound_count)
-                .enumerate()
-                .all(|(index, position)| {
-                    bindings[*position as usize]
-                        .as_ref()
-                        .is_some_and(|value| &key.0[index] == value)
-                })
+                .filter_map(|position| bindings[*position as usize].as_ref()),
+        )
+    }
+
+    fn key_from_values<'a>(&self, values: impl IntoIterator<Item = &'a Value>) -> RadixTupleKey {
+        let mut key = RadixTupleKeyBuilder::new();
+        for value in values {
+            value.encode_ordered_into(&mut key);
+        }
+        key.finish()
     }
 }
 
