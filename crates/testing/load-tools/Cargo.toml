@@ -10,6 +10,10 @@ description = "Load testing tools for Mica"
 name = "direct-driver-load-test"
 path = "src/direct-driver-load-test.rs"
 
+[[bin]]
+name = "property-update-load-test"
+path = "src/property-update-load-test.rs"
+
 [dependencies]
 clap.workspace = true
 compio.workspace = true
