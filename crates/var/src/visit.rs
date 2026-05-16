@@ -42,6 +42,10 @@ pub enum ValueRef<'a> {
         value: Option<&'a Value>,
     },
     Capability(CapabilityId),
+    Frob {
+        delegate: Identity,
+        value: &'a Value,
+    },
 }
 
 impl ValueRef<'_> {
@@ -62,6 +66,7 @@ impl ValueRef<'_> {
             Self::Range { .. } => ValueKind::Range,
             Self::Error { .. } => ValueKind::Error,
             Self::Capability(_) => ValueKind::Capability,
+            Self::Frob { .. } => ValueKind::Frob,
         }
     }
 
@@ -92,6 +97,7 @@ impl ValueRef<'_> {
             Self::Map(entries) => entries.len() * 2,
             Self::Range { end, .. } => 1 + usize::from(end.is_some()),
             Self::Error { value, .. } => usize::from(value.is_some()),
+            Self::Frob { .. } => 1,
             _ => 0,
         }
     }
@@ -147,7 +153,8 @@ impl Value {
             | ValueKind::List
             | ValueKind::Map
             | ValueKind::Range
-            | ValueKind::Error => self.heap_value_ref(),
+            | ValueKind::Error
+            | ValueKind::Frob => self.heap_value_ref(),
         }
     }
 
@@ -168,6 +175,10 @@ impl Value {
                 end: end.as_ref(),
             },
             HeapValue::Error(error) => error.as_value_ref(),
+            HeapValue::Frob(frob) => ValueRef::Frob {
+                delegate: frob.delegate(),
+                value: frob.value(),
+            },
         }
     }
 }
@@ -217,6 +228,9 @@ fn walk_children<V: ValueVisitor>(
         ValueRef::Error {
             value: Some(value), ..
         } => {
+            walk_value(value, visitor)?;
+        }
+        ValueRef::Frob { value, .. } => {
             walk_value(value, visitor)?;
         }
         _ => {}

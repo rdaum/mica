@@ -13,8 +13,8 @@
 
 use crate::value::{
     PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_ERROR, TAG_ERROR_CODE, TAG_FLOAT,
-    TAG_IDENTITY, TAG_INT, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE, TAG_SHIFT, TAG_STRING,
-    TAG_SYMBOL,
+    TAG_FROB, TAG_IDENTITY, TAG_INT, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE, TAG_SHIFT,
+    TAG_STRING, TAG_SYMBOL,
 };
 use crate::{CapabilityId, Identity, Symbol, Value, ValueRef};
 use std::fmt;
@@ -286,6 +286,11 @@ pub fn encode_value_to_sink<S: ValueSink>(
                 encode_value_to_sink(value, sink, options)?;
             }
         }
+        ValueRef::Frob { delegate, value } => {
+            write_extended_header(sink, TAG_FROB, 0)?;
+            encode_value_to_sink(&Value::identity(delegate), sink, options)?;
+            encode_value_to_sink(value, sink, options)?;
+        }
         ValueRef::Capability(_) if options.allow_capabilities => {
             write_word(sink, value.raw_bits())?;
         }
@@ -433,6 +438,11 @@ fn encode_value_to_segments<'a>(
             if let Some(value) = value {
                 encode_value_to_segments(value, segments, options)?;
             }
+        }
+        ValueRef::Frob { delegate, value } => {
+            segments.push_scratch_word(extended_header_word(TAG_FROB, 0));
+            segments.push_scratch_word(Value::identity(delegate).raw_bits());
+            encode_value_to_segments(value, segments, options)?;
         }
         ValueRef::Capability(_) if options.allow_capabilities => {
             segments.push_scratch_word(value.raw_bits());
@@ -588,6 +598,16 @@ impl<'a> ValueReader<'a> {
                 };
                 Ok(Value::error(code, message, value))
             }
+            TAG_FROB => {
+                if aux != 0 {
+                    return Err(ValueCodecError::InvalidExtendedAux { kind, aux });
+                }
+                let delegate = self.read_value()?.as_identity().ok_or_else(|| {
+                    ValueCodecError::InvalidValue("frob delegate is not an identity".to_owned())
+                })?;
+                let value = self.read_value()?;
+                Ok(Value::frob(delegate, value))
+            }
             TAG_CAPABILITY => Err(ValueCodecError::CapabilityNotDecodable),
             TAG_NOTHING | TAG_BOOL | TAG_INT | TAG_FLOAT | TAG_IDENTITY => {
                 Err(ValueCodecError::InvalidExtendedAux { kind, aux })
@@ -718,7 +738,7 @@ fn decode_inline_word(word: u64, options: ValueCodecOptions) -> Result<Value, Va
                 Err(ValueCodecError::InvalidSymbolPayload(payload))
             }
         }
-        TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR => {
+        TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR | TAG_FROB => {
             Err(ValueCodecError::InlineHeapValue(tag))
         }
         TAG_CAPABILITY => {

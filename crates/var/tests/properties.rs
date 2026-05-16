@@ -39,11 +39,14 @@ fn arb_value() -> impl Strategy<Value = Value> {
             (
                 "E_[A-Z][A-Z0-9_]{0,12}",
                 prop::option::of("\\PC{0,24}"),
-                prop::option::of(inner),
+                prop::option::of(inner.clone()),
             )
                 .prop_map(|(code, message, value)| {
                     Value::error(Symbol::intern(&code), message, value)
                 }),
+            (0u64..=Identity::MAX, inner).prop_map(|(delegate, value)| {
+                Value::frob(Identity::new(delegate).unwrap(), value)
+            }),
         ]
     })
 }

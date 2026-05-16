@@ -110,6 +110,34 @@ fn capability_values_are_ephemeral() {
 }
 
 #[test]
+fn frob_values_carry_delegate_and_payload() {
+    let delegate = Identity::new(42).unwrap();
+    let payload = Value::map([(Value::symbol(Symbol::intern("item")), Value::string("coin"))]);
+    let frob = Value::frob(delegate, payload.clone());
+
+    assert_eq!(frob.kind(), ValueKind::Frob);
+    assert_eq!(frob.frob_delegate(), Some(delegate));
+    assert_eq!(frob.frob_value(), Some(&payload));
+    assert_eq!(
+        frob.with_frob(|delegate, value| (delegate, value.clone())),
+        Some((delegate, payload.clone()))
+    );
+    assert_eq!(frob, Value::frob(delegate, payload.clone()));
+    assert_ne!(
+        frob,
+        Value::frob(Identity::new(43).unwrap(), payload.clone())
+    );
+    assert_ne!(frob, Value::frob(delegate, Value::string("coin")));
+}
+
+#[test]
+fn frob_persistability_follows_payload() {
+    let delegate = Identity::new(42).unwrap();
+    assert!(Value::frob(delegate, Value::string("coin")).is_persistable());
+    assert!(!Value::frob(delegate, Value::capability_raw(1).unwrap()).is_persistable());
+}
+
+#[test]
 fn symbols_intern_consistently_across_threads() {
     let handles = (0..8)
         .map(|_| {
@@ -275,6 +303,16 @@ fn value_refs_borrow_immediate_and_heap_payloads() {
         value_ref => panic!("expected list ref, got {value_ref:?}"),
     }
     assert_eq!(list.as_value_ref().child_count(), 2);
+
+    let frob = Value::frob(identity, Value::string("payload"));
+    match frob.as_value_ref() {
+        ValueRef::Frob { delegate, value } => {
+            assert_eq!(delegate, identity);
+            assert_eq!(value.with_str(str::to_owned), Some("payload".to_owned()));
+        }
+        value_ref => panic!("expected frob ref, got {value_ref:?}"),
+    }
+    assert_eq!(frob.as_value_ref().child_count(), 1);
 }
 
 #[test]
@@ -318,6 +356,29 @@ fn value_walk_visits_nested_values_depth_first() {
             ValueKind::Int,
         ]
     );
+}
+
+#[test]
+fn value_walk_visits_frob_payload() {
+    struct KindCollector(Vec<ValueKind>);
+
+    impl ValueVisitor for KindCollector {
+        type Error = std::convert::Infallible;
+
+        fn visit_value(
+            &mut self,
+            _value: &Value,
+            value_ref: ValueRef<'_>,
+        ) -> Result<VisitDecision, Self::Error> {
+            self.0.push(value_ref.kind());
+            Ok(VisitDecision::Descend)
+        }
+    }
+
+    let value = Value::frob(Identity::new(42).unwrap(), Value::string("payload"));
+    let mut collector = KindCollector(Vec::new());
+    value.walk(&mut collector).unwrap();
+    assert_eq!(collector.0, vec![ValueKind::Frob, ValueKind::String]);
 }
 
 #[test]
@@ -419,6 +480,7 @@ fn value_codec_round_trips_persistable_values() {
             Some("rich error"),
             Some(Value::int(7).unwrap()),
         ),
+        Value::frob(Identity::new(42).unwrap(), Value::string("payload")),
     ];
 
     for value in values {
@@ -473,6 +535,7 @@ fn value_codec_sink_matches_vec_encoder() {
                 Some(Value::int(7).unwrap()),
             ),
         ]),
+        Value::frob(Identity::new(42).unwrap(), Value::string("payload")),
     ];
 
     for value in values {
@@ -500,6 +563,7 @@ fn value_codec_segments_match_vec_encoder_and_borrow_payloads() {
                 Some(Value::int(7).unwrap()),
             ),
         ]),
+        Value::frob(Identity::new(42).unwrap(), Value::string("payload")),
     ];
 
     for value in values {

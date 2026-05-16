@@ -32,6 +32,7 @@ pub(crate) const TAG_MAP: u8 = 10;
 pub(crate) const TAG_RANGE: u8 = 11;
 pub(crate) const TAG_ERROR: u8 = 12;
 pub(crate) const TAG_CAPABILITY: u8 = 13;
+pub(crate) const TAG_FROB: u8 = 14;
 
 pub(crate) const INT_BITS: u32 = 56;
 pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
@@ -122,6 +123,26 @@ impl ErrorValue {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct FrobValue {
+    delegate: Identity,
+    value: Value,
+}
+
+impl FrobValue {
+    pub fn new(delegate: Identity, value: Value) -> Self {
+        Self { delegate, value }
+    }
+
+    pub const fn delegate(&self) -> Identity {
+        self.delegate
+    }
+
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u8)]
 pub enum ValueKind {
@@ -139,6 +160,7 @@ pub enum ValueKind {
     Range = TAG_RANGE,
     Error = TAG_ERROR,
     Capability = TAG_CAPABILITY,
+    Frob = TAG_FROB,
 }
 
 pub const NOTHING_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0001);
@@ -155,6 +177,7 @@ pub const MAP_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000b);
 pub const RANGE_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000c);
 pub const ERROR_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000d);
 pub const CAPABILITY_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000e);
+pub const FROB_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000f);
 
 pub const PRIMITIVE_PROTOTYPES: &[(&str, Identity)] = &[
     ("nothing", NOTHING_PROTOTYPE),
@@ -171,6 +194,7 @@ pub const PRIMITIVE_PROTOTYPES: &[(&str, Identity)] = &[
     ("range", RANGE_PROTOTYPE),
     ("error", ERROR_PROTOTYPE),
     ("capability", CAPABILITY_PROTOTYPE),
+    ("frob", FROB_PROTOTYPE),
 ];
 
 const fn primitive_identity(raw: u64) -> Identity {
@@ -196,6 +220,7 @@ pub const fn primitive_prototype_for_kind(kind: ValueKind) -> Identity {
         ValueKind::Range => RANGE_PROTOTYPE,
         ValueKind::Error => ERROR_PROTOTYPE,
         ValueKind::Capability => CAPABILITY_PROTOTYPE,
+        ValueKind::Frob => FROB_PROTOTYPE,
     }
 }
 
@@ -281,6 +306,10 @@ impl Value {
         Self::heap(HeapValue::Error(ErrorValue::new(code, message, value)))
     }
 
+    pub fn frob(delegate: Identity, value: Value) -> Self {
+        Self::heap(HeapValue::Frob(FrobValue::new(delegate, value)))
+    }
+
     pub fn string(value: impl AsRef<str>) -> Self {
         Self::heap(HeapValue::String(value.as_ref().into()))
     }
@@ -337,6 +366,7 @@ impl Value {
             TAG_RANGE => ValueKind::Range,
             TAG_ERROR => ValueKind::Error,
             TAG_CAPABILITY => ValueKind::Capability,
+            TAG_FROB => ValueKind::Frob,
             _ => unreachable!(),
         }
     }
@@ -345,7 +375,7 @@ impl Value {
     pub const fn is_immediate(&self) -> bool {
         !matches!(
             self.tag(),
-            TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR
+            TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR | TAG_FROB
         )
     }
 
@@ -455,6 +485,24 @@ impl Value {
         })?
     }
 
+    pub fn with_frob<R>(&self, f: impl FnOnce(Identity, &Value) -> R) -> Option<R> {
+        self.with_heap(|heap| match heap {
+            HeapValue::Frob(frob) => Some(f(frob.delegate(), frob.value())),
+            _ => None,
+        })?
+    }
+
+    pub fn frob_delegate(&self) -> Option<Identity> {
+        self.with_frob(|delegate, _| delegate)
+    }
+
+    pub fn frob_value(&self) -> Option<&Value> {
+        match self.heap_ref()? {
+            HeapValue::Frob(frob) => Some(frob.value()),
+            _ => None,
+        }
+    }
+
     pub fn error_code_symbol(&self) -> Option<Symbol> {
         self.as_error_code()
             .or_else(|| self.with_error(ErrorValue::code))
@@ -480,6 +528,9 @@ impl Value {
                 .unwrap_or(false),
             ValueKind::Error => self
                 .with_error(|error| error.value().is_none_or(Self::is_persistable))
+                .unwrap_or(false),
+            ValueKind::Frob => self
+                .with_frob(|_, value| value.is_persistable())
                 .unwrap_or(false),
             _ => true,
         }

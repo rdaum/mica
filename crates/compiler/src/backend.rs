@@ -602,14 +602,7 @@ fn lower_installed_params(
             .map(|(position, param)| {
                 let restriction = match &param.restriction {
                     Some(restriction) => {
-                        let identity = context.identity(restriction).ok_or_else(|| {
-                            CompileError::UnknownIdentity {
-                                node: id,
-                                span: semantic.span(id).cloned(),
-                                name: restriction.clone(),
-                            }
-                        })?;
-                        Value::identity(identity)
+                        compile_param_restriction(id, semantic, context, restriction)?
                     }
                     None => Value::nothing(),
                 };
@@ -644,15 +637,9 @@ fn lower_installed_params(
             }
             let (name, restriction) = match part.split_once('@') {
                 Some((name, restriction)) => {
-                    let restriction_name = restriction.trim().trim_start_matches('#').trim();
-                    let restriction = context.identity(restriction_name).ok_or_else(|| {
-                        CompileError::UnknownIdentity {
-                            node: id,
-                            span: semantic.span(id).cloned(),
-                            name: restriction_name.to_owned(),
-                        }
-                    })?;
-                    (name.trim(), Value::identity(restriction))
+                    let restriction =
+                        compile_param_restriction(id, semantic, context, restriction)?;
+                    (name.trim(), restriction)
                 }
                 None => (part, Value::nothing()),
             };
@@ -674,6 +661,31 @@ fn lower_installed_params(
         }
     }
     Ok(installed)
+}
+
+fn compile_param_restriction(
+    id: NodeId,
+    semantic: &SemanticProgram,
+    context: &CompileContext,
+    restriction: &str,
+) -> Result<Value, CompileError> {
+    let restriction_name = restriction.trim().trim_start_matches('#').trim();
+    let (name, frob_only) = match restriction_name.strip_suffix("<_>") {
+        Some(name) => (name.trim(), true),
+        None => (restriction_name, false),
+    };
+    let identity = context
+        .identity(name)
+        .ok_or_else(|| CompileError::UnknownIdentity {
+            node: id,
+            span: semantic.span(id).cloned(),
+            name: name.to_owned(),
+        })?;
+    if frob_only {
+        Ok(Value::frob(identity, Value::nothing()))
+    } else {
+        Ok(Value::identity(identity))
+    }
 }
 
 fn item_id(item: &HirItem) -> NodeId {
@@ -857,6 +869,11 @@ impl<'a> ProgramCompiler<'a> {
                 });
                 Ok(dst)
             }
+            HirExpr::Frob {
+                id,
+                delegate,
+                value,
+            } => self.compile_frob(*id, delegate, value),
             HirExpr::Symbol { name, .. } => {
                 let dst = self.alloc_register();
                 self.emit(Instruction::Load {
@@ -1158,6 +1175,30 @@ impl<'a> ProgramCompiler<'a> {
                 Ok(dst)
             }
         }
+    }
+
+    fn compile_frob(
+        &mut self,
+        id: NodeId,
+        delegate: &str,
+        value: &HirExpr,
+    ) -> Result<Register, CompileError> {
+        let delegate =
+            self.context
+                .identity(delegate)
+                .ok_or_else(|| CompileError::UnknownIdentity {
+                    node: id,
+                    span: self.span(id),
+                    name: delegate.to_owned(),
+                })?;
+        let value = self.compile_expr_for_operand(value)?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::BuiltinCall {
+            dst,
+            name: Symbol::intern("frob"),
+            args: vec![Operand::Value(Value::identity(delegate)), value],
+        });
+        Ok(dst)
     }
 
     fn compile_range(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
@@ -2813,6 +2854,7 @@ fn expr_id(expr: &HirExpr) -> NodeId {
         | HirExpr::LocalRef { id, .. }
         | HirExpr::ExternalRef { id, .. }
         | HirExpr::Identity { id, .. }
+        | HirExpr::Frob { id, .. }
         | HirExpr::Symbol { id, .. }
         | HirExpr::QueryVar { id, .. }
         | HirExpr::Hole { id }

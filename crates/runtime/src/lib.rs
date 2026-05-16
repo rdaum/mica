@@ -87,6 +87,10 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "assert_transient",
     "retract_transient",
     "drop_transient_scope",
+    "frob",
+    "frob_delegate",
+    "frob_value",
+    "is_frob",
     "string_len",
     "string_chars",
     "string_slice",
@@ -1591,11 +1595,11 @@ fn source_literal(
         ValueKind::Map => value
             .with_map(|entries| {
                 render_sequence(
-                    "[",
-                    "]",
+                    "{",
+                    "}",
                     entries.iter().map(|(key, value)| {
                         format!(
-                            "{}: {}",
+                            "{} -> {}",
                             source_literal(key, identity_names, relation_names),
                             source_literal(value, identity_names, relation_names)
                         )
@@ -1635,6 +1639,15 @@ fn source_literal(
             })
             .unwrap(),
         ValueKind::Capability => "<cap>".to_owned(),
+        ValueKind::Frob => value
+            .with_frob(|delegate, payload| {
+                format!(
+                    "{}<{}>",
+                    source_literal(&Value::identity(delegate), identity_names, relation_names),
+                    source_literal(payload, identity_names, relation_names)
+                )
+            })
+            .unwrap(),
     }
 }
 
@@ -1973,6 +1986,10 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("assert_transient", assert_transient_builtin)
         .with_builtin("retract_transient", retract_transient_builtin)
         .with_builtin("drop_transient_scope", drop_transient_scope_builtin)
+        .with_builtin("frob", frob_builtin)
+        .with_builtin("frob_delegate", frob_delegate_builtin)
+        .with_builtin("frob_value", frob_value_builtin)
+        .with_builtin("is_frob", is_frob_builtin)
         .with_builtin("string_len", string_len_builtin)
         .with_builtin("string_chars", string_chars_builtin)
         .with_builtin("string_slice", string_slice_builtin)
@@ -2015,6 +2032,62 @@ fn tasks_builtin(
         return Err(invalid_builtin_call("tasks", "expected tasks()"));
     }
     Ok(Value::list(context.task_snapshot().iter().cloned()))
+}
+
+fn frob_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "frob",
+            "expected frob(delegate, value)",
+        ));
+    }
+    let delegate = builtin_identity_arg("frob", args, 0)?;
+    Ok(Value::frob(delegate, args[1].clone()))
+}
+
+fn frob_delegate_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "frob_delegate",
+            "expected frob_delegate(value)",
+        ));
+    }
+    Ok(args[0]
+        .frob_delegate()
+        .map(Value::identity)
+        .unwrap_or_else(Value::nothing))
+}
+
+fn frob_value_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "frob_value",
+            "expected frob_value(value)",
+        ));
+    }
+    args[0]
+        .frob_value()
+        .cloned()
+        .ok_or_else(|| invalid_builtin_call("frob_value", "expected frob argument"))
+}
+
+fn is_frob_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("is_frob", "expected is_frob(value)"));
+    }
+    Ok(Value::bool(args[0].frob_delegate().is_some()))
 }
 
 fn string_len_builtin(
@@ -3578,6 +3651,15 @@ fn render_value(
             })
             .unwrap(),
         ValueKind::Capability => "<cap>".to_owned(),
+        ValueKind::Frob => value
+            .with_frob(|delegate, payload| {
+                format!(
+                    "{}<{}>",
+                    render_value(&Value::identity(delegate), identity_names, relation_names),
+                    render_value(payload, identity_names, relation_names)
+                )
+            })
+            .unwrap(),
     }
 }
 
@@ -3774,6 +3856,70 @@ mod tests {
                 .unwrap()
                 .outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("rth")
+        ));
+    }
+
+    #[test]
+    fn runner_frob_builtins_construct_and_inspect_values() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:take_event)").unwrap();
+
+        let delegate = runner.actor_identity(Symbol::intern("take_event")).unwrap();
+        let report = runner
+            .run_source(
+                "let event = frob(#take_event, {:item -> \"coin\"})\n\
+                 return [is_frob(event), frob_delegate(event), frob_value(event)[:item]]",
+            )
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([
+                    Value::bool(true),
+                    Value::identity(delegate),
+                    Value::string("coin"),
+                ])
+        ));
+    }
+
+    #[test]
+    fn runner_frob_literals_compile_to_frob_values() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:take_event)").unwrap();
+
+        let report = runner
+            .run_source("return frob_value(#take_event<{:item -> \"coin\"}>)[:item]")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("coin")
+        ));
+    }
+
+    #[test]
+    fn runner_dispatches_frobs_by_delegate_restriction() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "make_identity(:event)\n\
+                 make_identity(:take_event)\n\
+                 make_relation(:Delegates, 3)\n\
+                 assert Delegates(#take_event, #event, 0)\n\
+                 verb render(event @ #event<_>)\n\
+                   return frob_value(event)[:item]\n\
+                 end\n",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source("return :render(event: #take_event<{:item -> \"coin\"}>)")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("coin")
         ));
     }
 
@@ -5393,6 +5539,36 @@ mod tests {
         let dispatch = imported.run_source("return :look(actor: #room)").unwrap();
         assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
         assert!(dispatch.render().contains("\"ok\""));
+    }
+
+    #[test]
+    fn runner_fileout_preserves_frob_fact_literals() {
+        let mut runner = SourceRunner::new_empty();
+        let unit = Symbol::intern("events");
+        runner
+            .run_filein_with_unit(
+                unit,
+                "make_identity(:take_event)\n\
+                 make_relation(:CompiledEvent, 1)\n\
+                 assert CompiledEvent(#take_event<{:item -> \"coin\"}>)\n",
+                FileinMode::Add,
+            )
+            .unwrap();
+
+        let source = runner.fileout_unit(unit).unwrap();
+
+        assert!(source.contains("assert CompiledEvent(#take_event<{:item -> \"coin\"}>)"));
+        let mut imported = SourceRunner::new_empty();
+        imported
+            .run_filein_with_unit(unit, &source, FileinMode::Add)
+            .unwrap();
+        let query = imported
+            .run_source("return frob_value(one CompiledEvent(?event))[:item]")
+            .unwrap();
+        assert!(matches!(
+            query.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("coin")
+        ));
     }
 
     #[test]

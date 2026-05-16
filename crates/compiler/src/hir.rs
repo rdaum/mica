@@ -68,6 +68,11 @@ pub enum HirExpr {
         id: NodeId,
         name: String,
     },
+    Frob {
+        id: NodeId,
+        delegate: String,
+        value: Box<HirExpr>,
+    },
     Symbol {
         id: NodeId,
         name: String,

@@ -12,7 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::value::{
-    ErrorValue, TAG_BYTES, TAG_ERROR, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value,
+    ErrorValue, FrobValue, TAG_BYTES, TAG_ERROR, TAG_FROB, TAG_LIST, TAG_MAP, TAG_RANGE,
+    TAG_STRING, Value,
 };
 
 pub(crate) enum HeapValue {
@@ -22,6 +23,7 @@ pub(crate) enum HeapValue {
     Map(Box<[(Value, Value)]>),
     Range { start: Value, end: Option<Value> },
     Error(ErrorValue),
+    Frob(FrobValue),
 }
 
 impl HeapValue {
@@ -33,6 +35,7 @@ impl HeapValue {
             Self::Map(_) => TAG_MAP,
             Self::Range { .. } => TAG_RANGE,
             Self::Error(_) => TAG_ERROR,
+            Self::Frob(_) => TAG_FROB,
         }
     }
 }

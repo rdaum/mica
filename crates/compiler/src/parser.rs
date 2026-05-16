@@ -622,7 +622,14 @@ impl<'a> Parser<'a> {
         } else {
             children.push(self.missing("expected identity name after '#'"));
         }
-        CstNode::new(SyntaxKind::IdentityExpr, children)
+        if self.current_kind() == SyntaxKind::Lt {
+            children.push(self.bump_element());
+            children.push(CstElement::Node(self.parse_expr(10)));
+            children.push(self.expect_token(SyntaxKind::Gt, "expected '>' after frob payload"));
+            CstNode::new(SyntaxKind::FrobExpr, children)
+        } else {
+            CstNode::new(SyntaxKind::IdentityExpr, children)
+        }
     }
 
     fn parse_symbol_or_role_call(&mut self) -> CstNode {

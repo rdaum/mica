@@ -432,6 +432,16 @@ impl<'a> Analyzer<'a> {
                 id: *id,
                 name: name.clone(),
             },
+            Expr::Frob {
+                id,
+                delegate,
+                value,
+                ..
+            } => HirExpr::Frob {
+                id: *id,
+                delegate: delegate.clone(),
+                value: Box::new(self.lower_expr(value, scope)),
+            },
             Expr::Symbol { id, name, .. } => HirExpr::Symbol {
                 id: *id,
                 name: name.clone(),
@@ -1058,6 +1068,7 @@ fn collect_expr_span(expr: &Expr, spans: &mut HashMap<NodeId, Span>) {
         | Expr::Break { .. }
         | Expr::Continue { .. }
         | Expr::Error { .. } => {}
+        Expr::Frob { value, .. } => collect_expr_span(value, spans),
         Expr::List { items, .. } => {
             for item in items {
                 match item {

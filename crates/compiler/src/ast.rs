@@ -114,6 +114,12 @@ pub enum Expr {
         span: Span,
         name: String,
     },
+    Frob {
+        id: NodeId,
+        span: Span,
+        delegate: String,
+        value: Box<Expr>,
+    },
     Symbol {
         id: NodeId,
         span: Span,
@@ -281,6 +287,7 @@ impl Expr {
             | Self::Name { id, .. }
             | Self::QueryVar { id, .. }
             | Self::Identity { id, .. }
+            | Self::Frob { id, .. }
             | Self::Symbol { id, .. }
             | Self::Hole { id, .. }
             | Self::List { id, .. }
@@ -317,6 +324,7 @@ impl Expr {
             | Self::Name { span, .. }
             | Self::QueryVar { span, .. }
             | Self::Identity { span, .. }
+            | Self::Frob { span, .. }
             | Self::Symbol { span, .. }
             | Self::Hole { span, .. }
             | Self::List { span, .. }

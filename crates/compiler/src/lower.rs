@@ -225,6 +225,7 @@ impl<'a> Lower<'a> {
             SyntaxKind::NameExpr => self.lower_name(node),
             SyntaxKind::QueryVarExpr => self.lower_query_var(node),
             SyntaxKind::IdentityExpr => self.lower_identity(node),
+            SyntaxKind::FrobExpr => self.lower_frob(node),
             SyntaxKind::SymbolExpr => self.lower_symbol(node),
             SyntaxKind::HoleExpr => Expr::Hole {
                 id: self.node_id(),
@@ -335,6 +336,25 @@ impl<'a> Lower<'a> {
             id: self.node_id(),
             span: node.span.clone(),
             name,
+        }
+    }
+
+    fn lower_frob(&mut self, node: &CstNode) -> Expr {
+        let tokens = self.token_children(node).collect::<Vec<_>>();
+        let delegate = identity_after_hash(self.source, &tokens, 0).unwrap_or_else(|| {
+            self.error(node, "expected frob delegate identity");
+            String::new()
+        });
+        let value = self
+            .node_children(node)
+            .next()
+            .map(|child| self.lower_expr(child))
+            .unwrap_or_else(|| self.error_expr(node));
+        Expr::Frob {
+            id: self.node_id(),
+            span: node.span.clone(),
+            delegate,
+            value: Box::new(value),
         }
     }
 
@@ -1168,6 +1188,7 @@ fn is_expr_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::NameExpr
             | SyntaxKind::QueryVarExpr
             | SyntaxKind::IdentityExpr
+            | SyntaxKind::FrobExpr
             | SyntaxKind::SymbolExpr
             | SyntaxKind::HoleExpr
             | SyntaxKind::AtomExpr
@@ -1708,6 +1729,7 @@ mod tests {
                 }
             }
             Expr::Effect { expr, .. } => collect_expr_ids(expr, ids),
+            Expr::Frob { value, .. } => collect_expr_ids(value, ids),
             Expr::Literal { .. }
             | Expr::Name { .. }
             | Expr::QueryVar { .. }

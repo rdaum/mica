@@ -13,7 +13,8 @@
 
 use crate::heap::HeapValue;
 use crate::value::{
-    TAG_BYTES, TAG_ERROR, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value, ValueKind, normalize_f32,
+    TAG_BYTES, TAG_ERROR, TAG_FROB, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value, ValueKind,
+    normalize_f32,
 };
 use std::cmp::Ordering;
 use std::fmt;
@@ -122,6 +123,12 @@ impl Value {
                     }
                 });
             }
+            ValueKind::Frob => {
+                let _ = self.with_frob(|delegate, value| {
+                    out.extend_from_slice(&delegate.raw().to_be_bytes());
+                    value.encode_ordered_into(out);
+                });
+            }
         }
     }
 }
@@ -160,6 +167,15 @@ impl PartialEq for Value {
                 .unwrap(),
             (ValueKind::Error, ValueKind::Error) => self
                 .with_error(|left| other.with_error(|right| left == right).unwrap())
+                .unwrap(),
+            (ValueKind::Frob, ValueKind::Frob) => self
+                .with_frob(|left_delegate, left_value| {
+                    other
+                        .with_frob(|right_delegate, right_value| {
+                            left_delegate == right_delegate && left_value == right_value
+                        })
+                        .unwrap()
+                })
                 .unwrap(),
             _ => false,
         }
@@ -221,6 +237,17 @@ impl Ord for Value {
             ValueKind::Error => self
                 .with_error(|left| other.with_error(|right| left.cmp(right)).unwrap())
                 .unwrap(),
+            ValueKind::Frob => self
+                .with_frob(|left_delegate, left_value| {
+                    other
+                        .with_frob(|right_delegate, right_value| {
+                            left_delegate
+                                .cmp(&right_delegate)
+                                .then_with(|| left_value.cmp(right_value))
+                        })
+                        .unwrap()
+                })
+                .unwrap(),
         }
     }
 }
@@ -259,6 +286,12 @@ impl Hash for Value {
             }
             ValueKind::Error => {
                 let _ = self.with_error(|error| error.hash(state));
+            }
+            ValueKind::Frob => {
+                let _ = self.with_frob(|delegate, value| {
+                    delegate.hash(state);
+                    value.hash(state);
+                });
             }
         };
     }
@@ -306,6 +339,9 @@ impl fmt::Debug for Value {
                 .unwrap(),
             ValueKind::Error => self
                 .with_error(|error| write_error_value(error, f))
+                .unwrap(),
+            ValueKind::Frob => self
+                .with_frob(|delegate, value| write!(f, "#{}<{value:?}>", delegate.raw()))
                 .unwrap(),
         }
     }
@@ -365,6 +401,9 @@ impl fmt::Display for Value {
                 .unwrap(),
             ValueKind::Error => self
                 .with_error(|error| write_error_value(error, f))
+                .unwrap(),
+            ValueKind::Frob => self
+                .with_frob(|delegate, value| write!(f, "#{}<{value}>", delegate.raw()))
                 .unwrap(),
         }
     }
@@ -433,6 +472,6 @@ const _: () = {
     }
     let _ = _heap_value_is_used;
     let _ = (
-        TAG_STRING, TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_ERROR,
+        TAG_STRING, TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_ERROR, TAG_FROB,
     );
 };

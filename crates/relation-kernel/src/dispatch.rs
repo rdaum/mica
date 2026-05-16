@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{KernelError, RelationId, RelationRead, ScanControl, delegates_reaches};
-use mica_var::{Value, primitive_prototype_for_value};
+use mica_var::{FROB_PROTOTYPE, Identity, Value, primitive_prototype_for_value};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DispatchRelations {
@@ -329,15 +329,63 @@ fn matches_restriction(
     if *restriction == Value::nothing() {
         return Ok(true);
     }
+    if let Some(required_delegate) = frob_only_restriction(restriction) {
+        let Some(value_delegate) = value.frob_delegate() else {
+            return Ok(false);
+        };
+        return identity_matches(
+            reader,
+            delegates_relation,
+            value_delegate,
+            &required_delegate,
+        );
+    }
     if value == restriction {
         return Ok(true);
     }
 
-    if delegates_reaches(reader, delegates_relation, value, restriction)? {
+    if value.frob_delegate().is_none()
+        && delegates_reaches(reader, delegates_relation, value, restriction)?
+    {
         return Ok(true);
     }
 
-    let prototype = Value::identity(primitive_prototype_for_value(value));
+    if let Some(identity) = value.as_identity() {
+        if identity_matches(reader, delegates_relation, identity, restriction)? {
+            return Ok(true);
+        }
+        return identity_matches(
+            reader,
+            delegates_relation,
+            primitive_prototype_for_value(value),
+            restriction,
+        );
+    }
+
+    if let Some(delegate) = value.frob_delegate() {
+        if identity_matches(reader, delegates_relation, delegate, restriction)? {
+            return Ok(true);
+        }
+        return identity_matches(reader, delegates_relation, FROB_PROTOTYPE, restriction);
+    }
+
+    let prototype = primitive_prototype_for_value(value);
+    identity_matches(reader, delegates_relation, prototype, restriction)
+}
+
+fn frob_only_restriction(restriction: &Value) -> Option<Value> {
+    restriction.with_frob(|delegate, payload| {
+        (payload == &Value::nothing()).then_some(Value::identity(delegate))
+    })?
+}
+
+fn identity_matches(
+    reader: &impl RelationRead,
+    delegates_relation: RelationId,
+    identity: Identity,
+    restriction: &Value,
+) -> Result<bool, KernelError> {
+    let prototype = Value::identity(identity);
     if &prototype == restriction {
         return Ok(true);
     }
@@ -524,6 +572,81 @@ mod tests {
             applicable_positional_methods(&tx, dispatch_relations(), sym("split"), &[int(1)])
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn dispatch_matches_frob_delegate_through_delegation() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut tx = kernel.begin();
+        let event = Value::identity(Identity::new(200).unwrap());
+        let take_event = Value::identity(Identity::new(201).unwrap());
+        let event_value = Value::frob(take_event.as_identity().unwrap(), Value::string("payload"));
+
+        tx.assert(rel(40), Tuple::from([int(100), sym("render")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(100), sym("event"), event.clone(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(rel(42), Tuple::from([take_event, event, int(0)]))
+            .unwrap();
+
+        assert_eq!(
+            applicable_methods(
+                &tx,
+                dispatch_relations(),
+                sym("render"),
+                [(sym("event"), event_value)]
+            )
+            .unwrap(),
+            vec![int(100)]
+        );
+    }
+
+    #[test]
+    fn dispatch_frob_only_restriction_rejects_bare_identity() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut tx = kernel.begin();
+        let event_identity = Identity::new(200).unwrap();
+        let event = Value::identity(event_identity);
+        let take_event_identity = Identity::new(201).unwrap();
+        let take_event = Value::identity(take_event_identity);
+        let frob_only = Value::frob(event_identity, Value::nothing());
+
+        tx.assert(rel(40), Tuple::from([int(100), sym("render")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(100), sym("event"), frob_only, int(0)]),
+        )
+        .unwrap();
+        tx.assert(rel(42), Tuple::from([take_event.clone(), event, int(0)]))
+            .unwrap();
+
+        assert!(
+            applicable_methods(
+                &tx,
+                dispatch_relations(),
+                sym("render"),
+                [(sym("event"), take_event)]
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(
+            applicable_methods(
+                &tx,
+                dispatch_relations(),
+                sym("render"),
+                [(
+                    sym("event"),
+                    Value::frob(take_event_identity, Value::string("payload"))
+                )]
+            )
+            .unwrap(),
+            vec![int(100)]
         );
     }
 

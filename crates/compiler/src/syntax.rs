@@ -145,6 +145,7 @@ pub enum SyntaxKind {
     NameExpr,
     QueryVarExpr,
     IdentityExpr,
+    FrobExpr,
     SymbolExpr,
     HoleExpr,
     RelationRule,
