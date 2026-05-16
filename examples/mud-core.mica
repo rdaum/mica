@@ -1,114 +1,258 @@
+// Small relational world core for daemon/telnet demos.
+//
+// This file intentionally keeps the world model in ordinary Mica relations:
+// rooms, exits, containment, visibility, names, descriptions, and command verbs
+// are all authorable world state rather than privileged runtime concepts.
+
 make_identity(:player)
 make_identity(:thing)
 make_identity(:portable)
 make_identity(:container)
 make_identity(:room)
+
 make_identity(:alice)
 make_identity(:coin)
 make_identity(:box)
 make_identity(:first_room)
 make_identity(:north_room)
+make_identity(:attic)
+make_identity(:bob)
 
 make_relation(:Delegates, 3)
-make_relation(:HeldBy, 2)
-make_relation(:In, 2)
+
 make_relation(:Portable, 1)
+make_functional_relation(:Name, 2, [0])
+make_functional_relation(:Description, 2, [0])
+make_functional_relation(:LocatedIn, 2, [0])
+
+// A durable bidirectional-exit fact records one author-facing connection. The
+// derived Exit relation exposes both directions for command handling and query.
+make_relation(:BidirectionalExit, 4)
+make_relation(:Exit, 3)
+
+// Recursive containment/location views.
+make_relation(:Within, 2)
+make_relation(:Contents, 2)
+make_relation(:Carrying, 2)
 make_relation(:CanSee, 2)
+make_relation(:PresentActor, 2)
+
 make_relation(:CanRead, 2)
 make_relation(:CanWrite, 2)
 make_relation(:CanInvoke, 2)
 make_relation(:CanEffect, 1)
-make_functional_relation(:Name, 2, [0])
-make_functional_relation(:LocatedIn, 2, [0])
 
 assert Delegates(#portable, #thing, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
+assert Delegates(#bob, #player, 0)
 assert Delegates(#box, #container, 0)
 assert Delegates(#first_room, #room, 0)
 assert Delegates(#north_room, #room, 0)
+assert Delegates(#attic, #room, 0)
 
 assert Portable(#coin)
+
+assert Name(#alice, "Alice")
+assert Name(#bob, "Bob")
 assert Name(#coin, "coin")
 assert Name(#box, "box")
 assert Name(#first_room, "First Room")
 assert Name(#north_room, "North Room")
+assert Name(#attic, "Dusty Attic")
+
+assert Description(#coin, "A tarnished brass coin catches the light.")
+assert Description(#bob, "Bob is here, looking faintly puzzled.")
+assert Description(#box, "A small wooden box rests here, open and empty.")
+assert Description(#first_room, "First Room. You are standing in a plain stone room.")
+assert Description(#north_room, "North Room. It is quieter here, and the ceiling slopes upward.")
+assert Description(#attic, "Dusty Attic. Old beams vanish into shadow.")
+
 assert LocatedIn(#alice, #first_room)
+assert LocatedIn(#bob, #first_room)
 assert LocatedIn(#coin, #first_room)
 assert LocatedIn(#box, #first_room)
 
-assert CanRead(#alice, :HeldBy)
-assert CanRead(#alice, :In)
-assert CanRead(#alice, :Portable)
-assert CanRead(#alice, :CanSee)
+assert BidirectionalExit(#first_room, :north, :south, #north_room)
+assert BidirectionalExit(#north_room, :up, :down, #attic)
+
+assert CanRead(#alice, :Name)
+assert CanRead(#alice, :Description)
 assert CanRead(#alice, :LocatedIn)
-assert CanWrite(#alice, :HeldBy)
-assert CanWrite(#alice, :In)
+assert CanRead(#alice, :Portable)
+assert CanRead(#alice, :BidirectionalExit)
+assert CanRead(#alice, :Exit)
+assert CanRead(#alice, :Within)
+assert CanRead(#alice, :Contents)
+assert CanRead(#alice, :Carrying)
+assert CanRead(#alice, :CanSee)
+assert CanRead(#alice, :PresentActor)
+
 assert CanWrite(#alice, :LocatedIn)
+
 assert CanInvoke(#alice, :command)
 assert CanInvoke(#alice, :look)
+assert CanInvoke(#alice, :go)
 assert CanInvoke(#alice, :north)
+assert CanInvoke(#alice, :south)
+assert CanInvoke(#alice, :up)
+assert CanInvoke(#alice, :down)
 assert CanInvoke(#alice, :get)
+assert CanInvoke(#alice, :drop)
 assert CanInvoke(#alice, :put)
 assert CanInvoke(#alice, :say)
 assert CanInvoke(#alice, :trim)
 assert CanInvoke(#alice, :split)
+assert CanInvoke(#alice, :string_chars)
+assert CanInvoke(#alice, :string_from_chars)
+
 assert CanEffect(#alice)
 
-CanSee(actor, item) :-
-  HeldBy(actor, item)
+Exit(from, direction, to) :-
+  BidirectionalExit(from, direction, reverse, to)
+
+Exit(to, reverse, from) :-
+  BidirectionalExit(from, direction, reverse, to)
+
+Within(item, place) :-
+  LocatedIn(item, place)
+
+Within(item, place) :-
+  LocatedIn(item, container),
+  Within(container, place)
+
+Contents(place, item) :-
+  Within(item, place)
+
+Carrying(actor, item) :-
+  LocatedIn(item, actor)
+
+CanSee(actor, room) :-
+  LocatedIn(actor, room)
 
 CanSee(actor, item) :-
   LocatedIn(actor, room),
-  LocatedIn(item, room)
+  Within(item, room)
 
-CanSee(actor, item) :-
-  HeldBy(actor, container),
-  In(item, container)
+PresentActor(room, actor) :-
+  Delegates(actor, #player, depth),
+  LocatedIn(actor, room)
 
 verb look(actor @ #player)
-  if LocatedIn(actor, #first_room)
-    emit(actor, "First Room. A coin and a box are here. The only exit is north.")
-  else
-    emit(actor, "North Room. It is quiet here. The exit is south, but the demo only knows north.")
+  let room = one LocatedIn(actor, ?room)
+  emit(actor, one Description(room, ?text))
+
+  for found in LocatedIn(?item, room)
+    let item = found[:item]
+    let text = one Description(item, ?text)
+    if item != actor && text != nothing
+      emit(actor, text)
+    end
   end
+
   return true
 end
 
 verb north(actor @ #player)
-  if LocatedIn(actor, #first_room)
-    assert LocatedIn(actor, #north_room)
-    emit(actor, "You walk north.")
-    emit(actor, "North Room. It is quiet here. The exit is south, but the demo only knows north.")
-  else
-    emit(actor, "You cannot go farther north.")
+  return :go(actor: actor, direction: :north, message: "You walk north.")
+end
+
+verb south(actor @ #player)
+  return :go(actor: actor, direction: :south, message: "You walk south.")
+end
+
+verb up(actor @ #player)
+  return :go(actor: actor, direction: :up, message: "You climb up.")
+end
+
+verb down(actor @ #player)
+  return :go(actor: actor, direction: :down, message: "You climb down.")
+end
+
+verb go(actor @ #player, direction, message)
+  let room = one LocatedIn(actor, ?room)
+  let destination = one Exit(room, direction, ?destination)
+
+  if destination == nothing
+    emit(actor, "You cannot go that way.")
+    return false
   end
+
+  retract LocatedIn(actor, _)
+  assert LocatedIn(actor, destination)
+  emit(actor, message)
+  emit(actor, one Description(destination, ?text))
   return true
 end
 
 verb get(actor @ #player, item @ #thing)
-  if Portable(item) && CanSee(actor, item)
-    assert HeldBy(actor, item)
-    emit(actor, "Taken.")
-    return true
-  else
-    emit(actor, "You cannot take that.")
+  if Carrying(actor, item)
+    emit(actor, "You already have that.")
     return false
   end
+
+  if Portable(item) && CanSee(actor, item)
+    retract LocatedIn(item, _)
+    assert LocatedIn(item, actor)
+    emit(actor, "Taken.")
+    return true
+  end
+
+  emit(actor, "You cannot take that.")
+  return false
+end
+
+verb drop(actor @ #player, item @ #thing)
+  let room = one LocatedIn(actor, ?room)
+
+  if Carrying(actor, item)
+    retract LocatedIn(item, _)
+    assert LocatedIn(item, room)
+    emit(actor, "Dropped.")
+    return true
+  end
+
+  emit(actor, "You are not carrying that.")
+  return false
 end
 
 verb put(actor @ #player, item @ #thing, container @ #container)
-  if HeldBy(actor, item)
-    assert In(item, container)
+  if Carrying(actor, item) && CanSee(actor, container)
+    retract LocatedIn(item, _)
+    assert LocatedIn(item, container)
     emit(actor, "Placed.")
     return true
-  else
-    emit(actor, "You are not carrying that.")
-    return false
   end
+
+  emit(actor, "You are not carrying that.")
+  return false
 end
 
 verb say(actor @ #player, message)
-  emit(actor, message)
+  let room = one LocatedIn(actor, ?room)
+  let line = []
+
+  for ch in string_chars(one Name(actor, ?name))
+    line = [@line, ch]
+  end
+
+  for ch in string_chars(" says, \"")
+    line = [@line, ch]
+  end
+
+  for ch in string_chars(message)
+    line = [@line, ch]
+  end
+
+  for ch in string_chars("\"")
+    line = [@line, ch]
+  end
+
+  let text = string_from_chars(line)
+
+  for found in PresentActor(room, ?listener)
+    emit(found[:listener], text)
+  end
+
   return true
 end

@@ -1083,10 +1083,33 @@ fn parse_method_param(part: &str) -> Option<MethodParam> {
 }
 
 fn unquote(text: &str) -> String {
-    text.strip_prefix('"')
+    let Some(text) = text
+        .strip_prefix('"')
         .and_then(|text| text.strip_suffix('"'))
-        .unwrap_or(text)
-        .to_owned()
+    else {
+        return text.to_owned();
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 fn binary_op(token: &CstToken) -> Option<BinaryOp> {
@@ -1410,7 +1433,9 @@ mod tests {
 
     #[test]
     fn lowers_literals_and_field_assignment() {
-        let ast = parse_ast("#lamp.name = \"golden lamp\"\ntrue\nE_NOT_PORTABLE\nnothing");
+        let ast = parse_ast(
+            "#lamp.name = \"golden lamp\"\ntrue\nE_NOT_PORTABLE\nnothing\n\"Alice says, \\\"hello\\\"\"",
+        );
         assert_eq!(ast.errors, vec![]);
         assert!(matches!(
             &ast.items[0],
@@ -1427,6 +1452,11 @@ mod tests {
                 },
                 ..
             }
+        ));
+        assert!(matches!(
+            &ast.items[4],
+            Item::Expr { expr: Expr::Literal { value: Literal::String(text), .. }, .. }
+                if text == "Alice says, \"hello\""
         ));
         assert!(matches!(
             &ast.items[2],

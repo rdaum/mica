@@ -3602,6 +3602,7 @@ mod tests {
             .run_filein(include_str!("../../../examples/mud-core.mica"))
             .unwrap();
         let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
 
         let report = runner
             .run_source("return :say(actor: #alice, message: \"hello\")")
@@ -3612,9 +3613,11 @@ mod tests {
             TaskOutcome::Complete { value, .. } if value == Value::bool(true)
         ));
         let emissions = runner.drain_emissions();
-        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions.len(), 2);
         assert_eq!(emissions[0].target, alice);
-        assert_eq!(emissions[0].value, Value::string("hello"));
+        assert_eq!(emissions[0].value, Value::string("Alice says, \"hello\""));
+        assert_eq!(emissions[1].target, bob);
+        assert_eq!(emissions[1].value, Value::string("Alice says, \"hello\""));
     }
 
     #[test]
@@ -3630,6 +3633,7 @@ mod tests {
             .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
             .unwrap();
         let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+        let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
         let endpoint = SYSTEM_ENDPOINT;
 
         let report = runner
@@ -3641,9 +3645,73 @@ mod tests {
             TaskOutcome::Complete { value, .. } if value == Value::bool(true)
         ));
         let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 2);
+        assert_eq!(emissions[0].target, alice);
+        assert_eq!(emissions[0].value, Value::string("Alice says, \"hello\""));
+        assert_eq!(emissions[1].target, bob);
+        assert_eq!(emissions[1].value, Value::string("Alice says, \"hello\""));
+
+        let report = runner
+            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"up\")")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+        ));
+        let emissions = runner.drain_emissions();
         assert_eq!(emissions.len(), 1);
         assert_eq!(emissions[0].target, alice);
-        assert_eq!(emissions[0].value, Value::string("hello"));
+        assert_eq!(emissions[0].value, Value::string("You cannot go that way."));
+
+        let report = runner
+            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"get coin\")")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].target, alice);
+        assert_eq!(emissions[0].value, Value::string("Taken."));
+
+        let report = runner
+            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"look\")")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert!(emissions.iter().all(
+            |effect| effect.value != Value::string("A tarnished brass coin catches the light.")
+        ));
+        assert!(emissions.iter().any(|effect| effect.value
+            == Value::string("A small wooden box rests here, open and empty.")));
+
+        let report = runner
+            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"get coin\")")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].target, alice);
+        assert_eq!(emissions[0].value, Value::string("You already have that."));
+
+        let report = runner
+            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"drop coin\")")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].target, alice);
+        assert_eq!(emissions[0].value, Value::string("Dropped."));
 
         let report = runner
             .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"dance\")")
@@ -3660,6 +3728,131 @@ mod tests {
             emissions[0].value,
             Value::string("I do not understand that.")
         );
+    }
+
+    #[test]
+    fn runner_mud_core_derives_exits_and_recursive_location() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .unwrap();
+        let first_room = runner.named_identity(Symbol::intern("first_room")).unwrap();
+        let north_room = runner.named_identity(Symbol::intern("north_room")).unwrap();
+        let attic = runner.named_identity(Symbol::intern("attic")).unwrap();
+
+        let report = runner
+            .run_source("return one Exit(#north_room, :south, ?destination)")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(first_room)
+        ));
+
+        let report = runner.run_source("return CanSee(#alice, #coin)").unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+
+        runner
+            .run_source("return :get(actor: #alice, item: #coin)")
+            .unwrap();
+        let report = runner.run_source("return Carrying(#alice, #coin)").unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+
+        let north = runner.run_source("return :north(actor: #alice)").unwrap();
+        assert!(matches!(
+            north.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let report = runner
+            .run_source("return Within(#coin, #north_room)")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let report = runner
+            .run_source("return one LocatedIn(#alice, ?room)")
+            .unwrap();
+        assert!(
+            matches!(
+                report.outcome,
+                TaskOutcome::Complete { ref value, .. } if *value == Value::identity(north_room)
+            ),
+            "{}",
+            report.render()
+        );
+
+        let north = runner.run_source("return :north(actor: #alice)").unwrap();
+        assert!(matches!(
+            north.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+        ));
+        let report = runner
+            .run_source("return one LocatedIn(#alice, ?room)")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(north_room)
+        ));
+
+        let drop = runner
+            .run_source("return :drop(actor: #alice, item: #coin)")
+            .unwrap();
+        assert!(matches!(
+            drop.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let report = runner
+            .run_source("return one LocatedIn(#coin, ?room)")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(north_room)
+        ));
+
+        let up = runner.run_source("return :up(actor: #alice)").unwrap();
+        assert!(matches!(
+            up.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let report = runner
+            .run_source("return one LocatedIn(#alice, ?room)")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(attic)
+        ));
+
+        let down = runner.run_source("return :down(actor: #alice)").unwrap();
+        assert!(matches!(
+            down.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let report = runner
+            .run_source("return one LocatedIn(#alice, ?room)")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(north_room)
+        ));
+
+        let south = runner.run_source("return :south(actor: #alice)").unwrap();
+        assert!(matches!(
+            south.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let report = runner
+            .run_source("return one LocatedIn(#alice, ?room)")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(first_room)
+        ));
     }
 
     #[test]

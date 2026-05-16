@@ -20,8 +20,16 @@ verb command(actor @ #player, endpoint, line)
     return :look(actor: actor)
   elseif command == "north" || command == "n"
     return :north(actor: actor)
+  elseif command == "south" || command == "s"
+    return :south(actor: actor)
+  elseif command == "up" || command == "u"
+    return :up(actor: actor)
+  elseif command == "down" || command == "d"
+    return :down(actor: actor)
   elseif words == ["get", "coin"] || words == ["take", "coin"]
     return :get(actor: actor, item: #coin)
+  elseif words == ["drop", "coin"]
+    return :drop(actor: actor, item: #coin)
   elseif words == ["put", "coin", "box"] || words == ["put", "coin", "in", "box"]
     return :put(actor: actor, item: #coin, container: #box)
   elseif command == "say" && message != ""
