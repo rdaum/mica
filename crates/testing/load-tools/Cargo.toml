@@ -14,6 +14,10 @@ path = "src/direct-driver-load-test.rs"
 name = "property-update-load-test"
 path = "src/property-update-load-test.rs"
 
+[[bin]]
+name = "query-join-load-test"
+path = "src/query-join-load-test.rs"
+
 [dependencies]
 clap.workspace = true
 compio.workspace = true

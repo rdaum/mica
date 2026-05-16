@@ -232,6 +232,32 @@ impl Snapshot {
         self.relation(relation)?.scan(bindings)
     }
 
+    pub(crate) fn join_extensional_relation_scans(
+        &self,
+        left_relation: RelationId,
+        left_bindings: &[Option<Value>],
+        left_positions: &[u16],
+        right_relation: RelationId,
+        right_bindings: &[Option<Value>],
+        right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        self.relation(left_relation)?.join_eq(
+            left_bindings,
+            left_positions,
+            self.relation(right_relation)?,
+            right_bindings,
+            right_positions,
+        )
+    }
+
+    pub(crate) fn relation_has_exact_index(
+        &self,
+        relation: RelationId,
+        positions: &[u16],
+    ) -> Result<bool, KernelError> {
+        Ok(self.relation(relation)?.has_exact_index(positions))
+    }
+
     pub(crate) fn estimate_scan(
         &self,
         relation: RelationId,
@@ -386,5 +412,32 @@ impl crate::RelationRead for ExtensionalSnapshotReader<'_> {
         self.snapshot
             .estimate_extensional_scan(relation, bindings)
             .map(Some)
+    }
+
+    fn has_exact_relation_index(
+        &self,
+        relation: RelationId,
+        positions: &[u16],
+    ) -> Result<bool, KernelError> {
+        self.snapshot.relation_has_exact_index(relation, positions)
+    }
+
+    fn join_relation_scans(
+        &self,
+        left_relation: RelationId,
+        left_bindings: &[Option<Value>],
+        left_positions: &[u16],
+        right_relation: RelationId,
+        right_bindings: &[Option<Value>],
+        right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        self.snapshot.join_extensional_relation_scans(
+            left_relation,
+            left_bindings,
+            left_positions,
+            right_relation,
+            right_bindings,
+            right_positions,
+        )
     }
 }

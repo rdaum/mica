@@ -51,6 +51,10 @@ impl<'a> Transaction<'a> {
         self.writes.is_empty()
     }
 
+    pub(crate) fn has_local_writes(&self, relation: RelationId) -> bool {
+        self.writes.contains_key(&relation)
+    }
+
     pub(crate) fn cached_applicable_method_calls(
         &self,
         relations: DispatchRelations,
@@ -485,6 +489,42 @@ impl crate::RelationRead for ExtensionalTransactionReader<'_, '_> {
         self.tx
             .estimate_extensional_scan(relation, bindings)
             .map(Some)
+    }
+
+    fn has_exact_relation_index(
+        &self,
+        relation: RelationId,
+        positions: &[u16],
+    ) -> Result<bool, KernelError> {
+        if self.tx.has_local_writes(relation) {
+            return Ok(false);
+        }
+        self.tx.base.relation_has_exact_index(relation, positions)
+    }
+
+    fn join_relation_scans(
+        &self,
+        left_relation: RelationId,
+        left_bindings: &[Option<Value>],
+        left_positions: &[u16],
+        right_relation: RelationId,
+        right_bindings: &[Option<Value>],
+        right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        if !self.tx.has_local_writes(left_relation)
+            && !self.tx.has_local_writes(right_relation)
+            && let Some(rows) = self.tx.base.join_extensional_relation_scans(
+                left_relation,
+                left_bindings,
+                left_positions,
+                right_relation,
+                right_bindings,
+                right_positions,
+            )?
+        {
+            return Ok(Some(rows));
+        }
+        Ok(None)
     }
 }
 

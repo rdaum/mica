@@ -161,6 +161,56 @@ impl RelationState {
         })
     }
 
+    pub(crate) fn join_eq(
+        &self,
+        left_bindings: &[Option<Value>],
+        left_positions: &[u16],
+        right: &Self,
+        right_bindings: &[Option<Value>],
+        right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        if left_bindings.len() != self.metadata.arity() as usize {
+            return Err(KernelError::ArityMismatch {
+                relation: self.metadata.id(),
+                expected: self.metadata.arity(),
+                actual: left_bindings.len(),
+            });
+        }
+        if right_bindings.len() != right.metadata.arity() as usize {
+            return Err(KernelError::ArityMismatch {
+                relation: right.metadata.id(),
+                expected: right.metadata.arity(),
+                actual: right_bindings.len(),
+            });
+        }
+
+        let Some(left_index) = self.index_for_positions(left_positions) else {
+            return Ok(None);
+        };
+        let Some(right_index) = right.index_for_positions(right_positions) else {
+            return Ok(None);
+        };
+
+        let mut out = BTreeSet::new();
+        left_index.intersect_values_with(right_index, |left_bucket, right_bucket| {
+            for left_tuple in left_bucket {
+                if !left_tuple.matches_bindings(left_bindings) {
+                    continue;
+                }
+                for right_tuple in right_bucket {
+                    if right_tuple.matches_bindings(right_bindings) {
+                        out.insert(left_tuple.concat(right_tuple));
+                    }
+                }
+            }
+        });
+        Ok(Some(out.into_iter().collect()))
+    }
+
+    pub(crate) fn has_exact_index(&self, positions: &[u16]) -> bool {
+        self.index_for_positions(positions).is_some()
+    }
+
     pub(crate) fn insert(&mut self, tuple: Tuple) {
         if Arc::make_mut(&mut self.tuples).insert(tuple.clone()) {
             for index in &mut self.indexes {
@@ -207,6 +257,12 @@ impl RelationState {
             .map(|index| (index, index.spec.leading_bound_count(bindings)))
             .filter(|(_, count)| *count > 0)
             .max_by_key(|(_, count)| *count)
+    }
+
+    fn index_for_positions(&self, positions: &[u16]) -> Option<&TupleIndex> {
+        self.indexes
+            .iter()
+            .find(|index| index.spec.positions() == positions)
     }
 }
 
@@ -321,6 +377,10 @@ impl TupleIndex {
                 }
                 Ok(VisitControl::Continue)
             })
+    }
+
+    fn intersect_values_with(&self, other: &Self, visit: impl FnMut(&TupleBucket, &TupleBucket)) {
+        self.entries.intersect_values_with(&other.entries, visit);
     }
 
     fn tuple_key(&self, tuple: &Tuple) -> RadixTupleKey {
