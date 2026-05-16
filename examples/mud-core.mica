@@ -26,6 +26,7 @@ make_identity(:south_pattern)
 make_identity(:up_pattern)
 make_identity(:down_pattern)
 make_identity(:get_pattern)
+make_identity(:get_from_pattern)
 make_identity(:drop_pattern)
 make_identity(:put_pattern)
 make_identity(:say_pattern)
@@ -159,6 +160,11 @@ assert PatternPart(#down_pattern, 0, :eol, nothing)
 assert CommandPattern(:get, :get, #get_pattern)
 assert PatternPart(#get_pattern, 0, :object_role, :item)
 
+assert CommandPattern(:get, :get_from, #get_from_pattern)
+assert PatternPart(#get_from_pattern, 0, :object_role, :item)
+assert PatternPart(#get_from_pattern, 1, :prep, :from)
+assert PatternPart(#get_from_pattern, 2, :object_role, :container)
+
 assert CommandPattern(:drop, :drop, #drop_pattern)
 assert PatternPart(#drop_pattern, 0, :object_role, :item)
 
@@ -174,6 +180,7 @@ assert Preposition(:at, "at")
 assert Preposition(:inside, "in")
 assert Preposition(:inside, "inside")
 assert Preposition(:inside, "into")
+assert Preposition(:from, "from")
 
 assert CommandRole(:look, :actor, :identity)
 assert CommandRole(:examine, :actor, :identity)
@@ -186,6 +193,9 @@ assert CommandRole(:up, :actor, :identity)
 assert CommandRole(:down, :actor, :identity)
 assert CommandRole(:get, :actor, :identity)
 assert CommandRole(:get, :item, :thing)
+assert CommandRole(:get_from, :actor, :identity)
+assert CommandRole(:get_from, :item, :thing)
+assert CommandRole(:get_from, :container, :container)
 assert CommandRole(:drop, :actor, :identity)
 assert CommandRole(:drop, :item, :thing)
 assert CommandRole(:put, :actor, :identity)
@@ -247,6 +257,7 @@ assert CanInvoke(#alice, :south)
 assert CanInvoke(#alice, :up)
 assert CanInvoke(#alice, :down)
 assert CanInvoke(#alice, :get)
+assert CanInvoke(#alice, :get_from)
 assert CanInvoke(#alice, :drop)
 assert CanInvoke(#alice, :put)
 assert CanInvoke(#alice, :say)
@@ -414,6 +425,28 @@ verb get(actor @ #player, item @ #thing)
   end
 
   emit(actor, "You cannot take that.")
+  return false
+end
+
+verb get_from(actor @ #player, item @ #thing, container @ #container)
+  if Carrying(actor, item)
+    emit(actor, "You already have that.")
+    return false
+  end
+
+  if CanSee(actor, container) == false
+    emit(actor, "I do not see that.")
+    return false
+  end
+
+  if LocatedIn(item, container) && Portable(item)
+    retract LocatedIn(item, _)
+    assert LocatedIn(item, actor)
+    emit(actor, "Taken.")
+    return true
+  end
+
+  emit(actor, "That is not in there.")
   return false
 end
 

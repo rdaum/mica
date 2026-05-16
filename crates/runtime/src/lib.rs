@@ -4085,6 +4085,50 @@ mod tests {
         assert_eq!(emissions[0].value, Value::string("It is empty."));
 
         let report = runner
+            .run_source(
+                "return :command(actor: #alice, endpoint: #endpoint, line: \"put coin in box\")",
+            )
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].target, alice);
+        assert_eq!(emissions[0].value, Value::string("Placed."));
+
+        let report = runner
+            .run_source(
+                "return :command(actor: #alice, endpoint: #endpoint, line: \"look in box\")",
+            )
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(
+            emissions[0].value,
+            Value::string("A tarnished brass coin catches the light.")
+        );
+
+        let report = runner
+            .run_source(
+                "return :command(actor: #alice, endpoint: #endpoint, line: \"take coin from box\")",
+            )
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].target, alice);
+        assert_eq!(emissions[0].value, Value::string("Taken."));
+
+        let report = runner
             .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"get coin\")")
             .unwrap();
         assert!(matches!(
