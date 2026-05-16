@@ -41,7 +41,9 @@ make_relation(:PresentActor, 2)
 // without being allowed to pollute the command parser.
 make_relation(:CommandAlias, 2)
 make_relation(:CommandForm, 1)
+make_relation(:CommandPattern, 3)
 make_relation(:CommandRole, 3)
+make_relation(:Preposition, 2)
 make_relation(:ParserNoun, 2)
 make_relation(:ParserAlias, 2)
 make_relation(:ParserName, 2)
@@ -58,6 +60,7 @@ make_relation(:CanInvoke, 2)
 make_relation(:CanEffect, 1)
 
 assert Delegates(#portable, #thing, 0)
+assert Delegates(#container, #thing, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
 assert Delegates(#bob, #player, 0)
@@ -117,7 +120,28 @@ assert CommandForm(:drop)
 assert CommandForm(:put)
 assert CommandForm(:say)
 
+assert CommandPattern(:look, :look, [:eol])
+assert CommandPattern(:look, :examine, [:optional_prep, :at, :target])
+assert CommandPattern(:look, :look_in, [:prep, :inside, :target])
+assert CommandPattern(:north, :north, [:eol])
+assert CommandPattern(:south, :south, [:eol])
+assert CommandPattern(:up, :up, [:eol])
+assert CommandPattern(:down, :down, [:eol])
+assert CommandPattern(:get, :get, [:item])
+assert CommandPattern(:drop, :drop, [:item])
+assert CommandPattern(:put, :put, [:item, :optional_prep, :inside, :container])
+assert CommandPattern(:say, :say, [:message])
+
+assert Preposition(:at, "at")
+assert Preposition(:inside, "in")
+assert Preposition(:inside, "inside")
+assert Preposition(:inside, "into")
+
 assert CommandRole(:look, :actor, :identity)
+assert CommandRole(:examine, :actor, :identity)
+assert CommandRole(:examine, :target, :thing)
+assert CommandRole(:look_in, :actor, :identity)
+assert CommandRole(:look_in, :target, :container)
 assert CommandRole(:north, :actor, :identity)
 assert CommandRole(:south, :actor, :identity)
 assert CommandRole(:up, :actor, :identity)
@@ -157,7 +181,9 @@ assert CanRead(#alice, :CanSee)
 assert CanRead(#alice, :PresentActor)
 assert CanRead(#alice, :CommandAlias)
 assert CanRead(#alice, :CommandForm)
+assert CanRead(#alice, :CommandPattern)
 assert CanRead(#alice, :CommandRole)
+assert CanRead(#alice, :Preposition)
 assert CanRead(#alice, :ParserNoun)
 assert CanRead(#alice, :ParserAlias)
 assert CanRead(#alice, :ParserName)
@@ -172,7 +198,10 @@ assert CanWrite(#alice, :LocatedIn)
 
 assert CanInvoke(#alice, :command)
 assert CanInvoke(#alice, :match_object)
+assert CanInvoke(#alice, :bind_command_pattern)
 assert CanInvoke(#alice, :look)
+assert CanInvoke(#alice, :examine)
+assert CanInvoke(#alice, :look_in)
 assert CanInvoke(#alice, :go)
 assert CanInvoke(#alice, :north)
 assert CanInvoke(#alice, :south)
@@ -262,6 +291,39 @@ verb look(actor @ #player)
     if item != actor && text != nothing
       emit(actor, text)
     end
+  end
+
+  return true
+end
+
+verb examine(actor @ #player, target @ #thing)
+  if CanSee(actor, target)
+    emit(actor, one Description(target, ?text))
+    return true
+  end
+
+  emit(actor, "I do not see that.")
+  return false
+end
+
+verb look_in(actor @ #player, target @ #container)
+  if CanSee(actor, target) == false
+    emit(actor, "I do not see that.")
+    return false
+  end
+
+  let found_any = false
+  for found in LocatedIn(?item, target)
+    let item = found[:item]
+    let text = one Description(item, ?text)
+    if text != nothing
+      found_any = true
+      emit(actor, text)
+    end
+  end
+
+  if found_any == false
+    emit(actor, "It is empty.")
   end
 
   return true

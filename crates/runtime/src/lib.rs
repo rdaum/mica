@@ -4042,6 +4042,49 @@ mod tests {
             == Value::string("A small wooden box rests here, open and empty.")));
 
         let report = runner
+            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"look box\")")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(
+            emissions[0].value,
+            Value::string("A small wooden box rests here, open and empty.")
+        );
+
+        let report = runner
+            .run_source(
+                "return :command(actor: #alice, endpoint: #endpoint, line: \"look at box\")",
+            )
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(
+            emissions[0].value,
+            Value::string("A small wooden box rests here, open and empty.")
+        );
+
+        let report = runner
+            .run_source(
+                "return :command(actor: #alice, endpoint: #endpoint, line: \"look in box\")",
+            )
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        let emissions = runner.drain_emissions();
+        assert_eq!(emissions.len(), 1);
+        assert_eq!(emissions[0].value, Value::string("It is empty."));
+
+        let report = runner
             .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"get coin\")")
             .unwrap();
         assert!(matches!(

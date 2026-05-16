@@ -1,9 +1,9 @@
 // Relation-backed command parser for the MUD example.
 //
-// The TCP daemon passes raw input lines to :command. This file keeps command
-// parsing in Mica: command words, object parser names, visibility, and trust
-// policy are world facts/rules from mud-core.mica. Rust supplies only string
-// primitives and dynamic role-map dispatch through invoke(selector, roles).
+// The TCP daemon passes raw input lines to :command. Command words, command
+// patterns, object parser names, visibility, and trust policy are world facts
+// and rules from mud-core.mica. Rust supplies string primitives and dynamic
+// role-map dispatch through invoke(selector, roles).
 
 verb match_object(actor @ #player, token @ #string)
   let lowered = lower(token)
@@ -16,6 +16,66 @@ verb match_object(actor @ #player, token @ #string)
   end
 
   return nothing
+end
+
+verb bind_command_pattern(actor @ #player, raw @ #string, tokens @ #list, pattern @ #list)
+  let roles = {:actor -> actor}
+  let position = 1
+  let pending_prep = nothing
+  let consumes_rest = false
+
+  for part in pattern
+    if pending_prep == :optional_prep
+      if Preposition(part, tokens[position])
+        position = position + 1
+      end
+      pending_prep = nothing
+    elseif pending_prep == :prep
+      if Preposition(part, tokens[position]) == false
+        return {:status -> :no_match}
+      end
+      roles[:prep] = part
+      position = position + 1
+      pending_prep = nothing
+    elseif part == :optional_prep || part == :prep
+      pending_prep = part
+    elseif part == :item || part == :container || part == :target
+      if tokens[position] == nothing
+        return {:status -> :no_match}
+      end
+
+      let obj = match_object(actor, tokens[position])
+      if obj == nothing
+        return {:status -> :not_visible}
+      end
+
+      roles[part] = obj
+      position = position + 1
+    elseif part == :message
+      let message = trim(string_slice(raw, string_len(tokens[0]), string_len(raw)))
+      if message == ""
+        return {:status -> :no_match}
+      end
+      roles[:message] = message
+      consumes_rest = true
+    elseif part == :eol
+      if tokens[position] != nothing
+        return {:status -> :no_match}
+      end
+    else
+      return {:status -> :no_match}
+    end
+  end
+
+  if pending_prep != nothing
+    return {:status -> :no_match}
+  end
+
+  if consumes_rest == false && tokens[position] != nothing
+    return {:status -> :no_match}
+  end
+
+  return {:status -> :ok, :roles -> roles}
 end
 
 verb command(actor @ #player, endpoint, line)
@@ -33,58 +93,19 @@ verb command(actor @ #player, endpoint, line)
     return false
   end
 
-  if selector == :look || selector == :north || selector == :south || selector == :up || selector == :down
-    return invoke(selector, {:actor -> actor})
+  let saw_not_visible = false
+  for found in CommandPattern(selector, ?dispatch_selector, ?pattern)
+    let bound = bind_command_pattern(actor, raw, tokens, found[:pattern])
+    if bound[:status] == :ok
+      return invoke(found[:dispatch_selector], bound[:roles])
+    elseif bound[:status] == :not_visible
+      saw_not_visible = true
+    end
   end
 
-  if selector == :say
-    let message = trim(string_slice(raw, string_len(tokens[0]), string_len(raw)))
-    if message == ""
-      emit(endpoint, "I do not understand that.")
-      return false
-    end
-    return invoke(selector, {:actor -> actor, :message -> message})
-  end
-
-  if selector == :get || selector == :drop
-    if tokens[1] == nothing
-      emit(endpoint, "I do not understand that.")
-      return false
-    end
-
-    let item = match_object(actor, tokens[1])
-    if item == nothing
-      emit(endpoint, "I do not see that.")
-      return false
-    end
-
-    return invoke(selector, {:actor -> actor, :item -> item})
-  end
-
-  if selector == :put
-    if tokens[1] == nothing || tokens[2] == nothing
-      emit(endpoint, "I do not understand that.")
-      return false
-    end
-
-    let container_token = tokens[2]
-    if tokens[2] == "in" || tokens[2] == "into"
-      container_token = tokens[3]
-    end
-
-    if container_token == nothing
-      emit(endpoint, "I do not understand that.")
-      return false
-    end
-
-    let item = match_object(actor, tokens[1])
-    let container = match_object(actor, container_token)
-    if item == nothing || container == nothing
-      emit(endpoint, "I do not see that.")
-      return false
-    end
-
-    return invoke(selector, {:actor -> actor, :item -> item, :container -> container})
+  if saw_not_visible
+    emit(endpoint, "I do not see that.")
+    return false
   end
 
   emit(endpoint, "I do not understand that.")
