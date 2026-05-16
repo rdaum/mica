@@ -13,7 +13,9 @@
 
 use crate::commit_bloom::CommitBloom;
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
-use crate::snapshot::{active_rules, empty_derived_cache, empty_dispatch_cache};
+use crate::snapshot::{
+    active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
+};
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRelations, KernelError,
     RelationId, RelationKernel, RelationWorkspace, RuleSet, ScanControl, Snapshot, Tuple, Version,
@@ -77,6 +79,17 @@ impl<'a> Transaction<'a> {
         }
         self.base
             .cached_applicable_method_calls_normalized(relations, selector, roles)
+    }
+
+    pub(crate) fn cached_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+    ) -> Result<Option<Value>, KernelError> {
+        if !self.is_read_only() {
+            return crate::query::method_program_id_uncached(self, relation, method);
+        }
+        self.base.cached_method_program(relation, method)
     }
 
     pub fn assert(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
@@ -396,6 +409,7 @@ impl<'a> Transaction<'a> {
         next.version = current.version() + 1;
         next.derived_cache = empty_derived_cache();
         next.dispatch_cache = empty_dispatch_cache();
+        next.method_program_cache = empty_method_program_cache();
         let commit = Commit {
             version: next.version,
             catalog_changes: Arc::from([]),

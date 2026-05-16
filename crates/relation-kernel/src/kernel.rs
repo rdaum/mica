@@ -12,7 +12,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::RelationState;
-use crate::snapshot::{active_rules, empty_derived_cache, empty_dispatch_cache};
+use crate::snapshot::{
+    active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
+};
 use crate::{
     CatalogChange, Commit, CommitProvider, FactChangeKind, KernelError, RelationMetadata, Rule,
     RuleDefinition, RuleSet, Snapshot, Transaction,
@@ -42,6 +44,7 @@ impl RelationKernel {
                 rules: Vec::new(),
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
+                method_program_cache: empty_method_program_cache(),
                 commits: Arc::from([]),
             })),
             provider,
@@ -101,6 +104,7 @@ impl RelationKernel {
                 rules,
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
+                method_program_cache: empty_method_program_cache(),
                 commits: commits.into(),
             })),
             provider,
@@ -162,6 +166,7 @@ impl RelationKernel {
                 rules,
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
+                method_program_cache: empty_method_program_cache(),
                 commits: commits.into(),
             })),
             provider,
@@ -206,6 +211,7 @@ impl RelationKernel {
                 rules: state.rules,
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
+                method_program_cache: empty_method_program_cache(),
                 commits: Arc::from([]),
             })),
             provider,
@@ -232,6 +238,7 @@ impl RelationKernel {
         next.relations.insert(metadata.id(), relation);
         next.derived_cache = empty_derived_cache();
         next.dispatch_cache = empty_dispatch_cache();
+        next.method_program_cache = empty_method_program_cache();
         next.version += 1;
         let commit = Commit {
             version: next.version,
@@ -275,6 +282,7 @@ impl RelationKernel {
         next.rules = rules;
         next.derived_cache = empty_derived_cache();
         next.dispatch_cache = empty_dispatch_cache();
+        next.method_program_cache = empty_method_program_cache();
         next.version += 1;
         let commit = Commit {
             version: next.version,
@@ -310,6 +318,7 @@ impl RelationKernel {
         next.rules = rules;
         next.derived_cache = empty_derived_cache();
         next.dispatch_cache = empty_dispatch_cache();
+        next.method_program_cache = empty_method_program_cache();
         next.version += 1;
         let commit = Commit {
             version: next.version,

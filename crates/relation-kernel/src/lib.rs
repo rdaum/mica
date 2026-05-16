@@ -30,6 +30,7 @@ mod index;
 mod kernel;
 mod materialized;
 mod metadata;
+mod method_program_cache;
 mod neighborhood;
 mod projected;
 mod provider;
@@ -66,6 +67,7 @@ pub use projected::{ProjectedDelta, ProjectedStore};
 pub use provider::{CommitProvider, InMemoryCommitProvider, PersistedKernelState};
 #[cfg(feature = "fjall-provider")]
 pub use provider::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
+pub use query::method_program_id;
 pub use query::{QueryPlan, RelationRead, ScanControl};
 pub use rules::{Atom, Rule, RuleDefinition, RuleError, RuleEvalError, RuleSet, Term};
 pub use snapshot::{CatalogChange, Commit, CommitResult, FactChange, FactChangeKind, Snapshot};

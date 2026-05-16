@@ -317,6 +317,17 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
             .cached_applicable_method_calls_normalized(relations, selector, roles)
             .map(Some)
     }
+
+    fn cached_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+    ) -> Result<Option<Option<Value>>, KernelError> {
+        if self.method_program_cache_is_transient(relation) {
+            return Ok(None);
+        }
+        self.tx.cached_method_program(relation, method).map(Some)
+    }
 }
 
 struct ComposedExtensionalTransactionRead<'a, 'kernel> {
@@ -413,6 +424,20 @@ impl ComposedTransactionRead<'_, '_> {
             .iter()
             .any(|relation| self.transient.relation_visible(self.scopes, *relation))
             || dispatch_relation_can_be_derived(self.tx, relations)
+                && self
+                    .scopes
+                    .iter()
+                    .any(|scope| self.transient.scope_len(*scope) > 0)
+    }
+
+    fn method_program_cache_is_transient(&self, relation: RelationId) -> bool {
+        self.transient.relation_visible(self.scopes, relation)
+            || self
+                .tx
+                .base
+                .rules()
+                .iter()
+                .any(|rule| rule.active() && rule.rule().head_relation() == relation)
                 && self
                     .scopes
                     .iter()

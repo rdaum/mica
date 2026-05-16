@@ -14,6 +14,7 @@
 use crate::commit_bloom::CommitBloom;
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
+use crate::method_program_cache::MethodProgramCache;
 use crate::{
     ApplicableMethodCall, DispatchRelations, KernelError, RelationId, RelationMetadata,
     RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple, Version,
@@ -93,6 +94,7 @@ pub struct Snapshot {
     pub(crate) rules: Vec<RuleDefinition>,
     pub(crate) derived_cache: DerivedCache,
     pub(crate) dispatch_cache: DispatchCache,
+    pub(crate) method_program_cache: MethodProgramCache,
     pub(crate) commits: Arc<[Commit]>,
 }
 
@@ -274,6 +276,21 @@ impl Snapshot {
             .insert_normalized(relations, selector, roles, methods.clone());
         Ok(methods)
     }
+
+    pub(crate) fn cached_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+    ) -> Result<Option<Value>, KernelError> {
+        if let Some(program) = self.method_program_cache.get(relation, method) {
+            return Ok(program);
+        }
+
+        let program = crate::query::method_program_id_uncached(self, relation, method)?;
+        self.method_program_cache
+            .insert(relation, method, program.clone());
+        Ok(program)
+    }
 }
 
 pub(crate) fn empty_derived_cache() -> DerivedCache {
@@ -282,6 +299,10 @@ pub(crate) fn empty_derived_cache() -> DerivedCache {
 
 pub(crate) fn empty_dispatch_cache() -> DispatchCache {
     DispatchCache::new()
+}
+
+pub(crate) fn empty_method_program_cache() -> MethodProgramCache {
+    MethodProgramCache::new()
 }
 
 pub(crate) fn active_rules(rules: &[RuleDefinition]) -> Vec<crate::Rule> {

@@ -82,6 +82,39 @@ pub trait RelationRead {
     ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
         self.cached_applicable_method_calls(relations, selector, roles)
     }
+
+    fn cached_method_program(
+        &self,
+        _relation: RelationId,
+        _method: &Value,
+    ) -> Result<Option<Option<Value>>, KernelError> {
+        Ok(None)
+    }
+}
+
+pub fn method_program_id(
+    reader: &impl RelationRead,
+    relation: RelationId,
+    method: &Value,
+) -> Result<Option<Value>, KernelError> {
+    if let Some(cached) = reader.cached_method_program(relation, method)? {
+        return Ok(cached);
+    }
+
+    method_program_id_uncached(reader, relation, method)
+}
+
+pub(crate) fn method_program_id_uncached(
+    reader: &impl RelationRead,
+    relation: RelationId,
+    method: &Value,
+) -> Result<Option<Value>, KernelError> {
+    let mut program = None;
+    reader.visit_relation(relation, &[Some(method.clone()), None], &mut |row| {
+        program = Some(row.values()[1].clone());
+        Ok(ScanControl::Stop)
+    })?;
+    Ok(program)
 }
 
 impl RelationRead for crate::Snapshot {
@@ -148,6 +181,14 @@ impl RelationRead for crate::Snapshot {
         self.cached_applicable_method_calls_normalized(relations, selector, roles)
             .map(Some)
     }
+
+    fn cached_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+    ) -> Result<Option<Option<Value>>, KernelError> {
+        self.cached_method_program(relation, method).map(Some)
+    }
 }
 
 impl RelationRead for Transaction<'_> {
@@ -213,6 +254,14 @@ impl RelationRead for Transaction<'_> {
     ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
         self.cached_applicable_method_calls_normalized(relations, selector, roles)
             .map(Some)
+    }
+
+    fn cached_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+    ) -> Result<Option<Option<Value>>, KernelError> {
+        self.cached_method_program(relation, method).map(Some)
     }
 }
 

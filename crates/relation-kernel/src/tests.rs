@@ -16,7 +16,7 @@ use crate::{
     ComposedRelationRead, ComposedTransactionRead, Conflict, ConflictKind, ConflictPolicy, Fact,
     FactChange, FactChangeKind, InMemoryCommitProvider, KernelError, MentionedFact, ProjectedStore,
     QueryPlan, RelationId, RelationKernel, RelationMetadata, RelationRead, RelationWorkspace, Rule,
-    SubjectFact, Term, TransientStore, Tuple,
+    SubjectFact, Term, TransientStore, Tuple, method_program_id,
 };
 #[cfg(feature = "fjall-provider")]
 use crate::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
@@ -607,6 +607,92 @@ fn composed_transaction_reader_derives_rules_from_transient_inputs() {
     assert_eq!(
         reader.scan_relation(rel(71), &[None]).unwrap(),
         vec![Tuple::from([int(9)])]
+    );
+}
+
+#[test]
+fn method_program_cache_is_scoped_to_snapshot_version() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(90), Symbol::intern("MethodProgram"), 2).with_index([0]),
+        )
+        .unwrap();
+    let method = Value::identity(rel(91));
+    let program = Value::identity(rel(92));
+    let snapshot = kernel.snapshot();
+
+    assert_eq!(
+        method_program_id(snapshot.as_ref(), rel(90), &method).unwrap(),
+        None
+    );
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(90), Tuple::from([method.clone(), program.clone()]))
+        .unwrap();
+    tx.commit().unwrap();
+
+    assert_eq!(
+        method_program_id(kernel.snapshot().as_ref(), rel(90), &method).unwrap(),
+        Some(program)
+    );
+}
+
+#[test]
+fn transaction_method_program_cache_bypasses_snapshot_after_local_writes() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(93), Symbol::intern("MethodProgram"), 2).with_index([0]),
+        )
+        .unwrap();
+    let method = Value::identity(rel(94));
+    let program = Value::identity(rel(95));
+    let snapshot = kernel.snapshot();
+    assert_eq!(
+        method_program_id(snapshot.as_ref(), rel(93), &method).unwrap(),
+        None
+    );
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(93), Tuple::from([method.clone(), program.clone()]))
+        .unwrap();
+
+    assert_eq!(
+        method_program_id(&tx, rel(93), &method).unwrap(),
+        Some(program)
+    );
+}
+
+#[test]
+fn composed_transaction_method_program_cache_bypasses_transient_relation() {
+    let kernel = RelationKernel::new();
+    let metadata =
+        RelationMetadata::new(rel(96), Symbol::intern("MethodProgram"), 2).with_index([0]);
+    kernel.create_relation(metadata.clone()).unwrap();
+    let method = Value::identity(rel(97));
+    let program = Value::identity(rel(98));
+    let snapshot = kernel.snapshot();
+    assert_eq!(
+        method_program_id(snapshot.as_ref(), rel(96), &method).unwrap(),
+        None
+    );
+    let scope = rel(99);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(
+            scope,
+            metadata,
+            Tuple::from([method.clone(), program.clone()]),
+        )
+        .unwrap();
+    let tx = kernel.begin();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        method_program_id(&reader, rel(96), &method).unwrap(),
+        Some(program)
     );
 }
 

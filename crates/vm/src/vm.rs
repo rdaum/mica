@@ -21,7 +21,8 @@ use crate::{
 use mica_relation_kernel::{
     ApplicableMethodCall, ComposedTransactionRead, DispatchRelations, RelationId, RelationRead,
     RelationWorkspace, ScanControl, Transaction, TransientStore, Tuple,
-    applicable_method_calls_normalized, applicable_positional_methods, normalize_dispatch_roles,
+    applicable_method_calls_normalized, applicable_positional_methods, method_program_id,
+    normalize_dispatch_roles,
 };
 use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::collections::BTreeMap;
@@ -273,6 +274,27 @@ impl RelationRead for VmHostContext<'_, '_> {
             None => self
                 .tx
                 .cached_applicable_method_calls(relations, selector, roles),
+        }
+    }
+
+    fn cached_method_program(
+        &self,
+        relation: mica_relation_kernel::RelationId,
+        method: &Value,
+    ) -> Result<Option<Option<Value>>, mica_relation_kernel::KernelError> {
+        match &self.transient {
+            Some(TransientAccess::Exclusive(transient)) => {
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
+                reader.cached_method_program(relation, method)
+            }
+            Some(TransientAccess::Shared(transient)) => {
+                let transient = transient.read().unwrap();
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
+                reader.cached_method_program(relation, method)
+            }
+            None => self.tx.cached_method_program(relation, method),
         }
     }
 }
@@ -968,18 +990,10 @@ impl RegisterVm {
                         return Err(RuntimeError::AmbiguousDispatch { selector, methods });
                     }
                 };
-                let mut program_id = None;
-                host.visit_relation(
-                    spec.program_relation,
-                    &[Some(method.clone()), None],
-                    &mut |row| {
-                        program_id = Some(row.values()[1].clone());
-                        Ok(ScanControl::Stop)
-                    },
-                )?;
-                let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
-                    method: method.clone(),
-                })?;
+                let program_id = method_program_id(host, spec.program_relation, method)?
+                    .ok_or_else(|| RuntimeError::MissingMethodProgram {
+                        method: method.clone(),
+                    })?;
                 let callee_id = self.resolve_program_id(host, spec.program_bytes, &program_id)?;
                 let register_count = self.program_unchecked(callee_id).register_count();
                 let args = args.clone().ok_or_else(|| {
@@ -1017,18 +1031,10 @@ impl RegisterVm {
                         return Err(RuntimeError::AmbiguousDispatch { selector, methods });
                     }
                 };
-                let mut program_id = None;
-                host.visit_relation(
-                    spec.program_relation,
-                    &[Some(method.clone()), None],
-                    &mut |row| {
-                        program_id = Some(row.values()[1].clone());
-                        Ok(ScanControl::Stop)
-                    },
-                )?;
-                let program_id = program_id.ok_or_else(|| RuntimeError::MissingMethodProgram {
-                    method: method.clone(),
-                })?;
+                let program_id = method_program_id(host, spec.program_relation, &method)?
+                    .ok_or_else(|| RuntimeError::MissingMethodProgram {
+                        method: method.clone(),
+                    })?;
                 let callee_id = self.resolve_program_id(host, spec.program_bytes, &program_id)?;
                 let register_count = self.program_unchecked(callee_id).register_count();
                 self.advance_ip_unchecked();
