@@ -91,6 +91,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "frob_delegate",
     "frob_value",
     "is_frob",
+    "to_literal",
     "string_len",
     "string_chars",
     "string_slice",
@@ -1399,7 +1400,7 @@ fn owned_fact_tuple(ownership: &Tuple) -> Option<(Identity, Tuple)> {
 
 fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, KernelError> {
     let snapshot = kernel.snapshot();
-    let identity_names = identity_name_map(&snapshot);
+    let identity_names = identity_name_map(snapshot.as_ref())?;
     let relation_names = relation_name_map(&snapshot);
     let mut relation_declarations = BTreeSet::new();
     let mut identity_declarations = BTreeSet::new();
@@ -1535,10 +1536,11 @@ fn relation_declaration_source(metadata: &RelationMetadata) -> Option<String> {
     })
 }
 
-fn identity_name_map(snapshot: &mica_relation_kernel::Snapshot) -> BTreeMap<Identity, String> {
-    snapshot
-        .scan(named_identity_relation(), &[None, None])
-        .unwrap_or_default()
+fn identity_name_map(
+    reader: &impl RelationRead,
+) -> Result<BTreeMap<Identity, String>, KernelError> {
+    Ok(reader
+        .scan_relation(named_identity_relation(), &[None, None])?
         .into_iter()
         .filter_map(|tuple| {
             let [name, identity] = tuple.values() else {
@@ -1549,7 +1551,7 @@ fn identity_name_map(snapshot: &mica_relation_kernel::Snapshot) -> BTreeMap<Iden
                 name.as_symbol()?.name()?.to_owned(),
             ))
         })
-        .collect()
+        .collect())
 }
 
 fn relation_name_map(snapshot: &mica_relation_kernel::Snapshot) -> BTreeMap<Identity, String> {
@@ -1990,6 +1992,7 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("frob_delegate", frob_delegate_builtin)
         .with_builtin("frob_value", frob_value_builtin)
         .with_builtin("is_frob", is_frob_builtin)
+        .with_builtin("to_literal", to_literal_builtin)
         .with_builtin("string_len", string_len_builtin)
         .with_builtin("string_chars", string_chars_builtin)
         .with_builtin("string_slice", string_slice_builtin)
@@ -2088,6 +2091,32 @@ fn is_frob_builtin(
         return Err(invalid_builtin_call("is_frob", "expected is_frob(value)"));
     }
     Ok(Value::bool(args[0].frob_delegate().is_some()))
+}
+
+fn to_literal_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "to_literal",
+            "expected to_literal(value)",
+        ));
+    }
+    if !args[0].is_persistable() {
+        return Err(invalid_builtin_call(
+            "to_literal",
+            "capability values do not have source literals",
+        ));
+    }
+
+    let relation_names = relation_name_map(&context.kernel().snapshot());
+    let identity_names = identity_name_map(context.tx())?;
+    Ok(Value::string(source_literal(
+        &args[0],
+        &identity_names,
+        &relation_names,
+    )))
 }
 
 fn string_len_builtin(
@@ -3899,6 +3928,28 @@ mod tests {
     }
 
     #[test]
+    fn runner_to_literal_renders_parseable_value_source() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:take_event)").unwrap();
+
+        assert!(matches!(
+            runner
+                .run_source("return to_literal([nothing, true, 42, \"x\", :foo])")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("[nothing, true, 42, \"x\", :foo]")
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return to_literal(#take_event<[\"coin\"]>)")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("#take_event<[\"coin\"]>")
+        ));
+    }
+
+    #[test]
     fn runner_dispatches_frobs_by_delegate_restriction() {
         let mut runner = SourceRunner::new_empty();
         runner
@@ -3961,6 +4012,23 @@ mod tests {
             TaskOutcome::Complete { value, .. }
                 if value == Value::string("{Actor} {pick|picks} up {the item}.")
         ));
+
+        let literal_report = runner
+            .run_source(
+                "let template = compile_template(\"{Actor} {pick|picks} up {the item}.\")\n\
+                 return template_literal(template)",
+            )
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = literal_report.outcome else {
+            panic!("expected template literal task to complete");
+        };
+        let Some(literal) = value.with_str(str::to_owned) else {
+            panic!("expected template literal to return a string");
+        };
+        assert!(literal.starts_with("#subst<["));
+        assert!(literal.contains("#subst_name<"));
+        assert!(literal.contains("#subst_self_alt<"));
+        assert!(literal.contains("#subst_article<"));
     }
 
     #[test]
