@@ -5915,6 +5915,24 @@ mod tests {
     }
 
     #[test]
+    fn runner_same_source_body_can_use_declared_functional_relation_and_identity() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source(
+                "make_identity(:thing)\n\
+                 make_functional_relation(:Name, 2, [0])\n\
+                 #thing.name = \"brass lamp\"\n\
+                 return #thing.name",
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.render(),
+            "task 1 complete: \"brass lamp\" (retries: 0)"
+        );
+    }
+
+    #[test]
     fn runner_same_source_body_can_use_declared_identity_without_reusing_id() {
         let mut runner = SourceRunner::new_empty();
         let first = runner
