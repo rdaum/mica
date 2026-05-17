@@ -254,6 +254,18 @@ pub enum Instruction {
         target: Operand,
         value: Operand,
     },
+    LoadFunction {
+        dst: Register,
+        program: Arc<Program>,
+        captures: Vec<Operand>,
+        min_arity: u16,
+        max_arity: u16,
+    },
+    CallValue {
+        dst: Register,
+        callee: Operand,
+        args: Vec<Operand>,
+    },
     Call {
         dst: Register,
         program: Arc<Program>,
@@ -528,6 +540,18 @@ pub(crate) enum Opcode {
     Emit {
         target: OperandRef,
         value: OperandRef,
+    },
+    LoadFunction {
+        dst: Register,
+        program: ProgramId,
+        captures: TableRange,
+        min_arity: u16,
+        max_arity: u16,
+    },
+    CallValue {
+        dst: Register,
+        callee: OperandRef,
+        args: TableRange,
     },
     Call {
         dst: Register,
@@ -1012,6 +1036,32 @@ impl Program {
                 target: self.decode_operand(*target),
                 value: self.decode_operand(*value),
             },
+            Opcode::LoadFunction {
+                dst,
+                program,
+                captures,
+                min_arity,
+                max_arity,
+            } => Instruction::LoadFunction {
+                dst: *dst,
+                program: Arc::clone(self.program(*program)),
+                captures: self
+                    .operands(*captures)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+                min_arity: *min_arity,
+                max_arity: *max_arity,
+            },
+            Opcode::CallValue { dst, callee, args } => Instruction::CallValue {
+                dst: *dst,
+                callee: self.decode_operand(*callee),
+                args: self
+                    .operands(*args)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+            },
             Opcode::Call { dst, program, args } => Instruction::Call {
                 dst: *dst,
                 program: Arc::clone(self.program(*program)),
@@ -1490,6 +1540,24 @@ impl ProgramBuilder {
             Instruction::Emit { target, value } => Opcode::Emit {
                 target: self.operand(target)?,
                 value: self.operand(value)?,
+            },
+            Instruction::LoadFunction {
+                dst,
+                program,
+                captures,
+                min_arity,
+                max_arity,
+            } => Opcode::LoadFunction {
+                dst,
+                program: self.program(program)?,
+                captures: self.operands(captures)?,
+                min_arity,
+                max_arity,
+            },
+            Instruction::CallValue { dst, callee, args } => Opcode::CallValue {
+                dst,
+                callee: self.operand(callee)?,
+                args: self.operands(args)?,
             },
             Instruction::Call { dst, program, args } => Opcode::Call {
                 dst,
@@ -2003,12 +2071,22 @@ fn validate_instruction(
             validate_operands(register_count, message.iter())?;
             validate_operands(register_count, value.iter())
         }
+        Instruction::LoadFunction { dst, captures, .. } => {
+            validate_register(register_count, *dst)?;
+            validate_operands(register_count, captures.iter())
+        }
+        Instruction::CallValue { dst, callee, args } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, callee)?;
+            validate_operands(register_count, args.iter())
+        }
         Instruction::Call { dst, program, args } => {
             validate_register(register_count, *dst)?;
             validate_operands(register_count, args.iter())?;
             if args.len() > program.register_count() {
                 return Err(RuntimeError::InvalidCallArity {
-                    expected_at_most: program.register_count(),
+                    expected_min: 0,
+                    expected_max: program.register_count(),
                     actual: args.len(),
                 });
             }
@@ -2198,6 +2276,8 @@ const INST_ASSERT_DYNAMIC: u8 = 44;
 const INST_RETRACT_DYNAMIC: u8 = 45;
 const INST_BUILTIN_CALL_DYNAMIC: u8 = 46;
 const INST_SPAWN_POSITIONAL_DISPATCH: u8 = 47;
+const INST_LOAD_FUNCTION: u8 = 48;
+const INST_CALL_VALUE: u8 = 49;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2458,6 +2538,27 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_EMIT);
             write_operand(out, target)?;
             write_operand(out, value)
+        }
+        Instruction::LoadFunction {
+            dst,
+            program,
+            captures,
+            min_arity,
+            max_arity,
+        } => {
+            out.push(INST_LOAD_FUNCTION);
+            write_register(out, *dst);
+            write_u16(out, *min_arity);
+            write_u16(out, *max_arity);
+            write_bytes(out, &program.to_bytes()?);
+            write_operands(out, captures)?;
+            Ok(())
+        }
+        Instruction::CallValue { dst, callee, args } => {
+            out.push(INST_CALL_VALUE);
+            write_register(out, *dst);
+            write_operand(out, callee)?;
+            write_operands(out, args)
         }
         Instruction::Commit => {
             out.push(INST_COMMIT);
@@ -3029,6 +3130,18 @@ impl<'a> ByteReader<'a> {
             INST_CALL => Instruction::Call {
                 dst: self.read_register()?,
                 program: Arc::new(Program::from_bytes(&self.read_bytes()?)?),
+                args: self.read_operands()?,
+            },
+            INST_LOAD_FUNCTION => Instruction::LoadFunction {
+                dst: self.read_register()?,
+                min_arity: self.read_u16()?,
+                max_arity: self.read_u16()?,
+                program: Arc::new(Program::from_bytes(&self.read_bytes()?)?),
+                captures: self.read_operands()?,
+            },
+            INST_CALL_VALUE => Instruction::CallValue {
+                dst: self.read_register()?,
+                callee: self.read_operand()?,
                 args: self.read_operands()?,
             },
             INST_BUILTIN_CALL => Instruction::BuiltinCall {

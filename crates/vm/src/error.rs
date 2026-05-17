@@ -34,9 +34,12 @@ pub enum RuntimeError {
         max_depth: usize,
     },
     InvalidCallArity {
-        expected_at_most: usize,
+        expected_min: usize,
+        expected_max: usize,
         actual: usize,
     },
+    InvalidCallable(Value),
+    InvalidFunction(u64),
     NoApplicableMethod {
         selector: Value,
     },

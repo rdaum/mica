@@ -25,7 +25,7 @@ use mica_relation_kernel::{
     applicable_method_calls_normalized, applicable_positional_methods, method_program_id,
     normalize_dispatch_roles,
 };
-use mica_var::{Identity, Symbol, Value, ValueKind};
+use mica_var::{FunctionId, Identity, Symbol, Value, ValueKind};
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,7 +71,8 @@ impl Frame {
     ) -> Result<Self, RuntimeError> {
         if args.len() > register_count {
             return Err(RuntimeError::InvalidCallArity {
-                expected_at_most: register_count,
+                expected_min: 0,
+                expected_max: register_count,
                 actual: args.len(),
             });
         }
@@ -110,9 +111,18 @@ impl Frame {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmState {
     programs: Vec<Arc<Program>>,
+    functions: Vec<CallableInfo>,
     resolved_programs: Vec<(Value, usize)>,
     frames: Vec<Frame>,
     pending_resume: Option<Register>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CallableInfo {
+    program: usize,
+    captures: Vec<Value>,
+    min_arity: usize,
+    max_arity: usize,
 }
 
 impl VmState {
@@ -569,6 +579,7 @@ impl RegisterVm {
         Self {
             state: VmState {
                 programs: vec![program],
+                functions: Vec::new(),
                 resolved_programs: Vec::new(),
                 frames: vec![Frame::root(0, register_count)],
                 pending_resume: None,
@@ -996,6 +1007,57 @@ impl RegisterVm {
                 let value = self.resolve_operand_ref(program, *value);
                 host.emit(target, value)?;
                 self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::LoadFunction {
+                dst,
+                program: callee,
+                captures,
+                min_arity,
+                max_arity,
+            } => {
+                let callee = program.program(*callee);
+                let callee_id = self.intern_program(Arc::clone(callee));
+                let captures = self.resolve_operands(program, program.operands(*captures));
+                let function = self.intern_function(CallableInfo {
+                    program: callee_id,
+                    captures,
+                    min_arity: *min_arity as usize,
+                    max_arity: *max_arity as usize,
+                })?;
+                self.write_register_unchecked(*dst, Value::function(function));
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::CallValue { dst, callee, args } => {
+                if self.state.frames.len() >= max_call_depth {
+                    return Err(RuntimeError::MaxCallDepthExceeded {
+                        max_depth: max_call_depth,
+                    });
+                }
+                let callee = self.resolve_operand_ref(program, *callee);
+                let function = callee
+                    .as_function()
+                    .ok_or_else(|| RuntimeError::InvalidCallable(callee.clone()))?;
+                let callable = self.callable(function)?;
+                let user_args = self.resolve_operands(program, program.operands(*args));
+                if user_args.len() < callable.min_arity || user_args.len() > callable.max_arity {
+                    return Err(RuntimeError::InvalidCallArity {
+                        expected_min: callable.min_arity,
+                        expected_max: callable.max_arity,
+                        actual: user_args.len(),
+                    });
+                }
+                let register_count = self.program_unchecked(callable.program).register_count();
+                let mut args = callable.captures;
+                args.extend(user_args);
+                self.advance_ip_unchecked();
+                self.state.frames.push(Frame::new(
+                    callable.program,
+                    register_count,
+                    Some(*dst),
+                    args,
+                )?);
                 Ok(VmHostResponse::Continue)
             }
             Opcode::Call {
@@ -1436,6 +1498,34 @@ impl RegisterVm {
         let index = self.state.programs.len();
         self.state.programs.push(program);
         index
+    }
+
+    fn intern_function(&mut self, function: CallableInfo) -> Result<FunctionId, RuntimeError> {
+        if let Some((index, _)) = self
+            .state
+            .functions
+            .iter()
+            .enumerate()
+            .find(|(_, loaded)| **loaded == function)
+        {
+            return FunctionId::new(index as u64).ok_or_else(|| {
+                RuntimeError::ProgramArtifact("function id exceeds value payload range".to_owned())
+            });
+        }
+        let index = self.state.functions.len();
+        let function_id = FunctionId::new(index as u64).ok_or_else(|| {
+            RuntimeError::ProgramArtifact("function id exceeds value payload range".to_owned())
+        })?;
+        self.state.functions.push(function);
+        Ok(function_id)
+    }
+
+    fn callable(&self, id: FunctionId) -> Result<CallableInfo, RuntimeError> {
+        self.state
+            .functions
+            .get(id.raw() as usize)
+            .cloned()
+            .ok_or(RuntimeError::InvalidFunction(id.raw()))
     }
 
     fn resolve_program_id<H: VmHost>(

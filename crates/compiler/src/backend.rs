@@ -794,6 +794,7 @@ struct ProgramCompiler<'a> {
 struct FunctionInfo {
     program: Arc<Program>,
     params: Vec<FunctionParamInfo>,
+    captures: Vec<BindingId>,
     min_arity: usize,
     max_arity: Option<usize>,
 }
@@ -931,13 +932,12 @@ impl<'a> ProgramCompiler<'a> {
                 if let (Some(binding), Some(value)) = (*binding, value.as_deref())
                     && let HirExpr::Function { name: None, .. } = value
                 {
-                    let function = self.compile_function(value, Some(binding))?;
-                    self.functions.insert(binding, function);
-                    let dst = self.alloc_register();
-                    self.emit(Instruction::Load {
-                        dst,
-                        value: Value::nothing(),
-                    });
+                    let function = self.compile_function(value)?;
+                    if function.captures.is_empty() {
+                        self.functions.insert(binding, function.clone());
+                    }
+                    let dst = self.emit_function_value(*id, function)?;
+                    self.locals.insert(binding, dst);
                     return Ok(dst);
                 }
                 let dst = match value {
@@ -1101,23 +1101,27 @@ impl<'a> ProgramCompiler<'a> {
                 finally,
             } => self.compile_try(*id, body, catches, finally),
             HirExpr::Function { id, .. } => {
-                let function = self.compile_function(expr, None)?;
+                let function = self.compile_function(expr)?;
                 let HirExpr::Function { name, .. } = expr else {
                     unreachable!();
                 };
-                let Some(binding) = name else {
-                    return Err(self.unsupported(
-                        *id,
-                        "anonymous function values are not implemented in the task compiler yet",
-                    ));
-                };
-                self.functions.insert(*binding, function);
-                let dst = self.alloc_register();
-                self.emit(Instruction::Load {
-                    dst,
-                    value: Value::nothing(),
-                });
-                Ok(dst)
+                if let Some(binding) = name {
+                    if function.captures.is_empty() {
+                        self.functions.insert(*binding, function);
+                        let dst = self.alloc_register();
+                        self.emit(Instruction::Load {
+                            dst,
+                            value: Value::nothing(),
+                        });
+                        Ok(dst)
+                    } else {
+                        let dst = self.emit_function_value(*id, function)?;
+                        self.locals.insert(*binding, dst);
+                        Ok(dst)
+                    }
+                } else {
+                    self.emit_function_value(*id, function)
+                }
             }
             HirExpr::RoleDispatch { id, selector, args } => {
                 self.compile_dispatch(*id, selector, args, None)
@@ -1637,14 +1641,10 @@ impl<'a> ProgramCompiler<'a> {
         Ok(())
     }
 
-    fn compile_function(
-        &self,
-        expr: &HirExpr,
-        binding_override: Option<BindingId>,
-    ) -> Result<FunctionInfo, CompileError> {
+    fn compile_function(&self, expr: &HirExpr) -> Result<FunctionInfo, CompileError> {
         let HirExpr::Function {
-            id,
-            name,
+            id: _,
+            name: _,
             params,
             captures,
             body,
@@ -1653,17 +1653,6 @@ impl<'a> ProgramCompiler<'a> {
         else {
             return Err(self.unsupported(expr_id(expr), "expected function expression"));
         };
-        if !captures.is_empty() {
-            return Err(
-                self.unsupported(*id, "closures are not implemented in the task compiler yet")
-            );
-        }
-        if name.is_none() && binding_override.is_none() {
-            return Err(self.unsupported(
-                *id,
-                "anonymous function values are not implemented in the task compiler yet",
-            ));
-        }
         let mut saw_optional = false;
         let mut saw_rest = false;
         for param in params {
@@ -1704,9 +1693,14 @@ impl<'a> ProgramCompiler<'a> {
         }
 
         let mut compiler = ProgramCompiler::new(self.semantic, self.context);
-        compiler.next_register = params.len() as u16;
+        compiler.next_register = (captures.len() + params.len()) as u16;
+        for (idx, capture) in captures.iter().enumerate() {
+            compiler.locals.insert(*capture, Register(idx as u16));
+        }
         for (idx, param) in params.iter().enumerate() {
-            compiler.locals.insert(param.binding, Register(idx as u16));
+            compiler
+                .locals
+                .insert(param.binding, Register((captures.len() + idx) as u16));
         }
         let program = match body {
             HirFunctionBody::Expr(expr) => compiler.compile_function_expr_body(expr)?,
@@ -1735,9 +1729,55 @@ impl<'a> ProgramCompiler<'a> {
         Ok(FunctionInfo {
             program: Arc::new(program),
             params: param_info,
+            captures: captures.clone(),
             min_arity,
             max_arity,
         })
+    }
+
+    fn emit_function_value(
+        &mut self,
+        id: NodeId,
+        function: FunctionInfo,
+    ) -> Result<Register, CompileError> {
+        if function
+            .params
+            .iter()
+            .any(|param| param.kind != LocalKind::Param)
+        {
+            return Err(self.unsupported(
+                id,
+                "function values only support required positional parameters yet",
+            ));
+        }
+        let min_arity = u16::try_from(function.min_arity)
+            .map_err(|_| self.unsupported(id, "function value has too many parameters"))?;
+        let max_arity = u16::try_from(function.max_arity.unwrap_or(function.min_arity))
+            .map_err(|_| self.unsupported(id, "function value has too many parameters"))?;
+        let captures = function
+            .captures
+            .iter()
+            .map(|capture| {
+                self.locals
+                    .get(capture)
+                    .copied()
+                    .map(Operand::Register)
+                    .ok_or_else(|| CompileError::UnboundLocal {
+                        node: id,
+                        span: self.span(id),
+                        binding: *capture,
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::LoadFunction {
+            dst,
+            program: function.program,
+            captures,
+            min_arity,
+            max_arity,
+        });
+        Ok(dst)
     }
 
     fn compile_function_expr_body(mut self, expr: &HirExpr) -> Result<Program, CompileError> {
@@ -1765,18 +1805,42 @@ impl<'a> ProgramCompiler<'a> {
                 self.compile_positional_dispatch(id, name, args)
             };
         }
-        let HirExpr::LocalRef { binding, .. } = callee else {
+        if let HirExpr::LocalRef { binding, .. } = callee
+            && let Some(function) = self.functions.get(binding).cloned()
+        {
+            return self.compile_direct_function_call(id, &function, args);
+        }
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(
+                self.unsupported(id, "function value calls only support positional arguments")
+            );
+        }
+        if args.iter().any(|arg| arg.splice) {
             return Err(self.unsupported(
                 id,
-                "only direct calls to local functions are implemented in the task compiler yet",
+                "function value calls do not support argument splices yet",
             ));
-        };
-        let function = self.functions.get(binding).cloned().ok_or_else(|| {
-            self.unsupported(
-                id,
-                "only direct calls to local functions are implemented in the task compiler yet",
-            )
-        })?;
+        }
+        let callee = self.compile_expr_for_value(callee)?;
+        let call_args = args
+            .iter()
+            .map(|arg| self.compile_arg_operand(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::CallValue {
+            dst,
+            callee: Operand::Register(callee),
+            args: call_args,
+        });
+        Ok(dst)
+    }
+
+    fn compile_direct_function_call(
+        &mut self,
+        id: NodeId,
+        function: &FunctionInfo,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(self.unsupported(
                 id,
@@ -1785,7 +1849,7 @@ impl<'a> ProgramCompiler<'a> {
         }
         let has_splice = args.iter().any(|arg| arg.splice);
         if !has_splice {
-            self.validate_static_function_arity(id, &function, args.len())?;
+            self.validate_static_function_arity(id, function, args.len())?;
         }
         let call_args = if function
             .params
@@ -1797,12 +1861,12 @@ impl<'a> ProgramCompiler<'a> {
                 .map(|arg| self.compile_arg_operand(arg))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
-            self.compile_bound_function_args(id, &function, args)?
+            self.compile_bound_function_args(id, function, args)?
         };
         let dst = self.alloc_register();
         self.emit(Instruction::Call {
             dst,
-            program: function.program,
+            program: Arc::clone(&function.program),
             args: call_args,
         });
         Ok(dst)
@@ -4334,6 +4398,106 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_passes_function_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let apply = fn(f, x) => f(x)\n\
+             return apply(fn(x) => x + 1, 41)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(42).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_returns_function_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let make = fn() => fn(x) => x + 1\n\
+             let inc = make()\n\
+             return inc(41)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(42).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_calls_function_values_through_aliases() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let inc = fn(x) => x + 1\n\
+             let alias = inc\n\
+             return alias(41)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(42).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn function_value_calls_validate_arity_at_runtime() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let error = submit_source_task(
+            "let inc = fn(x) => x + 1\n\
+             let alias = inc\n\
+             return alias()",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            mica_runtime::TaskManagerError::Task(mica_runtime::TaskError::Runtime(
+                RuntimeError::InvalidCallArity {
+                    expected_min: 1,
+                    expected_max: 1,
+                    actual: 0,
+                }
+            ))
+        ));
+    }
+
+    #[test]
     fn compiled_task_calls_functions_with_optional_params() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();
@@ -4466,24 +4630,81 @@ mod tests {
     }
 
     #[test]
-    fn captured_function_locals_are_rejected() {
+    fn compiled_task_calls_closures() {
         let context = CompileContext::new();
-        let error = compile_source(
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
             "let factor = 2\n\
              fn scale(x)\n\
                return x * factor\n\
              end\n\
              return scale(10)",
             &context,
+            &mut task_manager,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(matches!(
-            error,
-            CompileError::SemanticDiagnostic { diagnostic }
-                if diagnostic.code == crate::DiagnosticCode::UnsupportedSyntax
-                    && diagnostic.message == "closures are not implemented yet"
-        ));
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(20).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_passes_returned_closures() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let make_adder = fn(base) => fn(value) => base + value\n\
+             let add10 = make_adder(10)\n\
+             return add10(32)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(42).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn closures_capture_values_when_created() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let value = 1\n\
+             let read = fn() => value\n\
+             value = 2\n\
+             return read()",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(1).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
     }
 
     #[test]

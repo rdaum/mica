@@ -33,6 +33,7 @@ pub(crate) const TAG_RANGE: u8 = 11;
 pub(crate) const TAG_ERROR: u8 = 12;
 pub(crate) const TAG_CAPABILITY: u8 = 13;
 pub(crate) const TAG_FROB: u8 = 14;
+pub(crate) const TAG_FUNCTION: u8 = 15;
 
 pub(crate) const INT_BITS: u32 = 56;
 pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
@@ -83,6 +84,29 @@ impl CapabilityId {
 
     pub const fn new(raw: u64) -> Option<Self> {
         if raw <= Self::MAX && raw != 0 {
+            Some(Self(raw))
+        } else {
+            None
+        }
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// Ephemeral VM-local function designation payload.
+///
+/// Function ids name callable programs inside one running VM. They are not
+/// durable world data and must not be persisted in relation tuples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct FunctionId(u64);
+
+impl FunctionId {
+    pub const MAX: u64 = MAX_PAYLOAD;
+
+    pub const fn new(raw: u64) -> Option<Self> {
+        if raw <= Self::MAX {
             Some(Self(raw))
         } else {
             None
@@ -161,6 +185,7 @@ pub enum ValueKind {
     Error = TAG_ERROR,
     Capability = TAG_CAPABILITY,
     Frob = TAG_FROB,
+    Function = TAG_FUNCTION,
 }
 
 pub const NOTHING_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0001);
@@ -178,6 +203,7 @@ pub const RANGE_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000c);
 pub const ERROR_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000d);
 pub const CAPABILITY_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000e);
 pub const FROB_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000f);
+pub const FUNCTION_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0010);
 
 pub const PRIMITIVE_PROTOTYPES: &[(&str, Identity)] = &[
     ("nothing", NOTHING_PROTOTYPE),
@@ -195,6 +221,7 @@ pub const PRIMITIVE_PROTOTYPES: &[(&str, Identity)] = &[
     ("error", ERROR_PROTOTYPE),
     ("capability", CAPABILITY_PROTOTYPE),
     ("frob", FROB_PROTOTYPE),
+    ("function", FUNCTION_PROTOTYPE),
 ];
 
 const fn primitive_identity(raw: u64) -> Identity {
@@ -221,6 +248,7 @@ pub const fn primitive_prototype_for_kind(kind: ValueKind) -> Identity {
         ValueKind::Error => ERROR_PROTOTYPE,
         ValueKind::Capability => CAPABILITY_PROTOTYPE,
         ValueKind::Frob => FROB_PROTOTYPE,
+        ValueKind::Function => FUNCTION_PROTOTYPE,
     }
 }
 
@@ -233,6 +261,7 @@ pub enum ValueError {
     IntegerOutOfRange(i64),
     IdentityOutOfRange(u64),
     CapabilityOutOfRange(u64),
+    FunctionOutOfRange(u64),
     HeapPointerOutOfRange(usize),
 }
 
@@ -289,6 +318,19 @@ impl Value {
         match CapabilityId::new(raw) {
             Some(capability) => Ok(Self::capability(capability)),
             None => Err(ValueError::CapabilityOutOfRange(raw)),
+        }
+    }
+
+    #[inline(always)]
+    pub const fn function(function: FunctionId) -> Self {
+        Self::pack(TAG_FUNCTION, function.raw())
+    }
+
+    #[inline(always)]
+    pub const fn function_raw(raw: u64) -> Result<Self, ValueError> {
+        match FunctionId::new(raw) {
+            Some(function) => Ok(Self::function(function)),
+            None => Err(ValueError::FunctionOutOfRange(raw)),
         }
     }
 
@@ -367,6 +409,7 @@ impl Value {
             TAG_ERROR => ValueKind::Error,
             TAG_CAPABILITY => ValueKind::Capability,
             TAG_FROB => ValueKind::Frob,
+            TAG_FUNCTION => ValueKind::Function,
             _ => unreachable!(),
         }
     }
@@ -420,6 +463,15 @@ impl Value {
     pub const fn as_capability(&self) -> Option<CapabilityId> {
         if self.tag() == TAG_CAPABILITY {
             CapabilityId::new(self.payload())
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_function(&self) -> Option<FunctionId> {
+        if self.tag() == TAG_FUNCTION {
+            FunctionId::new(self.payload())
         } else {
             None
         }
@@ -510,7 +562,7 @@ impl Value {
 
     pub fn is_persistable(&self) -> bool {
         match self.kind() {
-            ValueKind::Capability => false,
+            ValueKind::Capability | ValueKind::Function => false,
             ValueKind::List => self
                 .with_list(|values| values.iter().all(Self::is_persistable))
                 .unwrap_or(false),

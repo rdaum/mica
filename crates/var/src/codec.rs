@@ -13,8 +13,8 @@
 
 use crate::value::{
     PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_ERROR, TAG_ERROR_CODE, TAG_FLOAT,
-    TAG_FROB, TAG_IDENTITY, TAG_INT, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE, TAG_SHIFT,
-    TAG_STRING, TAG_SYMBOL,
+    TAG_FROB, TAG_FUNCTION, TAG_IDENTITY, TAG_INT, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE,
+    TAG_SHIFT, TAG_STRING, TAG_SYMBOL,
 };
 use crate::{CapabilityId, Identity, Symbol, Value, ValueRef};
 use std::fmt;
@@ -60,6 +60,8 @@ pub enum ValueCodecError {
     UnnamedSymbol(u32),
     CapabilityNotEncodable,
     CapabilityNotDecodable,
+    FunctionNotEncodable,
+    FunctionNotDecodable,
     UnexpectedEnd {
         needed: usize,
         offset: usize,
@@ -89,6 +91,8 @@ impl fmt::Display for ValueCodecError {
             Self::UnnamedSymbol(id) => write!(f, "cannot encode unnamed symbol id {id}"),
             Self::CapabilityNotEncodable => f.write_str("capability values cannot be encoded"),
             Self::CapabilityNotDecodable => f.write_str("capability values cannot be decoded"),
+            Self::FunctionNotEncodable => f.write_str("function values cannot be encoded"),
+            Self::FunctionNotDecodable => f.write_str("function values cannot be decoded"),
             Self::UnexpectedEnd {
                 needed,
                 offset,
@@ -295,6 +299,7 @@ pub fn encode_value_to_sink<S: ValueSink>(
             write_word(sink, value.raw_bits())?;
         }
         ValueRef::Capability(_) => return Err(ValueCodecError::CapabilityNotEncodable),
+        ValueRef::Function(_) => return Err(ValueCodecError::FunctionNotEncodable),
     }
     Ok(())
 }
@@ -448,6 +453,7 @@ fn encode_value_to_segments<'a>(
             segments.push_scratch_word(value.raw_bits());
         }
         ValueRef::Capability(_) => return Err(ValueCodecError::CapabilityNotEncodable),
+        ValueRef::Function(_) => return Err(ValueCodecError::FunctionNotEncodable),
     }
     Ok(())
 }
@@ -609,6 +615,7 @@ impl<'a> ValueReader<'a> {
                 Ok(Value::frob(delegate, value))
             }
             TAG_CAPABILITY => Err(ValueCodecError::CapabilityNotDecodable),
+            TAG_FUNCTION => Err(ValueCodecError::FunctionNotDecodable),
             TAG_NOTHING | TAG_BOOL | TAG_INT | TAG_FLOAT | TAG_IDENTITY => {
                 Err(ValueCodecError::InvalidExtendedAux { kind, aux })
             }
@@ -749,6 +756,7 @@ fn decode_inline_word(word: u64, options: ValueCodecOptions) -> Result<Value, Va
                 .map(Value::capability)
                 .ok_or(ValueCodecError::InvalidCapabilityPayload(payload))
         }
+        TAG_FUNCTION => Err(ValueCodecError::FunctionNotDecodable),
         tag => Err(ValueCodecError::UnknownValueTag(tag)),
     }
 }

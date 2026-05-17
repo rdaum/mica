@@ -317,7 +317,7 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn validate_supported_surface_expr(&mut self, expr: &HirExpr, direct_function_binding: bool) {
+    fn validate_supported_surface_expr(&mut self, expr: &HirExpr, _direct_function_binding: bool) {
         match expr {
             HirExpr::QueryVar { id, .. } => {
                 self.unsupported(*id, "query variables are only valid as relation arguments");
@@ -501,26 +501,12 @@ impl<'a> Analyzer<'a> {
                 }
                 self.validate_supported_surface_items(finally);
             }
-            HirExpr::Function {
-                id,
-                name,
-                captures,
-                body,
-                ..
-            } => {
-                if name.is_none() && !direct_function_binding {
-                    self.unsupported(*id, "anonymous function values are not implemented yet");
+            HirExpr::Function { body, .. } => match body {
+                HirFunctionBody::Expr(expr) => {
+                    self.validate_supported_surface_expr(expr, false);
                 }
-                if !captures.is_empty() {
-                    self.unsupported(*id, "closures are not implemented yet");
-                }
-                match body {
-                    HirFunctionBody::Expr(expr) => {
-                        self.validate_supported_surface_expr(expr, false);
-                    }
-                    HirFunctionBody::Block(items) => self.validate_supported_surface_items(items),
-                }
-            }
+                HirFunctionBody::Block(items) => self.validate_supported_surface_items(items),
+            },
             HirExpr::Recover { expr, catches, .. } => {
                 self.validate_supported_surface_expr(expr, false);
                 for catch in catches {
@@ -1602,9 +1588,7 @@ mod tests {
              let f = {y} => x + y\n\
              f(2)",
         );
-        assert!(program.diagnostics.iter().any(|diagnostic| diagnostic.code
-            == DiagnosticCode::UnsupportedSyntax
-            && diagnostic.message == "closures are not implemented yet"));
+        assert_eq!(program.diagnostics, vec![]);
         let x = program
             .bindings
             .iter()

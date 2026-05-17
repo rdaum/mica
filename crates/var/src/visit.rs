@@ -13,7 +13,7 @@
 
 use crate::heap::HeapValue;
 use crate::symbol::Symbol;
-use crate::value::{CapabilityId, ErrorValue, Identity, Value, ValueKind};
+use crate::value::{CapabilityId, ErrorValue, FunctionId, Identity, Value, ValueKind};
 
 /// A borrowed, structured view of a `Value`.
 ///
@@ -42,6 +42,7 @@ pub enum ValueRef<'a> {
         value: Option<&'a Value>,
     },
     Capability(CapabilityId),
+    Function(FunctionId),
     Frob {
         delegate: Identity,
         value: &'a Value,
@@ -66,6 +67,7 @@ impl ValueRef<'_> {
             Self::Range { .. } => ValueKind::Range,
             Self::Error { .. } => ValueKind::Error,
             Self::Capability(_) => ValueKind::Capability,
+            Self::Function(_) => ValueKind::Function,
             Self::Frob { .. } => ValueKind::Frob,
         }
     }
@@ -82,6 +84,7 @@ impl ValueRef<'_> {
                 | Self::Symbol(_)
                 | Self::ErrorCode(_)
                 | Self::Capability(_)
+                | Self::Function(_)
         )
     }
 
@@ -148,6 +151,7 @@ impl Value {
             ValueKind::Symbol => ValueRef::Symbol(self.as_symbol().unwrap()),
             ValueKind::ErrorCode => ValueRef::ErrorCode(self.as_error_code().unwrap()),
             ValueKind::Capability => ValueRef::Capability(self.as_capability().unwrap()),
+            ValueKind::Function => ValueRef::Function(self.as_function().unwrap()),
             ValueKind::String
             | ValueKind::Bytes
             | ValueKind::List

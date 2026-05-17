@@ -3,27 +3,25 @@
 These are not reference semantics; they are bugs or design debts exposed by
 the cross-check.
 
-1. Anonymous function/lambda values parse, but backend rejects them unless the
-   function literal is immediately bound as a direct local function.
+1. Function/lambda values now compile to ephemeral runtime function handles,
+   including closures with captured locals, but function values currently
+   support only required positional parameters.
 
-2. Closures are detected by semantic analysis, but backend rejects captured
-   locals.
-
-3. Argument splices parse in every argument list, but backend only implements
+2. Argument splices parse in every argument list, but backend only implements
    them for list literals, direct local function calls, registered runtime
-   builtin calls, and relation atoms. Dispatch, spawn, and task-control call
-   paths still reject them.
+   builtin calls, and relation atoms. Function-value calls, dispatch, spawn,
+   and task-control call paths still reject them.
 
-4. `spawn` parses any expression target, but backend only accepts role or
+3. `spawn` parses any expression target, but backend only accepts role or
    receiver dispatch targets. Role dispatch spawn targets still require
    explicit role names.
 
-5. A single compiled eval task cannot define a relation/identity and use the
+4. A single compiled eval task cannot define a relation/identity and use the
     new name later in the same source body because compile context is resolved
     before execution. Filein chunking hides this for import files, but the REPL
     and `eval` semantics remain surprising.
 
-6. Rules and method/verb definitions cannot be mixed with executable task code
+5. Rules and method/verb definitions cannot be mixed with executable task code
     in one compiled chunk.
 
-7. Contextual actor submissions cannot install rules or methods.
+6. Contextual actor submissions cannot install rules or methods.

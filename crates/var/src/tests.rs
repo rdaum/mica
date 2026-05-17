@@ -110,6 +110,17 @@ fn capability_values_are_ephemeral() {
 }
 
 #[test]
+fn function_values_are_ephemeral() {
+    let function = Value::function_raw(1).unwrap();
+    assert_eq!(function.kind(), ValueKind::Function);
+    assert_eq!(function.as_function().unwrap().raw(), 1);
+    assert_eq!(format!("{function}"), "<function>");
+    assert_eq!(format!("{function:?}"), "<function>");
+    assert!(!function.is_persistable());
+    assert!(!Value::list([Value::int(1).unwrap(), function.clone()]).is_persistable());
+}
+
+#[test]
 fn frob_values_carry_delegate_and_payload() {
     let delegate = Identity::new(42).unwrap();
     let payload = Value::map([(Value::symbol(Symbol::intern("item")), Value::string("coin"))]);
@@ -671,6 +682,22 @@ fn value_codec_rejects_ephemeral_capabilities() {
     assert_eq!(
         decode_value_exact_with_options(&encoded, options).unwrap(),
         cap
+    );
+}
+
+#[test]
+fn value_codec_rejects_ephemeral_functions() {
+    let function = Value::function_raw(1).unwrap();
+    let mut encoded = Vec::new();
+    assert_eq!(
+        encode_value(&function, &mut encoded),
+        Err(ValueCodecError::FunctionNotEncodable)
+    );
+
+    let encoded_function = function.raw_bits().to_le_bytes();
+    assert_eq!(
+        decode_value(&encoded_function),
+        Err(ValueCodecError::FunctionNotDecodable)
     );
 }
 

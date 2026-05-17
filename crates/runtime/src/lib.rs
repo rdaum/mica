@@ -1805,6 +1805,7 @@ fn source_literal(
             })
             .unwrap(),
         ValueKind::Capability => "<cap>".to_owned(),
+        ValueKind::Function => "<function>".to_owned(),
         ValueKind::Frob => value
             .with_frob(|delegate, payload| {
                 format!(
@@ -4050,6 +4051,7 @@ fn render_value(
             })
             .unwrap(),
         ValueKind::Capability => "<cap>".to_owned(),
+        ValueKind::Function => "<function>".to_owned(),
         ValueKind::Frob => value
             .with_frob(|delegate, payload| {
                 format!(
