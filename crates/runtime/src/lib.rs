@@ -3674,7 +3674,6 @@ fn item_id(item: &HirItem) -> mica_compiler::NodeId {
     match item {
         HirItem::Expr { id, .. }
         | HirItem::RelationRule { id, .. }
-        | HirItem::Object { id, .. }
         | HirItem::Method { id, .. } => *id,
     }
 }

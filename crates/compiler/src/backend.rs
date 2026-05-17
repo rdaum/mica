@@ -692,7 +692,6 @@ fn item_id(item: &HirItem) -> NodeId {
     match item {
         HirItem::Expr { id, .. }
         | HirItem::RelationRule { id, .. }
-        | HirItem::Object { id, .. }
         | HirItem::Method { id, .. } => *id,
     }
 }
@@ -831,10 +830,6 @@ impl<'a> ProgramCompiler<'a> {
             HirItem::RelationRule { id, .. } => Err(self.unsupported(
                 *id,
                 "relation rules are compile-time database definitions, not executable task code yet",
-            )),
-            HirItem::Object { id, .. } => Err(self.unsupported(
-                *id,
-                "object fileout declarations are not executable task code yet",
             )),
             HirItem::Method { id, .. } => Err(self.unsupported(
                 *id,

@@ -709,17 +709,9 @@ end
 :light(actor: #player, target: #lamp)
 ```
 
-Planned fileout may add outer sugar for object-shaped exports:
-
-```mica
-object #lamp extends #thing
-  lit = false
-end
-```
-
-That envelope should be import/export syntax only. It must expand to the same
-ordinary Mica operations above; bodies inside any verb or method remain normal
-executable Mica.
+World entities remain ordinary Mica operations over identities, relations,
+methods, and rules; bodies inside any verb or method remain normal executable
+Mica.
 
 ## 16. Syntax Still Missing
 

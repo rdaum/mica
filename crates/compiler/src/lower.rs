@@ -14,7 +14,7 @@
 use crate::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, CstElement,
     CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, MethodParam,
-    NodeId, ObjectClause, Param, ParamMode, ParseError, RecoveryClause, SyntaxKind, UnaryOp, parse,
+    NodeId, Param, ParamMode, ParseError, RecoveryClause, SyntaxKind, UnaryOp, parse,
 };
 
 pub fn parse_ast(source: &str) -> Ast {
@@ -74,7 +74,6 @@ impl<'a> Lower<'a> {
                         expr: self.lower_expr(child),
                     },
                 }),
-            SyntaxKind::ObjectItem => Some(self.lower_object_item(node)),
             SyntaxKind::MethodItem => Some(self.lower_method_item(node, MethodKind::Method)),
             SyntaxKind::VerbItem => Some(self.lower_method_item(node, MethodKind::Verb)),
             _ => {
@@ -97,44 +96,6 @@ impl<'a> Lower<'a> {
             head,
             body: iter.collect(),
         }
-    }
-
-    fn lower_object_item(&mut self, node: &CstNode) -> Item {
-        let header = self
-            .node_children(node)
-            .find(|child| child.kind == SyntaxKind::ObjectHeader);
-        let (identity, extends) = header
-            .map(|header| self.lower_object_header(header))
-            .unwrap_or((None, None));
-        let clauses = self
-            .node_children(node)
-            .filter(|child| child.kind == SyntaxKind::ObjectClause)
-            .map(|child| ObjectClause {
-                id: self.node_id(),
-                span: child.span.clone(),
-                exprs: self
-                    .node_children(child)
-                    .map(|expr| self.lower_expr(expr))
-                    .collect(),
-            })
-            .collect();
-        Item::Object {
-            id: self.node_id(),
-            span: node.span.clone(),
-            identity,
-            extends,
-            clauses,
-        }
-    }
-
-    fn lower_object_header(&self, node: &CstNode) -> (Option<String>, Option<String>) {
-        let tokens = self.token_children(node).collect::<Vec<_>>();
-        let identity = identity_after_hash(self.source, &tokens, 0);
-        let extends = tokens
-            .iter()
-            .position(|token| token.kind == SyntaxKind::ExtendsKw)
-            .and_then(|idx| identity_after_hash(self.source, &tokens, idx + 1));
-        (identity, extends)
     }
 
     fn lower_method_item(&mut self, node: &CstNode, kind: MethodKind) -> Item {
@@ -1288,12 +1249,9 @@ mod tests {
     }
 
     #[test]
-    fn lowers_methods_objects_and_effects() {
+    fn lowers_methods_and_effects() {
         let ast = parse_ast(
-            "object #lamp extends #thing\n\
-               name = \"brass lamp\"\n\
-             end\n\
-             method #move_into :move\n\
+            "method #move_into :move\n\
                roles actor @ #player, item @ #portable\n\
              do\n\
                require CanMove(actor, item)\n\
@@ -1301,11 +1259,6 @@ mod tests {
              end",
         );
         assert_eq!(ast.errors, vec![]);
-        assert!(matches!(
-            &ast.items[0],
-            Item::Object { identity: Some(identity), extends: Some(extends), .. }
-                if identity == "lamp" && extends == "thing"
-        ));
         let Item::Method {
             kind,
             identity,
@@ -1314,7 +1267,7 @@ mod tests {
             params,
             body,
             ..
-        } = &ast.items[1]
+        } = &ast.items[0]
         else {
             panic!("expected method");
         };
@@ -1521,10 +1474,7 @@ mod tests {
     #[test]
     fn assigns_unique_dense_node_ids() {
         let ast = parse_ast(
-            "object #lamp extends #thing\n\
-               name = \"brass lamp\"\n\
-             end\n\
-             let f = {x, ?style = :short, @rest} => x + 1\n\
+            "let f = {x, ?style = :short, @rest} => x + 1\n\
              :move(actor: #alice, item: #coin)\n\
              try\n\
                risky()\n\
@@ -1562,14 +1512,6 @@ mod tests {
                 collect_expr_ids(head, ids);
                 for expr in body {
                     collect_expr_ids(expr, ids);
-                }
-            }
-            Item::Object { clauses, .. } => {
-                for clause in clauses {
-                    ids.push(clause.id);
-                    for expr in &clause.exprs {
-                        collect_expr_ids(expr, ids);
-                    }
                 }
             }
             Item::Method { body, .. } => {

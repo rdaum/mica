@@ -312,11 +312,6 @@ impl<'a> Analyzer<'a> {
                         self.validate_relation_atom_support(atom, true, false);
                     }
                 }
-                HirItem::Object { clauses, .. } => {
-                    for expr in clauses {
-                        self.validate_supported_surface_expr(expr, false);
-                    }
-                }
                 HirItem::Method { body, .. } => self.validate_supported_surface_items(body),
             }
         }
@@ -669,30 +664,6 @@ impl<'a> Analyzer<'a> {
                     id: *id,
                     head,
                     body,
-                }
-            }
-            Item::Object {
-                id,
-                identity,
-                extends,
-                clauses,
-                ..
-            } => {
-                let clauses = clauses
-                    .iter()
-                    .flat_map(|clause| {
-                        clause
-                            .exprs
-                            .iter()
-                            .map(|expr| self.lower_expr(expr, scope))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-                HirItem::Object {
-                    id: *id,
-                    identity: identity.clone(),
-                    extends: extends.clone(),
-                    clauses,
                 }
             }
             Item::Method {
@@ -1369,15 +1340,6 @@ fn collect_item_spans(items: &[Item], spans: &mut HashMap<NodeId, Span>) {
                 collect_expr_span(head, spans);
                 collect_expr_spans(body, spans);
             }
-            Item::Object {
-                id, span, clauses, ..
-            } => {
-                spans.insert(*id, span.clone());
-                for clause in clauses {
-                    spans.insert(clause.id, clause.span.clone());
-                    collect_expr_spans(&clause.exprs, spans);
-                }
-            }
             Item::Method { id, span, body, .. } => {
                 spans.insert(*id, span.clone());
                 collect_item_spans(body, spans);
@@ -1596,9 +1558,7 @@ fn collect_recovery_span(catch: &RecoveryClause, spans: &mut HashMap<NodeId, Spa
 fn first_item_span(items: &[Item]) -> Option<Span> {
     items.first().map(|item| match item {
         Item::Expr { expr, .. } => expr.span().clone(),
-        Item::RelationRule { span, .. } | Item::Object { span, .. } | Item::Method { span, .. } => {
-            span.clone()
-        }
+        Item::RelationRule { span, .. } | Item::Method { span, .. } => span.clone(),
     })
 }
 

@@ -61,48 +61,8 @@ impl<'a> Parser<'a> {
         match self.current_kind() {
             SyntaxKind::MethodKw => self.parse_method_like(SyntaxKind::MethodItem),
             SyntaxKind::VerbKw => self.parse_verb_item(),
-            SyntaxKind::ObjectKw => self.parse_object_item(),
             _ => self.parse_expr_stmt(),
         }
-    }
-
-    fn parse_object_item(&mut self) -> CstNode {
-        let mut children = Vec::new();
-        children.push(self.bump_element());
-        children.push(CstElement::Node(self.parse_object_header()));
-        self.consume_separators();
-        while !matches!(self.current_kind(), SyntaxKind::EndKw | SyntaxKind::Eof) {
-            children.push(CstElement::Node(self.parse_object_clause()));
-            self.consume_separators();
-        }
-        children.push(self.expect_token(SyntaxKind::EndKw, "expected end after object"));
-        CstNode::new(SyntaxKind::ObjectItem, children)
-    }
-
-    fn parse_object_header(&mut self) -> CstNode {
-        let mut children = Vec::new();
-        while !matches!(
-            self.current_kind(),
-            SyntaxKind::Newline | SyntaxKind::Semi | SyntaxKind::EndKw | SyntaxKind::Eof
-        ) {
-            children.push(self.bump_element());
-        }
-        CstNode::new(SyntaxKind::ObjectHeader, children)
-    }
-
-    fn parse_object_clause(&mut self) -> CstNode {
-        let mut children = Vec::new();
-        while !matches!(
-            self.current_kind(),
-            SyntaxKind::Newline | SyntaxKind::Semi | SyntaxKind::EndKw | SyntaxKind::Eof
-        ) {
-            if Self::starts_expr(self.current_kind()) {
-                children.push(CstElement::Node(self.parse_expr(0)));
-            } else {
-                children.push(self.bump_element());
-            }
-        }
-        CstNode::new(SyntaxKind::ObjectClause, children)
     }
 
     fn parse_method_like(&mut self, kind: SyntaxKind) -> CstNode {
@@ -1098,12 +1058,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_try_and_object_fileout_envelope() {
+    fn parses_try_with_catch_and_finally() {
         let parse = parse(
-            "object #lamp extends #thing\n\
-               name = \"brass lamp\"\n\
-             end\n\
-             try\n\
+            "try\n\
                risky()\n\
              catch err if err == :perm\n\
                \"permission denied\"\n\
@@ -1112,7 +1069,6 @@ mod tests {
              end",
         );
         assert_eq!(parse.errors, vec![]);
-        assert!(contains(&parse.root, SyntaxKind::ObjectItem));
         assert!(contains(&parse.root, SyntaxKind::TryExpr));
         assert!(contains(&parse.root, SyntaxKind::CatchClause));
         assert!(contains(&parse.root, SyntaxKind::FinallyClause));

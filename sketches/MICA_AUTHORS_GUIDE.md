@@ -43,10 +43,8 @@ assert Lit(#brass_lamp, false)
 assert LocatedIn(#brass_lamp, #study_room)
 ```
 
-An `object #brass_lamp ... end` envelope is still a planned filein/fileout
-sugar. When it exists, it should expand to the same ordinary relation and fact
-changes shown above. The code inside method or verb bodies should remain the
-same Mica syntax used everywhere else.
+Creating an object-shaped world entity means creating a stable identity and
+describing it through ordinary relations and facts.
 
 ### Inspecting an Object
 If you "inspect" `#brass_lamp`, the system shows you a **fact neighbourhood**. It gathers facts where `#brass_lamp` appears in important subject positions, especially argument 0. It looks like an object in an outliner, but it is a computed view over the relational world.

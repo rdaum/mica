@@ -29,8 +29,8 @@ mod syntax;
 
 pub use ast::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
-    FunctionBody, Item, Literal, MethodKind, MethodParam, NodeId, ObjectClause, Param, ParamMode,
-    RecoveryClause, Span, UnaryOp,
+    FunctionBody, Item, Literal, MethodKind, MethodParam, NodeId, Param, ParamMode, RecoveryClause,
+    Span, UnaryOp,
 };
 pub use backend::{
     CompileContext, CompileError, CompiledProgram, InstalledMethod, InstalledParam,

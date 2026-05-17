@@ -32,12 +32,6 @@ pub enum HirItem {
         head: HirRelationAtom,
         body: Vec<HirRelationAtom>,
     },
-    Object {
-        id: NodeId,
-        identity: Option<String>,
-        extends: Option<String>,
-        clauses: Vec<HirExpr>,
-    },
     Method {
         id: NodeId,
         kind: MethodKind,

@@ -43,13 +43,6 @@ pub enum Item {
         head: Expr,
         body: Vec<Expr>,
     },
-    Object {
-        id: NodeId,
-        span: Span,
-        identity: Option<String>,
-        extends: Option<String>,
-        clauses: Vec<ObjectClause>,
-    },
     Method {
         id: NodeId,
         span: Span,
@@ -65,10 +58,7 @@ pub enum Item {
 impl Item {
     pub fn id(&self) -> NodeId {
         match self {
-            Self::Expr { id, .. }
-            | Self::RelationRule { id, .. }
-            | Self::Object { id, .. }
-            | Self::Method { id, .. } => *id,
+            Self::Expr { id, .. } | Self::RelationRule { id, .. } | Self::Method { id, .. } => *id,
         }
     }
 }
@@ -83,13 +73,6 @@ pub enum MethodKind {
 pub struct MethodParam {
     pub name: String,
     pub restriction: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ObjectClause {
-    pub id: NodeId,
-    pub span: Span,
-    pub exprs: Vec<Expr>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

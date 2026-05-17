@@ -272,8 +272,6 @@ fn keyword_kind(text: &str) -> Option<SyntaxKind> {
         "fn" => SyntaxKind::FnKw,
         "method" => SyntaxKind::MethodKw,
         "verb" => SyntaxKind::VerbKw,
-        "object" => SyntaxKind::ObjectKw,
-        "extends" => SyntaxKind::ExtendsKw,
         "do" => SyntaxKind::DoKw,
         "assert" => SyntaxKind::AssertKw,
         "retract" => SyntaxKind::RetractKw,
@@ -319,5 +317,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(kinds[0], SyntaxKind::ErrorCode);
         assert_eq!(kinds[2], SyntaxKind::ErrorCode);
+    }
+
+    #[test]
+    fn object_words_are_plain_identifiers() {
+        let kinds = lex("object extends")
+            .into_iter()
+            .map(|t| t.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds[0], SyntaxKind::Ident);
+        assert_eq!(kinds[2], SyntaxKind::Ident);
     }
 }
