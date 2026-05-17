@@ -608,18 +608,7 @@ impl<'a> Analyzer<'a> {
         let Some(condition) = condition else {
             return;
         };
-        if !matches!(
-            condition,
-            HirExpr::Literal {
-                value: crate::Literal::ErrorCode(_),
-                ..
-            }
-        ) {
-            self.unsupported(
-                id,
-                "compiled catch clauses currently match an error code literal or catch all",
-            );
-        }
+        let _ = id;
         self.validate_supported_surface_expr(condition, false);
     }
 
@@ -1802,9 +1791,6 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(messages.contains(&"ordinary calls only support positional arguments"));
         assert!(messages.contains(&"receiver dispatch arguments must use explicit role names"));
-        assert!(messages.contains(
-            &"compiled catch clauses currently match an error code literal or catch all"
-        ));
         assert!(messages.contains(&"relation argument splices are not valid here"));
         assert!(messages.contains(&"query variables are only valid as relation arguments"));
     }

@@ -768,6 +768,16 @@ fn internal_bytecode_error(error: RuntimeError) -> CompileError {
     }
 }
 
+fn is_static_catch_condition(condition: Option<&HirExpr>) -> bool {
+    matches!(
+        condition,
+        None | Some(HirExpr::Literal {
+            value: Literal::ErrorCode(_),
+            ..
+        })
+    )
+}
+
 struct ProgramCompiler<'a> {
     semantic: &'a SemanticProgram,
     context: &'a CompileContext,
@@ -2408,26 +2418,42 @@ impl<'a> ProgramCompiler<'a> {
             value: Value::nothing(),
         });
 
-        let mut handlers = catches
+        let has_dynamic_catch = catches
             .iter()
-            .map(|catch| {
-                let binding = catch.binding.map(|binding| {
-                    let register = self.alloc_register();
-                    self.emit(Instruction::Load {
-                        dst: register,
-                        value: Value::nothing(),
+            .any(|catch| !is_static_catch_condition(catch.condition.as_ref()));
+        let mut handlers = if has_dynamic_catch {
+            let error = self.alloc_register();
+            self.emit(Instruction::Load {
+                dst: error,
+                value: Value::nothing(),
+            });
+            vec![CatchHandler {
+                code: None,
+                binding: Some(error),
+                target: 0,
+            }]
+        } else {
+            catches
+                .iter()
+                .map(|catch| {
+                    let binding = catch.binding.map(|binding| {
+                        let register = self.alloc_register();
+                        self.emit(Instruction::Load {
+                            dst: register,
+                            value: Value::nothing(),
+                        });
+                        self.locals.insert(binding, register);
+                        register
                     });
-                    self.locals.insert(binding, register);
-                    register
-                });
-                let code = self.catch_code(id, catch.condition.as_ref())?;
-                Ok(CatchHandler {
-                    code,
-                    binding,
-                    target: 0,
+                    let code = self.catch_code(id, catch.condition.as_ref())?;
+                    Ok(CatchHandler {
+                        code,
+                        binding,
+                        target: 0,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, CompileError>>()?;
+                .collect::<Result<Vec<_>, CompileError>>()?
+        };
 
         let enter = self.instructions.len();
         self.emit(Instruction::EnterTry {
@@ -2445,17 +2471,25 @@ impl<'a> ProgramCompiler<'a> {
         }
 
         let mut end_jumps = Vec::new();
-        for (idx, catch) in catches.iter().enumerate() {
-            handlers[idx].target = self.instructions.len();
-            let (value, returned) = self.compile_branch_items(&catch.body)?;
-            if let Some(value) = value {
-                self.emit(Instruction::Move { dst, src: value });
-            }
-            if !returned {
-                if finally.is_empty() {
-                    end_jumps.push(self.emit_jump(0));
-                } else {
-                    self.emit(Instruction::ExitTry);
+        if has_dynamic_catch {
+            let error = handlers[0]
+                .binding
+                .expect("dynamic catch handler binds error");
+            handlers[0].target = self.instructions.len();
+            self.compile_try_catch_dispatcher(dst, error, catches, finally, &mut end_jumps)?;
+        } else {
+            for (idx, catch) in catches.iter().enumerate() {
+                handlers[idx].target = self.instructions.len();
+                let (value, returned) = self.compile_branch_items(&catch.body)?;
+                if let Some(value) = value {
+                    self.emit(Instruction::Move { dst, src: value });
+                }
+                if !returned {
+                    if finally.is_empty() {
+                        end_jumps.push(self.emit_jump(0));
+                    } else {
+                        self.emit(Instruction::ExitTry);
+                    }
                 }
             }
         }
@@ -2479,6 +2513,48 @@ impl<'a> ProgramCompiler<'a> {
         Ok(dst)
     }
 
+    fn compile_try_catch_dispatcher(
+        &mut self,
+        dst: Register,
+        error: Register,
+        catches: &[HirCatch],
+        finally: &[HirItem],
+        end_jumps: &mut Vec<usize>,
+    ) -> Result<(), CompileError> {
+        for catch in catches {
+            if let Some(binding) = catch.binding {
+                self.locals.insert(binding, error);
+            }
+            let branch = self
+                .compile_catch_match(error, catch.condition.as_ref())?
+                .map(|condition| self.emit_branch(condition, 0, 0));
+            let body_target = self.instructions.len();
+            let (value, returned) = self.compile_branch_items(&catch.body)?;
+            if let Some(value) = value {
+                self.emit(Instruction::Move { dst, src: value });
+            }
+            if !returned {
+                if finally.is_empty() {
+                    end_jumps.push(self.emit_jump(0));
+                } else {
+                    self.emit(Instruction::ExitTry);
+                }
+            }
+            let next_target = self.instructions.len();
+            if let Some(branch) = branch {
+                self.patch_branch(branch, body_target, next_target)?;
+            } else {
+                return Ok(());
+            }
+        }
+        self.emit(Instruction::Raise {
+            error: Operand::Register(error),
+            message: None,
+            value: None,
+        });
+        Ok(())
+    }
+
     fn compile_recover(
         &mut self,
         id: NodeId,
@@ -2495,26 +2571,42 @@ impl<'a> ProgramCompiler<'a> {
             value: Value::nothing(),
         });
 
-        let mut handlers = catches
+        let has_dynamic_catch = catches
             .iter()
-            .map(|catch| {
-                let binding = catch.binding.map(|binding| {
-                    let register = self.alloc_register();
-                    self.emit(Instruction::Load {
-                        dst: register,
-                        value: Value::nothing(),
+            .any(|catch| !is_static_catch_condition(catch.condition.as_ref()));
+        let mut handlers = if has_dynamic_catch {
+            let error = self.alloc_register();
+            self.emit(Instruction::Load {
+                dst: error,
+                value: Value::nothing(),
+            });
+            vec![CatchHandler {
+                code: None,
+                binding: Some(error),
+                target: 0,
+            }]
+        } else {
+            catches
+                .iter()
+                .map(|catch| {
+                    let binding = catch.binding.map(|binding| {
+                        let register = self.alloc_register();
+                        self.emit(Instruction::Load {
+                            dst: register,
+                            value: Value::nothing(),
+                        });
+                        self.locals.insert(binding, register);
+                        register
                     });
-                    self.locals.insert(binding, register);
-                    register
-                });
-                let code = self.catch_code(id, catch.condition.as_ref())?;
-                Ok(CatchHandler {
-                    code,
-                    binding,
-                    target: 0,
+                    let code = self.catch_code(id, catch.condition.as_ref())?;
+                    Ok(CatchHandler {
+                        code,
+                        binding,
+                        target: 0,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, CompileError>>()?;
+                .collect::<Result<Vec<_>, CompileError>>()?
+        };
 
         let enter = self.instructions.len();
         self.emit(Instruction::EnterTry {
@@ -2530,16 +2622,24 @@ impl<'a> ProgramCompiler<'a> {
         }
 
         let mut end_jumps = Vec::new();
-        for (idx, catch) in catches.iter().enumerate() {
-            handlers[idx].target = self.instructions.len();
-            let saved_branch_returned = self.returned;
-            self.returned = false;
-            let value = self.compile_expr_for_value(&catch.value)?;
-            if !self.returned {
-                self.emit(Instruction::Move { dst, src: value });
-                end_jumps.push(self.emit_jump(0));
+        if has_dynamic_catch {
+            let error = handlers[0]
+                .binding
+                .expect("dynamic recover handler binds error");
+            handlers[0].target = self.instructions.len();
+            self.compile_recover_catch_dispatcher(dst, error, catches, &mut end_jumps)?;
+        } else {
+            for (idx, catch) in catches.iter().enumerate() {
+                handlers[idx].target = self.instructions.len();
+                let saved_branch_returned = self.returned;
+                self.returned = false;
+                let value = self.compile_expr_for_value(&catch.value)?;
+                if !self.returned {
+                    self.emit(Instruction::Move { dst, src: value });
+                    end_jumps.push(self.emit_jump(0));
+                }
+                self.returned = saved_branch_returned;
             }
-            self.returned = saved_branch_returned;
         }
 
         let end = self.instructions.len();
@@ -2550,6 +2650,44 @@ impl<'a> ProgramCompiler<'a> {
         self.locals = saved_locals;
         self.returned = saved_returned;
         Ok(dst)
+    }
+
+    fn compile_recover_catch_dispatcher(
+        &mut self,
+        dst: Register,
+        error: Register,
+        catches: &[HirRecovery],
+        end_jumps: &mut Vec<usize>,
+    ) -> Result<(), CompileError> {
+        for catch in catches {
+            if let Some(binding) = catch.binding {
+                self.locals.insert(binding, error);
+            }
+            let branch = self
+                .compile_catch_match(error, catch.condition.as_ref())?
+                .map(|condition| self.emit_branch(condition, 0, 0));
+            let body_target = self.instructions.len();
+            let saved_branch_returned = self.returned;
+            self.returned = false;
+            let value = self.compile_expr_for_value(&catch.value)?;
+            if !self.returned {
+                self.emit(Instruction::Move { dst, src: value });
+                end_jumps.push(self.emit_jump(0));
+            }
+            self.returned = saved_branch_returned;
+            let next_target = self.instructions.len();
+            if let Some(branch) = branch {
+                self.patch_branch(branch, body_target, next_target)?;
+            } else {
+                return Ok(());
+            }
+        }
+        self.emit(Instruction::Raise {
+            error: Operand::Register(error),
+            message: None,
+            value: None,
+        });
+        Ok(())
     }
 
     fn catch_code(
@@ -2570,6 +2708,51 @@ impl<'a> ProgramCompiler<'a> {
                 "compiled catch clauses currently match an error code literal or catch all",
             )),
         }
+    }
+
+    fn compile_catch_match(
+        &mut self,
+        error: Register,
+        condition: Option<&HirExpr>,
+    ) -> Result<Option<Register>, CompileError> {
+        let Some(condition) = condition else {
+            return Ok(None);
+        };
+        match condition {
+            HirExpr::Literal {
+                value: Literal::ErrorCode(code),
+                ..
+            } => self
+                .compile_error_code_match(error, Symbol::intern(code))
+                .map(Some),
+            _ => self.compile_expr_for_value(condition).map(Some),
+        }
+    }
+
+    fn compile_error_code_match(
+        &mut self,
+        error: Register,
+        code: Symbol,
+    ) -> Result<Register, CompileError> {
+        let actual = self.alloc_register();
+        self.emit(Instruction::ErrorField {
+            dst: actual,
+            error,
+            field: ErrorField::Code,
+        });
+        let expected = self.alloc_register();
+        self.emit(Instruction::Load {
+            dst: expected,
+            value: Value::error_code(code),
+        });
+        let matched = self.alloc_register();
+        self.emit(Instruction::Binary {
+            dst: matched,
+            op: RuntimeBinaryOp::Eq,
+            left: actual,
+            right: expected,
+        });
+        Ok(matched)
     }
 
     fn compile_break(&mut self, id: NodeId) -> Result<Register, CompileError> {
@@ -3248,6 +3431,54 @@ mod tests {
                 retries: 0,
             }
         );
+    }
+
+    #[test]
+    fn compiled_task_runs_conditional_try_catches_in_order() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let handled = try\n\
+               raise E_NO_EXIT, \"No exit.\"\n\
+             catch err if err.code == E_PERMISSION\n\
+               false\n\
+             catch err if err.code == E_NO_EXIT\n\
+               err.message == \"No exit.\"\n\
+             end\n\
+             return handled",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(true),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_recover_reraises_when_no_conditional_catch_matches() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let handled = recover raise E_NO_EXIT\n\
+             catch err if err.code == E_PERMISSION => 1\n\
+             end\n\
+             return handled",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert!(matches!(submitted.outcome, TaskOutcome::Aborted { .. }));
     }
 
     #[test]

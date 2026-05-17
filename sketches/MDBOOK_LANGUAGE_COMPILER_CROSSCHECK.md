@@ -35,6 +35,3 @@ the cross-check.
     in one compiled chunk.
 
 10. Contextual actor submissions cannot install rules or methods.
-
-11. Error catch syntax parses broader conditions, but backend currently
-    accepts only literal error-code matches or catch-all clauses.
