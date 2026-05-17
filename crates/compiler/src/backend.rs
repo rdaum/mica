@@ -1870,7 +1870,7 @@ impl<'a> ProgramCompiler<'a> {
         args: &[HirArg],
     ) -> Result<Register, CompileError> {
         if let HirExpr::ExternalRef { name, .. } = callee {
-            return if self.context.is_runtime_function(name) {
+            return if self.is_task_control_builtin(name) || self.context.is_runtime_function(name) {
                 self.compile_builtin_call(id, name, args)
             } else {
                 self.compile_positional_dispatch(id, name, args)
@@ -1907,6 +1907,10 @@ impl<'a> ProgramCompiler<'a> {
             });
         }
         Ok(dst)
+    }
+
+    fn is_task_control_builtin(&self, name: &str) -> bool {
+        matches!(name, "commit" | "suspend" | "read" | "mailbox_recv")
     }
 
     fn compile_direct_function_call(
@@ -2085,7 +2089,13 @@ impl<'a> ProgramCompiler<'a> {
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(self.unsupported(id, "commit does not accept named arguments"));
         }
-        self.ensure_no_arg_splices(args, "commit does not accept argument splices")?;
+        if args.iter().any(|arg| arg.splice) {
+            let (_, len) = self.compile_dynamic_arg_list(args)?;
+            self.compile_abort_if_len_gt(id, len, 0, "commit expects no arguments")?;
+            let dst = self.alloc_register();
+            self.emit(Instruction::CommitValue { dst });
+            return Ok(dst);
+        }
         if !args.is_empty() {
             return Err(self.unsupported(id, "commit expects no arguments"));
         }
@@ -2102,7 +2112,11 @@ impl<'a> ProgramCompiler<'a> {
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(self.unsupported(id, "suspend only supports positional arguments"));
         }
-        self.ensure_no_arg_splices(args, "suspend argument splices are not implemented yet")?;
+        if args.iter().any(|arg| arg.splice) {
+            let (actuals, len) = self.compile_dynamic_arg_list(args)?;
+            self.compile_abort_if_len_gt(id, len, 1, "suspend expects 0 or 1 arguments")?;
+            return self.compile_suspend_from_dynamic_args(id, actuals, len);
+        }
         if args.len() > 1 {
             return Err(self.unsupported(id, "suspend expects 0 or 1 arguments"));
         }
@@ -2119,7 +2133,11 @@ impl<'a> ProgramCompiler<'a> {
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(self.unsupported(id, "read only supports positional arguments"));
         }
-        self.ensure_no_arg_splices(args, "read argument splices are not implemented yet")?;
+        if args.iter().any(|arg| arg.splice) {
+            let (actuals, len) = self.compile_dynamic_arg_list(args)?;
+            self.compile_abort_if_len_gt(id, len, 1, "read expects 0 or 1 arguments")?;
+            return self.compile_read_from_dynamic_args(id, actuals, len);
+        }
         if args.len() > 1 {
             return Err(self.unsupported(id, "read expects 0 or 1 arguments"));
         }
@@ -2140,7 +2158,22 @@ impl<'a> ProgramCompiler<'a> {
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(self.unsupported(id, "mailbox_recv only supports positional arguments"));
         }
-        self.ensure_no_arg_splices(args, "mailbox_recv does not accept argument splices")?;
+        if args.iter().any(|arg| arg.splice) {
+            let (actuals, len) = self.compile_dynamic_arg_list(args)?;
+            self.compile_abort_if_len_lt(
+                id,
+                len,
+                1,
+                "mailbox_recv expects a receive-cap list and optional timeout",
+            )?;
+            self.compile_abort_if_len_gt(
+                id,
+                len,
+                2,
+                "mailbox_recv expects a receive-cap list and optional timeout",
+            )?;
+            return self.compile_mailbox_recv_from_dynamic_args(id, actuals, len);
+        }
         if args.is_empty() || args.len() > 2 {
             return Err(self.unsupported(
                 id,
@@ -2158,6 +2191,180 @@ impl<'a> ProgramCompiler<'a> {
             receivers,
             timeout,
         });
+        Ok(dst)
+    }
+
+    fn compile_dynamic_arg_list(
+        &mut self,
+        args: &[HirArg],
+    ) -> Result<(Register, Register), CompileError> {
+        let items = self.compile_arg_items(args)?;
+        let actuals = self.alloc_register();
+        self.emit(Instruction::BuildList {
+            dst: actuals,
+            items,
+        });
+        let len = self.alloc_register();
+        self.emit(Instruction::CollectionLen {
+            dst: len,
+            collection: actuals,
+        });
+        Ok((actuals, len))
+    }
+
+    fn compile_abort_if_len_lt(
+        &mut self,
+        id: NodeId,
+        len: Register,
+        min: usize,
+        message: &str,
+    ) -> Result<(), CompileError> {
+        let min = self.load_usize(min, id)?;
+        let condition = self.alloc_register();
+        self.emit(Instruction::Binary {
+            dst: condition,
+            op: RuntimeBinaryOp::Lt,
+            left: len,
+            right: min,
+        });
+        self.compile_abort_if(condition, message)
+    }
+
+    fn compile_abort_if_len_gt(
+        &mut self,
+        id: NodeId,
+        len: Register,
+        max: usize,
+        message: &str,
+    ) -> Result<(), CompileError> {
+        let max = self.load_usize(max, id)?;
+        let condition = self.alloc_register();
+        self.emit(Instruction::Binary {
+            dst: condition,
+            op: RuntimeBinaryOp::Gt,
+            left: len,
+            right: max,
+        });
+        self.compile_abort_if(condition, message)
+    }
+
+    fn compile_abort_if(&mut self, condition: Register, message: &str) -> Result<(), CompileError> {
+        let branch = self.emit_branch(condition, 0, 0);
+        let abort_target = self.instructions.len();
+        self.emit(Instruction::Abort {
+            error: Operand::Value(Value::string(message)),
+        });
+        let continue_target = self.instructions.len();
+        self.patch_branch(branch, abort_target, continue_target)
+    }
+
+    fn compile_len_gt_condition(
+        &mut self,
+        id: NodeId,
+        len: Register,
+        position: usize,
+    ) -> Result<Register, CompileError> {
+        let position = self.load_usize(position, id)?;
+        let condition = self.alloc_register();
+        self.emit(Instruction::Binary {
+            dst: condition,
+            op: RuntimeBinaryOp::Gt,
+            left: len,
+            right: position,
+        });
+        Ok(condition)
+    }
+
+    fn compile_suspend_from_dynamic_args(
+        &mut self,
+        id: NodeId,
+        actuals: Register,
+        len: Register,
+    ) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        let condition = self.compile_len_gt_condition(id, len, 0)?;
+        let branch = self.emit_branch(condition, 0, 0);
+
+        let duration_target = self.instructions.len();
+        let duration = self.compile_collection_slot(actuals, 0, id)?;
+        self.emit(Instruction::SuspendValue {
+            dst,
+            duration: Some(Operand::Register(duration)),
+        });
+        let duration_jump = self.emit_jump(0);
+
+        let no_duration_target = self.instructions.len();
+        self.emit(Instruction::SuspendValue {
+            dst,
+            duration: None,
+        });
+
+        let end = self.instructions.len();
+        self.patch_branch(branch, duration_target, no_duration_target)?;
+        self.patch_jump(duration_jump, end)?;
+        Ok(dst)
+    }
+
+    fn compile_read_from_dynamic_args(
+        &mut self,
+        id: NodeId,
+        actuals: Register,
+        len: Register,
+    ) -> Result<Register, CompileError> {
+        let dst = self.alloc_register();
+        let condition = self.compile_len_gt_condition(id, len, 0)?;
+        let branch = self.emit_branch(condition, 0, 0);
+
+        let metadata_target = self.instructions.len();
+        let metadata = self.compile_collection_slot(actuals, 0, id)?;
+        self.emit(Instruction::Read {
+            dst,
+            metadata: Some(Operand::Register(metadata)),
+        });
+        let metadata_jump = self.emit_jump(0);
+
+        let no_metadata_target = self.instructions.len();
+        self.emit(Instruction::Read {
+            dst,
+            metadata: None,
+        });
+
+        let end = self.instructions.len();
+        self.patch_branch(branch, metadata_target, no_metadata_target)?;
+        self.patch_jump(metadata_jump, end)?;
+        Ok(dst)
+    }
+
+    fn compile_mailbox_recv_from_dynamic_args(
+        &mut self,
+        id: NodeId,
+        actuals: Register,
+        len: Register,
+    ) -> Result<Register, CompileError> {
+        let receivers = self.compile_collection_slot(actuals, 0, id)?;
+        let dst = self.alloc_register();
+        let condition = self.compile_len_gt_condition(id, len, 1)?;
+        let branch = self.emit_branch(condition, 0, 0);
+
+        let timeout_target = self.instructions.len();
+        let timeout = self.compile_collection_slot(actuals, 1, id)?;
+        self.emit(Instruction::MailboxRecv {
+            dst,
+            receivers: Operand::Register(receivers),
+            timeout: Some(Operand::Register(timeout)),
+        });
+        let timeout_jump = self.emit_jump(0);
+
+        let no_timeout_target = self.instructions.len();
+        self.emit(Instruction::MailboxRecv {
+            dst,
+            receivers: Operand::Register(receivers),
+            timeout: None,
+        });
+
+        let end = self.instructions.len();
+        self.patch_branch(branch, timeout_target, no_timeout_target)?;
+        self.patch_jump(timeout_jump, end)?;
         Ok(dst)
     }
 
@@ -3481,7 +3688,8 @@ mod tests {
     use super::*;
     use mica_relation_kernel::{ConflictPolicy, RelationKernel, RelationMetadata, Tuple};
     use mica_runtime::{
-        BuiltinContext, BuiltinRegistry, Emission, RuntimeError, TaskManager, TaskOutcome,
+        BuiltinContext, BuiltinRegistry, Emission, RuntimeError, SuspendKind, TaskManager,
+        TaskOutcome,
     };
     use std::sync::Arc;
 
@@ -4400,6 +4608,132 @@ mod tests {
                 retries: 0,
             }
         );
+    }
+
+    #[test]
+    fn compiled_task_expands_task_control_argument_splices() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+
+        let commit = submit_source_task(
+            "let args = []\n\
+             return commit(@args)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            commit.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Commit,
+                ..
+            }
+        ));
+
+        let suspend = submit_source_task(
+            "let args = [0.5]\n\
+             return suspend(@args)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            suspend.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::TimedMillis(500),
+                ..
+            }
+        ));
+
+        let suspend_without_duration = submit_source_task(
+            "let args = []\n\
+             return suspend(@args)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            suspend_without_duration.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Never,
+                ..
+            }
+        ));
+
+        let read = submit_source_task(
+            "let args = [:line]\n\
+             return read(@args)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            read.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::WaitingForInput(value),
+                ..
+            } if value == Value::symbol(Symbol::intern("line"))
+        ));
+
+        let read_without_metadata = submit_source_task(
+            "let args = []\n\
+             return read(@args)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            read_without_metadata.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::WaitingForInput(value),
+                ..
+            } if value == Value::nothing()
+        ));
+    }
+
+    #[test]
+    fn task_control_argument_splices_validate_dynamic_arity() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+
+        let commit = submit_source_task(
+            "let args = [1]\n\
+             return commit(@args)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            commit.outcome,
+            TaskOutcome::Aborted { error, .. } if error == Value::string("commit expects no arguments")
+        ));
+
+        let read = submit_source_task(
+            "let args = [1, 2]\n\
+             return read(@args)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            read.outcome,
+            TaskOutcome::Aborted { error, .. } if error == Value::string("read expects 0 or 1 arguments")
+        ));
+
+        let mailbox_recv = submit_source_task(
+            "let args = []\n\
+             return mailbox_recv(@args)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert!(matches!(
+            mailbox_recv.outcome,
+            TaskOutcome::Aborted { error, .. }
+                if error == Value::string("mailbox_recv expects a receive-cap list and optional timeout")
+        ));
     }
 
     #[test]

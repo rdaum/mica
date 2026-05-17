@@ -6350,6 +6350,32 @@ mod tests {
     }
 
     #[test]
+    fn runner_mailbox_recv_expands_argument_splices() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source(
+                "let caps = mailbox()\n\
+                 let args = [[caps[0]], 0.5]\n\
+                 return mailbox_recv(@args)",
+            )
+            .unwrap();
+
+        let TaskOutcome::Suspended {
+            kind: SuspendKind::MailboxRecv(request),
+            ..
+        } = report.outcome
+        else {
+            panic!("mailbox_recv(@args) did not suspend on mailbox receive");
+        };
+
+        assert_eq!(request.timeout_millis, Some(500));
+        assert_eq!(request.receivers.len(), 1);
+        runner
+            .mailbox_for_receiver(&request.receivers[0])
+            .expect("spliced receiver should be a valid receive cap");
+    }
+
+    #[test]
     fn runner_mints_actor_authority_from_policy_facts() {
         let mut runner = SourceRunner::new_empty();
         runner
