@@ -802,6 +802,7 @@ struct FunctionInfo {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FunctionParamInfo {
     id: NodeId,
+    binding: BindingId,
     kind: LocalKind,
     default: Option<HirExpr>,
 }
@@ -1710,6 +1711,7 @@ impl<'a> ProgramCompiler<'a> {
             .iter()
             .map(|param| FunctionParamInfo {
                 id: param.id,
+                binding: param.binding,
                 kind: param.kind.clone(),
                 default: param.default.clone(),
             })
@@ -1740,20 +1742,19 @@ impl<'a> ProgramCompiler<'a> {
         id: NodeId,
         function: FunctionInfo,
     ) -> Result<Register, CompileError> {
-        if function
-            .params
-            .iter()
-            .any(|param| param.kind != LocalKind::Param)
-        {
-            return Err(self.unsupported(
-                id,
-                "function values only support required positional parameters yet",
-            ));
-        }
         let min_arity = u16::try_from(function.min_arity)
             .map_err(|_| self.unsupported(id, "function value has too many parameters"))?;
-        let max_arity = u16::try_from(function.max_arity.unwrap_or(function.min_arity))
-            .map_err(|_| self.unsupported(id, "function value has too many parameters"))?;
+        let max_arity = match function.max_arity {
+            Some(max_arity) => {
+                let max_arity = u16::try_from(max_arity)
+                    .map_err(|_| self.unsupported(id, "function value has too many parameters"))?;
+                if max_arity == u16::MAX {
+                    return Err(self.unsupported(id, "function value has too many parameters"));
+                }
+                max_arity
+            }
+            None => u16::MAX,
+        };
         let captures = function
             .captures
             .iter()
@@ -1769,15 +1770,85 @@ impl<'a> ProgramCompiler<'a> {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let wrapper = self.compile_function_value_wrapper(id, &function)?;
         let dst = self.alloc_register();
         self.emit(Instruction::LoadFunction {
             dst,
-            program: function.program,
+            program: Arc::new(wrapper),
             captures,
             min_arity,
             max_arity,
         });
         Ok(dst)
+    }
+
+    fn compile_function_value_wrapper(
+        &self,
+        id: NodeId,
+        function: &FunctionInfo,
+    ) -> Result<Program, CompileError> {
+        let mut compiler = ProgramCompiler::new(self.semantic, self.context);
+        compiler.next_register = (function.captures.len() + 1) as u16;
+        let actuals = Register(function.captures.len() as u16);
+        for (idx, capture) in function.captures.iter().enumerate() {
+            compiler.locals.insert(*capture, Register(idx as u16));
+        }
+
+        let len = compiler.alloc_register();
+        compiler.emit(Instruction::CollectionLen {
+            dst: len,
+            collection: actuals,
+        });
+
+        let mut operands = Vec::with_capacity(function.captures.len() + function.params.len());
+        operands.extend(
+            (0..function.captures.len()).map(|idx| Operand::Register(Register(idx as u16))),
+        );
+        let mut position = 0usize;
+        for param in &function.params {
+            let value = match param.kind {
+                LocalKind::Param => {
+                    let value = compiler.compile_collection_slot(actuals, position, param.id)?;
+                    position += 1;
+                    value
+                }
+                LocalKind::OptionalParam => {
+                    let value = compiler.compile_collection_slot_with_optional_default(
+                        actuals,
+                        len,
+                        position,
+                        param.id,
+                        param.default.as_ref(),
+                    )?;
+                    position += 1;
+                    value
+                }
+                LocalKind::RestParam => {
+                    compiler.compile_collection_rest(actuals, len, position, param.id)?
+                }
+                _ => {
+                    return Err(self
+                        .unsupported(id, "unsupported function parameter kind in function value"));
+                }
+            };
+            compiler.locals.insert(param.binding, value);
+            operands.push(Operand::Register(value));
+        }
+
+        let dst = compiler.alloc_register();
+        compiler.emit(Instruction::Call {
+            dst,
+            program: Arc::clone(&function.program),
+            args: operands,
+        });
+        compiler.emit(Instruction::Return {
+            value: Operand::Register(dst),
+        });
+        let register_count = compiler.next_register as usize;
+        compiler
+            .instructions
+            .finish(register_count)
+            .map_err(Into::into)
     }
 
     fn compile_function_expr_body(mut self, expr: &HirExpr) -> Result<Program, CompileError> {
@@ -4519,6 +4590,108 @@ mod tests {
             submitted.outcome,
             TaskOutcome::Complete {
                 value: Value::int(16).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_calls_function_value_optional_params() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let pick = fn(value, ?fallback = 10) => value + fallback\n\
+             let alias = pick\n\
+             return alias(1) + alias(1, 2)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(14).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_calls_function_value_rest_params() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let sum = fn(first, @rest) => first + rest[0] + rest[1]\n\
+             let alias = sum\n\
+             return alias(1, 2, 3)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(6).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_splices_function_value_rest_params() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let sum = fn(first, @rest) => first + rest[0] + rest[1]\n\
+             let alias = sum\n\
+             let rest = [2, 3]\n\
+             return alias(1, @rest)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(6).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn function_value_default_params_capture_values_when_created() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let fallback = 10\n\
+             let add = fn(value, ?extra = fallback) => value + extra\n\
+             fallback = 20\n\
+             return add(1)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(11).unwrap(),
                 effects: vec![],
                 mailbox_sends: Vec::new(),
                 retries: 0,

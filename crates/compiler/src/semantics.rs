@@ -1030,11 +1030,11 @@ impl<'a> Analyzer<'a> {
                     .as_ref()
                     .map(|name| self.declare(scope, name.clone(), LocalKind::Function, *id, span));
                 let function_scope = self.alloc_scope(Some(scope), Some(*id));
-                let hir_params = self.declare_params(params, function_scope, span);
                 self.function_stack.push(FunctionContext {
                     owner: *id,
                     scope: function_scope,
                 });
+                let hir_params = self.declare_params(params, function_scope, span);
                 let body = match body {
                     FunctionBody::Expr(expr) => {
                         HirFunctionBody::Expr(Box::new(self.lower_expr(expr, function_scope)))

@@ -122,7 +122,7 @@ struct CallableInfo {
     program: usize,
     captures: Vec<Value>,
     min_arity: usize,
-    max_arity: usize,
+    max_arity: Option<usize>,
 }
 
 impl VmState {
@@ -1023,7 +1023,7 @@ impl RegisterVm {
                     program: callee_id,
                     captures,
                     min_arity: *min_arity as usize,
-                    max_arity: *max_arity as usize,
+                    max_arity: (*max_arity != u16::MAX).then_some(*max_arity as usize),
                 })?;
                 self.write_register_unchecked(*dst, Value::function(function));
                 self.advance_ip_unchecked();
@@ -1525,16 +1525,25 @@ impl RegisterVm {
             .as_function()
             .ok_or_else(|| RuntimeError::InvalidCallable(callee.clone()))?;
         let callable = self.callable(function)?;
-        if user_args.len() < callable.min_arity || user_args.len() > callable.max_arity {
+        if user_args.len() < callable.min_arity {
             return Err(RuntimeError::InvalidCallArity {
                 expected_min: callable.min_arity,
-                expected_max: callable.max_arity,
+                expected_max: callable.max_arity.unwrap_or(usize::MAX),
+                actual: user_args.len(),
+            });
+        }
+        if let Some(max_arity) = callable.max_arity
+            && user_args.len() > max_arity
+        {
+            return Err(RuntimeError::InvalidCallArity {
+                expected_min: callable.min_arity,
+                expected_max: max_arity,
                 actual: user_args.len(),
             });
         }
         let register_count = self.program_unchecked(callable.program).register_count();
         let mut args = callable.captures;
-        args.extend(user_args);
+        args.push(Value::list(user_args));
         self.advance_ip_unchecked();
         self.state.frames.push(Frame::new(
             callable.program,

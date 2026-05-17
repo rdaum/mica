@@ -1403,21 +1403,36 @@ fn dynamic_function_value_call_expands_argument_splices() {
     let kernel = kernel_with_world_relations();
     let callee = Arc::new(
         Program::new(
-            5,
+            6,
             [
-                Instruction::Binary {
+                Instruction::Index {
+                    dst: reg(1),
+                    collection: reg(0),
+                    index: v(int(0)),
+                },
+                Instruction::Index {
+                    dst: reg(2),
+                    collection: reg(0),
+                    index: v(int(1)),
+                },
+                Instruction::Index {
                     dst: reg(3),
-                    op: RuntimeBinaryOp::Add,
-                    left: reg(0),
-                    right: reg(1),
+                    collection: reg(0),
+                    index: v(int(2)),
                 },
                 Instruction::Binary {
                     dst: reg(4),
                     op: RuntimeBinaryOp::Add,
-                    left: reg(3),
+                    left: reg(1),
                     right: reg(2),
                 },
-                Instruction::Return { value: r(4) },
+                Instruction::Binary {
+                    dst: reg(5),
+                    op: RuntimeBinaryOp::Add,
+                    left: reg(4),
+                    right: reg(3),
+                },
+                Instruction::Return { value: r(5) },
             ],
         )
         .unwrap(),
