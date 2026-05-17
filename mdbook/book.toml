@@ -1,0 +1,11 @@
+[book]
+title = "Mica Reference"
+description = "Language, syntax, and runtime reference for Mica."
+authors = ["Ryan Daum"]
+language = "en"
+multilingual = false
+src = "src"
+
+[output.html]
+git-repository-url = "https://codeberg.org/timbran/mica"
+edit-url-template = "https://codeberg.org/timbran/mica/src/branch/main/mdbook/{path}"

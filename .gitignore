@@ -1,4 +1,5 @@
 /target/
+/mdbook/book/
 /crates/var/fuzz/target/
 /crates/var/fuzz/corpus/
 /crates/var/fuzz/artifacts/
