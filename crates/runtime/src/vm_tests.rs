@@ -17,7 +17,9 @@ use crate::{
     RelationArg, RuntimeBinaryOp, RuntimeError, SpawnTarget, SuspendKind, Task, TaskError,
     TaskLimits, TaskManager, TaskManagerError, TaskOutcome,
 };
-use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
+use mica_relation_kernel::{
+    ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Tuple,
+};
 use mica_var::{Identity, Symbol, Value};
 use std::sync::Arc;
 
@@ -1592,6 +1594,32 @@ fn program_artifact_round_trips_positional_spawn() {
             && request.target == SpawnTarget::PositionalArgs(vec![ident(10), ident(20)])
             && request.delay_millis.is_none()
     ));
+}
+
+#[test]
+fn program_artifact_round_trips_dynamic_positional_dispatch() {
+    let program = Program::new(
+        2,
+        [
+            Instruction::PositionalDispatchDynamic {
+                dst: reg(0),
+                relations: DispatchRelations {
+                    method_selector: rel(10),
+                    param: rel(11),
+                    delegates: rel(12),
+                },
+                program_relation: rel(13),
+                program_bytes: rel(14),
+                selector: v(sym("inspect")),
+                args: vec![item(v(ident(20))), splice(r(1))],
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+
+    assert_eq!(restored, program);
 }
 
 #[test]

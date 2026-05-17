@@ -567,10 +567,15 @@ impl<'a> Analyzer<'a> {
     }
 
     fn validate_receiver_dispatch_args(&mut self, id: NodeId, args: &[HirArg]) {
-        if let Some(arg) = args.iter().find(|arg| arg.splice) {
-            self.unsupported(arg.id, "receiver dispatch arguments do not support splices");
+        let has_named = args.iter().any(|arg| arg.role.is_some());
+        let has_positional = args.iter().any(|arg| arg.role.is_none());
+        if has_named && let Some(arg) = args.iter().find(|arg| arg.splice) {
+            self.unsupported(
+                arg.id,
+                "receiver role dispatch arguments do not support splices",
+            );
         }
-        if args.iter().any(|arg| arg.role.is_some()) && args.iter().any(|arg| arg.role.is_none()) {
+        if has_named && has_positional {
             self.unsupported(
                 id,
                 "receiver dispatch arguments must be all positional or all role-named",

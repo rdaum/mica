@@ -1870,7 +1870,7 @@ impl<'a> ProgramCompiler<'a> {
         args: &[HirArg],
     ) -> Result<Register, CompileError> {
         if let HirExpr::ExternalRef { name, .. } = callee {
-            return if self.is_task_control_builtin(name) || self.context.is_runtime_function(name) {
+            return if self.is_compiler_builtin(name) || self.context.is_runtime_function(name) {
                 self.compile_builtin_call(id, name, args)
             } else {
                 self.compile_positional_dispatch(id, name, args)
@@ -1909,8 +1909,11 @@ impl<'a> ProgramCompiler<'a> {
         Ok(dst)
     }
 
-    fn is_task_control_builtin(&self, name: &str) -> bool {
-        matches!(name, "commit" | "suspend" | "read" | "mailbox_recv")
+    fn is_compiler_builtin(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "commit" | "suspend" | "read" | "mailbox_recv" | "invoke"
+        )
     }
 
     fn compile_direct_function_call(
@@ -1994,7 +1997,23 @@ impl<'a> ProgramCompiler<'a> {
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(self.unsupported(id, "invoke does not accept named arguments"));
         }
-        self.ensure_no_arg_splices(args, "invoke does not accept argument splices")?;
+        if args.iter().any(|arg| arg.splice) {
+            let (actuals, len) = self.compile_dynamic_arg_list(args)?;
+            self.compile_abort_if_len_lt(id, len, 2, "invoke expects selector and role map")?;
+            self.compile_abort_if_len_gt(id, len, 2, "invoke expects selector and role map")?;
+            let selector = Operand::Register(self.compile_collection_slot(actuals, 0, id)?);
+            let roles = Operand::Register(self.compile_collection_slot(actuals, 1, id)?);
+            let dst = self.alloc_register();
+            self.emit(Instruction::DynamicDispatch {
+                dst,
+                relations: method_relations.dispatch,
+                program_relation: method_relations.method_program,
+                program_bytes: method_relations.program_bytes,
+                selector,
+                roles,
+            });
+            return Ok(dst);
+        }
         if args.len() != 2 {
             return Err(self.unsupported(id, "invoke expects selector and role map"));
         }
@@ -2028,20 +2047,33 @@ impl<'a> ProgramCompiler<'a> {
                 "positional dispatch calls do not accept named arguments",
             ));
         }
-        self.ensure_no_arg_splices(args, "dispatch argument splices are not implemented yet")?;
-        let args = args
-            .iter()
-            .map(|arg| self.compile_arg_operand(arg))
-            .collect::<Result<Vec<_>, _>>()?;
+        let has_splice = args.iter().any(|arg| arg.splice);
         let dst = self.alloc_register();
-        self.emit(Instruction::PositionalDispatch {
-            dst,
-            relations: method_relations.dispatch,
-            program_relation: method_relations.method_program,
-            program_bytes: method_relations.program_bytes,
-            selector: Operand::Value(Value::symbol(Symbol::intern(name))),
-            args,
-        });
+        let selector = Operand::Value(Value::symbol(Symbol::intern(name)));
+        if has_splice {
+            let args = self.compile_arg_items(args)?;
+            self.emit(Instruction::PositionalDispatchDynamic {
+                dst,
+                relations: method_relations.dispatch,
+                program_relation: method_relations.method_program,
+                program_bytes: method_relations.program_bytes,
+                selector,
+                args,
+            });
+        } else {
+            let args = args
+                .iter()
+                .map(|arg| self.compile_arg_operand(arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.emit(Instruction::PositionalDispatch {
+                dst,
+                relations: method_relations.dispatch,
+                program_relation: method_relations.method_program,
+                program_bytes: method_relations.program_bytes,
+                selector,
+                args,
+            });
+        }
         Ok(dst)
     }
 
@@ -2062,22 +2094,37 @@ impl<'a> ProgramCompiler<'a> {
                 "receiver positional dispatch calls do not accept named arguments",
             ));
         }
-        self.ensure_no_arg_splices(args, "dispatch argument splices are not implemented yet")?;
+        let has_splice = args.iter().any(|arg| arg.splice);
         let selector = self.compile_expr_for_operand(selector)?;
-        let mut operands = Vec::with_capacity(args.len() + 1);
-        operands.push(Operand::Register(self.compile_expr_for_value(receiver)?));
-        for arg in args {
-            operands.push(self.compile_arg_operand(arg)?);
-        }
+        let receiver = self.compile_expr_for_value(receiver)?;
         let dst = self.alloc_register();
-        self.emit(Instruction::PositionalDispatch {
-            dst,
-            relations: method_relations.dispatch,
-            program_relation: method_relations.method_program,
-            program_bytes: method_relations.program_bytes,
-            selector,
-            args: operands,
-        });
+        if has_splice {
+            let mut items = Vec::with_capacity(args.len() + 1);
+            items.push(ListItem::Value(Operand::Register(receiver)));
+            items.extend(self.compile_arg_items(args)?);
+            self.emit(Instruction::PositionalDispatchDynamic {
+                dst,
+                relations: method_relations.dispatch,
+                program_relation: method_relations.method_program,
+                program_bytes: method_relations.program_bytes,
+                selector,
+                args: items,
+            });
+        } else {
+            let mut operands = Vec::with_capacity(args.len() + 1);
+            operands.push(Operand::Register(receiver));
+            for arg in args {
+                operands.push(self.compile_arg_operand(arg)?);
+            }
+            self.emit(Instruction::PositionalDispatch {
+                dst,
+                relations: method_relations.dispatch,
+                program_relation: method_relations.method_program,
+                program_bytes: method_relations.program_bytes,
+                selector,
+                args: operands,
+            });
+        }
         Ok(dst)
     }
 
@@ -5661,6 +5708,124 @@ mod tests {
             submitted.outcome,
             TaskOutcome::Complete {
                 value: Value::list([Value::identity(coin), Value::identity(alice)]),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_expands_dispatch_argument_splices() {
+        let inspect_method = id(100);
+        let inspect_program = id(101);
+        let look_method = id(102);
+        let look_program = id(103);
+        let player = id(200);
+        let thing = id(201);
+        let alice = id(300);
+        let coin = id(301);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("inspect_thing", inspect_method)
+            .with_program_identity("inspect_thing", inspect_program)
+            .with_identity("look_thing", look_method)
+            .with_program_identity("look_thing", look_program)
+            .with_identity("player", player)
+            .with_identity("thing", thing);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method #inspect_thing :inspect\n\
+               roles actor @ #player, item @ #thing\n\
+             do\n\
+               return [actor, item]\n\
+             end\n\
+             method #look_thing :look\n\
+               roles receiver @ #thing, actor @ #player\n\
+             do\n\
+               return [receiver, actor]\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(coin),
+                    Value::identity(thing),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice)
+            .with_identity("coin", coin);
+        let mut task_manager = TaskManager::new(kernel);
+
+        let positional = submit_source_task(
+            "let args = [#alice, #coin]\n\
+             return inspect(@args)",
+            &invoke_context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert_eq!(
+            positional.outcome,
+            TaskOutcome::Complete {
+                value: Value::list([Value::identity(alice), Value::identity(coin)]),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+
+        let receiver_positional = submit_source_task(
+            "let args = [#alice]\n\
+             return #coin:look(@args)",
+            &invoke_context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert_eq!(
+            receiver_positional.outcome,
+            TaskOutcome::Complete {
+                value: Value::list([Value::identity(coin), Value::identity(alice)]),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+
+        let dynamic_invoke = submit_source_task(
+            "let args = [:inspect, {:actor -> #alice, :item -> #coin}]\n\
+             return invoke(@args)",
+            &invoke_context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert_eq!(
+            dynamic_invoke.outcome,
+            TaskOutcome::Complete {
+                value: Value::list([Value::identity(alice), Value::identity(coin)]),
                 effects: vec![],
                 mailbox_sends: Vec::new(),
                 retries: 0,

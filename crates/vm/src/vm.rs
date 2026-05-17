@@ -1192,6 +1192,35 @@ impl RegisterVm {
                     .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
+            Opcode::PositionalDispatchDynamic {
+                dst,
+                spec,
+                selector,
+                args,
+            } => {
+                if self.state.frames.len() >= max_call_depth {
+                    return Err(RuntimeError::MaxCallDepthExceeded {
+                        max_depth: max_call_depth,
+                    });
+                }
+                let selector = self.resolve_operand_ref(program, *selector);
+                let args = self.resolve_list_items(program, program.list_items(*args))?;
+                let spec = program.dispatch_spec(*spec);
+                let methods =
+                    applicable_positional_methods(host, spec.relations, selector.clone(), &args)?;
+                let method = select_authorized_method(host.authority(), selector.clone(), methods)?;
+                let program_id = method_program_id(host, spec.program_relation, &method)?
+                    .ok_or_else(|| RuntimeError::MissingMethodProgram {
+                        method: method.clone(),
+                    })?;
+                let callee_id = self.resolve_program_id(host, spec.program_bytes, &program_id)?;
+                let register_count = self.program_unchecked(callee_id).register_count();
+                self.advance_ip_unchecked();
+                self.state
+                    .frames
+                    .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
+                Ok(VmHostResponse::Continue)
+            }
             Opcode::SpawnDispatch {
                 dst,
                 selector,
