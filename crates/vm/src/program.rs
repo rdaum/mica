@@ -90,8 +90,14 @@ pub enum ErrorField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpawnRequest {
     pub selector: Symbol,
-    pub roles: Vec<(Symbol, Value)>,
+    pub target: SpawnTarget,
     pub delay_millis: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SpawnTarget {
+    NamedRoles(Vec<(Symbol, Value)>),
+    PositionalArgs(Vec<Value>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -291,6 +297,12 @@ pub enum Instruction {
         dst: Register,
         selector: Operand,
         roles: Vec<(Value, Operand)>,
+        delay: Option<Operand>,
+    },
+    SpawnPositionalDispatch {
+        dst: Register,
+        selector: Operand,
+        args: Vec<Operand>,
         delay: Option<Operand>,
     },
     Commit,
@@ -554,6 +566,12 @@ pub(crate) enum Opcode {
         dst: Register,
         selector: OperandRef,
         roles: TableRange,
+        delay: Option<OperandRef>,
+    },
+    SpawnPositionalDispatch {
+        dst: Register,
+        selector: OperandRef,
+        args: TableRange,
         delay: Option<OperandRef>,
     },
     Commit,
@@ -1092,6 +1110,21 @@ impl Program {
                     .collect(),
                 delay: delay.map(|operand| self.decode_operand(operand)),
             },
+            Opcode::SpawnPositionalDispatch {
+                dst,
+                selector,
+                args,
+                delay,
+            } => Instruction::SpawnPositionalDispatch {
+                dst: *dst,
+                selector: self.decode_operand(*selector),
+                args: self
+                    .operands(*args)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+                delay: delay.map(|operand| self.decode_operand(operand)),
+            },
             Opcode::Commit => Instruction::Commit,
             Opcode::Suspend { kind } => Instruction::Suspend {
                 kind: self.suspend_kind(*kind).clone(),
@@ -1533,6 +1566,17 @@ impl ProgramBuilder {
                 dst,
                 selector: self.operand(selector)?,
                 roles: self.roles(roles)?,
+                delay: delay.map(|operand| self.operand(operand)).transpose()?,
+            },
+            Instruction::SpawnPositionalDispatch {
+                dst,
+                selector,
+                args,
+                delay,
+            } => Opcode::SpawnPositionalDispatch {
+                dst,
+                selector: self.operand(selector)?,
+                args: self.operands(args)?,
                 delay: delay.map(|operand| self.operand(operand)).transpose()?,
             },
             Instruction::Commit => Opcode::Commit,
@@ -2019,6 +2063,17 @@ fn validate_instruction(
             validate_operands(register_count, roles.iter().map(|(_, operand)| operand))?;
             validate_operands(register_count, delay.iter())
         }
+        Instruction::SpawnPositionalDispatch {
+            dst,
+            selector,
+            args,
+            delay,
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, selector)?;
+            validate_operands(register_count, args.iter())?;
+            validate_operands(register_count, delay.iter())
+        }
         Instruction::Commit | Instruction::Suspend { .. } | Instruction::RollbackRetry => Ok(()),
         Instruction::SuspendValue { dst, duration }
         | Instruction::Read {
@@ -2142,6 +2197,7 @@ const INST_SCAN_DYNAMIC: u8 = 43;
 const INST_ASSERT_DYNAMIC: u8 = 44;
 const INST_RETRACT_DYNAMIC: u8 = 45;
 const INST_BUILTIN_CALL_DYNAMIC: u8 = 46;
+const INST_SPAWN_POSITIONAL_DISPATCH: u8 = 47;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2540,6 +2596,18 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
                 write_value(out, role)?;
                 write_operand(out, operand)?;
             }
+            write_optional_operand(out, delay.as_ref())
+        }
+        Instruction::SpawnPositionalDispatch {
+            dst,
+            selector,
+            args,
+            delay,
+        } => {
+            out.push(INST_SPAWN_POSITIONAL_DISPATCH);
+            write_register(out, *dst);
+            write_operand(out, selector)?;
+            write_operands(out, args)?;
             write_optional_operand(out, delay.as_ref())
         }
         Instruction::Call { dst, program, args } => {
@@ -3093,6 +3161,12 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 selector: self.read_operand()?,
                 roles: self.read_dispatch_roles()?,
+                delay: self.read_optional_operand()?,
+            },
+            INST_SPAWN_POSITIONAL_DISPATCH => Instruction::SpawnPositionalDispatch {
+                dst: self.read_register()?,
+                selector: self.read_operand()?,
+                args: self.read_operands()?,
                 delay: self.read_optional_operand()?,
             },
             _ => return Err(artifact_error("unknown program artifact instruction tag")),

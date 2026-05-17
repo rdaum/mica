@@ -14,8 +14,8 @@
 use crate::{
     AuthorityContext, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp, Effect,
     ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, QueryBinding, Register,
-    RelationArg, RuntimeBinaryOp, RuntimeError, SuspendKind, Task, TaskError, TaskLimits,
-    TaskManager, TaskManagerError, TaskOutcome,
+    RelationArg, RuntimeBinaryOp, RuntimeError, SpawnTarget, SuspendKind, Task, TaskError,
+    TaskLimits, TaskManager, TaskManagerError, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -1486,6 +1486,36 @@ fn program_artifact_round_trips_suspend_and_read() {
     let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
 
     assert_eq!(restored, program);
+}
+
+#[test]
+fn program_artifact_round_trips_positional_spawn() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        1,
+        [
+            Instruction::SpawnPositionalDispatch {
+                dst: reg(0),
+                selector: v(sym("inspect")),
+                args: vec![v(ident(10)), v(ident(20))],
+                delay: None,
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert!(matches!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(request),
+            ..
+        } if request.selector == Symbol::intern("inspect")
+            && request.target == SpawnTarget::PositionalArgs(vec![ident(10), ident(20)])
+            && request.delay_millis.is_none()
+    ));
 }
 
 #[test]

@@ -2914,6 +2914,11 @@ impl<'a> ProgramCompiler<'a> {
                 ));
             }
         };
+        if let Some(receiver) = receiver
+            && args.iter().all(|arg| arg.role.is_none())
+        {
+            return self.compile_receiver_positional_spawn(id, receiver, selector, args, delay);
+        }
         self.ensure_no_arg_splices(args, "spawn argument splices are not implemented yet")?;
         let selector = self.compile_expr_for_operand(selector)?;
         let mut roles = Vec::new();
@@ -2942,6 +2947,40 @@ impl<'a> ProgramCompiler<'a> {
             dst,
             selector,
             roles,
+            delay,
+        });
+        Ok(dst)
+    }
+
+    fn compile_receiver_positional_spawn(
+        &mut self,
+        id: NodeId,
+        receiver: &HirExpr,
+        selector: &HirExpr,
+        args: &[HirArg],
+        delay: Option<&HirExpr>,
+    ) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(
+                id,
+                "receiver positional spawn calls do not accept named arguments",
+            ));
+        }
+        self.ensure_no_arg_splices(args, "spawn argument splices are not implemented yet")?;
+        let selector = self.compile_expr_for_operand(selector)?;
+        let mut operands = Vec::with_capacity(args.len() + 1);
+        operands.push(Operand::Register(self.compile_expr_for_value(receiver)?));
+        for arg in args {
+            operands.push(self.compile_arg_operand(arg)?);
+        }
+        let delay = delay
+            .map(|delay| self.compile_expr_for_operand(delay))
+            .transpose()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::SpawnPositionalDispatch {
+            dst,
+            selector,
+            args: operands,
             delay,
         });
         Ok(dst)

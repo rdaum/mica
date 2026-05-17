@@ -23,7 +23,8 @@ pub use mica_vm::{
     CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem,
     MailboxRecvRequest, MailboxSend, Operand, Program, ProgramResolver, QueryBinding, Register,
     RegisterVm, RelationArg, RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp,
-    SYSTEM_ENDPOINT, SpawnRequest, SuspendKind, VmHostContext, VmHostResponse, VmState,
+    SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget, SuspendKind, VmHostContext, VmHostResponse,
+    VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{
@@ -1129,7 +1130,7 @@ impl SharedSourceRunner {
     ) -> Result<SubmittedTask, SourceTaskError> {
         let SpawnRequest {
             selector,
-            roles,
+            target,
             delay_millis,
         } = spawn;
         let runtime_context = runtime_context(principal, actor, endpoint);
@@ -1137,12 +1138,9 @@ impl SharedSourceRunner {
             Some(actor) => authority_for_actor(self.task_manager.kernel(), actor)?,
             None => parent_authority,
         };
-        let program = invocation_program_with_delay(
-            selector,
-            invocation_roles(principal, actor, endpoint, roles),
-            delay_millis,
-        )
-        .map_err(CompileError::from)?;
+        let program =
+            spawn_invocation_program(selector, target, principal, actor, endpoint, delay_millis)
+                .map_err(CompileError::from)?;
         let (task_id, outcome) =
             self.task_manager
                 .submit_with_context(Arc::new(program), authority, runtime_context)?;
@@ -2130,6 +2128,54 @@ fn invocation_program_with_delay(
         },
     ]);
     Program::new(1, instructions)
+}
+
+fn positional_invocation_program_with_delay(
+    selector: Symbol,
+    args: Vec<Value>,
+    delay_millis: Option<u64>,
+) -> Result<Program, RuntimeError> {
+    let relations = method_relations();
+    let mut instructions = Vec::new();
+    if let Some(delay_millis) = delay_millis {
+        instructions.push(Instruction::Suspend {
+            kind: SuspendKind::TimedMillis(delay_millis),
+        });
+    }
+    instructions.extend([
+        Instruction::PositionalDispatch {
+            dst: Register(0),
+            relations: relations.dispatch,
+            program_relation: relations.method_program,
+            program_bytes: relations.program_bytes,
+            selector: Operand::Value(Value::symbol(selector)),
+            args: args.into_iter().map(Operand::Value).collect(),
+        },
+        Instruction::Return {
+            value: Operand::Register(Register(0)),
+        },
+    ]);
+    Program::new(1, instructions)
+}
+
+fn spawn_invocation_program(
+    selector: Symbol,
+    target: SpawnTarget,
+    principal: Option<Identity>,
+    actor: Option<Identity>,
+    endpoint: Identity,
+    delay_millis: Option<u64>,
+) -> Result<Program, RuntimeError> {
+    match target {
+        SpawnTarget::NamedRoles(roles) => invocation_program_with_delay(
+            selector,
+            invocation_roles(principal, actor, endpoint, roles),
+            delay_millis,
+        ),
+        SpawnTarget::PositionalArgs(args) => {
+            positional_invocation_program_with_delay(selector, args, delay_millis)
+        }
+    }
 }
 
 fn invocation_roles(
@@ -4039,7 +4085,7 @@ fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = Stri
 mod tests {
     use super::{
         AuthorityContext, CompileError, Emission, Instruction, Operand, Program, SYSTEM_ENDPOINT,
-        SourceTaskError, SpawnRequest, SuspendKind, TaskOutcome,
+        SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind, TaskOutcome,
     };
     use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
     use mica_var::{Identity, Symbol, Value};
@@ -4441,6 +4487,44 @@ mod tests {
                 }),
                 ..
             } if selector == Symbol::intern("child")
+        ));
+    }
+
+    #[test]
+    fn runner_can_spawn_receiver_positional_invocation() {
+        let mut runner = SourceRunner::new_empty();
+        let coin = runner.run_source("return make_identity(:coin)").unwrap();
+        let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+            panic!("expected coin identity creation to complete");
+        };
+        let alice = runner.run_source("return make_identity(:alice)").unwrap();
+        let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+            panic!("expected alice identity creation to complete");
+        };
+        runner
+            .run_filein(
+                "verb parent()\n\
+                   let child = spawn #coin:inspect(#alice) after 0\n\
+                   return child\n\
+                 end\n\
+                 verb inspect(receiver, actor)\n\
+                   return [receiver, actor]\n\
+                 end\n",
+            )
+            .unwrap();
+
+        let report = runner.run_source("return :parent()").unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Spawn(SpawnRequest {
+                    selector,
+                    target: SpawnTarget::PositionalArgs(args),
+                    delay_millis: Some(0),
+                }),
+                ..
+            } if selector == Symbol::intern("inspect") && args == vec![coin, alice]
         ));
     }
 

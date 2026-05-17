@@ -157,6 +157,51 @@ fn spawn_commits_parent_and_runs_child_task() {
 }
 
 #[test]
+fn spawn_runs_receiver_positional_child_task() {
+    let mut runner = SourceRunner::new_empty();
+    let coin = runner.run_source("return make_identity(:coin)").unwrap();
+    let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+        panic!("expected coin identity creation to complete");
+    };
+    let alice = runner.run_source("return make_identity(:alice)").unwrap();
+    let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+        panic!("expected alice identity creation to complete");
+    };
+    runner
+        .run_filein(
+            "verb parent()\n\
+               let child = spawn #coin:inspect(#alice) after 0\n\
+               return child\n\
+             end\n\
+             verb inspect(receiver, actor)\n\
+               emit(endpoint(), [receiver, actor])\n\
+               return nothing\n\
+             end\n",
+        )
+        .unwrap();
+    let driver = CompioTaskDriver::spawn(runner).unwrap();
+    let submitted = driver
+        .submit_source(endpoint(32), root_source("return :parent()"))
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(_),
+            ..
+        }
+    ));
+
+    std::thread::sleep(Duration::from_millis(20));
+
+    assert!(driver.drain_events().iter().any(|event| matches!(
+        event,
+        DriverEvent::Effect(effect)
+            if effect.value == Value::list([coin.clone(), alice.clone()])
+    )));
+}
+
+#[test]
 fn endpoint_input_resumes_reading_task() {
     let driver = CompioTaskDriver::spawn_empty().unwrap();
     let endpoint = endpoint(4);

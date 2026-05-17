@@ -16,7 +16,8 @@ use crate::program::{CompactListItem, CompactRelationArg, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
     Emission, ErrorField, MailboxRecvRequest, Program, ProgramResolver, QueryBinding, Register,
-    RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SpawnRequest, SuspendKind,
+    RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SpawnRequest, SpawnTarget,
+    SuspendKind,
 };
 use mica_relation_kernel::{
     ApplicableMethodCall, ComposedTransactionRead, DispatchRelations, RelationId, RelationRead,
@@ -1180,7 +1181,35 @@ impl RegisterVm {
                 self.state.pending_resume = Some(*dst);
                 Ok(VmHostResponse::Spawn(SpawnRequest {
                     selector: selector_symbol,
-                    roles: spawn_roles,
+                    target: SpawnTarget::NamedRoles(spawn_roles),
+                    delay_millis,
+                }))
+            }
+            Opcode::SpawnPositionalDispatch {
+                dst,
+                selector,
+                args,
+                delay,
+            } => {
+                let selector = self.resolve_operand_ref(program, *selector);
+                let selector_symbol = selector
+                    .as_symbol()
+                    .ok_or_else(|| RuntimeError::InvalidSpawnSelector(selector.clone()))?;
+                let args = self.resolve_operands(program, program.operands(*args));
+                let delay_millis = delay
+                    .map(|delay| {
+                        self.suspend_duration(self.resolve_operand_ref(program, delay))
+                            .and_then(|kind| match kind {
+                                SuspendKind::TimedMillis(millis) => Ok(millis),
+                                _ => unreachable!(),
+                            })
+                    })
+                    .transpose()?;
+                self.advance_ip_unchecked();
+                self.state.pending_resume = Some(*dst);
+                Ok(VmHostResponse::Spawn(SpawnRequest {
+                    selector: selector_symbol,
+                    target: SpawnTarget::PositionalArgs(args),
                     delay_millis,
                 }))
             }

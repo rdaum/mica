@@ -18,7 +18,8 @@ the cross-check.
    them. Named arguments are meaningful for role dispatch, not generic calls.
 
 5. `spawn` parses any expression target, but backend only accepts role or
-   receiver dispatch targets with explicit role names.
+   receiver dispatch targets. Role dispatch spawn targets still require
+   explicit role names.
 
 6. Query variables parse anywhere, but backend only accepts them in relation
     queries and rule terms.
