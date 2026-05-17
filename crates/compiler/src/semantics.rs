@@ -307,9 +307,9 @@ impl<'a> Analyzer<'a> {
             match item {
                 HirItem::Expr { expr, .. } => self.validate_supported_surface_expr(expr, false),
                 HirItem::RelationRule { head, body, .. } => {
-                    self.validate_relation_atom_support(head, true, false);
+                    self.validate_relation_atom_support(head, true, false, false);
                     for atom in body {
-                        self.validate_relation_atom_support(atom, true, false);
+                        self.validate_relation_atom_support(atom, true, false, false);
                     }
                 }
                 HirItem::Method { body, .. } => self.validate_supported_surface_items(body),
@@ -400,11 +400,14 @@ impl<'a> Analyzer<'a> {
                     self.validate_supported_surface_expr(delay, false);
                 }
             }
-            HirExpr::RelationAtom(atom) => self.validate_relation_atom_support(atom, true, true),
+            HirExpr::RelationAtom(atom) => {
+                self.validate_relation_atom_support(atom, true, true, true)
+            }
             HirExpr::FactChange { kind, atom, .. } => {
                 self.validate_relation_atom_support(
                     atom,
                     matches!(kind, EffectKind::Retract),
+                    true,
                     true,
                 );
                 if matches!(kind, EffectKind::Assert)
@@ -580,10 +583,11 @@ impl<'a> Analyzer<'a> {
         atom: &HirRelationAtom,
         allow_query_vars: bool,
         allow_holes: bool,
+        allow_splices: bool,
     ) {
         for arg in &atom.args {
-            if arg.splice {
-                self.unsupported(arg.id, "relation argument splices are not implemented yet");
+            if arg.splice && !allow_splices {
+                self.unsupported(arg.id, "relation argument splices are not valid here");
             }
             match &arg.value {
                 HirExpr::QueryVar { id, .. } if !allow_query_vars => {
@@ -1784,6 +1788,7 @@ mod tests {
              catch err if err.code == E_FAIL\n\
                err\n\
              end\n\
+             Visible(@args) :- Source(?x)\n\
              return ?value",
         );
 
@@ -1798,6 +1803,7 @@ mod tests {
         assert!(messages.contains(
             &"compiled catch clauses currently match an error code literal or catch all"
         ));
+        assert!(messages.contains(&"relation argument splices are not valid here"));
         assert!(messages.contains(&"query variables are only valid as relation arguments"));
     }
 }

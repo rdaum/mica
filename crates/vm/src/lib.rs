@@ -34,7 +34,7 @@ pub use effect::Emission;
 pub use error::RuntimeError;
 pub use program::{
     CatchHandler, ErrorField, Instruction, ListItem, MailboxRecvRequest, MailboxSend, Operand,
-    Program, ProgramBuilder, ProgramResolver, QueryBinding, Register, RuntimeBinaryOp,
+    Program, ProgramBuilder, ProgramResolver, QueryBinding, Register, RelationArg, RuntimeBinaryOp,
     RuntimeUnaryOp, SpawnRequest, SuspendKind,
 };
 pub use vm::{

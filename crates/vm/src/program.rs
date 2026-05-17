@@ -66,6 +66,14 @@ pub struct QueryBinding {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RelationArg {
+    Value(Operand),
+    Splice(Operand),
+    Query(Symbol),
+    Hole,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatchHandler {
     pub code: Option<Value>,
     pub binding: Option<Register>,
@@ -204,6 +212,19 @@ pub enum Instruction {
         relation: RelationId,
         bindings: Vec<Option<Operand>>,
     },
+    ScanDynamic {
+        dst: Register,
+        relation: RelationId,
+        args: Vec<RelationArg>,
+    },
+    AssertDynamic {
+        relation: RelationId,
+        args: Vec<RelationArg>,
+    },
+    RetractDynamic {
+        relation: RelationId,
+        args: Vec<RelationArg>,
+    },
     ReplaceFunctional {
         relation: RelationId,
         values: Vec<Operand>,
@@ -338,6 +359,14 @@ pub(crate) enum CompactListItem {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompactRelationArg {
+    Value(OperandRef),
+    Splice(OperandRef),
+    Query(Symbol),
+    Hole,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CompactCatchHandler {
     pub(crate) code: Option<ConstId>,
     pub(crate) binding: Option<Register>,
@@ -446,6 +475,19 @@ pub(crate) enum Opcode {
     RetractWhere {
         relation: RelationRef,
         bindings: TableRange,
+    },
+    ScanDynamic {
+        dst: Register,
+        relation: RelationRef,
+        args: TableRange,
+    },
+    AssertDynamic {
+        relation: RelationRef,
+        args: TableRange,
+    },
+    RetractDynamic {
+        relation: RelationRef,
+        args: TableRange,
     },
     ReplaceFunctional {
         relation: RelationRef,
@@ -565,6 +607,7 @@ pub struct Program {
     opcodes: Arc<[Opcode]>,
     constants: Arc<[Value]>,
     list_items: Arc<[CompactListItem]>,
+    relation_args: Arc<[CompactRelationArg]>,
     map_entries: Arc<[(OperandRef, OperandRef)]>,
     operands: Arc<[OperandRef]>,
     bindings: Arc<[Option<OperandRef>]>,
@@ -614,6 +657,11 @@ impl Program {
     #[inline]
     pub(crate) fn list_items(&self, range: TableRange) -> &[CompactListItem] {
         table_range(&self.list_items, range)
+    }
+
+    #[inline]
+    pub(crate) fn relation_args(&self, range: TableRange) -> &[CompactRelationArg] {
+        table_range(&self.relation_args, range)
     }
 
     #[inline]
@@ -697,6 +745,22 @@ impl Program {
             OperandRef::Register(register) => Operand::Register(register),
             OperandRef::Constant(id) => Operand::Value(self.constant(id).clone()),
         }
+    }
+
+    fn decode_relation_args(&self, range: TableRange) -> Vec<RelationArg> {
+        self.relation_args(range)
+            .iter()
+            .map(|arg| match arg {
+                CompactRelationArg::Value(operand) => {
+                    RelationArg::Value(self.decode_operand(*operand))
+                }
+                CompactRelationArg::Splice(operand) => {
+                    RelationArg::Splice(self.decode_operand(*operand))
+                }
+                CompactRelationArg::Query(name) => RelationArg::Query(*name),
+                CompactRelationArg::Hole => RelationArg::Hole,
+            })
+            .collect()
     }
 
     fn decode_instruction(&self, opcode: &Opcode) -> Instruction {
@@ -860,6 +924,23 @@ impl Program {
                     .iter()
                     .map(|binding| binding.map(|operand| self.decode_operand(operand)))
                     .collect(),
+            },
+            Opcode::ScanDynamic {
+                dst,
+                relation,
+                args,
+            } => Instruction::ScanDynamic {
+                dst: *dst,
+                relation: self.relation(*relation),
+                args: self.decode_relation_args(*args),
+            },
+            Opcode::AssertDynamic { relation, args } => Instruction::AssertDynamic {
+                relation: self.relation(*relation),
+                args: self.decode_relation_args(*args),
+            },
+            Opcode::RetractDynamic { relation, args } => Instruction::RetractDynamic {
+                relation: self.relation(*relation),
+                args: self.decode_relation_args(*args),
             },
             Opcode::ReplaceFunctional { relation, values } => Instruction::ReplaceFunctional {
                 relation: self.relation(*relation),
@@ -1052,6 +1133,7 @@ pub struct ProgramBuilder {
     constants: Vec<Value>,
     constant_ids: BTreeMap<Value, ConstId>,
     list_items: Vec<CompactListItem>,
+    relation_args: Vec<CompactRelationArg>,
     map_entries: Vec<(OperandRef, OperandRef)>,
     operands: Vec<OperandRef>,
     bindings: Vec<Option<OperandRef>>,
@@ -1181,6 +1263,7 @@ impl ProgramBuilder {
             opcodes: self.opcodes.into(),
             constants: self.constants.into(),
             list_items: self.list_items.into(),
+            relation_args: self.relation_args.into(),
             map_entries: self.map_entries.into(),
             operands: self.operands.into(),
             bindings: self.bindings.into(),
@@ -1312,6 +1395,23 @@ impl ProgramBuilder {
             Instruction::RetractWhere { relation, bindings } => Opcode::RetractWhere {
                 relation: self.relation(relation)?,
                 bindings: self.bindings(bindings)?,
+            },
+            Instruction::ScanDynamic {
+                dst,
+                relation,
+                args,
+            } => Opcode::ScanDynamic {
+                dst,
+                relation: self.relation(relation)?,
+                args: self.relation_args(args)?,
+            },
+            Instruction::AssertDynamic { relation, args } => Opcode::AssertDynamic {
+                relation: self.relation(relation)?,
+                args: self.relation_args(args)?,
+            },
+            Instruction::RetractDynamic { relation, args } => Opcode::RetractDynamic {
+                relation: self.relation(relation)?,
+                args: self.relation_args(args)?,
             },
             Instruction::ReplaceFunctional { relation, values } => Opcode::ReplaceFunctional {
                 relation: self.relation(relation)?,
@@ -1531,6 +1631,20 @@ impl ProgramBuilder {
             self.list_items.push(item);
         }
         table_range_for(start, self.list_items.len(), "list item table")
+    }
+
+    fn relation_args(&mut self, args: Vec<RelationArg>) -> Result<TableRange, RuntimeError> {
+        let start = self.relation_args.len();
+        for arg in args {
+            let arg = match arg {
+                RelationArg::Value(operand) => CompactRelationArg::Value(self.operand(operand)?),
+                RelationArg::Splice(operand) => CompactRelationArg::Splice(self.operand(operand)?),
+                RelationArg::Query(name) => CompactRelationArg::Query(name),
+                RelationArg::Hole => CompactRelationArg::Hole,
+            };
+            self.relation_args.push(arg);
+        }
+        table_range_for(start, self.relation_args.len(), "relation arg table")
     }
 
     fn map_entries(
@@ -1779,6 +1893,9 @@ fn validate_instruction(
             validate_operands(register_count, values.iter())
         }
         Instruction::RetractWhere { bindings, .. } => validate_bindings(register_count, bindings),
+        Instruction::ScanDynamic { args, .. }
+        | Instruction::AssertDynamic { args, .. }
+        | Instruction::RetractDynamic { args, .. } => validate_relation_args(register_count, args),
         Instruction::Branch {
             condition,
             if_true,
@@ -1908,6 +2025,16 @@ fn validate_bindings(
     validate_operands(register_count, bindings.iter().filter_map(Option::as_ref))
 }
 
+fn validate_relation_args(register_count: usize, args: &[RelationArg]) -> Result<(), RuntimeError> {
+    validate_operands(
+        register_count,
+        args.iter().filter_map(|arg| match arg {
+            RelationArg::Value(operand) | RelationArg::Splice(operand) => Some(operand),
+            RelationArg::Query(_) | RelationArg::Hole => None,
+        }),
+    )
+}
+
 fn validate_operands<'a>(
     register_count: usize,
     operands: impl IntoIterator<Item = &'a Operand>,
@@ -1988,6 +2115,9 @@ const INST_POSITIONAL_DISPATCH: u8 = 39;
 const INST_DYNAMIC_DISPATCH: u8 = 40;
 const INST_SPAWN_DISPATCH: u8 = 41;
 const INST_MAILBOX_RECV: u8 = 42;
+const INST_SCAN_DYNAMIC: u8 = 43;
+const INST_ASSERT_DYNAMIC: u8 = 44;
+const INST_RETRACT_DYNAMIC: u8 = 45;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2184,6 +2314,26 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_RETRACT_WHERE);
             write_identity(out, *relation);
             write_optional_operands(out, bindings)
+        }
+        Instruction::ScanDynamic {
+            dst,
+            relation,
+            args,
+        } => {
+            out.push(INST_SCAN_DYNAMIC);
+            write_register(out, *dst);
+            write_identity(out, *relation);
+            write_relation_args(out, args)
+        }
+        Instruction::AssertDynamic { relation, args } => {
+            out.push(INST_ASSERT_DYNAMIC);
+            write_identity(out, *relation);
+            write_relation_args(out, args)
+        }
+        Instruction::RetractDynamic { relation, args } => {
+            out.push(INST_RETRACT_DYNAMIC);
+            write_identity(out, *relation);
+            write_relation_args(out, args)
         }
         Instruction::ReplaceFunctional { relation, values } => {
             out.push(INST_REPLACE_FUNCTIONAL);
@@ -2474,6 +2624,31 @@ fn write_optional_operands(
                 write_operand(out, operand)?;
             }
             None => out.push(0),
+        }
+    }
+    Ok(())
+}
+
+fn write_relation_args(out: &mut Vec<u8>, args: &[RelationArg]) -> Result<(), RuntimeError> {
+    write_u32(out, args.len() as u32);
+    for arg in args {
+        match arg {
+            RelationArg::Value(operand) => {
+                out.push(0);
+                write_operand(out, operand)?;
+            }
+            RelationArg::Splice(operand) => {
+                out.push(1);
+                write_operand(out, operand)?;
+            }
+            RelationArg::Query(name) => {
+                out.push(2);
+                let Some(name) = name.name() else {
+                    return Err(artifact_error("cannot serialize unnamed query symbol"));
+                };
+                write_str(out, name);
+            }
+            RelationArg::Hole => out.push(3),
         }
     }
     Ok(())
@@ -2772,6 +2947,19 @@ impl<'a> ByteReader<'a> {
                 relation: self.read_identity()?,
                 bindings: self.read_optional_operands()?,
             },
+            INST_SCAN_DYNAMIC => Instruction::ScanDynamic {
+                dst: self.read_register()?,
+                relation: self.read_identity()?,
+                args: self.read_relation_args()?,
+            },
+            INST_ASSERT_DYNAMIC => Instruction::AssertDynamic {
+                relation: self.read_identity()?,
+                args: self.read_relation_args()?,
+            },
+            INST_RETRACT_DYNAMIC => Instruction::RetractDynamic {
+                relation: self.read_identity()?,
+                args: self.read_relation_args()?,
+            },
             INST_REPLACE_FUNCTIONAL => Instruction::ReplaceFunctional {
                 relation: self.read_identity()?,
                 values: self.read_operands()?,
@@ -2909,6 +3097,21 @@ impl<'a> ByteReader<'a> {
     fn read_optional_operands(&mut self) -> Result<Vec<Option<Operand>>, RuntimeError> {
         let count = self.read_u32()? as usize;
         (0..count).map(|_| self.read_optional_operand()).collect()
+    }
+
+    fn read_relation_args(&mut self) -> Result<Vec<RelationArg>, RuntimeError> {
+        let count = self.read_u32()? as usize;
+        (0..count)
+            .map(|_| {
+                Ok(match self.read_u8()? {
+                    0 => RelationArg::Value(self.read_operand()?),
+                    1 => RelationArg::Splice(self.read_operand()?),
+                    2 => RelationArg::Query(Symbol::intern(&self.read_string()?)),
+                    3 => RelationArg::Hole,
+                    _ => return Err(artifact_error("invalid relation argument tag")),
+                })
+            })
+            .collect()
     }
 
     fn read_optional_operand(&mut self) -> Result<Option<Operand>, RuntimeError> {

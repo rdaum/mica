@@ -12,11 +12,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::builtin::{RuntimePorts, TransientAccess};
-use crate::program::{CompactListItem, Opcode, OperandRef};
+use crate::program::{CompactListItem, CompactRelationArg, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
-    Emission, ErrorField, MailboxRecvRequest, Program, ProgramResolver, Register, RuntimeBinaryOp,
-    RuntimeContext, RuntimeError, RuntimeUnaryOp, SpawnRequest, SuspendKind,
+    Emission, ErrorField, MailboxRecvRequest, Program, ProgramResolver, QueryBinding, Register,
+    RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SpawnRequest, SuspendKind,
 };
 use mica_relation_kernel::{
     ApplicableMethodCall, ComposedTransactionRead, DispatchRelations, RelationId, RelationRead,
@@ -49,6 +49,12 @@ enum FinallyContinuation {
     Normal(usize),
     Raise(Value),
     Return(Value),
+}
+
+enum ExpandedRelationArg {
+    Value(Value),
+    Query(Symbol),
+    Hole,
 }
 
 impl Frame {
@@ -881,6 +887,53 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
+            Opcode::ScanDynamic {
+                dst,
+                relation,
+                args,
+            } => {
+                let relation = program.relation(*relation);
+                require_read(host.authority(), relation)?;
+                let (bindings, outputs) =
+                    self.resolve_relation_bindings(program, program.relation_args(*args))?;
+                let rows = host
+                    .scan_relation(relation, &bindings)
+                    .map_err(RuntimeError::Kernel)?;
+                let value = if outputs.is_empty() {
+                    Value::bool(!rows.is_empty())
+                } else {
+                    Value::list(query_rows(rows, &outputs))
+                };
+                self.write_register_unchecked(*dst, value);
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::AssertDynamic { relation, args } => {
+                let relation = program.relation(*relation);
+                require_write(host.authority(), relation)?;
+                host.assert_tuple(
+                    relation,
+                    Tuple::new(
+                        self.resolve_relation_values(program, program.relation_args(*args))?,
+                    ),
+                )?;
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::RetractDynamic { relation, args } => {
+                let relation = program.relation(*relation);
+                require_write(host.authority(), relation)?;
+                let (bindings, _) =
+                    self.resolve_relation_bindings(program, program.relation_args(*args))?;
+                if bindings.iter().any(Option::is_none) {
+                    require_read(host.authority(), relation)?;
+                    host.retract_matching(relation, &bindings)?;
+                } else {
+                    host.retract_tuple(relation, Tuple::new(bindings.into_iter().flatten()))?;
+                }
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
             Opcode::ReplaceFunctional { relation, values } => {
                 let relation = program.relation(*relation);
                 require_write(host.authority(), relation)?;
@@ -1479,6 +1532,86 @@ impl RegisterVm {
             .collect()
     }
 
+    fn resolve_relation_values(
+        &self,
+        program: &Program,
+        args: &[CompactRelationArg],
+    ) -> Result<Vec<Value>, RuntimeError> {
+        let mut values = Vec::new();
+        self.visit_relation_args(program, args, |arg| {
+            match arg {
+                ExpandedRelationArg::Value(value) => values.push(value),
+                ExpandedRelationArg::Query(_) | ExpandedRelationArg::Hole => {
+                    return Err(RuntimeError::InvalidBuiltinCall {
+                        name: Symbol::intern("relation"),
+                        message: "relation value operation cannot contain query variables or holes"
+                            .to_owned(),
+                    });
+                }
+            }
+            Ok(())
+        })?;
+        Ok(values)
+    }
+
+    fn resolve_relation_bindings(
+        &self,
+        program: &Program,
+        args: &[CompactRelationArg],
+    ) -> Result<(Vec<Option<Value>>, Vec<QueryBinding>), RuntimeError> {
+        let mut bindings = Vec::new();
+        let mut outputs = Vec::new();
+        self.visit_relation_args(program, args, |arg| {
+            match arg {
+                ExpandedRelationArg::Value(value) => bindings.push(Some(value)),
+                ExpandedRelationArg::Query(name) => {
+                    let position = u16::try_from(bindings.len()).map_err(|_| {
+                        RuntimeError::RelationArgumentCountExceeded {
+                            count: bindings.len(),
+                        }
+                    })?;
+                    outputs.push(QueryBinding { name, position });
+                    bindings.push(None);
+                }
+                ExpandedRelationArg::Hole => bindings.push(None),
+            }
+            Ok(())
+        })?;
+        Ok((bindings, outputs))
+    }
+
+    fn visit_relation_args(
+        &self,
+        program: &Program,
+        args: &[CompactRelationArg],
+        mut visit: impl FnMut(ExpandedRelationArg) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        for arg in args {
+            match arg {
+                CompactRelationArg::Value(operand) => {
+                    visit(ExpandedRelationArg::Value(
+                        self.resolve_operand_ref(program, *operand),
+                    ))?;
+                }
+                CompactRelationArg::Splice(operand) => {
+                    let splice = self.resolve_operand_ref(program, *operand);
+                    let Some(result) = splice.with_list(|items| {
+                        for item in items {
+                            visit(ExpandedRelationArg::Value(item.clone()))?;
+                        }
+                        Ok::<(), RuntimeError>(())
+                    }) else {
+                        return Err(RuntimeError::InvalidRelationSplice(splice));
+                    };
+                    result?;
+                }
+                CompactRelationArg::Query(name) => visit(ExpandedRelationArg::Query(*name))?,
+                CompactRelationArg::Hole => visit(ExpandedRelationArg::Hole)?,
+            }
+        }
+        Ok(())
+    }
+
     fn suspend_duration(&self, value: Value) -> Result<SuspendKind, RuntimeError> {
         let seconds = if let Some(seconds) = value.as_int() {
             seconds as f64
@@ -1628,6 +1761,29 @@ fn collection_len(collection: &Value) -> Value {
         .ok()
         .and_then(|len| Value::int(len).ok())
         .unwrap_or_else(Value::nothing)
+}
+
+fn query_rows(rows: Vec<Tuple>, outputs: &[QueryBinding]) -> Vec<Value> {
+    let mut result = Vec::with_capacity(rows.len());
+    'row: for row in rows {
+        let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
+        for output in outputs {
+            let key = Value::symbol(output.name);
+            let value = row.values()[output.position as usize].clone();
+            if let Some((_, existing)) = entries
+                .iter()
+                .find(|(existing_key, _)| existing_key == &key)
+            {
+                if existing != &value {
+                    continue 'row;
+                }
+                continue;
+            }
+            entries.push((key, value));
+        }
+        result.push(Value::map(entries));
+    }
+    result
 }
 
 fn collection_key_at(collection: &Value, index: &Value) -> Value {

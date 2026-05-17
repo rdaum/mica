@@ -14,8 +14,8 @@
 use crate::{
     AuthorityContext, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp, Effect,
     ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, QueryBinding, Register,
-    RuntimeBinaryOp, RuntimeError, SuspendKind, Task, TaskError, TaskLimits, TaskManager,
-    TaskManagerError, TaskOutcome,
+    RelationArg, RuntimeBinaryOp, RuntimeError, SuspendKind, Task, TaskError, TaskLimits,
+    TaskManager, TaskManagerError, TaskOutcome,
 };
 use mica_relation_kernel::{ConflictPolicy, RelationId, RelationKernel, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -1479,6 +1479,50 @@ fn program_artifact_round_trips_list_splices() {
         run_program(&kernel, restored, 100).unwrap(),
         TaskOutcome::Complete {
             value: Value::list([int(1), int(2), int(3), int(4)]),
+            effects: vec![],
+            mailbox_sends: Vec::new(),
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn program_artifact_round_trips_dynamic_relation_splices() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        3,
+        [
+            Instruction::BuildList {
+                dst: reg(0),
+                items: vec![item(v(ident(10))), item(v(ident(20)))],
+            },
+            Instruction::AssertDynamic {
+                relation: rel(2),
+                args: vec![RelationArg::Splice(r(0))],
+            },
+            Instruction::BuildList {
+                dst: reg(1),
+                items: vec![item(v(ident(10)))],
+            },
+            Instruction::ScanDynamic {
+                dst: reg(2),
+                relation: rel(2),
+                args: vec![
+                    RelationArg::Splice(r(1)),
+                    RelationArg::Query(Symbol::intern("room")),
+                ],
+            },
+            Instruction::Return { value: r(2) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: Value::list([Value::map([(sym("room"), ident(20))])]),
             effects: vec![],
             mailbox_sends: Vec::new(),
             retries: 0,

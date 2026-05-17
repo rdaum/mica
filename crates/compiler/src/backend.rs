@@ -18,13 +18,13 @@ use crate::{
     parse_semantic,
 };
 use mica_relation_kernel::{
-    Atom, DispatchRelations, RelationId, RelationKernel, Rule, RuleDefinition, Term, Transaction,
-    Tuple,
+    Atom, ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Rule,
+    RuleDefinition, Term, Transaction, Tuple,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use mica_vm::{
     CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramBuilder,
-    QueryBinding, Register, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
+    QueryBinding, Register, RelationArg, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -246,6 +246,7 @@ pub struct DotRelation {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompileContext {
     relations: HashMap<String, RelationId>,
+    relation_metadata: HashMap<RelationId, RelationMetadata>,
     dot_relations: HashMap<String, DotRelation>,
     identities: HashMap<String, Identity>,
     program_identities: HashMap<String, Identity>,
@@ -260,6 +261,11 @@ impl CompileContext {
 
     pub fn with_relation(mut self, name: impl Into<String>, id: RelationId) -> Self {
         self.define_relation(name, id);
+        self
+    }
+
+    pub fn with_relation_metadata(mut self, metadata: RelationMetadata) -> Self {
+        self.define_relation_metadata(metadata);
         self
     }
 
@@ -292,6 +298,13 @@ impl CompileContext {
         self.relations.insert(name.into(), id);
     }
 
+    pub fn define_relation_metadata(&mut self, metadata: RelationMetadata) {
+        if let Some(name) = metadata.name().name() {
+            self.define_relation(name, metadata.id());
+        }
+        self.relation_metadata.insert(metadata.id(), metadata);
+    }
+
     pub fn define_dot_relation(&mut self, name: impl Into<String>, relation: RelationId) {
         self.dot_relations
             .insert(name.into(), DotRelation { relation });
@@ -311,6 +324,10 @@ impl CompileContext {
 
     pub fn relation(&self, name: &str) -> Option<RelationId> {
         self.relations.get(name).copied()
+    }
+
+    pub fn relation_metadata(&self, relation: RelationId) -> Option<&RelationMetadata> {
+        self.relation_metadata.get(&relation)
     }
 
     pub fn dot_relation(&self, name: &str) -> Option<DotRelation> {
@@ -1500,6 +1517,7 @@ impl<'a> ProgramCompiler<'a> {
             return Ok(dst);
         }
         if let Some(dot) = self.context.dot_relation(name) {
+            self.ensure_dot_relation_metadata(id, name, dot.relation)?;
             let key = self.compile_expr_for_operand(base)?;
             let dst = self.alloc_register();
             self.emit(Instruction::ScanValue {
@@ -1509,7 +1527,7 @@ impl<'a> ProgramCompiler<'a> {
             });
             return Ok(dst);
         }
-        let Some(relation) = self.conventional_dot_relation(name) else {
+        let Some(relation) = self.conventional_dot_relation(id, name)? else {
             return Err(self.unsupported(id, format!("dot name `{name}` is not declared")));
         };
         let key = self.compile_expr_for_operand(base)?;
@@ -1535,14 +1553,16 @@ impl<'a> ProgramCompiler<'a> {
         name: &str,
         value: Register,
     ) -> Result<Register, CompileError> {
-        let dot = self
-            .context
-            .dot_relation(name)
-            .or_else(|| {
-                self.conventional_dot_relation(name)
-                    .map(|relation| DotRelation { relation })
-            })
-            .ok_or_else(|| self.unsupported(id, format!("dot name `{name}` is not declared")))?;
+        let dot = match self.context.dot_relation(name) {
+            Some(dot) => dot,
+            None => {
+                let Some(relation) = self.conventional_dot_relation(id, name)? else {
+                    return Err(self.unsupported(id, format!("dot name `{name}` is not declared")));
+                };
+                DotRelation { relation }
+            }
+        };
+        self.ensure_dot_relation_metadata(id, name, dot.relation)?;
         let key = self.compile_expr_for_operand(base)?;
         self.emit(Instruction::ReplaceFunctional {
             relation: dot.relation,
@@ -1551,8 +1571,54 @@ impl<'a> ProgramCompiler<'a> {
         Ok(value)
     }
 
-    fn conventional_dot_relation(&self, name: &str) -> Option<RelationId> {
-        self.context.relation(&relation_name_for_dot(name))
+    fn conventional_dot_relation(
+        &self,
+        id: NodeId,
+        name: &str,
+    ) -> Result<Option<RelationId>, CompileError> {
+        let Some(relation) = self.context.relation(&relation_name_for_dot(name)) else {
+            return Ok(None);
+        };
+        self.ensure_dot_relation_metadata(id, name, relation)?;
+        Ok(Some(relation))
+    }
+
+    fn ensure_dot_relation_metadata(
+        &self,
+        id: NodeId,
+        dot_name: &str,
+        relation: RelationId,
+    ) -> Result<(), CompileError> {
+        let Some(metadata) = self.context.relation_metadata(relation) else {
+            return Err(self.unsupported(
+                id,
+                format!("dot name `{dot_name}` has no relation metadata"),
+            ));
+        };
+        let relation_name = metadata.name().name().unwrap_or("<unnamed relation>");
+        if metadata.arity() != 2 {
+            return Err(self.unsupported(
+                id,
+                format!(
+                    "dot name `{dot_name}` requires a binary relation, but `{}` has arity {}",
+                    relation_name,
+                    metadata.arity()
+                ),
+            ));
+        }
+        if !matches!(
+            metadata.conflict_policy(),
+            ConflictPolicy::Functional { key_positions } if key_positions.as_slice() == [0]
+        ) {
+            return Err(self.unsupported(
+                id,
+                format!(
+                    "dot name `{dot_name}` requires `{}` to be functional on position 0",
+                    relation_name
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn compile_function(
@@ -2676,10 +2742,16 @@ impl<'a> ProgramCompiler<'a> {
         atom: &HirRelationAtom,
     ) -> Result<Register, CompileError> {
         let relation = self.relation_id(atom)?;
-        self.ensure_no_arg_splices(
-            &atom.args,
-            "relation argument splices are not implemented yet",
-        )?;
+        if atom.args.iter().any(|arg| arg.splice) {
+            let dst = self.alloc_register();
+            let args = self.compile_relation_arg_items(&atom.args)?;
+            self.emit(Instruction::ScanDynamic {
+                dst,
+                relation,
+                args,
+            });
+            return Ok(dst);
+        }
         let outputs = query_outputs(&atom.args);
         if !outputs.is_empty() {
             return self.compile_relation_query(relation, atom, outputs);
@@ -2728,10 +2800,19 @@ impl<'a> ProgramCompiler<'a> {
         atom: &HirRelationAtom,
     ) -> Result<(), CompileError> {
         let relation = self.relation_id(atom)?;
-        self.ensure_no_arg_splices(
-            &atom.args,
-            "relation argument splices are not implemented yet",
-        )?;
+        if atom.args.iter().any(|arg| arg.splice) {
+            let args = self.compile_relation_arg_items(&atom.args)?;
+            match kind {
+                EffectKind::Assert => self.emit(Instruction::AssertDynamic { relation, args }),
+                EffectKind::Retract => self.emit(Instruction::RetractDynamic { relation, args }),
+                EffectKind::Require => {
+                    return Err(
+                        self.unsupported(atom.id, "require is not a fact change instruction")
+                    );
+                }
+            }
+            return Ok(());
+        }
         match kind {
             EffectKind::Assert => {
                 let values = atom
@@ -2774,6 +2855,24 @@ impl<'a> ProgramCompiler<'a> {
 
     fn compile_arg_operand(&mut self, arg: &HirArg) -> Result<Operand, CompileError> {
         Ok(Operand::Register(self.compile_expr_for_value(&arg.value)?))
+    }
+
+    fn compile_relation_arg_items(
+        &mut self,
+        args: &[HirArg],
+    ) -> Result<Vec<RelationArg>, CompileError> {
+        args.iter()
+            .map(|arg| {
+                if arg.splice {
+                    return self.compile_arg_operand(arg).map(RelationArg::Splice);
+                }
+                Ok(match &arg.value {
+                    HirExpr::QueryVar { name, .. } => RelationArg::Query(Symbol::intern(name)),
+                    HirExpr::Hole { .. } => RelationArg::Hole,
+                    _ => RelationArg::Value(self.compile_arg_operand(arg)?),
+                })
+            })
+            .collect()
     }
 
     fn ensure_no_arg_splices(&self, args: &[HirArg], message: &str) -> Result<(), CompileError> {
@@ -3612,16 +3711,13 @@ mod tests {
         let name = id(1);
         let lamp = id(10);
         let kernel = RelationKernel::new();
-        kernel
-            .create_relation(
-                RelationMetadata::new(name, Symbol::intern("Name"), 2).with_conflict_policy(
-                    ConflictPolicy::Functional {
-                        key_positions: vec![0],
-                    },
-                ),
-            )
-            .unwrap();
+        let name_metadata = RelationMetadata::new(name, Symbol::intern("Name"), 2)
+            .with_conflict_policy(ConflictPolicy::Functional {
+                key_positions: vec![0],
+            });
+        kernel.create_relation(name_metadata.clone()).unwrap();
         let context = CompileContext::new()
+            .with_relation_metadata(name_metadata)
             .with_dot_relation("name", name)
             .with_identity("lamp", lamp);
         let mut task_manager = TaskManager::new(kernel);
@@ -3664,6 +3760,79 @@ mod tests {
         assert!(matches!(
             error,
             CompileError::Unsupported { message, .. } if message == "dot name `color` is not declared"
+        ));
+    }
+
+    #[test]
+    fn compiled_task_expands_relation_argument_splices() {
+        let located_in = id(1);
+        let coin = id(10);
+        let room = id(11);
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(
+                located_in,
+                Symbol::intern("LocatedIn"),
+                2,
+            ))
+            .unwrap();
+        let context = CompileContext::new()
+            .with_relation("LocatedIn", located_in)
+            .with_identity("coin", coin)
+            .with_identity("room", room);
+        let mut task_manager = TaskManager::new(kernel);
+
+        let submitted = submit_source_task(
+            "let pair = [#coin, #room]\n\
+             assert LocatedIn(@pair)\n\
+             let prefix = [#coin]\n\
+             let place = one LocatedIn(@prefix, ?place)\n\
+             retract LocatedIn(@prefix, ?old_place)\n\
+             return place == #room && not LocatedIn(@pair)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::bool(true),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn dot_relations_require_binary_functional_metadata() {
+        let tag = id(1);
+        let name = id(2);
+        let lamp = id(10);
+        let context = CompileContext::new()
+            .with_relation_metadata(RelationMetadata::new(tag, Symbol::intern("Tag"), 2))
+            .with_relation_metadata(
+                RelationMetadata::new(name, Symbol::intern("Name"), 2).with_conflict_policy(
+                    ConflictPolicy::Functional {
+                        key_positions: vec![1],
+                    },
+                ),
+            )
+            .with_identity("lamp", lamp);
+
+        let error = compile_source("return #lamp.tag", &context).unwrap_err();
+        assert!(matches!(
+            error,
+            CompileError::Unsupported { message, .. }
+                if message == "dot name `tag` requires `Tag` to be functional on position 0"
+        ));
+
+        let error = compile_source("return #lamp.name", &context).unwrap_err();
+        assert!(matches!(
+            error,
+            CompileError::Unsupported { message, .. }
+                if message == "dot name `name` requires `Name` to be functional on position 0"
         ));
     }
 
@@ -4627,18 +4796,15 @@ mod tests {
         let coin = id(301);
         let kernel = RelationKernel::new();
         create_method_relations(&kernel);
-        kernel
-            .create_relation(
-                RelationMetadata::new(name, Symbol::intern("Name"), 2).with_conflict_policy(
-                    ConflictPolicy::Functional {
-                        key_positions: vec![0],
-                    },
-                ),
-            )
-            .unwrap();
+        let name_metadata = RelationMetadata::new(name, Symbol::intern("Name"), 2)
+            .with_conflict_policy(ConflictPolicy::Functional {
+                key_positions: vec![0],
+            });
+        kernel.create_relation(name_metadata.clone()).unwrap();
 
         let method_relations = dispatch_relations();
         let install_context = CompileContext::new()
+            .with_relation_metadata(name_metadata)
             .with_dot_relation("name", name)
             .with_method_relations(method_relations)
             .with_identity("rename_thing", rename_method)

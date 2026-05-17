@@ -22,8 +22,8 @@ pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem,
     MailboxRecvRequest, MailboxSend, Operand, Program, ProgramResolver, QueryBinding, Register,
-    RegisterVm, RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT,
-    SpawnRequest, SuspendKind, VmHostContext, VmHostResponse, VmState,
+    RegisterVm, RelationArg, RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp,
+    SYSTEM_ENDPOINT, SpawnRequest, SuspendKind, VmHostContext, VmHostResponse, VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{
@@ -1373,9 +1373,7 @@ fn compile_context_from_catalog(kernel: &RelationKernel) -> CompileContext {
         context.define_runtime_function(*name);
     }
     for metadata in snapshot.relation_metadata() {
-        if let Some(name) = metadata.name().name() {
-            context.define_relation(name, metadata.id());
-        }
+        context.define_relation_metadata(metadata.clone());
     }
     for tuple in snapshot
         .scan(named_identity_relation(), &[None, None])
@@ -4040,8 +4038,8 @@ fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthorityContext, Emission, Instruction, Operand, Program, SYSTEM_ENDPOINT, SpawnRequest,
-        SuspendKind, TaskOutcome,
+        AuthorityContext, CompileError, Emission, Instruction, Operand, Program, SYSTEM_ENDPOINT,
+        SourceTaskError, SpawnRequest, SuspendKind, TaskOutcome,
     };
     use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
     use mica_var::{Identity, Symbol, Value};
@@ -5868,11 +5866,13 @@ mod tests {
     }
 
     #[test]
-    fn runner_one_and_dot_read_project_binary_relations() {
+    fn runner_one_and_dot_read_project_functional_relations() {
         let mut runner = SourceRunner::new_empty();
         runner.run_source("make_identity(:thing)").unwrap();
         runner.run_source("make_identity(:room)").unwrap();
-        runner.run_source("make_relation(:Location, 2)").unwrap();
+        runner
+            .run_source("make_functional_relation(:Location, 2, [0])")
+            .unwrap();
         runner.run_source("assert Location(#thing, #room)").unwrap();
 
         let one = runner
@@ -5882,6 +5882,21 @@ mod tests {
 
         assert_eq!(one.render(), "task 5 complete: #room (retries: 0)");
         assert_eq!(dot.render(), "task 6 complete: #room (retries: 0)");
+    }
+
+    #[test]
+    fn runner_rejects_dot_read_on_nonfunctional_relation() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:thing)").unwrap();
+        runner.run_source("make_relation(:Location, 2)").unwrap();
+
+        let error = runner.run_source("return #thing.location").unwrap_err();
+
+        assert!(matches!(
+            error,
+            SourceTaskError::Compile(CompileError::Unsupported { message, .. })
+                if message == "dot name `location` requires `Location` to be functional on position 0"
+        ));
     }
 
     #[test]
@@ -6324,7 +6339,7 @@ mod tests {
         runner
             .run_filein(
                 "make_identity(:bob)\n\
-                 make_relation(:Name, 2)\n\
+                 make_functional_relation(:Name, 2, [0])\n\
                  make_relation(:GrantRead, 2)\n\
                  assert Name(#bob, \"Bob\")\n\
                  assert GrantRead(#bob, :Name)\n",
