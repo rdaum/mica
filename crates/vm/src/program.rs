@@ -266,6 +266,11 @@ pub enum Instruction {
         callee: Operand,
         args: Vec<Operand>,
     },
+    CallValueDynamic {
+        dst: Register,
+        callee: Operand,
+        args: Vec<ListItem>,
+    },
     Call {
         dst: Register,
         program: Arc<Program>,
@@ -549,6 +554,11 @@ pub(crate) enum Opcode {
         max_arity: u16,
     },
     CallValue {
+        dst: Register,
+        callee: OperandRef,
+        args: TableRange,
+    },
+    CallValueDynamic {
         dst: Register,
         callee: OperandRef,
         args: TableRange,
@@ -1062,6 +1072,11 @@ impl Program {
                     .map(|operand| self.decode_operand(*operand))
                     .collect(),
             },
+            Opcode::CallValueDynamic { dst, callee, args } => Instruction::CallValueDynamic {
+                dst: *dst,
+                callee: self.decode_operand(*callee),
+                args: self.decode_list_items(*args),
+            },
             Opcode::Call { dst, program, args } => Instruction::Call {
                 dst: *dst,
                 program: Arc::clone(self.program(*program)),
@@ -1558,6 +1573,11 @@ impl ProgramBuilder {
                 dst,
                 callee: self.operand(callee)?,
                 args: self.operands(args)?,
+            },
+            Instruction::CallValueDynamic { dst, callee, args } => Opcode::CallValueDynamic {
+                dst,
+                callee: self.operand(callee)?,
+                args: self.list_items(args)?,
             },
             Instruction::Call { dst, program, args } => Opcode::Call {
                 dst,
@@ -2080,6 +2100,11 @@ fn validate_instruction(
             validate_operand(register_count, callee)?;
             validate_operands(register_count, args.iter())
         }
+        Instruction::CallValueDynamic { dst, callee, args } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, callee)?;
+            validate_operands(register_count, args.iter().map(ListItem::operand))
+        }
         Instruction::Call { dst, program, args } => {
             validate_register(register_count, *dst)?;
             validate_operands(register_count, args.iter())?;
@@ -2278,6 +2303,7 @@ const INST_BUILTIN_CALL_DYNAMIC: u8 = 46;
 const INST_SPAWN_POSITIONAL_DISPATCH: u8 = 47;
 const INST_LOAD_FUNCTION: u8 = 48;
 const INST_CALL_VALUE: u8 = 49;
+const INST_CALL_VALUE_DYNAMIC: u8 = 50;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2559,6 +2585,12 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *dst);
             write_operand(out, callee)?;
             write_operands(out, args)
+        }
+        Instruction::CallValueDynamic { dst, callee, args } => {
+            out.push(INST_CALL_VALUE_DYNAMIC);
+            write_register(out, *dst);
+            write_operand(out, callee)?;
+            write_list_items(out, args)
         }
         Instruction::Commit => {
             out.push(INST_COMMIT);
@@ -3143,6 +3175,11 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 callee: self.read_operand()?,
                 args: self.read_operands()?,
+            },
+            INST_CALL_VALUE_DYNAMIC => Instruction::CallValueDynamic {
+                dst: self.read_register()?,
+                callee: self.read_operand()?,
+                args: self.read_list_items()?,
             },
             INST_BUILTIN_CALL => Instruction::BuiltinCall {
                 dst: self.read_register()?,

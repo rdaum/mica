@@ -9,7 +9,7 @@ the cross-check.
 
 2. Argument splices parse in every argument list, but backend only implements
    them for list literals, direct local function calls, registered runtime
-   builtin calls, and relation atoms. Function-value calls, dispatch, spawn,
+   builtin calls, function-value calls, and relation atoms. Dispatch, spawn,
    and task-control call paths still reject them.
 
 3. `spawn` parses any expression target, but backend only accepts role or

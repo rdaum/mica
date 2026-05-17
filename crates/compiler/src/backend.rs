@@ -1815,23 +1815,26 @@ impl<'a> ProgramCompiler<'a> {
                 self.unsupported(id, "function value calls only support positional arguments")
             );
         }
-        if args.iter().any(|arg| arg.splice) {
-            return Err(self.unsupported(
-                id,
-                "function value calls do not support argument splices yet",
-            ));
-        }
         let callee = self.compile_expr_for_value(callee)?;
-        let call_args = args
-            .iter()
-            .map(|arg| self.compile_arg_operand(arg))
-            .collect::<Result<Vec<_>, _>>()?;
         let dst = self.alloc_register();
-        self.emit(Instruction::CallValue {
-            dst,
-            callee: Operand::Register(callee),
-            args: call_args,
-        });
+        if args.iter().any(|arg| arg.splice) {
+            let call_args = self.compile_arg_items(args)?;
+            self.emit(Instruction::CallValueDynamic {
+                dst,
+                callee: Operand::Register(callee),
+                args: call_args,
+            });
+        } else {
+            let call_args = args
+                .iter()
+                .map(|arg| self.compile_arg_operand(arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.emit(Instruction::CallValue {
+                dst,
+                callee: Operand::Register(callee),
+                args: call_args,
+            });
+        }
         Ok(dst)
     }
 
@@ -4469,6 +4472,80 @@ mod tests {
                 retries: 0,
             }
         );
+    }
+
+    #[test]
+    fn compiled_task_expands_function_value_call_splices() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let sum = fn(a, b, c) => a + b + c\n\
+             let alias = sum\n\
+             let rest = [2, 3]\n\
+             return alias(1, @rest)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(6).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_expands_closure_call_splices() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let base = 10\n\
+             let sum = fn(a, b, c) => base + a + b + c\n\
+             let rest = [2, 3]\n\
+             return sum(1, @rest)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(16).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn function_value_call_splices_require_lists() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let error = submit_source_task(
+            "let id = fn(value) => value\n\
+             let alias = id\n\
+             return alias(@1)",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            mica_runtime::TaskManagerError::Task(mica_runtime::TaskError::Runtime(
+                RuntimeError::InvalidArgumentSplice(value)
+            )) if value == Value::int(1).unwrap()
+        ));
     }
 
     #[test]

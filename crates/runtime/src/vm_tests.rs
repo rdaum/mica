@@ -1399,6 +1399,67 @@ fn dynamic_builtin_call_expands_argument_splices() {
 }
 
 #[test]
+fn dynamic_function_value_call_expands_argument_splices() {
+    let kernel = kernel_with_world_relations();
+    let callee = Arc::new(
+        Program::new(
+            5,
+            [
+                Instruction::Binary {
+                    dst: reg(3),
+                    op: RuntimeBinaryOp::Add,
+                    left: reg(0),
+                    right: reg(1),
+                },
+                Instruction::Binary {
+                    dst: reg(4),
+                    op: RuntimeBinaryOp::Add,
+                    left: reg(3),
+                    right: reg(2),
+                },
+                Instruction::Return { value: r(4) },
+            ],
+        )
+        .unwrap(),
+    );
+    let program = Program::new(
+        3,
+        [
+            Instruction::BuildList {
+                dst: reg(0),
+                items: vec![item(v(int(2))), item(v(int(3)))],
+            },
+            Instruction::LoadFunction {
+                dst: reg(1),
+                program: Arc::clone(&callee),
+                captures: Vec::new(),
+                min_arity: 3,
+                max_arity: 3,
+            },
+            Instruction::CallValueDynamic {
+                dst: reg(2),
+                callee: r(1),
+                args: vec![item(v(int(1))), splice(r(0))],
+            },
+            Instruction::Return { value: r(2) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: int(6),
+            effects: Vec::new(),
+            mailbox_sends: Vec::new(),
+            retries: 0,
+        }
+    );
+}
+
+#[test]
 fn missing_builtin_call_is_runtime_error() {
     let kernel = kernel_with_world_relations();
     let program = Program::new(

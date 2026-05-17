@@ -1030,34 +1030,15 @@ impl RegisterVm {
                 Ok(VmHostResponse::Continue)
             }
             Opcode::CallValue { dst, callee, args } => {
-                if self.state.frames.len() >= max_call_depth {
-                    return Err(RuntimeError::MaxCallDepthExceeded {
-                        max_depth: max_call_depth,
-                    });
-                }
                 let callee = self.resolve_operand_ref(program, *callee);
-                let function = callee
-                    .as_function()
-                    .ok_or_else(|| RuntimeError::InvalidCallable(callee.clone()))?;
-                let callable = self.callable(function)?;
                 let user_args = self.resolve_operands(program, program.operands(*args));
-                if user_args.len() < callable.min_arity || user_args.len() > callable.max_arity {
-                    return Err(RuntimeError::InvalidCallArity {
-                        expected_min: callable.min_arity,
-                        expected_max: callable.max_arity,
-                        actual: user_args.len(),
-                    });
-                }
-                let register_count = self.program_unchecked(callable.program).register_count();
-                let mut args = callable.captures;
-                args.extend(user_args);
-                self.advance_ip_unchecked();
-                self.state.frames.push(Frame::new(
-                    callable.program,
-                    register_count,
-                    Some(*dst),
-                    args,
-                )?);
+                self.call_function_value(*dst, callee, user_args, max_call_depth)?;
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::CallValueDynamic { dst, callee, args } => {
+                let callee = self.resolve_operand_ref(program, *callee);
+                let user_args = self.resolve_list_items(program, program.list_items(*args))?;
+                self.call_function_value(*dst, callee, user_args, max_call_depth)?;
                 Ok(VmHostResponse::Continue)
             }
             Opcode::Call {
@@ -1526,6 +1507,42 @@ impl RegisterVm {
             .get(id.raw() as usize)
             .cloned()
             .ok_or(RuntimeError::InvalidFunction(id.raw()))
+    }
+
+    fn call_function_value(
+        &mut self,
+        dst: Register,
+        callee: Value,
+        user_args: Vec<Value>,
+        max_call_depth: usize,
+    ) -> Result<(), RuntimeError> {
+        if self.state.frames.len() >= max_call_depth {
+            return Err(RuntimeError::MaxCallDepthExceeded {
+                max_depth: max_call_depth,
+            });
+        }
+        let function = callee
+            .as_function()
+            .ok_or_else(|| RuntimeError::InvalidCallable(callee.clone()))?;
+        let callable = self.callable(function)?;
+        if user_args.len() < callable.min_arity || user_args.len() > callable.max_arity {
+            return Err(RuntimeError::InvalidCallArity {
+                expected_min: callable.min_arity,
+                expected_max: callable.max_arity,
+                actual: user_args.len(),
+            });
+        }
+        let register_count = self.program_unchecked(callable.program).register_count();
+        let mut args = callable.captures;
+        args.extend(user_args);
+        self.advance_ip_unchecked();
+        self.state.frames.push(Frame::new(
+            callable.program,
+            register_count,
+            Some(dst),
+            args,
+        )?);
+        Ok(())
     }
 
     fn resolve_program_id<H: VmHost>(
