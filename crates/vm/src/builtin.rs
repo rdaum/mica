@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{AuthorityContext, CapabilityGrant, Emission, RuntimeError};
+use crate::{AuthorityContext, CapabilityGrant, Emission, MailboxSend, RuntimeError};
 use mica_relation_kernel::{
     RelationId, RelationKernel, RelationMetadata, RelationWorkspace, Transaction, TransientStore,
     Tuple,
@@ -66,10 +66,24 @@ pub struct BuiltinContext<'ctx, 'kernel> {
     kernel: &'kernel RelationKernel,
     tx: &'ctx mut Transaction<'kernel>,
     authority: &'ctx mut AuthorityContext,
-    pending_effects: &'ctx mut Vec<Emission>,
+    ports: RuntimePorts<'ctx>,
     task_snapshot: &'ctx [Value],
     runtime_context: RuntimeContext,
     transient: Option<TransientAccess<'ctx>>,
+}
+
+pub struct RuntimePorts<'ctx> {
+    pub pending_effects: &'ctx mut Vec<Emission>,
+    pub pending_mailbox_sends: &'ctx mut Vec<MailboxSend>,
+    pub mailbox_runtime: Option<&'ctx dyn MailboxRuntime>,
+}
+
+pub trait MailboxRuntime {
+    fn create_mailbox(&self) -> Result<(Value, Value), RuntimeError>;
+
+    fn validate_mailbox_sender(&self, sender: &Value) -> Result<(), RuntimeError>;
+
+    fn validate_mailbox_receiver(&self, receiver: &Value) -> Result<(), RuntimeError>;
 }
 
 pub(crate) enum TransientAccess<'ctx> {
@@ -82,7 +96,7 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         kernel: &'kernel RelationKernel,
         tx: &'ctx mut Transaction<'kernel>,
         authority: &'ctx mut AuthorityContext,
-        pending_effects: &'ctx mut Vec<Emission>,
+        ports: RuntimePorts<'ctx>,
         task_snapshot: &'ctx [Value],
         runtime_context: RuntimeContext,
         transient: Option<TransientAccess<'ctx>>,
@@ -91,7 +105,7 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
             kernel,
             tx,
             authority,
-            pending_effects,
+            ports,
             task_snapshot,
             runtime_context,
             transient,
@@ -133,7 +147,33 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
                 target: Value::identity(target),
             });
         }
-        self.pending_effects.push(Emission::new(target, value));
+        self.ports
+            .pending_effects
+            .push(Emission::new(target, value));
+        Ok(())
+    }
+
+    pub fn create_mailbox(&mut self) -> Result<(Value, Value), RuntimeError> {
+        let Some(mailbox_runtime) = self.ports.mailbox_runtime.as_ref() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("mailbox"),
+                message: "mailbox runtime is not available".to_owned(),
+            });
+        };
+        mailbox_runtime.create_mailbox()
+    }
+
+    pub fn send_mailbox(&mut self, sender: Value, value: Value) -> Result<(), RuntimeError> {
+        let Some(mailbox_runtime) = self.ports.mailbox_runtime.as_ref() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("mailbox_send"),
+                message: "mailbox runtime is not available".to_owned(),
+            });
+        };
+        mailbox_runtime.validate_mailbox_sender(&sender)?;
+        self.ports
+            .pending_mailbox_sends
+            .push(MailboxSend { sender, value });
         Ok(())
     }
 

@@ -28,14 +28,14 @@ mod vm;
 pub use authority::{AuthorityContext, CapabilityGrant, CapabilityOp, CapabilityScope};
 pub use builtin::{
     Builtin, BuiltinContext, BuiltinRegistry, ClientBuiltin, ClientBuiltinContext,
-    ClientBuiltinRegistry, RuntimeContext, SYSTEM_ENDPOINT,
+    ClientBuiltinRegistry, MailboxRuntime, RuntimeContext, RuntimePorts, SYSTEM_ENDPOINT,
 };
 pub use effect::Emission;
 pub use error::RuntimeError;
 pub use program::{
-    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramBuilder,
-    ProgramResolver, QueryBinding, Register, RuntimeBinaryOp, RuntimeUnaryOp, SpawnRequest,
-    SuspendKind,
+    CatchHandler, ErrorField, Instruction, ListItem, MailboxRecvRequest, MailboxSend, Operand,
+    Program, ProgramBuilder, ProgramResolver, QueryBinding, Register, RuntimeBinaryOp,
+    RuntimeUnaryOp, SpawnRequest, SuspendKind,
 };
 pub use vm::{
     Frame, ProjectedVmHostContext, RegisterVm, VmHost, VmHostContext, VmHostResponse, VmState,

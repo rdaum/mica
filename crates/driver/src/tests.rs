@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{CompioTaskDriver, DriverEvent};
-use mica_runtime::TaskRequest;
+use mica_runtime::{RuntimeError, SourceTaskError, TaskError, TaskManagerError, TaskRequest};
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
 use std::time::Duration;
@@ -92,7 +92,7 @@ fn commit_yields_and_immediately_resumes_task() {
         }
     ));
 
-    std::thread::sleep(Duration::from_millis(5));
+    std::thread::sleep(Duration::from_millis(20));
 
     assert!(driver.drain_events().iter().any(|event| matches!(
         event,
@@ -177,6 +177,180 @@ fn endpoint_input_resumes_reading_task() {
     assert!(matches!(
         &outcomes[0],
         TaskOutcome::Complete { value, .. } if *value == Value::string("look")
+    ));
+}
+
+#[test]
+fn mailbox_recv_drains_messages_sent_before_wait() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "verb send_reply(reply)\n\
+               mailbox_send(reply, \"done\")\n\
+               return nothing\n\
+             end\n",
+        )
+        .unwrap();
+    let driver = CompioTaskDriver::spawn(runner).unwrap();
+    let submitted = driver
+        .submit_source(
+            endpoint(32),
+            root_source(
+                "let caps = mailbox()\n\
+                 let rx = caps[0]\n\
+                 let tx = caps[1]\n\
+                 let child = spawn :send_reply(reply: tx) after 0\n\
+                 return mailbox_recv([rx], 1)",
+            ),
+        )
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(_),
+            ..
+        }
+    ));
+
+    std::thread::sleep(Duration::from_millis(20));
+
+    assert!(driver.drain_events().iter().any(|event| matches!(
+        event,
+        DriverEvent::TaskCompleted { task_id, value }
+            if *task_id == submitted.task_id
+                && value.with_list(|groups| groups.len()) == Some(1)
+                && value.with_list(|groups| groups[0].with_list(|group| {
+                    group.len() == 2 && group[1] == Value::list([Value::string("done")])
+                })) == Some(Some(true))
+    )));
+}
+
+#[test]
+fn mailbox_recv_waits_until_sender_commits() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "verb delayed_send(reply)\n\
+               suspend(0.001)\n\
+               mailbox_send(reply, \"late\")\n\
+               return nothing\n\
+             end\n",
+        )
+        .unwrap();
+    let driver = CompioTaskDriver::spawn(runner).unwrap();
+    let submitted = driver
+        .submit_source(
+            endpoint(33),
+            root_source(
+                "let caps = mailbox()\n\
+                 let rx = caps[0]\n\
+                 let tx = caps[1]\n\
+                 let child = spawn :delayed_send(reply: tx) after 0\n\
+                 return mailbox_recv([rx], 1)",
+            ),
+        )
+        .unwrap();
+
+    assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+
+    std::thread::sleep(Duration::from_millis(30));
+
+    assert!(driver.drain_events().iter().any(|event| matches!(
+        event,
+        DriverEvent::TaskCompleted { task_id, value }
+            if *task_id == submitted.task_id
+                && value.with_list(|groups| groups.len()) == Some(1)
+                && value.with_list(|groups| groups[0].with_list(|group| {
+                    group.len() == 2 && group[1] == Value::list([Value::string("late")])
+                })) == Some(Some(true))
+    )));
+}
+
+#[test]
+fn mailbox_recv_zero_timeout_returns_empty_list() {
+    let driver = CompioTaskDriver::spawn_empty().unwrap();
+    let submitted = driver
+        .submit_source(
+            endpoint(34),
+            root_source(
+                "let caps = mailbox()\n\
+                 return mailbox_recv([caps[0]], 0)",
+            ),
+        )
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::MailboxRecv(_),
+            ..
+        }
+    ));
+
+    std::thread::sleep(Duration::from_millis(5));
+
+    assert!(driver.drain_events().iter().any(|event| matches!(
+        event,
+        DriverEvent::TaskCompleted { task_id, value }
+            if *task_id == submitted.task_id && *value == Value::list([])
+    )));
+}
+
+#[test]
+fn mailbox_recv_reports_which_mailbox_is_ready() {
+    let driver = CompioTaskDriver::spawn_empty().unwrap();
+    let submitted = driver
+        .submit_source(
+            endpoint(36),
+            root_source(
+                "let first = mailbox()\n\
+                 let second = mailbox()\n\
+                 mailbox_send(second[1], \"second\")\n\
+                 let ready = mailbox_recv([first[0], second[0]], 0)\n\
+                 return ready[0][0] == second[0] && ready[0][1][0] == \"second\"",
+            ),
+        )
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::MailboxRecv(_),
+            ..
+        }
+    ));
+
+    std::thread::sleep(Duration::from_millis(5));
+
+    assert!(driver.drain_events().iter().any(|event| matches!(
+        event,
+        DriverEvent::TaskCompleted { task_id, value }
+            if *task_id == submitted.task_id && *value == Value::bool(true)
+    )));
+}
+
+#[test]
+fn mailbox_caps_are_directional() {
+    let driver = CompioTaskDriver::spawn_empty().unwrap();
+    let error = driver
+        .submit_source(
+            endpoint(35),
+            root_source(
+                "let caps = mailbox()\n\
+                 return mailbox_recv([caps[1]], 0)",
+            ),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error.source(),
+        Some(SourceTaskError::TaskManager(TaskManagerError::Task(
+            TaskError::Runtime(RuntimeError::InvalidMailboxCapability {
+                operation: "recv",
+                ..
+            })
+        )))
     ));
 }
 

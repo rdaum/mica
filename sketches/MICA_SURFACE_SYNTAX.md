@@ -638,6 +638,40 @@ The child inherits the parent principal, actor, and endpoint. Actor-bound child
 tasks rebuild authority from current policy at the task boundary; actor-less
 system tasks keep the parent authority rather than acquiring new authority.
 
+`mailbox()` creates a fresh ephemeral mailbox and returns its two capabilities:
+
+```mica
+let [rx, tx] = mailbox()
+```
+
+`rx` is the receive capability. `tx` is the send capability. The mailbox has no
+ordinary global name, and normal code cannot look it up later by relation query
+or task id. Possessing the send cap authorizes sending:
+
+```mica
+mailbox_send(tx, "ready")
+```
+
+Possessing a receive cap authorizes receiving. `mailbox_recv` takes a receive
+set, not a single mailbox, so a task can wait on several coordination points:
+
+```mica
+let ready = mailbox_recv([rx])
+let maybe_ready = mailbox_recv([rx1, rx2], 0)
+```
+
+The result is a list of ready groups. Each group is `[rx, messages]`, where
+`rx` is the receive cap that became ready and `messages` is the drained message
+list for that mailbox.
+
+`mailbox_send` buffers delivery in the sender's current transaction. Messages
+become visible only when the sender reaches a commit boundary; they are
+discarded if that attempt aborts or retries. `mailbox_recv` is itself a
+commit/suspend boundary. With no timeout it waits until at least one mailbox in
+the receive set is ready. With timeout `0`, it polls and resumes immediately
+with all currently available groups or an empty list. With a positive timeout,
+it waits up to that duration.
+
 ## 15. Filein/Fileout Envelope
 
 The current filein path runs the same compiler as the REPL. A filein is a

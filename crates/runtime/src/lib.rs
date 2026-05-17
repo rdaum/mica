@@ -20,10 +20,10 @@ mod vm_tests;
 pub use mica_relation_kernel::Tuple;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
-    CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem, Operand,
-    Program, ProgramResolver, QueryBinding, Register, RegisterVm, RuntimeBinaryOp, RuntimeContext,
-    RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SuspendKind, VmHostContext,
-    VmHostResponse, VmState,
+    CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem,
+    MailboxRecvRequest, MailboxSend, Operand, Program, ProgramResolver, QueryBinding, Register,
+    RegisterVm, RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT,
+    SpawnRequest, SuspendKind, VmHostContext, VmHostResponse, VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{
@@ -70,6 +70,9 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "suspend",
     "read",
     "invoke",
+    "mailbox",
+    "mailbox_send",
+    "mailbox_recv",
     "make_relation",
     "make_functional_relation",
     "make_identity",
@@ -460,6 +463,18 @@ impl SourceRunner {
 
     pub fn drain_emissions(&mut self) -> Vec<Effect> {
         self.task_manager.drain_emissions()
+    }
+
+    pub fn drain_mailbox(&self, receiver: Value) -> Result<Vec<Value>, RuntimeError> {
+        self.task_manager.drain_mailbox(receiver)
+    }
+
+    pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
+        self.task_manager.mailbox_for_receiver(receiver)
+    }
+
+    pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
+        self.task_manager.mailbox_for_sender(sender)
     }
 
     pub fn open_endpoint(
@@ -1219,6 +1234,18 @@ impl SharedSourceRunner {
 
     pub fn drain_emissions(&self) -> Vec<Effect> {
         self.task_manager.drain_emissions()
+    }
+
+    pub fn drain_mailbox(&self, receiver: Value) -> Result<Vec<Value>, RuntimeError> {
+        self.task_manager.drain_mailbox(receiver)
+    }
+
+    pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
+        self.task_manager.mailbox_for_receiver(receiver)
+    }
+
+    pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
+        self.task_manager.mailbox_for_sender(sender)
     }
 
     pub fn drain_routed_emissions(&self) -> Vec<Effect> {
@@ -2010,6 +2037,8 @@ fn endpoint_metadata(relation: Identity) -> Option<RelationMetadata> {
 fn default_builtins() -> BuiltinRegistry {
     BuiltinRegistry::new()
         .with_builtin("emit", emit_builtin)
+        .with_builtin("mailbox", mailbox_builtin)
+        .with_builtin("mailbox_send", mailbox_send_builtin)
         .with_builtin("make_relation", MakeRelationBuiltin::new())
         .with_builtin(
             "make_functional_relation",
@@ -2066,6 +2095,33 @@ fn emit_builtin(
         .ok_or(RuntimeError::InvalidEffectTarget(target_value))?;
     let value = args[1].clone();
     context.emit(target, value.clone())?;
+    Ok(value)
+}
+
+fn mailbox_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if !args.is_empty() {
+        return Err(invalid_builtin_call("mailbox", "expected mailbox()"));
+    }
+    let (receiver, sender) = context.create_mailbox()?;
+    Ok(Value::list([receiver, sender]))
+}
+
+fn mailbox_send_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "mailbox_send",
+            "expected mailbox_send(sender, value)",
+        ));
+    }
+    let sender = args[0].clone();
+    let value = args[1].clone();
+    context.send_mailbox(sender, value.clone())?;
     Ok(value)
 }
 
@@ -3561,6 +3617,7 @@ impl RunReport {
                 value,
                 effects,
                 retries,
+                ..
             } => render_finished(
                 "complete",
                 self.task_id,
@@ -3574,6 +3631,7 @@ impl RunReport {
                 error,
                 effects,
                 retries,
+                ..
             } => render_finished(
                 "aborted",
                 self.task_id,
@@ -3587,6 +3645,7 @@ impl RunReport {
                 kind,
                 effects,
                 retries,
+                ..
             } => {
                 let mut out = format!(
                     "task {} suspended: {:?} (retries: {})",
@@ -5907,6 +5966,23 @@ mod tests {
                 TaskOutcome::Complete { value: first, .. },
                 TaskOutcome::Complete { value: second, .. }
             ) if first == second
+        ));
+    }
+
+    #[test]
+    fn runner_mailbox_allocates_fresh_directional_caps() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source(
+                "let first = mailbox()\n\
+                 let second = mailbox()\n\
+                 return first[0] != first[1] && first[0] != second[0] && first[1] != second[1]",
+            )
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
         ));
     }
 

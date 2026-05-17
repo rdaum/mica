@@ -67,6 +67,10 @@ pub enum RuntimeError {
     InvalidRaisedValue(Value),
     InvalidErrorMessage(Value),
     InvalidEffectTarget(Value),
+    InvalidMailboxCapability {
+        operation: &'static str,
+        capability: Value,
+    },
     InvalidSuspendDuration(Value),
     InvalidSpawnSelector(Value),
     InvalidSpawnRole(Value),

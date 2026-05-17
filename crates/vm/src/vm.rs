@@ -11,12 +11,12 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::builtin::TransientAccess;
+use crate::builtin::{RuntimePorts, TransientAccess};
 use crate::program::{CompactListItem, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
-    Emission, ErrorField, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeContext,
-    RuntimeError, RuntimeUnaryOp, SpawnRequest, SuspendKind,
+    Emission, ErrorField, MailboxRecvRequest, Program, ProgramResolver, Register, RuntimeBinaryOp,
+    RuntimeContext, RuntimeError, RuntimeUnaryOp, SpawnRequest, SuspendKind,
 };
 use mica_relation_kernel::{
     ApplicableMethodCall, ComposedTransactionRead, DispatchRelations, RelationId, RelationRead,
@@ -144,6 +144,8 @@ pub trait VmHost: RelationWorkspace {
 
     fn emit(&mut self, target: Identity, value: Value) -> Result<(), RuntimeError>;
 
+    fn validate_mailbox_receiver(&mut self, receiver: &Value) -> Result<(), RuntimeError>;
+
     fn resolve_program(
         &mut self,
         program_bytes_relation: mica_relation_kernel::RelationId,
@@ -158,7 +160,7 @@ pub struct VmHostContext<'ctx, 'kernel> {
     authority: &'ctx mut AuthorityContext,
     resolver: &'ctx ProgramResolver,
     builtins: &'ctx BuiltinRegistry,
-    pending_effects: &'ctx mut Vec<Emission>,
+    ports: RuntimePorts<'ctx>,
     task_snapshot: &'ctx [Value],
     runtime_context: RuntimeContext,
     transient: Option<TransientAccess<'ctx>>,
@@ -171,7 +173,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
         authority: &'ctx mut AuthorityContext,
         resolver: &'ctx ProgramResolver,
         builtins: &'ctx BuiltinRegistry,
-        pending_effects: &'ctx mut Vec<Emission>,
+        ports: RuntimePorts<'ctx>,
         task_snapshot: &'ctx [Value],
         runtime_context: RuntimeContext,
     ) -> Self {
@@ -180,7 +182,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
             authority,
             resolver,
             builtins,
-            pending_effects,
+            ports,
             task_snapshot,
             runtime_context,
             transient: None,
@@ -353,8 +355,20 @@ impl VmHost for VmHostContext<'_, '_> {
                 target: Value::identity(target),
             });
         }
-        self.pending_effects.push(Emission::new(target, value));
+        self.ports
+            .pending_effects
+            .push(Emission::new(target, value));
         Ok(())
+    }
+
+    fn validate_mailbox_receiver(&mut self, receiver: &Value) -> Result<(), RuntimeError> {
+        let Some(mailbox_runtime) = self.ports.mailbox_runtime.as_ref() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("mailbox_recv"),
+                message: "mailbox runtime is not available".to_owned(),
+            });
+        };
+        mailbox_runtime.validate_mailbox_receiver(receiver)
     }
 
     fn resolve_program(
@@ -382,7 +396,11 @@ impl VmHost for VmHostContext<'_, '_> {
             self.tx.kernel(),
             self.tx,
             self.authority,
-            self.pending_effects,
+            RuntimePorts {
+                pending_effects: self.ports.pending_effects,
+                pending_mailbox_sends: self.ports.pending_mailbox_sends,
+                mailbox_runtime: self.ports.mailbox_runtime,
+            },
             self.task_snapshot,
             self.runtime_context,
             transient,
@@ -499,6 +517,13 @@ impl<W: RelationWorkspace> VmHost for ProjectedVmHostContext<'_, W> {
         }
         self.pending_effects.push(Emission::new(target, value));
         Ok(())
+    }
+
+    fn validate_mailbox_receiver(&mut self, receiver: &Value) -> Result<(), RuntimeError> {
+        Err(RuntimeError::InvalidMailboxCapability {
+            operation: "recv",
+            capability: receiver.clone(),
+        })
     }
 
     fn resolve_program(
@@ -1131,6 +1156,45 @@ impl RegisterVm {
                 self.state.pending_resume = Some(*dst);
                 Ok(VmHostResponse::Suspend(SuspendKind::WaitingForInput(
                     metadata,
+                )))
+            }
+            Opcode::MailboxRecv {
+                dst,
+                receivers,
+                timeout,
+            } => {
+                let receivers_value = self.resolve_operand_ref(program, *receivers);
+                let Some(receivers) = receivers_value.with_list(<[Value]>::to_vec) else {
+                    return Err(RuntimeError::InvalidBuiltinCall {
+                        name: Symbol::intern("mailbox_recv"),
+                        message: "mailbox_recv expects a list of receive caps".to_owned(),
+                    });
+                };
+                if receivers.is_empty() {
+                    return Err(RuntimeError::InvalidBuiltinCall {
+                        name: Symbol::intern("mailbox_recv"),
+                        message: "mailbox_recv expects at least one receive cap".to_owned(),
+                    });
+                }
+                for receiver in &receivers {
+                    host.validate_mailbox_receiver(receiver)?;
+                }
+                let timeout_millis = timeout
+                    .map(|timeout| {
+                        self.suspend_duration(self.resolve_operand_ref(program, timeout))
+                            .and_then(|kind| match kind {
+                                SuspendKind::TimedMillis(millis) => Ok(millis),
+                                _ => unreachable!(),
+                            })
+                    })
+                    .transpose()?;
+                self.advance_ip_unchecked();
+                self.state.pending_resume = Some(*dst);
+                Ok(VmHostResponse::Suspend(SuspendKind::MailboxRecv(
+                    MailboxRecvRequest {
+                        receivers,
+                        timeout_millis,
+                    },
                 )))
             }
             Opcode::RollbackRetry => {

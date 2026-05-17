@@ -15,11 +15,12 @@ use crate::{DispatcherConfig, DriverError, DriverEvent, TaskContext, configure_d
 use compio::dispatcher::Dispatcher;
 use compio::runtime::Runtime;
 use mica_runtime::{
-    RunReport, SharedSourceRunner, SourceRunner, SpawnRequest, SubmittedTask, SuspendKind, TaskId,
-    TaskInput, TaskOutcome, TaskRequest, Tuple,
+    MailboxRecvRequest, RunReport, RuntimeError, SharedSourceRunner, SourceRunner, SourceTaskError,
+    SpawnRequest, SubmittedTask, SuspendKind, TaskError, TaskId, TaskInput, TaskManagerError,
+    TaskOutcome, TaskRequest, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -43,8 +44,15 @@ struct PoolInner {
 struct PoolState {
     contexts: BTreeMap<TaskId, TaskContext>,
     input_waiters: BTreeMap<Identity, Vec<TaskId>>,
+    mailbox_waiters: BTreeMap<u64, VecDeque<MailboxWaiter>>,
     events: Vec<DriverEvent>,
     event_waker: Option<Waker>,
+}
+
+#[derive(Clone, Debug)]
+struct MailboxWaiter {
+    task_id: TaskId,
+    receivers: Vec<(u64, Value)>,
 }
 
 pub struct DriverEvents<'a> {
@@ -173,14 +181,14 @@ impl CompioTaskDriver {
     }
 
     pub fn resume(&self, task_id: TaskId, value: Value) -> Result<TaskOutcome, DriverError> {
-        let context = self
-            .inner
-            .state
-            .lock()
-            .unwrap()
-            .contexts
-            .remove(&task_id)
-            .ok_or(DriverError::MissingTaskContext(task_id))?;
+        let context = {
+            let mut state = self.inner.state.lock().unwrap();
+            state.remove_mailbox_waiter(task_id);
+            state
+                .contexts
+                .remove(&task_id)
+                .ok_or(DriverError::MissingTaskContext(task_id))?
+        };
         let runner = Arc::clone(&self.inner.runner);
         let request = TaskRequest {
             principal: context.principal,
@@ -329,8 +337,10 @@ impl CompioTaskDriver {
         context: TaskContext,
         outcome: TaskOutcome,
     ) -> Result<(), DriverError> {
+        let delivered_mailboxes = self.delivered_mailboxes(&outcome);
         let mut timer = None;
         let mut spawn = None;
+        let mut mailbox_recv = None;
         let event_waker;
         {
             let mut state = self.inner.state.lock().unwrap();
@@ -367,6 +377,9 @@ impl CompioTaskDriver {
                                 .or_default()
                                 .push(task_id);
                         }
+                        SuspendKind::MailboxRecv(request) => {
+                            mailbox_recv = Some(request.clone());
+                        }
                         SuspendKind::Spawn(request) => {
                             spawn = Some(request.clone());
                         }
@@ -381,8 +394,148 @@ impl CompioTaskDriver {
         if let Some(duration) = timer {
             self.spawn_timer_resume(task_id, duration);
         }
+        if let Some(request) = mailbox_recv {
+            self.handle_mailbox_recv(task_id, request)?;
+        }
+        self.wake_mailbox_waiters(delivered_mailboxes)?;
         if let Some(request) = spawn {
             self.spawn_child_and_resume(task_id, context, request)?;
+        }
+        Ok(())
+    }
+
+    fn delivered_mailboxes(&self, outcome: &TaskOutcome) -> Vec<u64> {
+        let mailbox_sends = match outcome {
+            TaskOutcome::Complete { mailbox_sends, .. }
+            | TaskOutcome::Suspended { mailbox_sends, .. }
+            | TaskOutcome::Aborted { mailbox_sends, .. } => mailbox_sends,
+        };
+        mailbox_sends
+            .iter()
+            .filter_map(|send| self.inner.runner.mailbox_for_sender(&send.sender).ok())
+            .fold(Vec::new(), |mut mailboxes, mailbox| {
+                if !mailboxes.contains(&mailbox) {
+                    mailboxes.push(mailbox);
+                }
+                mailboxes
+            })
+    }
+
+    fn handle_mailbox_recv(
+        &self,
+        task_id: TaskId,
+        request: MailboxRecvRequest,
+    ) -> Result<(), DriverError> {
+        let mut receivers = Vec::with_capacity(request.receivers.len());
+        for receiver in request.receivers {
+            let mailbox = self
+                .inner
+                .runner
+                .mailbox_for_receiver(&receiver)
+                .map_err(runtime_driver_error)?;
+            if receivers
+                .iter()
+                .any(|(existing_mailbox, _)| *existing_mailbox == mailbox)
+            {
+                continue;
+            }
+            receivers.push((mailbox, receiver));
+        }
+        let mut timeout = None;
+        let ready = {
+            let mut state = self.inner.state.lock().unwrap();
+            for (mailbox, _) in &receivers {
+                state
+                    .mailbox_waiters
+                    .entry(*mailbox)
+                    .or_default()
+                    .push_back(MailboxWaiter {
+                        task_id,
+                        receivers: receivers.clone(),
+                    });
+            }
+            let ready = self.drain_ready_mailbox_groups(&receivers)?;
+            let should_wait = ready.is_empty() && request.timeout_millis != Some(0);
+            if should_wait {
+                timeout = request
+                    .timeout_millis
+                    .map(|millis| Duration::from_millis(millis).max(Duration::from_millis(1)));
+                Vec::new()
+            } else {
+                state.remove_mailbox_waiter(task_id);
+                ready
+            }
+        };
+        if !ready.is_empty() || request.timeout_millis == Some(0) {
+            self.resume(task_id, Value::list(ready))?;
+            return Ok(());
+        }
+        if let Some(timeout) = timeout {
+            self.spawn_mailbox_timeout(task_id, timeout);
+        }
+        Ok(())
+    }
+
+    fn drain_ready_mailbox_groups(
+        &self,
+        receivers: &[(u64, Value)],
+    ) -> Result<Vec<Value>, DriverError> {
+        let mut ready = Vec::new();
+        for (_, receiver) in receivers {
+            let messages = self
+                .inner
+                .runner
+                .drain_mailbox(receiver.clone())
+                .map_err(runtime_driver_error)?;
+            if messages.is_empty() {
+                continue;
+            }
+            ready.push(Value::list([receiver.clone(), Value::list(messages)]));
+        }
+        Ok(ready)
+    }
+
+    fn spawn_mailbox_timeout(&self, task_id: TaskId, duration: Duration) {
+        let driver = self.clone();
+        thread::spawn(move || {
+            thread::sleep(duration);
+            let still_waiting = {
+                let state = driver.inner.state.lock().unwrap();
+                state
+                    .mailbox_waiters
+                    .values()
+                    .any(|waiters| waiters.iter().any(|waiter| waiter.task_id == task_id))
+            };
+            if !still_waiting {
+                return;
+            }
+            if let Err(error) = driver.resume(task_id, Value::list([])) {
+                driver.record_task_failure(task_id, error);
+            }
+        });
+    }
+
+    fn wake_mailbox_waiters(&self, mailboxes: Vec<u64>) -> Result<(), DriverError> {
+        for mailbox in mailboxes {
+            let waiter = {
+                let mut state = self.inner.state.lock().unwrap();
+                let waiter = state
+                    .mailbox_waiters
+                    .get_mut(&mailbox)
+                    .and_then(VecDeque::pop_front);
+                if let Some(waiter) = &waiter {
+                    state.remove_mailbox_waiter(waiter.task_id);
+                }
+                waiter
+            };
+            let Some(waiter) = waiter else {
+                continue;
+            };
+            let ready = self.drain_ready_mailbox_groups(&waiter.receivers)?;
+            if ready.is_empty() {
+                continue;
+            }
+            self.resume(waiter.task_id, Value::list(ready))?;
         }
         Ok(())
     }
@@ -458,4 +611,18 @@ impl PoolState {
                 .map(DriverEvent::Effect),
         );
     }
+
+    fn remove_mailbox_waiter(&mut self, task_id: TaskId) {
+        for waiters in self.mailbox_waiters.values_mut() {
+            waiters.retain(|waiter| waiter.task_id != task_id);
+        }
+        self.mailbox_waiters
+            .retain(|_, waiters| !waiters.is_empty());
+    }
+}
+
+fn runtime_driver_error(error: RuntimeError) -> DriverError {
+    DriverError::Source(SourceTaskError::TaskManager(TaskManagerError::Task(
+        TaskError::Runtime(error),
+    )))
 }

@@ -352,6 +352,7 @@ fn authority_context_filters_dispatch_applicability() {
         TaskOutcome::Complete {
             value: strv("ok"),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -419,6 +420,7 @@ fn task_runs_take_like_method_transactionally() {
         TaskOutcome::Complete {
             value: Value::bool(true),
             effects: vec![emitted(strv("Taken."))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -471,6 +473,7 @@ fn abort_rolls_back_current_transaction_and_pending_effects() {
         TaskOutcome::Aborted {
             error: sym("abort"),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -537,6 +540,7 @@ fn explicit_commit_boundary_survives_later_abort() {
         TaskOutcome::Aborted {
             error: sym("abort"),
             effects: vec![emitted(strv("Committed."))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -593,6 +597,7 @@ fn binary_divide_by_zero_raises_catchable_error() {
                 Some(Value::list([int(1), int(0)]))
             ),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -629,6 +634,7 @@ fn scan_bindings_returns_query_binding_maps() {
         TaskOutcome::Complete {
             value: Value::list([Value::map([(sym("room"), room)])]),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -658,6 +664,7 @@ fn one_extracts_single_query_binding_value() {
         TaskOutcome::Complete {
             value: room,
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -751,6 +758,7 @@ fn suspend_commits_then_resume_continues_in_new_transaction() {
         TaskOutcome::Suspended {
             kind: SuspendKind::TimedMillis(10),
             effects: vec![emitted(strv("phase 1"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -767,6 +775,7 @@ fn suspend_commits_then_resume_continues_in_new_transaction() {
         TaskOutcome::Complete {
             value: Value::bool(true),
             effects: vec![emitted(strv("phase 2"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -800,6 +809,7 @@ fn suspend_value_returns_supplied_resume_value() {
         TaskOutcome::Suspended {
             kind: SuspendKind::Never,
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -812,6 +822,7 @@ fn suspend_value_returns_supplied_resume_value() {
         TaskOutcome::Complete {
             value: strv("resumed"),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -844,6 +855,7 @@ fn commit_value_commits_and_resumes_with_nothing() {
         TaskOutcome::Suspended {
             kind: SuspendKind::Commit,
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -864,6 +876,7 @@ fn commit_value_commits_and_resumes_with_nothing() {
         TaskOutcome::Complete {
             value: Value::nothing(),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -897,6 +910,7 @@ fn read_commits_effects_and_returns_supplied_input() {
         TaskOutcome::Suspended {
             kind: SuspendKind::WaitingForInput(sym("line")),
             effects: vec![emitted(strv("prompt"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -909,6 +923,7 @@ fn read_commits_effects_and_returns_supplied_input() {
         TaskOutcome::Complete {
             value: strv("north"),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -975,6 +990,7 @@ fn task_retries_from_last_clean_state_on_commit_conflict() {
         TaskOutcome::Complete {
             value: Value::bool(true),
             effects: vec![emitted(strv("Taken."))],
+            mailbox_sends: Vec::new(),
             retries: 1,
         }
     );
@@ -1043,6 +1059,7 @@ fn task_manager_records_completed_task_and_delivers_effects() {
         TaskOutcome::Complete {
             value: Value::bool(true),
             effects: vec![emitted(strv("done"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1072,6 +1089,7 @@ fn task_manager_does_not_publish_read_only_task_completion() {
         TaskOutcome::Complete {
             value: int(1),
             effects: Vec::new(),
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1111,6 +1129,7 @@ fn task_manager_parks_and_resumes_suspended_task() {
         TaskOutcome::Suspended {
             kind: SuspendKind::TimedMillis(1),
             effects: vec![emitted(strv("before"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1136,6 +1155,7 @@ fn task_manager_parks_and_resumes_suspended_task() {
         TaskOutcome::Complete {
             value: Value::bool(true),
             effects: vec![emitted(strv("after"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1184,6 +1204,7 @@ fn task_manager_does_not_deliver_pending_effects_from_abort() {
         TaskOutcome::Aborted {
             error: sym("abort"),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1222,6 +1243,7 @@ fn task_manager_can_refresh_authority_when_resuming_suspended_task() {
         TaskOutcome::Suspended {
             kind: SuspendKind::TimedMillis(1),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1237,6 +1259,7 @@ fn task_manager_can_refresh_authority_when_resuming_suspended_task() {
         TaskOutcome::Complete {
             value: Value::bool(true),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1305,6 +1328,7 @@ fn direct_program_call_returns_into_caller_register() {
         TaskOutcome::Complete {
             value: int(42),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1334,6 +1358,7 @@ fn builtin_call_invokes_registered_host_function() {
         TaskOutcome::Complete {
             value: strv("hello"),
             effects: vec![emitted(strv("hello"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1400,6 +1425,7 @@ fn program_artifact_round_trips_range_slicing() {
         TaskOutcome::Complete {
             value: Value::list([int(2), int(3)]),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1454,6 +1480,7 @@ fn program_artifact_round_trips_list_splices() {
         TaskOutcome::Complete {
             value: Value::list([int(1), int(2), int(3), int(4)]),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1482,6 +1509,7 @@ fn program_artifact_round_trips_error_codes() {
         TaskOutcome::Complete {
             value: code,
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1514,6 +1542,7 @@ fn program_artifact_round_trips_rich_errors() {
         TaskOutcome::Complete {
             value: error,
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1569,6 +1598,7 @@ fn error_field_instruction_extracts_rich_error_parts() {
                 strv("lamp")
             ]),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1597,6 +1627,7 @@ fn raise_without_handler_aborts_with_rich_error() {
         TaskOutcome::Aborted {
             error: expected,
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1641,6 +1672,7 @@ fn try_catches_raised_error_by_code() {
         TaskOutcome::Complete {
             value: expected,
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1692,6 +1724,7 @@ fn raise_unwinds_across_activation_to_caller_handler() {
         TaskOutcome::Complete {
             value: expected,
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1725,6 +1758,7 @@ fn finally_runs_on_return() {
         TaskOutcome::Complete {
             value: int(7),
             effects: vec![emitted(strv("cleanup"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1771,6 +1805,7 @@ fn caught_exception_runs_finally_before_continuing() {
         TaskOutcome::Complete {
             value: Value::bool(true),
             effects: vec![emitted(strv("cleanup"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1865,6 +1900,7 @@ fn suspension_inside_callee_resumes_full_activation_stack() {
         TaskOutcome::Suspended {
             kind: SuspendKind::TimedMillis(1),
             effects: vec![emitted(strv("in callee"))],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1877,6 +1913,7 @@ fn suspension_inside_callee_resumes_full_activation_stack() {
         TaskOutcome::Complete {
             value: int(7),
             effects: vec![],
+            mailbox_sends: Vec::new(),
             retries: 0,
         }
     );
@@ -1959,6 +1996,7 @@ fn commit_conflict_retries_restore_call_stack() {
         TaskOutcome::Complete {
             value: Value::bool(true),
             effects: vec![emitted(strv("moved"))],
+            mailbox_sends: Vec::new(),
             retries: 1,
         }
     );

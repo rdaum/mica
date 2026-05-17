@@ -1741,6 +1741,7 @@ impl<'a> ProgramCompiler<'a> {
             "commit" => return self.compile_commit_call(id, args),
             "suspend" => return self.compile_suspend_call(id, args),
             "read" => return self.compile_read_call(id, args),
+            "mailbox_recv" => return self.compile_mailbox_recv_call(id, args),
             "invoke" => return self.compile_dynamic_invoke_call(id, args),
             _ => {}
         }
@@ -1876,6 +1877,35 @@ impl<'a> ProgramCompiler<'a> {
             .transpose()?;
         let dst = self.alloc_register();
         self.emit(Instruction::Read { dst, metadata });
+        Ok(dst)
+    }
+
+    fn compile_mailbox_recv_call(
+        &mut self,
+        id: NodeId,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(id, "mailbox_recv only supports positional arguments"));
+        }
+        self.ensure_no_arg_splices(args, "mailbox_recv does not accept argument splices")?;
+        if args.is_empty() || args.len() > 2 {
+            return Err(self.unsupported(
+                id,
+                "mailbox_recv expects a receive-cap list and optional timeout",
+            ));
+        }
+        let receivers = self.compile_arg_operand(&args[0])?;
+        let timeout = args
+            .get(1)
+            .map(|arg| self.compile_arg_operand(arg))
+            .transpose()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::MailboxRecv {
+            dst,
+            receivers,
+            timeout,
+        });
         Ok(dst)
     }
 
@@ -3089,6 +3119,7 @@ mod tests {
                     Some(Value::symbol(Symbol::intern("lamp"))),
                 ),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3115,6 +3146,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(true),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3145,6 +3177,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(7).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3181,6 +3214,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(11).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3206,6 +3240,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(true),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3244,6 +3279,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(true),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3308,6 +3344,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(true),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3392,6 +3429,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(20).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3417,6 +3455,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(15).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3441,6 +3480,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(10).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3464,6 +3504,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(10).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3487,6 +3528,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(true),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3511,6 +3553,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(99).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3536,6 +3579,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(5).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3562,6 +3606,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(60).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3598,6 +3643,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::string("brass lamp"),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3646,6 +3692,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(-1).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3703,6 +3750,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::string("hello"),
                 effects: vec![emitted(Value::string("hello"))],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3747,6 +3795,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(21).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3770,6 +3819,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(21).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3795,6 +3845,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(14).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3827,6 +3878,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(16).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3853,6 +3905,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(6).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3879,6 +3932,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(10).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3946,6 +4000,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(15).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -3980,6 +4035,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(8).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4006,6 +4062,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(6).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4032,6 +4089,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(10).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4060,6 +4118,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(20).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4092,6 +4151,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(8).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4204,6 +4264,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(true),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4292,6 +4353,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::identity(coin),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4357,6 +4419,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(3).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4421,6 +4484,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(9).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4481,6 +4545,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(13).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4544,6 +4609,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(2).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4634,6 +4700,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::string("bright coin"),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4708,6 +4775,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::int(42).unwrap(),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4816,6 +4884,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(true),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4940,6 +5009,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(true),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );
@@ -4967,6 +5037,7 @@ mod tests {
             TaskOutcome::Complete {
                 value: Value::bool(false),
                 effects: vec![],
+                mailbox_sends: Vec::new(),
                 retries: 0,
             }
         );

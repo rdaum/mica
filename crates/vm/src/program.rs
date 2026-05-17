@@ -87,11 +87,24 @@ pub struct SpawnRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MailboxRecvRequest {
+    pub receivers: Vec<Value>,
+    pub timeout_millis: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MailboxSend {
+    pub sender: Value,
+    pub value: Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SuspendKind {
     Commit,
     Never,
     TimedMillis(u64),
     WaitingForInput(Value),
+    MailboxRecv(MailboxRecvRequest),
     Spawn(SpawnRequest),
 }
 
@@ -268,6 +281,11 @@ pub enum Instruction {
     Read {
         dst: Register,
         metadata: Option<Operand>,
+    },
+    MailboxRecv {
+        dst: Register,
+        receivers: Operand,
+        timeout: Option<Operand>,
     },
     RollbackRetry,
     Return {
@@ -500,6 +518,11 @@ pub(crate) enum Opcode {
     Read {
         dst: Register,
         metadata: Option<OperandRef>,
+    },
+    MailboxRecv {
+        dst: Register,
+        receivers: OperandRef,
+        timeout: Option<OperandRef>,
     },
     RollbackRetry,
     Return {
@@ -987,6 +1010,15 @@ impl Program {
                 dst: *dst,
                 metadata: metadata.map(|operand| self.decode_operand(operand)),
             },
+            Opcode::MailboxRecv {
+                dst,
+                receivers,
+                timeout,
+            } => Instruction::MailboxRecv {
+                dst: *dst,
+                receivers: self.decode_operand(*receivers),
+                timeout: timeout.map(|operand| self.decode_operand(operand)),
+            },
             Opcode::RollbackRetry => Instruction::RollbackRetry,
             Opcode::Return { value } => Instruction::Return {
                 value: self.decode_operand(*value),
@@ -1396,6 +1428,15 @@ impl ProgramBuilder {
             Instruction::Read { dst, metadata } => Opcode::Read {
                 dst,
                 metadata: metadata.map(|operand| self.operand(operand)).transpose()?,
+            },
+            Instruction::MailboxRecv {
+                dst,
+                receivers,
+                timeout,
+            } => Opcode::MailboxRecv {
+                dst,
+                receivers: self.operand(receivers)?,
+                timeout: timeout.map(|operand| self.operand(operand)).transpose()?,
             },
             Instruction::RollbackRetry => Opcode::RollbackRetry,
             Instruction::Return { value } => Opcode::Return {
@@ -1847,6 +1888,15 @@ fn validate_instruction(
             validate_register(register_count, *dst)?;
             validate_operands(register_count, duration.iter())
         }
+        Instruction::MailboxRecv {
+            dst,
+            receivers,
+            timeout,
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, receivers)?;
+            validate_operands(register_count, timeout.iter())
+        }
         Instruction::CommitValue { dst } => validate_register(register_count, *dst),
     }
 }
@@ -1937,6 +1987,7 @@ const INST_COMMIT_VALUE: u8 = 38;
 const INST_POSITIONAL_DISPATCH: u8 = 39;
 const INST_DYNAMIC_DISPATCH: u8 = 40;
 const INST_SPAWN_DISPATCH: u8 = 41;
+const INST_MAILBOX_RECV: u8 = 42;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2190,6 +2241,7 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             SuspendKind::Never
             | SuspendKind::TimedMillis(_)
             | SuspendKind::WaitingForInput(_)
+            | SuspendKind::MailboxRecv(_)
             | SuspendKind::Spawn(_) => Err(artifact_error(
                 "only commit suspension is serializable in program artifacts",
             )),
@@ -2208,6 +2260,16 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_READ);
             write_register(out, *dst);
             write_optional_operand(out, metadata.as_ref())
+        }
+        Instruction::MailboxRecv {
+            dst,
+            receivers,
+            timeout,
+        } => {
+            out.push(INST_MAILBOX_RECV);
+            write_register(out, *dst);
+            write_operand(out, receivers)?;
+            write_optional_operand(out, timeout.as_ref())
         }
         Instruction::RollbackRetry => {
             out.push(INST_ROLLBACK_RETRY);
@@ -2747,6 +2809,11 @@ impl<'a> ByteReader<'a> {
             INST_READ => Instruction::Read {
                 dst: self.read_register()?,
                 metadata: self.read_optional_operand()?,
+            },
+            INST_MAILBOX_RECV => Instruction::MailboxRecv {
+                dst: self.read_register()?,
+                receivers: self.read_operand()?,
+                timeout: self.read_optional_operand()?,
             },
             INST_ROLLBACK_RETRY => Instruction::RollbackRetry,
             INST_RETURN => Instruction::Return {

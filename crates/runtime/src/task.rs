@@ -11,11 +11,13 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::task_manager::MailboxRuntimeHandle;
 use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction, TransientStore};
 use mica_var::{Identity, Value};
 use mica_vm::{
-    AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RegisterVm,
-    RuntimeContext, RuntimeError, SuspendKind, VmHostContext, VmHostResponse, VmState,
+    AuthorityContext, BuiltinRegistry, Emission, MailboxRuntime, MailboxSend, Program,
+    ProgramResolver, RegisterVm, RuntimeContext, RuntimeError, RuntimePorts, SuspendKind,
+    VmHostContext, VmHostResponse, VmState,
 };
 use std::sync::{Arc, RwLock};
 
@@ -43,16 +45,19 @@ pub enum TaskOutcome {
     Complete {
         value: Value,
         effects: Vec<Emission>,
+        mailbox_sends: Vec<MailboxSend>,
         retries: u8,
     },
     Suspended {
         kind: SuspendKind,
         effects: Vec<Emission>,
+        mailbox_sends: Vec<MailboxSend>,
         retries: u8,
     },
     Aborted {
         error: Value,
         effects: Vec<Emission>,
+        mailbox_sends: Vec<MailboxSend>,
         retries: u8,
     },
 }
@@ -89,6 +94,9 @@ pub struct Task<'a> {
     retry_state: VmState,
     pending_effects: Vec<Emission>,
     committed_effects: Vec<Emission>,
+    pending_mailbox_sends: Vec<MailboxSend>,
+    committed_mailbox_sends: Vec<MailboxSend>,
+    mailbox_runtime: Option<MailboxRuntimeHandle>,
     task_snapshot: Vec<Value>,
     runtime_context: RuntimeContext,
     retries: u8,
@@ -155,6 +163,9 @@ impl<'a> Task<'a> {
             retry_state,
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
+            pending_mailbox_sends: Vec::new(),
+            committed_mailbox_sends: Vec::new(),
+            mailbox_runtime: None,
             task_snapshot: Vec::new(),
             runtime_context: RuntimeContext::default(),
             retries: 0,
@@ -182,6 +193,9 @@ impl<'a> Task<'a> {
             retry_state: state.retry_state,
             pending_effects: Vec::new(),
             committed_effects: Vec::new(),
+            pending_mailbox_sends: Vec::new(),
+            committed_mailbox_sends: Vec::new(),
+            mailbox_runtime: None,
             task_snapshot: Vec::new(),
             runtime_context: RuntimeContext::default(),
             retries: state.retries,
@@ -199,6 +213,10 @@ impl<'a> Task<'a> {
 
     pub(crate) fn set_runtime_context(&mut self, runtime_context: RuntimeContext) {
         self.runtime_context = runtime_context;
+    }
+
+    pub(crate) fn set_mailbox_runtime(&mut self, mailbox_runtime: MailboxRuntimeHandle) {
+        self.mailbox_runtime = Some(mailbox_runtime);
     }
 
     pub fn retries(&self) -> u8 {
@@ -241,12 +259,19 @@ impl<'a> Task<'a> {
         loop {
             let response = {
                 let tx = self.tx.as_mut().ok_or(TaskError::MissingTransaction)?;
+                let mailbox_runtime = self.mailbox_runtime.clone();
                 let mut host = VmHostContext::new(
                     tx,
                     &mut self.authority,
                     &self.resolver,
                     &self.builtins,
-                    &mut self.pending_effects,
+                    RuntimePorts {
+                        pending_effects: &mut self.pending_effects,
+                        pending_mailbox_sends: &mut self.pending_mailbox_sends,
+                        mailbox_runtime: mailbox_runtime
+                            .as_ref()
+                            .map(|runtime| runtime as &dyn MailboxRuntime),
+                    },
                     &self.task_snapshot,
                     self.runtime_context,
                 );
@@ -274,12 +299,19 @@ impl<'a> Task<'a> {
         loop {
             let response = {
                 let tx = self.tx.as_mut().ok_or(TaskError::MissingTransaction)?;
+                let mailbox_runtime = self.mailbox_runtime.clone();
                 let mut host = VmHostContext::new(
                     tx,
                     &mut self.authority,
                     &self.resolver,
                     &self.builtins,
-                    &mut self.pending_effects,
+                    RuntimePorts {
+                        pending_effects: &mut self.pending_effects,
+                        pending_mailbox_sends: &mut self.pending_mailbox_sends,
+                        mailbox_runtime: mailbox_runtime
+                            .as_ref()
+                            .map(|runtime| runtime as &dyn MailboxRuntime),
+                    },
                     &self.task_snapshot,
                     self.runtime_context,
                 )
@@ -314,6 +346,7 @@ impl<'a> Task<'a> {
                 Ok(Some(TaskOutcome::Suspended {
                     kind,
                     effects: self.take_committed_effects(),
+                    mailbox_sends: self.take_committed_mailbox_sends(),
                     retries: self.retries,
                 }))
             }
@@ -324,6 +357,7 @@ impl<'a> Task<'a> {
                 Ok(Some(TaskOutcome::Suspended {
                     kind: SuspendKind::Spawn(request),
                     effects: self.take_committed_effects(),
+                    mailbox_sends: self.take_committed_mailbox_sends(),
                     retries: self.retries,
                 }))
             }
@@ -334,15 +368,18 @@ impl<'a> Task<'a> {
                 Ok(Some(TaskOutcome::Complete {
                     value,
                     effects: self.take_committed_effects(),
+                    mailbox_sends: self.take_committed_mailbox_sends(),
                     retries: self.retries,
                 }))
             }
             VmHostResponse::Abort(error) => {
                 self.pending_effects.clear();
+                self.pending_mailbox_sends.clear();
                 self.tx = Some(self.kernel.begin());
                 Ok(Some(TaskOutcome::Aborted {
                     error,
                     effects: self.take_committed_effects(),
+                    mailbox_sends: self.take_committed_mailbox_sends(),
                     retries: self.retries,
                 }))
             }
@@ -357,6 +394,8 @@ impl<'a> Task<'a> {
         let tx = self.tx.take().ok_or(TaskError::MissingTransaction)?;
         if tx.is_read_only() {
             self.committed_effects.append(&mut self.pending_effects);
+            self.committed_mailbox_sends
+                .append(&mut self.pending_mailbox_sends);
             self.retry_state = self.vm.snapshot_state();
             self.tx = Some(self.kernel.begin());
             return Ok(BoundaryResult::Committed);
@@ -364,6 +403,8 @@ impl<'a> Task<'a> {
         match tx.commit() {
             Ok(_) => {
                 self.committed_effects.append(&mut self.pending_effects);
+                self.committed_mailbox_sends
+                    .append(&mut self.pending_mailbox_sends);
                 self.retry_state = self.vm.snapshot_state();
                 self.tx = Some(self.kernel.begin());
                 Ok(BoundaryResult::Committed)
@@ -387,6 +428,7 @@ impl<'a> Task<'a> {
             });
         }
         self.pending_effects.clear();
+        self.pending_mailbox_sends.clear();
         self.vm.restore_state(&self.retry_state);
         self.tx = Some(self.kernel.begin());
         self.retries += 1;
@@ -395,6 +437,10 @@ impl<'a> Task<'a> {
 
     fn take_committed_effects(&mut self) -> Vec<Emission> {
         std::mem::take(&mut self.committed_effects)
+    }
+
+    fn take_committed_mailbox_sends(&mut self) -> Vec<MailboxSend> {
+        std::mem::take(&mut self.committed_mailbox_sends)
     }
 }
 

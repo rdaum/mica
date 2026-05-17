@@ -19,12 +19,12 @@ use crate::{
 use mica_relation_kernel::{
     KernelError, RelationId, RelationKernel, RelationMetadata, TransientStore, Tuple,
 };
-use mica_var::{Identity, Symbol, Value};
+use mica_var::{CapabilityId, Identity, Symbol, Value};
 use mica_vm::{
-    AuthorityContext, BuiltinRegistry, Emission, Program, ProgramResolver, RuntimeContext,
-    SuspendKind,
+    AuthorityContext, BuiltinRegistry, Emission, MailboxRuntime, MailboxSend, Program,
+    ProgramResolver, RuntimeContext, RuntimeError, SuspendKind,
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -33,6 +33,172 @@ pub enum TaskManagerError {
     UnknownTask(TaskId),
     TaskAlreadyCompleted(TaskId),
     Task(TaskError),
+}
+
+const MAILBOX_CAP_BASE: u64 = 0x00f0_0000_0000_0000;
+
+#[derive(Clone, Debug)]
+pub struct MailboxRuntimeHandle {
+    store: Arc<Mutex<MailboxStore>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MailboxCapKind {
+    Receiver,
+    Sender,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MailboxCap {
+    mailbox: u64,
+    kind: MailboxCapKind,
+}
+
+#[derive(Debug)]
+struct MailboxStore {
+    next_mailbox_id: u64,
+    next_cap_id: u64,
+    caps: HashMap<CapabilityId, MailboxCap>,
+    queues: HashMap<u64, VecDeque<Value>>,
+}
+
+impl MailboxRuntimeHandle {
+    fn new() -> Self {
+        Self {
+            store: Arc::new(Mutex::new(MailboxStore::new())),
+        }
+    }
+
+    pub fn drain_receiver(&self, receiver: Value) -> Result<Vec<Value>, RuntimeError> {
+        self.store.lock().unwrap().drain_receiver(receiver)
+    }
+
+    pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
+        self.store.lock().unwrap().mailbox_for_receiver(receiver)
+    }
+
+    pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
+        self.store.lock().unwrap().mailbox_for_sender(sender)
+    }
+
+    fn deliver(&self, sends: &[MailboxSend]) -> Vec<u64> {
+        self.store.lock().unwrap().deliver(sends)
+    }
+}
+
+impl MailboxRuntime for MailboxRuntimeHandle {
+    fn create_mailbox(&self) -> Result<(Value, Value), RuntimeError> {
+        self.store.lock().unwrap().create_mailbox()
+    }
+
+    fn validate_mailbox_sender(&self, sender: &Value) -> Result<(), RuntimeError> {
+        self.store
+            .lock()
+            .unwrap()
+            .mailbox_for_sender(sender)
+            .map(|_| ())
+    }
+
+    fn validate_mailbox_receiver(&self, receiver: &Value) -> Result<(), RuntimeError> {
+        self.store
+            .lock()
+            .unwrap()
+            .mailbox_for_receiver(receiver)
+            .map(|_| ())
+    }
+}
+
+impl MailboxStore {
+    fn new() -> Self {
+        Self {
+            next_mailbox_id: 1,
+            next_cap_id: MAILBOX_CAP_BASE,
+            caps: HashMap::new(),
+            queues: HashMap::new(),
+        }
+    }
+
+    fn create_mailbox(&mut self) -> Result<(Value, Value), RuntimeError> {
+        let mailbox = self.next_mailbox_id;
+        self.next_mailbox_id += 1;
+        self.queues.entry(mailbox).or_default();
+        let receiver = self.allocate_cap(mailbox, MailboxCapKind::Receiver)?;
+        let sender = self.allocate_cap(mailbox, MailboxCapKind::Sender)?;
+        Ok((receiver, sender))
+    }
+
+    fn allocate_cap(&mut self, mailbox: u64, kind: MailboxCapKind) -> Result<Value, RuntimeError> {
+        loop {
+            let raw = self.next_cap_id;
+            self.next_cap_id += 1;
+            let Some(id) = CapabilityId::new(raw) else {
+                return Err(RuntimeError::InvalidBuiltinCall {
+                    name: Symbol::intern("mailbox"),
+                    message: "mailbox capability id space exhausted".to_owned(),
+                });
+            };
+            if self.caps.contains_key(&id) {
+                continue;
+            }
+            self.caps.insert(id, MailboxCap { mailbox, kind });
+            return Ok(Value::capability(id));
+        }
+    }
+
+    fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
+        self.mailbox_for(sender, MailboxCapKind::Sender, "send")
+    }
+
+    fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
+        self.mailbox_for(receiver, MailboxCapKind::Receiver, "recv")
+    }
+
+    fn mailbox_for(
+        &self,
+        value: &Value,
+        expected_kind: MailboxCapKind,
+        operation: &'static str,
+    ) -> Result<u64, RuntimeError> {
+        let Some(id) = value.as_capability() else {
+            return Err(RuntimeError::InvalidMailboxCapability {
+                operation,
+                capability: value.clone(),
+            });
+        };
+        let Some(cap) = self.caps.get(&id) else {
+            return Err(RuntimeError::InvalidMailboxCapability {
+                operation,
+                capability: value.clone(),
+            });
+        };
+        if cap.kind != expected_kind {
+            return Err(RuntimeError::InvalidMailboxCapability {
+                operation,
+                capability: value.clone(),
+            });
+        }
+        Ok(cap.mailbox)
+    }
+
+    fn drain_receiver(&mut self, receiver: Value) -> Result<Vec<Value>, RuntimeError> {
+        let mailbox = self.mailbox_for_receiver(&receiver)?;
+        Ok(self.queues.entry(mailbox).or_default().drain(..).collect())
+    }
+
+    fn deliver(&mut self, sends: &[MailboxSend]) -> Vec<u64> {
+        let mut delivered = Vec::new();
+        for send in sends {
+            let Ok(mailbox) = self.mailbox_for_sender(&send.sender) else {
+                continue;
+            };
+            self.queues
+                .entry(mailbox)
+                .or_default()
+                .push_back(send.value.clone());
+            delivered.push(mailbox);
+        }
+        delivered
+    }
 }
 
 impl From<TaskError> for TaskManagerError {
@@ -85,6 +251,7 @@ pub struct TaskManager {
     completed: HashMap<TaskId, TaskOutcome>,
     effects: EffectLog,
     transient: TransientStore,
+    mailboxes: MailboxRuntimeHandle,
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
@@ -95,6 +262,7 @@ pub struct SharedTaskManager {
     next_task_id: AtomicU64,
     state: Mutex<SharedTaskState>,
     transient: RwLock<TransientStore>,
+    mailboxes: MailboxRuntimeHandle,
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
@@ -116,6 +284,7 @@ impl TaskManager {
             completed: HashMap::new(),
             effects: EffectLog::default(),
             transient: TransientStore::new(),
+            mailboxes: MailboxRuntimeHandle::new(),
             limits: TaskLimits::default(),
             resolver: Arc::new(ProgramResolver::new()),
             builtins: Arc::new(BuiltinRegistry::new()),
@@ -155,6 +324,18 @@ impl TaskManager {
 
     pub fn transient_mut(&mut self) -> &mut TransientStore {
         &mut self.transient
+    }
+
+    pub fn drain_mailbox(&self, receiver: Value) -> Result<Vec<Value>, RuntimeError> {
+        self.mailboxes.drain_receiver(receiver)
+    }
+
+    pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
+        self.mailboxes.mailbox_for_receiver(receiver)
+    }
+
+    pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
+        self.mailboxes.mailbox_for_sender(sender)
     }
 
     pub fn drain_emissions(&mut self) -> Vec<Effect> {
@@ -274,6 +455,7 @@ impl TaskManager {
                 effects: self.effects,
             }),
             transient: RwLock::new(self.transient),
+            mailboxes: self.mailboxes,
             limits: self.limits,
             resolver: self.resolver,
             builtins: self.builtins,
@@ -314,6 +496,7 @@ impl TaskManager {
         );
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
+        task.set_mailbox_runtime(self.mailboxes.clone());
         let transient_scopes = transient_scopes(runtime_context);
         let outcome = task.run_with_transient(Some(&mut self.transient), &transient_scopes)?;
         let suspended_state = suspended_state(&outcome, &task);
@@ -327,6 +510,7 @@ impl TaskManager {
         let outcome = TaskOutcome::Complete {
             value,
             effects: Vec::new(),
+            mailbox_sends: Vec::new(),
             retries: 0,
         };
         self.record_outcome(task_id, outcome.clone(), None);
@@ -375,6 +559,7 @@ impl TaskManager {
         );
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
+        task.set_mailbox_runtime(self.mailboxes.clone());
         task.resume_with(value)?;
         let transient_scopes = transient_scopes(runtime_context);
         let outcome = task.run_with_transient(Some(&mut self.transient), &transient_scopes)?;
@@ -426,12 +611,28 @@ impl TaskManager {
         suspended_state: Option<crate::task::TaskState>,
     ) {
         match &outcome {
-            TaskOutcome::Complete { effects, .. } | TaskOutcome::Aborted { effects, .. } => {
+            TaskOutcome::Complete {
+                effects,
+                mailbox_sends,
+                ..
+            }
+            | TaskOutcome::Aborted {
+                effects,
+                mailbox_sends,
+                ..
+            } => {
                 self.effects.emit(task_id, effects.clone());
+                self.mailboxes.deliver(mailbox_sends);
                 self.completed.insert(task_id, outcome);
             }
-            TaskOutcome::Suspended { kind, effects, .. } => {
+            TaskOutcome::Suspended {
+                kind,
+                effects,
+                mailbox_sends,
+                ..
+            } => {
                 self.effects.emit(task_id, effects.clone());
+                self.mailboxes.deliver(mailbox_sends);
                 self.suspended.insert(
                     task_id,
                     SuspendedTask {
@@ -499,6 +700,7 @@ impl SharedTaskManager {
         );
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
+        task.set_mailbox_runtime(self.mailboxes.clone());
         let transient_scopes = transient_scopes(runtime_context);
         let use_transient = !self.transient.read().unwrap().is_empty();
         let outcome = if use_transient {
@@ -548,6 +750,7 @@ impl SharedTaskManager {
         );
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
+        task.set_mailbox_runtime(self.mailboxes.clone());
         task.resume_with(value)?;
         let transient_scopes = transient_scopes(runtime_context);
         let use_transient = !self.transient.read().unwrap().is_empty();
@@ -564,6 +767,18 @@ impl SharedTaskManager {
 
     pub fn drain_emissions(&self) -> Vec<Effect> {
         self.state.lock().unwrap().effects.drain()
+    }
+
+    pub fn drain_mailbox(&self, receiver: Value) -> Result<Vec<Value>, RuntimeError> {
+        self.mailboxes.drain_receiver(receiver)
+    }
+
+    pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
+        self.mailboxes.mailbox_for_receiver(receiver)
+    }
+
+    pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
+        self.mailboxes.mailbox_for_sender(sender)
     }
 
     pub fn drain_routed_emissions(&self) -> Vec<Effect> {
@@ -717,12 +932,28 @@ impl SharedTaskManager {
     ) {
         let mut state = self.state.lock().unwrap();
         match &outcome {
-            TaskOutcome::Complete { effects, .. } | TaskOutcome::Aborted { effects, .. } => {
+            TaskOutcome::Complete {
+                effects,
+                mailbox_sends,
+                ..
+            }
+            | TaskOutcome::Aborted {
+                effects,
+                mailbox_sends,
+                ..
+            } => {
                 state.effects.emit(task_id, effects.clone());
+                self.mailboxes.deliver(mailbox_sends);
                 state.completed.insert(task_id);
             }
-            TaskOutcome::Suspended { kind, effects, .. } => {
+            TaskOutcome::Suspended {
+                kind,
+                effects,
+                mailbox_sends,
+                ..
+            } => {
                 state.effects.emit(task_id, effects.clone());
+                self.mailboxes.deliver(mailbox_sends);
                 state.suspended.insert(
                     task_id,
                     SuspendedTask {
