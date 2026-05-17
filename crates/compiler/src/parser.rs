@@ -268,6 +268,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::RaiseKw => self.parse_raise_expr(),
             SyntaxKind::RecoverKw => self.parse_recover_expr(),
             SyntaxKind::OneKw => self.parse_one_expr(),
+            SyntaxKind::SpawnKw => self.parse_spawn_expr(),
             SyntaxKind::BreakKw => self.parse_simple_control_expr(SyntaxKind::BreakExpr),
             SyntaxKind::ContinueKw => self.parse_simple_control_expr(SyntaxKind::ContinueExpr),
             SyntaxKind::TryKw => self.parse_try_expr(),
@@ -318,6 +319,16 @@ impl<'a> Parser<'a> {
             children.push(CstElement::Node(self.parse_expr(0)));
         }
         CstNode::new(kind, children)
+    }
+
+    fn parse_spawn_expr(&mut self) -> CstNode {
+        let mut children = vec![self.bump_element()];
+        children.push(CstElement::Node(self.parse_expr(0)));
+        if self.current_kind() == SyntaxKind::AfterKw {
+            children.push(self.bump_element());
+            children.push(CstElement::Node(self.parse_expr(0)));
+        }
+        CstNode::new(SyntaxKind::SpawnExpr, children)
     }
 
     fn parse_if_expr(&mut self) -> CstNode {

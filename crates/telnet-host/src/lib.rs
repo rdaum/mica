@@ -971,8 +971,24 @@ mod tests {
         );
         assert_eq!(
             output.try_recv().unwrap(),
+            "A red button protrudes from the wall under a brass sign reading DO NOT PRESS."
+        );
+        assert_eq!(
+            output.try_recv().unwrap(),
             "Bob is here, looking faintly puzzled."
         );
+        assert!(!handle_command(&host, endpoint, "alice", "push button").unwrap());
+
+        let line = output.try_recv().unwrap();
+        assert_eq!(
+            line,
+            "You press the red button. It clicks, then begins to hum."
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        flush_routed_effects(&host);
+
+        let line = output.try_recv().unwrap();
+        assert_eq!(line, "The red button gives one final cheerful ding.");
         assert!(!handle_command(&host, endpoint, "alice", "say hello").unwrap());
 
         let line = output.try_recv().unwrap();

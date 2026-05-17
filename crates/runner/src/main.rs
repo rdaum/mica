@@ -404,6 +404,7 @@ fn follow_delay(kind: &SuspendKind) -> Option<Duration> {
         SuspendKind::TimedMillis(millis) => {
             Some(Duration::from_millis(*millis).max(Duration::from_millis(1)))
         }
+        SuspendKind::Spawn(_) => Some(Duration::from_millis(1)),
         SuspendKind::Never | SuspendKind::WaitingForInput(_) => None,
     }
 }

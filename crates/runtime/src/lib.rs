@@ -22,8 +22,8 @@ pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem, Operand,
     Program, ProgramResolver, QueryBinding, Register, RegisterVm, RuntimeBinaryOp, RuntimeContext,
-    RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT, SuspendKind, VmHostContext, VmHostResponse,
-    VmState,
+    RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SuspendKind, VmHostContext,
+    VmHostResponse, VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{
@@ -1095,6 +1095,36 @@ impl SharedSourceRunner {
         Ok(SubmittedTask { task_id, outcome })
     }
 
+    pub fn submit_spawn(
+        &self,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        endpoint: Identity,
+        parent_authority: AuthorityContext,
+        spawn: SpawnRequest,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let SpawnRequest {
+            selector,
+            roles,
+            delay_millis,
+        } = spawn;
+        let runtime_context = runtime_context(principal, actor, endpoint);
+        let authority = match actor {
+            Some(actor) => authority_for_actor(self.task_manager.kernel(), actor)?,
+            None => parent_authority,
+        };
+        let program = invocation_program_with_delay(
+            selector,
+            invocation_roles(principal, actor, endpoint, roles),
+            delay_millis,
+        )
+        .map_err(CompileError::from)?;
+        let (task_id, outcome) =
+            self.task_manager
+                .submit_with_context(Arc::new(program), authority, runtime_context)?;
+        Ok(SubmittedTask { task_id, outcome })
+    }
+
     pub fn resume_task(&self, request: TaskRequest) -> Result<TaskOutcome, SourceTaskError> {
         let TaskRequest {
             principal,
@@ -1830,26 +1860,38 @@ fn invocation_program(
     selector: Symbol,
     roles: Vec<(Symbol, Value)>,
 ) -> Result<Program, RuntimeError> {
+    invocation_program_with_delay(selector, roles, None)
+}
+
+fn invocation_program_with_delay(
+    selector: Symbol,
+    roles: Vec<(Symbol, Value)>,
+    delay_millis: Option<u64>,
+) -> Result<Program, RuntimeError> {
     let relations = method_relations();
-    Program::new(
-        1,
-        [
-            Instruction::Dispatch {
-                dst: Register(0),
-                relations: relations.dispatch,
-                program_relation: relations.method_program,
-                program_bytes: relations.program_bytes,
-                selector: Operand::Value(Value::symbol(selector)),
-                roles: roles
-                    .into_iter()
-                    .map(|(role, value)| (Value::symbol(role), Operand::Value(value)))
-                    .collect(),
-            },
-            Instruction::Return {
-                value: Operand::Register(Register(0)),
-            },
-        ],
-    )
+    let mut instructions = Vec::new();
+    if let Some(delay_millis) = delay_millis {
+        instructions.push(Instruction::Suspend {
+            kind: SuspendKind::TimedMillis(delay_millis),
+        });
+    }
+    instructions.extend([
+        Instruction::Dispatch {
+            dst: Register(0),
+            relations: relations.dispatch,
+            program_relation: relations.method_program,
+            program_bytes: relations.program_bytes,
+            selector: Operand::Value(Value::symbol(selector)),
+            roles: roles
+                .into_iter()
+                .map(|(role, value)| (Value::symbol(role), Operand::Value(value)))
+                .collect(),
+        },
+        Instruction::Return {
+            value: Operand::Register(Register(0)),
+        },
+    ]);
+    Program::new(1, instructions)
 }
 
 fn invocation_roles(
@@ -3714,8 +3756,8 @@ fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthorityContext, Emission, Instruction, Operand, Program, SYSTEM_ENDPOINT, SuspendKind,
-        TaskOutcome,
+        AuthorityContext, Emission, Instruction, Operand, Program, SYSTEM_ENDPOINT, SpawnRequest,
+        SuspendKind, TaskOutcome,
     };
     use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
     use mica_var::{Identity, Symbol, Value};
@@ -4086,6 +4128,38 @@ mod tests {
         assert_eq!(emissions.len(), 1);
         assert_eq!(emissions[0].task_id, submitted.task_id);
         assert_eq!(emissions[0].target, actor);
+    }
+
+    #[test]
+    fn runner_persisted_method_can_spawn_child_invocation() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "verb parent(endpoint)\n\
+                   let child = spawn :child(endpoint: endpoint) after 0\n\
+                   return child\n\
+                 end\n\
+                 verb child(endpoint)\n\
+                   return endpoint\n\
+                 end\n",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source("return :parent(endpoint: #endpoint)")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Spawn(SpawnRequest {
+                    selector,
+                    delay_millis: Some(0),
+                    ..
+                }),
+                ..
+            } if selector == Symbol::intern("child")
+        ));
     }
 
     #[test]

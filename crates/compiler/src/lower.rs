@@ -239,6 +239,7 @@ impl<'a> Lower<'a> {
             SyntaxKind::CallExpr => self.lower_call(node),
             SyntaxKind::RoleCallExpr => self.lower_role_call(node),
             SyntaxKind::ReceiverCallExpr => self.lower_receiver_call(node),
+            SyntaxKind::SpawnExpr => self.lower_spawn(node),
             SyntaxKind::IndexExpr => self.lower_index(node),
             SyntaxKind::FieldExpr => self.lower_field(node),
             SyntaxKind::LetExpr => self.lower_binding(node, BindingKind::Let),
@@ -527,6 +528,21 @@ impl<'a> Lower<'a> {
             receiver: Box::new(receiver),
             selector: Box::new(selector),
             args,
+        }
+    }
+
+    fn lower_spawn(&mut self, node: &CstNode) -> Expr {
+        let exprs = self.node_children(node).collect::<Vec<_>>();
+        let target = exprs
+            .first()
+            .map(|child| self.lower_expr(child))
+            .unwrap_or_else(|| self.error_expr(node));
+        let delay = exprs.get(1).map(|child| Box::new(self.lower_expr(child)));
+        Expr::Spawn {
+            id: self.node_id(),
+            span: node.span.clone(),
+            target: Box::new(target),
+            delay,
         }
     }
 
@@ -1179,6 +1195,7 @@ fn is_expr_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::CallExpr
             | SyntaxKind::ReceiverCallExpr
             | SyntaxKind::RoleCallExpr
+            | SyntaxKind::SpawnExpr
             | SyntaxKind::IndexExpr
             | SyntaxKind::FieldExpr
             | SyntaxKind::ListExpr
@@ -1607,6 +1624,12 @@ mod tests {
                 collect_expr_ids(receiver, ids);
                 collect_expr_ids(selector, ids);
                 collect_arg_ids(args, ids);
+            }
+            Expr::Spawn { target, delay, .. } => {
+                collect_expr_ids(target, ids);
+                if let Some(delay) = delay {
+                    collect_expr_ids(delay, ids);
+                }
             }
             Expr::Index {
                 collection, index, ..

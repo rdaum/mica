@@ -16,7 +16,7 @@ use crate::program::{CompactListItem, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
     Emission, ErrorField, Program, ProgramResolver, Register, RuntimeBinaryOp, RuntimeContext,
-    RuntimeError, RuntimeUnaryOp, SuspendKind,
+    RuntimeError, RuntimeUnaryOp, SpawnRequest, SuspendKind,
 };
 use mica_relation_kernel::{
     ApplicableMethodCall, ComposedTransactionRead, DispatchRelations, RelationId, RelationRead,
@@ -131,6 +131,7 @@ pub enum VmHostResponse {
     Continue,
     Commit,
     Suspend(SuspendKind),
+    Spawn(SpawnRequest),
     Complete(Value),
     Abort(Value),
     RollbackRetry,
@@ -1062,6 +1063,42 @@ impl RegisterVm {
                     .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
                 Ok(VmHostResponse::Continue)
             }
+            Opcode::SpawnDispatch {
+                dst,
+                selector,
+                roles,
+                delay,
+            } => {
+                let selector = self.resolve_operand_ref(program, *selector);
+                let selector_symbol = selector
+                    .as_symbol()
+                    .ok_or_else(|| RuntimeError::InvalidSpawnSelector(selector.clone()))?;
+                let mut spawn_roles = Vec::new();
+                for (role, value) in program.roles(*roles) {
+                    let role = program.constant(*role).clone();
+                    let role_symbol = role
+                        .as_symbol()
+                        .ok_or_else(|| RuntimeError::InvalidSpawnRole(role.clone()))?;
+                    spawn_roles.push((role_symbol, self.resolve_operand_ref(program, *value)));
+                }
+                let delay_millis = delay
+                    .map(|delay| {
+                        self.suspend_duration(self.resolve_operand_ref(program, delay))
+                            .and_then(|kind| match kind {
+                                SuspendKind::TimedMillis(millis) => Ok(millis),
+                                _ => unreachable!(),
+                            })
+                    })
+                    .transpose()?;
+                normalize_spawn_roles(&mut spawn_roles);
+                self.advance_ip_unchecked();
+                self.state.pending_resume = Some(*dst);
+                Ok(VmHostResponse::Spawn(SpawnRequest {
+                    selector: selector_symbol,
+                    roles: spawn_roles,
+                    delay_millis,
+                }))
+            }
             Opcode::Commit => {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Commit)
@@ -1616,6 +1653,10 @@ fn dynamic_dispatch_roles(value: &Value) -> Result<Vec<(Value, Value)>, RuntimeE
             name: Symbol::intern("invoke"),
             message: "invoke expects roles to be a map".to_owned(),
         })
+}
+
+fn normalize_spawn_roles(roles: &mut [(Symbol, Value)]) {
+    roles.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
 }
 
 fn select_authorized_method(

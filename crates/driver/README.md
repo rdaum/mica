@@ -9,6 +9,8 @@ behaviour and schedules task-manager work as compio tasks:
 - source, invocation, explicit resume, and input resume work launched with
   `compio::runtime::spawn`;
 - compio timer tasks for `suspend(seconds)` wakeups;
+- child task submission for `spawn :verb(...)` expressions, including delayed
+  `after` starts;
 - endpoint input waiters for `read()`;
 - effect and task lifecycle events.
 

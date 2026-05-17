@@ -177,6 +177,12 @@ pub enum Expr {
         selector: Box<Expr>,
         args: Vec<Arg>,
     },
+    Spawn {
+        id: NodeId,
+        span: Span,
+        target: Box<Expr>,
+        delay: Option<Box<Expr>>,
+    },
     Index {
         id: NodeId,
         span: Span,
@@ -298,6 +304,7 @@ impl Expr {
             | Self::Call { id, .. }
             | Self::RoleCall { id, .. }
             | Self::ReceiverCall { id, .. }
+            | Self::Spawn { id, .. }
             | Self::Index { id, .. }
             | Self::Field { id, .. }
             | Self::Binding { id, .. }
@@ -335,6 +342,7 @@ impl Expr {
             | Self::Call { span, .. }
             | Self::RoleCall { span, .. }
             | Self::ReceiverCall { span, .. }
+            | Self::Spawn { span, .. }
             | Self::Index { span, .. }
             | Self::Field { span, .. }
             | Self::Binding { span, .. }

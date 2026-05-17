@@ -1106,6 +1106,9 @@ impl<'a> ProgramCompiler<'a> {
                 selector,
                 args,
             } => self.compile_dispatch(*id, selector, args, Some(receiver)),
+            HirExpr::Spawn { id, target, delay } => {
+                self.compile_spawn(*id, target, delay.as_deref())
+            }
             HirExpr::ExternalRef { id, name } => {
                 if let Some(register) = self.external_locals.get(name).copied() {
                     Ok(register)
@@ -2570,6 +2573,60 @@ impl<'a> ProgramCompiler<'a> {
         Ok(dst)
     }
 
+    fn compile_spawn(
+        &mut self,
+        id: NodeId,
+        target: &HirExpr,
+        delay: Option<&HirExpr>,
+    ) -> Result<Register, CompileError> {
+        let (selector, args, receiver) = match target {
+            HirExpr::RoleDispatch { selector, args, .. } => (selector.as_ref(), args, None),
+            HirExpr::ReceiverDispatch {
+                receiver,
+                selector,
+                args,
+                ..
+            } => (selector.as_ref(), args, Some(receiver.as_ref())),
+            _ => {
+                return Err(self.unsupported(
+                    id,
+                    "spawn expects a role dispatch target, such as spawn :verb(actor: actor())",
+                ));
+            }
+        };
+        self.ensure_no_arg_splices(args, "spawn argument splices are not implemented yet")?;
+        let selector = self.compile_expr_for_operand(selector)?;
+        let mut roles = Vec::new();
+        if let Some(receiver) = receiver {
+            roles.push((
+                Value::symbol(Symbol::intern("receiver")),
+                Operand::Register(self.compile_expr_for_value(receiver)?),
+            ));
+        }
+        for arg in args {
+            let Some(role) = &arg.role else {
+                return Err(
+                    self.unsupported(arg.id, "spawn arguments must use explicit role names")
+                );
+            };
+            roles.push((
+                Value::symbol(Symbol::intern(role)),
+                self.compile_arg_operand(arg)?,
+            ));
+        }
+        let delay = delay
+            .map(|delay| self.compile_expr_for_operand(delay))
+            .transpose()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::SpawnDispatch {
+            dst,
+            selector,
+            roles,
+            delay,
+        });
+        Ok(dst)
+    }
+
     fn compile_expr_for_operand(&mut self, expr: &HirExpr) -> Result<Operand, CompileError> {
         match expr {
             HirExpr::Symbol { name, .. } => Ok(Operand::Value(Value::symbol(Symbol::intern(name)))),
@@ -2866,6 +2923,7 @@ fn expr_id(expr: &HirExpr) -> NodeId {
         | HirExpr::Call { id, .. }
         | HirExpr::RoleDispatch { id, .. }
         | HirExpr::ReceiverDispatch { id, .. }
+        | HirExpr::Spawn { id, .. }
         | HirExpr::FactChange { id, .. }
         | HirExpr::Require { id, .. }
         | HirExpr::Index { id, .. }

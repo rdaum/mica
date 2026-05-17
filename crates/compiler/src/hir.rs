@@ -124,6 +124,11 @@ pub enum HirExpr {
         selector: Box<HirExpr>,
         args: Vec<HirArg>,
     },
+    Spawn {
+        id: NodeId,
+        target: Box<HirExpr>,
+        delay: Option<Box<HirExpr>>,
+    },
     RelationAtom(HirRelationAtom),
     FactChange {
         id: NodeId,

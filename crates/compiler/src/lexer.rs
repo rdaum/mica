@@ -260,6 +260,8 @@ fn keyword_kind(text: &str) -> Option<SyntaxKind> {
         "raise" => SyntaxKind::RaiseKw,
         "recover" => SyntaxKind::RecoverKw,
         "one" => SyntaxKind::OneKw,
+        "spawn" => SyntaxKind::SpawnKw,
+        "after" => SyntaxKind::AfterKw,
         "not" => SyntaxKind::NotKw,
         "break" => SyntaxKind::BreakKw,
         "continue" => SyntaxKind::ContinueKw,

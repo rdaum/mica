@@ -15,8 +15,8 @@ use crate::{DispatcherConfig, DriverError, DriverEvent, TaskContext, configure_d
 use compio::dispatcher::Dispatcher;
 use compio::runtime::Runtime;
 use mica_runtime::{
-    RunReport, SharedSourceRunner, SourceRunner, SubmittedTask, SuspendKind, TaskId, TaskInput,
-    TaskOutcome, TaskRequest, Tuple,
+    RunReport, SharedSourceRunner, SourceRunner, SpawnRequest, SubmittedTask, SuspendKind, TaskId,
+    TaskInput, TaskOutcome, TaskRequest, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
@@ -330,6 +330,7 @@ impl CompioTaskDriver {
         outcome: TaskOutcome,
     ) -> Result<(), DriverError> {
         let mut timer = None;
+        let mut spawn = None;
         let event_waker;
         {
             let mut state = self.inner.state.lock().unwrap();
@@ -366,6 +367,9 @@ impl CompioTaskDriver {
                                 .or_default()
                                 .push(task_id);
                         }
+                        SuspendKind::Spawn(request) => {
+                            spawn = Some(request.clone());
+                        }
                     }
                 }
             }
@@ -377,6 +381,32 @@ impl CompioTaskDriver {
         if let Some(duration) = timer {
             self.spawn_timer_resume(task_id, duration);
         }
+        if let Some(request) = spawn {
+            self.spawn_child_and_resume(task_id, context, request)?;
+        }
+        Ok(())
+    }
+
+    fn spawn_child_and_resume(
+        &self,
+        parent_task_id: TaskId,
+        context: TaskContext,
+        request: SpawnRequest,
+    ) -> Result<(), DriverError> {
+        let runner = Arc::clone(&self.inner.runner);
+        let submit_context = context.clone();
+        let child = self.dispatch(move || async move {
+            runner.submit_spawn(
+                submit_context.principal,
+                submit_context.actor,
+                submit_context.endpoint,
+                submit_context.authority,
+                request,
+            )
+        })?;
+        self.handle_submitted(context.clone(), child.clone())?;
+        let child_id = Value::int(child.task_id as i64).expect("allocated task id fits in Value");
+        self.resume(parent_task_id, child_id)?;
         Ok(())
     }
 

@@ -619,7 +619,26 @@ atomic
 end
 ```
 
-## 14. Filein/Fileout Envelope
+## 14. Tasks
+
+`spawn` starts a new task from a role-dispatch expression:
+
+```mica
+let task = spawn :tick(actor: actor(), clock: #clock)
+let delayed = spawn :tick(actor: actor(), clock: #clock) after 5
+```
+
+Creating the child task is a transaction boundary. The parent evaluates the
+target and role values, commits its current transaction, creates the child from
+the committed world, and then resumes with the child task id. If the commit
+conflicts, the parent retries and no child task is created from the failed
+attempt.
+
+The child inherits the parent principal, actor, and endpoint. Actor-bound child
+tasks rebuild authority from current policy at the task boundary; actor-less
+system tasks keep the parent authority rather than acquiring new authority.
+
+## 15. Filein/Fileout Envelope
 
 The current filein path runs the same compiler as the REPL. A filein is a
 sequence of ordinary Mica source chunks: builtin calls, fact changes, Horn
@@ -668,7 +687,7 @@ That envelope should be import/export syntax only. It must expand to the same
 ordinary Mica operations above; bodies inside any verb or method remain normal
 executable Mica.
 
-## 15. Syntax Still Missing
+## 16. Syntax Still Missing
 
 This proposal does not yet define:
 

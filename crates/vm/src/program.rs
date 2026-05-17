@@ -80,11 +80,19 @@ pub enum ErrorField {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpawnRequest {
+    pub selector: Symbol,
+    pub roles: Vec<(Symbol, Value)>,
+    pub delay_millis: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SuspendKind {
     Commit,
     Never,
     TimedMillis(u64),
     WaitingForInput(Value),
+    Spawn(SpawnRequest),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -239,6 +247,12 @@ pub enum Instruction {
         program_bytes: RelationId,
         selector: Operand,
         args: Vec<Operand>,
+    },
+    SpawnDispatch {
+        dst: Register,
+        selector: Operand,
+        roles: Vec<(Value, Operand)>,
+        delay: Option<Operand>,
     },
     Commit,
     Suspend {
@@ -465,6 +479,12 @@ pub(crate) enum Opcode {
         spec: DispatchSpecId,
         selector: OperandRef,
         args: TableRange,
+    },
+    SpawnDispatch {
+        dst: Register,
+        selector: OperandRef,
+        roles: TableRange,
+        delay: Option<OperandRef>,
     },
     Commit,
     Suspend {
@@ -937,6 +957,23 @@ impl Program {
                         .collect(),
                 }
             }
+            Opcode::SpawnDispatch {
+                dst,
+                selector,
+                roles,
+                delay,
+            } => Instruction::SpawnDispatch {
+                dst: *dst,
+                selector: self.decode_operand(*selector),
+                roles: self
+                    .roles(*roles)
+                    .iter()
+                    .map(|(role, operand)| {
+                        (self.constant(*role).clone(), self.decode_operand(*operand))
+                    })
+                    .collect(),
+                delay: delay.map(|operand| self.decode_operand(operand)),
+            },
             Opcode::Commit => Instruction::Commit,
             Opcode::Suspend { kind } => Instruction::Suspend {
                 kind: self.suspend_kind(*kind).clone(),
@@ -1335,6 +1372,17 @@ impl ProgramBuilder {
                 })?,
                 selector: self.operand(selector)?,
                 args: self.operands(args)?,
+            },
+            Instruction::SpawnDispatch {
+                dst,
+                selector,
+                roles,
+                delay,
+            } => Opcode::SpawnDispatch {
+                dst,
+                selector: self.operand(selector)?,
+                roles: self.roles(roles)?,
+                delay: delay.map(|operand| self.operand(operand)).transpose()?,
             },
             Instruction::Commit => Opcode::Commit,
             Instruction::Suspend { kind } => Opcode::Suspend {
@@ -1779,6 +1827,17 @@ fn validate_instruction(
             validate_operand(register_count, selector)?;
             validate_operands(register_count, args.iter())
         }
+        Instruction::SpawnDispatch {
+            dst,
+            selector,
+            roles,
+            delay,
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, selector)?;
+            validate_operands(register_count, roles.iter().map(|(_, operand)| operand))?;
+            validate_operands(register_count, delay.iter())
+        }
         Instruction::Commit | Instruction::Suspend { .. } | Instruction::RollbackRetry => Ok(()),
         Instruction::SuspendValue { dst, duration }
         | Instruction::Read {
@@ -1877,6 +1936,7 @@ const INST_READ: u8 = 37;
 const INST_COMMIT_VALUE: u8 = 38;
 const INST_POSITIONAL_DISPATCH: u8 = 39;
 const INST_DYNAMIC_DISPATCH: u8 = 40;
+const INST_SPAWN_DISPATCH: u8 = 41;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2127,11 +2187,12 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
                 out.push(INST_SUSPEND_COMMIT);
                 Ok(())
             }
-            SuspendKind::Never | SuspendKind::TimedMillis(_) | SuspendKind::WaitingForInput(_) => {
-                Err(artifact_error(
-                    "only commit suspension is serializable in program artifacts",
-                ))
-            }
+            SuspendKind::Never
+            | SuspendKind::TimedMillis(_)
+            | SuspendKind::WaitingForInput(_)
+            | SuspendKind::Spawn(_) => Err(artifact_error(
+                "only commit suspension is serializable in program artifacts",
+            )),
         },
         Instruction::SuspendValue { dst, duration } => {
             out.push(INST_SUSPEND_VALUE);
@@ -2228,6 +2289,22 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_identity(out, *program_bytes);
             write_operand(out, selector)?;
             write_operands(out, args)
+        }
+        Instruction::SpawnDispatch {
+            dst,
+            selector,
+            roles,
+            delay,
+        } => {
+            out.push(INST_SPAWN_DISPATCH);
+            write_register(out, *dst);
+            write_operand(out, selector)?;
+            write_u32(out, roles.len() as u32);
+            for (role, operand) in roles {
+                write_value(out, role)?;
+                write_operand(out, operand)?;
+            }
+            write_optional_operand(out, delay.as_ref())
         }
         Instruction::Call { dst, program, args } => {
             out.push(INST_CALL);
@@ -2718,6 +2795,12 @@ impl<'a> ByteReader<'a> {
                 program_bytes: self.read_identity()?,
                 selector: self.read_operand()?,
                 args: self.read_operands()?,
+            },
+            INST_SPAWN_DISPATCH => Instruction::SpawnDispatch {
+                dst: self.read_register()?,
+                selector: self.read_operand()?,
+                roles: self.read_dispatch_roles()?,
+                delay: self.read_optional_operand()?,
             },
             _ => return Err(artifact_error("unknown program artifact instruction tag")),
         })

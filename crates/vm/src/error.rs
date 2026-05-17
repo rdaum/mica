@@ -68,6 +68,8 @@ pub enum RuntimeError {
     InvalidErrorMessage(Value),
     InvalidEffectTarget(Value),
     InvalidSuspendDuration(Value),
+    InvalidSpawnSelector(Value),
+    InvalidSpawnRole(Value),
     Kernel(KernelError),
     Aborted(Value),
 }

@@ -317,6 +317,16 @@ impl<'a> Task<'a> {
                     retries: self.retries,
                 }))
             }
+            VmHostResponse::Spawn(request) => {
+                if self.commit_boundary()? == BoundaryResult::Retried {
+                    return Ok(None);
+                }
+                Ok(Some(TaskOutcome::Suspended {
+                    kind: SuspendKind::Spawn(request),
+                    effects: self.take_committed_effects(),
+                    retries: self.retries,
+                }))
+            }
             VmHostResponse::Complete(value) => {
                 if self.commit_boundary()? == BoundaryResult::Retried {
                     return Ok(None);

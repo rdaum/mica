@@ -102,6 +102,61 @@ fn commit_yields_and_immediately_resumes_task() {
 }
 
 #[test]
+fn spawn_commits_parent_and_runs_child_task() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "make_relation(:Seen, 1)\n\
+             verb child(endpoint)\n\
+               if Seen(:parent)\n\
+                 emit(endpoint, \"saw parent\")\n\
+               else\n\
+                 emit(endpoint, \"missed parent\")\n\
+               end\n\
+               return nothing\n\
+             end\n",
+        )
+        .unwrap();
+    let driver = CompioTaskDriver::spawn(runner).unwrap();
+    let submitted = driver
+        .submit_source(
+            endpoint(31),
+            root_source(
+                "assert Seen(:parent)\n\
+                 let child = spawn :child(endpoint: endpoint()) after 0.001\n\
+                 return child",
+            ),
+        )
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(_),
+            ..
+        }
+    ));
+
+    std::thread::sleep(Duration::from_millis(20));
+
+    let events = driver.drain_events();
+    let child_task_id = events.iter().find_map(|event| match event {
+        DriverEvent::TaskCompleted { task_id, value }
+            if *task_id == submitted.task_id && value.as_int().is_some() =>
+        {
+            Some(value.as_int().unwrap() as u64)
+        }
+        _ => None,
+    });
+    let child_task_id = child_task_id.expect("parent completed with spawned child task id");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DriverEvent::Effect(effect)
+            if effect.task_id == child_task_id && effect.value == Value::string("saw parent")
+    )));
+}
+
+#[test]
 fn endpoint_input_resumes_reading_task() {
     let driver = CompioTaskDriver::spawn_empty().unwrap();
     let endpoint = endpoint(4);

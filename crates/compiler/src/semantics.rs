@@ -529,6 +529,15 @@ impl<'a> Analyzer<'a> {
                 selector: Box::new(self.lower_expr(selector, scope)),
                 args: self.lower_args(args, scope),
             },
+            Expr::Spawn {
+                id, target, delay, ..
+            } => HirExpr::Spawn {
+                id: *id,
+                target: Box::new(self.lower_expr(target, scope)),
+                delay: delay
+                    .as_ref()
+                    .map(|delay| Box::new(self.lower_expr(delay, scope))),
+            },
             Expr::Index {
                 id,
                 collection,
@@ -1115,6 +1124,12 @@ fn collect_expr_span(expr: &Expr, spans: &mut HashMap<NodeId, Span>) {
             collect_expr_span(receiver, spans);
             collect_expr_span(selector, spans);
             collect_arg_spans(args, spans);
+        }
+        Expr::Spawn { target, delay, .. } => {
+            collect_expr_span(target, spans);
+            if let Some(delay) = delay {
+                collect_expr_span(delay, spans);
+            }
         }
         Expr::Index {
             collection, index, ..

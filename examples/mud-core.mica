@@ -16,10 +16,12 @@ make_identity(:take_from_event)
 make_identity(:drop_event)
 make_identity(:put_event)
 make_identity(:say_event)
+make_identity(:button_event)
 
 make_identity(:alice)
 make_identity(:coin)
 make_identity(:box)
+make_identity(:red_button)
 make_identity(:first_room)
 make_identity(:north_room)
 make_identity(:attic)
@@ -36,6 +38,7 @@ make_identity(:get_pattern)
 make_identity(:get_from_pattern)
 make_identity(:drop_pattern)
 make_identity(:put_pattern)
+make_identity(:push_pattern)
 make_identity(:say_pattern)
 
 make_relation(:Delegates, 3)
@@ -58,6 +61,7 @@ make_relation(:Contents, 2)
 make_relation(:Carrying, 2)
 make_relation(:CanSee, 2)
 make_relation(:PresentActor, 2)
+make_relation(:ButtonArmed, 1)
 
 // Parser-facing state is separate from display state. A thing can be visible
 // without being allowed to pollute the command parser.
@@ -91,10 +95,12 @@ assert Delegates(#take_from_event, #event, 0)
 assert Delegates(#drop_event, #event, 0)
 assert Delegates(#put_event, #event, 0)
 assert Delegates(#say_event, #event, 0)
+assert Delegates(#button_event, #event, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
 assert Delegates(#bob, #player, 0)
 assert Delegates(#box, #container, 0)
+assert Delegates(#red_button, #thing, 0)
 assert Delegates(#first_room, #room, 0)
 assert Delegates(#north_room, #room, 0)
 assert Delegates(#attic, #room, 0)
@@ -105,6 +111,7 @@ assert Name(#alice, "Alice")
 assert Name(#bob, "Bob")
 assert Name(#coin, "coin")
 assert Name(#box, "box")
+assert Name(#red_button, "button")
 assert Name(#first_room, "First Room")
 assert Name(#north_room, "North Room")
 assert Name(#attic, "Dusty Attic")
@@ -114,6 +121,7 @@ assert ProperNoun(#bob)
 assert Description(#coin, "A tarnished brass coin catches the light.")
 assert Description(#bob, "Bob is here, looking faintly puzzled.")
 assert Description(#box, "A small wooden box rests here, open and empty.")
+assert Description(#red_button, "A red button protrudes from the wall under a brass sign reading DO NOT PRESS.")
 assert Description(#first_room, "First Room. You are standing in a plain stone room.")
 assert Description(#north_room, "North Room. It is quieter here, and the ceiling slopes upward.")
 assert Description(#attic, "Dusty Attic. Old beams vanish into shadow.")
@@ -122,6 +130,7 @@ assert LocatedIn(#alice, #first_room)
 assert LocatedIn(#bob, #first_room)
 assert LocatedIn(#coin, #first_room)
 assert LocatedIn(#box, #first_room)
+assert LocatedIn(#red_button, #first_room)
 
 assert BidirectionalExit(#first_room, :north, :south, #north_room)
 assert BidirectionalExit(#north_room, :up, :down, #attic)
@@ -140,6 +149,8 @@ assert CommandAlias("get", :get)
 assert CommandAlias("take", :get)
 assert CommandAlias("drop", :drop)
 assert CommandAlias("put", :put)
+assert CommandAlias("push", :push)
+assert CommandAlias("press", :push)
 assert CommandAlias("say", :say)
 
 assert CommandForm(:look)
@@ -150,6 +161,7 @@ assert CommandForm(:down)
 assert CommandForm(:get)
 assert CommandForm(:drop)
 assert CommandForm(:put)
+assert CommandForm(:push)
 assert CommandForm(:say)
 
 assert CommandPattern(:look, :look, #look_room_pattern)
@@ -191,6 +203,9 @@ assert PatternPart(#put_pattern, 0, :object_role, :item)
 assert PatternPart(#put_pattern, 1, :optional_prep, :inside)
 assert PatternPart(#put_pattern, 2, :object_role, :container)
 
+assert CommandPattern(:push, :push, #push_pattern)
+assert PatternPart(#push_pattern, 0, :object_role, :target)
+
 assert CommandPattern(:say, :say, #say_pattern)
 assert PatternPart(#say_pattern, 0, :message, nothing)
 
@@ -219,6 +234,8 @@ assert CommandRole(:drop, :item, :thing)
 assert CommandRole(:put, :actor, :identity)
 assert CommandRole(:put, :item, :thing)
 assert CommandRole(:put, :container, :thing)
+assert CommandRole(:push, :actor, :identity)
+assert CommandRole(:push, :target, :thing)
 assert CommandRole(:say, :actor, :identity)
 assert CommandRole(:say, :message, :string)
 
@@ -226,9 +243,12 @@ assert ParserNoun(#coin, "coin")
 assert ParserAlias(#coin, "brass coin")
 assert ParserNoun(#box, "box")
 assert ParserAlias(#box, "wooden box")
+assert ParserNoun(#red_button, "button")
+assert ParserAlias(#red_button, "red button")
 
 assert TrustedForNameParsing(#alice, #coin)
 assert TrustedForNameParsing(#alice, #box)
+assert TrustedForNameParsing(#alice, #red_button)
 assert TrustedForCommandGrammar(#alice, #alice)
 assert TrustedForCommandGrammar(#alice, #first_room)
 assert TrustedForCommandGrammar(#alice, #north_room)
@@ -247,6 +267,7 @@ assert CanRead(#alice, :Contents)
 assert CanRead(#alice, :Carrying)
 assert CanRead(#alice, :CanSee)
 assert CanRead(#alice, :PresentActor)
+assert CanRead(#alice, :ButtonArmed)
 assert CanRead(#alice, :CommandAlias)
 assert CanRead(#alice, :CommandForm)
 assert CanRead(#alice, :CommandPattern)
@@ -264,6 +285,7 @@ assert CanRead(#alice, :CommandGrammarSource)
 assert CanRead(#alice, :CommandHandlerScope)
 
 assert CanWrite(#alice, :LocatedIn)
+assert CanWrite(#alice, :ButtonArmed)
 
 assert CanInvoke(#alice, :command)
 assert CanInvoke(#alice, :match_object)
@@ -287,6 +309,8 @@ assert CanInvoke(#alice, :get)
 assert CanInvoke(#alice, :get_from)
 assert CanInvoke(#alice, :drop)
 assert CanInvoke(#alice, :put)
+assert CanInvoke(#alice, :push)
+assert CanInvoke(#alice, :button_resolves)
 assert CanInvoke(#alice, :say)
 assert CanInvoke(#alice, :template_error)
 assert CanInvoke(#alice, :capitalize)
@@ -544,6 +568,34 @@ verb put(actor @ #player, item @ #thing, container @ #container)
 
   emit(actor, "You are not carrying that.")
   return false
+end
+
+verb push(actor @ #player, target @ #thing)
+  if target != #red_button || CanSee(actor, target) == false
+    emit(actor, "That does not seem pushable.")
+    return false
+  end
+
+  if ButtonArmed(target)
+    emit(actor, "The red button is already humming.")
+    return false
+  end
+
+  let room = one LocatedIn(actor, ?room)
+  assert ButtonArmed(target)
+  emit(actor, "You press the red button. It clicks, then begins to hum.")
+  let task = spawn :button_resolves(actor: actor, target: target, room: room) after 0.25
+  return task != nothing
+end
+
+verb button_resolves(actor @ #player, target @ #thing, room @ #room)
+  if ButtonArmed(target) == false
+    return false
+  end
+
+  retract ButtonArmed(target)
+  :emit_room_event(room: room, event: narrative_event(#button_event, "The red button gives one final cheerful ding.", {}))
+  return true
 end
 
 verb say(actor @ #player, message)
