@@ -351,7 +351,36 @@ impl SourceRunner {
             return Ok(SubmittedTask { task_id, outcome });
         }
 
-        if let Some(installation) = self.install_methods_from_source(&source)? {
+        if root_source_needs_install_chunking(&source) {
+            let chunks = source_chunks(&source);
+            return self.submit_root_source_chunks(chunks, endpoint, authority);
+        }
+
+        self.submit_root_source_chunk(&source, endpoint, authority)
+    }
+
+    fn submit_root_source_chunks(
+        &mut self,
+        chunks: Vec<String>,
+        endpoint: Identity,
+        authority: AuthorityContext,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let mut submitted = None;
+        for chunk in chunks {
+            submitted = Some(self.submit_root_source_chunk(&chunk, endpoint, authority.clone())?);
+        }
+        submitted.ok_or_else(|| {
+            unsupported_runner_error(NodeId(0), None, "source submission contains no items")
+        })
+    }
+
+    fn submit_root_source_chunk(
+        &mut self,
+        source: &str,
+        endpoint: Identity,
+        authority: AuthorityContext,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        if let Some(installation) = self.install_methods_from_source(source)? {
             let value = installed_method_value(&installation);
             let (task_id, outcome) = self.task_manager.complete_immediate(value);
             self.refresh_context_from_catalog();
@@ -359,7 +388,7 @@ impl SourceRunner {
         }
 
         if let Some(installation) =
-            install_rules_from_source(&source, &self.context, self.task_manager.kernel())?
+            install_rules_from_source(source, &self.context, self.task_manager.kernel())?
         {
             let value = installed_rule_value(&installation.rules);
             let (task_id, outcome) = self.task_manager.complete_immediate(value);
@@ -367,13 +396,13 @@ impl SourceRunner {
             return Ok(SubmittedTask { task_id, outcome });
         }
 
-        let semantic = parse_semantic(&source);
+        let semantic = parse_semantic(source);
         if semantic.parse_errors.is_empty() && semantic.diagnostics.is_empty() {
             self.predeclare_source_names(&semantic)?;
         }
-        let context = self.context_for_execution(principal, actor, endpoint);
+        let context = self.context_for_execution(None, None, endpoint);
         let compiled = compile_semantic(semantic, &context)?;
-        let runtime_context = runtime_context(principal, actor, endpoint);
+        let runtime_context = runtime_context(None, None, endpoint);
         let (task_id, outcome) = self.task_manager.submit_with_context(
             Arc::new(compiled.program),
             authority,
@@ -1362,6 +1391,31 @@ fn source_chunks(source: &str) -> Vec<String> {
 
 fn source_has_items(source: &str) -> bool {
     !parse_semantic(source).hir.items.is_empty()
+}
+
+fn root_source_needs_install_chunking(source: &str) -> bool {
+    let semantic = parse_semantic(source);
+    if !semantic.parse_errors.is_empty() || !semantic.diagnostics.is_empty() {
+        return false;
+    }
+
+    let has_method = semantic
+        .hir
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::Method { .. }));
+    let has_rule = semantic
+        .hir
+        .items
+        .iter()
+        .any(|item| matches!(item, HirItem::RelationRule { .. }));
+    let has_executable = semantic
+        .hir
+        .items
+        .iter()
+        .any(|item| !matches!(item, HirItem::Method { .. } | HirItem::RelationRule { .. }));
+
+    (has_method || has_rule) && (has_executable || (has_method && has_rule))
 }
 
 fn compile_context_from_catalog(kernel: &RelationKernel) -> CompileContext {
@@ -6122,6 +6176,49 @@ mod tests {
             SourceTaskError::Compile(CompileError::Unsupported { message, .. })
                 if message == "dot name `location` requires `Location` to be functional on position 0"
         ));
+    }
+
+    #[test]
+    fn runner_root_source_can_mix_method_definition_and_task_code() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source(
+                "verb greet()\n\
+                   return \"hello\"\n\
+                 end\n\
+                 return :greet()",
+            )
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("hello")
+        ));
+    }
+
+    #[test]
+    fn runner_root_source_can_mix_rule_definition_and_task_code() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source(
+                "make_identity(:alice)\n\
+                 make_identity(:lamp)\n\
+                 make_identity(:room)\n\
+                 make_relation(:LocatedIn, 2)\n\
+                 make_relation(:VisibleTo, 2)\n\
+                 assert LocatedIn(#alice, #room)\n\
+                 assert LocatedIn(#lamp, #room)\n\
+                 VisibleTo(actor, obj) :-\n\
+                   LocatedIn(actor, room),\n\
+                   LocatedIn(obj, room)\n\
+                 return VisibleTo(#alice, ?obj)",
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.render(),
+            "task 9 complete: [[:obj: #alice], [:obj: #lamp]] (retries: 0)"
+        );
     }
 
     #[test]
