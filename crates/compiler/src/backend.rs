@@ -3972,8 +3972,9 @@ mod tests {
 
         assert!(matches!(
             error,
-            CompileError::Unsupported { message, .. }
-                if message == "closures are not implemented in the task compiler yet"
+            CompileError::SemanticDiagnostic { diagnostic }
+                if diagnostic.code == crate::DiagnosticCode::UnsupportedSyntax
+                    && diagnostic.message == "closures are not implemented yet"
         ));
     }
 

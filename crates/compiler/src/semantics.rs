@@ -137,6 +137,7 @@ pub enum DiagnosticCode {
     InvalidAssignmentTarget,
     InvalidFactChange,
     InvalidRelationRule,
+    UnsupportedSyntax,
 }
 
 struct Analyzer<'a> {
@@ -175,6 +176,7 @@ impl<'a> Analyzer<'a> {
     fn analyze(mut self) -> SemanticProgram {
         let root_scope = self.alloc_scope(None, None);
         let items = self.lower_items(&self.ast.items, root_scope);
+        self.validate_supported_surface_items(&items);
         SemanticProgram {
             hir: HirProgram { items },
             spans: self.spans,
@@ -298,6 +300,326 @@ impl<'a> Analyzer<'a> {
             };
             descendant = parent;
         }
+    }
+
+    fn validate_supported_surface_items(&mut self, items: &[HirItem]) {
+        for item in items {
+            match item {
+                HirItem::Expr { expr, .. } => self.validate_supported_surface_expr(expr, false),
+                HirItem::RelationRule { head, body, .. } => {
+                    self.validate_relation_atom_support(head, true, false);
+                    for atom in body {
+                        self.validate_relation_atom_support(atom, true, false);
+                    }
+                }
+                HirItem::Object { clauses, .. } => {
+                    for expr in clauses {
+                        self.validate_supported_surface_expr(expr, false);
+                    }
+                }
+                HirItem::Method { body, .. } => self.validate_supported_surface_items(body),
+            }
+        }
+    }
+
+    fn validate_supported_surface_expr(&mut self, expr: &HirExpr, direct_function_binding: bool) {
+        match expr {
+            HirExpr::QueryVar { id, .. } => {
+                self.unsupported(*id, "query variables are only valid as relation arguments");
+            }
+            HirExpr::List { items, .. } => {
+                for item in items {
+                    match item {
+                        HirCollectionItem::Expr(expr) | HirCollectionItem::Splice(expr) => {
+                            self.validate_supported_surface_expr(expr, false);
+                        }
+                    }
+                }
+            }
+            HirExpr::Map { entries, .. } => {
+                for (key, value) in entries {
+                    self.validate_supported_surface_expr(key, false);
+                    self.validate_supported_surface_expr(value, false);
+                }
+            }
+            HirExpr::Unary { expr, .. } => self.validate_supported_surface_expr(expr, false),
+            HirExpr::Binary {
+                op: crate::BinaryOp::Range,
+                left,
+                right,
+                ..
+            } => {
+                self.validate_supported_surface_expr(left, false);
+                if !matches!(right.as_ref(), HirExpr::Hole { .. }) {
+                    self.validate_supported_surface_expr(right, false);
+                }
+            }
+            HirExpr::Binary { left, right, .. } => {
+                self.validate_supported_surface_expr(left, false);
+                self.validate_supported_surface_expr(right, false);
+            }
+            HirExpr::Assign { target, value, .. } => {
+                self.validate_supported_surface_place(target);
+                self.validate_supported_surface_expr(value, false);
+            }
+            HirExpr::Call { id, callee, args } => {
+                if args.iter().any(|arg| arg.role.is_some()) {
+                    self.unsupported(*id, "ordinary calls only support positional arguments");
+                }
+                if !matches!(callee.as_ref(), HirExpr::LocalRef { .. })
+                    && let Some(arg) = args.iter().find(|arg| arg.splice)
+                {
+                    self.unsupported(
+                        arg.id,
+                        "argument splices are only supported for direct local function calls",
+                    );
+                }
+                self.validate_supported_surface_expr(callee, false);
+                self.validate_args(args);
+            }
+            HirExpr::RoleDispatch { id, selector, args } => {
+                self.validate_dispatch_args(*id, args, "dispatch");
+                self.validate_supported_surface_expr(selector, false);
+                self.validate_args(args);
+            }
+            HirExpr::ReceiverDispatch {
+                id,
+                receiver,
+                selector,
+                args,
+            } => {
+                self.validate_dispatch_args(*id, args, "receiver dispatch");
+                self.validate_supported_surface_expr(receiver, false);
+                self.validate_supported_surface_expr(selector, false);
+                self.validate_args(args);
+            }
+            HirExpr::Spawn { id, target, delay } => {
+                if !matches!(
+                    target.as_ref(),
+                    HirExpr::RoleDispatch { .. } | HirExpr::ReceiverDispatch { .. }
+                ) {
+                    self.unsupported(*id, "spawn expects a role or receiver dispatch target");
+                }
+                self.validate_supported_surface_expr(target, false);
+                if let Some(delay) = delay {
+                    self.validate_supported_surface_expr(delay, false);
+                }
+            }
+            HirExpr::RelationAtom(atom) => self.validate_relation_atom_support(atom, true, true),
+            HirExpr::FactChange { kind, atom, .. } => {
+                self.validate_relation_atom_support(
+                    atom,
+                    matches!(kind, EffectKind::Retract),
+                    true,
+                );
+                if matches!(kind, EffectKind::Assert)
+                    && atom.args.iter().any(|arg| {
+                        matches!(arg.value, HirExpr::QueryVar { .. } | HirExpr::Hole { .. })
+                    })
+                {
+                    self.unsupported(
+                        atom.id,
+                        "assert facts cannot contain query variables or holes",
+                    );
+                }
+            }
+            HirExpr::Require { condition, .. }
+            | HirExpr::One {
+                expr: condition, ..
+            } => self.validate_supported_surface_expr(condition, false),
+            HirExpr::Index {
+                collection, index, ..
+            } => {
+                self.validate_supported_surface_expr(collection, false);
+                if let Some(index) = index {
+                    self.validate_supported_surface_expr(index, false);
+                }
+            }
+            HirExpr::Field { base, .. } => self.validate_supported_surface_expr(base, false),
+            HirExpr::Binding { value, .. } => {
+                if let Some(value) = value {
+                    let is_direct_function =
+                        matches!(value.as_ref(), HirExpr::Function { name: None, .. });
+                    self.validate_supported_surface_expr(value, is_direct_function);
+                }
+            }
+            HirExpr::If {
+                condition,
+                then_items,
+                elseif,
+                else_items,
+                ..
+            } => {
+                self.validate_supported_surface_expr(condition, false);
+                self.validate_supported_surface_items(then_items);
+                for (condition, items) in elseif {
+                    self.validate_supported_surface_expr(condition, false);
+                    self.validate_supported_surface_items(items);
+                }
+                self.validate_supported_surface_items(else_items);
+            }
+            HirExpr::Block { items, .. } => self.validate_supported_surface_items(items),
+            HirExpr::For { iter, body, .. } => {
+                self.validate_supported_surface_expr(iter, false);
+                self.validate_supported_surface_items(body);
+            }
+            HirExpr::While {
+                condition, body, ..
+            } => {
+                self.validate_supported_surface_expr(condition, false);
+                self.validate_supported_surface_items(body);
+            }
+            HirExpr::Return { value, .. } => {
+                if let Some(value) = value {
+                    self.validate_supported_surface_expr(value, false);
+                }
+            }
+            HirExpr::Raise {
+                error,
+                message,
+                value,
+                ..
+            } => {
+                self.validate_supported_surface_expr(error, false);
+                if let Some(message) = message {
+                    self.validate_supported_surface_expr(message, false);
+                }
+                if let Some(value) = value {
+                    self.validate_supported_surface_expr(value, false);
+                }
+            }
+            HirExpr::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => {
+                self.validate_supported_surface_items(body);
+                for catch in catches {
+                    self.validate_catch_condition(catch.id, catch.condition.as_ref());
+                    self.validate_supported_surface_items(&catch.body);
+                }
+                self.validate_supported_surface_items(finally);
+            }
+            HirExpr::Function {
+                id,
+                name,
+                captures,
+                body,
+                ..
+            } => {
+                if name.is_none() && !direct_function_binding {
+                    self.unsupported(*id, "anonymous function values are not implemented yet");
+                }
+                if !captures.is_empty() {
+                    self.unsupported(*id, "closures are not implemented yet");
+                }
+                match body {
+                    HirFunctionBody::Expr(expr) => {
+                        self.validate_supported_surface_expr(expr, false);
+                    }
+                    HirFunctionBody::Block(items) => self.validate_supported_surface_items(items),
+                }
+            }
+            HirExpr::Recover { expr, catches, .. } => {
+                self.validate_supported_surface_expr(expr, false);
+                for catch in catches {
+                    self.validate_catch_condition(catch.id, catch.condition.as_ref());
+                    self.validate_supported_surface_expr(&catch.value, false);
+                }
+            }
+            HirExpr::Frob { value, .. } => self.validate_supported_surface_expr(value, false),
+            HirExpr::Hole { id } => {
+                self.unsupported(*id, "holes are only valid as relation arguments")
+            }
+            HirExpr::LocalRef { .. }
+            | HirExpr::ExternalRef { .. }
+            | HirExpr::Identity { .. }
+            | HirExpr::Symbol { .. }
+            | HirExpr::Literal { .. }
+            | HirExpr::Break { .. }
+            | HirExpr::Continue { .. }
+            | HirExpr::Error { .. } => {}
+        }
+    }
+
+    fn validate_supported_surface_place(&mut self, place: &HirPlace) {
+        match place {
+            HirPlace::Index {
+                collection, index, ..
+            } => {
+                self.validate_supported_surface_expr(collection, false);
+                if let Some(index) = index {
+                    self.validate_supported_surface_expr(index, false);
+                }
+            }
+            HirPlace::Dot { base, .. } => self.validate_supported_surface_expr(base, false),
+            HirPlace::Invalid { .. } => {}
+            HirPlace::Local { .. } => {}
+        }
+    }
+
+    fn validate_args(&mut self, args: &[HirArg]) {
+        for arg in args {
+            self.validate_supported_surface_expr(&arg.value, false);
+        }
+    }
+
+    fn validate_dispatch_args(&mut self, id: NodeId, args: &[HirArg], context: &str) {
+        if let Some(arg) = args.iter().find(|arg| arg.splice) {
+            self.unsupported(
+                arg.id,
+                format!("{context} arguments do not support splices"),
+            );
+        }
+        if args.iter().any(|arg| arg.role.is_none()) {
+            self.unsupported(
+                id,
+                format!("{context} arguments must use explicit role names"),
+            );
+        }
+    }
+
+    fn validate_relation_atom_support(
+        &mut self,
+        atom: &HirRelationAtom,
+        allow_query_vars: bool,
+        allow_holes: bool,
+    ) {
+        for arg in &atom.args {
+            if arg.splice {
+                self.unsupported(arg.id, "relation argument splices are not implemented yet");
+            }
+            match &arg.value {
+                HirExpr::QueryVar { id, .. } if !allow_query_vars => {
+                    self.unsupported(*id, "query variables are not valid here");
+                }
+                HirExpr::Hole { id } if !allow_holes => {
+                    self.unsupported(*id, "holes are not valid here");
+                }
+                HirExpr::QueryVar { .. } | HirExpr::Hole { .. } => {}
+                expr => self.validate_supported_surface_expr(expr, false),
+            }
+        }
+    }
+
+    fn validate_catch_condition(&mut self, id: NodeId, condition: Option<&HirExpr>) {
+        let Some(condition) = condition else {
+            return;
+        };
+        if !matches!(
+            condition,
+            HirExpr::Literal {
+                value: crate::Literal::ErrorCode(_),
+                ..
+            }
+        ) {
+            self.unsupported(
+                id,
+                "compiled catch clauses currently match an error code literal or catch all",
+            );
+        }
+        self.validate_supported_surface_expr(condition, false);
     }
 
     fn lower_items(&mut self, items: &[Item], scope: ScopeId) -> Vec<HirItem> {
@@ -1017,6 +1339,11 @@ impl<'a> Analyzer<'a> {
             message: message.into(),
         });
     }
+
+    fn unsupported(&mut self, node: NodeId, message: impl Into<String>) {
+        let span = self.spans.get(&node).cloned().unwrap_or(0..0);
+        self.diagnostic(DiagnosticCode::UnsupportedSyntax, node, span, message);
+    }
 }
 
 fn looks_like_relation_name(name: &str) -> bool {
@@ -1308,7 +1635,9 @@ mod tests {
              let f = {y} => x + y\n\
              f(2)",
         );
-        assert_eq!(program.diagnostics, vec![]);
+        assert!(program.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::UnsupportedSyntax
+            && diagnostic.message == "closures are not implemented yet"));
         let x = program
             .bindings
             .iter()
@@ -1414,7 +1743,7 @@ mod tests {
     fn normalizes_dispatch_relation_atoms_and_fact_changes() {
         let program = parse_ok(
             ":move(actor: #alice, item: #coin)\n\
-             #box:put(#coin, :into)\n\
+             #box:put(item: #coin, prep: :into)\n\
              CanMove(#alice, #coin)\n\
              assert LocatedIn(#coin, #box)\n\
              retract LocatedIn(#coin, _)",
@@ -1483,5 +1812,32 @@ mod tests {
                 .any(|binding| binding.name == "err" && binding.kind == LocalKind::Catch)
         );
         assert!(program.scopes.len() >= 4);
+    }
+
+    #[test]
+    fn reports_backend_limited_surface_forms() {
+        let program = parse_ok(
+            "foo(named: 1)\n\
+             #box:put(#alice)\n\
+             try\n\
+               raise E_FAIL\n\
+             catch err if err.code == E_FAIL\n\
+               err\n\
+             end\n\
+             return ?value",
+        );
+
+        let messages = program
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DiagnosticCode::UnsupportedSyntax)
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert!(messages.contains(&"ordinary calls only support positional arguments"));
+        assert!(messages.contains(&"receiver dispatch arguments must use explicit role names"));
+        assert!(messages.contains(
+            &"compiled catch clauses currently match an error code literal or catch all"
+        ));
+        assert!(messages.contains(&"query variables are only valid as relation arguments"));
     }
 }

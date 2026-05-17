@@ -31,8 +31,8 @@ pub use task_manager::{
 };
 
 use mica_compiler::{
-    CompileContext, CompileError, HirExpr, HirItem, Literal, MethodInstallation, MethodKind,
-    MethodRelations, NodeId, compile_semantic, compile_source, install_methods,
+    CompileContext, CompileError, HirCollectionItem, HirExpr, HirItem, Literal, MethodInstallation,
+    MethodKind, MethodRelations, NodeId, compile_semantic, install_methods,
     install_rules_from_source, parse, parse_semantic,
 };
 use mica_relation_kernel::{
@@ -134,7 +134,14 @@ struct SourceProjection {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct SourceDeclarations {
     identities: BTreeSet<String>,
-    relations: BTreeSet<(String, u16)>,
+    relations: Vec<SourceRelationDeclaration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceRelationDeclaration {
+    name: String,
+    arity: u16,
+    conflict_policy: ConflictPolicy,
 }
 
 pub struct SourceRunner {
@@ -144,7 +151,6 @@ pub struct SourceRunner {
 }
 
 pub struct SharedSourceRunner {
-    context: CompileContext,
     task_manager: SharedTaskManager,
 }
 
@@ -232,7 +238,6 @@ impl SourceRunner {
 
     pub fn into_shared(self) -> SharedSourceRunner {
         SharedSourceRunner {
-            context: self.context,
             task_manager: self.task_manager.into_shared(),
         }
     }
@@ -361,8 +366,12 @@ impl SourceRunner {
             return Ok(SubmittedTask { task_id, outcome });
         }
 
+        let semantic = parse_semantic(&source);
+        if semantic.parse_errors.is_empty() && semantic.diagnostics.is_empty() {
+            self.predeclare_source_names(&semantic)?;
+        }
         let context = self.context_for_execution(principal, actor, endpoint);
-        let compiled = compile_source(&source, &context)?;
+        let compiled = compile_semantic(semantic, &context)?;
         let runtime_context = runtime_context(principal, actor, endpoint);
         let (task_id, outcome) = self.task_manager.submit_with_context(
             Arc::new(compiled.program),
@@ -663,10 +672,11 @@ impl SourceRunner {
             .copied()
             .collect::<BTreeSet<_>>();
 
-        for (name, arity) in declarations.relations {
-            if let Some((relation, existing_arity)) =
-                relation_named(self.task_manager.kernel(), Symbol::intern(&name))
-                && existing_arity == arity
+        for declaration in declarations.relations {
+            if let Some((relation, existing_arity)) = relation_named(
+                self.task_manager.kernel(),
+                Symbol::intern(&declaration.name),
+            ) && existing_arity == declaration.arity
             {
                 owned_relations.insert(relation);
             }
@@ -826,24 +836,17 @@ impl SourceRunner {
         Ok(Some(installation))
     }
 
+    fn predeclare_source_names(
+        &mut self,
+        semantic: &mica_compiler::SemanticProgram,
+    ) -> Result<(), SourceTaskError> {
+        predeclare_source_names_in_kernel(self.task_manager.kernel(), semantic)?;
+        self.refresh_context_from_catalog();
+        Ok(())
+    }
+
     fn refresh_context_from_catalog(&mut self) {
-        let snapshot = self.task_manager.kernel().snapshot();
-        self.context = CompileContext::new().with_method_relations(method_relations());
-        for name in DEFAULT_BUILTIN_NAMES {
-            self.context.define_runtime_function(*name);
-        }
-        for metadata in snapshot.relation_metadata() {
-            if let Some(name) = metadata.name().name() {
-                self.context.define_relation(name, metadata.id());
-            }
-        }
-        for (identity, name) in self.identity_names() {
-            self.context.define_identity(name, identity);
-        }
-        for (index, rule) in snapshot.rules().iter().enumerate() {
-            self.context
-                .define_identity(format!("rule{}", index + 1), rule.id());
-        }
+        self.context = compile_context_from_catalog(self.task_manager.kernel());
     }
 
     fn retract_source_unit(&mut self, unit: Symbol) -> Result<(), SourceTaskError> {
@@ -1054,6 +1057,12 @@ impl SharedSourceRunner {
                 semantic.span(item_id(item)).cloned(),
                 "contextual source submission cannot install methods or rules",
             ));
+        }
+        if authority.can_grant()
+            && semantic.parse_errors.is_empty()
+            && semantic.diagnostics.is_empty()
+        {
+            predeclare_source_names_in_kernel(self.task_manager.kernel(), &semantic)?;
         }
         let context = self.context_for_execution(principal, actor, endpoint);
         let compiled = compile_semantic(semantic, &context)?;
@@ -1288,7 +1297,7 @@ impl SharedSourceRunner {
         actor: Option<Identity>,
         endpoint: Identity,
     ) -> CompileContext {
-        let mut context = self.context.clone();
+        let mut context = compile_context_from_catalog(self.task_manager.kernel());
         if let Some(principal) = principal {
             context.define_identity("principal", principal);
         }
@@ -1357,6 +1366,66 @@ fn source_has_items(source: &str) -> bool {
     !parse_semantic(source).hir.items.is_empty()
 }
 
+fn compile_context_from_catalog(kernel: &RelationKernel) -> CompileContext {
+    let snapshot = kernel.snapshot();
+    let mut context = CompileContext::new().with_method_relations(method_relations());
+    for name in DEFAULT_BUILTIN_NAMES {
+        context.define_runtime_function(*name);
+    }
+    for metadata in snapshot.relation_metadata() {
+        if let Some(name) = metadata.name().name() {
+            context.define_relation(name, metadata.id());
+        }
+    }
+    for tuple in snapshot
+        .scan(named_identity_relation(), &[None, None])
+        .unwrap_or_default()
+    {
+        let [name, identity] = tuple.values() else {
+            continue;
+        };
+        let (Some(name), Some(identity)) = (
+            name.as_symbol().and_then(Symbol::name),
+            identity.as_identity(),
+        ) else {
+            continue;
+        };
+        context.define_identity(name, identity);
+    }
+    for (index, rule) in snapshot.rules().iter().enumerate() {
+        context.define_identity(format!("rule{}", index + 1), rule.id());
+    }
+    context
+}
+
+fn predeclare_source_names_in_kernel(
+    kernel: &RelationKernel,
+    semantic: &mica_compiler::SemanticProgram,
+) -> Result<(), SourceTaskError> {
+    let mut declarations = SourceDeclarations::default();
+    for item in &semantic.hir.items {
+        let HirItem::Expr { expr, .. } = item else {
+            continue;
+        };
+        collect_declaration_expr(expr, &mut declarations);
+    }
+    if declarations.identities.is_empty() && declarations.relations.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = kernel.begin();
+    let mut next_identity_id = next_generated_identity_id(kernel);
+    for identity_name in declarations.identities {
+        ensure_runtime_named_identity(&mut tx, &identity_name, &mut next_identity_id)?;
+    }
+    tx.commit().map_err(CompileError::from)?;
+
+    for declaration in declarations.relations {
+        ensure_declared_relation(kernel, declaration)?;
+    }
+    Ok(())
+}
+
 fn collect_source_declarations(source: &str) -> Result<SourceDeclarations, SourceTaskError> {
     let mut declarations = SourceDeclarations::default();
     for chunk in source_chunks(source) {
@@ -1396,8 +1465,7 @@ fn collect_declaration_expr(expr: &HirExpr, declarations: &mut SourceDeclaration
                 declarations.identities.insert(name.clone());
             }
         }
-        ("make_relation", [name_arg, arity_arg])
-        | ("make_functional_relation", [name_arg, arity_arg, _]) => {
+        ("make_relation", [name_arg, arity_arg]) => {
             let (HirExpr::Symbol { name, .. }, HirExpr::Literal { value, .. }) =
                 (&name_arg.value, &arity_arg.value)
             else {
@@ -1407,11 +1475,54 @@ fn collect_declaration_expr(expr: &HirExpr, declarations: &mut SourceDeclaration
                 return;
             };
             if let Ok(arity) = arity.parse::<u16>() {
-                declarations.relations.insert((name.clone(), arity));
+                declarations.relations.push(SourceRelationDeclaration {
+                    name: name.clone(),
+                    arity,
+                    conflict_policy: ConflictPolicy::Set,
+                });
+            }
+        }
+        ("make_functional_relation", [name_arg, arity_arg, key_arg]) => {
+            let (HirExpr::Symbol { name, .. }, HirExpr::Literal { value, .. }) =
+                (&name_arg.value, &arity_arg.value)
+            else {
+                return;
+            };
+            let Literal::Int(arity) = value else {
+                return;
+            };
+            if let Ok(arity) = arity.parse::<u16>()
+                && let Some(key_positions) = hir_key_positions(&key_arg.value, arity)
+            {
+                declarations.relations.push(SourceRelationDeclaration {
+                    name: name.clone(),
+                    arity,
+                    conflict_policy: ConflictPolicy::Functional { key_positions },
+                });
             }
         }
         _ => {}
     }
+}
+
+fn hir_key_positions(expr: &HirExpr, arity: u16) -> Option<Vec<u16>> {
+    let HirExpr::List { items, .. } = expr else {
+        return None;
+    };
+    items
+        .iter()
+        .map(|item| {
+            let HirCollectionItem::Expr(HirExpr::Literal {
+                value: Literal::Int(value),
+                ..
+            }) = item
+            else {
+                return None;
+            };
+            let position = value.parse::<u16>().ok()?;
+            (position < arity).then_some(position)
+        })
+        .collect()
 }
 
 fn is_exported_fact_relation(relation: Identity) -> bool {
@@ -1812,6 +1923,83 @@ fn ensure_named_identity(
     Ok(identity)
 }
 
+fn ensure_runtime_named_identity(
+    tx: &mut mica_relation_kernel::Transaction<'_>,
+    name: &str,
+    next_identity_id: &mut u64,
+) -> Result<Identity, CompileError> {
+    let symbol = Symbol::intern(name);
+    if let Some(identity) = identity_named_in_tx(tx, symbol)? {
+        return Ok(identity);
+    }
+
+    let identity = loop {
+        let Some(identity) = Identity::new(*next_identity_id) else {
+            return Err(CompileError::Unsupported {
+                node: mica_compiler::NodeId(0),
+                span: None,
+                message: "generated identity exhausted".to_owned(),
+            });
+        };
+        *next_identity_id += 1;
+        if tx
+            .scan(
+                named_identity_relation(),
+                &[None, Some(Value::identity(identity))],
+            )?
+            .is_empty()
+        {
+            break identity;
+        }
+    };
+    tx.assert(
+        named_identity_relation(),
+        Tuple::from([Value::symbol(symbol), Value::identity(identity)]),
+    )?;
+    Ok(identity)
+}
+
+fn ensure_declared_relation(
+    kernel: &RelationKernel,
+    declaration: SourceRelationDeclaration,
+) -> Result<Identity, SourceTaskError> {
+    let name = Symbol::intern(&declaration.name);
+    if let Some(metadata) = relation_metadata_named(kernel, name) {
+        if metadata.arity() == declaration.arity
+            && metadata.conflict_policy() == &declaration.conflict_policy
+        {
+            return Ok(metadata.id());
+        }
+        return Err(unsupported_runner_error(
+            NodeId(0),
+            None,
+            format!(
+                "relation {} already exists with different metadata",
+                name.name().unwrap_or("<unnamed>")
+            ),
+        ));
+    }
+
+    let mut next_relation_id = next_generated_relation_id(kernel);
+    loop {
+        let Some(relation) = Identity::new(next_relation_id) else {
+            return Err(unsupported_runner_error(
+                NodeId(0),
+                None,
+                "generated relation identity exhausted",
+            ));
+        };
+        next_relation_id += 1;
+        let metadata = RelationMetadata::new(relation, name, declaration.arity)
+            .with_conflict_policy(declaration.conflict_policy.clone());
+        match kernel.create_relation(metadata) {
+            Ok(_) => return Ok(relation),
+            Err(KernelError::RelationAlreadyExists(_)) => continue,
+            Err(error) => return Err(CompileError::from(error).into()),
+        }
+    }
+}
+
 fn bootstrap_kernel() -> RelationKernel {
     bootstrap_kernel_with_provider(Arc::new(mica_relation_kernel::InMemoryCommitProvider::new()))
 }
@@ -1869,6 +2057,31 @@ fn next_generated_method_identity_id(kernel: &RelationKernel) -> u64 {
         .max()
         .and_then(|raw| raw.checked_add(1))
         .unwrap_or(GENERATED_METHOD_ID_START)
+}
+
+fn next_generated_identity_id(kernel: &RelationKernel) -> u64 {
+    kernel
+        .snapshot()
+        .scan(named_identity_relation(), &[None, None])
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tuple| tuple.values().get(1).and_then(Value::as_identity))
+        .map(|identity| identity.raw())
+        .filter(|raw| *raw >= GENERATED_IDENTITY_ID_START)
+        .max()
+        .and_then(|raw| raw.checked_add(1))
+        .unwrap_or(GENERATED_IDENTITY_ID_START)
+}
+
+fn next_generated_relation_id(kernel: &RelationKernel) -> u64 {
+    kernel
+        .snapshot()
+        .relation_metadata()
+        .map(|metadata| metadata.id().raw())
+        .filter(|raw| *raw >= GENERATED_RELATION_ID_START)
+        .max()
+        .and_then(|raw| raw.checked_add(1))
+        .unwrap_or(GENERATED_RELATION_ID_START)
 }
 
 fn method_relations() -> MethodRelations {
@@ -3107,12 +3320,25 @@ impl Builtin for MakeIdentityBuiltin {
             return Ok(Value::identity(identity));
         }
 
-        let Some(identity) = Identity::new(self.next_identity_id.fetch_add(1, Ordering::Relaxed))
-        else {
-            return Err(invalid_builtin_call(
-                "make_identity",
-                "generated identity exhausted",
-            ));
+        let identity = loop {
+            let Some(identity) =
+                Identity::new(self.next_identity_id.fetch_add(1, Ordering::Relaxed))
+            else {
+                return Err(invalid_builtin_call(
+                    "make_identity",
+                    "generated identity exhausted",
+                ));
+            };
+            if context
+                .tx()
+                .scan(
+                    named_identity_relation(),
+                    &[None, Some(Value::identity(identity))],
+                )?
+                .is_empty()
+            {
+                break identity;
+            }
         };
         context.tx().replace_functional(
             named_identity_relation(),
@@ -5508,6 +5734,43 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn runner_same_source_body_can_use_declared_relation() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source(
+                "make_relation(:Hog, 1)\n\
+                 assert Hog(1)\n\
+                 return Hog(?value)",
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.render(),
+            "task 1 complete: [[:value: 1]] (retries: 0)"
+        );
+    }
+
+    #[test]
+    fn runner_same_source_body_can_use_declared_identity_without_reusing_id() {
+        let mut runner = SourceRunner::new_empty();
+        let first = runner
+            .run_source(
+                "make_identity(:thing)\n\
+                 return #thing",
+            )
+            .unwrap();
+        let second = runner.run_source("return make_identity(:room)").unwrap();
+
+        let TaskOutcome::Complete { value: first, .. } = first.outcome else {
+            panic!("expected first identity");
+        };
+        let TaskOutcome::Complete { value: second, .. } = second.outcome else {
+            panic!("expected second identity");
+        };
+        assert_ne!(first, second);
     }
 
     #[test]
