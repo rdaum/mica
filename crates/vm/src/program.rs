@@ -60,6 +60,21 @@ impl From<Operand> for ListItem {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MapItem {
+    Entry(Operand, Operand),
+    Splice(Operand),
+}
+
+impl MapItem {
+    fn operands(&self) -> impl Iterator<Item = &Operand> {
+        match self {
+            Self::Entry(key, value) => [Some(key), Some(value), None].into_iter().flatten(),
+            Self::Splice(operand) => [Some(operand), None, None].into_iter().flatten(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryBinding {
     pub name: Symbol,
     pub position: u16,
@@ -150,6 +165,10 @@ pub enum Instruction {
     BuildMap {
         dst: Register,
         entries: Vec<(Operand, Operand)>,
+    },
+    BuildMapDynamic {
+        dst: Register,
+        items: Vec<MapItem>,
     },
     BuildRange {
         dst: Register,
@@ -324,6 +343,12 @@ pub enum Instruction {
         roles: Vec<(Value, Operand)>,
         delay: Option<Operand>,
     },
+    SpawnDispatchDynamic {
+        dst: Register,
+        selector: Operand,
+        roles: Operand,
+        delay: Option<Operand>,
+    },
     SpawnPositionalDispatch {
         dst: Register,
         selector: Operand,
@@ -407,6 +432,12 @@ pub(crate) enum CompactListItem {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompactMapItem {
+    Entry(OperandRef, OperandRef),
+    Splice(OperandRef),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CompactRelationArg {
     Value(OperandRef),
     Splice(OperandRef),
@@ -456,6 +487,10 @@ pub(crate) enum Opcode {
     BuildMap {
         dst: Register,
         entries: TableRange,
+    },
+    BuildMapDynamic {
+        dst: Register,
+        items: TableRange,
     },
     BuildRange {
         dst: Register,
@@ -622,6 +657,12 @@ pub(crate) enum Opcode {
         roles: TableRange,
         delay: Option<OperandRef>,
     },
+    SpawnDispatchDynamic {
+        dst: Register,
+        selector: OperandRef,
+        roles: OperandRef,
+        delay: Option<OperandRef>,
+    },
     SpawnPositionalDispatch {
         dst: Register,
         selector: OperandRef,
@@ -695,6 +736,7 @@ pub struct Program {
     opcodes: Arc<[Opcode]>,
     constants: Arc<[Value]>,
     list_items: Arc<[CompactListItem]>,
+    map_items: Arc<[CompactMapItem]>,
     relation_args: Arc<[CompactRelationArg]>,
     map_entries: Arc<[(OperandRef, OperandRef)]>,
     operands: Arc<[OperandRef]>,
@@ -745,6 +787,11 @@ impl Program {
     #[inline]
     pub(crate) fn list_items(&self, range: TableRange) -> &[CompactListItem] {
         table_range(&self.list_items, range)
+    }
+
+    #[inline]
+    pub(crate) fn map_items(&self, range: TableRange) -> &[CompactMapItem] {
+        table_range(&self.map_items, range)
     }
 
     #[inline]
@@ -861,6 +908,18 @@ impl Program {
             .collect()
     }
 
+    fn decode_map_items(&self, range: TableRange) -> Vec<MapItem> {
+        self.map_items(range)
+            .iter()
+            .map(|item| match item {
+                CompactMapItem::Entry(key, value) => {
+                    MapItem::Entry(self.decode_operand(*key), self.decode_operand(*value))
+                }
+                CompactMapItem::Splice(operand) => MapItem::Splice(self.decode_operand(*operand)),
+            })
+            .collect()
+    }
+
     fn decode_instruction(&self, opcode: &Opcode) -> Instruction {
         match opcode {
             Opcode::Load { dst, value } => Instruction::Load {
@@ -898,6 +957,10 @@ impl Program {
                     .iter()
                     .map(|(key, value)| (self.decode_operand(*key), self.decode_operand(*value)))
                     .collect(),
+            },
+            Opcode::BuildMapDynamic { dst, items } => Instruction::BuildMapDynamic {
+                dst: *dst,
+                items: self.decode_map_items(*items),
             },
             Opcode::BuildRange { dst, start, end } => Instruction::BuildRange {
                 dst: *dst,
@@ -1217,6 +1280,17 @@ impl Program {
                     .collect(),
                 delay: delay.map(|operand| self.decode_operand(operand)),
             },
+            Opcode::SpawnDispatchDynamic {
+                dst,
+                selector,
+                roles,
+                delay,
+            } => Instruction::SpawnDispatchDynamic {
+                dst: *dst,
+                selector: self.decode_operand(*selector),
+                roles: self.decode_operand(*roles),
+                delay: delay.map(|operand| self.decode_operand(operand)),
+            },
             Opcode::SpawnPositionalDispatch {
                 dst,
                 selector,
@@ -1298,6 +1372,7 @@ pub struct ProgramBuilder {
     constants: Vec<Value>,
     constant_ids: BTreeMap<Value, ConstId>,
     list_items: Vec<CompactListItem>,
+    map_items: Vec<CompactMapItem>,
     relation_args: Vec<CompactRelationArg>,
     map_entries: Vec<(OperandRef, OperandRef)>,
     operands: Vec<OperandRef>,
@@ -1428,6 +1503,7 @@ impl ProgramBuilder {
             opcodes: self.opcodes.into(),
             constants: self.constants.into(),
             list_items: self.list_items.into(),
+            map_items: self.map_items.into(),
             relation_args: self.relation_args.into(),
             map_entries: self.map_entries.into(),
             operands: self.operands.into(),
@@ -1473,6 +1549,10 @@ impl ProgramBuilder {
             Instruction::BuildMap { dst, entries } => Opcode::BuildMap {
                 dst,
                 entries: self.map_entries(entries)?,
+            },
+            Instruction::BuildMapDynamic { dst, items } => Opcode::BuildMapDynamic {
+                dst,
+                items: self.map_items(items)?,
             },
             Instruction::BuildRange { dst, start, end } => Opcode::BuildRange {
                 dst,
@@ -1726,6 +1806,17 @@ impl ProgramBuilder {
                 roles: self.roles(roles)?,
                 delay: delay.map(|operand| self.operand(operand)).transpose()?,
             },
+            Instruction::SpawnDispatchDynamic {
+                dst,
+                selector,
+                roles,
+                delay,
+            } => Opcode::SpawnDispatchDynamic {
+                dst,
+                selector: self.operand(selector)?,
+                roles: self.operand(roles)?,
+                delay: delay.map(|operand| self.operand(operand)).transpose()?,
+            },
             Instruction::SpawnPositionalDispatch {
                 dst,
                 selector,
@@ -1863,6 +1954,20 @@ impl ProgramBuilder {
             self.list_items.push(item);
         }
         table_range_for(start, self.list_items.len(), "list item table")
+    }
+
+    fn map_items(&mut self, items: Vec<MapItem>) -> Result<TableRange, RuntimeError> {
+        let start = self.map_items.len();
+        for item in items {
+            let item = match item {
+                MapItem::Entry(key, value) => {
+                    CompactMapItem::Entry(self.operand(key)?, self.operand(value)?)
+                }
+                MapItem::Splice(operand) => CompactMapItem::Splice(self.operand(operand)?),
+            };
+            self.map_items.push(item);
+        }
+        table_range_for(start, self.map_items.len(), "map item table")
     }
 
     fn relation_args(&mut self, args: Vec<RelationArg>) -> Result<TableRange, RuntimeError> {
@@ -2059,6 +2164,10 @@ fn validate_instruction(
                     .iter()
                     .flat_map(|(key, value)| [key, value].into_iter()),
             )
+        }
+        Instruction::BuildMapDynamic { dst, items } => {
+            validate_register(register_count, *dst)?;
+            validate_operands(register_count, items.iter().flat_map(MapItem::operands))
         }
         Instruction::BuildRange { dst, start, end } => {
             validate_register(register_count, *dst)?;
@@ -2257,6 +2366,17 @@ fn validate_instruction(
             validate_operands(register_count, roles.iter().map(|(_, operand)| operand))?;
             validate_operands(register_count, delay.iter())
         }
+        Instruction::SpawnDispatchDynamic {
+            dst,
+            selector,
+            roles,
+            delay,
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, selector)?;
+            validate_operand(register_count, roles)?;
+            validate_operands(register_count, delay.iter())
+        }
         Instruction::SpawnPositionalDispatch {
             dst,
             selector,
@@ -2408,6 +2528,8 @@ const INST_CALL_VALUE: u8 = 49;
 const INST_CALL_VALUE_DYNAMIC: u8 = 50;
 const INST_POSITIONAL_DISPATCH_DYNAMIC: u8 = 51;
 const INST_SPAWN_POSITIONAL_DISPATCH_DYNAMIC: u8 = 52;
+const INST_BUILD_MAP_DYNAMIC: u8 = 53;
+const INST_SPAWN_DISPATCH_DYNAMIC: u8 = 54;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2433,6 +2555,8 @@ const OPERAND_VALUE: u8 = 1;
 
 const LIST_ITEM_VALUE: u8 = 0;
 const LIST_ITEM_SPLICE: u8 = 1;
+const MAP_ITEM_ENTRY: u8 = 0;
+const MAP_ITEM_SPLICE: u8 = 1;
 
 const VALUE_NOTHING: u8 = 0;
 const VALUE_BOOL: u8 = 1;
@@ -2492,6 +2616,11 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
                 write_operand(out, value)?;
             }
             Ok(())
+        }
+        Instruction::BuildMapDynamic { dst, items } => {
+            out.push(INST_BUILD_MAP_DYNAMIC);
+            write_register(out, *dst);
+            write_map_items(out, items)
         }
         Instruction::BuildRange { dst, start, end } => {
             out.push(INST_BUILD_RANGE);
@@ -2853,6 +2982,18 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             }
             write_optional_operand(out, delay.as_ref())
         }
+        Instruction::SpawnDispatchDynamic {
+            dst,
+            selector,
+            roles,
+            delay,
+        } => {
+            out.push(INST_SPAWN_DISPATCH_DYNAMIC);
+            write_register(out, *dst);
+            write_operand(out, selector)?;
+            write_operand(out, roles)?;
+            write_optional_operand(out, delay.as_ref())
+        }
         Instruction::SpawnPositionalDispatch {
             dst,
             selector,
@@ -2957,6 +3098,24 @@ fn write_list_items(out: &mut Vec<u8>, items: &[ListItem]) -> Result<(), Runtime
             }
             ListItem::Splice(operand) => {
                 out.push(LIST_ITEM_SPLICE);
+                write_operand(out, operand)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_map_items(out: &mut Vec<u8>, items: &[MapItem]) -> Result<(), RuntimeError> {
+    write_u32(out, items.len() as u32);
+    for item in items {
+        match item {
+            MapItem::Entry(key, value) => {
+                out.push(MAP_ITEM_ENTRY);
+                write_operand(out, key)?;
+                write_operand(out, value)?;
+            }
+            MapItem::Splice(operand) => {
+                out.push(MAP_ITEM_SPLICE);
                 write_operand(out, operand)?;
             }
         }
@@ -3238,6 +3397,10 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 entries: self.read_map_entries()?,
             },
+            INST_BUILD_MAP_DYNAMIC => Instruction::BuildMapDynamic {
+                dst: self.read_register()?,
+                items: self.read_map_items()?,
+            },
             INST_BUILD_RANGE => Instruction::BuildRange {
                 dst: self.read_register()?,
                 start: self.read_operand()?,
@@ -3459,6 +3622,12 @@ impl<'a> ByteReader<'a> {
                 roles: self.read_dispatch_roles()?,
                 delay: self.read_optional_operand()?,
             },
+            INST_SPAWN_DISPATCH_DYNAMIC => Instruction::SpawnDispatchDynamic {
+                dst: self.read_register()?,
+                selector: self.read_operand()?,
+                roles: self.read_operand()?,
+                delay: self.read_optional_operand()?,
+            },
             INST_SPAWN_POSITIONAL_DISPATCH => Instruction::SpawnPositionalDispatch {
                 dst: self.read_register()?,
                 selector: self.read_operand()?,
@@ -3487,6 +3656,17 @@ impl<'a> ByteReader<'a> {
                 LIST_ITEM_VALUE => self.read_operand().map(ListItem::Value),
                 LIST_ITEM_SPLICE => self.read_operand().map(ListItem::Splice),
                 _ => Err(artifact_error("unknown list item tag")),
+            })
+            .collect()
+    }
+
+    fn read_map_items(&mut self) -> Result<Vec<MapItem>, RuntimeError> {
+        let count = self.read_u32()? as usize;
+        (0..count)
+            .map(|_| match self.read_u8()? {
+                MAP_ITEM_ENTRY => Ok(MapItem::Entry(self.read_operand()?, self.read_operand()?)),
+                MAP_ITEM_SPLICE => self.read_operand().map(MapItem::Splice),
+                _ => Err(artifact_error("unknown map item tag")),
             })
             .collect()
     }

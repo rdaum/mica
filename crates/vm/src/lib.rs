@@ -33,9 +33,9 @@ pub use builtin::{
 pub use effect::Emission;
 pub use error::RuntimeError;
 pub use program::{
-    CatchHandler, ErrorField, Instruction, ListItem, MailboxRecvRequest, MailboxSend, Operand,
-    Program, ProgramBuilder, ProgramResolver, QueryBinding, Register, RelationArg, RuntimeBinaryOp,
-    RuntimeUnaryOp, SpawnRequest, SpawnTarget, SuspendKind,
+    CatchHandler, ErrorField, Instruction, ListItem, MailboxRecvRequest, MailboxSend, MapItem,
+    Operand, Program, ProgramBuilder, ProgramResolver, QueryBinding, Register, RelationArg,
+    RuntimeBinaryOp, RuntimeUnaryOp, SpawnRequest, SpawnTarget, SuspendKind,
 };
 pub use vm::{
     Frame, ProjectedVmHostContext, RegisterVm, VmHost, VmHostContext, VmHostResponse, VmState,

@@ -23,7 +23,7 @@ use mica_relation_kernel::{
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use mica_vm::{
-    CatchHandler, ErrorField, Instruction, ListItem, Operand, Program, ProgramBuilder,
+    CatchHandler, ErrorField, Instruction, ListItem, MapItem, Operand, Program, ProgramBuilder,
     QueryBinding, Register, RelationArg, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
 };
 use std::collections::{HashMap, HashSet};
@@ -2512,6 +2512,48 @@ impl<'a> ProgramCompiler<'a> {
             .collect()
     }
 
+    fn compile_role_map_items(
+        &mut self,
+        receiver: Option<Operand>,
+        args: &[HirArg],
+    ) -> Result<Vec<MapItem>, CompileError> {
+        let mut items = Vec::with_capacity(args.len() + usize::from(receiver.is_some()));
+        if let Some(receiver) = receiver {
+            items.push(MapItem::Entry(
+                Operand::Value(Value::symbol(Symbol::intern("receiver"))),
+                receiver,
+            ));
+        }
+        for arg in args {
+            if let Some(role) = &arg.role {
+                if arg.splice {
+                    return Err(self.unsupported(
+                        arg.id,
+                        "role-named argument values do not support splices; splice a role map",
+                    ));
+                }
+                items.push(MapItem::Entry(
+                    Operand::Value(Value::symbol(Symbol::intern(role))),
+                    self.compile_arg_operand(arg)?,
+                ));
+            } else if arg.splice {
+                items.push(MapItem::Splice(self.compile_arg_operand(arg)?));
+            } else {
+                return Err(self.unsupported(
+                    arg.id,
+                    "role-named dispatch arguments must use explicit role names",
+                ));
+            }
+        }
+        Ok(items)
+    }
+
+    fn alloc_map(&mut self, items: Vec<MapItem>) -> Register {
+        let dst = self.alloc_register();
+        self.emit(Instruction::BuildMapDynamic { dst, items });
+        dst
+    }
+
     fn compile_and(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
         let dst = self.alloc_register();
         self.emit(Instruction::Load {
@@ -3253,11 +3295,24 @@ impl<'a> ProgramCompiler<'a> {
             .context
             .method_relations
             .ok_or_else(|| self.unsupported(id, "method relation ids are not configured"))?;
-        self.ensure_no_arg_splices(
-            args,
-            "role-named dispatch argument splices are not implemented yet",
-        )?;
         let selector = self.compile_expr_for_operand(selector)?;
+        if args.iter().any(|arg| arg.splice) {
+            let receiver = receiver
+                .map(|receiver| self.compile_expr_for_value(receiver).map(Operand::Register))
+                .transpose()?;
+            let roles = self.compile_role_map_items(receiver, args)?;
+            let roles = self.alloc_map(roles);
+            let dst = self.alloc_register();
+            self.emit(Instruction::DynamicDispatch {
+                dst,
+                relations: method_relations.dispatch,
+                program_relation: method_relations.method_program,
+                program_bytes: method_relations.program_bytes,
+                selector,
+                roles: Operand::Register(roles),
+            });
+            return Ok(dst);
+        }
         let mut roles = Vec::new();
         if let Some(receiver) = receiver {
             roles.push((
@@ -3316,11 +3371,25 @@ impl<'a> ProgramCompiler<'a> {
         if receiver.is_none() && args.iter().all(|arg| arg.role.is_none()) {
             return self.compile_positional_spawn(id, selector, args, delay);
         }
-        self.ensure_no_arg_splices(
-            args,
-            "role-named spawn argument splices are not implemented yet",
-        )?;
         let selector = self.compile_expr_for_operand(selector)?;
+        if args.iter().any(|arg| arg.splice) {
+            let receiver = receiver
+                .map(|receiver| self.compile_expr_for_value(receiver).map(Operand::Register))
+                .transpose()?;
+            let roles = self.compile_role_map_items(receiver, args)?;
+            let roles = self.alloc_map(roles);
+            let delay = delay
+                .map(|delay| self.compile_expr_for_operand(delay))
+                .transpose()?;
+            let dst = self.alloc_register();
+            self.emit(Instruction::SpawnDispatchDynamic {
+                dst,
+                selector,
+                roles: Operand::Register(roles),
+                delay,
+            });
+            return Ok(dst);
+        }
         let mut roles = Vec::new();
         if let Some(receiver) = receiver {
             roles.push((
@@ -3593,13 +3662,6 @@ impl<'a> ProgramCompiler<'a> {
                 })
             })
             .collect()
-    }
-
-    fn ensure_no_arg_splices(&self, args: &[HirArg], message: &str) -> Result<(), CompileError> {
-        if let Some(arg) = args.iter().find(|arg| arg.splice) {
-            return Err(self.unsupported(arg.id, message));
-        }
-        Ok(())
     }
 
     fn relation_id(&self, atom: &HirRelationAtom) -> Result<RelationId, CompileError> {
@@ -5886,6 +5948,40 @@ mod tests {
             dynamic_invoke.outcome,
             TaskOutcome::Complete {
                 value: Value::list([Value::identity(alice), Value::identity(coin)]),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+
+        let role_named = submit_source_task(
+            "let roles = {:item -> #coin}\n\
+             return :inspect(actor: #alice, @roles)",
+            &invoke_context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert_eq!(
+            role_named.outcome,
+            TaskOutcome::Complete {
+                value: Value::list([Value::identity(alice), Value::identity(coin)]),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+
+        let receiver_role_named = submit_source_task(
+            "let roles = {}\n\
+             return #coin:look(actor: #alice, @roles)",
+            &invoke_context,
+            &mut task_manager,
+        )
+        .unwrap();
+        assert_eq!(
+            receiver_role_named.outcome,
+            TaskOutcome::Complete {
+                value: Value::list([Value::identity(coin), Value::identity(alice)]),
                 effects: vec![],
                 mailbox_sends: Vec::new(),
                 retries: 0,

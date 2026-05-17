@@ -13,9 +13,9 @@
 
 use crate::{
     AuthorityContext, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp, Effect,
-    ErrorField, Instruction, ListItem, Operand, Program, ProgramResolver, QueryBinding, Register,
-    RelationArg, RuntimeBinaryOp, RuntimeError, SpawnTarget, SuspendKind, Task, TaskError,
-    TaskLimits, TaskManager, TaskManagerError, TaskOutcome,
+    ErrorField, Instruction, ListItem, MapItem, Operand, Program, ProgramResolver, QueryBinding,
+    Register, RelationArg, RuntimeBinaryOp, RuntimeError, SpawnTarget, SuspendKind, Task,
+    TaskError, TaskLimits, TaskManager, TaskManagerError, TaskOutcome,
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Tuple,
@@ -75,6 +75,14 @@ fn item(value: Operand) -> ListItem {
 
 fn splice(value: Operand) -> ListItem {
     ListItem::Splice(value)
+}
+
+fn map_entry(key: Operand, value: Operand) -> MapItem {
+    MapItem::Entry(key, value)
+}
+
+fn map_splice(value: Operand) -> MapItem {
+    MapItem::Splice(value)
 }
 
 fn kernel_with_world_relations() -> RelationKernel {
@@ -1626,6 +1634,47 @@ fn program_artifact_round_trips_dynamic_positional_spawn() {
             ..
         } if request.selector == Symbol::intern("inspect")
             && request.target == SpawnTarget::PositionalArgs(vec![ident(10), ident(20)])
+            && request.delay_millis == Some(500)
+    ));
+}
+
+#[test]
+fn program_artifact_round_trips_dynamic_named_spawn() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        3,
+        [
+            Instruction::BuildMap {
+                dst: reg(1),
+                entries: vec![(v(sym("item")), v(ident(20)))],
+            },
+            Instruction::BuildMapDynamic {
+                dst: reg(2),
+                items: vec![map_entry(v(sym("actor")), v(ident(10))), map_splice(r(1))],
+            },
+            Instruction::SpawnDispatchDynamic {
+                dst: reg(0),
+                selector: v(sym("inspect")),
+                roles: r(2),
+                delay: Some(v(Value::float(0.5))),
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert!(matches!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(request),
+            ..
+        } if request.selector == Symbol::intern("inspect")
+            && request.target == SpawnTarget::NamedRoles(vec![
+                (Symbol::intern("actor"), ident(10)),
+                (Symbol::intern("item"), ident(20)),
+            ])
             && request.delay_millis == Some(500)
     ));
 }

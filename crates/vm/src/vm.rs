@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::builtin::{RuntimePorts, TransientAccess};
-use crate::program::{CompactListItem, CompactRelationArg, Opcode, OperandRef};
+use crate::program::{CompactListItem, CompactMapItem, CompactRelationArg, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
     Emission, ErrorField, MailboxRecvRequest, Program, ProgramResolver, QueryBinding, Register,
@@ -723,6 +723,12 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
+            Opcode::BuildMapDynamic { dst, items } => {
+                let value = self.resolve_map_items(program, program.map_items(*items))?;
+                self.write_register_unchecked(*dst, value);
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
             Opcode::BuildRange { dst, start, end } => {
                 let start = self.resolve_operand_ref(program, *start);
                 let end = end.map(|end| self.resolve_operand_ref(program, end));
@@ -1257,6 +1263,36 @@ impl RegisterVm {
                     delay_millis,
                 }))
             }
+            Opcode::SpawnDispatchDynamic {
+                dst,
+                selector,
+                roles,
+                delay,
+            } => {
+                let selector = self.resolve_operand_ref(program, *selector);
+                let selector_symbol = selector
+                    .as_symbol()
+                    .ok_or_else(|| RuntimeError::InvalidSpawnSelector(selector.clone()))?;
+                let roles = self.resolve_operand_ref(program, *roles);
+                let mut spawn_roles = dynamic_spawn_roles(&roles)?;
+                let delay_millis = delay
+                    .map(|delay| {
+                        self.suspend_duration(self.resolve_operand_ref(program, delay))
+                            .and_then(|kind| match kind {
+                                SuspendKind::TimedMillis(millis) => Ok(millis),
+                                _ => unreachable!(),
+                            })
+                    })
+                    .transpose()?;
+                normalize_spawn_roles(&mut spawn_roles);
+                self.advance_ip_unchecked();
+                self.state.pending_resume = Some(*dst);
+                Ok(VmHostResponse::Spawn(SpawnRequest {
+                    selector: selector_symbol,
+                    target: SpawnTarget::NamedRoles(spawn_roles),
+                    delay_millis,
+                }))
+            }
             Opcode::SpawnPositionalDispatch {
                 dst,
                 selector,
@@ -1748,6 +1784,33 @@ impl RegisterVm {
         Ok(values)
     }
 
+    fn resolve_map_items(
+        &self,
+        program: &Program,
+        items: &[CompactMapItem],
+    ) -> Result<Value, RuntimeError> {
+        let mut entries = Vec::new();
+        for item in items {
+            match item {
+                CompactMapItem::Entry(key, value) => {
+                    entries.push((
+                        self.resolve_operand_ref(program, *key),
+                        self.resolve_operand_ref(program, *value),
+                    ));
+                }
+                CompactMapItem::Splice(operand) => {
+                    let splice = self.resolve_operand_ref(program, *operand);
+                    let Some(()) = splice.with_map(|items| {
+                        entries.extend(items.iter().cloned());
+                    }) else {
+                        return Err(RuntimeError::InvalidArgumentSplice(splice));
+                    };
+                }
+            }
+        }
+        Ok(Value::map(entries))
+    }
+
     #[inline]
     fn resolve_tuple(&self, program: &Program, values: &[OperandRef]) -> Tuple {
         Tuple::new(self.resolve_operands(program, values))
@@ -2106,6 +2169,21 @@ fn dynamic_dispatch_roles(value: &Value) -> Result<Vec<(Value, Value)>, RuntimeE
             name: Symbol::intern("invoke"),
             message: "invoke expects roles to be a map".to_owned(),
         })
+}
+
+fn dynamic_spawn_roles(value: &Value) -> Result<Vec<(Symbol, Value)>, RuntimeError> {
+    value
+        .with_map(|entries| {
+            entries
+                .iter()
+                .map(|(role, value)| {
+                    role.as_symbol()
+                        .map(|role| (role, value.clone()))
+                        .ok_or_else(|| RuntimeError::InvalidSpawnRole(role.clone()))
+                })
+                .collect()
+        })
+        .ok_or_else(|| RuntimeError::InvalidArgumentSplice(value.clone()))?
 }
 
 fn normalize_spawn_roles(roles: &mut [(Symbol, Value)]) {

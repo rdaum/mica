@@ -21,10 +21,10 @@ pub use mica_relation_kernel::Tuple;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem,
-    MailboxRecvRequest, MailboxSend, Operand, Program, ProgramResolver, QueryBinding, Register,
-    RegisterVm, RelationArg, RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp,
-    SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget, SuspendKind, VmHostContext, VmHostResponse,
-    VmState,
+    MailboxRecvRequest, MailboxSend, MapItem, Operand, Program, ProgramResolver, QueryBinding,
+    Register, RegisterVm, RelationArg, RuntimeBinaryOp, RuntimeContext, RuntimeError,
+    RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget, SuspendKind, VmHostContext,
+    VmHostResponse, VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{
@@ -4566,6 +4566,49 @@ mod tests {
                 }),
                 ..
             } if selector == Symbol::intern("inspect") && args == vec![alice, coin]
+        ));
+    }
+
+    #[test]
+    fn runner_can_spawn_named_invocation_with_argument_splices() {
+        let mut runner = SourceRunner::new_empty();
+        let coin = runner.run_source("return make_identity(:coin)").unwrap();
+        let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+            panic!("expected coin identity creation to complete");
+        };
+        let alice = runner.run_source("return make_identity(:alice)").unwrap();
+        let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+            panic!("expected alice identity creation to complete");
+        };
+        runner
+            .run_filein(
+                "verb parent()\n\
+                   let roles = {:item -> #coin}\n\
+                   let child = spawn :inspect(actor: #alice, @roles) after 0.25\n\
+                   return child\n\
+                 end\n\
+                 verb inspect(actor, item)\n\
+                   return [actor, item]\n\
+                 end\n",
+            )
+            .unwrap();
+
+        let report = runner.run_source("return :parent()").unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Spawn(SpawnRequest {
+                    selector,
+                    target: SpawnTarget::NamedRoles(roles),
+                    delay_millis: Some(250),
+                }),
+                ..
+            } if selector == Symbol::intern("inspect")
+                && roles == vec![
+                    (Symbol::intern("actor"), alice),
+                    (Symbol::intern("item"), coin),
+                ]
         ));
     }
 

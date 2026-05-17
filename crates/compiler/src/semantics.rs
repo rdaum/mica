@@ -546,13 +546,13 @@ impl<'a> Analyzer<'a> {
     }
 
     fn validate_dispatch_args(&mut self, id: NodeId, args: &[HirArg], context: &str) {
-        if let Some(arg) = args.iter().find(|arg| arg.splice) {
+        if let Some(arg) = args.iter().find(|arg| arg.splice && arg.role.is_some()) {
             self.unsupported(
                 arg.id,
-                format!("{context} arguments do not support splices"),
+                format!("{context} role values do not support splices; splice a role map"),
             );
         }
-        if args.iter().any(|arg| arg.role.is_none()) {
+        if args.iter().any(|arg| arg.role.is_none() && !arg.splice) {
             self.unsupported(
                 id,
                 format!("{context} arguments must use explicit role names"),
@@ -562,11 +562,11 @@ impl<'a> Analyzer<'a> {
 
     fn validate_receiver_dispatch_args(&mut self, id: NodeId, args: &[HirArg]) {
         let has_named = args.iter().any(|arg| arg.role.is_some());
-        let has_positional = args.iter().any(|arg| arg.role.is_none());
-        if has_named && let Some(arg) = args.iter().find(|arg| arg.splice) {
+        let has_positional = args.iter().any(|arg| arg.role.is_none() && !arg.splice);
+        if has_named && let Some(arg) = args.iter().find(|arg| arg.splice && arg.role.is_some()) {
             self.unsupported(
                 arg.id,
-                "receiver role dispatch arguments do not support splices",
+                "receiver role dispatch values do not support splices; splice a role map",
             );
         }
         if has_named && has_positional {
@@ -581,9 +581,14 @@ impl<'a> Analyzer<'a> {
         match target {
             HirExpr::RoleDispatch { id, selector, args } => {
                 let has_named = args.iter().any(|arg| arg.role.is_some());
-                let has_positional = args.iter().any(|arg| arg.role.is_none());
-                if has_named && let Some(arg) = args.iter().find(|arg| arg.splice) {
-                    self.unsupported(arg.id, "spawn role arguments do not support splices");
+                let has_positional = args.iter().any(|arg| arg.role.is_none() && !arg.splice);
+                if has_named
+                    && let Some(arg) = args.iter().find(|arg| arg.splice && arg.role.is_some())
+                {
+                    self.unsupported(
+                        arg.id,
+                        "spawn role values do not support splices; splice a role map",
+                    );
                 }
                 if has_named && has_positional {
                     self.unsupported(
