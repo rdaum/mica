@@ -4531,6 +4531,84 @@ mod tests {
     }
 
     #[test]
+    fn runner_can_spawn_positional_invocation_with_argument_splices() {
+        let mut runner = SourceRunner::new_empty();
+        let coin = runner.run_source("return make_identity(:coin)").unwrap();
+        let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+            panic!("expected coin identity creation to complete");
+        };
+        let alice = runner.run_source("return make_identity(:alice)").unwrap();
+        let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+            panic!("expected alice identity creation to complete");
+        };
+        runner
+            .run_filein(
+                "verb parent()\n\
+                   let args = [#coin]\n\
+                   let child = spawn :inspect(#alice, @args) after 0.5\n\
+                   return child\n\
+                 end\n\
+                 verb inspect(actor, item)\n\
+                   return [actor, item]\n\
+                 end\n",
+            )
+            .unwrap();
+
+        let report = runner.run_source("return :parent()").unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Spawn(SpawnRequest {
+                    selector,
+                    target: SpawnTarget::PositionalArgs(args),
+                    delay_millis: Some(500),
+                }),
+                ..
+            } if selector == Symbol::intern("inspect") && args == vec![alice, coin]
+        ));
+    }
+
+    #[test]
+    fn runner_can_spawn_receiver_positional_invocation_with_argument_splices() {
+        let mut runner = SourceRunner::new_empty();
+        let coin = runner.run_source("return make_identity(:coin)").unwrap();
+        let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+            panic!("expected coin identity creation to complete");
+        };
+        let alice = runner.run_source("return make_identity(:alice)").unwrap();
+        let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+            panic!("expected alice identity creation to complete");
+        };
+        runner
+            .run_filein(
+                "verb parent()\n\
+                   let args = [#alice]\n\
+                   let child = spawn #coin:inspect(@args) after 0\n\
+                   return child\n\
+                 end\n\
+                 verb inspect(receiver, actor)\n\
+                   return [receiver, actor]\n\
+                 end\n",
+            )
+            .unwrap();
+
+        let report = runner.run_source("return :parent()").unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Spawn(SpawnRequest {
+                    selector,
+                    target: SpawnTarget::PositionalArgs(args),
+                    delay_millis: Some(0),
+                }),
+                ..
+            } if selector == Symbol::intern("inspect") && args == vec![coin, alice]
+        ));
+    }
+
+    #[test]
     fn shared_runner_executes_invocations_from_multiple_threads() {
         let mut runner = SourceRunner::new_empty();
         runner

@@ -6,8 +6,9 @@ the cross-check.
 1. Argument splices parse in every argument list, but backend only implements
    them for list literals, direct local function calls, registered runtime
    builtin calls, function-value calls, relation atoms, task-control calls,
-   positional dispatch, receiver positional dispatch, and `invoke`. Role-named
-   dispatch and spawn call paths still reject them.
+   positional dispatch, receiver positional dispatch, `invoke`, and positional
+   spawn. Role-named dispatch and role-named spawn call paths still reject
+   them.
 
 2. `spawn` parses any expression target, but backend only accepts role or
    receiver dispatch targets. Role dispatch spawn targets still require

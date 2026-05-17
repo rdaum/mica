@@ -3253,7 +3253,10 @@ impl<'a> ProgramCompiler<'a> {
             .context
             .method_relations
             .ok_or_else(|| self.unsupported(id, "method relation ids are not configured"))?;
-        self.ensure_no_arg_splices(args, "dispatch argument splices are not implemented yet")?;
+        self.ensure_no_arg_splices(
+            args,
+            "role-named dispatch argument splices are not implemented yet",
+        )?;
         let selector = self.compile_expr_for_operand(selector)?;
         let mut roles = Vec::new();
         if let Some(receiver) = receiver {
@@ -3311,7 +3314,13 @@ impl<'a> ProgramCompiler<'a> {
         {
             return self.compile_receiver_positional_spawn(id, receiver, selector, args, delay);
         }
-        self.ensure_no_arg_splices(args, "spawn argument splices are not implemented yet")?;
+        if receiver.is_none() && args.iter().all(|arg| arg.role.is_none()) {
+            return self.compile_positional_spawn(id, selector, args, delay);
+        }
+        self.ensure_no_arg_splices(
+            args,
+            "role-named spawn argument splices are not implemented yet",
+        )?;
         let selector = self.compile_expr_for_operand(selector)?;
         let mut roles = Vec::new();
         if let Some(receiver) = receiver {
@@ -3344,6 +3353,46 @@ impl<'a> ProgramCompiler<'a> {
         Ok(dst)
     }
 
+    fn compile_positional_spawn(
+        &mut self,
+        id: NodeId,
+        selector: &HirExpr,
+        args: &[HirArg],
+        delay: Option<&HirExpr>,
+    ) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(
+                self.unsupported(id, "positional spawn calls do not accept named arguments")
+            );
+        }
+        let selector = self.compile_expr_for_operand(selector)?;
+        let delay = delay
+            .map(|delay| self.compile_expr_for_operand(delay))
+            .transpose()?;
+        let dst = self.alloc_register();
+        if args.iter().any(|arg| arg.splice) {
+            let args = self.compile_arg_items(args)?;
+            self.emit(Instruction::SpawnPositionalDispatchDynamic {
+                dst,
+                selector,
+                args,
+                delay,
+            });
+        } else {
+            let args = args
+                .iter()
+                .map(|arg| self.compile_arg_operand(arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.emit(Instruction::SpawnPositionalDispatch {
+                dst,
+                selector,
+                args,
+                delay,
+            });
+        }
+        Ok(dst)
+    }
+
     fn compile_receiver_positional_spawn(
         &mut self,
         id: NodeId,
@@ -3358,23 +3407,35 @@ impl<'a> ProgramCompiler<'a> {
                 "receiver positional spawn calls do not accept named arguments",
             ));
         }
-        self.ensure_no_arg_splices(args, "spawn argument splices are not implemented yet")?;
         let selector = self.compile_expr_for_operand(selector)?;
-        let mut operands = Vec::with_capacity(args.len() + 1);
-        operands.push(Operand::Register(self.compile_expr_for_value(receiver)?));
-        for arg in args {
-            operands.push(self.compile_arg_operand(arg)?);
-        }
+        let receiver = self.compile_expr_for_value(receiver)?;
         let delay = delay
             .map(|delay| self.compile_expr_for_operand(delay))
             .transpose()?;
         let dst = self.alloc_register();
-        self.emit(Instruction::SpawnPositionalDispatch {
-            dst,
-            selector,
-            args: operands,
-            delay,
-        });
+        if args.iter().any(|arg| arg.splice) {
+            let mut items = Vec::with_capacity(args.len() + 1);
+            items.push(ListItem::Value(Operand::Register(receiver)));
+            items.extend(self.compile_arg_items(args)?);
+            self.emit(Instruction::SpawnPositionalDispatchDynamic {
+                dst,
+                selector,
+                args: items,
+                delay,
+            });
+        } else {
+            let mut operands = Vec::with_capacity(args.len() + 1);
+            operands.push(Operand::Register(receiver));
+            for arg in args {
+                operands.push(self.compile_arg_operand(arg)?);
+            }
+            self.emit(Instruction::SpawnPositionalDispatch {
+                dst,
+                selector,
+                args: operands,
+                delay,
+            });
+        }
         Ok(dst)
     }
 

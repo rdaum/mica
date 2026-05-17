@@ -1285,6 +1285,34 @@ impl RegisterVm {
                     delay_millis,
                 }))
             }
+            Opcode::SpawnPositionalDispatchDynamic {
+                dst,
+                selector,
+                args,
+                delay,
+            } => {
+                let selector = self.resolve_operand_ref(program, *selector);
+                let selector_symbol = selector
+                    .as_symbol()
+                    .ok_or_else(|| RuntimeError::InvalidSpawnSelector(selector.clone()))?;
+                let args = self.resolve_list_items(program, program.list_items(*args))?;
+                let delay_millis = delay
+                    .map(|delay| {
+                        self.suspend_duration(self.resolve_operand_ref(program, delay))
+                            .and_then(|kind| match kind {
+                                SuspendKind::TimedMillis(millis) => Ok(millis),
+                                _ => unreachable!(),
+                            })
+                    })
+                    .transpose()?;
+                self.advance_ip_unchecked();
+                self.state.pending_resume = Some(*dst);
+                Ok(VmHostResponse::Spawn(SpawnRequest {
+                    selector: selector_symbol,
+                    target: SpawnTarget::PositionalArgs(args),
+                    delay_millis,
+                }))
+            }
             Opcode::Commit => {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Commit)

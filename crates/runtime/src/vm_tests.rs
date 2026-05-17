@@ -1597,6 +1597,40 @@ fn program_artifact_round_trips_positional_spawn() {
 }
 
 #[test]
+fn program_artifact_round_trips_dynamic_positional_spawn() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        2,
+        [
+            Instruction::BuildList {
+                dst: reg(1),
+                items: vec![item(v(ident(20)))],
+            },
+            Instruction::SpawnPositionalDispatchDynamic {
+                dst: reg(0),
+                selector: v(sym("inspect")),
+                args: vec![item(v(ident(10))), splice(r(1))],
+                delay: Some(v(Value::float(0.5))),
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert!(matches!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(request),
+            ..
+        } if request.selector == Symbol::intern("inspect")
+            && request.target == SpawnTarget::PositionalArgs(vec![ident(10), ident(20)])
+            && request.delay_millis == Some(500)
+    ));
+}
+
+#[test]
 fn program_artifact_round_trips_dynamic_positional_dispatch() {
     let program = Program::new(
         2,

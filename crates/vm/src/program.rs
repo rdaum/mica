@@ -330,6 +330,12 @@ pub enum Instruction {
         args: Vec<Operand>,
         delay: Option<Operand>,
     },
+    SpawnPositionalDispatchDynamic {
+        dst: Register,
+        selector: Operand,
+        args: Vec<ListItem>,
+        delay: Option<Operand>,
+    },
     Commit,
     Suspend {
         kind: SuspendKind,
@@ -617,6 +623,12 @@ pub(crate) enum Opcode {
         delay: Option<OperandRef>,
     },
     SpawnPositionalDispatch {
+        dst: Register,
+        selector: OperandRef,
+        args: TableRange,
+        delay: Option<OperandRef>,
+    },
+    SpawnPositionalDispatchDynamic {
         dst: Register,
         selector: OperandRef,
         args: TableRange,
@@ -1220,6 +1232,17 @@ impl Program {
                     .collect(),
                 delay: delay.map(|operand| self.decode_operand(operand)),
             },
+            Opcode::SpawnPositionalDispatchDynamic {
+                dst,
+                selector,
+                args,
+                delay,
+            } => Instruction::SpawnPositionalDispatchDynamic {
+                dst: *dst,
+                selector: self.decode_operand(*selector),
+                args: self.decode_list_items(*args),
+                delay: delay.map(|operand| self.decode_operand(operand)),
+            },
             Opcode::Commit => Instruction::Commit,
             Opcode::Suspend { kind } => Instruction::Suspend {
                 kind: self.suspend_kind(*kind).clone(),
@@ -1712,6 +1735,17 @@ impl ProgramBuilder {
                 dst,
                 selector: self.operand(selector)?,
                 args: self.operands(args)?,
+                delay: delay.map(|operand| self.operand(operand)).transpose()?,
+            },
+            Instruction::SpawnPositionalDispatchDynamic {
+                dst,
+                selector,
+                args,
+                delay,
+            } => Opcode::SpawnPositionalDispatchDynamic {
+                dst,
+                selector: self.operand(selector)?,
+                args: self.list_items(args)?,
                 delay: delay.map(|operand| self.operand(operand)).transpose()?,
             },
             Instruction::Commit => Opcode::Commit,
@@ -2234,6 +2268,17 @@ fn validate_instruction(
             validate_operands(register_count, args.iter())?;
             validate_operands(register_count, delay.iter())
         }
+        Instruction::SpawnPositionalDispatchDynamic {
+            dst,
+            selector,
+            args,
+            delay,
+        } => {
+            validate_register(register_count, *dst)?;
+            validate_operand(register_count, selector)?;
+            validate_operands(register_count, args.iter().map(ListItem::operand))?;
+            validate_operands(register_count, delay.iter())
+        }
         Instruction::Commit | Instruction::Suspend { .. } | Instruction::RollbackRetry => Ok(()),
         Instruction::SuspendValue { dst, duration }
         | Instruction::Read {
@@ -2362,6 +2407,7 @@ const INST_LOAD_FUNCTION: u8 = 48;
 const INST_CALL_VALUE: u8 = 49;
 const INST_CALL_VALUE_DYNAMIC: u8 = 50;
 const INST_POSITIONAL_DISPATCH_DYNAMIC: u8 = 51;
+const INST_SPAWN_POSITIONAL_DISPATCH_DYNAMIC: u8 = 52;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2817,6 +2863,18 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_register(out, *dst);
             write_operand(out, selector)?;
             write_operands(out, args)?;
+            write_optional_operand(out, delay.as_ref())
+        }
+        Instruction::SpawnPositionalDispatchDynamic {
+            dst,
+            selector,
+            args,
+            delay,
+        } => {
+            out.push(INST_SPAWN_POSITIONAL_DISPATCH_DYNAMIC);
+            write_register(out, *dst);
+            write_operand(out, selector)?;
+            write_list_items(out, args)?;
             write_optional_operand(out, delay.as_ref())
         }
         Instruction::Call { dst, program, args } => {
@@ -3405,6 +3463,12 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 selector: self.read_operand()?,
                 args: self.read_operands()?,
+                delay: self.read_optional_operand()?,
+            },
+            INST_SPAWN_POSITIONAL_DISPATCH_DYNAMIC => Instruction::SpawnPositionalDispatchDynamic {
+                dst: self.read_register()?,
+                selector: self.read_operand()?,
+                args: self.read_list_items()?,
                 delay: self.read_optional_operand()?,
             },
             _ => return Err(artifact_error("unknown program artifact instruction tag")),

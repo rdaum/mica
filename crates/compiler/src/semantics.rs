@@ -391,13 +391,7 @@ impl<'a> Analyzer<'a> {
                 self.validate_args(args);
             }
             HirExpr::Spawn { id, target, delay } => {
-                if !matches!(
-                    target.as_ref(),
-                    HirExpr::RoleDispatch { .. } | HirExpr::ReceiverDispatch { .. }
-                ) {
-                    self.unsupported(*id, "spawn expects a role or receiver dispatch target");
-                }
-                self.validate_supported_surface_expr(target, false);
+                self.validate_spawn_target(*id, target);
                 if let Some(delay) = delay {
                     self.validate_supported_surface_expr(delay, false);
                 }
@@ -580,6 +574,38 @@ impl<'a> Analyzer<'a> {
                 id,
                 "receiver dispatch arguments must be all positional or all role-named",
             );
+        }
+    }
+
+    fn validate_spawn_target(&mut self, id: NodeId, target: &HirExpr) {
+        match target {
+            HirExpr::RoleDispatch { id, selector, args } => {
+                let has_named = args.iter().any(|arg| arg.role.is_some());
+                let has_positional = args.iter().any(|arg| arg.role.is_none());
+                if has_named && let Some(arg) = args.iter().find(|arg| arg.splice) {
+                    self.unsupported(arg.id, "spawn role arguments do not support splices");
+                }
+                if has_named && has_positional {
+                    self.unsupported(
+                        *id,
+                        "spawn arguments must be all positional or all role-named",
+                    );
+                }
+                self.validate_supported_surface_expr(selector, false);
+                self.validate_args(args);
+            }
+            HirExpr::ReceiverDispatch {
+                id,
+                receiver,
+                selector,
+                args,
+            } => {
+                self.validate_receiver_dispatch_args(*id, args);
+                self.validate_supported_surface_expr(receiver, false);
+                self.validate_supported_surface_expr(selector, false);
+                self.validate_args(args);
+            }
+            _ => self.unsupported(id, "spawn expects a role or receiver dispatch target"),
         }
     }
 
