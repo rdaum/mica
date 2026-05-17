@@ -379,6 +379,12 @@ Run the test suite:
 cargo test --workspace
 ```
 
+## Reference
+
+The checked-in mdBook source lives under [`mdbook/src`](mdbook/src/SUMMARY.md).
+It is an in-progress language and runtime reference; the generated HTML output
+is not committed yet.
+
 ## Repository Map
 
 - [`crates/var`](crates/var/README.md): Mica value representation.
