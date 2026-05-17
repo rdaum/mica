@@ -10,16 +10,12 @@ the cross-check.
    spawn. Role-named dispatch and role-named spawn call paths still reject
    them.
 
-2. `spawn` parses any expression target, but backend only accepts role or
-   receiver dispatch targets. Role dispatch spawn targets still require
-   explicit role names.
-
-3. A single compiled eval task cannot define a relation/identity and use the
+2. A single compiled eval task cannot define a relation/identity and use the
     new name later in the same source body because compile context is resolved
     before execution. Filein chunking hides this for import files, but the REPL
     and `eval` semantics remain surprising.
 
-4. Rules and method/verb definitions cannot be mixed with executable task code
+3. Rules and method/verb definitions cannot be mixed with executable task code
     in one compiled chunk.
 
-5. Contextual actor submissions cannot install rules or methods.
+4. Contextual actor submissions cannot install rules or methods.

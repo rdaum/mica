@@ -287,7 +287,14 @@ impl<'a> Parser<'a> {
 
     fn parse_spawn_expr(&mut self) -> CstNode {
         let mut children = vec![self.bump_element()];
-        children.push(CstElement::Node(self.parse_expr(0)));
+        let target = self.parse_expr(0);
+        if !matches!(
+            target.kind,
+            SyntaxKind::RoleCallExpr | SyntaxKind::ReceiverCallExpr
+        ) {
+            self.error("spawn expects a role or receiver dispatch target");
+        }
+        children.push(CstElement::Node(target));
         if self.current_kind() == SyntaxKind::AfterKw {
             children.push(self.bump_element());
             children.push(CstElement::Node(self.parse_expr(0)));
@@ -749,6 +756,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::RaiseKw
                 | SyntaxKind::RecoverKw
                 | SyntaxKind::OneKw
+                | SyntaxKind::SpawnKw
                 | SyntaxKind::BreakKw
                 | SyntaxKind::ContinueKw
                 | SyntaxKind::TryKw
@@ -1037,6 +1045,26 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::RoleCallExpr));
         assert!(contains(&parse.root, SyntaxKind::ReceiverCallExpr));
+    }
+
+    #[test]
+    fn spawn_requires_dispatch_target() {
+        let role = parse("spawn :tick(actor: actor()) after 5");
+        assert_eq!(role.errors, vec![]);
+        assert!(contains(&role.root, SyntaxKind::SpawnExpr));
+        assert!(contains(&role.root, SyntaxKind::RoleCallExpr));
+
+        let receiver = parse("spawn #clock:tick(actor())");
+        assert_eq!(receiver.errors, vec![]);
+        assert!(contains(&receiver.root, SyntaxKind::SpawnExpr));
+        assert!(contains(&receiver.root, SyntaxKind::ReceiverCallExpr));
+
+        let ordinary = parse("spawn tick(actor())");
+        assert_eq!(ordinary.errors.len(), 1);
+        assert_eq!(
+            ordinary.errors[0].message,
+            "spawn expects a role or receiver dispatch target"
+        );
     }
 
     #[test]

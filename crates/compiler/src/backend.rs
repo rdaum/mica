@@ -3303,10 +3303,9 @@ impl<'a> ProgramCompiler<'a> {
                 ..
             } => (selector.as_ref(), args, Some(receiver.as_ref())),
             _ => {
-                return Err(self.unsupported(
-                    id,
-                    "spawn expects a role dispatch target, such as spawn :verb(actor: actor())",
-                ));
+                return Err(
+                    self.unsupported(id, "spawn expects a role or receiver dispatch target")
+                );
             }
         };
         if let Some(receiver) = receiver
