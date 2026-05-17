@@ -1365,6 +1365,40 @@ fn builtin_call_invokes_registered_host_function() {
 }
 
 #[test]
+fn dynamic_builtin_call_expands_argument_splices() {
+    let kernel = kernel_with_world_relations();
+    let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
+    let program = Program::new(
+        2,
+        [
+            Instruction::BuildList {
+                dst: reg(0),
+                items: vec![item(v(ident(EFFECT_TARGET))), item(v(strv("hello")))],
+            },
+            Instruction::BuiltinCallDynamic {
+                dst: reg(1),
+                name: Symbol::intern("emit_first_arg"),
+                args: vec![splice(r(0))],
+            },
+            Instruction::Return { value: r(1) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    assert_eq!(
+        run_program_with_builtins(&kernel, restored, builtins).unwrap(),
+        TaskOutcome::Complete {
+            value: strv("hello"),
+            effects: vec![emitted(strv("hello"))],
+            mailbox_sends: Vec::new(),
+            retries: 0,
+        }
+    );
+}
+
+#[test]
 fn missing_builtin_call_is_runtime_error() {
     let kernel = kernel_with_world_relations();
     let program = Program::new(

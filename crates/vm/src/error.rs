@@ -74,6 +74,7 @@ pub enum RuntimeError {
     InvalidSuspendDuration(Value),
     InvalidSpawnSelector(Value),
     InvalidSpawnRole(Value),
+    InvalidArgumentSplice(Value),
     InvalidRelationSplice(Value),
     RelationArgumentCountExceeded {
         count: usize,

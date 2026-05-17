@@ -1024,6 +1024,13 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
+            Opcode::BuiltinCallDynamic { dst, name, args } => {
+                let args = self.resolve_list_items(program, program.list_items(*args))?;
+                let value = host.call_builtin(*name, &args)?;
+                self.write_register_unchecked(*dst, value);
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
             Opcode::Dispatch {
                 dst,
                 spec,
@@ -1513,6 +1520,30 @@ impl RegisterVm {
             }
         }
         Value::list(values)
+    }
+
+    fn resolve_list_items(
+        &self,
+        program: &Program,
+        items: &[CompactListItem],
+    ) -> Result<Vec<Value>, RuntimeError> {
+        let mut values = Vec::new();
+        for item in items {
+            match item {
+                CompactListItem::Value(operand) => {
+                    values.push(self.resolve_operand_ref(program, *operand));
+                }
+                CompactListItem::Splice(operand) => {
+                    let splice = self.resolve_operand_ref(program, *operand);
+                    let Some(()) = splice.with_list(|items| {
+                        values.extend(items.iter().cloned());
+                    }) else {
+                        return Err(RuntimeError::InvalidArgumentSplice(splice));
+                    };
+                }
+            }
+        }
+        Ok(values)
     }
 
     #[inline]

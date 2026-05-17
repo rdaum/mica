@@ -1809,17 +1809,18 @@ impl<'a> ProgramCompiler<'a> {
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(self.unsupported(id, "builtin calls only support positional arguments"));
         }
-        self.ensure_no_arg_splices(args, "builtin argument splices are not implemented yet")?;
-        let args = args
-            .iter()
-            .map(|arg| self.compile_arg_operand(arg))
-            .collect::<Result<Vec<_>, _>>()?;
         let dst = self.alloc_register();
-        self.emit(Instruction::BuiltinCall {
-            dst,
-            name: Symbol::intern(name),
-            args,
-        });
+        let name = Symbol::intern(name);
+        if args.iter().any(|arg| arg.splice) {
+            let args = self.compile_arg_items(args)?;
+            self.emit(Instruction::BuiltinCallDynamic { dst, name, args });
+        } else {
+            let args = args
+                .iter()
+                .map(|arg| self.compile_arg_operand(arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.emit(Instruction::BuiltinCall { dst, name, args });
+        }
         Ok(dst)
     }
 
@@ -2005,17 +2006,7 @@ impl<'a> ProgramCompiler<'a> {
         function: &FunctionInfo,
         args: &[HirArg],
     ) -> Result<Vec<Operand>, CompileError> {
-        let items = args
-            .iter()
-            .map(|arg| {
-                let operand = self.compile_arg_operand(arg)?;
-                Ok(if arg.splice {
-                    ListItem::Splice(operand)
-                } else {
-                    ListItem::Value(operand)
-                })
-            })
-            .collect::<Result<Vec<_>, CompileError>>()?;
+        let items = self.compile_arg_items(args)?;
         let actuals = self.alloc_register();
         self.emit(Instruction::BuildList {
             dst: actuals,
@@ -2062,6 +2053,19 @@ impl<'a> ProgramCompiler<'a> {
             }
         }
         Ok(operands)
+    }
+
+    fn compile_arg_items(&mut self, args: &[HirArg]) -> Result<Vec<ListItem>, CompileError> {
+        args.iter()
+            .map(|arg| {
+                let operand = self.compile_arg_operand(arg)?;
+                Ok(if arg.splice {
+                    ListItem::Splice(operand)
+                } else {
+                    ListItem::Value(operand)
+                })
+            })
+            .collect()
     }
 
     fn compile_and(&mut self, left: &HirExpr, right: &HirExpr) -> Result<Register, CompileError> {
@@ -3903,6 +3907,34 @@ mod tests {
         let mut task_manager = TaskManager::new(kernel).with_builtins(Arc::new(builtins));
         let submitted = submit_source_task(
             "let value = emit_first_arg(#target, \"hello\")\n\
+             return value",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::string("hello"),
+                effects: vec![emitted(Value::string("hello"))],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_expands_runtime_builtin_argument_splices() {
+        let context = CompileContext::new()
+            .with_identity("target", id(99))
+            .with_runtime_function("emit_first_arg");
+        let kernel = RelationKernel::new();
+        let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
+        let mut task_manager = TaskManager::new(kernel).with_builtins(Arc::new(builtins));
+        let submitted = submit_source_task(
+            "let args = [#target, \"hello\"]\n\
+             let value = emit_first_arg(@args)\n\
              return value",
             &context,
             &mut task_manager,

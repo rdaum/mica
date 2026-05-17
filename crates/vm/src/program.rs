@@ -258,6 +258,11 @@ pub enum Instruction {
         name: Symbol,
         args: Vec<Operand>,
     },
+    BuiltinCallDynamic {
+        dst: Register,
+        name: Symbol,
+        args: Vec<ListItem>,
+    },
     Dispatch {
         dst: Register,
         relations: DispatchRelations,
@@ -522,6 +527,11 @@ pub(crate) enum Opcode {
         name: Symbol,
         args: TableRange,
     },
+    BuiltinCallDynamic {
+        dst: Register,
+        name: Symbol,
+        args: TableRange,
+    },
     Dispatch {
         dst: Register,
         spec: DispatchSpecId,
@@ -763,6 +773,16 @@ impl Program {
             .collect()
     }
 
+    fn decode_list_items(&self, range: TableRange) -> Vec<ListItem> {
+        self.list_items(range)
+            .iter()
+            .map(|item| match item {
+                CompactListItem::Value(operand) => ListItem::Value(self.decode_operand(*operand)),
+                CompactListItem::Splice(operand) => ListItem::Splice(self.decode_operand(*operand)),
+            })
+            .collect()
+    }
+
     fn decode_instruction(&self, opcode: &Opcode) -> Instruction {
         match opcode {
             Opcode::Load { dst, value } => Instruction::Load {
@@ -791,18 +811,7 @@ impl Program {
             },
             Opcode::BuildList { dst, items } => Instruction::BuildList {
                 dst: *dst,
-                items: self
-                    .list_items(*items)
-                    .iter()
-                    .map(|item| match item {
-                        CompactListItem::Value(operand) => {
-                            ListItem::Value(self.decode_operand(*operand))
-                        }
-                        CompactListItem::Splice(operand) => {
-                            ListItem::Splice(self.decode_operand(*operand))
-                        }
-                    })
-                    .collect(),
+                items: self.decode_list_items(*items),
             },
             Opcode::BuildMap { dst, entries } => Instruction::BuildMap {
                 dst: *dst,
@@ -1002,6 +1011,11 @@ impl Program {
                     .iter()
                     .map(|operand| self.decode_operand(*operand))
                     .collect(),
+            },
+            Opcode::BuiltinCallDynamic { dst, name, args } => Instruction::BuiltinCallDynamic {
+                dst: *dst,
+                name: *name,
+                args: self.decode_list_items(*args),
             },
             Opcode::Dispatch {
                 dst,
@@ -1453,6 +1467,11 @@ impl ProgramBuilder {
                 dst,
                 name,
                 args: self.operands(args)?,
+            },
+            Instruction::BuiltinCallDynamic { dst, name, args } => Opcode::BuiltinCallDynamic {
+                dst,
+                name,
+                args: self.list_items(args)?,
             },
             Instruction::Dispatch {
                 dst,
@@ -1955,6 +1974,10 @@ fn validate_instruction(
             validate_register(register_count, *dst)?;
             validate_operands(register_count, args.iter())
         }
+        Instruction::BuiltinCallDynamic { dst, args, .. } => {
+            validate_register(register_count, *dst)?;
+            validate_operands(register_count, args.iter().map(ListItem::operand))
+        }
         Instruction::Dispatch {
             dst,
             selector,
@@ -2118,6 +2141,7 @@ const INST_MAILBOX_RECV: u8 = 42;
 const INST_SCAN_DYNAMIC: u8 = 43;
 const INST_ASSERT_DYNAMIC: u8 = 44;
 const INST_RETRACT_DYNAMIC: u8 = 45;
+const INST_BUILTIN_CALL_DYNAMIC: u8 = 46;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -2533,6 +2557,15 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_str(out, name);
             write_operands(out, args)
         }
+        Instruction::BuiltinCallDynamic { dst, name, args } => {
+            let Some(name) = name.name() else {
+                return Err(artifact_error("cannot serialize unnamed builtin symbol"));
+            };
+            out.push(INST_BUILTIN_CALL_DYNAMIC);
+            write_register(out, *dst);
+            write_str(out, name);
+            write_list_items(out, args)
+        }
     }
 }
 
@@ -2934,6 +2967,11 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 name: Symbol::intern(&self.read_string()?),
                 args: self.read_operands()?,
+            },
+            INST_BUILTIN_CALL_DYNAMIC => Instruction::BuiltinCallDynamic {
+                dst: self.read_register()?,
+                name: Symbol::intern(&self.read_string()?),
+                args: self.read_list_items()?,
             },
             INST_ASSERT => Instruction::Assert {
                 relation: self.read_identity()?,

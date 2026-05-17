@@ -361,12 +361,14 @@ impl<'a> Analyzer<'a> {
                 if args.iter().any(|arg| arg.role.is_some()) {
                     self.unsupported(*id, "ordinary calls only support positional arguments");
                 }
-                if !matches!(callee.as_ref(), HirExpr::LocalRef { .. })
-                    && let Some(arg) = args.iter().find(|arg| arg.splice)
+                if !matches!(
+                    callee.as_ref(),
+                    HirExpr::LocalRef { .. } | HirExpr::ExternalRef { .. }
+                ) && let Some(arg) = args.iter().find(|arg| arg.splice)
                 {
                     self.unsupported(
                         arg.id,
-                        "argument splices are only supported for direct local function calls",
+                        "argument splices are only supported for direct local or runtime calls",
                     );
                 }
                 self.validate_supported_surface_expr(callee, false);
