@@ -1127,7 +1127,13 @@ impl<'a> ProgramCompiler<'a> {
                 receiver,
                 selector,
                 args,
-            } => self.compile_dispatch(*id, selector, args, Some(receiver)),
+            } => {
+                if args.iter().all(|arg| arg.role.is_none()) {
+                    self.compile_receiver_positional_dispatch(*id, receiver, selector, args)
+                } else {
+                    self.compile_dispatch(*id, selector, args, Some(receiver))
+                }
+            }
             HirExpr::Spawn { id, target, delay } => {
                 self.compile_spawn(*id, target, delay.as_deref())
             }
@@ -1893,6 +1899,42 @@ impl<'a> ProgramCompiler<'a> {
             program_bytes: method_relations.program_bytes,
             selector: Operand::Value(Value::symbol(Symbol::intern(name))),
             args,
+        });
+        Ok(dst)
+    }
+
+    fn compile_receiver_positional_dispatch(
+        &mut self,
+        id: NodeId,
+        receiver: &HirExpr,
+        selector: &HirExpr,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        let method_relations = self
+            .context
+            .method_relations
+            .ok_or_else(|| self.unsupported(id, "method relation ids are not configured"))?;
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(
+                id,
+                "receiver positional dispatch calls do not accept named arguments",
+            ));
+        }
+        self.ensure_no_arg_splices(args, "dispatch argument splices are not implemented yet")?;
+        let selector = self.compile_expr_for_operand(selector)?;
+        let mut operands = Vec::with_capacity(args.len() + 1);
+        operands.push(Operand::Register(self.compile_expr_for_value(receiver)?));
+        for arg in args {
+            operands.push(self.compile_arg_operand(arg)?);
+        }
+        let dst = self.alloc_register();
+        self.emit(Instruction::PositionalDispatch {
+            dst,
+            relations: method_relations.dispatch,
+            program_relation: method_relations.method_program,
+            program_bytes: method_relations.program_bytes,
+            selector,
+            args: operands,
         });
         Ok(dst)
     }
@@ -4708,6 +4750,77 @@ mod tests {
             vec![Tuple::from(
                 [Value::identity(coin), Value::identity(alice),]
             )]
+        );
+    }
+
+    #[test]
+    fn receiver_dispatch_accepts_positional_arguments() {
+        let inspect_method = id(100);
+        let inspect_program = id(101);
+        let player = id(200);
+        let thing = id(201);
+        let alice = id(300);
+        let coin = id(301);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+
+        let method_relations = dispatch_relations();
+        let install_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("inspect_thing", inspect_method)
+            .with_program_identity("inspect_thing", inspect_program)
+            .with_identity("player", player)
+            .with_identity("thing", thing);
+        let mut install_tx = kernel.begin();
+        install_methods_from_source(
+            "method #inspect_thing :inspect\n\
+               roles receiver @ #thing, actor @ #player\n\
+             do\n\
+               return [receiver, actor]\n\
+             end",
+            &install_context,
+            &mut install_tx,
+        )
+        .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(alice),
+                    Value::identity(player),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx
+            .assert(
+                method_relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(coin),
+                    Value::identity(thing),
+                    Value::int(0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        install_tx.commit().unwrap();
+
+        let invoke_context = CompileContext::new()
+            .with_method_relations(method_relations)
+            .with_identity("alice", alice)
+            .with_identity("coin", coin);
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted =
+            submit_source_task("#coin:inspect(#alice)", &invoke_context, &mut task_manager)
+                .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::list([Value::identity(coin), Value::identity(alice)]),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
         );
     }
 

@@ -479,17 +479,29 @@ bindings.
 
 ### 9.3 Receiver Sugar
 
-For MOO familiarity, receiver syntax currently fills the conventional
-`receiver` role:
+Receiver syntax supports the same named-role call shape as direct dispatch and
+fills the conventional `receiver` role:
 
 ```mica
 #box:put(actor: #alice, item: #coin)
 :put(receiver: #box, actor: #alice, item: #coin)
 ```
 
-Dispatch arguments must still use explicit role names. More elaborate selector
-metadata for positional arguments or alternate receiver role names is planned,
-not implemented.
+It also supports a positional form. In that form, the receiver is the first
+positional argument and the parenthesized arguments fill the remaining method
+parameters in declaration order:
+
+```mica
+method #put_in :put
+  roles receiver @ #container, actor @ #player, item @ #portable
+do
+  assert LocatedIn(item, receiver)
+end
+
+#box:put(#alice, #coin)
+```
+
+Receiver calls must not mix positional and named arguments.
 
 ### 9.4 Dynamic Calls
 

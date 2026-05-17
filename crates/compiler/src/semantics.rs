@@ -385,7 +385,7 @@ impl<'a> Analyzer<'a> {
                 selector,
                 args,
             } => {
-                self.validate_dispatch_args(*id, args, "receiver dispatch");
+                self.validate_receiver_dispatch_args(*id, args);
                 self.validate_supported_surface_expr(receiver, false);
                 self.validate_supported_surface_expr(selector, false);
                 self.validate_args(args);
@@ -576,6 +576,18 @@ impl<'a> Analyzer<'a> {
             self.unsupported(
                 id,
                 format!("{context} arguments must use explicit role names"),
+            );
+        }
+    }
+
+    fn validate_receiver_dispatch_args(&mut self, id: NodeId, args: &[HirArg]) {
+        if let Some(arg) = args.iter().find(|arg| arg.splice) {
+            self.unsupported(arg.id, "receiver dispatch arguments do not support splices");
+        }
+        if args.iter().any(|arg| arg.role.is_some()) && args.iter().any(|arg| arg.role.is_none()) {
+            self.unsupported(
+                id,
+                "receiver dispatch arguments must be all positional or all role-named",
             );
         }
     }
@@ -1790,8 +1802,28 @@ mod tests {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>();
         assert!(messages.contains(&"ordinary calls only support positional arguments"));
-        assert!(messages.contains(&"receiver dispatch arguments must use explicit role names"));
         assert!(messages.contains(&"relation argument splices are not valid here"));
         assert!(messages.contains(&"query variables are only valid as relation arguments"));
+    }
+
+    #[test]
+    fn allows_receiver_dispatch_positional_or_named_arguments() {
+        let program = parse_ok(
+            "#box:put(#alice, #coin)\n\
+             #box:put(actor: #alice, item: #coin)",
+        );
+
+        assert_eq!(program.diagnostics, vec![]);
+    }
+
+    #[test]
+    fn rejects_mixed_receiver_dispatch_argument_styles() {
+        let program = parse_ok("#box:put(#alice, item: #coin)");
+
+        assert!(program.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::UnsupportedSyntax
+                && diagnostic.message
+                    == "receiver dispatch arguments must be all positional or all role-named"
+        }));
     }
 }

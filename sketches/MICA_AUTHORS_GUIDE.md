@@ -122,7 +122,7 @@ end
 ### Key Differences:
 - **Role Binding:** Instead of `dobj` and `iobj`, you use meaningful names like `target`, `item`, or `destination`.
 - **Requirements:** The `require` keyword checks a fact (or a rule) before the method runs. 
-- **Self:** There is no magic `self` in the current surface. A receiver call binds the conventional `receiver` role; method bodies still use declared role names.
+- **Self:** There is no magic `self` in the current surface. A receiver call either binds the conventional `receiver` role in named calls or supplies the first positional method argument; method bodies still use declared role names.
 
 ---
 
@@ -162,7 +162,7 @@ To you, the author, it feels like an immediate update. To the system, it is a ch
 | `obj.prop` | Sugar over a binary relation, such as `Name(obj, val)`, with the current conventional mapping `obj.name` -> `Name(obj, ?name)`. |
 | `parent(obj)` | `Delegates(obj, p, 0)` |
 | `children(obj)` | `Delegates(c, obj, _)` |
-| `obj:verb(...)` | Receiver-call sugar for a role-bound invocation with `receiver: obj`. The explicit current form is `:verb(role: value, ...)`. |
+| `obj:verb(...)` | Receiver-call syntax. Named calls bind `receiver: obj`; positional calls pass `obj` as the first method argument. |
 | `move obj to dest` | `retract LocatedIn(obj, _)`, `assert LocatedIn(obj, dest)` |
 | `player` | `actor` (A standard role binding). |
 | `dobj / iobj` | Named roles (e.g., `item`, `target`) in the method signature. |
