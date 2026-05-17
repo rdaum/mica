@@ -1416,7 +1416,7 @@ mod tests {
     fn lowers_functions_loops_and_try() {
         let ast = parse_ast(
             "let f = {x, ?style = :short, @rest} => x + 1\n\
-             transaction\n\
+             begin\n\
                for key, value in properties\n\
                  render_property(key, value)\n\
                end\n\

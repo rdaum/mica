@@ -275,8 +275,6 @@ fn keyword_kind(text: &str) -> Option<SyntaxKind> {
         "object" => SyntaxKind::ObjectKw,
         "extends" => SyntaxKind::ExtendsKw,
         "do" => SyntaxKind::DoKw,
-        "transaction" => SyntaxKind::TransactionKw,
-        "atomic" => SyntaxKind::AtomicKw,
         "assert" => SyntaxKind::AssertKw,
         "retract" => SyntaxKind::RetractKw,
         "require" => SyntaxKind::RequireKw,

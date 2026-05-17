@@ -273,7 +273,6 @@ impl<'a> Parser<'a> {
             SyntaxKind::ContinueKw => self.parse_simple_control_expr(SyntaxKind::ContinueExpr),
             SyntaxKind::TryKw => self.parse_try_expr(),
             SyntaxKind::FnKw => self.parse_fn_expr(),
-            SyntaxKind::TransactionKw | SyntaxKind::AtomicKw => self.parse_begin_like_expr(),
             SyntaxKind::AssertKw => self.parse_effect_expr(SyntaxKind::AssertExpr),
             SyntaxKind::RetractKw => self.parse_effect_expr(SyntaxKind::RetractExpr),
             SyntaxKind::RequireKw => self.parse_effect_expr(SyntaxKind::RequireExpr),
@@ -372,15 +371,6 @@ impl<'a> Parser<'a> {
             self.bump_element(),
             CstElement::Node(self.parse_block(&[SyntaxKind::EndKw])),
             self.expect_token(SyntaxKind::EndKw, "expected end after begin"),
-        ];
-        CstNode::new(SyntaxKind::BeginExpr, children)
-    }
-
-    fn parse_begin_like_expr(&mut self) -> CstNode {
-        let children = vec![
-            self.bump_element(),
-            CstElement::Node(self.parse_block(&[SyntaxKind::EndKw])),
-            self.expect_token(SyntaxKind::EndKw, "expected end after block"),
         ];
         CstNode::new(SyntaxKind::BeginExpr, children)
     }
@@ -792,8 +782,6 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::ContinueKw
                 | SyntaxKind::TryKw
                 | SyntaxKind::FnKw
-                | SyntaxKind::TransactionKw
-                | SyntaxKind::AtomicKw
                 | SyntaxKind::AssertKw
                 | SyntaxKind::RetractKw
                 | SyntaxKind::RequireKw
@@ -1131,9 +1119,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_transaction_and_key_value_for_loop() {
+    fn parses_begin_and_key_value_for_loop() {
         let parse = parse(
-            "transaction\n\
+            "begin\n\
                for key, value in properties\n\
                  render_property(key, value)\n\
                end\n\

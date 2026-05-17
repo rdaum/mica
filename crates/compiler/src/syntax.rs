@@ -54,8 +54,6 @@ pub enum SyntaxKind {
     ObjectKw,
     ExtendsKw,
     DoKw,
-    TransactionKw,
-    AtomicKw,
     AssertKw,
     RetractKw,
     RequireKw,
