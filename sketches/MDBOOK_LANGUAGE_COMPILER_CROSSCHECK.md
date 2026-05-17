@@ -14,22 +14,19 @@ the cross-check.
    builtin calls, and relation atoms. Dispatch, spawn, and task-control call
    paths still reject them.
 
-4. Named arguments parse in ordinary call syntax, but most call paths reject
-   them. Named arguments are meaningful for role dispatch, not generic calls.
-
-5. `spawn` parses any expression target, but backend only accepts role or
+4. `spawn` parses any expression target, but backend only accepts role or
    receiver dispatch targets. Role dispatch spawn targets still require
    explicit role names.
 
-6. Query variables parse anywhere, but backend only accepts them in relation
+5. Query variables parse anywhere, but backend only accepts them in relation
     queries and rule terms.
 
-7. A single compiled eval task cannot define a relation/identity and use the
+6. A single compiled eval task cannot define a relation/identity and use the
     new name later in the same source body because compile context is resolved
     before execution. Filein chunking hides this for import files, but the REPL
     and `eval` semantics remain surprising.
 
-8. Rules and method/verb definitions cannot be mixed with executable task code
+7. Rules and method/verb definitions cannot be mixed with executable task code
     in one compiled chunk.
 
-9. Contextual actor submissions cannot install rules or methods.
+8. Contextual actor submissions cannot install rules or methods.

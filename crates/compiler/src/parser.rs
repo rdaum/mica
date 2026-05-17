@@ -601,7 +601,7 @@ impl<'a> Parser<'a> {
             children.push(self.expect_token(SyntaxKind::Ident, "expected symbol name after ':'"));
         }
         if self.current_kind() == SyntaxKind::LParen {
-            children.push(CstElement::Node(self.parse_arg_list()));
+            children.push(CstElement::Node(self.parse_arg_list(true)));
             CstNode::new(SyntaxKind::RoleCallExpr, children)
         } else {
             CstNode::new(SyntaxKind::SymbolExpr, children)
@@ -611,7 +611,7 @@ impl<'a> Parser<'a> {
     fn parse_call(&mut self, callee: CstNode) -> CstNode {
         let children = vec![
             CstElement::Node(callee),
-            CstElement::Node(self.parse_arg_list()),
+            CstElement::Node(self.parse_arg_list(false)),
         ];
         CstNode::new(SyntaxKind::CallExpr, children)
     }
@@ -623,7 +623,7 @@ impl<'a> Parser<'a> {
         } else {
             children.push(self.expect_token(SyntaxKind::Ident, "expected selector after ':'"));
         }
-        children.push(CstElement::Node(self.parse_arg_list()));
+        children.push(CstElement::Node(self.parse_arg_list(true)));
         CstNode::new(SyntaxKind::ReceiverCallExpr, children)
     }
 
@@ -668,12 +668,15 @@ impl<'a> Parser<'a> {
         CstNode::new(SyntaxKind::ParamList, children)
     }
 
-    fn parse_arg_list(&mut self) -> CstNode {
+    fn parse_arg_list(&mut self, allow_named_args: bool) -> CstNode {
         let mut children = Vec::new();
         children.push(self.expect_token(SyntaxKind::LParen, "expected '('"));
         while !matches!(self.current_kind(), SyntaxKind::RParen | SyntaxKind::Eof) {
             let mut arg = Vec::new();
             if self.current_kind() == SyntaxKind::Ident && self.nth_kind(1) == SyntaxKind::Colon {
+                if !allow_named_args {
+                    self.error("ordinary call arguments must be positional");
+                }
                 arg.push(self.bump_element());
                 arg.push(self.bump_element());
             }
@@ -970,6 +973,17 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::CallExpr));
         assert!(contains(&parse.root, SyntaxKind::At));
+    }
+
+    #[test]
+    fn rejects_named_arguments_in_ordinary_calls() {
+        let parse = parse("summarize(first: value)");
+
+        assert_eq!(parse.errors.len(), 1);
+        assert_eq!(
+            parse.errors[0].message,
+            "ordinary call arguments must be positional"
+        );
     }
 
     #[test]

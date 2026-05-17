@@ -1582,7 +1582,7 @@ mod tests {
     #[test]
     fn preserves_span_map_for_stable_node_ids() {
         let source = "let x = 1\n\
-                      CanMove(actor: #alice, item: #coin)\n\
+                      CanMove(#alice, #coin)\n\
                       {y} => x + y";
         let ast = parse_ast(source);
         assert_eq!(ast.errors, vec![]);
@@ -1784,8 +1784,7 @@ mod tests {
     #[test]
     fn reports_backend_limited_surface_forms() {
         let program = parse_ok(
-            "foo(named: 1)\n\
-             #box:put(#alice)\n\
+            "#box:put(#alice)\n\
              try\n\
                raise E_FAIL\n\
              catch err if err.code == E_FAIL\n\
@@ -1801,7 +1800,6 @@ mod tests {
             .filter(|diagnostic| diagnostic.code == DiagnosticCode::UnsupportedSyntax)
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>();
-        assert!(messages.contains(&"ordinary calls only support positional arguments"));
         assert!(messages.contains(&"relation argument splices are not valid here"));
         assert!(messages.contains(&"query variables are only valid as relation arguments"));
     }
