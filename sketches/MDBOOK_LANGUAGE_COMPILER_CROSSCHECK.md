@@ -18,15 +18,12 @@ the cross-check.
    receiver dispatch targets. Role dispatch spawn targets still require
    explicit role names.
 
-5. Query variables parse anywhere, but backend only accepts them in relation
-    queries and rule terms.
-
-6. A single compiled eval task cannot define a relation/identity and use the
+5. A single compiled eval task cannot define a relation/identity and use the
     new name later in the same source body because compile context is resolved
     before execution. Filein chunking hides this for import files, but the REPL
     and `eval` semantics remain surprising.
 
-7. Rules and method/verb definitions cannot be mixed with executable task code
+6. Rules and method/verb definitions cannot be mixed with executable task code
     in one compiled chunk.
 
-8. Contextual actor submissions cannot install rules or methods.
+7. Contextual actor submissions cannot install rules or methods.

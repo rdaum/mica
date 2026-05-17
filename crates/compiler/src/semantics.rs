@@ -1790,8 +1790,7 @@ mod tests {
              catch err if err.code == E_FAIL\n\
                err\n\
              end\n\
-             Visible(@args) :- Source(?x)\n\
-             return ?value",
+             Visible(@args) :- Source(?x)",
         );
 
         let messages = program
@@ -1801,7 +1800,6 @@ mod tests {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>();
         assert!(messages.contains(&"relation argument splices are not valid here"));
-        assert!(messages.contains(&"query variables are only valid as relation arguments"));
     }
 
     #[test]
@@ -1822,6 +1820,16 @@ mod tests {
             diagnostic.code == DiagnosticCode::UnsupportedSyntax
                 && diagnostic.message
                     == "receiver dispatch arguments must be all positional or all role-named"
+        }));
+    }
+
+    #[test]
+    fn rejects_query_variables_in_non_relation_arguments() {
+        let program = parse_ok("foo(?value)");
+
+        assert!(program.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::UnsupportedSyntax
+                && diagnostic.message == "query variables are only valid as relation arguments"
         }));
     }
 }

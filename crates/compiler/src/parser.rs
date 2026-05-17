@@ -22,6 +22,7 @@ struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     errors: Vec<ParseError>,
+    query_vars_allowed: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -30,6 +31,7 @@ impl<'a> Parser<'a> {
             tokens,
             pos: 0,
             errors: Vec::new(),
+            query_vars_allowed: false,
         }
     }
 
@@ -246,6 +248,9 @@ impl<'a> Parser<'a> {
             }
             SyntaxKind::Colon => self.parse_symbol_or_role_call(),
             SyntaxKind::Question if self.nth_kind(1) == SyntaxKind::Ident => {
+                if !self.query_vars_allowed {
+                    self.error("query variables are only valid as relation arguments");
+                }
                 self.parse_query_var_expr()
             }
             SyntaxKind::Underscore => self.single_token_node(SyntaxKind::HoleExpr),
@@ -683,7 +688,10 @@ impl<'a> Parser<'a> {
             if self.current_kind() == SyntaxKind::At {
                 arg.push(self.bump_element());
             }
+            let query_vars_allowed = self.query_vars_allowed;
+            self.query_vars_allowed = true;
             arg.push(CstElement::Node(self.parse_expr(0)));
+            self.query_vars_allowed = query_vars_allowed;
             children.push(CstElement::Node(CstNode::new(SyntaxKind::Arg, arg)));
             if self.current_kind() != SyntaxKind::Comma {
                 break;
@@ -992,6 +1000,17 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::CallExpr));
         assert!(contains(&parse.root, SyntaxKind::QueryVarExpr));
+    }
+
+    #[test]
+    fn rejects_query_variables_outside_relation_arguments() {
+        let parse = parse("return ?value");
+
+        assert_eq!(parse.errors.len(), 1);
+        assert_eq!(
+            parse.errors[0].message,
+            "query variables are only valid as relation arguments"
+        );
     }
 
     #[test]
