@@ -38,3 +38,34 @@ requests before the daemon was ready, and concurrent `/hello` requests exposed a
 transient-store lock deadlock. After fixing the script and the deadlock, the
 HTTP path is correct but far above the old target. Do not use this artifact to
 claim a performance win.
+
+## Pre/Post Baseline
+
+This release-mode comparison uses `scratch/compare_http_latency.sh`, which
+builds and runs isolated worktrees for the before and after refs on the same
+machine.
+
+| Field | Value |
+| --- | --- |
+| Before ref | `335e13a93be6ec17611d88f38066cfd172b02d5b` |
+| After ref | `bc6c435796b42cf4f44f7f15b9a4d8cec60cd178` |
+| Profile | `release` |
+| Sequential run | 50 requests, concurrency 1 |
+| Loaded run | 200 requests, concurrency 20 |
+| Generated raw output | `scratch/http_baseline/summary.txt` |
+
+| Case | Requests | Concurrency | Average | Min | Max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Before `http-core.mica` `/hello` sequential | 50 | 1 | 1.145 ms | 0.929 ms | 1.507 ms |
+| After `http-core.mica` `/hello` sequential | 50 | 1 | 1.269 ms | 1.095 ms | 1.657 ms |
+| Before `http-core.mica` `/hello` loaded | 200 | 20 | 17.839 ms | 1.373 ms | 24.067 ms |
+| After `http-core.mica` `/hello` loaded | 200 | 20 | 17.522 ms | 1.424 ms | 25.625 ms |
+| After `relational-router.mica` `/hello` sequential | 50 | 1 | 1.113 ms | 0.941 ms | 1.786 ms |
+| After `relational-router.mica` `/hello` loaded | 200 | 20 | 16.042 ms | 1.543 ms | 21.547 ms |
+| After `relational-router.mica` `/admin` sequential | 50 | 1 | 1.082 ms | 0.882 ms | 1.329 ms |
+| After `relational-router.mica` `/missing` sequential | 50 | 1 | 1.204 ms | 1.073 ms | 1.363 ms |
+
+The core route is effectively flat across the async driver refactor in this
+local run: sequential latency is slightly higher after the refactor, while the
+loaded average is slightly lower. The router demo is a current-only measurement
+because `examples/relational-router.mica` did not exist at the before ref.
