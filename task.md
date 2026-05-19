@@ -8,10 +8,10 @@
     - [x] Update mica-telnet-host to use async driver
     - [x] Update mica-daemon to use async driver
     - [x] Fix all tests in the workspace and clippy warnings
-- [ ] Relational HTTP Routing Demo
+- [x] Relational HTTP Routing Demo
     - [x] Augment web-host to assert RequestActor facts
-    - [ ] Implement examples/relational-router.mica
-    - [ ] Verify stratified negation for security policies
+    - [x] Implement examples/relational-router.mica
+    - [x] Verify stratified negation for security policies
 - [x] Performance Validation
     - [x] Fix latency script readiness and xargs behaviour
     - [x] Measure latency post-refactor

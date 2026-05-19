@@ -1,0 +1,90 @@
+// Relational HTTP routing demo for the in-process web host.
+//
+// Use this instead of examples/http-core.mica when starting mica-daemon. Rust
+// parses HTTP and asserts transient request facts; this file keeps route
+// selection and access policy in ordinary Mica relations and rules.
+
+make_identity(:alice)
+make_identity(:bob)
+
+make_relation(:HttpRequest, 1)
+make_relation(:RequestMethod, 2)
+make_relation(:RequestPath, 2)
+make_relation(:RequestVersion, 2)
+make_relation(:RequestActor, 2)
+make_relation(:RequestHeader, 3)
+make_relation(:RequestBody, 2)
+
+make_relation(:HttpRoute, 3)
+make_relation(:CanAccess, 2)
+make_relation(:RouteMatch, 2)
+make_relation(:HasRouteMatch, 1)
+make_relation(:AuthorizedRoute, 2)
+make_relation(:DeniedRequest, 1)
+make_relation(:SelectedRoute, 2)
+
+assert HttpRoute("GET", "/", :home)
+assert HttpRoute("GET", "/hello", :hello)
+assert HttpRoute("GET", "/admin", :admin)
+
+assert CanAccess(#alice, "/")
+assert CanAccess(#alice, "/hello")
+assert CanAccess(#bob, "/")
+
+RouteMatch(req, handler) :-
+  RequestMethod(req, http_method),
+  RequestPath(req, path),
+  HttpRoute(http_method, path, handler)
+
+HasRouteMatch(req) :-
+  RouteMatch(req, handler)
+
+AuthorizedRoute(req, handler) :-
+  RouteMatch(req, handler),
+  RequestActor(req, actor),
+  RequestPath(req, path),
+  CanAccess(actor, path)
+
+DeniedRequest(req) :-
+  RouteMatch(req, handler),
+  RequestActor(req, actor),
+  RequestPath(req, path),
+  not CanAccess(actor, path)
+
+SelectedRoute(req, handler) :-
+  AuthorizedRoute(req, handler)
+
+SelectedRoute(req, :denied) :-
+  DeniedRequest(req)
+
+SelectedRoute(req, :not_found) :-
+  HttpRequest(req),
+  not HasRouteMatch(req)
+
+verb http_response(status, content_type, body)
+  return {:status -> status, :headers -> [["content-type", content_type]], :body -> body}
+end
+
+verb http_text(status, body)
+  return http_response(status, "text/plain; charset=utf-8", body)
+end
+
+verb http_html(status, body)
+  return http_response(status, "text/html; charset=utf-8", body)
+end
+
+verb http_request(request)
+  let route = one SelectedRoute(request, ?route)
+
+  if route == :home
+    return http_html(200, "<!doctype html><title>Mica Router</title><h1>Mica Router</h1><p>Selected by relations.</p>")
+  elseif route == :hello
+    return http_text(200, "hello from the relational router")
+  elseif route == :admin
+    return http_text(200, "admin route")
+  elseif route == :denied
+    return http_text(403, "forbidden")
+  end
+
+  return http_text(404, "not found")
+end

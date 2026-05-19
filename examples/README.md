@@ -35,3 +35,25 @@ The first actor invocation succeeds and emits an effect because Alice has the
 `#builder` role, which can inspect and edit `Name`, invoke the `:maintenance`
 surface, and emit effects. Bob has the `#visitor` role, so he can read the lamp
 name, but the write attempt is denied.
+
+`http-core.mica` is the minimal default HTTP filein. `relational-router.mica`
+shows the same web-host request facts routed through relations and stratified
+negation. It keeps route matching, access policy, forbidden responses, and
+not-found fallback in Mica source.
+
+Run the router demo with an explicit filein list so it replaces the default
+HTTP filein:
+
+```sh
+cargo run --bin mica-daemon -- \
+  --filein examples/string.mica \
+  --filein examples/events.mica \
+  --filein examples/mud-core.mica \
+  --filein examples/event-substitutions.mica \
+  --filein examples/mud-command-parser.mica \
+  --filein examples/relational-router.mica \
+  --web-bind 127.0.0.1:8080
+curl -i http://127.0.0.1:8080/hello
+curl -i http://127.0.0.1:8080/admin
+curl -i http://127.0.0.1:8080/missing
+```
