@@ -9,7 +9,7 @@
     - [x] Update mica-daemon to use async driver
     - [x] Fix all tests in the workspace and clippy warnings
 - [ ] Relational HTTP Routing Demo
-    - [ ] Augment web-host to assert RequestActor facts
+    - [x] Augment web-host to assert RequestActor facts
     - [ ] Implement examples/relational-router.mica
     - [ ] Verify stratified negation for security policies
 - [x] Performance Validation

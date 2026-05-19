@@ -9,6 +9,7 @@ make_relation(:HttpRequest, 1)
 make_relation(:RequestMethod, 2)
 make_relation(:RequestPath, 2)
 make_relation(:RequestVersion, 2)
+make_relation(:RequestActor, 2)
 make_relation(:RequestHeader, 3)
 make_relation(:RequestBody, 2)
 

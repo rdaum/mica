@@ -47,7 +47,7 @@ pub(crate) async fn handle_in_process_request(
         Err(error) => return internal_error_response(error, close),
     };
     let mut asserted_facts = Vec::new();
-    let assert_result = visit_request_facts(request_id, request, |fact| {
+    let assert_result = visit_request_facts(request_id, actor, request, |fact| {
         host.driver
             .assert_transient_tuple_named(endpoint, fact.relation, fact.tuple.clone())?;
         asserted_facts.push(fact);
@@ -84,6 +84,7 @@ pub(crate) async fn handle_in_process_request(
 
 fn visit_request_facts<E>(
     request_id: Identity,
+    actor: Identity,
     request: &HttpRequest,
     mut visit: impl FnMut(RequestFact) -> Result<(), E>,
 ) -> Result<(), E> {
@@ -106,6 +107,10 @@ fn visit_request_facts<E>(
             request_value.clone(),
             Value::int(i64::from(request.version)).unwrap(),
         ],
+    ))?;
+    visit(RequestFact::new(
+        Symbol::intern("RequestActor"),
+        [request_value.clone(), Value::identity(actor)],
     ))?;
     for header in &request.headers {
         visit(RequestFact::new(
@@ -139,9 +144,13 @@ mod tests {
     use super::*;
     use std::convert::Infallible;
 
-    fn request_facts(request_id: Identity, request: &HttpRequest) -> Vec<RequestFact> {
+    fn request_facts(
+        request_id: Identity,
+        actor: Identity,
+        request: &HttpRequest,
+    ) -> Vec<RequestFact> {
         let mut facts = Vec::new();
-        visit_request_facts(request_id, request, |fact| {
+        visit_request_facts(request_id, actor, request, |fact| {
             facts.push(fact);
             Ok::<_, Infallible>(())
         })
@@ -152,8 +161,10 @@ mod tests {
     #[test]
     fn request_facts_include_core_request_neighbourhood() {
         let request_id = Identity::new(0x00eb_0000_0000_0001).unwrap();
+        let actor = Identity::new(0x00e0_0000_0000_0001).unwrap();
         let facts = request_facts(
             request_id,
+            actor,
             &HttpRequest {
                 method: "GET".to_owned(),
                 path: "/hello".to_owned(),
@@ -186,6 +197,31 @@ mod tests {
                             Value::string("accept"),
                             Value::bytes(b"text/plain")
                         ])
+        );
+    }
+
+    #[test]
+    fn request_facts_include_actor_binding() {
+        let request_id = Identity::new(0x00eb_0000_0000_0002).unwrap();
+        let actor = Identity::new(0x00e0_0000_0000_0002).unwrap();
+        let facts = request_facts(
+            request_id,
+            actor,
+            &HttpRequest {
+                method: "GET".to_owned(),
+                path: "/secure".to_owned(),
+                version: 1,
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+        );
+
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.relation == Symbol::intern("RequestActor")
+                    && fact.tuple.values()
+                        == [Value::identity(request_id), Value::identity(actor)])
         );
     }
 }
