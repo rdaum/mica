@@ -13,7 +13,6 @@
 
 use crate::{DispatcherConfig, DriverError, DriverEvent, TaskContext, configure_dispatcher};
 use compio::dispatcher::Dispatcher;
-use compio::runtime::Runtime;
 use mica_runtime::{
     MailboxRecvRequest, RunReport, RuntimeError, SharedSourceRunner, SourceRunner, SourceTaskError,
     SpawnRequest, SubmittedTask, SuspendKind, TaskError, TaskId, TaskInput, TaskManagerError,
@@ -26,7 +25,6 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::thread;
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -106,7 +104,7 @@ impl CompioTaskDriver {
             .map_err(DriverError::Source)
     }
 
-    pub fn submit_source(
+    pub async fn submit_source(
         &self,
         endpoint: Identity,
         mut request: TaskRequest,
@@ -114,12 +112,14 @@ impl CompioTaskDriver {
         request.endpoint = endpoint;
         let context = TaskContext::from_request(&request, endpoint);
         let runner = Arc::clone(&self.inner.runner);
-        let submitted = self.dispatch(move || async move { runner.submit_source(request) })?;
-        self.handle_submitted(context, submitted.clone())?;
+        let submitted = self
+            .dispatch(move || async move { runner.submit_source(request) })
+            .await?;
+        self.handle_submitted(context, submitted.clone()).await?;
         Ok(submitted)
     }
 
-    pub fn submit_source_report(
+    pub async fn submit_source_report(
         &self,
         endpoint: Identity,
         actor: Option<Symbol>,
@@ -140,15 +140,17 @@ impl CompioTaskDriver {
         request.endpoint = endpoint;
         let context = TaskContext::from_request(&request, endpoint);
         let runner = Arc::clone(&self.inner.runner);
-        let submitted = self.dispatch(move || async move { runner.submit_source(request) })?;
-        self.handle_submitted(context, submitted.clone())?;
+        let submitted = self
+            .dispatch(move || async move { runner.submit_source(request) })
+            .await?;
+        self.handle_submitted(context, submitted.clone()).await?;
         Ok(self
             .inner
             .runner
             .report_outcome(submitted.task_id, submitted.outcome))
     }
 
-    pub fn submit_source_as_actor(
+    pub async fn submit_source_as_actor(
         &self,
         endpoint: Identity,
         actor: Identity,
@@ -162,25 +164,30 @@ impl CompioTaskDriver {
         request.endpoint = endpoint;
         let context = TaskContext::from_request(&request, endpoint);
         let runner = Arc::clone(&self.inner.runner);
-        let submitted = self.dispatch(move || async move { runner.submit_source(request) })?;
-        self.handle_submitted(context, submitted.clone())?;
+        let submitted = self
+            .dispatch(move || async move { runner.submit_source(request) })
+            .await?;
+        self.handle_submitted(context, submitted.clone()).await?;
         Ok(submitted)
     }
 
-    pub fn submit_invocation(
+    pub async fn submit_invocation(
         &self,
         endpoint: Identity,
-        mut request: TaskRequest,
+        request: TaskRequest,
     ) -> Result<SubmittedTask, DriverError> {
+        let mut request = request;
         request.endpoint = endpoint;
-        let context = TaskContext::from_request(&request, endpoint);
         let runner = Arc::clone(&self.inner.runner);
-        let submitted = self.dispatch(move || async move { runner.submit_invocation(request) })?;
-        self.handle_submitted(context, submitted.clone())?;
+        let context = TaskContext::from_request(&request, endpoint);
+        let submitted = self
+            .dispatch(move || async move { runner.submit_invocation(request) })
+            .await?;
+        self.handle_submitted(context, submitted.clone()).await?;
         Ok(submitted)
     }
 
-    pub fn resume(&self, task_id: TaskId, value: Value) -> Result<TaskOutcome, DriverError> {
+    pub async fn resume(&self, task_id: TaskId, value: Value) -> Result<TaskOutcome, DriverError> {
         let context = {
             let mut state = self.inner.state.lock().unwrap();
             state.remove_mailbox_waiter(task_id);
@@ -197,12 +204,25 @@ impl CompioTaskDriver {
             authority: context.authority.clone(),
             input: TaskInput::Continuation { task_id, value },
         };
-        let outcome = self.dispatch(move || async move { runner.resume_task(request) })?;
-        self.handle_outcome(task_id, context, outcome.clone())?;
+        let outcome = self
+            .dispatch(move || async move { runner.resume_task(request) })
+            .await?;
+        self.handle_submitted(
+            context,
+            SubmittedTask {
+                task_id,
+                outcome: outcome.clone(),
+            },
+        )
+        .await?;
         Ok(outcome)
     }
 
-    pub fn input(&self, endpoint: Identity, value: Value) -> Result<Vec<TaskOutcome>, DriverError> {
+    pub async fn input(
+        &self,
+        endpoint: Identity,
+        value: Value,
+    ) -> Result<Vec<TaskOutcome>, DriverError> {
         let task_ids = self
             .inner
             .state
@@ -213,7 +233,7 @@ impl CompioTaskDriver {
             .unwrap_or_default();
         let mut outcomes = Vec::with_capacity(task_ids.len());
         for task_id in task_ids {
-            outcomes.push(self.resume(task_id, value.clone())?);
+            outcomes.push(self.resume(task_id, value.clone()).await?);
         }
         Ok(outcomes)
     }
@@ -305,7 +325,7 @@ impl CompioTaskDriver {
         DriverEvents { driver: self }
     }
 
-    fn dispatch<F, Fut, T>(&self, f: F) -> Result<T, DriverError>
+    async fn dispatch<F, Fut, T>(&self, f: F) -> Result<T, DriverError>
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<T, mica_runtime::SourceTaskError>> + 'static,
@@ -316,90 +336,91 @@ impl CompioTaskDriver {
             .dispatcher
             .dispatch(f)
             .map_err(|_| DriverError::Join("dispatcher is stopped".to_owned()))?;
-        Runtime::new()
-            .map_err(|error| DriverError::Join(format!("failed to create wait runtime: {error}")))?
-            .block_on(receiver)
+        receiver
+            .await
             .map_err(|_| DriverError::Join("dispatched task was cancelled".to_owned()))?
             .map_err(DriverError::Source)
     }
 
-    fn handle_submitted(
+    async fn handle_submitted(
         &self,
         context: TaskContext,
         submitted: SubmittedTask,
     ) -> Result<(), DriverError> {
-        self.handle_outcome(submitted.task_id, context, submitted.outcome)
+        let mut queue = VecDeque::new();
+        queue.push_back((submitted.task_id, context, submitted.outcome));
+        self.process_outcome_queue(&mut queue).await
     }
 
-    fn handle_outcome(
+    async fn process_outcome_queue(
         &self,
-        task_id: TaskId,
-        context: TaskContext,
-        outcome: TaskOutcome,
+        queue: &mut VecDeque<(TaskId, TaskContext, TaskOutcome)>,
     ) -> Result<(), DriverError> {
-        let delivered_mailboxes = self.delivered_mailboxes(&outcome);
-        let mut timer = None;
-        let mut spawn = None;
-        let mut mailbox_recv = None;
-        let event_waker;
-        {
-            let mut state = self.inner.state.lock().unwrap();
-            state.drain_effects_into_events(&self.inner.runner);
-            match &outcome {
-                TaskOutcome::Complete { value, .. } => {
-                    state.events.push(DriverEvent::TaskCompleted {
-                        task_id,
-                        value: value.clone(),
-                    });
-                }
-                TaskOutcome::Aborted { error, .. } => {
-                    state.events.push(DriverEvent::TaskAborted {
-                        task_id,
-                        error: error.clone(),
-                    });
-                }
-                TaskOutcome::Suspended { kind, .. } => {
-                    state.contexts.insert(task_id, context.clone());
-                    state.events.push(DriverEvent::TaskSuspended {
-                        task_id,
-                        kind: kind.clone(),
-                    });
-                    match kind {
-                        SuspendKind::Commit => timer = Some(Duration::ZERO),
-                        SuspendKind::Never => {}
-                        SuspendKind::TimedMillis(millis) => {
-                            timer = Some(Duration::from_millis(*millis));
-                        }
-                        SuspendKind::WaitingForInput(_) => {
-                            state
-                                .input_waiters
-                                .entry(context.endpoint)
-                                .or_default()
-                                .push(task_id);
-                        }
-                        SuspendKind::MailboxRecv(request) => {
-                            mailbox_recv = Some(request.clone());
-                        }
-                        SuspendKind::Spawn(request) => {
-                            spawn = Some(request.clone());
+        while let Some((task_id, context, outcome)) = queue.pop_front() {
+            let delivered_mailboxes = self.delivered_mailboxes(&outcome);
+            let mut timer = None;
+            let mut spawn = None;
+            let mut mailbox_recv = None;
+            let event_waker;
+            {
+                let mut state = self.inner.state.lock().unwrap();
+                state.drain_effects_into_events(&self.inner.runner);
+                match outcome {
+                    TaskOutcome::Complete { value, .. } => {
+                        state
+                            .events
+                            .push(DriverEvent::TaskCompleted { task_id, value });
+                    }
+                    TaskOutcome::Aborted { error, .. } => {
+                        state
+                            .events
+                            .push(DriverEvent::TaskAborted { task_id, error });
+                    }
+                    TaskOutcome::Suspended { kind, .. } => {
+                        state.contexts.insert(task_id, context.clone());
+                        state.events.push(DriverEvent::TaskSuspended {
+                            task_id,
+                            kind: kind.clone(),
+                        });
+                        match kind {
+                            SuspendKind::Commit => timer = Some(Duration::ZERO),
+                            SuspendKind::Never => {}
+                            SuspendKind::TimedMillis(millis) => {
+                                timer = Some(Duration::from_millis(millis));
+                            }
+                            SuspendKind::WaitingForInput(_) => {
+                                state
+                                    .input_waiters
+                                    .entry(context.endpoint)
+                                    .or_default()
+                                    .push(task_id);
+                            }
+                            SuspendKind::MailboxRecv(request) => {
+                                mailbox_recv = Some(request);
+                            }
+                            SuspendKind::Spawn(request) => {
+                                spawn = Some(request);
+                            }
                         }
                     }
                 }
+                event_waker = state.event_waker.take();
             }
-            event_waker = state.event_waker.take();
-        }
-        if let Some(waker) = event_waker {
-            waker.wake();
-        }
-        if let Some(duration) = timer {
-            self.spawn_timer_resume(task_id, duration);
-        }
-        if let Some(request) = mailbox_recv {
-            self.handle_mailbox_recv(task_id, request)?;
-        }
-        self.wake_mailbox_waiters(delivered_mailboxes)?;
-        if let Some(request) = spawn {
-            self.spawn_child_and_resume(task_id, context, request)?;
+            if let Some(waker) = event_waker {
+                waker.wake();
+            }
+            if let Some(duration) = timer {
+                self.spawn_timer_resume(task_id, duration);
+            }
+            if let Some(request) = mailbox_recv {
+                self.handle_mailbox_recv(task_id, request, queue).await?;
+            }
+            self.wake_mailbox_waiters(delivered_mailboxes, queue)
+                .await?;
+            if let Some(request) = spawn {
+                self.spawn_child_and_resume(task_id, context, request, queue)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -421,10 +442,11 @@ impl CompioTaskDriver {
             })
     }
 
-    fn handle_mailbox_recv(
+    async fn handle_mailbox_recv(
         &self,
         task_id: TaskId,
         request: MailboxRecvRequest,
+        queue: &mut VecDeque<(TaskId, TaskContext, TaskOutcome)>,
     ) -> Result<(), DriverError> {
         let mut receivers = Vec::with_capacity(request.receivers.len());
         for receiver in request.receivers {
@@ -467,7 +489,8 @@ impl CompioTaskDriver {
             }
         };
         if !ready.is_empty() || request.timeout_millis == Some(0) {
-            self.resume(task_id, Value::list(ready))?;
+            let (ctx, submitted) = self.resume_raw(task_id, Value::list(ready)).await?;
+            queue.push_back((submitted.task_id, ctx, submitted.outcome));
             return Ok(());
         }
         if let Some(timeout) = timeout {
@@ -497,8 +520,8 @@ impl CompioTaskDriver {
 
     fn spawn_mailbox_timeout(&self, task_id: TaskId, duration: Duration) {
         let driver = self.clone();
-        thread::spawn(move || {
-            thread::sleep(duration);
+        compio::runtime::spawn(async move {
+            compio::time::sleep(duration).await;
             let still_waiting = {
                 let state = driver.inner.state.lock().unwrap();
                 state
@@ -509,13 +532,18 @@ impl CompioTaskDriver {
             if !still_waiting {
                 return;
             }
-            if let Err(error) = driver.resume(task_id, Value::list([])) {
+            if let Err(error) = driver.resume(task_id, Value::list([])).await {
                 driver.record_task_failure(task_id, error);
             }
-        });
+        })
+        .detach();
     }
 
-    fn wake_mailbox_waiters(&self, mailboxes: Vec<u64>) -> Result<(), DriverError> {
+    async fn wake_mailbox_waiters(
+        &self,
+        mailboxes: Vec<u64>,
+        queue: &mut VecDeque<(TaskId, TaskContext, TaskOutcome)>,
+    ) -> Result<(), DriverError> {
         for mailbox in mailboxes {
             let waiter = {
                 let mut state = self.inner.state.lock().unwrap();
@@ -535,42 +563,91 @@ impl CompioTaskDriver {
             if ready.is_empty() {
                 continue;
             }
-            self.resume(waiter.task_id, Value::list(ready))?;
+            let (ctx, submitted) = self.resume_raw(waiter.task_id, Value::list(ready)).await?;
+            queue.push_back((submitted.task_id, ctx, submitted.outcome));
         }
         Ok(())
     }
 
-    fn spawn_child_and_resume(
+    async fn spawn_child_and_resume(
         &self,
         parent_task_id: TaskId,
         context: TaskContext,
         request: SpawnRequest,
+        queue: &mut VecDeque<(TaskId, TaskContext, TaskOutcome)>,
     ) -> Result<(), DriverError> {
-        let runner = Arc::clone(&self.inner.runner);
-        let submit_context = context.clone();
-        let child = self.dispatch(move || async move {
-            runner.submit_spawn(
-                submit_context.principal,
-                submit_context.actor,
-                submit_context.endpoint,
-                submit_context.authority,
-                request,
-            )
-        })?;
-        self.handle_submitted(context.clone(), child.clone())?;
-        let child_id = Value::int(child.task_id as i64).expect("allocated task id fits in Value");
-        self.resume(parent_task_id, child_id)?;
+        let (child_ctx, child_submitted) = self.submit_spawn_raw(context, request).await?;
+        queue.push_back((child_submitted.task_id, child_ctx, child_submitted.outcome));
+
+        let child_id =
+            Value::int(child_submitted.task_id as i64).expect("allocated task id fits in Value");
+        let (parent_ctx, parent_submitted) = self.resume_raw(parent_task_id, child_id).await?;
+        queue.push_back((
+            parent_submitted.task_id,
+            parent_ctx,
+            parent_submitted.outcome,
+        ));
         Ok(())
+    }
+
+    async fn submit_spawn_raw(
+        &self,
+        context: TaskContext,
+        request: SpawnRequest,
+    ) -> Result<(TaskContext, SubmittedTask), DriverError> {
+        let runner = Arc::clone(&self.inner.runner);
+        let context_authority = context.authority.clone();
+        let submit_context = context.clone();
+        let submitted = self
+            .dispatch(move || async move {
+                runner.submit_spawn(
+                    context.principal,
+                    context.actor,
+                    context.endpoint,
+                    context_authority,
+                    request,
+                )
+            })
+            .await?;
+        Ok((submit_context, submitted))
+    }
+
+    async fn resume_raw(
+        &self,
+        task_id: TaskId,
+        value: Value,
+    ) -> Result<(TaskContext, SubmittedTask), DriverError> {
+        let context = {
+            let mut state = self.inner.state.lock().unwrap();
+            state
+                .contexts
+                .remove(&task_id)
+                .ok_or(DriverError::MissingTaskContext(task_id))?
+        };
+        let request = TaskRequest {
+            principal: context.principal,
+            actor: context.actor,
+            endpoint: context.endpoint,
+            authority: context.authority.clone(),
+            input: TaskInput::Continuation { task_id, value },
+        };
+        let runner = Arc::clone(&self.inner.runner);
+        let submitted = self
+            .dispatch(move || async move { runner.resume_task(request) })
+            .await
+            .map(|outcome| SubmittedTask { task_id, outcome })?;
+        Ok((context, submitted))
     }
 
     fn spawn_timer_resume(&self, task_id: TaskId, duration: Duration) {
         let driver = self.clone();
-        thread::spawn(move || {
-            thread::sleep(duration);
-            if let Err(error) = driver.resume(task_id, Value::nothing()) {
+        compio::runtime::spawn(async move {
+            compio::time::sleep(duration).await;
+            if let Err(error) = driver.resume(task_id, Value::nothing()).await {
                 driver.record_task_failure(task_id, error);
             }
-        });
+        })
+        .detach();
     }
 
     fn record_task_failure(&self, task_id: TaskId, error: DriverError) {

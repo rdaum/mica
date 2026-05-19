@@ -22,7 +22,6 @@ use rustyline::error::ReadlineError;
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::thread;
 use std::time::Duration;
 
 const REPL_SETTLE_LIMIT: Duration = Duration::from_millis(50);
@@ -88,24 +87,26 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::FAILURE
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        match run().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
         }
-    }
+    })
 }
 
-fn run() -> Result<(), String> {
+async fn run() -> Result<(), String> {
     let cli = Cli::parse();
     match cli.command.as_ref().unwrap_or(&Command::Repl) {
         Command::Run { file } => {
             let source = fs::read_to_string(file)
                 .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
             let session = open_cli_session(&cli, Symbol::intern("cli"))?;
-            let report = submit_cli_source(&session, &cli, source)?;
-            print_report_and_follow(&session.driver, report);
+            let report = submit_cli_source(&session, &cli, source).await?;
+            print_report_and_follow(&session.driver, report).await;
             let _ = session.driver.close_endpoint(session.endpoint);
             Ok(())
         }
@@ -158,12 +159,12 @@ fn run() -> Result<(), String> {
         Command::Eval { source } => {
             let source = source.join(" ");
             let session = open_cli_session(&cli, Symbol::intern("cli"))?;
-            let report = submit_cli_source(&session, &cli, source)?;
-            print_report_and_follow(&session.driver, report);
+            let report = submit_cli_source(&session, &cli, source).await?;
+            print_report_and_follow(&session.driver, report).await;
             let _ = session.driver.close_endpoint(session.endpoint);
             Ok(())
         }
-        Command::Repl => repl(&cli),
+        Command::Repl => repl(&cli).await,
     }
 }
 
@@ -172,7 +173,7 @@ struct CliSession {
     endpoint: Identity,
 }
 
-fn submit_cli_source(
+async fn submit_cli_source(
     session: &CliSession,
     cli: &Cli,
     source: String,
@@ -184,6 +185,7 @@ fn submit_cli_source(
             cli.actor.as_deref().map(actor_symbol),
             source,
         )
+        .await
         .map_err(format_driver_error)
 }
 
@@ -230,16 +232,20 @@ fn cli_endpoint() -> Identity {
     Identity::new(CLI_ENDPOINT_ID).unwrap()
 }
 
-fn repl(cli: &Cli) -> Result<(), String> {
+async fn repl(cli: &Cli) -> Result<(), String> {
     let mut editor =
         DefaultEditor::new().map_err(|error| format!("failed to initialize repl: {error}"))?;
     let session = open_cli_session(cli, Symbol::intern("repl"))?;
-    let result = repl_loop(cli, &session, &mut editor);
+    let result = repl_loop(cli, &session, &mut editor).await;
     let _ = session.driver.close_endpoint(session.endpoint);
     result
 }
 
-fn repl_loop(cli: &Cli, session: &CliSession, editor: &mut DefaultEditor) -> Result<(), String> {
+async fn repl_loop(
+    cli: &Cli,
+    session: &CliSession,
+    editor: &mut DefaultEditor,
+) -> Result<(), String> {
     let mut buffer = String::new();
 
     println!("Mica REPL. Enter :quit to exit. Blank line forces evaluation.");
@@ -266,7 +272,7 @@ fn repl_loop(cli: &Cli, session: &CliSession, editor: &mut DefaultEditor) -> Res
                 }
                 if trimmed.is_empty() {
                     if !buffer.trim().is_empty() {
-                        evaluate_buffer(session, cli, &mut buffer);
+                        evaluate_buffer(session, cli, &mut buffer).await;
                     }
                     continue;
                 }
@@ -275,7 +281,7 @@ fn repl_loop(cli: &Cli, session: &CliSession, editor: &mut DefaultEditor) -> Res
                 buffer.push_str(&line);
                 buffer.push('\n');
                 if parse(&buffer).errors.is_empty() {
-                    evaluate_buffer(session, cli, &mut buffer);
+                    evaluate_buffer(session, cli, &mut buffer).await;
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -288,8 +294,8 @@ fn repl_loop(cli: &Cli, session: &CliSession, editor: &mut DefaultEditor) -> Res
     }
 }
 
-fn evaluate_buffer(session: &CliSession, cli: &Cli, buffer: &mut String) {
-    match submit_cli_source(session, cli, buffer.clone()) {
+async fn evaluate_buffer(session: &CliSession, cli: &Cli, buffer: &mut String) {
+    match submit_cli_source(session, cli, buffer.clone()).await {
         Ok(report) => {
             let task_id = report.task_id;
             let outcome = report.outcome.clone();
@@ -299,7 +305,7 @@ fn evaluate_buffer(session: &CliSession, cli: &Cli, buffer: &mut String) {
                 &outcome,
                 session.driver.drain_events(),
             );
-            settle_repl_task(&session.driver, task_id, &outcome);
+            settle_repl_task(&session.driver, task_id, &outcome).await;
         }
         Err(error) => eprintln!("{error}"),
     }
@@ -318,7 +324,7 @@ fn format_driver_error(error: DriverError) -> String {
     format!("error: {error}")
 }
 
-fn print_report_and_follow(driver: &CompioTaskDriver, report: mica_runtime::RunReport) {
+async fn print_report_and_follow(driver: &CompioTaskDriver, report: mica_runtime::RunReport) {
     let task_id = report.task_id;
     let outcome = report.outcome.clone();
     let mut suspended = suspended_kind(&outcome);
@@ -328,7 +334,7 @@ fn print_report_and_follow(driver: &CompioTaskDriver, report: mica_runtime::RunR
         let Some(duration) = follow_delay(&kind) else {
             break;
         };
-        thread::sleep(duration);
+        compio::time::sleep(duration).await;
         suspended = None;
         for event in driver.drain_events() {
             match &event {
@@ -365,7 +371,7 @@ fn print_report_and_follow(driver: &CompioTaskDriver, report: mica_runtime::RunR
     print_driver_events_without_initial_report(task_id, &outcome, driver.drain_events());
 }
 
-fn settle_repl_task(driver: &CompioTaskDriver, task_id: u64, outcome: &TaskOutcome) {
+async fn settle_repl_task(driver: &CompioTaskDriver, task_id: u64, outcome: &TaskOutcome) {
     let mut suspended = suspended_kind(outcome);
     for _ in 0..8 {
         let Some(kind) = suspended else {
@@ -374,7 +380,7 @@ fn settle_repl_task(driver: &CompioTaskDriver, task_id: u64, outcome: &TaskOutco
         let Some(duration) = repl_settle_delay(&kind) else {
             return;
         };
-        thread::sleep(duration);
+        compio::time::sleep(duration).await;
         suspended = None;
         let events = driver.drain_events();
         for event in events {

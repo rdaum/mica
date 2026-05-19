@@ -32,7 +32,7 @@ impl RequestFact {
     }
 }
 
-pub(crate) fn handle_in_process_request(
+pub(crate) async fn handle_in_process_request(
     host: &InProcessWebHost,
     endpoint: Identity,
     actor: Identity,
@@ -58,19 +58,22 @@ pub(crate) fn handle_in_process_request(
         return internal_error_response(format_driver_error(error), close);
     }
 
-    let submitted = host.driver.submit_invocation(
-        endpoint,
-        TaskRequest {
-            principal: None,
-            actor: Some(actor),
+    let submitted = host
+        .driver
+        .submit_invocation(
             endpoint,
-            authority: mica_runtime::AuthorityContext::root(),
-            input: TaskInput::Invocation {
-                selector: Symbol::intern("http_request"),
-                roles: vec![(Symbol::intern("request"), Value::identity(request_id))],
+            TaskRequest {
+                principal: None,
+                actor: Some(actor),
+                endpoint,
+                authority: mica_runtime::AuthorityContext::root(),
+                input: TaskInput::Invocation {
+                    selector: Symbol::intern("http_request"),
+                    roles: vec![(Symbol::intern("request"), Value::identity(request_id))],
+                },
             },
-        },
-    );
+        )
+        .await;
     cleanup_request_facts(host, endpoint, &asserted_facts);
 
     match submitted {

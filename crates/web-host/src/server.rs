@@ -118,7 +118,8 @@ async fn handle_in_process_connection(
                 for request in requests {
                     let close = request.connection_should_close();
                     let response =
-                        handle_in_process_request(&host, endpoint, actor.identity, &request, close);
+                        handle_in_process_request(&host, endpoint, actor.identity, &request, close)
+                            .await;
                     write_response(&mut stream, response).await?;
                     if close {
                         host.driver.close_endpoint(endpoint);

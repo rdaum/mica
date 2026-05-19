@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+compio.workspace = true
 mica-compiler.workspace = true
 mica-driver.workspace = true
 mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }

@@ -263,10 +263,18 @@ impl RelationRead for VmHostContext<'_, '_> {
                 reader.visit_relation(relation, bindings, visitor)
             }
             Some(TransientAccess::Shared(transient)) => {
-                let transient = transient.read().unwrap();
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
-                reader.visit_relation(relation, bindings, visitor)
+                let rows = {
+                    let transient = transient.read().unwrap();
+                    let reader =
+                        ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
+                    reader.scan_relation(relation, bindings)?
+                };
+                for tuple in rows {
+                    if visitor(&tuple)? == ScanControl::Stop {
+                        break;
+                    }
+                }
+                Ok(())
             }
             None => self.tx.visit_relation(relation, bindings, visitor),
         }

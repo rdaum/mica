@@ -58,7 +58,7 @@ pub(crate) async fn serve_zmq_rpc_once(
     handler: &mut RpcHandler,
 ) -> Result<(), RpcServerError> {
     let request = socket.recv_routed_message().await?;
-    let replies = handler.handle_message(request.message);
+    let replies = handler.dispatch_message(request.message).await;
     for reply in replies {
         socket.send_routed_message(&request.peer, &reply).await?;
     }
@@ -93,7 +93,7 @@ impl RpcHandler {
         }
     }
 
-    pub(crate) fn handle_message(&mut self, message: HostMessage) -> Vec<HostMessage> {
+    pub(crate) async fn dispatch_message(&mut self, message: HostMessage) -> Vec<HostMessage> {
         let is_request = is_request_message(&message);
         let mut replies = match message {
             HostMessage::Hello { .. } => vec![HostMessage::HelloAck {
@@ -132,12 +132,15 @@ impl RpcHandler {
                 endpoint,
                 actor,
                 source,
-            } => self.submit_source(request_id, endpoint, actor, source),
+            } => {
+                self.submit_source(request_id, endpoint, actor, source)
+                    .await
+            }
             HostMessage::SubmitInput {
                 request_id,
                 endpoint,
                 value,
-            } => self.submit_input(request_id, endpoint, value),
+            } => self.submit_input(request_id, endpoint, value).await,
             HostMessage::DrainOutput {
                 request_id,
                 endpoint,
@@ -212,7 +215,7 @@ impl RpcHandler {
         }
     }
 
-    fn submit_source(
+    async fn submit_source(
         &mut self,
         request_id: u64,
         endpoint: Identity,
@@ -226,13 +229,17 @@ impl RpcHandler {
                 "endpoint is not open",
             )];
         }
-        match self.driver.submit_source_as_actor(endpoint, actor, source) {
+        match self
+            .driver
+            .submit_source_as_actor(endpoint, actor, source)
+            .await
+        {
             Ok(submitted) => vec![accepted(request_id, Some(submitted.task_id))],
             Err(error) => vec![rejected(request_id, "E_SUBMIT_SOURCE", error.to_string())],
         }
     }
 
-    fn submit_input(
+    async fn submit_input(
         &mut self,
         request_id: u64,
         endpoint: Identity,
@@ -245,7 +252,7 @@ impl RpcHandler {
                 "endpoint is not open",
             )];
         }
-        match self.driver.input(endpoint, value) {
+        match self.driver.input(endpoint, value).await {
             Ok(_) => vec![accepted(request_id, None)],
             Err(error) => vec![rejected(request_id, "E_SUBMIT_INPUT", error.to_string())],
         }
@@ -389,176 +396,206 @@ mod tests {
 
     #[test]
     fn rpc_handler_accepts_endpoint_and_submits_source() {
-        let (driver, actor) = seeded_driver();
-        let endpoint = endpoint(0x00ef_0000_0000_0001);
-        let mut handler = RpcHandler::new(driver);
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (driver, actor) = seeded_driver();
+            let endpoint = endpoint(0x00ef_0000_0000_0001);
+            let mut handler = RpcHandler::new(driver);
 
-        assert_eq!(
-            handler.handle_message(HostMessage::OpenEndpoint {
-                request_id: 1,
-                endpoint,
-                actor: None,
-                protocol: "test".to_owned(),
-                grant_token: None,
-            }),
-            vec![accepted(1, None)]
-        );
+            assert_eq!(
+                handler
+                    .dispatch_message(HostMessage::OpenEndpoint {
+                        request_id: 1,
+                        endpoint,
+                        actor: None,
+                        protocol: "test".to_owned(),
+                        grant_token: None,
+                    })
+                    .await,
+                vec![accepted(1, None)]
+            );
 
-        let replies = handler.handle_message(HostMessage::SubmitSource {
-            request_id: 2,
-            endpoint,
-            actor,
-            source: "emit(#endpoint, \"hello\")\nreturn actor()".to_owned(),
-        });
-        assert!(matches!(
-            &replies[..],
-            [
-                HostMessage::OutputReady { endpoint: target, buffered: 1 },
-                HostMessage::TaskCompleted { value, .. },
-                HostMessage::RequestAccepted {
+            let replies = handler
+                .dispatch_message(HostMessage::SubmitSource {
                     request_id: 2,
-                    task_id: Some(_),
-                },
-            ] if *target == endpoint && *value == Value::identity(actor)
-        ));
-
-        let replies = handler.handle_message(HostMessage::DrainOutput {
-            request_id: 3,
-            endpoint,
-            limit: 10,
-        });
-        assert_eq!(
-            replies,
-            vec![
-                HostMessage::OutputBatch {
                     endpoint,
-                    values: vec![Value::string("hello")],
-                },
-                accepted(3, None),
-            ]
-        );
+                    actor,
+                    source: "emit(#endpoint, \"hello\")\nreturn actor()".to_owned(),
+                })
+                .await;
+            assert!(matches!(
+                &replies[..],
+                [
+                    HostMessage::OutputReady { endpoint: target, buffered: 1 },
+                    HostMessage::TaskCompleted { value, .. },
+                    HostMessage::RequestAccepted {
+                        request_id: 2,
+                        task_id: Some(_),
+                    },
+                ] if *target == endpoint && *value == Value::identity(actor)
+            ));
+
+            let replies = handler
+                .dispatch_message(HostMessage::DrainOutput {
+                    request_id: 3,
+                    endpoint,
+                    limit: 10,
+                })
+                .await;
+            assert_eq!(
+                replies,
+                vec![
+                    HostMessage::OutputBatch {
+                        endpoint,
+                        values: vec![Value::string("hello")],
+                    },
+                    accepted(3, None),
+                ]
+            );
+        });
     }
 
     #[test]
     fn rpc_handler_rejects_grant_tokens_until_validation_exists() {
-        let (driver, _) = seeded_driver();
-        let mut handler = RpcHandler::new(driver);
-        assert_eq!(
-            handler.handle_message(HostMessage::OpenEndpoint {
-                request_id: 1,
-                endpoint: endpoint(0x00ef_0000_0000_0002),
-                actor: None,
-                protocol: "test".to_owned(),
-                grant_token: Some("token".to_owned()),
-            }),
-            vec![rejected(
-                1,
-                "E_GRANT_UNSUPPORTED",
-                "grant tokens are not implemented yet"
-            )]
-        );
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (driver, _) = seeded_driver();
+            let mut handler = RpcHandler::new(driver);
+            assert_eq!(
+                handler
+                    .dispatch_message(HostMessage::OpenEndpoint {
+                        request_id: 1,
+                        endpoint: endpoint(0x00ef_0000_0000_0002),
+                        actor: None,
+                        protocol: "test".to_owned(),
+                        grant_token: Some("token".to_owned()),
+                    })
+                    .await,
+                vec![rejected(
+                    1,
+                    "E_GRANT_UNSUPPORTED",
+                    "grant tokens are not implemented yet"
+                )]
+            );
+        });
     }
 
     #[test]
     fn rpc_handler_routes_failed_source_as_rejection() {
-        let (driver, actor) = seeded_driver();
-        let endpoint = endpoint(0x00ef_0000_0000_0003);
-        let mut handler = RpcHandler::new(driver);
-        handler.handle_message(HostMessage::OpenEndpoint {
-            request_id: 1,
-            endpoint,
-            actor: None,
-            protocol: "test".to_owned(),
-            grant_token: None,
-        });
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (driver, actor) = seeded_driver();
+            let endpoint = endpoint(0x00ef_0000_0000_0003);
+            let mut handler = RpcHandler::new(driver);
+            handler
+                .dispatch_message(HostMessage::OpenEndpoint {
+                    request_id: 1,
+                    endpoint,
+                    actor: None,
+                    protocol: "test".to_owned(),
+                    grant_token: None,
+                })
+                .await;
 
-        let replies = handler.handle_message(HostMessage::SubmitSource {
-            request_id: 2,
-            endpoint,
-            actor,
-            source: "return 1 / 0".to_owned(),
-        });
-        assert!(matches!(
-            &replies[..],
-            [
-                HostMessage::TaskFailed { error, .. },
-                HostMessage::RequestAccepted {
+            let replies = handler
+                .dispatch_message(HostMessage::SubmitSource {
                     request_id: 2,
-                    task_id: Some(_),
-                },
-            ] if error.error_code_symbol() == Some(Symbol::intern("E_DIV"))
-        ));
+                    endpoint,
+                    actor,
+                    source: "return 1 / 0".to_owned(),
+                })
+                .await;
+            assert!(matches!(
+                &replies[..],
+                [
+                    HostMessage::TaskFailed { error, .. },
+                    HostMessage::RequestAccepted {
+                        request_id: 2,
+                        task_id: Some(_),
+                    },
+                ] if error.error_code_symbol() == Some(Symbol::intern("E_DIV"))
+            ));
+        });
     }
 
     #[test]
     fn rpc_handler_routes_actor_effects_to_actor_endpoint() {
-        let (driver, actor) = seeded_driver();
-        let endpoint = endpoint(0x00ef_0000_0000_0007);
-        let mut handler = RpcHandler::new(driver);
-        handler.handle_message(HostMessage::OpenEndpoint {
-            request_id: 1,
-            endpoint,
-            actor: Some(actor),
-            protocol: "test".to_owned(),
-            grant_token: None,
-        });
-
-        let replies = handler.handle_message(HostMessage::SubmitSource {
-            request_id: 2,
-            endpoint,
-            actor,
-            source: "emit(#alice, \"hello actor\")".to_owned(),
-        });
-        assert!(matches!(
-            &replies[..],
-            [
-                HostMessage::OutputReady { endpoint: target, buffered: 1 },
-                HostMessage::TaskCompleted { .. },
-                HostMessage::RequestAccepted { request_id: 2, .. },
-            ] if *target == endpoint
-        ));
-        let replies = handler.handle_message(HostMessage::DrainOutput {
-            request_id: 3,
-            endpoint,
-            limit: 1,
-        });
-        assert_eq!(
-            replies,
-            vec![
-                HostMessage::OutputBatch {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (driver, actor) = seeded_driver();
+            let endpoint = endpoint(0x00ef_0000_0000_0007);
+            let mut handler = RpcHandler::new(driver);
+            handler
+                .dispatch_message(HostMessage::OpenEndpoint {
+                    request_id: 1,
                     endpoint,
-                    values: vec![Value::string("hello actor")],
-                },
-                accepted(3, None),
-            ]
-        );
+                    actor: Some(actor),
+                    protocol: "test".to_owned(),
+                    grant_token: None,
+                })
+                .await;
+
+            let replies = handler
+                .dispatch_message(HostMessage::SubmitSource {
+                    request_id: 2,
+                    endpoint,
+                    actor,
+                    source: "emit(#alice, \"hello actor\")".to_owned(),
+                })
+                .await;
+            assert!(matches!(
+                &replies[..],
+                [
+                    HostMessage::OutputReady { endpoint: target, buffered: 1 },
+                    HostMessage::TaskCompleted { .. },
+                    HostMessage::RequestAccepted { request_id: 2, .. },
+                ] if *target == endpoint
+            ));
+            let replies = handler
+                .dispatch_message(HostMessage::DrainOutput {
+                    request_id: 3,
+                    endpoint,
+                    limit: 1,
+                })
+                .await;
+            assert_eq!(
+                replies,
+                vec![
+                    HostMessage::OutputBatch {
+                        endpoint,
+                        values: vec![Value::string("hello actor")],
+                    },
+                    accepted(3, None),
+                ]
+            );
+        });
     }
 
     #[test]
     fn rpc_handler_resolves_named_identity() {
-        let (driver, actor) = seeded_driver();
-        let mut handler = RpcHandler::new(driver);
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (driver, actor) = seeded_driver();
+            let mut handler = RpcHandler::new(driver);
 
-        assert_eq!(
-            handler.handle_message(HostMessage::ResolveIdentity {
-                request_id: 12,
-                name: Symbol::intern("alice"),
-            }),
-            vec![HostMessage::IdentityResolved {
-                request_id: 12,
-                name: Symbol::intern("alice"),
-                identity: actor,
-            }]
-        );
+            assert_eq!(
+                handler
+                    .dispatch_message(HostMessage::ResolveIdentity {
+                        request_id: 12,
+                        name: Symbol::intern("alice"),
+                    })
+                    .await,
+                vec![HostMessage::IdentityResolved {
+                    request_id: 12,
+                    name: Symbol::intern("alice"),
+                    identity: actor,
+                }]
+            );
 
-        assert!(matches!(
-            handler.handle_message(HostMessage::ResolveIdentity {
-                request_id: 13,
-                name: Symbol::intern("missing"),
-            }).as_slice(),
-            [HostMessage::RequestRejected { request_id: 13, code, .. }]
-                if *code == Symbol::intern("E_UNKNOWN_IDENTITY")
-        ));
+            assert!(matches!(
+                handler.dispatch_message(HostMessage::ResolveIdentity {
+                    request_id: 13,
+                    name: Symbol::intern("missing"),
+                }).await.as_slice(),
+                [HostMessage::RequestRejected { request_id: 13, code, .. }]
+                    if *code == Symbol::intern("E_UNKNOWN_IDENTITY")
+            ));
+        });
     }
 
     #[test]
@@ -570,18 +607,21 @@ mod tests {
 
     #[test]
     fn source_runner_identity_request_uses_actor_context() {
-        let (driver, actor) = seeded_driver();
-        let submitted = driver
-            .submit_source_as_actor(
-                endpoint(0x00ef_0000_0000_0004),
-                actor,
-                "return actor()".to_owned(),
-            )
-            .unwrap();
-        assert!(matches!(
-            submitted.outcome,
-            TaskOutcome::Complete { value, .. } if value == Value::identity(actor)
-        ));
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (driver, actor) = seeded_driver();
+            let submitted = driver
+                .submit_source_as_actor(
+                    endpoint(0x00ef_0000_0000_0004),
+                    actor,
+                    "return actor()".to_owned(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                submitted.outcome,
+                TaskOutcome::Complete { value, .. } if value == Value::identity(actor)
+            ));
+        });
     }
 
     #[test]
@@ -686,39 +726,45 @@ mod tests {
 
     #[test]
     fn rpc_handler_can_drain_delayed_driver_events() {
-        let (driver, actor) = seeded_driver();
-        let endpoint = endpoint(0x00ef_0000_0000_0006);
-        let mut handler = RpcHandler::new(driver);
-        handler.handle_message(HostMessage::OpenEndpoint {
-            request_id: 1,
-            endpoint,
-            actor: None,
-            protocol: "test".to_owned(),
-            grant_token: None,
-        });
-        let replies = handler.handle_message(HostMessage::SubmitSource {
-            request_id: 2,
-            endpoint,
-            actor,
-            source: "suspend(0.001)\nemit(#endpoint, \"awake\")".to_owned(),
-        });
-        assert!(matches!(
-            &replies[..],
-            [HostMessage::RequestAccepted {
-                request_id: 2,
-                task_id: Some(_)
-            }]
-        ));
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (driver, actor) = seeded_driver();
+            let endpoint = endpoint(0x00ef_0000_0000_0006);
+            let mut handler = RpcHandler::new(driver);
+            handler
+                .dispatch_message(HostMessage::OpenEndpoint {
+                    request_id: 1,
+                    endpoint,
+                    actor: None,
+                    protocol: "test".to_owned(),
+                    grant_token: None,
+                })
+                .await;
+            let replies = handler
+                .dispatch_message(HostMessage::SubmitSource {
+                    request_id: 2,
+                    endpoint,
+                    actor,
+                    source: "suspend(0.001)\nemit(#endpoint, \"awake\")".to_owned(),
+                })
+                .await;
+            assert!(matches!(
+                &replies[..],
+                [HostMessage::RequestAccepted {
+                    request_id: 2,
+                    task_id: Some(_)
+                }]
+            ));
 
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let events = handler.drain_driver_messages();
-        assert!(matches!(
-            &events[..],
-            [
-                HostMessage::OutputReady { endpoint: target, buffered: 1 },
-                HostMessage::TaskCompleted { .. },
-            ] if *target == endpoint
-        ));
+            compio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let events = handler.drain_driver_messages();
+            assert!(matches!(
+                &events[..],
+                [
+                    HostMessage::OutputReady { endpoint: target, buffered: 1 },
+                    HostMessage::TaskCompleted { .. },
+                ] if *target == endpoint
+            ));
+        });
     }
 
     struct IpcEndpoint {

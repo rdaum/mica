@@ -370,7 +370,7 @@ async fn read_socket_loop(
     let mut codec = TelnetCodec::new();
     let mut pending = VecDeque::new();
     loop {
-        start_read_task(host, endpoint)?;
+        start_read_task(host, endpoint).await?;
         let line = read_telnet_line(&mut stream, &mut codec, &mut pending).await?;
         let Some(line) = line else {
             return Ok(());
@@ -378,11 +378,12 @@ async fn read_socket_loop(
         let outcomes = host
             .driver
             .input(endpoint, Value::string(line.clone()))
+            .await
             .map_err(format_driver_error)?;
         for outcome in outcomes {
             if let TaskOutcome::Complete { value, .. } = outcome {
                 let command = value.with_str(str::to_owned).unwrap_or(line.clone());
-                if handle_command(host, endpoint, actor_name, &command)? {
+                if handle_command(host, endpoint, actor_name, &command).await? {
                     return Ok(());
                 }
             }
@@ -440,10 +441,11 @@ async fn read_telnet_line(
     }
 }
 
-fn start_read_task(host: &InProcessTelnetHost, endpoint: Identity) -> Result<(), String> {
+async fn start_read_task(host: &InProcessTelnetHost, endpoint: Identity) -> Result<(), String> {
     let report = host
         .driver
         .submit_source_report(endpoint, None, "return read(:line)".to_owned())
+        .await
         .map_err(format_driver_error)?;
     match report.outcome {
         TaskOutcome::Suspended {
@@ -707,7 +709,7 @@ fn is_terminal_response(request_id: u64, message: &HostMessage) -> bool {
     }
 }
 
-fn handle_command(
+async fn handle_command(
     host: &InProcessTelnetHost,
     endpoint: Identity,
     actor_name: &str,
@@ -720,6 +722,7 @@ fn handle_command(
     let source = command_invocation_source(actor_name, command);
     host.driver
         .submit_source_report(endpoint, None, source)
+        .await
         .map_err(format_driver_error)?;
     flush_routed_effects(host);
     Ok(false)
@@ -940,12 +943,6 @@ mod tests {
         runner
             .run_filein(include_str!("../../../examples/mud-core.mica"))
             .unwrap();
-        runner
-            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
-            .unwrap();
-        runner
-            .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
-            .unwrap();
         let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
         let host =
             InProcessTelnetHost::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
@@ -957,68 +954,137 @@ mod tests {
             .insert(endpoint, output.clone());
         open_endpoint(&host, endpoint, alice).unwrap();
 
-        assert!(!handle_command(&host, endpoint, "alice", "look").unwrap());
-
-        let line = output.try_recv().unwrap();
-        assert_eq!(line, "First Room. You are standing in a plain stone room.");
-        assert_eq!(
-            output.try_recv().unwrap(),
-            "A tarnished brass coin catches the light."
+        let replies = host.driver.submit_source_report(
+            endpoint,
+            None,
+            "emit(#endpoint, \"hello\")".to_owned(),
         );
-        assert_eq!(
-            output.try_recv().unwrap(),
-            "A small wooden box rests here, open and empty."
-        );
-        assert_eq!(
-            output.try_recv().unwrap(),
-            "A red button protrudes from the wall under a brass sign reading DO NOT PRESS."
-        );
-        assert_eq!(
-            output.try_recv().unwrap(),
-            "Bob is here, looking faintly puzzled."
-        );
-        assert!(!handle_command(&host, endpoint, "alice", "push button").unwrap());
-
-        let line = output.try_recv().unwrap();
-        assert_eq!(
-            line,
-            "You press the red button. It clicks, then begins to hum."
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            replies.await.unwrap();
+        });
         flush_routed_effects(&host);
 
-        let line = output.try_recv().unwrap();
-        assert_eq!(line, "The red button gives one final cheerful ding.");
-        assert!(!handle_command(&host, endpoint, "alice", "say hello").unwrap());
-
-        let line = output.try_recv().unwrap();
-        assert_eq!(line, "You say, \"hello\"");
-        assert!(!handle_command(&host, endpoint, "alice", "dance").unwrap());
-
-        let line = output.try_recv().unwrap();
-        assert_eq!(line, "I do not understand that.");
+        assert_eq!(output.try_recv().unwrap(), "hello");
         let _ = host.driver.close_endpoint(endpoint);
     }
 
     #[test]
+    fn mud_command_parser_integration_test() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut runner = SourceRunner::new_empty();
+            runner
+                .run_filein(include_str!("../../../examples/string.mica"))
+                .unwrap();
+            runner
+                .run_filein(include_str!("../../../examples/events.mica"))
+                .unwrap();
+            runner
+                .run_filein(include_str!("../../../examples/mud-core.mica"))
+                .unwrap();
+            runner
+                .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+                .unwrap();
+            runner
+                .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
+                .unwrap();
+            let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
+            let host = InProcessTelnetHost::new_without_event_pump(
+                CompioTaskDriver::spawn(runner).unwrap(),
+            );
+            let endpoint = host.allocate_endpoint().unwrap();
+            let output = EndpointOutput::new();
+            host.endpoints
+                .lock()
+                .unwrap()
+                .insert(endpoint, output.clone());
+            open_endpoint(&host, endpoint, alice).unwrap();
+
+            assert!(
+                !handle_command(&host, endpoint, "alice", "look")
+                    .await
+                    .unwrap()
+            );
+
+            let line = output.try_recv().unwrap();
+            assert_eq!(line, "First Room. You are standing in a plain stone room.");
+            assert_eq!(
+                output.try_recv().unwrap(),
+                "A tarnished brass coin catches the light."
+            );
+            assert_eq!(
+                output.try_recv().unwrap(),
+                "A small wooden box rests here, open and empty."
+            );
+            assert_eq!(
+                output.try_recv().unwrap(),
+                "A red button protrudes from the wall under a brass sign reading DO NOT PRESS."
+            );
+            assert_eq!(
+                output.try_recv().unwrap(),
+                "Bob is here, looking faintly puzzled."
+            );
+            assert!(
+                !handle_command(&host, endpoint, "alice", "push button")
+                    .await
+                    .unwrap()
+            );
+
+            let line = output.try_recv().unwrap();
+            assert_eq!(
+                line,
+                "You press the red button. It clicks, then begins to hum."
+            );
+            compio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            flush_routed_effects(&host);
+
+            let line = output.try_recv().unwrap();
+            assert_eq!(line, "The red button gives one final cheerful ding.");
+            assert!(
+                !handle_command(&host, endpoint, "alice", "say hello")
+                    .await
+                    .unwrap()
+            );
+
+            let line = output.try_recv().unwrap();
+            assert_eq!(line, "You say, \"hello\"");
+            assert!(
+                !handle_command(&host, endpoint, "alice", "dance")
+                    .await
+                    .unwrap()
+            );
+
+            let line = output.try_recv().unwrap();
+            assert_eq!(line, "I do not understand that.");
+            let _ = host.driver.close_endpoint(endpoint);
+        });
+    }
+
+    #[test]
     fn endpoint_read_task_accepts_driver_input() {
-        let runner = SourceRunner::new_empty();
-        let host =
-            InProcessTelnetHost::new_without_event_pump(CompioTaskDriver::spawn(runner).unwrap());
-        let endpoint = host.allocate_endpoint().unwrap();
-        host.endpoints
-            .lock()
-            .unwrap()
-            .insert(endpoint, EndpointOutput::new());
-        open_endpoint(&host, endpoint, endpoint).unwrap();
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let runner = SourceRunner::new_empty();
+            let host = InProcessTelnetHost::new_without_event_pump(
+                CompioTaskDriver::spawn(runner).unwrap(),
+            );
+            let endpoint = host.allocate_endpoint().unwrap();
+            host.endpoints
+                .lock()
+                .unwrap()
+                .insert(endpoint, EndpointOutput::new());
+            open_endpoint(&host, endpoint, endpoint).unwrap();
 
-        start_read_task(&host, endpoint).unwrap();
-        let outcomes = host.driver.input(endpoint, Value::string("look")).unwrap();
+            start_read_task(&host, endpoint).await.unwrap();
+            let outcomes = host
+                .driver
+                .input(endpoint, Value::string("look"))
+                .await
+                .unwrap();
 
-        assert!(matches!(
-            outcomes.as_slice(),
-            [TaskOutcome::Complete { value, .. }] if *value == Value::string("look")
-        ));
-        let _ = host.driver.close_endpoint(endpoint);
+            assert!(matches!(
+                outcomes.as_slice(),
+                [TaskOutcome::Complete { value, .. }] if *value == Value::string("look")
+            ));
+            let _ = host.driver.close_endpoint(endpoint);
+        });
     }
 }
