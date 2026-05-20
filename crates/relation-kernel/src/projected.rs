@@ -116,28 +116,19 @@ impl ProjectedStore {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
-        self.relations
-            .get(&relation)
-            .ok_or(KernelError::UnknownRelation(relation))?
-            .scan(bindings)
+        self.relation(relation)?.scan(bindings)
     }
 
     fn assert_visible(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
         self.validate_tuple(relation, &tuple)?;
-        self.relations
-            .get_mut(&relation)
-            .ok_or(KernelError::UnknownRelation(relation))?
-            .insert(tuple);
+        self.relation_mut(relation)?.insert(tuple);
         self.advance_version();
         Ok(())
     }
 
     fn retract_visible(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
         self.validate_tuple(relation, &tuple)?;
-        self.relations
-            .get_mut(&relation)
-            .ok_or(KernelError::UnknownRelation(relation))?
-            .remove(&tuple);
+        self.relation_mut(relation)?.remove(&tuple);
         self.advance_version();
         Ok(())
     }
@@ -148,11 +139,7 @@ impl ProjectedStore {
         positions: &[u16],
         tuple: &Tuple,
     ) -> Result<Option<Tuple>, KernelError> {
-        Ok(self
-            .relations
-            .get(&relation)
-            .ok_or(KernelError::UnknownRelation(relation))?
-            .tuple_for_key(positions, tuple))
+        Ok(self.relation(relation)?.tuple_for_key(positions, tuple))
     }
 
     fn apply_catalog_change(&mut self, change: CatalogChange) -> Result<(), KernelError> {
@@ -185,10 +172,7 @@ impl ProjectedStore {
 
     fn apply_fact_change(&mut self, change: FactChange) -> Result<(), KernelError> {
         self.validate_tuple(change.relation, &change.tuple)?;
-        let relation = self
-            .relations
-            .get_mut(&change.relation)
-            .ok_or(KernelError::UnknownRelation(change.relation))?;
+        let relation = self.relation_mut(change.relation)?;
         let _ = match change.kind {
             FactChangeKind::Assert => relation.insert(change.tuple),
             FactChangeKind::Retract => relation.remove(&change.tuple),
@@ -197,11 +181,7 @@ impl ProjectedStore {
     }
 
     fn validate_tuple(&self, relation: RelationId, tuple: &Tuple) -> Result<(), KernelError> {
-        let metadata = self
-            .relations
-            .get(&relation)
-            .ok_or(KernelError::UnknownRelation(relation))?
-            .metadata();
+        let metadata = self.relation(relation)?.metadata();
         if metadata.arity() as usize != tuple.arity() {
             return Err(KernelError::ArityMismatch {
                 relation,
@@ -216,6 +196,18 @@ impl ProjectedStore {
             });
         }
         Ok(())
+    }
+
+    fn relation(&self, relation: RelationId) -> Result<&RelationState, KernelError> {
+        self.relations
+            .get(&relation)
+            .ok_or(KernelError::UnknownRelation(relation))
+    }
+
+    fn relation_mut(&mut self, relation: RelationId) -> Result<&mut RelationState, KernelError> {
+        self.relations
+            .get_mut(&relation)
+            .ok_or(KernelError::UnknownRelation(relation))
     }
 
     fn derived_tuples(&self) -> Result<BTreeMap<RelationId, Vec<Tuple>>, KernelError> {
@@ -276,13 +268,7 @@ impl RelationWorkspace for ProjectedStore {
         tuple: Tuple,
     ) -> Result<(), KernelError> {
         self.validate_tuple(relation, &tuple)?;
-        let key_positions = match self
-            .relations
-            .get(&relation)
-            .ok_or(KernelError::UnknownRelation(relation))?
-            .metadata()
-            .conflict_policy()
-        {
+        let key_positions = match self.relation(relation)?.metadata().conflict_policy() {
             ConflictPolicy::Functional { key_positions } => key_positions.to_vec(),
             ConflictPolicy::Set | ConflictPolicy::EventAppend => {
                 return self.assert_visible(relation, tuple);

@@ -15,8 +15,7 @@ use crate::ScanControl;
 use crate::error::KernelError;
 use crate::metadata::RelationMetadata;
 use crate::tuple::{Tuple, TupleKey, finish_tuple_rows};
-use mica_var::{OrderedKeySink, Value};
-use rart::{OverflowKey, OverflowKeyBuilder};
+use mica_var::Value;
 pub(crate) use tuple_index::ProjectedTupleIndex;
 use tuple_index::TupleIndex;
 use tuple_store::TupleStore;
@@ -25,34 +24,10 @@ mod tuple_bucket;
 mod tuple_index;
 mod tuple_store;
 
-pub(crate) type RadixTupleKey = OverflowKey<64, 16>;
-
 #[derive(Clone, Copy)]
 pub(crate) enum RelationMutationKind {
     Assert,
     Retract,
-}
-
-pub(crate) struct RadixTupleKeyBuilder(OverflowKeyBuilder<64, 16>);
-
-impl RadixTupleKeyBuilder {
-    pub(crate) fn new() -> Self {
-        Self(RadixTupleKey::builder())
-    }
-
-    pub(crate) fn finish(self) -> RadixTupleKey {
-        self.0.finish()
-    }
-}
-
-impl OrderedKeySink for RadixTupleKeyBuilder {
-    fn push_byte(&mut self, byte: u8) {
-        self.0.push(byte);
-    }
-
-    fn extend_from_slice(&mut self, bytes: &[u8]) {
-        self.0.extend_from_slice(bytes);
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -168,18 +143,14 @@ impl RelationState {
         };
 
         let mut out = Vec::new();
-        left_index.intersect_values_with(right_index, |left_bucket, right_bucket| {
-            for left_tuple in left_bucket {
-                if !left_tuple.matches_bindings(left_bindings) {
-                    continue;
-                }
-                for right_tuple in right_bucket {
-                    if right_tuple.matches_bindings(right_bindings) {
-                        out.push(left_tuple.concat(right_tuple));
-                    }
-                }
-            }
-        });
+        left_index.matching_row_pairs(
+            right_index,
+            left_bindings,
+            right_bindings,
+            |left_tuple, right_tuple| {
+                out.push(left_tuple.concat(right_tuple));
+            },
+        );
         Ok(Some(finish_tuple_rows(out)))
     }
 
@@ -191,7 +162,7 @@ impl RelationState {
     ) -> Vec<Tuple> {
         let mut out = Vec::new();
         self.tuples
-            .intersect_values_with(&right.tuples, |left, right| {
+            .matching_row_pairs(&right.tuples, |left, right| {
                 if left.matches_bindings(left_bindings) && right.matches_bindings(right_bindings) {
                     out.push(left.concat(right));
                 }
@@ -429,14 +400,6 @@ impl ScanAccess<'_> {
             Self::Index(index, bound_count) => index.visit_prefix(bindings, *bound_count, visitor),
         }
     }
-}
-
-pub(crate) fn key_from_values<'a>(values: impl IntoIterator<Item = &'a Value>) -> RadixTupleKey {
-    let mut key = RadixTupleKeyBuilder::new();
-    for value in values {
-        value.encode_ordered_into(&mut key);
-    }
-    key.finish()
 }
 
 fn is_natural_full_tuple_index(positions: &[u16], arity: u16) -> bool {

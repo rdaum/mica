@@ -65,6 +65,25 @@ struct FjallKeyspaces {
     commits: Keyspace,
 }
 
+impl FjallKeyspaces {
+    fn open(database: &Database) -> Result<Self, String> {
+        Ok(Self {
+            metadata: open_keyspace(database, FJALL_METADATA_KEYSPACE)?,
+            relations: open_keyspace(database, FJALL_RELATIONS_KEYSPACE)?,
+            rules: open_keyspace(database, FJALL_RULES_KEYSPACE)?,
+            facts: open_keyspace(database, FJALL_FACTS_KEYSPACE)?,
+            commits: open_keyspace(database, FJALL_COMMITS_KEYSPACE)?,
+        })
+    }
+
+    fn is_uninitialized(&self) -> bool {
+        !has_entries(&self.relations)
+            && !has_entries(&self.rules)
+            && !has_entries(&self.facts)
+            && !has_entries(&self.commits)
+    }
+}
+
 pub struct FjallStateProvider {
     keyspaces: FjallKeyspaces,
     durability: FjallDurabilityMode,
@@ -109,20 +128,8 @@ impl FjallStateProvider {
         let database = Database::builder(path)
             .open()
             .map_err(|error| format!("failed to open fjall database: {error}"))?;
-        let metadata = open_keyspace(&database, FJALL_METADATA_KEYSPACE)?;
-        let relations = open_keyspace(&database, FJALL_RELATIONS_KEYSPACE)?;
-        let rules = open_keyspace(&database, FJALL_RULES_KEYSPACE)?;
-        let facts = open_keyspace(&database, FJALL_FACTS_KEYSPACE)?;
-        let commits = open_keyspace(&database, FJALL_COMMITS_KEYSPACE)?;
-        write_format_markers(&metadata)?;
-
-        let keyspaces = FjallKeyspaces {
-            metadata,
-            relations,
-            rules,
-            facts,
-            commits,
-        };
+        let keyspaces = FjallKeyspaces::open(&database)?;
+        write_format_markers(&keyspaces.metadata)?;
         let (sender, receiver) = mpsc::sync_channel(1024);
         let writer_database = database.clone();
         let writer_keyspaces = keyspaces.clone();
@@ -167,23 +174,12 @@ impl FjallStateProvider {
         let database = Database::builder(path)
             .open()
             .map_err(|error| format!("failed to open fjall database for format check: {error}"))?;
-        let metadata = open_keyspace(&database, FJALL_METADATA_KEYSPACE)?;
-        let relations = open_keyspace(&database, FJALL_RELATIONS_KEYSPACE)?;
-        let rules = open_keyspace(&database, FJALL_RULES_KEYSPACE)?;
-        let facts = open_keyspace(&database, FJALL_FACTS_KEYSPACE)?;
-        let commits = open_keyspace(&database, FJALL_COMMITS_KEYSPACE)?;
-        let stored_version = read_marker(&metadata, FORMAT_VERSION_KEY)?;
-        let stored_shape = read_marker(&metadata, SHAPE_KEY)?;
+        let keyspaces = FjallKeyspaces::open(&database)?;
+        let stored_version = read_marker(&keyspaces.metadata, FORMAT_VERSION_KEY)?;
+        let stored_shape = read_marker(&keyspaces.metadata, SHAPE_KEY)?;
 
         match (&stored_version, &stored_shape) {
-            (None, None)
-                if !has_entries(&relations)
-                    && !has_entries(&rules)
-                    && !has_entries(&facts)
-                    && !has_entries(&commits) =>
-            {
-                Ok(FjallFormatStatus::Uninitialized)
-            }
+            (None, None) if keyspaces.is_uninitialized() => Ok(FjallFormatStatus::Uninitialized),
             (Some(version), Some(shape))
                 if version == FJALL_FORMAT_VERSION && shape == FJALL_SHAPE =>
             {

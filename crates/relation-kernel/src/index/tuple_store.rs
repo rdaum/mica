@@ -7,7 +7,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
-use super::{RadixTupleKey, key_from_values, natural_prefix_covers_all_bindings};
+use crate::radix_key::{RadixTupleKey, key_from_values};
+
+use super::natural_prefix_covers_all_bindings;
 
 const TUPLE_STORE_RADIX_THRESHOLD: usize = 4096;
 
@@ -247,11 +249,7 @@ impl TupleStore {
         Ok(())
     }
 
-    pub(super) fn intersect_values_with(
-        &self,
-        other: &Self,
-        mut visitor: impl FnMut(&Tuple, &Tuple),
-    ) {
+    pub(super) fn matching_row_pairs(&self, other: &Self, mut visitor: impl FnMut(&Tuple, &Tuple)) {
         match (self, other) {
             (Self::Small(left), Self::Small(right)) => {
                 for tuple in left.intersection(right) {

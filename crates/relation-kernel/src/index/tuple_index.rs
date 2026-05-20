@@ -5,8 +5,9 @@ use mica_var::Value;
 use rart::{AdaptiveRadixTree, Slot, SlotUpdate, VersionedAdaptiveRadixTree, VisitControl};
 use std::fmt;
 
+use crate::radix_key::{RadixTupleKey, key_from_values};
+
 use super::tuple_bucket::TupleBucket;
-use super::{RadixTupleKey, key_from_values};
 
 pub(super) struct TupleIndex {
     spec: crate::TupleIndexSpec,
@@ -205,12 +206,29 @@ impl TupleIndex {
             })
     }
 
-    pub(super) fn intersect_values_with(
+    fn intersect_values_with(&self, other: &Self, visit: impl FnMut(&TupleBucket, &TupleBucket)) {
+        self.entries.intersect_values_with(&other.entries, visit);
+    }
+
+    pub(super) fn matching_row_pairs(
         &self,
         other: &Self,
-        visit: impl FnMut(&TupleBucket, &TupleBucket),
+        left_bindings: &[Option<Value>],
+        right_bindings: &[Option<Value>],
+        mut visit: impl FnMut(&Tuple, &Tuple),
     ) {
-        self.entries.intersect_values_with(&other.entries, visit);
+        self.intersect_values_with(other, |left_bucket, right_bucket| {
+            for left_tuple in left_bucket {
+                if !left_tuple.matches_bindings(left_bindings) {
+                    continue;
+                }
+                for right_tuple in right_bucket {
+                    if right_tuple.matches_bindings(right_bindings) {
+                        visit(left_tuple, right_tuple);
+                    }
+                }
+            }
+        });
     }
 
     pub(super) fn tuple_for_key_values(&self, values: &[Value]) -> Option<Tuple> {

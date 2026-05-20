@@ -11,6 +11,8 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+mod overlay;
+
 use crate::commit_bloom::CommitBloom;
 use crate::index::RelationMutationKind;
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
@@ -23,9 +25,8 @@ use crate::{
     RelationId, RelationKernel, RelationWorkspace, RuleSet, ScanControl, Snapshot, Tuple, Version,
 };
 use mica_var::Value;
-use rart::{AdaptiveRadixTree, Slot, SlotUpdate};
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 pub struct Transaction<'a> {
@@ -334,13 +335,12 @@ impl<'a> Transaction<'a> {
         tuple: &Tuple,
     ) -> Result<Option<Tuple>, KernelError> {
         self.ensure_functional_visible(relation, positions)?;
-        let key = projected_key(tuple, positions);
         let visible = self
             .functional_visible
             .get(&relation)
             .expect("ensured functional visibility map should exist");
-        if let Some(entry) = visible.tuples.get_k(&key) {
-            return Ok(entry.tuple.clone());
+        if let Some(tuple) = visible.tracked_tuple(tuple) {
+            return Ok(tuple);
         }
         self.base
             .relation(relation)
@@ -357,47 +357,11 @@ impl<'a> Transaction<'a> {
         }
 
         let base_relation = self.base.relation(relation)?;
-        let mut tuples = AdaptiveRadixTree::new();
-        if let Some(writes) = self.writes.get(&relation) {
-            writes.for_each(|tuple, change| {
-                let key = projected_key(tuple, positions);
-                tuples.update_k(&key, |slot| match slot {
-                    Slot::Vacant => {
-                        let mut current = base_relation.tuple_for_key(positions, tuple);
-                        match change {
-                            LocalChange::Assert => current = Some(tuple.clone()),
-                            LocalChange::Retract => {
-                                if current.as_ref() == Some(tuple) {
-                                    current = None;
-                                }
-                            }
-                        }
-                        SlotUpdate::Insert(FunctionalVisibleEntry {
-                            representative: tuple.clone(),
-                            tuple: current,
-                        })
-                    }
-                    Slot::Occupied(entry) => {
-                        match change {
-                            LocalChange::Assert => entry.tuple = Some(tuple.clone()),
-                            LocalChange::Retract => {
-                                if entry.tuple.as_ref() == Some(tuple) {
-                                    entry.tuple = None;
-                                }
-                            }
-                        }
-                        SlotUpdate::Keep
-                    }
-                });
+        let visible =
+            FunctionalVisibleMap::from_writes(positions, self.writes.get(&relation), |tuple| {
+                base_relation.tuple_for_key(positions, tuple)
             });
-        }
-        self.functional_visible.insert(
-            relation,
-            FunctionalVisibleMap {
-                positions: positions.to_vec(),
-                tuples,
-            },
-        );
+        self.functional_visible.insert(relation, visible);
         Ok(())
     }
 
@@ -411,60 +375,16 @@ impl<'a> Transaction<'a> {
             return Ok(());
         }
 
-        let Some(visible) = self.functional_visible.get(&relation) else {
+        if !self.functional_visible.contains_key(&relation) {
             return Ok(());
-        };
-        let positions = visible.positions.clone();
-        let key = projected_key(tuple, &positions);
-        match change {
-            LocalChange::Assert => {
-                self.functional_visible
-                    .get_mut(&relation)
-                    .expect("checked functional visibility map should exist")
-                    .tuples
-                    .update_k(&key, |slot| match slot {
-                        Slot::Vacant => SlotUpdate::Insert(FunctionalVisibleEntry {
-                            representative: tuple.clone(),
-                            tuple: Some(tuple.clone()),
-                        }),
-                        Slot::Occupied(entry) => {
-                            entry.tuple = Some(tuple.clone());
-                            SlotUpdate::Keep
-                        }
-                    });
-            }
-            LocalChange::Retract => {
-                let base_visible = if visible.tuples.get_k(&key).is_some() {
-                    None
-                } else {
-                    self.base
-                        .relation(relation)?
-                        .tuple_for_key(&positions, tuple)
-                };
-                let visible = self
-                    .functional_visible
-                    .get_mut(&relation)
-                    .expect("checked functional visibility map should exist");
-                visible.tuples.update_k(&key, |slot| match slot {
-                    Slot::Vacant => {
-                        let mut current = base_visible;
-                        if current.as_ref() == Some(tuple) {
-                            current = None;
-                        }
-                        SlotUpdate::Insert(FunctionalVisibleEntry {
-                            representative: tuple.clone(),
-                            tuple: current,
-                        })
-                    }
-                    Slot::Occupied(entry) => {
-                        if entry.tuple.as_ref() == Some(tuple) {
-                            entry.tuple = None;
-                        }
-                        SlotUpdate::Keep
-                    }
-                });
-            }
         }
+        let base_relation = self.base.relation(relation)?;
+        self.functional_visible
+            .get_mut(&relation)
+            .expect("checked functional visibility map should exist")
+            .record_change_with_base_lookup(tuple, change, |positions| {
+                base_relation.tuple_for_key(positions, tuple)
+            });
         Ok(())
     }
 
@@ -491,11 +411,11 @@ impl<'a> Transaction<'a> {
                 }
                 ConflictPolicy::Functional { key_positions } => {
                     if let Some(visible) = self.functional_visible.get(relation_id) {
-                        for entry in visible.tuples.values_iter() {
+                        for entry in visible.conflict_entries() {
                             let base =
-                                base_relation.tuple_for_key(key_positions, &entry.representative);
-                            let current = current_relation
-                                .tuple_for_key(key_positions, &entry.representative);
+                                base_relation.tuple_for_key(key_positions, entry.representative);
+                            let current =
+                                current_relation.tuple_for_key(key_positions, entry.representative);
                             if base != current {
                                 return Err(KernelError::Conflict(Conflict {
                                     relation: *relation_id,
@@ -509,21 +429,19 @@ impl<'a> Transaction<'a> {
                         continue;
                     }
 
-                    let mut touched_keys = BTreeMap::new();
-                    writes.for_each(|tuple, _change| {
-                        touched_keys.insert(tuple.project(key_positions), tuple.clone());
-                    });
-                    for (key, representative) in touched_keys {
-                        let base = base_relation.tuple_for_projected_key(key_positions, &key);
-                        let current = current_relation.tuple_for_projected_key(key_positions, &key);
+                    writes.visit_touched_projected_keys(key_positions, |key, representative| {
+                        let base = base_relation.tuple_for_projected_key(key_positions, key);
+                        let current = current_relation.tuple_for_projected_key(key_positions, key);
                         if base != current {
-                            return Err(KernelError::Conflict(Conflict {
+                            Err(KernelError::Conflict(Conflict {
                                 relation: *relation_id,
-                                tuple: representative,
+                                tuple: representative.clone(),
                                 kind: ConflictKind::FunctionalKeyChanged,
-                            }));
+                            }))
+                        } else {
+                            Ok(())
                         }
-                    }
+                    })?;
                 }
                 ConflictPolicy::EventAppend => {}
             }
@@ -660,197 +578,6 @@ impl crate::RelationRead for ExtensionalTransactionReader<'_, '_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LocalChange {
-    Assert,
-    Retract,
-}
-
-struct RelationWriteOverlay {
-    changes: OverlayChanges,
-    scan_indexes: RefCell<HashMap<Vec<u16>, LocalScanIndex>>,
-    scan_requests: RefCell<HashMap<Vec<u16>, usize>>,
-}
-
-impl RelationWriteOverlay {
-    fn insert(&mut self, tuple: Tuple, change: LocalChange) {
-        self.changes.insert(tuple, change);
-        self.scan_indexes.get_mut().clear();
-        self.scan_requests.get_mut().clear();
-    }
-
-    fn for_each(&self, mut visitor: impl FnMut(&Tuple, LocalChange)) {
-        match &self.changes {
-            OverlayChanges::Small(changes) => {
-                for entry in changes {
-                    visitor(&entry.tuple, entry.change);
-                }
-            }
-            OverlayChanges::Radix(changes) => {
-                for entry in changes.values_iter() {
-                    visitor(&entry.tuple, entry.change);
-                }
-            }
-        }
-    }
-
-    fn try_for_each<E>(
-        &self,
-        mut visitor: impl FnMut(&Tuple, LocalChange) -> Result<(), E>,
-    ) -> Result<(), E> {
-        match &self.changes {
-            OverlayChanges::Small(changes) => {
-                for entry in changes {
-                    visitor(&entry.tuple, entry.change)?;
-                }
-            }
-            OverlayChanges::Radix(changes) => {
-                for entry in changes.values_iter() {
-                    visitor(&entry.tuple, entry.change)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_ordered_changes(
-        &self,
-        relation: &mut crate::index::RelationState,
-        base_relation: &crate::index::RelationState,
-        mut on_applied: impl FnMut(&Tuple, RelationMutationKind),
-    ) {
-        match &self.changes {
-            OverlayChanges::Small(changes) => {
-                if base_relation.is_empty()
-                    && relation.cardinality() == 0
-                    && changes
-                        .iter()
-                        .all(|entry| entry.change == LocalChange::Assert)
-                {
-                    relation.apply_ordered_asserts_to_empty(
-                        changes.iter().map(|entry| &entry.tuple),
-                        &mut on_applied,
-                    );
-                    return;
-                }
-                relation.apply_ordered_changes(
-                    changes
-                        .iter()
-                        .map(|entry| (&entry.tuple, RelationMutationKind::from(entry.change))),
-                    |tuple| base_relation.contains_tuple(tuple),
-                    &mut on_applied,
-                );
-            }
-            OverlayChanges::Radix(changes) => {
-                if base_relation.is_empty()
-                    && relation.cardinality() == 0
-                    && changes
-                        .values_iter()
-                        .all(|entry| entry.change == LocalChange::Assert)
-                {
-                    relation.apply_ordered_asserts_to_empty(
-                        changes.values_iter().map(|entry| &entry.tuple),
-                        &mut on_applied,
-                    );
-                    return;
-                }
-                relation.apply_ordered_changes(
-                    changes
-                        .values_iter()
-                        .map(|entry| (&entry.tuple, RelationMutationKind::from(entry.change))),
-                    |tuple| base_relation.contains_tuple(tuple),
-                    &mut on_applied,
-                );
-            }
-        }
-    }
-
-    fn visit_matches(
-        &self,
-        metadata: &crate::RelationMetadata,
-        bindings: &[Option<Value>],
-        visitor: &mut dyn FnMut(&Tuple, LocalChange),
-    ) {
-        let Some(prefix_positions) = best_local_prefix_positions(metadata, bindings) else {
-            self.for_each(|tuple, change| {
-                visitor(tuple, change);
-            });
-            return;
-        };
-
-        if !self.scan_indexes.borrow().contains_key(&prefix_positions) {
-            let mut requests = self.scan_requests.borrow_mut();
-            let request_count = requests.entry(prefix_positions.clone()).or_default();
-            *request_count += 1;
-            if *request_count == 1 {
-                drop(requests);
-                self.for_each(|tuple, change| {
-                    visitor(tuple, change);
-                });
-                return;
-            }
-        }
-
-        self.ensure_scan_index(&prefix_positions);
-        let key = crate::index::key_from_values(prefix_positions.iter().map(|position| {
-            bindings[*position as usize]
-                .as_ref()
-                .expect("prefix positions should be bound")
-        }));
-        let indexes = self.scan_indexes.borrow();
-        let index = indexes
-            .get(&prefix_positions)
-            .expect("ensured local scan index should exist");
-        if let Some(rows) = index.rows.get_k(&key) {
-            for (tuple, change) in rows {
-                visitor(tuple, *change);
-            }
-        }
-    }
-
-    fn ensure_scan_index(&self, positions: &[u16]) {
-        if self.scan_indexes.borrow().contains_key(positions) {
-            return;
-        }
-
-        let mut rows = AdaptiveRadixTree::new();
-        self.for_each(|tuple, change| {
-            let key = crate::index::key_from_values(
-                positions
-                    .iter()
-                    .map(|position| &tuple.values()[*position as usize]),
-            );
-            rows.update_k(&key, |slot| match slot {
-                Slot::Vacant => SlotUpdate::Insert(vec![(tuple.clone(), change)]),
-                Slot::Occupied(rows) => {
-                    rows.push((tuple.clone(), change));
-                    SlotUpdate::Keep
-                }
-            });
-        });
-        self.scan_indexes
-            .borrow_mut()
-            .insert(positions.to_vec(), LocalScanIndex { rows });
-    }
-}
-
-impl Default for RelationWriteOverlay {
-    fn default() -> Self {
-        Self {
-            changes: OverlayChanges::Small(Vec::new()),
-            scan_indexes: RefCell::new(HashMap::new()),
-            scan_requests: RefCell::new(HashMap::new()),
-        }
-    }
-}
-
-const LOCAL_RADIX_OVERLAY_THRESHOLD: usize = 64;
-
-enum OverlayChanges {
-    Small(Vec<OverlayEntry>),
-    Radix(AdaptiveRadixTree<crate::index::RadixTupleKey, OverlayEntry>),
-}
-
 impl From<LocalChange> for RelationMutationKind {
     fn from(change: LocalChange) -> Self {
         match change {
@@ -858,76 +585,4 @@ impl From<LocalChange> for RelationMutationKind {
             LocalChange::Retract => Self::Retract,
         }
     }
-}
-
-impl OverlayChanges {
-    fn insert(&mut self, tuple: Tuple, change: LocalChange) {
-        let promote = match self {
-            Self::Small(changes) => {
-                match changes.binary_search_by(|entry| entry.tuple.cmp(&tuple)) {
-                    Ok(index) => changes[index].change = change,
-                    Err(index) => changes.insert(index, OverlayEntry { tuple, change }),
-                }
-                if changes.len() > LOCAL_RADIX_OVERLAY_THRESHOLD {
-                    Some(std::mem::take(changes))
-                } else {
-                    None
-                }
-            }
-            Self::Radix(changes) => {
-                let key = crate::index::key_from_values(tuple.values());
-                changes.insert_k(&key, OverlayEntry { tuple, change });
-                None
-            }
-        };
-
-        if let Some(changes) = promote {
-            let mut radix = AdaptiveRadixTree::new();
-            for entry in changes {
-                let key = crate::index::key_from_values(entry.tuple.values());
-                radix.insert_k(&key, entry);
-            }
-            *self = Self::Radix(radix);
-        }
-    }
-}
-
-struct OverlayEntry {
-    tuple: Tuple,
-    change: LocalChange,
-}
-
-struct LocalScanIndex {
-    rows: AdaptiveRadixTree<crate::index::RadixTupleKey, Vec<(Tuple, LocalChange)>>,
-}
-
-struct FunctionalVisibleMap {
-    positions: Vec<u16>,
-    tuples: AdaptiveRadixTree<crate::index::RadixTupleKey, FunctionalVisibleEntry>,
-}
-
-struct FunctionalVisibleEntry {
-    representative: Tuple,
-    tuple: Option<Tuple>,
-}
-
-fn best_local_prefix_positions(
-    metadata: &crate::RelationMetadata,
-    bindings: &[Option<Value>],
-) -> Option<Vec<u16>> {
-    metadata
-        .indexes
-        .iter()
-        .map(|index| (index, index.leading_bound_count(bindings)))
-        .filter(|(_, count)| *count > 0)
-        .max_by_key(|(_, count)| *count)
-        .map(|(index, count)| index.positions.iter().take(count).copied().collect())
-}
-
-fn projected_key(tuple: &Tuple, positions: &[u16]) -> crate::index::RadixTupleKey {
-    crate::index::key_from_values(
-        positions
-            .iter()
-            .map(|position| &tuple.values()[*position as usize]),
-    )
 }

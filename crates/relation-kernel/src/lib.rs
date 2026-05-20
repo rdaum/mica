@@ -35,6 +35,7 @@ mod neighborhood;
 mod projected;
 mod provider;
 mod query;
+mod radix_key;
 mod rules;
 mod snapshot;
 mod transaction;
