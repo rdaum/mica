@@ -58,7 +58,7 @@ impl OrderedKeySink for RadixTupleKeyBuilder {
 #[derive(Clone, Debug)]
 pub(crate) struct RelationState {
     metadata: RelationMetadata,
-    pub(crate) tuples: TupleStore,
+    tuples: TupleStore,
     indexes: Vec<TupleIndex>,
 }
 
@@ -86,6 +86,14 @@ impl RelationState {
 
     pub(crate) fn cardinality(&self) -> usize {
         self.tuples.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.tuples.is_empty()
+    }
+
+    pub(crate) fn contains_tuple(&self, tuple: &Tuple) -> bool {
+        self.tuples.contains(tuple)
     }
 
     pub(crate) fn estimate_scan_count(
@@ -416,7 +424,7 @@ enum ScanAccess<'a> {
 }
 
 #[derive(Clone)]
-pub(crate) enum TupleStore {
+enum TupleStore {
     Small(Arc<BTreeSet<Tuple>>),
     Radix {
         entries: VersionedAdaptiveRadixTree<RadixTupleKey, Tuple>,

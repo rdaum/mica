@@ -157,7 +157,7 @@ impl TransientScopeState {
     fn len(&self) -> usize {
         self.relations
             .values()
-            .map(|relation| relation.tuples.len())
+            .map(RelationState::cardinality)
             .sum()
     }
 
@@ -190,7 +190,7 @@ impl TransientScopeState {
                 actual: tuple.arity(),
             });
         }
-        let inserted = !relation.tuples.contains(&tuple);
+        let inserted = !relation.contains_tuple(&tuple);
         relation.insert(tuple);
         Ok(inserted)
     }
@@ -199,9 +199,9 @@ impl TransientScopeState {
         let Some(relation_state) = self.relations.get_mut(&relation) else {
             return false;
         };
-        let removed = relation_state.tuples.contains(tuple);
+        let removed = relation_state.contains_tuple(tuple);
         relation_state.remove(tuple);
-        if relation_state.tuples.is_empty() {
+        if relation_state.is_empty() {
             self.relations.remove(&relation);
         }
         removed

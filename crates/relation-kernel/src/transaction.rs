@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::commit_bloom::CommitBloom;
-use crate::index::{RelationMutationKind, TupleStore};
+use crate::index::RelationMutationKind;
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
     active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
@@ -476,8 +476,8 @@ impl<'a> Transaction<'a> {
                 ConflictPolicy::Set => {
                     writes.try_for_each(|tuple, change| {
                         if matches!(change, LocalChange::Assert)
-                            && base_relation.tuples.contains(tuple)
-                            && !current_relation.tuples.contains(tuple)
+                            && base_relation.contains_tuple(tuple)
+                            && !current_relation.contains_tuple(tuple)
                         {
                             Err(KernelError::Conflict(Conflict {
                                 relation: *relation_id,
@@ -550,8 +550,8 @@ impl<'a> Transaction<'a> {
                 .relations
                 .get_mut(&relation_id)
                 .ok_or(KernelError::UnknownRelation(relation_id))?;
-            let base_tuples = self.base.relation(relation_id)?.tuples.clone();
-            writes.apply_ordered_changes(relation, &base_tuples, |tuple, kind| {
+            let base_relation = self.base.relation(relation_id)?;
+            writes.apply_ordered_changes(relation, base_relation, |tuple, kind| {
                 changes.push(FactChange {
                     relation: relation_id,
                     tuple: tuple.clone(),
@@ -716,12 +716,12 @@ impl RelationWriteOverlay {
     fn apply_ordered_changes(
         &self,
         relation: &mut crate::index::RelationState,
-        base_tuples: &TupleStore,
+        base_relation: &crate::index::RelationState,
         mut on_applied: impl FnMut(&Tuple, RelationMutationKind),
     ) {
         match &self.changes {
             OverlayChanges::Small(changes) => {
-                if base_tuples.is_empty()
+                if base_relation.is_empty()
                     && relation.cardinality() == 0
                     && changes
                         .iter()
@@ -737,12 +737,12 @@ impl RelationWriteOverlay {
                     changes
                         .iter()
                         .map(|entry| (&entry.tuple, RelationMutationKind::from(entry.change))),
-                    |tuple| base_tuples.contains(tuple),
+                    |tuple| base_relation.contains_tuple(tuple),
                     &mut on_applied,
                 );
             }
             OverlayChanges::Radix(changes) => {
-                if base_tuples.is_empty()
+                if base_relation.is_empty()
                     && relation.cardinality() == 0
                     && changes
                         .values_iter()
@@ -758,7 +758,7 @@ impl RelationWriteOverlay {
                     changes
                         .values_iter()
                         .map(|entry| (&entry.tuple, RelationMutationKind::from(entry.change))),
-                    |tuple| base_tuples.contains(tuple),
+                    |tuple| base_relation.contains_tuple(tuple),
                     &mut on_applied,
                 );
             }
