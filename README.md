@@ -1,7 +1,7 @@
 # Mica
 
 <p align="center">
-  <img src="assets/mica-logo.png" alt="Mica logo" width="320">
+  <img src="assets/mica-logo.png" alt="Mica logo" width="480">
 </p>
 
 Mica is a language runtime and application server for building live,
