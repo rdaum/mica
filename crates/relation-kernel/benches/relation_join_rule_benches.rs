@@ -25,11 +25,28 @@ const ITEMS_PER_ROOM: usize = 64;
 const ACTORS: usize = 24;
 const ROOMS_PER_ACTOR: usize = 8;
 const HIDDEN_EVERY: usize = 17;
+const UNARY_SET_SIZE: usize = 16_384;
+const UNARY_SET_OVERLAP: usize = 8_192;
+const TEMP_PROJECTED_GROUPS: usize = 4096;
+const TEMP_PROJECTED_ITEMS_PER_GROUP: usize = 4;
 
 struct JoinRuleContext {
     snapshot: Arc<Snapshot>,
     query: QueryPlan,
     rules: RuleSet,
+}
+
+struct NaturalJoinContext {
+    snapshot: Arc<Snapshot>,
+    join_query: QueryPlan,
+    semi_query: QueryPlan,
+    union_query: QueryPlan,
+    difference_query: QueryPlan,
+}
+
+struct TemporaryProjectedJoinContext {
+    snapshot: Arc<Snapshot>,
+    query: QueryPlan,
 }
 
 impl BenchContext for JoinRuleContext {
@@ -50,7 +67,175 @@ impl BenchContext for JoinRuleContext {
     }
 }
 
+impl BenchContext for NaturalJoinContext {
+    fn prepare(_num_chunks: usize) -> Self {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(
+                active_item(),
+                Symbol::intern("ActiveItem"),
+                1,
+            ))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                visible_item(),
+                Symbol::intern("VisibleItem"),
+                1,
+            ))
+            .unwrap();
+
+        let mut tx = kernel.begin();
+        for index in 0..UNARY_SET_SIZE {
+            tx.assert(
+                active_item(),
+                Tuple::from([Value::identity(natural_join_item(index))]),
+            )
+            .unwrap();
+        }
+        for index in (UNARY_SET_SIZE - UNARY_SET_OVERLAP)..(UNARY_SET_SIZE * 2 - UNARY_SET_OVERLAP)
+        {
+            tx.assert(
+                visible_item(),
+                Tuple::from([Value::identity(natural_join_item(index))]),
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        Self {
+            snapshot: kernel.snapshot(),
+            join_query: QueryPlan::join_eq(
+                QueryPlan::scan(active_item(), [None]),
+                QueryPlan::scan(visible_item(), [None]),
+                [0],
+                [0],
+            )
+            .project([0]),
+            semi_query: QueryPlan::semi_join(
+                QueryPlan::scan(active_item(), [None]),
+                QueryPlan::scan(visible_item(), [None]),
+                [0],
+                [0],
+            ),
+            union_query: QueryPlan::union(
+                QueryPlan::scan(active_item(), [None]),
+                QueryPlan::scan(visible_item(), [None]),
+            ),
+            difference_query: QueryPlan::difference(
+                QueryPlan::scan(active_item(), [None]),
+                QueryPlan::scan(visible_item(), [None]),
+            ),
+        }
+    }
+
+    fn chunk_size() -> Option<usize> {
+        Some(1)
+    }
+}
+
+impl BenchContext for TemporaryProjectedJoinContext {
+    fn prepare(_num_chunks: usize) -> Self {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(
+                temp_projected_left(),
+                Symbol::intern("TempProjectedLeft"),
+                2,
+            ))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                temp_projected_right(),
+                Symbol::intern("TempProjectedRight"),
+                2,
+            ))
+            .unwrap();
+
+        let mut tx = kernel.begin();
+        for group in 0..TEMP_PROJECTED_GROUPS {
+            for item in 0..TEMP_PROJECTED_ITEMS_PER_GROUP {
+                tx.assert(
+                    temp_projected_left(),
+                    Tuple::from([
+                        Value::identity(temp_projected_group(group)),
+                        Value::identity(temp_projected_left_item(group, item)),
+                    ]),
+                )
+                .unwrap();
+                tx.assert(
+                    temp_projected_right(),
+                    Tuple::from([
+                        Value::identity(temp_projected_group(group)),
+                        Value::identity(temp_projected_right_item(group, item)),
+                    ]),
+                )
+                .unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        let left = QueryPlan::scan(temp_projected_left(), [None, None]).project([0, 1]);
+        let right = QueryPlan::scan(temp_projected_right(), [None, None]).project([0, 1]);
+
+        Self {
+            snapshot: kernel.snapshot(),
+            query: QueryPlan::join_eq(left, right, [0], [0]),
+        }
+    }
+
+    fn chunk_size() -> Option<usize> {
+        Some(1)
+    }
+}
+
 fn query_visible_items(ctx: &mut JoinRuleContext, chunk_size: usize, _chunk_num: usize) {
+    for _ in 0..chunk_size {
+        black_box(ctx.query.execute(&*ctx.snapshot).unwrap());
+    }
+}
+
+fn query_natural_unary_intersection(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        black_box(ctx.join_query.execute(&*ctx.snapshot).unwrap());
+    }
+}
+
+fn query_natural_unary_semi_intersection(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        black_box(ctx.semi_query.execute(&*ctx.snapshot).unwrap());
+    }
+}
+
+fn query_natural_unary_union(ctx: &mut NaturalJoinContext, chunk_size: usize, _chunk_num: usize) {
+    for _ in 0..chunk_size {
+        black_box(ctx.union_query.execute(&*ctx.snapshot).unwrap());
+    }
+}
+
+fn query_natural_unary_difference(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        black_box(ctx.difference_query.execute(&*ctx.snapshot).unwrap());
+    }
+}
+
+fn query_temporary_projected_low_cardinality_join(
+    ctx: &mut TemporaryProjectedJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
     for _ in 0..chunk_size {
         black_box(ctx.query.execute(&*ctx.snapshot).unwrap());
     }
@@ -193,6 +378,22 @@ fn visible() -> RelationId {
     relation(94)
 }
 
+fn active_item() -> RelationId {
+    relation(95)
+}
+
+fn visible_item() -> RelationId {
+    relation(96)
+}
+
+fn temp_projected_left() -> RelationId {
+    relation(97)
+}
+
+fn temp_projected_right() -> RelationId {
+    relation(98)
+}
+
 fn relation(raw: u64) -> Identity {
     Identity::new(raw).unwrap()
 }
@@ -207,6 +408,22 @@ fn room_identity(index: usize) -> Identity {
 
 fn item_identity(room: usize, item: usize) -> Identity {
     relation(100_000 + (room * ITEMS_PER_ROOM + item) as u64)
+}
+
+fn natural_join_item(index: usize) -> Identity {
+    relation(200_000 + index as u64)
+}
+
+fn temp_projected_group(index: usize) -> Identity {
+    relation(300_000 + index as u64)
+}
+
+fn temp_projected_left_item(group: usize, item: usize) -> Identity {
+    relation(400_000 + (group * TEMP_PROJECTED_ITEMS_PER_GROUP + item) as u64)
+}
+
+fn temp_projected_right_item(group: usize, item: usize) -> Identity {
+    relation(500_000 + (group * TEMP_PROJECTED_ITEMS_PER_GROUP + item) as u64)
 }
 
 benchmark_main!(
@@ -224,6 +441,28 @@ benchmark_main!(
         runner.group::<JoinRuleContext>("query", |g| {
             g.throughput(Throughput::per_operation(1, "query"))
                 .bench("visible_items_query_3way_anti", query_visible_items);
+        });
+
+        runner.group::<NaturalJoinContext>("query", |g| {
+            g.throughput(Throughput::per_operation(1, "query")).bench(
+                "natural_unary_set_intersection",
+                query_natural_unary_intersection,
+            );
+            g.throughput(Throughput::per_operation(1, "query")).bench(
+                "natural_unary_semi_intersection",
+                query_natural_unary_semi_intersection,
+            );
+            g.throughput(Throughput::per_operation(1, "query"))
+                .bench("natural_unary_union", query_natural_unary_union);
+            g.throughput(Throughput::per_operation(1, "query"))
+                .bench("natural_unary_difference", query_natural_unary_difference);
+        });
+
+        runner.group::<TemporaryProjectedJoinContext>("query", |g| {
+            g.throughput(Throughput::per_operation(1, "query")).bench(
+                "temporary_projected_low_cardinality_join",
+                query_temporary_projected_low_cardinality_join,
+            );
         });
 
         runner.group::<JoinRuleContext>("rule", |g| {

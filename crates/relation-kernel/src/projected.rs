@@ -189,10 +189,10 @@ impl ProjectedStore {
             .relations
             .get_mut(&change.relation)
             .ok_or(KernelError::UnknownRelation(change.relation))?;
-        match change.kind {
+        let _ = match change.kind {
             FactChangeKind::Assert => relation.insert(change.tuple),
             FactChangeKind::Retract => relation.remove(&change.tuple),
-        }
+        };
         Ok(())
     }
 

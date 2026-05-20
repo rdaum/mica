@@ -12,22 +12,27 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::commit_bloom::CommitBloom;
+use crate::index::{RelationMutationKind, TupleStore};
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
     active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
 };
+use crate::tuple::{difference_ordered_tuple_rows, finish_tuple_rows, union_ordered_tuple_rows};
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRelations, KernelError,
     RelationId, RelationKernel, RelationWorkspace, RuleSet, ScanControl, Snapshot, Tuple, Version,
 };
 use mica_var::Value;
+use rart::{AdaptiveRadixTree, Slot, SlotUpdate};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 pub struct Transaction<'a> {
     kernel: &'a RelationKernel,
     pub(crate) base: Arc<Snapshot>,
-    writes: HashMap<RelationId, BTreeMap<Tuple, LocalChange>>,
+    writes: HashMap<RelationId, RelationWriteOverlay>,
+    functional_visible: HashMap<RelationId, FunctionalVisibleMap>,
 }
 
 impl<'a> Transaction<'a> {
@@ -36,6 +41,7 @@ impl<'a> Transaction<'a> {
             kernel,
             base,
             writes: HashMap::new(),
+            functional_visible: HashMap::new(),
         }
     }
 
@@ -101,7 +107,8 @@ impl<'a> Transaction<'a> {
         self.writes
             .entry(relation)
             .or_default()
-            .insert(tuple, LocalChange::Assert);
+            .insert(tuple.clone(), LocalChange::Assert);
+        self.record_functional_change(relation, &tuple, LocalChange::Assert)?;
         Ok(())
     }
 
@@ -110,7 +117,8 @@ impl<'a> Transaction<'a> {
         self.writes
             .entry(relation)
             .or_default()
-            .insert(tuple, LocalChange::Retract);
+            .insert(tuple.clone(), LocalChange::Retract);
+        self.record_functional_change(relation, &tuple, LocalChange::Retract)?;
         Ok(())
     }
 
@@ -120,15 +128,15 @@ impl<'a> Transaction<'a> {
         tuple: Tuple,
     ) -> Result<(), KernelError> {
         self.validate_tuple(relation, &tuple)?;
-        let base_relation = self.base.relation(relation)?;
         let ConflictPolicy::Functional { key_positions } =
-            base_relation.metadata().conflict_policy()
+            self.base.relation(relation)?.metadata().conflict_policy()
         else {
             self.assert(relation, tuple)?;
             return Ok(());
         };
+        let key_positions = key_positions.clone();
 
-        if let Some(old_tuple) = self.visible_tuple_for_key(relation, key_positions, &tuple)? {
+        if let Some(old_tuple) = self.visible_tuple_for_key(relation, &key_positions, &tuple)? {
             self.retract(relation, old_tuple)?;
         }
         self.assert(relation, tuple)
@@ -143,7 +151,7 @@ impl<'a> Transaction<'a> {
             return self.base.scan_extensional(relation, bindings);
         }
 
-        let mut visible = self.scan_extensional(relation, bindings)?;
+        let mut visible = self.scan_extensional_rows(relation, bindings)?;
 
         if !self.base.rules().is_empty() {
             let derived = RuleSet::new(active_rules(self.base.rules()))
@@ -155,10 +163,11 @@ impl<'a> Transaction<'a> {
                         .filter(|tuple| tuple.matches_bindings(bindings))
                         .cloned(),
                 );
+                visible = finish_tuple_rows(visible);
             }
         }
 
-        Ok(visible.into_iter().collect())
+        Ok(visible)
     }
 
     pub(crate) fn estimate_scan(
@@ -206,25 +215,44 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<BTreeSet<Tuple>, KernelError> {
-        let mut visible = self
-            .base
-            .scan_extensional(relation, bindings)?
+        Ok(self
+            .scan_extensional_rows(relation, bindings)?
             .into_iter()
-            .collect::<BTreeSet<_>>();
+            .collect())
+    }
+
+    fn scan_extensional_rows(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let mut visible = self.base.scan_extensional(relation, bindings)?;
 
         if let Some(writes) = self.writes.get(&relation) {
-            for (tuple, change) in writes {
+            let metadata = self.base.relation(relation)?.metadata();
+            let mut local_asserts = Vec::new();
+            let mut local_retracts = Vec::new();
+            writes.visit_matches(metadata, bindings, &mut |tuple, change| {
                 if !tuple.matches_bindings(bindings) {
-                    continue;
+                    return;
                 }
                 match change {
                     LocalChange::Assert => {
-                        visible.insert(tuple.clone());
+                        local_asserts.push(tuple.clone());
                     }
                     LocalChange::Retract => {
-                        visible.remove(tuple);
+                        local_retracts.push(tuple.clone());
                     }
                 }
+            });
+            if visible.is_empty() && local_retracts.is_empty() {
+                return Ok(local_asserts);
+            }
+            if !local_asserts.is_empty() {
+                visible = union_ordered_tuple_rows(visible, local_asserts);
+            }
+            if !local_retracts.is_empty() {
+                visible = difference_ordered_tuple_rows(visible, local_retracts);
             }
         }
 
@@ -263,11 +291,12 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn commit(self) -> Result<CommitResult, KernelError> {
-        let write_bloom = self.write_bloom()?;
         let _guard = self.kernel.commit_guard();
         let current = self.kernel.snapshot();
-        self.validate_conflicts(&current)?;
-        let (next, commit) = self.build_next_snapshot(&current, write_bloom)?;
+        if current.version() != self.base.version() {
+            self.validate_conflicts(&current)?;
+        }
+        let (next, commit) = self.build_next_snapshot(&current)?;
         self.kernel.persist_commit(&commit)?;
         if !self.kernel.try_publish(current.version(), next.clone()) {
             return Err(KernelError::Persistence(
@@ -299,32 +328,144 @@ impl<'a> Transaction<'a> {
     }
 
     fn visible_tuple_for_key(
-        &self,
+        &mut self,
         relation: RelationId,
         positions: &[u16],
         tuple: &Tuple,
     ) -> Result<Option<Tuple>, KernelError> {
-        let mut visible = self
-            .base
-            .relation(relation)?
-            .tuple_for_key(positions, tuple);
+        self.ensure_functional_visible(relation, positions)?;
+        let key = projected_key(tuple, positions);
+        let visible = self
+            .functional_visible
+            .get(&relation)
+            .expect("ensured functional visibility map should exist");
+        if let Some(entry) = visible.tuples.get_k(&key) {
+            return Ok(entry.tuple.clone());
+        }
+        self.base
+            .relation(relation)
+            .map(|base_relation| base_relation.tuple_for_key(positions, tuple))
+    }
+
+    fn ensure_functional_visible(
+        &mut self,
+        relation: RelationId,
+        positions: &[u16],
+    ) -> Result<(), KernelError> {
+        if self.functional_visible.contains_key(&relation) {
+            return Ok(());
+        }
+
+        let base_relation = self.base.relation(relation)?;
+        let mut tuples = AdaptiveRadixTree::new();
         if let Some(writes) = self.writes.get(&relation) {
-            let key = tuple.project(positions);
-            for (candidate, change) in writes {
-                if candidate.project(positions) != key {
-                    continue;
-                }
-                match change {
-                    LocalChange::Assert => visible = Some(candidate.clone()),
-                    LocalChange::Retract => {
-                        if visible.as_ref() == Some(candidate) {
-                            visible = None;
+            writes.for_each(|tuple, change| {
+                let key = projected_key(tuple, positions);
+                tuples.update_k(&key, |slot| match slot {
+                    Slot::Vacant => {
+                        let mut current = base_relation.tuple_for_key(positions, tuple);
+                        match change {
+                            LocalChange::Assert => current = Some(tuple.clone()),
+                            LocalChange::Retract => {
+                                if current.as_ref() == Some(tuple) {
+                                    current = None;
+                                }
+                            }
                         }
+                        SlotUpdate::Insert(FunctionalVisibleEntry {
+                            representative: tuple.clone(),
+                            tuple: current,
+                        })
                     }
-                }
+                    Slot::Occupied(entry) => {
+                        match change {
+                            LocalChange::Assert => entry.tuple = Some(tuple.clone()),
+                            LocalChange::Retract => {
+                                if entry.tuple.as_ref() == Some(tuple) {
+                                    entry.tuple = None;
+                                }
+                            }
+                        }
+                        SlotUpdate::Keep
+                    }
+                });
+            });
+        }
+        self.functional_visible.insert(
+            relation,
+            FunctionalVisibleMap {
+                positions: positions.to_vec(),
+                tuples,
+            },
+        );
+        Ok(())
+    }
+
+    fn record_functional_change(
+        &mut self,
+        relation: RelationId,
+        tuple: &Tuple,
+        change: LocalChange,
+    ) -> Result<(), KernelError> {
+        if self.functional_visible.is_empty() {
+            return Ok(());
+        }
+
+        let Some(visible) = self.functional_visible.get(&relation) else {
+            return Ok(());
+        };
+        let positions = visible.positions.clone();
+        let key = projected_key(tuple, &positions);
+        match change {
+            LocalChange::Assert => {
+                self.functional_visible
+                    .get_mut(&relation)
+                    .expect("checked functional visibility map should exist")
+                    .tuples
+                    .update_k(&key, |slot| match slot {
+                        Slot::Vacant => SlotUpdate::Insert(FunctionalVisibleEntry {
+                            representative: tuple.clone(),
+                            tuple: Some(tuple.clone()),
+                        }),
+                        Slot::Occupied(entry) => {
+                            entry.tuple = Some(tuple.clone());
+                            SlotUpdate::Keep
+                        }
+                    });
+            }
+            LocalChange::Retract => {
+                let base_visible = if visible.tuples.get_k(&key).is_some() {
+                    None
+                } else {
+                    self.base
+                        .relation(relation)?
+                        .tuple_for_key(&positions, tuple)
+                };
+                let visible = self
+                    .functional_visible
+                    .get_mut(&relation)
+                    .expect("checked functional visibility map should exist");
+                visible.tuples.update_k(&key, |slot| match slot {
+                    Slot::Vacant => {
+                        let mut current = base_visible;
+                        if current.as_ref() == Some(tuple) {
+                            current = None;
+                        }
+                        SlotUpdate::Insert(FunctionalVisibleEntry {
+                            representative: tuple.clone(),
+                            tuple: current,
+                        })
+                    }
+                    Slot::Occupied(entry) => {
+                        if entry.tuple.as_ref() == Some(tuple) {
+                            entry.tuple = None;
+                        }
+                        SlotUpdate::Keep
+                    }
+                });
             }
         }
-        Ok(visible)
+        Ok(())
     }
 
     fn validate_conflicts(&self, current: &Snapshot) -> Result<(), KernelError> {
@@ -333,24 +474,45 @@ impl<'a> Transaction<'a> {
             let current_relation = current.relation(*relation_id)?;
             match base_relation.metadata().conflict_policy() {
                 ConflictPolicy::Set => {
-                    for (tuple, change) in writes {
+                    writes.try_for_each(|tuple, change| {
                         if matches!(change, LocalChange::Assert)
                             && base_relation.tuples.contains(tuple)
                             && !current_relation.tuples.contains(tuple)
                         {
-                            return Err(KernelError::Conflict(Conflict {
+                            Err(KernelError::Conflict(Conflict {
                                 relation: *relation_id,
                                 tuple: tuple.clone(),
                                 kind: ConflictKind::AssertRetract,
-                            }));
+                            }))
+                        } else {
+                            Ok(())
                         }
-                    }
+                    })?;
                 }
                 ConflictPolicy::Functional { key_positions } => {
-                    let touched_keys = writes
-                        .keys()
-                        .map(|tuple| (tuple.project(key_positions), tuple.clone()))
-                        .collect::<BTreeMap<_, _>>();
+                    if let Some(visible) = self.functional_visible.get(relation_id) {
+                        for entry in visible.tuples.values_iter() {
+                            let base =
+                                base_relation.tuple_for_key(key_positions, &entry.representative);
+                            let current = current_relation
+                                .tuple_for_key(key_positions, &entry.representative);
+                            if base != current {
+                                return Err(KernelError::Conflict(Conflict {
+                                    relation: *relation_id,
+                                    tuple: entry.tuple.clone().or(base).unwrap_or_else(|| {
+                                        entry.representative.select(key_positions.iter().copied())
+                                    }),
+                                    kind: ConflictKind::FunctionalKeyChanged,
+                                }));
+                            }
+                        }
+                        continue;
+                    }
+
+                    let mut touched_keys = BTreeMap::new();
+                    writes.for_each(|tuple, _change| {
+                        touched_keys.insert(tuple.project(key_positions), tuple.clone());
+                    });
                     for (key, representative) in touched_keys {
                         let base = base_relation.tuple_for_projected_key(key_positions, &key);
                         let current = current_relation.tuple_for_projected_key(key_positions, &key);
@@ -372,92 +534,47 @@ impl<'a> Transaction<'a> {
     fn build_next_snapshot(
         &self,
         current: &Snapshot,
-        bloom: CommitBloom,
     ) -> Result<(Arc<Snapshot>, Commit), KernelError> {
         let mut next = current.clone();
         let mut changes = Vec::new();
 
-        for (relation_id, writes) in &self.writes {
+        let mut relation_ids = self.writes.keys().copied().collect::<Vec<_>>();
+        relation_ids.sort();
+
+        for relation_id in relation_ids {
+            let writes = self
+                .writes
+                .get(&relation_id)
+                .expect("relation id should come from write set");
             let relation = next
                 .relations
-                .get_mut(relation_id)
-                .ok_or(KernelError::UnknownRelation(*relation_id))?;
-            for (tuple, change) in writes {
-                match change {
-                    LocalChange::Assert => {
-                        if !relation.tuples.contains(tuple) {
-                            changes.push(FactChange {
-                                relation: *relation_id,
-                                tuple: tuple.clone(),
-                                kind: FactChangeKind::Assert,
-                            });
-                        }
-                        relation.insert(tuple.clone());
-                    }
-                    LocalChange::Retract => {
-                        if self.base.relation(*relation_id)?.tuples.contains(tuple)
-                            && relation.tuples.contains(tuple)
-                        {
-                            changes.push(FactChange {
-                                relation: *relation_id,
-                                tuple: tuple.clone(),
-                                kind: FactChangeKind::Retract,
-                            });
-                            relation.remove(tuple);
-                        }
-                    }
-                }
-            }
+                .get_mut(&relation_id)
+                .ok_or(KernelError::UnknownRelation(relation_id))?;
+            let base_tuples = self.base.relation(relation_id)?.tuples.clone();
+            writes.apply_ordered_changes(relation, &base_tuples, |tuple, kind| {
+                changes.push(FactChange {
+                    relation: relation_id,
+                    tuple: tuple.clone(),
+                    kind: match kind {
+                        RelationMutationKind::Assert => FactChangeKind::Assert,
+                        RelationMutationKind::Retract => FactChangeKind::Retract,
+                    },
+                });
+            });
         }
 
         next.version = current.version() + 1;
         next.derived_cache = empty_derived_cache();
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
-        changes.sort_by(|left, right| {
-            left.relation
-                .cmp(&right.relation)
-                .then_with(|| left.tuple.cmp(&right.tuple))
-                .then_with(|| {
-                    fact_change_kind_order(left.kind).cmp(&fact_change_kind_order(right.kind))
-                })
-        });
         let commit = Commit {
             version: next.version,
             catalog_changes: Arc::from([]),
             changes: changes.into(),
-            bloom,
+            bloom: CommitBloom::new(),
         };
         next.commits = current.commits.append(commit.clone());
         Ok((Arc::new(next), commit))
-    }
-
-    fn write_bloom(&self) -> Result<CommitBloom, KernelError> {
-        let mut bloom = CommitBloom::new();
-        for (relation_id, writes) in &self.writes {
-            let relation = self.base.relation(*relation_id)?;
-            for tuple in writes.keys() {
-                let key = match relation.metadata().conflict_policy() {
-                    ConflictPolicy::Functional { key_positions } => tuple.project(key_positions),
-                    ConflictPolicy::Set | ConflictPolicy::EventAppend => {
-                        let positions = (0..tuple.arity() as u16).collect::<Vec<_>>();
-                        tuple.project(&positions)
-                    }
-                };
-                bloom.insert(&ModifiedKey {
-                    relation: *relation_id,
-                    key,
-                });
-            }
-        }
-        Ok(bloom)
-    }
-}
-
-fn fact_change_kind_order(kind: FactChangeKind) -> u8 {
-    match kind {
-        FactChangeKind::Assert => 0,
-        FactChangeKind::Retract => 1,
     }
 }
 
@@ -549,8 +666,268 @@ enum LocalChange {
     Retract,
 }
 
-#[derive(Hash)]
-struct ModifiedKey {
-    relation: RelationId,
-    key: crate::tuple::TupleKey,
+struct RelationWriteOverlay {
+    changes: OverlayChanges,
+    scan_indexes: RefCell<HashMap<Vec<u16>, LocalScanIndex>>,
+    scan_requests: RefCell<HashMap<Vec<u16>, usize>>,
+}
+
+impl RelationWriteOverlay {
+    fn insert(&mut self, tuple: Tuple, change: LocalChange) {
+        self.changes.insert(tuple, change);
+        self.scan_indexes.get_mut().clear();
+        self.scan_requests.get_mut().clear();
+    }
+
+    fn for_each(&self, mut visitor: impl FnMut(&Tuple, LocalChange)) {
+        match &self.changes {
+            OverlayChanges::Small(changes) => {
+                for entry in changes {
+                    visitor(&entry.tuple, entry.change);
+                }
+            }
+            OverlayChanges::Radix(changes) => {
+                for entry in changes.values_iter() {
+                    visitor(&entry.tuple, entry.change);
+                }
+            }
+        }
+    }
+
+    fn try_for_each<E>(
+        &self,
+        mut visitor: impl FnMut(&Tuple, LocalChange) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match &self.changes {
+            OverlayChanges::Small(changes) => {
+                for entry in changes {
+                    visitor(&entry.tuple, entry.change)?;
+                }
+            }
+            OverlayChanges::Radix(changes) => {
+                for entry in changes.values_iter() {
+                    visitor(&entry.tuple, entry.change)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_ordered_changes(
+        &self,
+        relation: &mut crate::index::RelationState,
+        base_tuples: &TupleStore,
+        mut on_applied: impl FnMut(&Tuple, RelationMutationKind),
+    ) {
+        match &self.changes {
+            OverlayChanges::Small(changes) => {
+                if base_tuples.is_empty()
+                    && relation.cardinality() == 0
+                    && changes
+                        .iter()
+                        .all(|entry| entry.change == LocalChange::Assert)
+                {
+                    relation.apply_ordered_asserts_to_empty(
+                        changes.iter().map(|entry| &entry.tuple),
+                        &mut on_applied,
+                    );
+                    return;
+                }
+                relation.apply_ordered_changes(
+                    changes
+                        .iter()
+                        .map(|entry| (&entry.tuple, RelationMutationKind::from(entry.change))),
+                    |tuple| base_tuples.contains(tuple),
+                    &mut on_applied,
+                );
+            }
+            OverlayChanges::Radix(changes) => {
+                if base_tuples.is_empty()
+                    && relation.cardinality() == 0
+                    && changes
+                        .values_iter()
+                        .all(|entry| entry.change == LocalChange::Assert)
+                {
+                    relation.apply_ordered_asserts_to_empty(
+                        changes.values_iter().map(|entry| &entry.tuple),
+                        &mut on_applied,
+                    );
+                    return;
+                }
+                relation.apply_ordered_changes(
+                    changes
+                        .values_iter()
+                        .map(|entry| (&entry.tuple, RelationMutationKind::from(entry.change))),
+                    |tuple| base_tuples.contains(tuple),
+                    &mut on_applied,
+                );
+            }
+        }
+    }
+
+    fn visit_matches(
+        &self,
+        metadata: &crate::RelationMetadata,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple, LocalChange),
+    ) {
+        let Some(prefix_positions) = best_local_prefix_positions(metadata, bindings) else {
+            self.for_each(|tuple, change| {
+                visitor(tuple, change);
+            });
+            return;
+        };
+
+        if !self.scan_indexes.borrow().contains_key(&prefix_positions) {
+            let mut requests = self.scan_requests.borrow_mut();
+            let request_count = requests.entry(prefix_positions.clone()).or_default();
+            *request_count += 1;
+            if *request_count == 1 {
+                drop(requests);
+                self.for_each(|tuple, change| {
+                    visitor(tuple, change);
+                });
+                return;
+            }
+        }
+
+        self.ensure_scan_index(&prefix_positions);
+        let key = crate::index::key_from_values(prefix_positions.iter().map(|position| {
+            bindings[*position as usize]
+                .as_ref()
+                .expect("prefix positions should be bound")
+        }));
+        let indexes = self.scan_indexes.borrow();
+        let index = indexes
+            .get(&prefix_positions)
+            .expect("ensured local scan index should exist");
+        if let Some(rows) = index.rows.get_k(&key) {
+            for (tuple, change) in rows {
+                visitor(tuple, *change);
+            }
+        }
+    }
+
+    fn ensure_scan_index(&self, positions: &[u16]) {
+        if self.scan_indexes.borrow().contains_key(positions) {
+            return;
+        }
+
+        let mut rows = AdaptiveRadixTree::new();
+        self.for_each(|tuple, change| {
+            let key = crate::index::key_from_values(
+                positions
+                    .iter()
+                    .map(|position| &tuple.values()[*position as usize]),
+            );
+            rows.update_k(&key, |slot| match slot {
+                Slot::Vacant => SlotUpdate::Insert(vec![(tuple.clone(), change)]),
+                Slot::Occupied(rows) => {
+                    rows.push((tuple.clone(), change));
+                    SlotUpdate::Keep
+                }
+            });
+        });
+        self.scan_indexes
+            .borrow_mut()
+            .insert(positions.to_vec(), LocalScanIndex { rows });
+    }
+}
+
+impl Default for RelationWriteOverlay {
+    fn default() -> Self {
+        Self {
+            changes: OverlayChanges::Small(Vec::new()),
+            scan_indexes: RefCell::new(HashMap::new()),
+            scan_requests: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+const LOCAL_RADIX_OVERLAY_THRESHOLD: usize = 64;
+
+enum OverlayChanges {
+    Small(Vec<OverlayEntry>),
+    Radix(AdaptiveRadixTree<crate::index::RadixTupleKey, OverlayEntry>),
+}
+
+impl From<LocalChange> for RelationMutationKind {
+    fn from(change: LocalChange) -> Self {
+        match change {
+            LocalChange::Assert => Self::Assert,
+            LocalChange::Retract => Self::Retract,
+        }
+    }
+}
+
+impl OverlayChanges {
+    fn insert(&mut self, tuple: Tuple, change: LocalChange) {
+        let promote = match self {
+            Self::Small(changes) => {
+                match changes.binary_search_by(|entry| entry.tuple.cmp(&tuple)) {
+                    Ok(index) => changes[index].change = change,
+                    Err(index) => changes.insert(index, OverlayEntry { tuple, change }),
+                }
+                if changes.len() > LOCAL_RADIX_OVERLAY_THRESHOLD {
+                    Some(std::mem::take(changes))
+                } else {
+                    None
+                }
+            }
+            Self::Radix(changes) => {
+                let key = crate::index::key_from_values(tuple.values());
+                changes.insert_k(&key, OverlayEntry { tuple, change });
+                None
+            }
+        };
+
+        if let Some(changes) = promote {
+            let mut radix = AdaptiveRadixTree::new();
+            for entry in changes {
+                let key = crate::index::key_from_values(entry.tuple.values());
+                radix.insert_k(&key, entry);
+            }
+            *self = Self::Radix(radix);
+        }
+    }
+}
+
+struct OverlayEntry {
+    tuple: Tuple,
+    change: LocalChange,
+}
+
+struct LocalScanIndex {
+    rows: AdaptiveRadixTree<crate::index::RadixTupleKey, Vec<(Tuple, LocalChange)>>,
+}
+
+struct FunctionalVisibleMap {
+    positions: Vec<u16>,
+    tuples: AdaptiveRadixTree<crate::index::RadixTupleKey, FunctionalVisibleEntry>,
+}
+
+struct FunctionalVisibleEntry {
+    representative: Tuple,
+    tuple: Option<Tuple>,
+}
+
+fn best_local_prefix_positions(
+    metadata: &crate::RelationMetadata,
+    bindings: &[Option<Value>],
+) -> Option<Vec<u16>> {
+    metadata
+        .indexes
+        .iter()
+        .map(|index| (index, index.leading_bound_count(bindings)))
+        .filter(|(_, count)| *count > 0)
+        .max_by_key(|(_, count)| *count)
+        .map(|(index, count)| index.positions.iter().take(count).copied().collect())
+}
+
+fn projected_key(tuple: &Tuple, positions: &[u16]) -> crate::index::RadixTupleKey {
+    crate::index::key_from_values(
+        positions
+            .iter()
+            .map(|position| &tuple.values()[*position as usize]),
+    )
 }

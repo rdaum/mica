@@ -26,3 +26,7 @@ harness = false
 [[bench]]
 name = "relation_join_rule_benches"
 harness = false
+
+[[bench]]
+name = "transaction_overlay_benches"
+harness = false

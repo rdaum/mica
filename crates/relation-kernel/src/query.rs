@@ -12,11 +12,13 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::ProjectedTupleIndex;
+use crate::tuple::{TupleKey, difference_tuple_rows, finish_tuple_rows};
 use crate::{ApplicableMethodCall, DispatchRelations, KernelError, RelationId, Transaction, Tuple};
 use mica_var::Value;
 use std::collections::BTreeSet;
 
 const PROBE_JOIN_LEFT_ROW_LIMIT: usize = 32;
+const SMALL_RIGHT_SEMI_JOIN_FACTOR: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScanControl {
@@ -437,12 +439,11 @@ impl QueryPlan {
             Self::Scan { relation, bindings } => reader.scan_relation(*relation, bindings),
             Self::Project { input, positions } => {
                 let rows = input.execute(reader)?;
-                Ok(rows
-                    .into_iter()
-                    .map(|tuple| tuple.select(positions.iter().copied()))
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect())
+                Ok(finish_tuple_rows(
+                    rows.into_iter()
+                        .map(|tuple| tuple.select(positions.iter().copied()))
+                        .collect(),
+                ))
             }
             Self::JoinEq {
                 left,
@@ -572,17 +573,14 @@ impl QueryPlan {
                 ))
             }
             Self::Union { left, right } => {
-                let mut rows = left.execute(reader)?.into_iter().collect::<BTreeSet<_>>();
+                let mut rows = left.execute(reader)?;
                 rows.extend(right.execute(reader)?);
-                Ok(rows.into_iter().collect())
+                Ok(finish_tuple_rows(rows))
             }
-            Self::Difference { left, right } => {
-                let mut rows = left.execute(reader)?.into_iter().collect::<BTreeSet<_>>();
-                for row in right.execute(reader)? {
-                    rows.remove(&row);
-                }
-                Ok(rows.into_iter().collect())
-            }
+            Self::Difference { left, right } => Ok(difference_tuple_rows(
+                left.execute(reader)?,
+                right.execute(reader)?,
+            )),
         }
     }
 }
@@ -622,7 +620,7 @@ fn indexed_nested_loop_join_rows(
     right_positions: &[u16],
     reader: &impl RelationRead,
 ) -> Result<Vec<Tuple>, KernelError> {
-    let mut out = BTreeSet::new();
+    let mut out = Vec::new();
     for left_row in left_rows {
         let Some(probe_bindings) =
             probe_bindings(right_bindings, &left_row, left_positions, right_positions)
@@ -630,10 +628,10 @@ fn indexed_nested_loop_join_rows(
             continue;
         };
         for right_row in reader.scan_relation(right_relation, &probe_bindings)? {
-            out.insert(left_row.concat(&right_row));
+            out.push(left_row.concat(&right_row));
         }
     }
-    Ok(out.into_iter().collect())
+    Ok(finish_tuple_rows(out))
 }
 
 fn indexed_nested_loop_semi_join_rows(
@@ -650,9 +648,7 @@ fn indexed_nested_loop_semi_join_rows(
         let matched = if let Some(probe_bindings) =
             probe_bindings(right_bindings, &left_row, left_positions, right_positions)
         {
-            !reader
-                .scan_relation(right_relation, &probe_bindings)?
-                .is_empty()
+            relation_has_match(reader, right_relation, &probe_bindings)?
         } else {
             false
         };
@@ -662,6 +658,19 @@ fn indexed_nested_loop_semi_join_rows(
         }
     }
     Ok(out)
+}
+
+fn relation_has_match(
+    reader: &impl RelationRead,
+    relation: RelationId,
+    bindings: &[Option<Value>],
+) -> Result<bool, KernelError> {
+    let mut matched = false;
+    reader.visit_relation(relation, bindings, &mut |_| {
+        matched = true;
+        Ok(ScanControl::Stop)
+    })?;
+    Ok(matched)
 }
 
 fn probe_bindings(
@@ -690,15 +699,15 @@ fn join_eq(
 ) -> Vec<Tuple> {
     let left_index = ProjectedTupleIndex::from_rows(left_rows, left_positions);
     let right_index = ProjectedTupleIndex::from_rows(right_rows, right_positions);
-    let mut out = BTreeSet::new();
+    let mut out = Vec::new();
     left_index.intersect_values_with(&right_index, |left_bucket, right_bucket| {
         for left in left_bucket {
             for right in right_bucket {
-                out.insert(left.concat(right));
+                out.push(left.concat(right));
             }
         }
     });
-    out.into_iter().collect()
+    finish_tuple_rows(out)
 }
 
 fn semi_join(
@@ -708,6 +717,20 @@ fn semi_join(
     right_positions: &[u16],
     keep_matches: bool,
 ) -> Vec<Tuple> {
+    if right_rows
+        .len()
+        .saturating_mul(SMALL_RIGHT_SEMI_JOIN_FACTOR)
+        < left_rows.len()
+    {
+        return semi_join_with_right_key_set(
+            left_rows,
+            right_rows,
+            left_positions,
+            right_positions,
+            keep_matches,
+        );
+    }
+
     let left_index = ProjectedTupleIndex::from_rows(left_rows.iter().cloned(), left_positions);
     let right_index = ProjectedTupleIndex::from_rows(right_rows, right_positions);
     let mut matches = BTreeSet::new();
@@ -717,6 +740,23 @@ fn semi_join(
     left_rows
         .into_iter()
         .filter(|row| matches.contains(row) == keep_matches)
+        .collect()
+}
+
+fn semi_join_with_right_key_set(
+    left_rows: Vec<Tuple>,
+    right_rows: Vec<Tuple>,
+    left_positions: &[u16],
+    right_positions: &[u16],
+    keep_matches: bool,
+) -> Vec<Tuple> {
+    let right_keys = right_rows
+        .iter()
+        .map(|row| row.project(right_positions))
+        .collect::<BTreeSet<TupleKey>>();
+    left_rows
+        .into_iter()
+        .filter(|row| right_keys.contains(&row.project(left_positions)) == keep_matches)
         .collect()
 }
 
@@ -1003,6 +1043,38 @@ mod tests {
             path.execute(&reader).unwrap(),
             vec![Tuple::from([int(1), int(100)])]
         );
+        assert!(reader.called.get());
+    }
+
+    #[test]
+    fn query_plan_uses_snapshot_natural_tuple_store_join() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(42), Symbol::intern("Active"), 1))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(rel(43), Symbol::intern("Visible"), 1))
+            .unwrap();
+        let mut tx = kernel.begin();
+        tx.assert(rel(42), Tuple::from([int(1)])).unwrap();
+        tx.assert(rel(42), Tuple::from([int(2)])).unwrap();
+        tx.assert(rel(43), Tuple::from([int(2)])).unwrap();
+        tx.assert(rel(43), Tuple::from([int(3)])).unwrap();
+        let snapshot = tx.commit().unwrap().into_snapshot();
+
+        let reader = SnapshotJoinOnlyReader {
+            snapshot: &snapshot,
+            called: Cell::new(false),
+        };
+        let path = QueryPlan::join_eq(
+            QueryPlan::scan(rel(42), [None]),
+            QueryPlan::scan(rel(43), [None]),
+            [0],
+            [0],
+        )
+        .project([0]);
+
+        assert_eq!(path.execute(&reader).unwrap(), vec![Tuple::from([int(2)])]);
         assert!(reader.called.get());
     }
 

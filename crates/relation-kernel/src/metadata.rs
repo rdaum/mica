@@ -65,6 +65,11 @@ impl RelationMetadata {
         self
     }
 
+    pub fn without_indexes(mut self) -> Self {
+        self.indexes.clear();
+        self
+    }
+
     pub fn with_argument_name(mut self, position: u16, name: Symbol) -> Self {
         if let Some(slot) = self.schema.argument_names.get_mut(position as usize) {
             *slot = Some(name);

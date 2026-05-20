@@ -90,10 +90,10 @@ impl RelationKernel {
                         actual: change.tuple.arity(),
                     });
                 }
-                match change.kind {
+                let _ = match change.kind {
                     FactChangeKind::Assert => relation.insert(change.tuple.clone()),
                     FactChangeKind::Retract => relation.remove(&change.tuple),
-                }
+                };
             }
         }
 
@@ -152,10 +152,10 @@ impl RelationKernel {
                         actual: change.tuple.arity(),
                     });
                 }
-                match change.kind {
+                let _ = match change.kind {
                     FactChangeKind::Assert => relation.insert(change.tuple.clone()),
                     FactChangeKind::Retract => relation.remove(&change.tuple),
-                }
+                };
             }
         }
 

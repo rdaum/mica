@@ -195,6 +195,208 @@ fn transaction_reads_own_asserts_and_retracts() {
 }
 
 #[test]
+fn pure_local_transaction_scan_returns_canonical_order() {
+    let kernel = kernel_with_located();
+    let mut tx = kernel.begin();
+
+    for id in (0..80).rev() {
+        tx.assert(rel(1), Tuple::from([int(id), int(id + 1000)]))
+            .unwrap();
+    }
+
+    let expected = (0..80)
+        .map(|id| Tuple::from([int(id), int(id + 1000)]))
+        .collect::<Vec<_>>();
+    assert_eq!(tx.scan(rel(1), &[None, None]).unwrap(), expected);
+}
+
+#[test]
+fn transaction_scan_with_local_retractions_preserves_canonical_order() {
+    let kernel = kernel_with_located();
+    let mut seed = kernel.begin();
+    for id in 0..80 {
+        seed.assert(rel(1), Tuple::from([int(10), int(id)]))
+            .unwrap();
+    }
+    seed.commit().unwrap();
+
+    let mut tx = kernel.begin();
+    for id in (0..80).rev() {
+        if id % 2 == 0 {
+            tx.retract(rel(1), Tuple::from([int(10), int(id)])).unwrap();
+        }
+    }
+
+    let expected = (0..80)
+        .filter(|id| id % 2 != 0)
+        .map(|id| Tuple::from([int(10), int(id)]))
+        .collect::<Vec<_>>();
+    assert_eq!(tx.scan(rel(1), &[Some(int(10)), None]).unwrap(), expected);
+}
+
+#[test]
+fn transaction_scan_with_local_assertions_preserves_canonical_order() {
+    let kernel = kernel_with_located();
+    let mut seed = kernel.begin();
+    for id in 0..80 {
+        seed.assert(rel(1), Tuple::from([int(10), int(id * 2)]))
+            .unwrap();
+    }
+    seed.commit().unwrap();
+
+    let mut tx = kernel.begin();
+    for id in (0..80).rev() {
+        tx.assert(rel(1), Tuple::from([int(10), int(id * 2 + 1)]))
+            .unwrap();
+    }
+    tx.assert(rel(1), Tuple::from([int(10), int(20)])).unwrap();
+
+    let expected = (0..160)
+        .map(|id| Tuple::from([int(10), int(id)]))
+        .collect::<Vec<_>>();
+    assert_eq!(tx.scan(rel(1), &[Some(int(10)), None]).unwrap(), expected);
+}
+
+#[test]
+fn promoted_transaction_overlay_preserves_local_visibility() {
+    let kernel = kernel_with_located();
+    let mut tx = kernel.begin();
+
+    for id in 0..160 {
+        tx.assert(rel(1), Tuple::from([int(id), int(id + 1000)]))
+            .unwrap();
+    }
+
+    let original = Tuple::from([int(42), int(1042)]);
+    let replacement = Tuple::from([int(42), int(9000)]);
+    tx.retract(rel(1), original).unwrap();
+    tx.assert(rel(1), replacement.clone()).unwrap();
+
+    for _ in 0..3 {
+        assert_eq!(
+            tx.scan(rel(1), &[Some(int(42)), None]).unwrap(),
+            vec![replacement.clone()]
+        );
+    }
+
+    tx.commit().unwrap();
+    assert_eq!(
+        kernel
+            .snapshot()
+            .scan_relation(rel(1), &[Some(int(42)), None])
+            .unwrap(),
+        vec![replacement]
+    );
+}
+
+#[test]
+fn large_committed_relation_preserves_canonical_tuple_visibility() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(61), Symbol::intern("LargeCanonical"), 2).without_indexes(),
+        )
+        .unwrap();
+
+    let mut seed = kernel.begin();
+    for id in 0..5000 {
+        seed.assert(rel(61), Tuple::from([int(id), int(id + 10_000)]))
+            .unwrap();
+    }
+    seed.commit().unwrap();
+
+    let replacement = Tuple::from([int(42), int(9000)]);
+    let mut tx = kernel.begin();
+    tx.retract(rel(61), Tuple::from([int(42), int(10_042)]))
+        .unwrap();
+    tx.assert(rel(61), replacement.clone()).unwrap();
+    tx.commit().unwrap();
+
+    let snapshot = kernel.snapshot();
+    assert_eq!(
+        snapshot
+            .scan_relation(rel(61), &[Some(int(42)), None])
+            .unwrap(),
+        vec![replacement]
+    );
+    assert_eq!(
+        snapshot
+            .scan_relation(rel(61), &[None, Some(int(10_043))])
+            .unwrap(),
+        vec![Tuple::from([int(43), int(10_043)])]
+    );
+}
+
+#[test]
+fn large_default_relation_preserves_natural_prefix_scans() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(62),
+            Symbol::intern("LargeDefault"),
+            2,
+        ))
+        .unwrap();
+
+    let mut seed = kernel.begin();
+    for id in 0..5000 {
+        seed.assert(rel(62), Tuple::from([int(id), int(id + 10_000)]))
+            .unwrap();
+    }
+    seed.commit().unwrap();
+
+    assert_eq!(
+        kernel
+            .snapshot()
+            .scan_relation(rel(62), &[Some(int(42)), None])
+            .unwrap(),
+        vec![Tuple::from([int(42), int(10_042)])]
+    );
+}
+
+#[test]
+fn bulk_empty_relation_commit_preserves_secondary_indexes() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(63), Symbol::intern("BulkIndexed"), 3).with_index([1, 0]),
+        )
+        .unwrap();
+
+    let mut seed = kernel.begin();
+    for group in 0..100 {
+        for item in 0..50 {
+            seed.assert(
+                rel(63),
+                Tuple::from([int(item), int(group), int(group * 1000 + item)]),
+            )
+            .unwrap();
+        }
+    }
+    seed.commit().unwrap();
+
+    let snapshot = kernel.snapshot();
+    let found = snapshot
+        .scan(rel(63), &[None, Some(int(42)), None])
+        .unwrap();
+    assert_eq!(found.len(), 50);
+    assert_eq!(
+        found.first(),
+        Some(&Tuple::from([int(0), int(42), int(42_000)]))
+    );
+    assert_eq!(
+        found.last(),
+        Some(&Tuple::from([int(49), int(42), int(42_049)]))
+    );
+    assert_eq!(
+        snapshot
+            .scan(rel(63), &[Some(int(7)), Some(int(42)), None])
+            .unwrap(),
+        vec![Tuple::from([int(7), int(42), int(42_007)])]
+    );
+}
+
+#[test]
 fn transaction_rejects_capability_values_in_tuples() {
     let kernel = kernel_with_located();
     let mut tx = kernel.begin();
@@ -844,6 +1046,45 @@ fn functional_replace_conflicts_when_key_changes_concurrently() {
             ..
         })
     ));
+}
+
+#[test]
+fn functional_replace_uses_latest_local_value_in_transaction() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(82), Symbol::intern("Name"), 2)
+                .with_index([0])
+                .with_conflict_policy(ConflictPolicy::Functional {
+                    key_positions: vec![0],
+                }),
+        )
+        .unwrap();
+
+    let mut seed = kernel.begin();
+    seed.replace_functional(rel(82), Tuple::from([int(1), Value::string("old")]))
+        .unwrap();
+    seed.commit().unwrap();
+
+    let mut tx = kernel.begin();
+    tx.replace_functional(rel(82), Tuple::from([int(1), Value::string("middle")]))
+        .unwrap();
+    tx.replace_functional(rel(82), Tuple::from([int(1), Value::string("new")]))
+        .unwrap();
+
+    assert_eq!(
+        tx.scan(rel(82), &[Some(int(1)), None]).unwrap(),
+        vec![Tuple::from([int(1), Value::string("new")])]
+    );
+
+    tx.commit().unwrap();
+    assert_eq!(
+        kernel
+            .snapshot()
+            .scan_relation(rel(82), &[Some(int(1)), None])
+            .unwrap(),
+        vec![Tuple::from([int(1), Value::string("new")])]
+    );
 }
 
 #[test]
