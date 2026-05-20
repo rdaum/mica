@@ -700,12 +700,8 @@ fn join_eq(
     let left_index = ProjectedTupleIndex::from_rows(left_rows, left_positions);
     let right_index = ProjectedTupleIndex::from_rows(right_rows, right_positions);
     let mut out = Vec::new();
-    left_index.intersect_values_with(&right_index, |left_bucket, right_bucket| {
-        for left in left_bucket {
-            for right in right_bucket {
-                out.push(left.concat(right));
-            }
-        }
+    left_index.matching_row_pairs(&right_index, |left, right| {
+        out.push(left.concat(right));
     });
     finish_tuple_rows(out)
 }
