@@ -71,6 +71,23 @@ impl RelationState {
         self.tuples.contains(tuple)
     }
 
+    pub(crate) fn validate_tuple(&self, tuple: &Tuple) -> Result<(), KernelError> {
+        if self.metadata.arity() as usize != tuple.arity() {
+            return Err(KernelError::ArityMismatch {
+                relation: self.metadata.id(),
+                expected: self.metadata.arity(),
+                actual: tuple.arity(),
+            });
+        }
+        if tuple.values().iter().any(|value| !value.is_persistable()) {
+            return Err(KernelError::NonPersistentValue {
+                relation: self.metadata.id(),
+                tuple: tuple.clone(),
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn estimate_scan_count(
         &self,
         bindings: &[Option<Value>],
@@ -176,25 +193,11 @@ impl RelationState {
     }
 
     pub(crate) fn insert(&mut self, tuple: Tuple) -> bool {
-        if self.tuples.insert(tuple.clone()) {
-            for index in &mut self.indexes {
-                index.insert(tuple.clone());
-            }
-            true
-        } else {
-            false
-        }
+        self.insert_indexed(tuple)
     }
 
     pub(crate) fn remove(&mut self, tuple: &Tuple) -> bool {
-        if self.tuples.remove(tuple) {
-            for index in &mut self.indexes {
-                index.remove(tuple);
-            }
-            true
-        } else {
-            false
-        }
+        self.remove_indexed(tuple)
     }
 
     pub(crate) fn apply_ordered_changes<'a>(
@@ -206,18 +209,12 @@ impl RelationState {
         for (tuple, kind) in changes {
             match kind {
                 RelationMutationKind::Assert => {
-                    if self.tuples.insert(tuple.clone()) {
-                        for index in &mut self.indexes {
-                            index.insert(tuple.clone());
-                        }
+                    if self.insert_indexed(tuple.clone()) {
                         on_applied(tuple, kind);
                     }
                 }
                 RelationMutationKind::Retract => {
-                    if base_contains(tuple) && self.tuples.remove(tuple) {
-                        for index in &mut self.indexes {
-                            index.remove(tuple);
-                        }
+                    if base_contains(tuple) && self.remove_indexed(tuple) {
                         on_applied(tuple, kind);
                     }
                 }
@@ -284,11 +281,7 @@ impl RelationState {
         self.tuple_for_projected_values(positions, &key.0)
     }
 
-    pub(crate) fn tuple_for_projected_values(
-        &self,
-        positions: &[u16],
-        key_values: &[Value],
-    ) -> Option<Tuple> {
+    fn tuple_for_projected_values(&self, positions: &[u16], key_values: &[Value]) -> Option<Tuple> {
         if is_natural_full_tuple_positions(positions, self.metadata.arity()) {
             return self.tuples.tuple_for_values(key_values);
         }
@@ -363,6 +356,28 @@ impl RelationState {
         self.indexes
             .iter()
             .find(|index| index.positions() == positions)
+    }
+
+    fn insert_indexed(&mut self, tuple: Tuple) -> bool {
+        if !self.tuples.insert(tuple.clone()) {
+            return false;
+        }
+
+        for index in &mut self.indexes {
+            index.insert(tuple.clone());
+        }
+        true
+    }
+
+    fn remove_indexed(&mut self, tuple: &Tuple) -> bool {
+        if !self.tuples.remove(tuple) {
+            return false;
+        }
+
+        for index in &mut self.indexes {
+            index.remove(tuple);
+        }
+        true
     }
 }
 

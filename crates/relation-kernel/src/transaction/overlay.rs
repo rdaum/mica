@@ -27,37 +27,14 @@ impl RelationWriteOverlay {
     }
 
     pub(super) fn for_each(&self, mut visitor: impl FnMut(&Tuple, LocalChange)) {
-        match &self.changes {
-            OverlayChanges::Small(changes) => {
-                for entry in changes {
-                    visitor(&entry.tuple, entry.change);
-                }
-            }
-            OverlayChanges::Radix(changes) => {
-                for entry in changes.values_iter() {
-                    visitor(&entry.tuple, entry.change);
-                }
-            }
-        }
+        self.changes.for_each(&mut visitor);
     }
 
     pub(super) fn try_for_each<E>(
         &self,
         mut visitor: impl FnMut(&Tuple, LocalChange) -> Result<(), E>,
     ) -> Result<(), E> {
-        match &self.changes {
-            OverlayChanges::Small(changes) => {
-                for entry in changes {
-                    visitor(&entry.tuple, entry.change)?;
-                }
-            }
-            OverlayChanges::Radix(changes) => {
-                for entry in changes.values_iter() {
-                    visitor(&entry.tuple, entry.change)?;
-                }
-            }
-        }
-        Ok(())
+        self.changes.try_for_each(&mut visitor)
     }
 
     pub(super) fn visit_touched_projected_keys<E>(
@@ -182,6 +159,40 @@ enum OverlayChanges {
 }
 
 impl OverlayChanges {
+    fn for_each(&self, visitor: &mut impl FnMut(&Tuple, LocalChange)) {
+        match self {
+            Self::Small(changes) => {
+                for entry in changes {
+                    visitor(&entry.tuple, entry.change);
+                }
+            }
+            Self::Radix(changes) => {
+                for entry in changes.values_iter() {
+                    visitor(&entry.tuple, entry.change);
+                }
+            }
+        }
+    }
+
+    fn try_for_each<E>(
+        &self,
+        visitor: &mut impl FnMut(&Tuple, LocalChange) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self {
+            Self::Small(changes) => {
+                for entry in changes {
+                    visitor(&entry.tuple, entry.change)?;
+                }
+            }
+            Self::Radix(changes) => {
+                for entry in changes.values_iter() {
+                    visitor(&entry.tuple, entry.change)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn all_are_asserts(&self) -> bool {
         match self {
             Self::Small(changes) => changes

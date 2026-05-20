@@ -121,17 +121,11 @@ impl ProjectedStore {
     }
 
     fn assert_visible(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
-        self.validate_tuple(relation, &tuple)?;
-        self.relation_mut(relation)?.insert(tuple);
-        self.advance_version();
-        Ok(())
+        self.apply_visible_change(relation, tuple, FactChangeKind::Assert)
     }
 
     fn retract_visible(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
-        self.validate_tuple(relation, &tuple)?;
-        self.relation_mut(relation)?.remove(&tuple);
-        self.advance_version();
-        Ok(())
+        self.apply_visible_change(relation, tuple, FactChangeKind::Retract)
     }
 
     fn visible_tuple_for_key(
@@ -172,8 +166,8 @@ impl ProjectedStore {
     }
 
     fn apply_fact_change(&mut self, change: FactChange) -> Result<(), KernelError> {
-        self.validate_tuple(change.relation, &change.tuple)?;
         let relation = self.relation_mut(change.relation)?;
+        relation.validate_tuple(&change.tuple)?;
         let _ = match change.kind {
             FactChangeKind::Assert => relation.insert(change.tuple),
             FactChangeKind::Retract => relation.remove(&change.tuple),
@@ -181,21 +175,19 @@ impl ProjectedStore {
         Ok(())
     }
 
-    fn validate_tuple(&self, relation: RelationId, tuple: &Tuple) -> Result<(), KernelError> {
-        let metadata = self.relation(relation)?.metadata();
-        if metadata.arity() as usize != tuple.arity() {
-            return Err(KernelError::ArityMismatch {
-                relation,
-                expected: metadata.arity(),
-                actual: tuple.arity(),
-            });
-        }
-        if tuple.values().iter().any(|value| !value.is_persistable()) {
-            return Err(KernelError::NonPersistentValue {
-                relation,
-                tuple: tuple.clone(),
-            });
-        }
+    fn apply_visible_change(
+        &mut self,
+        relation: RelationId,
+        tuple: Tuple,
+        kind: FactChangeKind,
+    ) -> Result<(), KernelError> {
+        let relation = self.relation_mut(relation)?;
+        relation.validate_tuple(&tuple)?;
+        match kind {
+            FactChangeKind::Assert => relation.insert(tuple),
+            FactChangeKind::Retract => relation.remove(&tuple),
+        };
+        self.advance_version();
         Ok(())
     }
 
@@ -262,7 +254,7 @@ impl RelationWorkspace for ProjectedStore {
         relation: RelationId,
         tuple: Tuple,
     ) -> Result<(), KernelError> {
-        self.validate_tuple(relation, &tuple)?;
+        self.relation(relation)?.validate_tuple(&tuple)?;
         let key_positions = match self.relation(relation)?.metadata().conflict_policy() {
             ConflictPolicy::Functional { key_positions } => key_positions.to_vec(),
             ConflictPolicy::Set | ConflictPolicy::EventAppend => {

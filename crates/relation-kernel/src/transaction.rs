@@ -14,7 +14,7 @@
 mod overlay;
 
 use crate::commit_bloom::CommitBloom;
-use crate::index::RelationMutationKind;
+use crate::index::{RelationMutationKind, RelationState};
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
     active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
@@ -107,23 +107,11 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn assert(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
-        self.validate_tuple(relation, &tuple)?;
-        self.writes
-            .entry(relation)
-            .or_default()
-            .insert(tuple.clone(), LocalChange::Assert);
-        self.record_functional_change(relation, &tuple, LocalChange::Assert)?;
-        Ok(())
+        self.apply_local_change(relation, tuple, LocalChange::Assert)
     }
 
     pub fn retract(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
-        self.validate_tuple(relation, &tuple)?;
-        self.writes
-            .entry(relation)
-            .or_default()
-            .insert(tuple.clone(), LocalChange::Retract);
-        self.record_functional_change(relation, &tuple, LocalChange::Retract)?;
-        Ok(())
+        self.apply_local_change(relation, tuple, LocalChange::Retract)
     }
 
     pub fn replace_functional(
@@ -131,7 +119,7 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         tuple: Tuple,
     ) -> Result<(), KernelError> {
-        self.validate_tuple(relation, &tuple)?;
+        self.base.relation(relation)?.validate_tuple(&tuple)?;
         let ConflictPolicy::Functional { key_positions } =
             self.base.relation(relation)?.metadata().conflict_policy()
         else {
@@ -308,24 +296,6 @@ impl<'a> Transaction<'a> {
         })
     }
 
-    fn validate_tuple(&self, relation: RelationId, tuple: &Tuple) -> Result<(), KernelError> {
-        let metadata = self.base.relation(relation)?.metadata();
-        if metadata.arity() as usize != tuple.arity() {
-            return Err(KernelError::ArityMismatch {
-                relation,
-                expected: metadata.arity(),
-                actual: tuple.arity(),
-            });
-        }
-        if tuple.values().iter().any(|value| !value.is_persistable()) {
-            return Err(KernelError::NonPersistentValue {
-                relation,
-                tuple: tuple.clone(),
-            });
-        }
-        Ok(())
-    }
-
     fn visible_tuple_for_key(
         &mut self,
         relation: RelationId,
@@ -363,6 +333,20 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
+    fn apply_local_change(
+        &mut self,
+        relation: RelationId,
+        tuple: Tuple,
+        change: LocalChange,
+    ) -> Result<(), KernelError> {
+        self.base.relation(relation)?.validate_tuple(&tuple)?;
+        self.writes
+            .entry(relation)
+            .or_default()
+            .insert(tuple.clone(), change);
+        self.record_functional_change(relation, &tuple, change)
+    }
+
     fn record_functional_change(
         &mut self,
         relation: RelationId,
@@ -391,60 +375,88 @@ impl<'a> Transaction<'a> {
             let base_relation = self.base.relation(*relation_id)?;
             let current_relation = current.relation(*relation_id)?;
             match base_relation.metadata().conflict_policy() {
-                ConflictPolicy::Set => {
-                    writes.try_for_each(|tuple, change| {
-                        if matches!(change, LocalChange::Assert)
-                            && base_relation.contains_tuple(tuple)
-                            && !current_relation.contains_tuple(tuple)
-                        {
-                            Err(KernelError::Conflict(Conflict {
-                                relation: *relation_id,
-                                tuple: tuple.clone(),
-                                kind: ConflictKind::AssertRetract,
-                            }))
-                        } else {
-                            Ok(())
-                        }
-                    })?;
-                }
+                ConflictPolicy::Set => self.validate_set_conflicts(
+                    *relation_id,
+                    writes,
+                    base_relation,
+                    current_relation,
+                )?,
                 ConflictPolicy::Functional { key_positions } => {
-                    if let Some(visible) = self.functional_visible.get(relation_id) {
-                        for entry in visible.conflict_entries() {
-                            let base =
-                                base_relation.tuple_for_key(key_positions, entry.representative);
-                            let current =
-                                current_relation.tuple_for_key(key_positions, entry.representative);
-                            if base != current {
-                                return Err(KernelError::Conflict(Conflict {
-                                    relation: *relation_id,
-                                    tuple: entry.tuple.clone().or(base).unwrap_or_else(|| {
-                                        entry.representative.select(key_positions.iter().copied())
-                                    }),
-                                    kind: ConflictKind::FunctionalKeyChanged,
-                                }));
-                            }
-                        }
-                        continue;
-                    }
-
-                    writes.visit_touched_projected_keys(key_positions, |key, representative| {
-                        let base = base_relation.tuple_for_projected_key(key_positions, key);
-                        let current = current_relation.tuple_for_projected_key(key_positions, key);
-                        if base != current {
-                            Err(KernelError::Conflict(Conflict {
-                                relation: *relation_id,
-                                tuple: representative.clone(),
-                                kind: ConflictKind::FunctionalKeyChanged,
-                            }))
-                        } else {
-                            Ok(())
-                        }
-                    })?;
+                    self.validate_functional_conflicts(
+                        *relation_id,
+                        key_positions,
+                        writes,
+                        base_relation,
+                        current_relation,
+                    )?;
                 }
                 ConflictPolicy::EventAppend => {}
             }
         }
         Ok(())
+    }
+
+    fn validate_set_conflicts(
+        &self,
+        relation_id: RelationId,
+        writes: &RelationWriteOverlay,
+        base_relation: &RelationState,
+        current_relation: &RelationState,
+    ) -> Result<(), KernelError> {
+        writes.try_for_each(|tuple, change| {
+            if matches!(change, LocalChange::Assert)
+                && base_relation.contains_tuple(tuple)
+                && !current_relation.contains_tuple(tuple)
+            {
+                Err(KernelError::Conflict(Conflict {
+                    relation: relation_id,
+                    tuple: tuple.clone(),
+                    kind: ConflictKind::AssertRetract,
+                }))
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    fn validate_functional_conflicts(
+        &self,
+        relation_id: RelationId,
+        key_positions: &[u16],
+        writes: &RelationWriteOverlay,
+        base_relation: &RelationState,
+        current_relation: &RelationState,
+    ) -> Result<(), KernelError> {
+        if let Some(visible) = self.functional_visible.get(&relation_id) {
+            for entry in visible.conflict_entries() {
+                let base = base_relation.tuple_for_key(key_positions, entry.representative);
+                let current = current_relation.tuple_for_key(key_positions, entry.representative);
+                if base != current {
+                    return Err(KernelError::Conflict(Conflict {
+                        relation: relation_id,
+                        tuple: entry.tuple.clone().or(base).unwrap_or_else(|| {
+                            entry.representative.select(key_positions.iter().copied())
+                        }),
+                        kind: ConflictKind::FunctionalKeyChanged,
+                    }));
+                }
+            }
+            return Ok(());
+        }
+
+        writes.visit_touched_projected_keys(key_positions, |key, representative| {
+            let base = base_relation.tuple_for_projected_key(key_positions, key);
+            let current = current_relation.tuple_for_projected_key(key_positions, key);
+            if base != current {
+                Err(KernelError::Conflict(Conflict {
+                    relation: relation_id,
+                    tuple: representative.clone(),
+                    kind: ConflictKind::FunctionalKeyChanged,
+                }))
+            } else {
+                Ok(())
+            }
+        })
     }
 
     fn build_next_snapshot(
