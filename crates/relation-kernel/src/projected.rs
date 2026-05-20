@@ -13,6 +13,7 @@
 
 use crate::index::RelationState;
 use crate::snapshot::active_rules;
+use crate::tuple::finish_with_matching_tuple_rows;
 use crate::{
     CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, FactId, KernelError,
     RelationId, RelationMetadata, RelationRead, RelationWorkspace, Rule, RuleDefinition, RuleSet,
@@ -241,13 +242,7 @@ impl RelationRead for ProjectedStore {
             return Ok(visible);
         }
         if let Some(rows) = self.derived_tuples()?.get(&relation) {
-            visible.extend(
-                rows.iter()
-                    .filter(|tuple| tuple.matches_bindings(bindings))
-                    .cloned(),
-            );
-            visible.sort();
-            visible.dedup();
+            visible = finish_with_matching_tuple_rows(visible, rows, bindings);
         }
         Ok(visible)
     }

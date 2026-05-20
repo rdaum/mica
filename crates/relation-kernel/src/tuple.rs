@@ -74,6 +74,27 @@ pub(crate) fn finish_tuple_rows(mut rows: Vec<Tuple>) -> Vec<Tuple> {
     rows
 }
 
+pub(crate) fn extend_matching_tuple_rows(
+    target: &mut impl Extend<Tuple>,
+    rows: &[Tuple],
+    bindings: &[Option<Value>],
+) {
+    target.extend(
+        rows.iter()
+            .filter(|tuple| tuple.matches_bindings(bindings))
+            .cloned(),
+    );
+}
+
+pub(crate) fn finish_with_matching_tuple_rows(
+    mut visible: Vec<Tuple>,
+    rows: &[Tuple],
+    bindings: &[Option<Value>],
+) -> Vec<Tuple> {
+    extend_matching_tuple_rows(&mut visible, rows, bindings);
+    finish_tuple_rows(visible)
+}
+
 pub(crate) fn union_ordered_tuple_rows(left: Vec<Tuple>, right: Vec<Tuple>) -> Vec<Tuple> {
     debug_assert!(left.windows(2).all(|window| window[0] < window[1]));
     debug_assert!(right.windows(2).all(|window| window[0] < window[1]));

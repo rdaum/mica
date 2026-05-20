@@ -15,9 +15,11 @@ use crate::commit_bloom::CommitBloom;
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
+use crate::tuple::finish_with_matching_tuple_rows;
 use crate::{
-    ApplicableMethodCall, DispatchRelations, KernelError, RelationId, RelationMetadata,
-    RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple, Version,
+    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationId,
+    RelationMetadata, RelationRead, RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple,
+    Version,
 };
 use mica_var::{Identity, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -163,13 +165,7 @@ impl Snapshot {
 
         let derived = self.derived_tuples()?;
         if let Some(rows) = derived.get(&relation) {
-            visible.extend(
-                rows.iter()
-                    .filter(|tuple| tuple.matches_bindings(bindings))
-                    .cloned(),
-            );
-            visible.sort();
-            visible.dedup();
+            visible = finish_with_matching_tuple_rows(visible, rows, bindings);
         }
         Ok(visible)
     }
@@ -361,7 +357,7 @@ impl Snapshot {
             return Ok(program);
         }
 
-        let program = crate::query::method_program_id_uncached(self, relation, method)?;
+        let program = crate::dispatch::method_program_id_uncached(self, relation, method)?;
         self.method_program_cache
             .insert(relation, method, program.clone());
         Ok(program)
@@ -394,6 +390,106 @@ impl From<RuleEvalError> for KernelError {
             RuleEvalError::Kernel(error) => error,
             RuleEvalError::Rule(error) => Self::Rule(error),
         }
+    }
+}
+
+impl DispatchRead for Snapshot {
+    fn cached_applicable_method_calls(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls(relations, selector, roles)
+            .map(Some)
+    }
+
+    fn cached_applicable_method_calls_normalized(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls_normalized(relations, selector, roles)
+            .map(Some)
+    }
+
+    fn cached_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+    ) -> Result<Option<Option<Value>>, KernelError> {
+        self.cached_method_program(relation, method).map(Some)
+    }
+}
+
+impl RelationRead for Snapshot {
+    fn scan_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        self.scan(relation, bindings)
+    }
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        self.visit(relation, bindings, visitor)
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.estimate_scan(relation, bindings).map(Some)
+    }
+
+    fn has_exact_relation_index(
+        &self,
+        relation: RelationId,
+        positions: &[u16],
+    ) -> Result<bool, KernelError> {
+        if !self.rules().is_empty() {
+            return Ok(false);
+        }
+        self.relation_has_exact_index(relation, positions)
+    }
+
+    fn join_relation_scans(
+        &self,
+        left_relation: RelationId,
+        left_bindings: &[Option<Value>],
+        left_positions: &[u16],
+        right_relation: RelationId,
+        right_bindings: &[Option<Value>],
+        right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        if self.rules().is_empty()
+            && let Some(rows) = self.join_extensional_relation_scans(
+                left_relation,
+                left_bindings,
+                left_positions,
+                right_relation,
+                right_bindings,
+                right_positions,
+            )?
+        {
+            return Ok(Some(rows));
+        }
+
+        let left_rows = self.scan(left_relation, left_bindings)?;
+        let right_rows = self.scan(right_relation, right_bindings)?;
+        Ok(Some(crate::query::join_eq(
+            left_rows,
+            right_rows,
+            left_positions,
+            right_positions,
+        )))
     }
 }
 

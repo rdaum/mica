@@ -13,9 +13,10 @@
 
 use crate::index::RelationState;
 use crate::snapshot::active_rules;
+use crate::tuple::extend_matching_tuple_rows;
 use crate::{
-    ApplicableMethodCall, DispatchRelations, KernelError, RelationId, RelationMetadata,
-    RelationRead, RuleSet, ScanControl, Transaction, Tuple,
+    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationId,
+    RelationMetadata, RelationRead, RuleSet, ScanControl, Transaction, Tuple,
 };
 use mica_var::{Identity, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -306,11 +307,7 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
                 .evaluate_fixpoint(&reader)
                 .map_err(KernelError::from)?;
             if let Some(rows) = derived.get(&relation) {
-                visible.extend(
-                    rows.iter()
-                        .filter(|tuple| tuple.matches_bindings(bindings))
-                        .cloned(),
-                );
+                extend_matching_tuple_rows(&mut visible, rows, bindings);
             }
         }
 
@@ -333,7 +330,9 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
         }
         Ok(())
     }
+}
 
+impl DispatchRead for ComposedTransactionRead<'_, '_> {
     fn cached_applicable_method_calls(
         &self,
         relations: DispatchRelations,

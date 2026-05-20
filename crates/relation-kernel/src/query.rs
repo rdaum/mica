@@ -13,7 +13,7 @@
 
 use crate::index::ProjectedTupleIndex;
 use crate::tuple::{TupleKey, difference_tuple_rows, finish_tuple_rows};
-use crate::{ApplicableMethodCall, DispatchRelations, KernelError, RelationId, Transaction, Tuple};
+use crate::{KernelError, RelationId, Tuple};
 use mica_var::Value;
 use std::collections::BTreeSet;
 
@@ -73,255 +73,6 @@ pub trait RelationRead {
         _right_positions: &[u16],
     ) -> Result<Option<Vec<Tuple>>, KernelError> {
         Ok(None)
-    }
-
-    fn cached_applicable_method_calls(
-        &self,
-        _relations: DispatchRelations,
-        _selector: &Value,
-        _roles: &[(Value, Value)],
-    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
-        Ok(None)
-    }
-
-    fn cached_applicable_method_calls_normalized(
-        &self,
-        relations: DispatchRelations,
-        selector: &Value,
-        roles: &[(Value, Value)],
-    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
-        self.cached_applicable_method_calls(relations, selector, roles)
-    }
-
-    fn cached_method_program(
-        &self,
-        _relation: RelationId,
-        _method: &Value,
-    ) -> Result<Option<Option<Value>>, KernelError> {
-        Ok(None)
-    }
-}
-
-pub fn method_program_id(
-    reader: &impl RelationRead,
-    relation: RelationId,
-    method: &Value,
-) -> Result<Option<Value>, KernelError> {
-    if let Some(cached) = reader.cached_method_program(relation, method)? {
-        return Ok(cached);
-    }
-
-    method_program_id_uncached(reader, relation, method)
-}
-
-pub(crate) fn method_program_id_uncached(
-    reader: &impl RelationRead,
-    relation: RelationId,
-    method: &Value,
-) -> Result<Option<Value>, KernelError> {
-    let mut program = None;
-    reader.visit_relation(relation, &[Some(method.clone()), None], &mut |row| {
-        program = Some(row.values()[1].clone());
-        Ok(ScanControl::Stop)
-    })?;
-    Ok(program)
-}
-
-impl RelationRead for crate::Snapshot {
-    fn scan_relation(
-        &self,
-        relation: RelationId,
-        bindings: &[Option<Value>],
-    ) -> Result<Vec<Tuple>, KernelError> {
-        self.scan(relation, bindings)
-    }
-
-    fn visit_relation(
-        &self,
-        relation: RelationId,
-        bindings: &[Option<Value>],
-        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
-    ) -> Result<(), KernelError> {
-        self.visit(relation, bindings, visitor)
-    }
-
-    fn estimate_relation_scan(
-        &self,
-        relation: RelationId,
-        bindings: &[Option<Value>],
-    ) -> Result<Option<usize>, KernelError> {
-        self.estimate_scan(relation, bindings).map(Some)
-    }
-
-    fn has_exact_relation_index(
-        &self,
-        relation: RelationId,
-        positions: &[u16],
-    ) -> Result<bool, KernelError> {
-        if !self.rules().is_empty() {
-            return Ok(false);
-        }
-        self.relation_has_exact_index(relation, positions)
-    }
-
-    fn join_relation_scans(
-        &self,
-        left_relation: RelationId,
-        left_bindings: &[Option<Value>],
-        left_positions: &[u16],
-        right_relation: RelationId,
-        right_bindings: &[Option<Value>],
-        right_positions: &[u16],
-    ) -> Result<Option<Vec<Tuple>>, KernelError> {
-        if self.rules().is_empty()
-            && let Some(rows) = self.join_extensional_relation_scans(
-                left_relation,
-                left_bindings,
-                left_positions,
-                right_relation,
-                right_bindings,
-                right_positions,
-            )?
-        {
-            return Ok(Some(rows));
-        }
-
-        let left_rows = self.scan(left_relation, left_bindings)?;
-        let right_rows = self.scan(right_relation, right_bindings)?;
-        Ok(Some(join_eq(
-            left_rows,
-            right_rows,
-            left_positions,
-            right_positions,
-        )))
-    }
-
-    fn cached_applicable_method_calls(
-        &self,
-        relations: DispatchRelations,
-        selector: &Value,
-        roles: &[(Value, Value)],
-    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
-        self.cached_applicable_method_calls(relations, selector, roles)
-            .map(Some)
-    }
-
-    fn cached_applicable_method_calls_normalized(
-        &self,
-        relations: DispatchRelations,
-        selector: &Value,
-        roles: &[(Value, Value)],
-    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
-        self.cached_applicable_method_calls_normalized(relations, selector, roles)
-            .map(Some)
-    }
-
-    fn cached_method_program(
-        &self,
-        relation: RelationId,
-        method: &Value,
-    ) -> Result<Option<Option<Value>>, KernelError> {
-        self.cached_method_program(relation, method).map(Some)
-    }
-}
-
-impl RelationRead for Transaction<'_> {
-    fn scan_relation(
-        &self,
-        relation: RelationId,
-        bindings: &[Option<Value>],
-    ) -> Result<Vec<Tuple>, KernelError> {
-        self.scan(relation, bindings)
-    }
-
-    fn visit_relation(
-        &self,
-        relation: RelationId,
-        bindings: &[Option<Value>],
-        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
-    ) -> Result<(), KernelError> {
-        self.visit(relation, bindings, visitor)
-    }
-
-    fn estimate_relation_scan(
-        &self,
-        relation: RelationId,
-        bindings: &[Option<Value>],
-    ) -> Result<Option<usize>, KernelError> {
-        self.estimate_scan(relation, bindings).map(Some)
-    }
-
-    fn has_exact_relation_index(
-        &self,
-        relation: RelationId,
-        positions: &[u16],
-    ) -> Result<bool, KernelError> {
-        if !self.base.rules().is_empty() {
-            return Ok(false);
-        }
-        self.base.relation_has_exact_index(relation, positions)
-    }
-
-    fn join_relation_scans(
-        &self,
-        left_relation: RelationId,
-        left_bindings: &[Option<Value>],
-        left_positions: &[u16],
-        right_relation: RelationId,
-        right_bindings: &[Option<Value>],
-        right_positions: &[u16],
-    ) -> Result<Option<Vec<Tuple>>, KernelError> {
-        if self.base.rules().is_empty()
-            && !self.has_local_writes(left_relation)
-            && !self.has_local_writes(right_relation)
-            && let Some(rows) = self.base.join_extensional_relation_scans(
-                left_relation,
-                left_bindings,
-                left_positions,
-                right_relation,
-                right_bindings,
-                right_positions,
-            )?
-        {
-            return Ok(Some(rows));
-        }
-
-        let left_rows = self.scan(left_relation, left_bindings)?;
-        let right_rows = self.scan(right_relation, right_bindings)?;
-        Ok(Some(join_eq(
-            left_rows,
-            right_rows,
-            left_positions,
-            right_positions,
-        )))
-    }
-
-    fn cached_applicable_method_calls(
-        &self,
-        relations: DispatchRelations,
-        selector: &Value,
-        roles: &[(Value, Value)],
-    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
-        self.cached_applicable_method_calls(relations, selector, roles)
-            .map(Some)
-    }
-
-    fn cached_applicable_method_calls_normalized(
-        &self,
-        relations: DispatchRelations,
-        selector: &Value,
-        roles: &[(Value, Value)],
-    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
-        self.cached_applicable_method_calls_normalized(relations, selector, roles)
-            .map(Some)
-    }
-
-    fn cached_method_program(
-        &self,
-        relation: RelationId,
-        method: &Value,
-    ) -> Result<Option<Option<Value>>, KernelError> {
-        self.cached_method_program(relation, method).map(Some)
     }
 }
 
@@ -450,128 +201,19 @@ impl QueryPlan {
                 right,
                 left_positions,
                 right_positions,
-            } => {
-                validate_join_positions(left_positions, right_positions);
-                if let (
-                    QueryPlan::Scan {
-                        relation: left_relation,
-                        bindings: left_bindings,
-                    },
-                    QueryPlan::Scan {
-                        relation: right_relation,
-                        bindings: right_bindings,
-                    },
-                ) = (left.as_ref(), right.as_ref())
-                    && let Some(rows) = reader.join_relation_scans(
-                        *left_relation,
-                        left_bindings,
-                        left_positions,
-                        *right_relation,
-                        right_bindings,
-                        right_positions,
-                    )?
-                {
-                    return Ok(rows);
-                }
-                let left_rows = left.execute(reader)?;
-                if let Some((relation, bindings)) = scan_parts(right)
-                    && should_probe_join(
-                        left_rows.len(),
-                        reader,
-                        relation,
-                        bindings,
-                        right_positions,
-                    )?
-                {
-                    return indexed_nested_loop_join_rows(
-                        left_rows,
-                        relation,
-                        bindings,
-                        left_positions,
-                        right_positions,
-                        reader,
-                    );
-                }
-                let right_rows = right.execute(reader)?;
-                Ok(join_eq(
-                    left_rows,
-                    right_rows,
-                    left_positions,
-                    right_positions,
-                ))
-            }
+            } => execute_join_eq(left, right, left_positions, right_positions, reader),
             Self::SemiJoin {
                 left,
                 right,
                 left_positions,
                 right_positions,
-            } => {
-                validate_join_positions(left_positions, right_positions);
-                let left_rows = left.execute(reader)?;
-                if let Some((relation, bindings)) = scan_parts(right)
-                    && should_probe_join(
-                        left_rows.len(),
-                        reader,
-                        relation,
-                        bindings,
-                        right_positions,
-                    )?
-                {
-                    return indexed_nested_loop_semi_join_rows(
-                        left_rows,
-                        relation,
-                        bindings,
-                        left_positions,
-                        right_positions,
-                        reader,
-                        true,
-                    );
-                }
-                let right_rows = right.execute(reader)?;
-                Ok(semi_join(
-                    left_rows,
-                    right_rows,
-                    left_positions,
-                    right_positions,
-                    true,
-                ))
-            }
+            } => execute_semi_join(left, right, left_positions, right_positions, reader, true),
             Self::AntiJoin {
                 left,
                 right,
                 left_positions,
                 right_positions,
-            } => {
-                validate_join_positions(left_positions, right_positions);
-                let left_rows = left.execute(reader)?;
-                if let Some((relation, bindings)) = scan_parts(right)
-                    && should_probe_join(
-                        left_rows.len(),
-                        reader,
-                        relation,
-                        bindings,
-                        right_positions,
-                    )?
-                {
-                    return indexed_nested_loop_semi_join_rows(
-                        left_rows,
-                        relation,
-                        bindings,
-                        left_positions,
-                        right_positions,
-                        reader,
-                        false,
-                    );
-                }
-                let right_rows = right.execute(reader)?;
-                Ok(semi_join(
-                    left_rows,
-                    right_rows,
-                    left_positions,
-                    right_positions,
-                    false,
-                ))
-            }
+            } => execute_semi_join(left, right, left_positions, right_positions, reader, false),
             Self::Union { left, right } => {
                 let mut rows = left.execute(reader)?;
                 rows.extend(right.execute(reader)?);
@@ -583,6 +225,107 @@ impl QueryPlan {
             )),
         }
     }
+}
+
+fn execute_join_eq(
+    left: &QueryPlan,
+    right: &QueryPlan,
+    left_positions: &[u16],
+    right_positions: &[u16],
+    reader: &impl RelationRead,
+) -> Result<Vec<Tuple>, KernelError> {
+    validate_join_positions(left_positions, right_positions);
+    if let Some(rows) = direct_relation_join(left, right, left_positions, right_positions, reader)?
+    {
+        return Ok(rows);
+    }
+
+    let left_rows = left.execute(reader)?;
+    if let Some((relation, bindings)) = scan_parts(right)
+        && should_probe_join(left_rows.len(), reader, relation, bindings, right_positions)?
+    {
+        return indexed_nested_loop_join_rows(
+            left_rows,
+            relation,
+            bindings,
+            left_positions,
+            right_positions,
+            reader,
+        );
+    }
+
+    let right_rows = right.execute(reader)?;
+    Ok(join_eq(
+        left_rows,
+        right_rows,
+        left_positions,
+        right_positions,
+    ))
+}
+
+fn direct_relation_join(
+    left: &QueryPlan,
+    right: &QueryPlan,
+    left_positions: &[u16],
+    right_positions: &[u16],
+    reader: &impl RelationRead,
+) -> Result<Option<Vec<Tuple>>, KernelError> {
+    let (
+        QueryPlan::Scan {
+            relation: left_relation,
+            bindings: left_bindings,
+        },
+        QueryPlan::Scan {
+            relation: right_relation,
+            bindings: right_bindings,
+        },
+    ) = (left, right)
+    else {
+        return Ok(None);
+    };
+
+    reader.join_relation_scans(
+        *left_relation,
+        left_bindings,
+        left_positions,
+        *right_relation,
+        right_bindings,
+        right_positions,
+    )
+}
+
+fn execute_semi_join(
+    left: &QueryPlan,
+    right: &QueryPlan,
+    left_positions: &[u16],
+    right_positions: &[u16],
+    reader: &impl RelationRead,
+    keep_matches: bool,
+) -> Result<Vec<Tuple>, KernelError> {
+    validate_join_positions(left_positions, right_positions);
+    let left_rows = left.execute(reader)?;
+    if let Some((relation, bindings)) = scan_parts(right)
+        && should_probe_join(left_rows.len(), reader, relation, bindings, right_positions)?
+    {
+        return indexed_nested_loop_semi_join_rows(
+            left_rows,
+            relation,
+            bindings,
+            left_positions,
+            right_positions,
+            reader,
+            keep_matches,
+        );
+    }
+
+    let right_rows = right.execute(reader)?;
+    Ok(semi_join(
+        left_rows,
+        right_rows,
+        left_positions,
+        right_positions,
+        keep_matches,
+    ))
 }
 
 fn scan_parts(plan: &QueryPlan) -> Option<(RelationId, &[Option<Value>])> {
@@ -691,7 +434,7 @@ fn probe_bindings(
     Some(probe_bindings)
 }
 
-fn join_eq(
+pub(crate) fn join_eq(
     left_rows: Vec<Tuple>,
     right_rows: Vec<Tuple>,
     left_positions: &[u16],

@@ -53,10 +53,10 @@ pub use closure::{
     delegates_reaches, delegates_star, delegates_star_from, materialize_delegates_star,
 };
 pub use dispatch::{
-    ApplicableMethod, ApplicableMethodCall, DispatchRelations, applicable_method_calls,
-    applicable_method_calls_normalized, applicable_method_entries, applicable_methods,
-    applicable_positional_methods, named_method_args, normalize_dispatch_roles, ordered_params,
-    positional_method_args, role_value,
+    ApplicableMethod, ApplicableMethodCall, DispatchRead, DispatchRelations,
+    applicable_method_calls, applicable_method_calls_normalized, applicable_method_entries,
+    applicable_methods, applicable_positional_methods, method_program_id, named_method_args,
+    normalize_dispatch_roles, ordered_params, positional_method_args, role_value,
 };
 pub use error::{Conflict, ConflictKind, KernelError};
 pub use fact::Fact;
@@ -68,7 +68,6 @@ pub use projected::{ProjectedDelta, ProjectedStore};
 pub use provider::{CommitProvider, InMemoryCommitProvider, PersistedKernelState};
 #[cfg(feature = "fjall-provider")]
 pub use provider::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
-pub use query::method_program_id;
 pub use query::{QueryPlan, RelationRead, ScanControl};
 pub use rules::{Atom, Rule, RuleDefinition, RuleError, RuleEvalError, RuleSet, Term};
 pub use snapshot::{CatalogChange, Commit, CommitResult, FactChange, FactChangeKind, Snapshot};

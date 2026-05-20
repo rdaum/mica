@@ -20,8 +20,8 @@ use crate::{
     SuspendKind,
 };
 use mica_relation_kernel::{
-    ApplicableMethodCall, ComposedTransactionRead, DispatchRelations, RelationId, RelationRead,
-    RelationWorkspace, ScanControl, Transaction, TransientStore, Tuple,
+    ApplicableMethodCall, ComposedTransactionRead, DispatchRead, DispatchRelations, RelationId,
+    RelationRead, RelationWorkspace, ScanControl, Transaction, TransientStore, Tuple,
     applicable_method_calls_normalized, applicable_positional_methods, method_program_id,
     normalize_dispatch_roles,
 };
@@ -154,7 +154,7 @@ pub enum VmHostResponse {
     RollbackRetry,
 }
 
-pub trait VmHost: RelationWorkspace {
+pub trait VmHost: RelationWorkspace + DispatchRead {
     fn authority(&self) -> &AuthorityContext;
 
     fn authority_mut(&mut self) -> &mut AuthorityContext;
@@ -279,7 +279,9 @@ impl RelationRead for VmHostContext<'_, '_> {
             None => self.tx.visit_relation(relation, bindings, visitor),
         }
     }
+}
 
+impl DispatchRead for VmHostContext<'_, '_> {
     fn cached_applicable_method_calls(
         &self,
         relations: DispatchRelations,
@@ -298,9 +300,9 @@ impl RelationRead for VmHostContext<'_, '_> {
                     ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
                 reader.cached_applicable_method_calls(relations, selector, roles)
             }
-            None => self
-                .tx
-                .cached_applicable_method_calls(relations, selector, roles),
+            None => {
+                DispatchRead::cached_applicable_method_calls(&*self.tx, relations, selector, roles)
+            }
         }
     }
 
@@ -321,7 +323,7 @@ impl RelationRead for VmHostContext<'_, '_> {
                     ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
                 reader.cached_method_program(relation, method)
             }
-            None => self.tx.cached_method_program(relation, method),
+            None => DispatchRead::cached_method_program(&*self.tx, relation, method),
         }
     }
 }
@@ -523,6 +525,8 @@ impl<W: RelationWorkspace> RelationWorkspace for ProjectedVmHostContext<'_, W> {
         self.workspace.retract_matching(relation, bindings)
     }
 }
+
+impl<W: RelationWorkspace> DispatchRead for ProjectedVmHostContext<'_, W> {}
 
 impl<W: RelationWorkspace> VmHost for ProjectedVmHostContext<'_, W> {
     fn authority(&self) -> &AuthorityContext {

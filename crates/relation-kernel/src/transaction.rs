@@ -19,10 +19,13 @@ use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
     active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
 };
-use crate::tuple::{difference_ordered_tuple_rows, finish_tuple_rows, union_ordered_tuple_rows};
+use crate::tuple::{
+    difference_ordered_tuple_rows, finish_with_matching_tuple_rows, union_ordered_tuple_rows,
+};
 use crate::{
-    ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRelations, KernelError,
-    RelationId, RelationKernel, RelationWorkspace, RuleSet, ScanControl, Snapshot, Tuple, Version,
+    ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRead, DispatchRelations,
+    KernelError, RelationId, RelationKernel, RelationRead, RelationWorkspace, RuleSet, ScanControl,
+    Snapshot, Tuple, Version,
 };
 use mica_var::Value;
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
@@ -98,7 +101,7 @@ impl<'a> Transaction<'a> {
         method: &Value,
     ) -> Result<Option<Value>, KernelError> {
         if !self.is_read_only() {
-            return crate::query::method_program_id_uncached(self, relation, method);
+            return crate::dispatch::method_program_id_uncached(self, relation, method);
         }
         self.base.cached_method_program(relation, method)
     }
@@ -159,12 +162,7 @@ impl<'a> Transaction<'a> {
                 .evaluate_fixpoint(&ExtensionalTransactionReader { tx: self })
                 .map_err(KernelError::from)?;
             if let Some(rows) = derived.get(&relation) {
-                visible.extend(
-                    rows.iter()
-                        .filter(|tuple| tuple.matches_bindings(bindings))
-                        .cloned(),
-                );
-                visible = finish_tuple_rows(visible);
+                visible = finish_with_matching_tuple_rows(visible, rows, bindings);
             }
         }
 
@@ -511,6 +509,108 @@ impl RelationWorkspace for Transaction<'_> {
         tuple: Tuple,
     ) -> Result<(), KernelError> {
         self.replace_functional(relation, tuple)
+    }
+}
+
+impl DispatchRead for Transaction<'_> {
+    fn cached_applicable_method_calls(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls(relations, selector, roles)
+            .map(Some)
+    }
+
+    fn cached_applicable_method_calls_normalized(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls_normalized(relations, selector, roles)
+            .map(Some)
+    }
+
+    fn cached_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+    ) -> Result<Option<Option<Value>>, KernelError> {
+        self.cached_method_program(relation, method).map(Some)
+    }
+}
+
+impl RelationRead for Transaction<'_> {
+    fn scan_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        self.scan(relation, bindings)
+    }
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        self.visit(relation, bindings, visitor)
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.estimate_scan(relation, bindings).map(Some)
+    }
+
+    fn has_exact_relation_index(
+        &self,
+        relation: RelationId,
+        positions: &[u16],
+    ) -> Result<bool, KernelError> {
+        if !self.base.rules().is_empty() {
+            return Ok(false);
+        }
+        self.base.relation_has_exact_index(relation, positions)
+    }
+
+    fn join_relation_scans(
+        &self,
+        left_relation: RelationId,
+        left_bindings: &[Option<Value>],
+        left_positions: &[u16],
+        right_relation: RelationId,
+        right_bindings: &[Option<Value>],
+        right_positions: &[u16],
+    ) -> Result<Option<Vec<Tuple>>, KernelError> {
+        if self.base.rules().is_empty()
+            && !self.has_local_writes(left_relation)
+            && !self.has_local_writes(right_relation)
+            && let Some(rows) = self.base.join_extensional_relation_scans(
+                left_relation,
+                left_bindings,
+                left_positions,
+                right_relation,
+                right_bindings,
+                right_positions,
+            )?
+        {
+            return Ok(Some(rows));
+        }
+
+        let left_rows = self.scan(left_relation, left_bindings)?;
+        let right_rows = self.scan(right_relation, right_bindings)?;
+        Ok(Some(crate::query::join_eq(
+            left_rows,
+            right_rows,
+            left_positions,
+            right_positions,
+        )))
     }
 }
 

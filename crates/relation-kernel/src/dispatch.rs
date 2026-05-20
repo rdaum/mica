@@ -33,6 +33,34 @@ pub struct ApplicableMethodCall {
     pub args: Option<Vec<Value>>,
 }
 
+pub trait DispatchRead: RelationRead {
+    fn cached_applicable_method_calls(
+        &self,
+        _relations: DispatchRelations,
+        _selector: &Value,
+        _roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        Ok(None)
+    }
+
+    fn cached_applicable_method_calls_normalized(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        roles: &[(Value, Value)],
+    ) -> Result<Option<Vec<ApplicableMethodCall>>, KernelError> {
+        self.cached_applicable_method_calls(relations, selector, roles)
+    }
+
+    fn cached_method_program(
+        &self,
+        _relation: RelationId,
+        _method: &Value,
+    ) -> Result<Option<Option<Value>>, KernelError> {
+        Ok(None)
+    }
+}
+
 pub fn applicable_methods(
     reader: &impl RelationRead,
     relations: DispatchRelations,
@@ -83,7 +111,7 @@ pub fn applicable_method_entries(
 }
 
 pub fn applicable_method_calls(
-    reader: &impl RelationRead,
+    reader: &impl DispatchRead,
     relations: DispatchRelations,
     selector: Value,
     roles: &[(Value, Value)],
@@ -95,7 +123,7 @@ pub fn applicable_method_calls(
 }
 
 pub fn applicable_method_calls_normalized(
-    reader: &impl RelationRead,
+    reader: &impl DispatchRead,
     relations: DispatchRelations,
     selector: Value,
     roles: &[(Value, Value)],
@@ -106,6 +134,31 @@ pub fn applicable_method_calls_normalized(
         return Ok(methods);
     }
     applicable_method_calls_uncached(reader, relations, &selector, roles)
+}
+
+pub fn method_program_id(
+    reader: &impl DispatchRead,
+    relation: RelationId,
+    method: &Value,
+) -> Result<Option<Value>, KernelError> {
+    if let Some(cached) = reader.cached_method_program(relation, method)? {
+        return Ok(cached);
+    }
+
+    method_program_id_uncached(reader, relation, method)
+}
+
+pub(crate) fn method_program_id_uncached(
+    reader: &impl RelationRead,
+    relation: RelationId,
+    method: &Value,
+) -> Result<Option<Value>, KernelError> {
+    let mut program = None;
+    reader.visit_relation(relation, &[Some(method.clone()), None], &mut |row| {
+        program = Some(row.values()[1].clone());
+        Ok(ScanControl::Stop)
+    })?;
+    Ok(program)
 }
 
 pub(crate) fn applicable_method_calls_uncached(
