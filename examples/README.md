@@ -39,7 +39,9 @@ name, but the write attempt is denied.
 `http-core.mica` is the minimal default HTTP filein. `relational-router.mica`
 shows the same web-host request facts routed through relations and stratified
 negation. It keeps route matching, access policy, forbidden responses, and
-not-found fallback in Mica source.
+not-found fallback in Mica source. Both examples define `#web` as the default
+HTTP principal and grant it only the read/invoke authority needed to handle
+requests.
 
 Run the router demo with an explicit filein list so it replaces the default
 HTTP filein:

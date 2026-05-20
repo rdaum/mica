@@ -6,14 +6,18 @@
 
 make_identity(:alice)
 make_identity(:bob)
+make_identity(:web)
 
 make_relation(:HttpRequest, 1)
 make_relation(:RequestMethod, 2)
 make_relation(:RequestPath, 2)
 make_relation(:RequestVersion, 2)
+make_relation(:RequestPrincipal, 2)
 make_relation(:RequestActor, 2)
 make_relation(:RequestHeader, 3)
 make_relation(:RequestBody, 2)
+make_relation(:CanRead, 2)
+make_relation(:CanInvoke, 2)
 
 make_relation(:HttpRoute, 3)
 make_relation(:CanAccess, 2)
@@ -27,6 +31,22 @@ assert HttpRoute("GET", "/", :home)
 assert HttpRoute("GET", "/hello", :hello)
 assert HttpRoute("GET", "/admin", :admin)
 
+assert CanRead(#web, :HttpRequest)
+assert CanRead(#web, :RequestMethod)
+assert CanRead(#web, :RequestPath)
+assert CanRead(#web, :RequestVersion)
+assert CanRead(#web, :RequestPrincipal)
+assert CanRead(#web, :RequestActor)
+assert CanRead(#web, :RequestHeader)
+assert CanRead(#web, :RequestBody)
+assert CanRead(#web, :SelectedRoute)
+assert CanInvoke(#web, :http_request)
+assert CanInvoke(#web, :http_response)
+assert CanInvoke(#web, :http_text)
+assert CanInvoke(#web, :http_html)
+
+assert CanAccess(#web, "/")
+assert CanAccess(#web, "/hello")
 assert CanAccess(#alice, "/")
 assert CanAccess(#alice, "/hello")
 assert CanAccess(#bob, "/")
@@ -41,13 +61,13 @@ HasRouteMatch(req) :-
 
 AuthorizedRoute(req, handler) :-
   RouteMatch(req, handler),
-  RequestActor(req, actor),
+  RequestPrincipal(req, actor),
   RequestPath(req, path),
   CanAccess(actor, path)
 
 DeniedRequest(req) :-
   RouteMatch(req, handler),
-  RequestActor(req, actor),
+  RequestPrincipal(req, actor),
   RequestPath(req, path),
   not CanAccess(actor, path)
 

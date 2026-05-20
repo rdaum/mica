@@ -187,6 +187,25 @@ impl CompioTaskDriver {
         Ok(submitted)
     }
 
+    pub async fn submit_invocation_for_endpoint(
+        &self,
+        endpoint: Identity,
+        selector: Symbol,
+        roles: Vec<(Symbol, Value)>,
+    ) -> Result<SubmittedTask, DriverError> {
+        let runner = Arc::clone(&self.inner.runner);
+        let (context, submitted) = self
+            .dispatch(move || async move {
+                let request = runner.invocation_request_for_endpoint(endpoint, selector, roles)?;
+                let context = TaskContext::from_request(&request, endpoint);
+                let submitted = runner.submit_invocation(request)?;
+                Ok((context, submitted))
+            })
+            .await?;
+        self.handle_submitted(context, submitted.clone()).await?;
+        Ok(submitted)
+    }
+
     pub async fn resume(&self, task_id: TaskId, value: Value) -> Result<TaskOutcome, DriverError> {
         let context = {
             let mut state = self.inner.state.lock().unwrap();

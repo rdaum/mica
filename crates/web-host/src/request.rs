@@ -13,8 +13,8 @@
 
 use crate::codec::{HttpRequest, HttpResponse};
 use crate::response::{internal_error_response, response_from_submitted, route_request};
-use crate::{InProcessWebHost, format_driver_error};
-use mica_runtime::{TaskInput, TaskRequest, Tuple};
+use crate::{InProcessWebHost, RequestBinding, format_driver_error};
+use mica_runtime::Tuple;
 use mica_var::{Identity, Symbol, Value};
 
 #[derive(Clone, Debug)]
@@ -34,8 +34,7 @@ impl RequestFact {
 
 pub(crate) async fn handle_in_process_request(
     host: &InProcessWebHost,
-    endpoint: Identity,
-    actor: Identity,
+    binding: &RequestBinding,
     request: &HttpRequest,
     close: bool,
 ) -> HttpResponse {
@@ -46,35 +45,41 @@ pub(crate) async fn handle_in_process_request(
         Ok(request_id) => request_id,
         Err(error) => return internal_error_response(error, close),
     };
-    let request_facts = request_facts(request_id, actor, request);
+    let request_endpoint = match host.allocate_endpoint() {
+        Ok(endpoint) => endpoint,
+        Err(error) => return internal_error_response(error, close),
+    };
+    if let Err(error) = host.driver.open_endpoint_with_context(
+        request_endpoint,
+        Some(binding.principal),
+        binding.actor,
+        Symbol::intern("http-request"),
+    ) {
+        return internal_error_response(format_driver_error(error), close);
+    }
+
+    let request_facts = request_facts(request_id, binding.principal, binding.actor, request);
     let transient_tuples = request_facts
         .iter()
         .map(|fact| (fact.relation, fact.tuple.clone()))
         .collect();
     if let Err(error) = host
         .driver
-        .assert_transient_tuples_named(endpoint, transient_tuples)
+        .assert_transient_tuples_named(request_endpoint, transient_tuples)
     {
+        host.driver.close_endpoint(request_endpoint);
         return internal_error_response(format_driver_error(error), close);
     }
 
     let submitted = host
         .driver
-        .submit_invocation(
-            endpoint,
-            TaskRequest {
-                principal: None,
-                actor: Some(actor),
-                endpoint,
-                authority: mica_runtime::AuthorityContext::root(),
-                input: TaskInput::Invocation {
-                    selector: Symbol::intern("http_request"),
-                    roles: vec![(Symbol::intern("request"), Value::identity(request_id))],
-                },
-            },
+        .submit_invocation_for_endpoint(
+            request_endpoint,
+            Symbol::intern("http_request"),
+            vec![(Symbol::intern("request"), Value::identity(request_id))],
         )
         .await;
-    cleanup_request_facts(host, endpoint, &request_facts);
+    host.driver.close_endpoint(request_endpoint);
 
     match submitted {
         Ok(submitted) => response_from_submitted(submitted, close),
@@ -84,7 +89,8 @@ pub(crate) async fn handle_in_process_request(
 
 fn visit_request_facts<E>(
     request_id: Identity,
-    actor: Identity,
+    principal: Identity,
+    actor: Option<Identity>,
     request: &HttpRequest,
     mut visit: impl FnMut(RequestFact) -> Result<(), E>,
 ) -> Result<(), E> {
@@ -109,9 +115,15 @@ fn visit_request_facts<E>(
         ],
     ))?;
     visit(RequestFact::new(
-        Symbol::intern("RequestActor"),
-        [request_value.clone(), Value::identity(actor)],
+        Symbol::intern("RequestPrincipal"),
+        [request_value.clone(), Value::identity(principal)],
     ))?;
+    if let Some(actor) = actor {
+        visit(RequestFact::new(
+            Symbol::intern("RequestActor"),
+            [request_value.clone(), Value::identity(actor)],
+        ))?;
+    }
     for header in &request.headers {
         visit(RequestFact::new(
             Symbol::intern("RequestHeader"),
@@ -131,9 +143,14 @@ fn visit_request_facts<E>(
     Ok(())
 }
 
-fn request_facts(request_id: Identity, actor: Identity, request: &HttpRequest) -> Vec<RequestFact> {
+fn request_facts(
+    request_id: Identity,
+    principal: Identity,
+    actor: Option<Identity>,
+    request: &HttpRequest,
+) -> Vec<RequestFact> {
     let mut facts = Vec::new();
-    visit_request_facts(request_id, actor, request, |fact| {
+    visit_request_facts(request_id, principal, actor, request, |fact| {
         facts.push(fact);
         Ok::<_, std::convert::Infallible>(())
     })
@@ -141,27 +158,18 @@ fn request_facts(request_id: Identity, actor: Identity, request: &HttpRequest) -
     facts
 }
 
-fn cleanup_request_facts(host: &InProcessWebHost, endpoint: Identity, facts: &[RequestFact]) {
-    let transient_tuples = facts
-        .iter()
-        .rev()
-        .map(|fact| (fact.relation, fact.tuple.clone()))
-        .collect();
-    let _ = host
-        .driver
-        .retract_transient_tuples_named(endpoint, transient_tuples);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn request_facts_include_core_request_neighbourhood() {
         let request_id = Identity::new(0x00eb_0000_0000_0001).unwrap();
-        let actor = Identity::new(0x00e0_0000_0000_0001).unwrap();
+        let principal = Identity::new(0x00e0_0000_0000_0001).unwrap();
         let facts = request_facts(
             request_id,
-            actor,
+            principal,
+            None,
             &HttpRequest {
                 method: "GET".to_owned(),
                 path: "/hello".to_owned(),
@@ -198,12 +206,14 @@ mod tests {
     }
 
     #[test]
-    fn request_facts_include_actor_binding() {
+    fn request_facts_include_principal_and_optional_actor_binding() {
         let request_id = Identity::new(0x00eb_0000_0000_0002).unwrap();
-        let actor = Identity::new(0x00e0_0000_0000_0002).unwrap();
+        let principal = Identity::new(0x00e0_0000_0000_0002).unwrap();
+        let actor = Identity::new(0x00e0_0000_0000_0003).unwrap();
         let facts = request_facts(
             request_id,
-            actor,
+            principal,
+            Some(actor),
             &HttpRequest {
                 method: "GET".to_owned(),
                 path: "/secure".to_owned(),
@@ -213,6 +223,13 @@ mod tests {
             },
         );
 
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.relation == Symbol::intern("RequestPrincipal")
+                    && fact.tuple.values()
+                        == [Value::identity(request_id), Value::identity(principal)])
+        );
         assert!(
             facts
                 .iter()

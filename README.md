@@ -367,6 +367,10 @@ cargo run --bin mica-daemon -- --web-bind 127.0.0.1:8080
 curl -i http://127.0.0.1:8080/hello
 ```
 
+HTTP requests run as the `#web` principal by default. The daemon derives
+request-handler authority from Mica policy facts rather than running
+`:http_request(...)` as root.
+
 Start the REPL:
 
 ```sh

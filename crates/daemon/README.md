@@ -13,7 +13,9 @@ The daemon currently files in Mica source files at startup. By default it loads
 `examples/mud-command-parser.mica`, and `examples/http-core.mica`. Line input
 is submitted to the in-core `:command(...)` verb; HTTP requests are submitted
 to the in-core `:http_request(...)` verb. The Rust transports only own protocol
-parsing and connection control.
+parsing and connection control. HTTP handlers run as the configured web
+principal, `#web` by default, so request handling uses ordinary Mica authority
+policy instead of root authority.
 
 Run the daemon with an in-process telnet listener:
 
@@ -43,3 +45,6 @@ Run the daemon with an in-process HTTP listener:
 cargo run --bin mica-daemon -- --web-bind 127.0.0.1:8080
 curl -i http://127.0.0.1:8080/hello
 ```
+
+Use `--web-principal NAME` to run HTTP request handlers as a different
+principal identity.

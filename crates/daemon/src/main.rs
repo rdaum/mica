@@ -21,9 +21,7 @@ use mica_telnet_host::{
     ActorBinding as TelnetActorBinding, InProcessTelnetHost, serve_in_process as serve_telnet,
 };
 use mica_var::Symbol;
-use mica_web_host::{
-    ActorBinding as WebActorBinding, InProcessWebHost, serve_in_process as serve_web,
-};
+use mica_web_host::{InProcessWebHost, RequestBinding, serve_in_process as serve_web};
 use std::fs;
 use std::future;
 use std::net::SocketAddr;
@@ -53,6 +51,8 @@ struct Cli {
     fileins: Vec<PathBuf>,
     #[arg(long, default_value = "alice", value_name = "IDENTITY")]
     actor: String,
+    #[arg(long, default_value = "web", value_name = "IDENTITY")]
+    web_principal: String,
     #[arg(long, value_name = "THREADS")]
     driver_threads: Option<NonZeroUsize>,
     #[arg(long, value_name = "URI")]
@@ -93,34 +93,37 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             .map_err(|error| format!("failed to read {}: {error}", filein.display()))?;
         runner.run_filein(&source).map_err(format_source_error)?;
     }
-    let in_process_actor = if cli.telnet_bind.is_some() || cli.web_bind.is_some() {
+    let telnet_actor = if cli.telnet_bind.is_some() {
         let actor_name = actor_name(&cli.actor)?;
         let actor = runner
             .named_identity(Symbol::intern(&actor_name))
             .map_err(format_source_error)?;
-        Some((actor_name, actor))
+        Some(TelnetActorBinding {
+            name: actor_name,
+            identity: actor,
+        })
     } else {
         None
     };
-    let telnet_actor = in_process_actor
-        .as_ref()
-        .map(|(name, identity)| TelnetActorBinding {
-            name: name.clone(),
-            identity: *identity,
-        });
-    let web_actor = in_process_actor
-        .as_ref()
-        .map(|(name, identity)| WebActorBinding {
-            name: name.clone(),
-            identity: *identity,
-        });
+    let web_binding = if cli.web_bind.is_some() {
+        let principal_name = actor_name(&cli.web_principal)?;
+        let principal = runner
+            .named_identity(Symbol::intern(&principal_name))
+            .map_err(format_source_error)?;
+        Some(RequestBinding {
+            principal,
+            actor: None,
+        })
+    } else {
+        None
+    };
     let driver = CompioTaskDriver::spawn_with_workers(runner, cli.driver_threads)
         .map_err(format_driver_error)?;
     if let Some(rpc_bind) = cli.rpc_bind {
         start_rpc_server(driver.clone(), rpc_bind)?;
     }
     if let Some(web_bind) = cli.web_bind {
-        let actor = web_actor.expect("web actor should be resolved before driver spawn");
+        let binding = web_binding.expect("web principal should be resolved before driver spawn");
         let listener = TcpListener::bind(web_bind)
             .await
             .map_err(|error| format!("failed to bind web listener {web_bind}: {error}"))?;
@@ -130,7 +133,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         );
         let host = InProcessWebHost::new(driver.clone());
         compio::runtime::spawn(async move {
-            if let Err(error) = serve_web(listener, host, actor, None).await {
+            if let Err(error) = serve_web(listener, host, binding, None).await {
                 eprintln!("web host failed: {error}");
             }
         })

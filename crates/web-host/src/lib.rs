@@ -29,9 +29,9 @@ pub const DAEMON_ENDPOINT_ID_START: u64 = 0x00ec_0000_0000_0000;
 pub const DAEMON_REQUEST_ID_START: u64 = 0x00eb_0000_0000_0000;
 
 #[derive(Clone, Debug)]
-pub struct ActorBinding {
-    pub name: String,
-    pub identity: Identity,
+pub struct RequestBinding {
+    pub principal: Identity,
+    pub actor: Option<Identity>,
 }
 
 pub struct InProcessWebHost {

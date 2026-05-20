@@ -443,6 +443,32 @@ impl SourceRunner {
         Ok(SubmittedTask { task_id, outcome })
     }
 
+    pub fn invocation_request_for_endpoint(
+        &self,
+        endpoint: Identity,
+        selector: Symbol,
+        roles: Vec<(Symbol, Value)>,
+    ) -> Result<TaskRequest, SourceTaskError> {
+        let runtime_context = self.endpoint_runtime_context(endpoint)?;
+        Ok(TaskRequest {
+            principal: runtime_context.principal(),
+            actor: runtime_context.actor(),
+            endpoint,
+            authority: authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?,
+            input: TaskInput::Invocation { selector, roles },
+        })
+    }
+
+    pub fn submit_invocation_for_endpoint(
+        &mut self,
+        endpoint: Identity,
+        selector: Symbol,
+        roles: Vec<(Symbol, Value)>,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let request = self.invocation_request_for_endpoint(endpoint, selector, roles)?;
+        self.submit_invocation(request)
+    }
+
     pub fn resume_task(&mut self, request: TaskRequest) -> Result<TaskOutcome, SourceTaskError> {
         let TaskRequest {
             principal,
@@ -1167,6 +1193,32 @@ impl SharedSourceRunner {
             self.task_manager
                 .submit_with_context(Arc::new(program), authority, runtime_context)?;
         Ok(SubmittedTask { task_id, outcome })
+    }
+
+    pub fn invocation_request_for_endpoint(
+        &self,
+        endpoint: Identity,
+        selector: Symbol,
+        roles: Vec<(Symbol, Value)>,
+    ) -> Result<TaskRequest, SourceTaskError> {
+        let runtime_context = self.endpoint_runtime_context(endpoint)?;
+        Ok(TaskRequest {
+            principal: runtime_context.principal(),
+            actor: runtime_context.actor(),
+            endpoint,
+            authority: authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?,
+            input: TaskInput::Invocation { selector, roles },
+        })
+    }
+
+    pub fn submit_invocation_for_endpoint(
+        &self,
+        endpoint: Identity,
+        selector: Symbol,
+        roles: Vec<(Symbol, Value)>,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let request = self.invocation_request_for_endpoint(endpoint, selector, roles)?;
+        self.submit_invocation(request)
     }
 
     pub fn submit_spawn(
@@ -3597,9 +3649,10 @@ fn authority_for_runtime_context(
     kernel: &RelationKernel,
     runtime_context: RuntimeContext,
 ) -> Result<AuthorityContext, SourceTaskError> {
-    match runtime_context.actor() {
-        Some(actor) => authority_for_actor(kernel, actor),
-        None => Ok(AuthorityContext::empty()),
+    match (runtime_context.actor(), runtime_context.principal()) {
+        (Some(actor), _) => authority_for_actor(kernel, actor),
+        (None, Some(principal)) => authority_for_actor(kernel, principal),
+        (None, None) => Ok(AuthorityContext::empty()),
     }
 }
 
@@ -5786,6 +5839,51 @@ mod tests {
         assert!(matches!(
             closed.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::list([])
+        ));
+    }
+
+    #[test]
+    fn runner_endpoint_invocation_uses_principal_authority_without_actor() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "make_identity(:web)\n\
+                 make_relation(:RequestPath, 2)\n\
+                 make_relation(:CanRead, 2)\n\
+                 make_relation(:CanInvoke, 2)\n\
+                 assert CanRead(#web, :RequestPath)\n\
+                 assert CanInvoke(#web, :http_request)\n\
+                 verb http_request(request)\n\
+                   return one RequestPath(request, ?path)\n\
+                 end\n",
+            )
+            .unwrap();
+        let web = runner.actor_identity(Symbol::intern("web")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0011).unwrap();
+        let request = Identity::new(0x00eb_0000_0000_0011).unwrap();
+        runner
+            .open_endpoint_with_context(endpoint, Some(web), None, Symbol::intern("http-request"))
+            .unwrap();
+        runner
+            .assert_transient_named(
+                endpoint,
+                Symbol::intern("RequestPath"),
+                vec![Value::identity(request), Value::string("/hello")],
+            )
+            .unwrap();
+
+        let submitted = runner
+            .submit_invocation_for_endpoint(
+                endpoint,
+                Symbol::intern("http_request"),
+                vec![(Symbol::intern("request"), Value::identity(request))],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_str(|text| text == "/hello").unwrap_or(false)
         ));
     }
 
