@@ -21,13 +21,13 @@ use crate::{
     RelationId, RelationKernel, RelationWorkspace, RuleSet, ScanControl, Snapshot, Tuple, Version,
 };
 use mica_var::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 pub struct Transaction<'a> {
     kernel: &'a RelationKernel,
     pub(crate) base: Arc<Snapshot>,
-    writes: BTreeMap<RelationId, BTreeMap<Tuple, LocalChange>>,
+    writes: HashMap<RelationId, BTreeMap<Tuple, LocalChange>>,
 }
 
 impl<'a> Transaction<'a> {
@@ -35,7 +35,7 @@ impl<'a> Transaction<'a> {
         Self {
             kernel,
             base,
-            writes: BTreeMap::new(),
+            writes: HashMap::new(),
         }
     }
 
@@ -414,6 +414,14 @@ impl<'a> Transaction<'a> {
         next.derived_cache = empty_derived_cache();
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
+        changes.sort_by(|left, right| {
+            left.relation
+                .cmp(&right.relation)
+                .then_with(|| left.tuple.cmp(&right.tuple))
+                .then_with(|| {
+                    fact_change_kind_order(left.kind).cmp(&fact_change_kind_order(right.kind))
+                })
+        });
         let commit = Commit {
             version: next.version,
             catalog_changes: Arc::from([]),
@@ -443,6 +451,13 @@ impl<'a> Transaction<'a> {
             }
         }
         Ok(bloom)
+    }
+}
+
+fn fact_change_kind_order(kind: FactChangeKind) -> u8 {
+    match kind {
+        FactChangeKind::Assert => 0,
+        FactChangeKind::Retract => 1,
     }
 }
 

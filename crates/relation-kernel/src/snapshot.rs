@@ -20,7 +20,7 @@ use crate::{
     RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple, Version,
 };
 use mica_var::{Identity, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock};
 
 pub(crate) type DerivedCache = Arc<OnceLock<Result<BTreeMap<RelationId, Vec<Tuple>>, KernelError>>>;
@@ -138,7 +138,7 @@ impl CommitResult {
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub(crate) version: Version,
-    pub(crate) relations: BTreeMap<RelationId, RelationState>,
+    pub(crate) relations: HashMap<RelationId, RelationState>,
     pub(crate) rules: Vec<RuleDefinition>,
     pub(crate) derived_cache: DerivedCache,
     pub(crate) dispatch_cache: DispatchCache,
@@ -202,7 +202,13 @@ impl Snapshot {
     }
 
     pub fn relation_metadata(&self) -> impl Iterator<Item = &RelationMetadata> {
-        self.relations.values().map(|relation| relation.metadata())
+        let mut metadata = self
+            .relations
+            .values()
+            .map(|relation| relation.metadata())
+            .collect::<Vec<_>>();
+        metadata.sort_by_key(|metadata| metadata.id());
+        metadata.into_iter()
     }
 
     pub fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {

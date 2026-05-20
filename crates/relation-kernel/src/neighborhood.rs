@@ -32,7 +32,9 @@ pub struct MentionedFact {
 impl Snapshot {
     pub fn subject_facts(&self, subject: &Value) -> Result<Vec<SubjectFact>, KernelError> {
         let mut facts = Vec::new();
-        for (relation, state) in &self.relations {
+        let mut relations = self.relations.iter().collect::<Vec<_>>();
+        relations.sort_by_key(|(relation, _)| **relation);
+        for (relation, state) in relations {
             if state.metadata().arity() == 0 {
                 continue;
             }
@@ -49,7 +51,9 @@ impl Snapshot {
 
     pub fn mentioned_facts(&self, identity: &Value) -> Result<Vec<MentionedFact>, KernelError> {
         let mut facts = Vec::new();
-        for (relation, state) in &self.relations {
+        let mut relations = self.relations.iter().collect::<Vec<_>>();
+        relations.sort_by_key(|(relation, _)| **relation);
+        for (relation, state) in relations {
             for position in 0..state.metadata().arity() {
                 let mut bindings = vec![None; state.metadata().arity() as usize];
                 bindings[position as usize] = Some(identity.clone());
@@ -73,7 +77,9 @@ impl Snapshot {
 impl Transaction<'_> {
     pub fn subject_facts(&self, subject: &Value) -> Result<Vec<SubjectFact>, KernelError> {
         let mut facts = Vec::new();
-        for (relation, state) in &self.base.relations {
+        let mut relations = self.base.relations.iter().collect::<Vec<_>>();
+        relations.sort_by_key(|(relation, _)| **relation);
+        for (relation, state) in relations {
             if state.metadata().arity() == 0 {
                 continue;
             }
@@ -94,7 +100,9 @@ impl Transaction<'_> {
 
     pub fn mentioned_facts(&self, identity: &Value) -> Result<Vec<MentionedFact>, KernelError> {
         let mut facts = Vec::new();
-        for (relation, state) in &self.base.relations {
+        let mut relations = self.base.relations.iter().collect::<Vec<_>>();
+        relations.sort_by_key(|(relation, _)| **relation);
+        for (relation, state) in relations {
             for position in 0..state.metadata().arity() {
                 let mut bindings = vec![None; state.metadata().arity() as usize];
                 bindings[position as usize] = Some(identity.clone());
@@ -116,7 +124,9 @@ impl Transaction<'_> {
         identity: &Value,
     ) -> Result<Vec<MentionedFact>, KernelError> {
         let mut facts = Vec::new();
-        for (relation, state) in &self.base.relations {
+        let mut relations = self.base.relations.iter().collect::<Vec<_>>();
+        relations.sort_by_key(|(relation, _)| **relation);
+        for (relation, state) in relations {
             for position in 0..state.metadata().arity() {
                 let mut bindings = vec![None; state.metadata().arity() as usize];
                 bindings[position as usize] = Some(identity.clone());

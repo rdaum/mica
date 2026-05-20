@@ -21,7 +21,7 @@ use crate::{
     RuleDefinition, RuleSet, Snapshot, Transaction,
 };
 use arc_swap::ArcSwap;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub(crate) const GENERATED_RULE_ID_START: u64 = 0x00d0_0000_0000_0000;
@@ -41,7 +41,7 @@ impl RelationKernel {
         Self {
             root: ArcSwap::new(Arc::new(Snapshot {
                 version: 0,
-                relations: BTreeMap::new(),
+                relations: HashMap::new(),
                 rules: Vec::new(),
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
@@ -58,7 +58,7 @@ impl RelationKernel {
         commits: impl IntoIterator<Item = Commit>,
         provider: Arc<dyn CommitProvider>,
     ) -> Result<Self, KernelError> {
-        let mut states = BTreeMap::new();
+        let mut states = HashMap::new();
         for metadata in relations {
             states.insert(metadata.id(), RelationState::empty(metadata)?);
         }
@@ -118,7 +118,7 @@ impl RelationKernel {
         provider: Arc<dyn CommitProvider>,
     ) -> Result<Self, KernelError> {
         let commits = commits.into_iter().collect::<Vec<_>>();
-        let mut states = BTreeMap::new();
+        let mut states = HashMap::new();
         let mut rules = Vec::new();
 
         for commit in &commits {
@@ -179,7 +179,7 @@ impl RelationKernel {
         state: crate::PersistedKernelState,
         provider: Arc<dyn CommitProvider>,
     ) -> Result<Self, KernelError> {
-        let mut states = BTreeMap::new();
+        let mut states = HashMap::new();
         for metadata in state.relations {
             states.insert(metadata.id(), RelationState::empty(metadata)?);
         }
@@ -363,14 +363,14 @@ impl RelationKernel {
 }
 
 fn validate_rule_definition_against_relations(
-    relations: &BTreeMap<crate::RelationId, RelationState>,
+    relations: &HashMap<crate::RelationId, RelationState>,
     definition: &RuleDefinition,
 ) -> Result<(), KernelError> {
     validate_rule_against_relations(relations, definition.rule())
 }
 
 fn validate_rule_against_relations(
-    relations: &BTreeMap<crate::RelationId, RelationState>,
+    relations: &HashMap<crate::RelationId, RelationState>,
     rule: &Rule,
 ) -> Result<(), KernelError> {
     validate_rule_atom(relations, rule.head_relation(), rule.head_terms())?;
@@ -403,7 +403,7 @@ fn disable_rule_in(
 }
 
 fn validate_rule_atom(
-    relations: &BTreeMap<crate::RelationId, RelationState>,
+    relations: &HashMap<crate::RelationId, RelationState>,
     relation: crate::RelationId,
     terms: &[crate::Term],
 ) -> Result<(), KernelError> {

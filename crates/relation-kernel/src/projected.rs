@@ -20,14 +20,14 @@ use crate::{
 };
 use mica_var::Value;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 type ProjectedDerivedCache = RefCell<Option<Result<BTreeMap<RelationId, Vec<Tuple>>, KernelError>>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct ProjectedStore {
     version: Version,
-    relations: BTreeMap<RelationId, RelationState>,
+    relations: HashMap<RelationId, RelationState>,
     rules: Vec<RuleDefinition>,
     derived_cache: ProjectedDerivedCache,
 }
@@ -42,7 +42,13 @@ impl ProjectedStore {
     }
 
     pub fn relation_metadata(&self) -> impl Iterator<Item = &RelationMetadata> {
-        self.relations.values().map(RelationState::metadata)
+        let mut metadata = self
+            .relations
+            .values()
+            .map(RelationState::metadata)
+            .collect::<Vec<_>>();
+        metadata.sort_by_key(|metadata| metadata.id());
+        metadata.into_iter()
     }
 
     pub fn rules(&self) -> &[RuleDefinition] {
@@ -311,14 +317,14 @@ impl RelationRead for ExtensionalProjectedReader<'_> {
 }
 
 pub(crate) fn validate_rule_definition_against_relations(
-    relations: &BTreeMap<RelationId, RelationState>,
+    relations: &HashMap<RelationId, RelationState>,
     definition: &RuleDefinition,
 ) -> Result<(), KernelError> {
     validate_rule_against_relations(relations, definition.rule())
 }
 
 pub(crate) fn validate_rule_against_relations(
-    relations: &BTreeMap<RelationId, RelationState>,
+    relations: &HashMap<RelationId, RelationState>,
     rule: &Rule,
 ) -> Result<(), KernelError> {
     validate_rule_atom(relations, rule.head_relation(), rule.head_terms())?;
@@ -351,7 +357,7 @@ pub(crate) fn disable_rule_in(
 }
 
 fn validate_rule_atom(
-    relations: &BTreeMap<RelationId, RelationState>,
+    relations: &HashMap<RelationId, RelationState>,
     relation: RelationId,
     terms: &[crate::Term],
 ) -> Result<(), KernelError> {

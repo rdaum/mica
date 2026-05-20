@@ -18,11 +18,11 @@ use crate::{
     RelationRead, RuleSet, ScanControl, Transaction, Tuple,
 };
 use mica_var::{Identity, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Clone, Debug, Default)]
 pub struct TransientStore {
-    scopes: BTreeMap<Identity, TransientScopeState>,
+    scopes: HashMap<Identity, TransientScopeState>,
 }
 
 impl TransientStore {
@@ -42,7 +42,9 @@ impl TransientStore {
     }
 
     pub fn scopes(&self) -> impl Iterator<Item = Identity> + '_ {
-        self.scopes.keys().copied()
+        let mut scopes = self.scopes.keys().copied().collect::<Vec<_>>();
+        scopes.sort();
+        scopes.into_iter()
     }
 
     pub fn assert(
@@ -144,7 +146,7 @@ impl TransientStore {
 
 #[derive(Clone, Debug, Default)]
 struct TransientScopeState {
-    relations: BTreeMap<RelationId, RelationState>,
+    relations: HashMap<RelationId, RelationState>,
 }
 
 impl TransientScopeState {
