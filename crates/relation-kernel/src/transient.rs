@@ -57,11 +57,53 @@ impl TransientStore {
             .assert(metadata, tuple)
     }
 
+    pub fn assert_many(
+        &mut self,
+        scope: Identity,
+        tuples: impl IntoIterator<Item = (RelationMetadata, Tuple)>,
+    ) -> Result<usize, KernelError> {
+        let mut tuples = tuples.into_iter();
+        let Some((first_metadata, first_tuple)) = tuples.next() else {
+            return Ok(0);
+        };
+        let scope_state = self.scopes.entry(scope).or_default();
+        let mut inserted = 0;
+        if scope_state.assert(first_metadata, first_tuple)? {
+            inserted += 1;
+        }
+        for (metadata, tuple) in tuples {
+            if scope_state.assert(metadata, tuple)? {
+                inserted += 1;
+            }
+        }
+        Ok(inserted)
+    }
+
     pub fn retract(&mut self, scope: Identity, relation: RelationId, tuple: &Tuple) -> bool {
         let Some(scope_state) = self.scopes.get_mut(&scope) else {
             return false;
         };
         let removed = scope_state.retract(relation, tuple);
+        if scope_state.is_empty() {
+            self.scopes.remove(&scope);
+        }
+        removed
+    }
+
+    pub fn retract_many(
+        &mut self,
+        scope: Identity,
+        tuples: impl IntoIterator<Item = (RelationId, Tuple)>,
+    ) -> usize {
+        let Some(scope_state) = self.scopes.get_mut(&scope) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for (relation, tuple) in tuples {
+            if scope_state.retract(relation, &tuple) {
+                removed += 1;
+            }
+        }
         if scope_state.is_empty() {
             self.scopes.remove(&scope);
         }

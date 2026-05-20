@@ -564,6 +564,17 @@ impl SourceRunner {
             .map_err(SourceTaskError::from)
     }
 
+    pub fn assert_transient_tuples_named(
+        &mut self,
+        scope: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        let tuples = transient_tuple_metadata_required(self.task_manager.kernel(), tuples)?;
+        self.task_manager
+            .assert_transient_many(scope, tuples)
+            .map_err(SourceTaskError::from)
+    }
+
     pub fn retract_transient_named(
         &mut self,
         scope: Identity,
@@ -585,6 +596,15 @@ impl SourceRunner {
         self.task_manager
             .retract_transient(scope, metadata.id(), tuple)
             .map_err(SourceTaskError::from)
+    }
+
+    pub fn retract_transient_tuples_named(
+        &mut self,
+        scope: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        let tuples = transient_tuple_relation_required(self.task_manager.kernel(), tuples)?;
+        Ok(self.task_manager.retract_transient_many(scope, tuples))
     }
 
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
@@ -1245,6 +1265,17 @@ impl SharedSourceRunner {
             .map_err(SourceTaskError::from)
     }
 
+    pub fn assert_transient_tuples_named(
+        &self,
+        scope: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        let tuples = transient_tuple_metadata_required(self.task_manager.kernel(), tuples)?;
+        self.task_manager
+            .assert_transient_many(scope, tuples)
+            .map_err(SourceTaskError::from)
+    }
+
     pub fn retract_transient_named(
         &self,
         scope: Identity,
@@ -1266,6 +1297,15 @@ impl SharedSourceRunner {
         self.task_manager
             .retract_transient(scope, metadata.id(), tuple)
             .map_err(SourceTaskError::from)
+    }
+
+    pub fn retract_transient_tuples_named(
+        &self,
+        scope: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        let tuples = transient_tuple_relation_required(self.task_manager.kernel(), tuples)?;
+        Ok(self.task_manager.retract_transient_many(scope, tuples))
     }
 
     pub fn drain_emissions(&self) -> Vec<Effect> {
@@ -3474,6 +3514,34 @@ fn relation_metadata_required(
             format!("unknown relation {}", name.name().unwrap_or("<unnamed>")),
         )
     })
+}
+
+fn transient_tuple_metadata_required(
+    kernel: &RelationKernel,
+    tuples: Vec<(Symbol, Tuple)>,
+) -> Result<Vec<(RelationMetadata, Tuple)>, SourceTaskError> {
+    tuples
+        .into_iter()
+        .map(|(relation, tuple)| {
+            let metadata = relation_metadata_required(kernel, relation)?;
+            ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
+            Ok((metadata, tuple))
+        })
+        .collect()
+}
+
+fn transient_tuple_relation_required(
+    kernel: &RelationKernel,
+    tuples: Vec<(Symbol, Tuple)>,
+) -> Result<Vec<(Identity, Tuple)>, SourceTaskError> {
+    tuples
+        .into_iter()
+        .map(|(relation, tuple)| {
+            let metadata = relation_metadata_required(kernel, relation)?;
+            ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
+            Ok((metadata.id(), tuple))
+        })
+        .collect()
 }
 
 fn ensure_tuple_arity(

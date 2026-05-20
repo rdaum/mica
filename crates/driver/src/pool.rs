@@ -291,6 +291,17 @@ impl CompioTaskDriver {
             .map_err(DriverError::Source)
     }
 
+    pub fn assert_transient_tuples_named(
+        &self,
+        scope: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, DriverError> {
+        self.inner
+            .runner
+            .assert_transient_tuples_named(scope, tuples)
+            .map_err(DriverError::Source)
+    }
+
     pub fn retract_transient_named(
         &self,
         scope: Identity,
@@ -312,6 +323,17 @@ impl CompioTaskDriver {
         self.inner
             .runner
             .retract_transient_tuple_named(scope, relation, tuple)
+            .map_err(DriverError::Source)
+    }
+
+    pub fn retract_transient_tuples_named(
+        &self,
+        scope: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, DriverError> {
+        self.inner
+            .runner
+            .retract_transient_tuples_named(scope, tuples)
             .map_err(DriverError::Source)
     }
 

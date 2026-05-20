@@ -46,15 +46,15 @@ pub(crate) async fn handle_in_process_request(
         Ok(request_id) => request_id,
         Err(error) => return internal_error_response(error, close),
     };
-    let mut asserted_facts = Vec::new();
-    let assert_result = visit_request_facts(request_id, actor, request, |fact| {
-        host.driver
-            .assert_transient_tuple_named(endpoint, fact.relation, fact.tuple.clone())?;
-        asserted_facts.push(fact);
-        Ok(())
-    });
-    if let Err(error) = assert_result {
-        cleanup_request_facts(host, endpoint, &asserted_facts);
+    let request_facts = request_facts(request_id, actor, request);
+    let transient_tuples = request_facts
+        .iter()
+        .map(|fact| (fact.relation, fact.tuple.clone()))
+        .collect();
+    if let Err(error) = host
+        .driver
+        .assert_transient_tuples_named(endpoint, transient_tuples)
+    {
         return internal_error_response(format_driver_error(error), close);
     }
 
@@ -74,7 +74,7 @@ pub(crate) async fn handle_in_process_request(
             },
         )
         .await;
-    cleanup_request_facts(host, endpoint, &asserted_facts);
+    cleanup_request_facts(host, endpoint, &request_facts);
 
     match submitted {
         Ok(submitted) => response_from_submitted(submitted, close),
@@ -131,33 +131,30 @@ fn visit_request_facts<E>(
     Ok(())
 }
 
+fn request_facts(request_id: Identity, actor: Identity, request: &HttpRequest) -> Vec<RequestFact> {
+    let mut facts = Vec::new();
+    visit_request_facts(request_id, actor, request, |fact| {
+        facts.push(fact);
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap();
+    facts
+}
+
 fn cleanup_request_facts(host: &InProcessWebHost, endpoint: Identity, facts: &[RequestFact]) {
-    for fact in facts.iter().rev() {
-        let _ = host
-            .driver
-            .retract_transient_tuple_named(endpoint, fact.relation, &fact.tuple);
-    }
+    let transient_tuples = facts
+        .iter()
+        .rev()
+        .map(|fact| (fact.relation, fact.tuple.clone()))
+        .collect();
+    let _ = host
+        .driver
+        .retract_transient_tuples_named(endpoint, transient_tuples);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::Infallible;
-
-    fn request_facts(
-        request_id: Identity,
-        actor: Identity,
-        request: &HttpRequest,
-    ) -> Vec<RequestFact> {
-        let mut facts = Vec::new();
-        visit_request_facts(request_id, actor, request, |fact| {
-            facts.push(fact);
-            Ok::<_, Infallible>(())
-        })
-        .unwrap();
-        facts
-    }
-
     #[test]
     fn request_facts_include_core_request_neighbourhood() {
         let request_id = Identity::new(0x00eb_0000_0000_0001).unwrap();

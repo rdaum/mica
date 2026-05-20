@@ -423,6 +423,17 @@ impl TaskManager {
             .map_err(TaskManagerError::from)
     }
 
+    pub fn assert_transient_many(
+        &mut self,
+        scope: Identity,
+        tuples: Vec<(RelationMetadata, Tuple)>,
+    ) -> Result<usize, TaskManagerError> {
+        self.transient
+            .assert_many(scope, tuples)
+            .map_err(TaskError::from)
+            .map_err(TaskManagerError::from)
+    }
+
     pub fn retract_transient(
         &mut self,
         scope: Identity,
@@ -430,6 +441,14 @@ impl TaskManager {
         tuple: &Tuple,
     ) -> Result<bool, TaskManagerError> {
         Ok(self.transient.retract(scope, relation, tuple))
+    }
+
+    pub fn retract_transient_many(
+        &mut self,
+        scope: Identity,
+        tuples: Vec<(RelationId, Tuple)>,
+    ) -> usize {
+        self.transient.retract_many(scope, tuples)
     }
 
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
@@ -878,6 +897,19 @@ impl SharedTaskManager {
             .map_err(TaskManagerError::from)
     }
 
+    pub fn assert_transient_many(
+        &self,
+        scope: Identity,
+        tuples: Vec<(RelationMetadata, Tuple)>,
+    ) -> Result<usize, TaskManagerError> {
+        self.transient
+            .write()
+            .unwrap()
+            .assert_many(scope, tuples)
+            .map_err(TaskError::from)
+            .map_err(TaskManagerError::from)
+    }
+
     pub fn retract_transient(
         &self,
         scope: Identity,
@@ -889,6 +921,14 @@ impl SharedTaskManager {
             .write()
             .unwrap()
             .retract(scope, relation, tuple))
+    }
+
+    pub fn retract_transient_many(
+        &self,
+        scope: Identity,
+        tuples: Vec<(RelationId, Tuple)>,
+    ) -> usize {
+        self.transient.write().unwrap().retract_many(scope, tuples)
     }
 
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {

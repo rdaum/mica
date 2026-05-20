@@ -69,3 +69,49 @@ The core route is effectively flat across the async driver refactor in this
 local run: sequential latency is slightly higher after the refactor, while the
 loaded average is slightly lower. The router demo is a current-only measurement
 because `examples/relational-router.mica` did not exist at the before ref.
+
+## Batched Transient Request Facts
+
+Profiling the current HTTP path with `perf record` showed request fact
+assertion and cleanup spending substantial time taking the shared transient
+store write lock once per fact. The follow-up change batches request fact
+assertion and retraction so each request takes one write lock to install facts
+and one write lock to clean them up.
+
+Comparison shape:
+
+| Field | Value |
+| --- | --- |
+| Before ref | `99af284` |
+| After state | working tree with batched transient request facts |
+| Profile | `release` |
+| Sequential run | 50 requests, concurrency 1 |
+| Loaded run | 200 requests, concurrency 20 |
+| Route | `http-core.mica` `/hello` |
+
+| Case | Average | Min | Max |
+| --- | ---: | ---: | ---: |
+| Before sequential | 1.100 ms | 0.893 ms | 1.596 ms |
+| After sequential | 1.081 ms | 0.878 ms | 1.558 ms |
+| Before loaded | 11.087 ms | 1.349 ms | 16.176 ms |
+| After loaded | 6.259 ms | 1.510 ms | 14.884 ms |
+
+The loaded average improved by roughly 44% in this run. A post-change profile
+still shows transient index insert/remove work as the dominant Mica-side cost,
+especially cleanup, but futex/write-lock overhead is much lower than in the
+pre-batching profile.
+
+Because batching makes each write-lock hold larger while reducing the number of
+lock handoffs, a follow-up sweep checked the same route under increasing
+concurrency:
+
+| Concurrency | Requests | Before average | After average |
+| ---: | ---: | ---: | ---: |
+| 1 | 500 | 1.233 ms | 1.258 ms |
+| 10 | 500 | 4.203 ms | 3.145 ms |
+| 20 | 500 | 11.118 ms | 7.382 ms |
+| 50 | 500 | 33.765 ms | 26.807 ms |
+| 100 | 500 | 65.737 ms | 46.359 ms |
+
+The sequential case is effectively flat; the concurrent cases improve because
+the shared transient-store lock is acquired fewer times per HTTP request.
