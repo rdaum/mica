@@ -96,10 +96,13 @@ struct SessionOutputRecv<'a> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ChatPostAction {
-    room: u64,
-    actor: String,
-    text: String,
+struct SyncDomEvent {
+    session_id: u64,
+    view_id: u64,
+    event: String,
+    target: String,
+    action: String,
+    fields: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -479,15 +482,18 @@ async fn route_plain_datagram(
     endpoint: Identity,
     datagram: Bytes,
 ) -> Result<(), String> {
-    if let Some(action) = decode_chat_post_action(&datagram)? {
+    if let Some(event) = decode_sync_dom_event(&datagram)? {
         host.driver
             .submit_invocation_for_endpoint(
                 endpoint,
-                Symbol::intern("chat_post"),
+                Symbol::intern("sync_event"),
                 vec![
-                    (Symbol::intern("room"), sync_u64_value(action.room)),
-                    (Symbol::intern("actor"), Value::string(action.actor)),
-                    (Symbol::intern("text"), Value::string(action.text)),
+                    (Symbol::intern("session"), sync_u64_value(event.session_id)),
+                    (Symbol::intern("view"), sync_u64_value(event.view_id)),
+                    (Symbol::intern("event"), Value::string(event.event)),
+                    (Symbol::intern("target"), Value::string(event.target)),
+                    (Symbol::intern("action"), Value::string(event.action)),
+                    (Symbol::intern("fields"), sync_event_fields(event.fields)),
                 ],
             )
             .await
@@ -527,32 +533,68 @@ async fn refresh_active_sync_views(host: &InProcessWebTransportHost) -> Result<(
     Ok(())
 }
 
-fn decode_chat_post_action(datagram: &[u8]) -> Result<Option<ChatPostAction>, String> {
+fn decode_sync_dom_event(datagram: &[u8]) -> Result<Option<SyncDomEvent>, String> {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(datagram) else {
         return Ok(None);
     };
     let Some(object) = value.as_object() else {
         return Ok(None);
     };
-    if object.get("type").and_then(|value| value.as_str()) != Some("chat_post") {
+    if object.get("type").and_then(|value| value.as_str()) != Some("sync_event") {
         return Ok(None);
     }
 
-    let room = object
-        .get("room")
+    let session_id = object
+        .get("session")
         .and_then(|value| value.as_u64())
-        .ok_or_else(|| "chat_post action requires numeric room".to_owned())?;
-    let actor = object
-        .get("actor")
+        .ok_or_else(|| "sync_event requires numeric session".to_owned())?;
+    let view_id = object
+        .get("view")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| "sync_event requires numeric view".to_owned())?;
+    let event = object
+        .get("event")
         .and_then(|value| value.as_str())
-        .unwrap_or("alice")
+        .ok_or_else(|| "sync_event requires event".to_owned())?
         .to_owned();
-    let text = object
-        .get("text")
+    let target = object
+        .get("target")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| "chat_post action requires text".to_owned())?
+        .ok_or_else(|| "sync_event requires target".to_owned())?
         .to_owned();
-    Ok(Some(ChatPostAction { room, actor, text }))
+    let action = object
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let field_object = object
+        .get("fields")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "sync_event requires fields object".to_owned())?;
+    let mut fields = Vec::with_capacity(field_object.len());
+    for (key, value) in field_object {
+        let field = value
+            .as_str()
+            .ok_or_else(|| format!("sync_event field {key} must be a string"))?;
+        fields.push((key.clone(), field.to_owned()));
+    }
+
+    Ok(Some(SyncDomEvent {
+        session_id,
+        view_id,
+        event,
+        target,
+        action,
+        fields,
+    }))
+}
+
+fn sync_event_fields(fields: Vec<(String, String)>) -> Value {
+    Value::map(
+        fields
+            .into_iter()
+            .map(|(key, value)| (Value::symbol(Symbol::intern(&key)), Value::string(value))),
+    )
 }
 
 async fn route_sync_envelope(
@@ -756,31 +798,34 @@ mod tests {
     }
 
     #[test]
-    fn decodes_chat_post_actions() {
+    fn decodes_sync_dom_events() {
         assert_eq!(
-            decode_chat_post_action(
-                br#"{"type":"chat_post","room":1,"actor":"bob","text":"hello"}"#
-            )
-            .unwrap(),
-            Some(ChatPostAction {
-                room: 1,
-                actor: "bob".to_owned(),
-                text: "hello".to_owned(),
+            decode_sync_dom_event(
+                br#"{"type":"sync_event","session":7,"view":11,"event":"submit","target":"chat-composer","action":"chat_post","fields":{"actor":"bob","text":"hello"}}"#
+            ).unwrap(),
+            Some(SyncDomEvent {
+                session_id: 7,
+                view_id: 11,
+                event: "submit".to_owned(),
+                target: "chat-composer".to_owned(),
+                action: "chat_post".to_owned(),
+                fields: vec![
+                    ("actor".to_owned(), "bob".to_owned()),
+                    ("text".to_owned(), "hello".to_owned()),
+                ],
             })
         );
         assert_eq!(
-            decode_chat_post_action(br#"{"type":"chat_post","room":1,"text":"hello"}"#).unwrap(),
-            Some(ChatPostAction {
-                room: 1,
-                actor: "alice".to_owned(),
-                text: "hello".to_owned(),
-            })
-        );
-        assert_eq!(
-            decode_chat_post_action(br#"{"type":"other","room":1,"text":"hello"}"#).unwrap(),
+            decode_sync_dom_event(br#"{"type":"other","fields":{}}"#).unwrap(),
             None
         );
-        assert!(decode_chat_post_action(br#"{"type":"chat_post"}"#).is_err());
+        assert!(decode_sync_dom_event(br#"{"type":"sync_event"}"#).is_err());
+        assert!(
+            decode_sync_dom_event(
+                br#"{"type":"sync_event","session":7,"view":11,"event":"submit","target":"chat-composer","fields":{"text":2}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -891,10 +936,7 @@ mod tests {
             let server_addr = endpoint.local_addr().unwrap();
             let server_endpoint = endpoint.clone();
 
-            let mut runner = SourceRunner::new_empty();
-            runner
-                .run_filein(include_str!("../../../examples/sync-view-provider.mica"))
-                .unwrap();
+            let runner = sync_chat_runner();
             let principal = runner.named_identity(Symbol::intern("web")).unwrap();
             let driver = CompioTaskDriver::spawn(runner).unwrap();
             let host = InProcessWebTransportHost::new(driver.clone());
@@ -941,13 +983,96 @@ mod tests {
             assert_eq!(envelope.client_revision, 13);
             assert_eq!(envelope.client_signature, 17);
             assert_eq!(envelope.server_revision, 1);
+            assert_eq!(envelope.server_signature, 1 + envelope.payload.len() as u64);
+            let payload: serde_json::Value = serde_json::from_slice(&envelope.payload).unwrap();
+            assert_eq!(payload["view"], 11);
+            assert_eq!(payload["revision"], 1);
+            assert_eq!(payload["root"]["tag"], "main");
+            assert_eq!(payload["root"]["attrs"]["id"], "chat-root");
             assert_eq!(
-                envelope.server_signature,
-                1 + envelope.payload.len() as u64
+                payload["root"]["children"][0]["children"][0]["children"][0]["children"][0]["text"],
+                "alice"
+            );
+            assert_eq!(payload["root"]["children"][1]["tag"], "form");
+            assert_eq!(
+                payload["root"]["children"][1]["attrs"]["data-sync-action"],
+                "chat_post"
+            );
+        });
+    }
+
+    #[test]
+    fn webtransport_sync_event_pushes_chat_delta() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let tls = test_tls_config();
+            let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
+                .await
+                .unwrap();
+            let server_addr = endpoint.local_addr().unwrap();
+            let server_endpoint = endpoint.clone();
+
+            let runner = sync_chat_runner();
+            let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebTransportHost::new(driver.clone());
+            let binding = SessionBinding {
+                principal,
+                actor: None,
+            };
+            compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(1))).detach();
+
+            let have_view = SyncEnvelope {
+                kind: SyncMessageKind::HaveView,
+                session_id: 7,
+                view_id: 11,
+                client_revision: 1,
+                client_signature: 0,
+                server_revision: 1,
+                server_signature: 0,
+                payload: b"have".to_vec(),
+            };
+            let messages = vec![
+                (encoded_sync_envelope(have_view.as_ref()), false),
+                (
+                    br#"{"type":"sync_event","session":7,"view":11,"event":"submit","target":"chat-composer","action":"chat_post","fields":{"actor":"bob","text":"hello from sync event"}}"#
+                        .to_vec(),
+                    true,
+                ),
+            ];
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (send_tx, send_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let client =
+                spawn_wtransport_sequence_client(server_addr, messages, connected_tx, send_rx, result_tx);
+
+            wait_for_client_connected(&connected_rx).await;
+            send_tx.send(()).unwrap();
+            let received = wait_for_client_sequence_result(&result_rx).await.unwrap();
+
+            server_endpoint.close(0u32.into(), b"test complete");
+            client.join().unwrap();
+            assert_eq!(received.len(), 1);
+            let delta = decode_sync_envelope(&received[0]).unwrap();
+            assert_eq!(delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(delta.session_id, 7);
+            assert_eq!(delta.view_id, 11);
+            assert_eq!(delta.client_revision, 1);
+            assert_eq!(delta.server_revision, 2);
+            assert_eq!(delta.server_signature, 2 + delta.payload.len() as u64);
+            let payload: serde_json::Value = serde_json::from_slice(&delta.payload).unwrap();
+            assert_eq!(payload["type"], "dom_patch");
+            assert_eq!(payload["view"], 11);
+            assert_eq!(payload["revision"], 2);
+            assert_eq!(payload["patches"][0]["op"], "append_child");
+            assert_eq!(payload["patches"][0]["path"], serde_json::json!([0]));
+            assert_eq!(payload["patches"][0]["node"]["tag"], "li");
+            assert_eq!(
+                payload["patches"][0]["node"]["children"][0]["children"][0]["text"],
+                "bob"
             );
             assert_eq!(
-                std::str::from_utf8(&envelope.payload).unwrap(),
-                "{\"view\":11,\"revision\":1,\"root\":{\"id\":\"chat-root\",\"tag\":\"main\",\"children\":[{\"tag\":\"ul\",\"id\":\"messages\",\"children\":[{\"tag\":\"li\",\"children\":[{\"tag\":\"span\",\"class\":\"author\",\"children\":[{\"text\":\"alice\"}]},{\"text\":\": \"},{\"text\":\"hello\"}]}]},{\"tag\":\"section\",\"id\":\"composer\",\"children\":[{\"text\":\"composer\"}]}]}}"
+                payload["patches"][0]["node"]["children"][2]["text"],
+                "hello from sync event"
             );
         });
     }
@@ -959,6 +1084,23 @@ mod tests {
             cert_chain: vec![cert.der().clone()],
             key_der: signing_key.serialize_der().try_into().unwrap(),
         }
+    }
+
+    fn sync_chat_runner() -> SourceRunner {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../examples/sync-host.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/chat-sync.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/sync-dom.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../examples/chat-http.mica"))
+            .unwrap();
+        runner
     }
 
     fn spawn_wtransport_smoke_client(
@@ -1004,6 +1146,56 @@ mod tests {
         })
     }
 
+    fn spawn_wtransport_sequence_client(
+        server_addr: SocketAddr,
+        messages: Vec<(Vec<u8>, bool)>,
+        connected_tx: mpsc::Sender<()>,
+        send_rx: mpsc::Receiver<()>,
+        result_tx: mpsc::Sender<Result<Vec<Vec<u8>>, String>>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        let config = wtransport::ClientConfig::builder()
+                            .with_bind_default()
+                            .with_no_cert_validation()
+                            .build();
+                        let url = format!("https://127.0.0.1:{}/view", server_addr.port());
+                        let connection = wtransport::Endpoint::client(config)
+                            .map_err(|error| error.to_string())?
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        connected_tx.send(()).map_err(|error| error.to_string())?;
+                        send_rx.recv().map_err(|error| error.to_string())?;
+                        let mut received = Vec::new();
+                        for (message, expect_response) in messages {
+                            connection
+                                .send_datagram(message)
+                                .map_err(|error| error.to_string())?;
+                            if !expect_response {
+                                continue;
+                            }
+                            let datagram = tokio::time::timeout(
+                                Duration::from_secs(3),
+                                connection.receive_datagram(),
+                            )
+                            .await
+                            .map_err(|_| "timed out waiting for WebTransport datagram".to_owned())?
+                            .map_err(|error| error.to_string())?;
+                            received.push(datagram.payload().to_vec());
+                        }
+                        Ok(received)
+                    })
+                });
+            let _ = result_tx.send(result);
+        })
+    }
+
     async fn wait_for_client_connected(receiver: &mpsc::Receiver<()>) {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -1023,6 +1215,26 @@ mod tests {
     async fn wait_for_client_result(
         receiver: &mpsc::Receiver<Result<Vec<u8>, String>>,
     ) -> Result<Vec<u8>, String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match receiver.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Err("timed out waiting for client result".to_owned());
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("client result channel disconnected".to_owned());
+                }
+            }
+        }
+    }
+
+    async fn wait_for_client_sequence_result(
+        receiver: &mpsc::Receiver<Result<Vec<Vec<u8>>, String>>,
+    ) -> Result<Vec<Vec<u8>>, String> {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match receiver.try_recv() {

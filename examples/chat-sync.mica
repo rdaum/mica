@@ -1,0 +1,103 @@
+// Chat domain state and server-side DOM sync view.
+
+make_relation(:ChatRoom, 1)
+make_relation(:ChatMessage, 2)
+make_relation(:MessageSeq, 2)
+make_relation(:MessageAuthor, 2)
+make_relation(:MessageText, 2)
+make_relation(:ChatView, 2)
+
+make_identity(:msg_1)
+make_identity(:chat_message)
+
+assert CanRead(#web, :ChatRoom)
+assert CanRead(#web, :ChatMessage)
+assert CanRead(#web, :MessageSeq)
+assert CanRead(#web, :MessageAuthor)
+assert CanRead(#web, :MessageText)
+assert CanRead(#web, :ChatView)
+assert CanWrite(#web, :ChatMessage)
+assert CanWrite(#web, :MessageSeq)
+assert CanWrite(#web, :MessageAuthor)
+assert CanWrite(#web, :MessageText)
+assert CanInvoke(#web, :sync_view_revision)
+assert CanInvoke(#web, :sync_view_tree)
+assert CanInvoke(#web, :chat_message_node)
+assert CanInvoke(#web, :chat_composer_node)
+assert CanInvoke(#web, :chat_room_revision)
+assert CanInvoke(#web, :chat_post)
+assert CanInvoke(#web, :sync_event)
+
+assert ChatRoom(1)
+assert ChatView(11, 1)
+assert ChatMessage(1, #msg_1)
+assert MessageSeq(#msg_1, 1)
+assert MessageAuthor(#msg_1, "alice")
+assert MessageText(#msg_1, "hello")
+
+verb chat_room_revision(room)
+  let revision = 0
+  for found in ChatMessage(room, ?message)
+    let seq = one MessageSeq(found[:message], ?seq)
+    if seq > revision
+      revision = seq
+    end
+  end
+
+  return revision
+end
+
+verb chat_message_node(message)
+  let author = one MessageAuthor(message, ?author)
+  let text = one MessageText(message, ?text)
+  let author_node = dom_element("span", {:class -> "author"}, [dom_text(author)])
+  return dom_element("li", {}, [author_node, dom_text(": "), dom_text(text)])
+end
+
+verb chat_composer_node()
+  return from_xml("<form id='chat-composer' data-sync-event='submit' data-sync-action='chat_post'><input id='actor' name='actor' autocomplete='name' value='browser' aria-label='Actor'/><input id='message' name='text' autocomplete='off' placeholder='Message' aria-label='Message'/><button id='send' type='submit'>Send</button></form>")
+end
+
+verb chat_post(endpoint, room, actor, text)
+  if string_len(text) == 0
+    return false
+  end
+
+  let seq = chat_room_revision(room) + 1
+  let message = #chat_message<[room, seq]>
+
+  assert ChatMessage(room, message)
+  assert MessageSeq(message, seq)
+  assert MessageAuthor(message, actor)
+  assert MessageText(message, text)
+
+  return true
+end
+
+verb sync_event(endpoint, session, view, event, target, action, fields)
+  if event == "submit" && target == "chat-composer" && action == "chat_post"
+    let room = one ChatView(view, ?room)
+    return chat_post(endpoint, room, fields[:actor], fields[:text])
+  end
+
+  return false
+end
+
+verb sync_view_revision(view)
+  let room = one ChatView(view, ?room)
+  return chat_room_revision(room)
+end
+
+verb sync_view_tree(view, revision)
+  let room = one ChatView(view, ?room)
+  let messages = []
+  for found in ChatMessage(room, ?message)
+    let seq = one MessageSeq(found[:message], ?seq)
+    if seq <= revision
+      messages = [@messages, chat_message_node(found[:message])]
+    end
+  end
+
+  let message_list = dom_element("ul", {:id -> "messages"}, messages)
+  return dom_element("main", {:id -> "chat-root"}, [message_list, chat_composer_node()])
+end

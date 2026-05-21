@@ -38,7 +38,8 @@ pub(crate) async fn handle_in_process_request(
     request: &HttpRequest,
     close: bool,
 ) -> HttpResponse {
-    if request.method == "GET" && request.path == "/healthz" {
+    if request.method == "GET" && (request.path == "/healthz" || request.path == "/sync-client.js")
+    {
         return route_request(request, close);
     }
     let request_id = match host.allocate_request() {

@@ -11,3 +11,5 @@ mica-compiler.workspace = true
 mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
 mica-var.workspace = true
 mica-vm.workspace = true
+serde_json.workspace = true
+xml.workspace = true

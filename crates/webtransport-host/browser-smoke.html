@@ -115,11 +115,11 @@
     </label>
     <label>
       Revision
-      <input id="revision" type="number" min="0" value="13">
+      <input id="revision" type="number" min="0" value="0">
     </label>
     <label>
       Signature
-      <input id="signature" type="number" min="0" value="17">
+      <input id="signature" type="number" min="0" value="0">
     </label>
     <button id="connect" type="button">Connect</button>
     <button id="need" type="button" disabled>Need View</button>
@@ -299,12 +299,18 @@
   }
 
   async function sendChatPost() {
-    await client.postChat({
-      room: numberField("room"),
-      actor: field("actor").value,
-      text: field("chatText").value,
+    await client.sendDomEvent({
+      session: numberField("session"),
+      view: numberField("view"),
+      event: "submit",
+      target: "chat-composer",
+      action: "chat_post",
+      fields: {
+        actor: field("actor").value,
+        text: field("chatText").value,
+      },
     });
-    log("sent chat_post");
+    log("sent sync_event");
   }
 
   connectButton.addEventListener("click", connect);

@@ -21,6 +21,12 @@ use mica_var::{Symbol, Value};
 pub(crate) fn route_request(request: &HttpRequest, close: bool) -> HttpResponse {
     let response = match request.method.as_str() {
         "GET" if request.path == "/healthz" => HttpResponse::text(200, "OK", "ok\n"),
+        "GET" if request.path == "/sync-client.js" => HttpResponse::new(
+            200,
+            "OK",
+            include_bytes!("../../webtransport-host/sync-client.js").to_vec(),
+        )
+        .with_header("content-type", b"text/javascript; charset=utf-8".as_slice()),
         "GET" if request.path == "/" => HttpResponse::html(
             200,
             "OK",
@@ -254,6 +260,36 @@ mod tests {
                 .find(|header| header.name.eq_ignore_ascii_case("connection"))
                 .map(|header| header.value.as_slice()),
             Some(b"keep-alive".as_slice())
+        );
+    }
+
+    #[test]
+    fn routes_sync_client_module() {
+        let response = route_request(
+            &HttpRequest {
+                method: "GET".to_owned(),
+                path: "/sync-client.js".to_owned(),
+                version: 1,
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+            false,
+        );
+
+        assert_eq!(response.status, 200);
+        assert!(
+            response
+                .body
+                .windows(b"MicaWebTransportSyncClient".len())
+                .any(|window| window == b"MicaWebTransportSyncClient")
+        );
+        assert_eq!(
+            response
+                .headers
+                .iter()
+                .find(|header| header.name.eq_ignore_ascii_case("content-type"))
+                .map(|header| header.value.as_slice()),
+            Some(b"text/javascript; charset=utf-8".as_slice())
         );
     }
 

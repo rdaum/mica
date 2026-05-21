@@ -1,0 +1,46 @@
+// HTTP document route for the chat sync example.
+
+assert CanInvoke(#web, :http_request)
+assert CanInvoke(#web, :chat_document)
+assert CanInvoke(#web, :chat_mount_node)
+assert CanInvoke(#web, :chat_style)
+assert CanInvoke(#web, :chat_bootstrap_script)
+
+verb http_request(request)
+  let http_method = one RequestMethod(request, ?m)
+  let path = one RequestPath(request, ?path)
+
+  if http_method == "GET" && (path == "/" || path == "/chat" || string_starts_with(path, "/chat?"))
+    return http_html(200, chat_document(11))
+  end
+
+  return http_text(404, "not found")
+end
+
+verb chat_document(view)
+  let snapshot = sync_snapshot(view)
+  let payload = sync_snapshot_payload(view)
+  let signature = sync_snapshot_signature(view, payload)
+  let root = sync_snapshot_tree(view)
+  let mount = chat_mount_node(view, snapshot[:revision], signature, root)
+  let status = dom_element("div", {:id -> "status", :class -> "status"}, [dom_text("Synced revision "), dom_text(to_literal(snapshot[:revision]))])
+  let header = dom_element("header", {}, [dom_element("h1", {}, [dom_text("Mica Chat")]), status])
+  let shell = dom_element("main", {:id -> "shell"}, [header, mount])
+  let head = dom_element("head", {}, [dom_element("meta", {:charset -> "utf-8"}, []), dom_element("title", {}, [dom_text("Mica Chat")]), dom_element("style", {}, [dom_raw(chat_style())])])
+  let body = dom_element("body", {}, [shell, dom_element("script", {:type -> "module"}, [dom_raw(chat_bootstrap_script())])])
+  let document = [dom_raw("<!doctype html>"), dom_element("html", {}, [head, body])]
+  return to_xml(document)
+end
+
+verb chat_mount_node(view, revision, signature, root)
+  let attrs = {:id -> "mount", "data-view" -> view, "data-revision" -> revision, "data-signature" -> signature, "data-webtransport-url" -> "https://127.0.0.1:4433/view"}
+  return dom_element("div", attrs, [root])
+end
+
+verb chat_style()
+  return "#shell{display:grid;grid-template-rows:auto 1fr;min-height:100dvh;max-width:760px;margin:0 auto;padding:18px;gap:14px;box-sizing:border-box}body{margin:0;background:#1f1e26;color:#fff;font-family:system-ui,sans-serif}#shell>header{display:flex;gap:12px;align-items:center;justify-content:space-between}#shell h1{margin:0;font-size:22px;font-weight:650}.status{font-size:13px;color:#bbb}#mount{min-height:0;overflow:auto;border:1px solid #55515f;border-radius:8px;background:#26242d}#chat-root{display:grid;grid-template-rows:1fr auto;min-height:100%}#messages{margin:0;padding:14px;list-style:none}#messages li{display:block;width:fit-content;max-width:min(92%,560px);margin:0 0 8px;padding:8px 10px;border-radius:8px;background:#302e38;overflow-wrap:anywhere}.author{font-weight:700}#chat-composer{display:grid;grid-template-columns:minmax(120px,180px) 1fr auto;gap:10px;padding:14px}#chat-composer input,#chat-composer button{min-width:0;min-height:42px;box-sizing:border-box;border:1px solid #625e6d;border-radius:8px;padding:9px 11px;font:inherit;background:#1f1e26;color:#fff}#chat-composer button{padding-inline:18px;background:#2b2933}@media(max-width:640px){#shell{padding:12px}#chat-composer{grid-template-columns:1fr}#shell>header{display:grid}}"
+end
+
+verb chat_bootstrap_script()
+  return "import{bootstrapServerRenderedSync}from'/sync-client.js';window.micaChat=bootstrapServerRenderedSync(document.getElementById('mount'),document.getElementById('status'));"
+end

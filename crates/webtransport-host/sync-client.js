@@ -26,6 +26,18 @@ const SUPPORTED_TAGS = new Set([
   "span",
   "ul",
 ]);
+const SUPPORTED_ATTRIBUTES = new Set([
+  "aria-label",
+  "autocomplete",
+  "data-sync-action",
+  "data-sync-event",
+  "class",
+  "id",
+  "name",
+  "placeholder",
+  "type",
+  "value",
+]);
 
 function writeU64(view, offset, value) {
   view.setBigUint64(offset, BigInt(value), true);
@@ -118,7 +130,8 @@ export function validateDeltaEnvelope(envelope) {
   return {
     payload,
     valid:
-      payload.type === "append_message" &&
+      payload.type === "dom_patch" &&
+      Array.isArray(payload.patches) &&
       String(payload.view) === envelope.view &&
       String(payload.revision) === envelope.serverRevision &&
       expectedSignature.toString() === envelope.serverSignature,
@@ -126,18 +139,83 @@ export function validateDeltaEnvelope(envelope) {
 }
 
 export function applySnapshot(mount, payload) {
-  mount.replaceChildren(renderNode(payload.root));
+  reconcileChildren(mount, [payload.root]);
 }
 
 export function applyDelta(mount, payload) {
-  if (payload.type !== "append_message") {
+  if (payload.type !== "dom_patch") {
     throw new Error(`unsupported delta type: ${payload.type}`);
   }
-  const messages = mount.querySelector("#messages");
-  if (messages === null) {
-    throw new Error("snapshot delta requires #messages mount");
+  for (const patch of payload.patches) {
+    applyPatch(mount, patch);
   }
-  messages.append(renderNode(payload.message));
+}
+
+function applyPatch(mount, patch) {
+  const target = nodeAtPath(mount, patch.path);
+  if (patch.op === "replace") {
+    const replacement = renderNode(patch.node);
+    if (target === mount) {
+      mount.replaceChildren(replacement);
+    } else {
+      target.replaceWith(replacement);
+    }
+    return;
+  }
+  if (patch.op === "set_text") {
+    if (target.nodeType !== Node.TEXT_NODE) {
+      throw new Error("set_text patch target is not a text node");
+    }
+    target.nodeValue = String(patch.text);
+    return;
+  }
+  if (patch.op === "set_attr") {
+    if (target.nodeType !== Node.ELEMENT_NODE) {
+      throw new Error("set_attr patch target is not an element");
+    }
+    applySingleAttribute(target, String(patch.name), patch.value);
+    return;
+  }
+  if (patch.op === "remove_attr") {
+    if (target.nodeType !== Node.ELEMENT_NODE) {
+      throw new Error("remove_attr patch target is not an element");
+    }
+    removeSingleAttribute(target, String(patch.name));
+    return;
+  }
+  if (patch.op === "append_child") {
+    if (target.nodeType !== Node.ELEMENT_NODE) {
+      throw new Error("append_child patch target is not an element");
+    }
+    target.append(renderNode(patch.node));
+    return;
+  }
+  if (patch.op === "remove_child") {
+    if (target === mount) {
+      throw new Error("cannot remove DOM mount");
+    }
+    target.remove();
+    return;
+  }
+  throw new Error(`unsupported DOM patch op: ${patch.op}`);
+}
+
+function nodeAtPath(mount, path) {
+  if (!Array.isArray(path)) {
+    throw new Error("DOM patch path must be an array");
+  }
+  let node = mount.firstChild;
+  if (node === null) {
+    throw new Error("DOM patch requires a mounted root");
+  }
+  for (const index of path) {
+    const child = node.childNodes[Number(index)];
+    if (child === undefined) {
+      throw new Error(`DOM patch path not found: ${path.join("/")}`);
+    }
+    node = child;
+  }
+  return node;
 }
 
 function renderNode(node) {
@@ -156,10 +234,107 @@ function renderNode(node) {
   if (node.class !== undefined) {
     element.className = String(node.class);
   }
+  applyAttributes(element, node.attrs ?? {});
   for (const child of node.children ?? []) {
     element.append(renderNode(child));
   }
   return element;
+}
+
+function reconcileNode(current, node) {
+  if (Object.hasOwn(node, "text")) {
+    const text = String(node.text);
+    if (current?.nodeType !== Node.TEXT_NODE) {
+      return document.createTextNode(text);
+    }
+    if (current.nodeValue !== text) {
+      current.nodeValue = text;
+    }
+    return current;
+  }
+
+  const tag = String(node.tag);
+  if (!SUPPORTED_TAGS.has(tag)) {
+    throw new Error(`unsupported snapshot tag: ${tag}`);
+  }
+  if (
+    current?.nodeType !== Node.ELEMENT_NODE ||
+    current.localName !== tag
+  ) {
+    return renderNode(node);
+  }
+
+  if (node.id === undefined) {
+    current.removeAttribute("id");
+  } else if (current.id !== String(node.id)) {
+    current.id = String(node.id);
+  }
+
+  if (node.class === undefined) {
+    current.removeAttribute("class");
+  } else if (current.className !== String(node.class)) {
+    current.className = String(node.class);
+  }
+
+  applyAttributes(current, node.attrs ?? {});
+  reconcileChildren(current, node.children ?? []);
+  return current;
+}
+
+function applyAttributes(element, attrs) {
+  const wanted = new Set();
+  for (const [name, value] of Object.entries(attrs)) {
+    validateAttributeName(name);
+    wanted.add(name);
+    applySingleAttribute(element, name, value);
+  }
+
+  for (const name of SUPPORTED_ATTRIBUTES) {
+    if (!wanted.has(name) && element.hasAttribute(name)) {
+      removeSingleAttribute(element, name);
+    }
+  }
+}
+
+function applySingleAttribute(element, name, value) {
+  validateAttributeName(name);
+  const text = String(value);
+  if (element.getAttribute(name) !== text) {
+    element.setAttribute(name, text);
+  }
+  if (name === "value" && "value" in element && element.value !== text) {
+    element.value = text;
+  }
+}
+
+function removeSingleAttribute(element, name) {
+  validateAttributeName(name);
+  element.removeAttribute(name);
+  if (name === "value" && "value" in element) {
+    element.value = "";
+  }
+}
+
+function validateAttributeName(name) {
+  if (!SUPPORTED_ATTRIBUTES.has(name)) {
+    throw new Error(`unsupported snapshot attribute: ${name}`);
+  }
+}
+
+function reconcileChildren(parent, nodes) {
+  for (let index = 0; index < nodes.length; index += 1) {
+    const current = parent.childNodes[index];
+    const next = reconcileNode(current, nodes[index]);
+    if (current === undefined) {
+      parent.append(next);
+    } else if (next !== current) {
+      parent.replaceChild(next, current);
+    }
+  }
+
+  while (parent.childNodes.length > nodes.length) {
+    parent.lastChild.remove();
+  }
 }
 
 export class MicaWebTransportSyncClient {
@@ -215,14 +390,17 @@ export class MicaWebTransportSyncClient {
     });
   }
 
-  async postChat(message) {
+  async sendDomEvent(event) {
     await this.writer.write(
       new TextEncoder().encode(
         JSON.stringify({
-          type: "chat_post",
-          room: Number(message.room),
-          actor: String(message.actor),
-          text: String(message.text),
+          type: "sync_event",
+          session: Number(event.session),
+          view: Number(event.view),
+          event: String(event.event),
+          target: String(event.target ?? ""),
+          action: String(event.action ?? ""),
+          fields: event.fields ?? {},
         }),
       ),
     );
@@ -242,4 +420,127 @@ export class MicaWebTransportSyncClient {
   close() {
     this.transport?.close();
   }
+}
+
+export function bootstrapServerRenderedSync(mount, status) {
+  const params = new URLSearchParams(location.search);
+  const state = {
+    url: params.get("url") ?? mount.dataset.webtransportUrl,
+    certificateHash: params.get("certHash") ?? "",
+    session: BigInt(params.get("session") ?? String(Date.now() % 1000000)),
+    view: BigInt(mount.dataset.view),
+    revision: BigInt(mount.dataset.revision),
+    signature: BigInt(mount.dataset.signature),
+  };
+  let connected = false;
+  let client;
+  const api = { client: null, state };
+
+  function setStatus(text) {
+    status.textContent = text;
+  }
+
+  function viewState(payload) {
+    return {
+      session: state.session,
+      view: state.view,
+      clientRevision: state.revision,
+      clientSignature: state.signature,
+      payload,
+    };
+  }
+
+  function accept(envelope) {
+    state.revision = BigInt(envelope.serverRevision);
+    state.signature = BigInt(envelope.serverSignature);
+    setStatus(`Synced revision ${envelope.serverRevision}`);
+    client.haveView(viewState("have")).catch((error) => setStatus(String(error)));
+  }
+
+  function handle(envelope) {
+    if (envelope.kind === "ViewSnapshot") {
+      const snapshot = validateSnapshotEnvelope(envelope);
+      if (!snapshot.valid) {
+        setStatus("Snapshot rejected");
+        return;
+      }
+      applySnapshot(mount, snapshot.payload);
+      accept(envelope);
+      return;
+    }
+    if (envelope.kind === "ViewDelta") {
+      const delta = validateDeltaEnvelope(envelope);
+      try {
+        if (!delta.valid) {
+          throw new Error("Delta rejected");
+        }
+        applyDelta(mount, delta.payload);
+        accept(envelope);
+      } catch (error) {
+        setStatus("Recovering");
+        state.revision = 0n;
+        state.signature = 0n;
+        client
+          .needView(viewState("recover"))
+          .catch((requestError) => setStatus(String(requestError)));
+      }
+    }
+  }
+
+  async function connect() {
+    client = new MicaWebTransportSyncClient({
+      url: state.url,
+      certificateHash: state.certificateHash,
+      onEnvelope: handle,
+      onClose: () => {
+        connected = false;
+        setStatus("Disconnected");
+      },
+      onError: (error) => {
+        connected = false;
+        setStatus(String(error));
+      },
+    });
+    api.client = client;
+    await client.connect();
+    connected = true;
+    await client.haveView(viewState("initial"));
+  }
+
+  mount.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!connected) {
+      return;
+    }
+    const form = event.target;
+    if (
+      !(form instanceof HTMLFormElement) ||
+      form.dataset.syncEvent !== "submit"
+    ) {
+      return;
+    }
+    const submit = form.querySelector("button[type='submit']");
+    const fields = Object.fromEntries(new FormData(form).entries());
+    if (String(fields.text ?? "").trim().length === 0) {
+      return;
+    }
+    submit.disabled = true;
+    try {
+      await client.sendDomEvent({
+        session: state.session,
+        view: state.view,
+        event: "submit",
+        target: form.id,
+        action: form.dataset.syncAction ?? "",
+        fields,
+      });
+      form.reset();
+      form.elements.namedItem("actor")?.focus();
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  connect().catch((error) => setStatus(String(error)));
+  return api;
 }

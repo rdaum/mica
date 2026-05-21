@@ -42,9 +42,11 @@ use mica_relation_kernel::{
 };
 use mica_var::{Identity, PRIMITIVE_PROTOTYPES, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use xml::reader::{EventReader, XmlEvent};
 
 const GENERATED_RELATION_ID_START: u64 = 0x00f0_0000_0000_0000;
 const GENERATED_IDENTITY_ID_START: u64 = 0x00e0_0000_0000_0000;
@@ -96,6 +98,14 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "frob_value",
     "is_frob",
     "to_literal",
+    "json_encode",
+    "dom_text",
+    "dom_raw",
+    "dom_element",
+    "dom_html",
+    "to_xml",
+    "from_xml",
+    "dom_diff",
     "string_len",
     "string_chars",
     "string_slice",
@@ -2468,6 +2478,14 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("frob_value", frob_value_builtin)
         .with_builtin("is_frob", is_frob_builtin)
         .with_builtin("to_literal", to_literal_builtin)
+        .with_builtin("json_encode", json_encode_builtin)
+        .with_builtin("dom_text", dom_text_builtin)
+        .with_builtin("dom_raw", dom_raw_builtin)
+        .with_builtin("dom_element", dom_element_builtin)
+        .with_builtin("dom_html", dom_html_builtin)
+        .with_builtin("to_xml", to_xml_builtin)
+        .with_builtin("from_xml", from_xml_builtin)
+        .with_builtin("dom_diff", dom_diff_builtin)
         .with_builtin("string_len", string_len_builtin)
         .with_builtin("string_chars", string_chars_builtin)
         .with_builtin("string_slice", string_slice_builtin)
@@ -2619,6 +2637,611 @@ fn to_literal_builtin(
         &identity_names,
         &relation_names,
     )))
+}
+
+fn json_encode_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "json_encode",
+            "expected json_encode(value)",
+        ));
+    }
+    let json = json_value(&args[0])?;
+    serde_json::to_string(&json)
+        .map(Value::string)
+        .map_err(|error| invalid_builtin_call("json_encode", error.to_string()))
+}
+
+fn dom_text_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("dom_text", "expected dom_text(text)"));
+    }
+    let text = builtin_string_arg("dom_text", args, 0)?;
+    Ok(dom_text_value(text))
+}
+
+fn dom_raw_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("dom_raw", "expected dom_raw(text)"));
+    }
+    let text = builtin_string_arg("dom_raw", args, 0)?;
+    Ok(dom_raw_value(text))
+}
+
+fn dom_element_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 3 {
+        return Err(invalid_builtin_call(
+            "dom_element",
+            "expected dom_element(tag, attrs, children)",
+        ));
+    }
+    let tag = builtin_string_arg("dom_element", args, 0)?;
+    if args[1].with_map(|_| ()).is_none() {
+        return Err(invalid_builtin_call(
+            "dom_element",
+            "expected attribute map as second argument",
+        ));
+    }
+    if args[2].with_list(|_| ()).is_none() {
+        return Err(invalid_builtin_call(
+            "dom_element",
+            "expected child list as third argument",
+        ));
+    }
+    Ok(dom_element_value(tag, args[1].clone(), args[2].clone()))
+}
+
+fn dom_html_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("dom_html", "expected dom_html(node)"));
+    }
+    let mut out = String::new();
+    render_dom_html(&args[0], &mut out)?;
+    Ok(Value::string(out))
+}
+
+fn to_xml_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("to_xml", "expected to_xml(node)"));
+    }
+    let mut out = String::new();
+    render_dom_xml(&args[0], "to_xml", false, &mut out)?;
+    Ok(Value::string(out))
+}
+
+fn from_xml_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("from_xml", "expected from_xml(text)"));
+    }
+    let xml = builtin_string_arg("from_xml", args, 0)?;
+    parse_dom_xml(&xml)
+}
+
+fn dom_diff_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "dom_diff",
+            "expected dom_diff(before, after)",
+        ));
+    }
+    let mut patches = Vec::new();
+    dom_diff_node(&args[0], &args[1], &mut Vec::new(), &mut patches);
+    Ok(Value::list(patches))
+}
+
+fn json_value(value: &Value) -> Result<serde_json::Value, RuntimeError> {
+    match value.kind() {
+        ValueKind::Nothing => Ok(serde_json::Value::Null),
+        ValueKind::Bool => Ok(serde_json::Value::Bool(value.as_bool().unwrap())),
+        ValueKind::Int => Ok(serde_json::Value::Number(value.as_int().unwrap().into())),
+        ValueKind::Float => {
+            let number =
+                serde_json::Number::from_f64(value.as_float().unwrap()).ok_or_else(|| {
+                    invalid_builtin_call(
+                        "json_encode",
+                        "non-finite float cannot be encoded as JSON",
+                    )
+                })?;
+            Ok(serde_json::Value::Number(number))
+        }
+        ValueKind::String => Ok(serde_json::Value::String(
+            value.with_str(str::to_owned).unwrap(),
+        )),
+        ValueKind::Symbol => Ok(serde_json::Value::String(json_symbol_name(
+            value.as_symbol().unwrap(),
+        )?)),
+        ValueKind::List => {
+            let Some(values) = value
+                .with_list(|values| values.iter().map(json_value).collect::<Result<Vec<_>, _>>())
+            else {
+                unreachable!("list kind should expose list values");
+            };
+            Ok(serde_json::Value::Array(values?))
+        }
+        ValueKind::Map => {
+            let Some(entries) = value.with_map(|entries| {
+                let mut object = serde_json::Map::new();
+                for (key, value) in entries {
+                    object.insert(json_object_key(key)?, json_value(value)?);
+                }
+                Ok::<_, RuntimeError>(object)
+            }) else {
+                unreachable!("map kind should expose map entries");
+            };
+            Ok(serde_json::Value::Object(entries?))
+        }
+        _ => Err(invalid_builtin_call(
+            "json_encode",
+            format!("cannot encode {:?} value as JSON", value.kind()),
+        )),
+    }
+}
+
+fn json_object_key(value: &Value) -> Result<String, RuntimeError> {
+    if let Some(text) = value.with_str(str::to_owned) {
+        return Ok(text);
+    }
+    if let Some(symbol) = value.as_symbol() {
+        return json_symbol_name(symbol);
+    }
+    Err(invalid_builtin_call(
+        "json_encode",
+        "JSON object keys must be strings or symbols",
+    ))
+}
+
+fn json_symbol_name(symbol: Symbol) -> Result<String, RuntimeError> {
+    symbol.name().map(str::to_owned).ok_or_else(|| {
+        invalid_builtin_call(
+            "json_encode",
+            "anonymous symbols cannot be encoded as JSON strings",
+        )
+    })
+}
+
+fn dom_text_value(text: impl AsRef<str>) -> Value {
+    Value::map([(Value::symbol(Symbol::intern("text")), Value::string(text))])
+}
+
+fn dom_raw_value(text: impl AsRef<str>) -> Value {
+    Value::map([(Value::symbol(Symbol::intern("raw")), Value::string(text))])
+}
+
+fn dom_element_value(tag: impl AsRef<str>, attrs: Value, children: Value) -> Value {
+    Value::map([
+        (Value::symbol(Symbol::intern("attrs")), attrs),
+        (Value::symbol(Symbol::intern("children")), children),
+        (Value::symbol(Symbol::intern("tag")), Value::string(tag)),
+    ])
+}
+
+fn render_dom_html(node: &Value, out: &mut String) -> Result<(), RuntimeError> {
+    render_dom_xml(node, "dom_html", true, out)
+}
+
+fn render_dom_xml(
+    node: &Value,
+    builtin: &'static str,
+    restrict_html_surface: bool,
+    out: &mut String,
+) -> Result<(), RuntimeError> {
+    if let Some(result) = node.with_list(|nodes| {
+        for child in nodes {
+            render_dom_xml(child, builtin, restrict_html_surface, out)?;
+        }
+        Ok::<_, RuntimeError>(())
+    }) {
+        result?;
+        return Ok(());
+    }
+    if let Some(text) = dom_text(node) {
+        escape_html_text(&text, out);
+        return Ok(());
+    }
+    if let Some(raw) = dom_raw(node) {
+        out.push_str(&raw);
+        return Ok(());
+    }
+
+    let Some((tag, attrs, children)) = dom_element(node) else {
+        return Err(invalid_builtin_call(
+            builtin,
+            "expected DOM text, element, or node list",
+        ));
+    };
+    if restrict_html_surface {
+        validate_dom_tag(&tag)?;
+    } else {
+        validate_xml_name(builtin, "tag", &tag)?;
+    }
+    out.push('<');
+    out.push_str(&tag);
+    let Some(entries) = attrs.with_map(|entries| {
+        entries
+            .iter()
+            .map(|(key, value)| {
+                Ok::<_, RuntimeError>((dom_attr_name(key)?, dom_attr_value(value)?))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }) else {
+        return Err(invalid_builtin_call(builtin, "element attrs must be a map"));
+    };
+    for (name, value) in entries? {
+        if restrict_html_surface {
+            validate_dom_attr(&name)?;
+        } else {
+            validate_xml_name(builtin, "attribute", &name)?;
+        }
+        out.push(' ');
+        out.push_str(&name);
+        out.push_str("=\"");
+        escape_html_attr(&value, out);
+        out.push('"');
+    }
+    out.push('>');
+    for child in children {
+        render_dom_xml(&child, builtin, restrict_html_surface, out)?;
+    }
+    out.push_str("</");
+    out.push_str(&tag);
+    out.push('>');
+    Ok(())
+}
+
+fn dom_attr_name(value: &Value) -> Result<String, RuntimeError> {
+    if let Some(text) = value.with_str(str::to_owned) {
+        return Ok(text);
+    }
+    if let Some(symbol) = value.as_symbol()
+        && let Some(name) = symbol.name()
+    {
+        return Ok(name.to_owned());
+    }
+    Err(invalid_builtin_call(
+        "dom_html",
+        "attribute names must be strings or named symbols",
+    ))
+}
+
+fn dom_attr_value(value: &Value) -> Result<String, RuntimeError> {
+    if let Some(text) = value.with_str(str::to_owned) {
+        return Ok(text);
+    }
+    if let Some(boolean) = value.as_bool() {
+        return Ok(boolean.to_string());
+    }
+    if let Some(integer) = value.as_int() {
+        return Ok(integer.to_string());
+    }
+    Err(invalid_builtin_call(
+        "dom_html",
+        "attribute values must be strings, booleans, or integers",
+    ))
+}
+
+fn validate_dom_tag(tag: &str) -> Result<(), RuntimeError> {
+    match tag {
+        "button" | "div" | "form" | "input" | "li" | "main" | "p" | "section" | "span" | "ul" => {
+            Ok(())
+        }
+        _ => Err(invalid_builtin_call(
+            "dom_html",
+            format!("unsupported DOM tag: {tag}"),
+        )),
+    }
+}
+
+fn validate_dom_attr(name: &str) -> Result<(), RuntimeError> {
+    match name {
+        "aria-label" | "autocomplete" | "class" | "data-sync-action" | "data-sync-event" | "id"
+        | "name" | "placeholder" | "type" | "value" => Ok(()),
+        _ => Err(invalid_builtin_call(
+            "dom_html",
+            format!("unsupported DOM attribute: {name}"),
+        )),
+    }
+}
+
+fn validate_xml_name(builtin: &'static str, kind: &str, name: &str) -> Result<(), RuntimeError> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err(invalid_builtin_call(
+            builtin,
+            format!("{kind} name cannot be empty"),
+        ));
+    };
+    if !is_xml_name_start(first) || !chars.all(is_xml_name_char) {
+        return Err(invalid_builtin_call(
+            builtin,
+            format!("invalid XML {kind} name: {name}"),
+        ));
+    }
+    Ok(())
+}
+
+fn is_xml_name_start(ch: char) -> bool {
+    ch == '_' || ch == ':' || ch.is_ascii_alphabetic()
+}
+
+fn is_xml_name_char(ch: char) -> bool {
+    is_xml_name_start(ch) || ch == '-' || ch == '.' || ch.is_ascii_digit()
+}
+
+struct DomXmlFrame {
+    tag: String,
+    attrs: Vec<(Value, Value)>,
+    children: Vec<Value>,
+}
+
+fn parse_dom_xml(xml: &str) -> Result<Value, RuntimeError> {
+    let reader = BufReader::new(xml.as_bytes());
+    let parser = EventReader::new(reader);
+    let mut stack: Vec<DomXmlFrame> = Vec::new();
+    let mut roots = Vec::new();
+
+    for event in parser {
+        match event {
+            Ok(XmlEvent::StartElement {
+                name, attributes, ..
+            }) => {
+                let attrs = attributes
+                    .into_iter()
+                    .map(|attr| {
+                        (
+                            Value::string(attr.name.local_name),
+                            Value::string(attr.value),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                stack.push(DomXmlFrame {
+                    tag: name.local_name,
+                    attrs,
+                    children: Vec::new(),
+                });
+            }
+            Ok(XmlEvent::EndElement { .. }) => {
+                let Some(frame) = stack.pop() else {
+                    return Err(invalid_builtin_call(
+                        "from_xml",
+                        "end tag without start tag",
+                    ));
+                };
+                let node = dom_element_value(
+                    frame.tag,
+                    Value::map(frame.attrs),
+                    Value::list(frame.children),
+                );
+                if let Some(parent) = stack.last_mut() {
+                    parent.children.push(node);
+                } else {
+                    roots.push(node);
+                }
+            }
+            Ok(XmlEvent::Characters(text)) | Ok(XmlEvent::CData(text)) => {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let Some(frame) = stack.last_mut() else {
+                    roots.push(dom_text_value(text));
+                    continue;
+                };
+                frame.children.push(dom_text_value(text));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Err(invalid_builtin_call(
+                    "from_xml",
+                    format!("XML parse error: {error}"),
+                ));
+            }
+        }
+    }
+
+    if !stack.is_empty() {
+        return Err(invalid_builtin_call("from_xml", "unclosed XML element"));
+    }
+    match roots.len() {
+        0 => Err(invalid_builtin_call(
+            "from_xml",
+            "XML did not contain a node",
+        )),
+        1 => Ok(roots.pop().unwrap()),
+        _ => Ok(Value::list(roots)),
+    }
+}
+
+fn escape_html_text(value: &str, out: &mut String) {
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+fn escape_html_attr(value: &str, out: &mut String) {
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+fn dom_diff_node(before: &Value, after: &Value, path: &mut Vec<usize>, patches: &mut Vec<Value>) {
+    if before == after {
+        return;
+    }
+    if let (Some(before_text), Some(after_text)) = (dom_text(before), dom_text(after)) {
+        if before_text != after_text {
+            patches.push(dom_patch(
+                "set_text",
+                path,
+                [(
+                    Value::symbol(Symbol::intern("text")),
+                    Value::string(after_text),
+                )],
+            ));
+        }
+        return;
+    }
+
+    let Some((before_tag, before_attrs, before_children)) = dom_element(before) else {
+        patches.push(dom_replace_patch(path, after.clone()));
+        return;
+    };
+    let Some((after_tag, after_attrs, after_children)) = dom_element(after) else {
+        patches.push(dom_replace_patch(path, after.clone()));
+        return;
+    };
+    if before_tag != after_tag {
+        patches.push(dom_replace_patch(path, after.clone()));
+        return;
+    }
+
+    dom_diff_attrs(&before_attrs, &after_attrs, path, patches);
+    dom_diff_children(&before_children, &after_children, path, patches);
+}
+
+fn dom_diff_attrs(before: &Value, after: &Value, path: &[usize], patches: &mut Vec<Value>) {
+    let before_entries = before
+        .with_map(<[(Value, Value)]>::to_vec)
+        .unwrap_or_default();
+    let after_entries = after
+        .with_map(<[(Value, Value)]>::to_vec)
+        .unwrap_or_default();
+
+    for (key, before_value) in &before_entries {
+        match after.map_get(key) {
+            Some(after_value) if after_value == *before_value => {}
+            Some(after_value) => patches.push(dom_patch(
+                "set_attr",
+                path,
+                [
+                    (Value::symbol(Symbol::intern("name")), key.clone()),
+                    (Value::symbol(Symbol::intern("value")), after_value),
+                ],
+            )),
+            None => patches.push(dom_patch(
+                "remove_attr",
+                path,
+                [(Value::symbol(Symbol::intern("name")), key.clone())],
+            )),
+        }
+    }
+
+    for (key, after_value) in &after_entries {
+        if before.map_get(key).is_none() {
+            patches.push(dom_patch(
+                "set_attr",
+                path,
+                [
+                    (Value::symbol(Symbol::intern("name")), key.clone()),
+                    (Value::symbol(Symbol::intern("value")), after_value.clone()),
+                ],
+            ));
+        }
+    }
+}
+
+fn dom_diff_children(
+    before: &[Value],
+    after: &[Value],
+    path: &mut Vec<usize>,
+    patches: &mut Vec<Value>,
+) {
+    let shared = before.len().min(after.len());
+    for index in 0..shared {
+        path.push(index);
+        dom_diff_node(&before[index], &after[index], path, patches);
+        path.pop();
+    }
+    for child in &after[shared..] {
+        patches.push(dom_patch(
+            "append_child",
+            path,
+            [(Value::symbol(Symbol::intern("node")), child.clone())],
+        ));
+    }
+    for index in (after.len()..before.len()).rev() {
+        let mut child_path = path.to_owned();
+        child_path.push(index);
+        patches.push(dom_patch("remove_child", &child_path, []));
+    }
+}
+
+fn dom_text(value: &Value) -> Option<String> {
+    value
+        .map_get(&Value::symbol(Symbol::intern("text")))?
+        .with_str(str::to_owned)
+}
+
+fn dom_raw(value: &Value) -> Option<String> {
+    value
+        .map_get(&Value::symbol(Symbol::intern("raw")))?
+        .with_str(str::to_owned)
+}
+
+fn dom_element(value: &Value) -> Option<(String, Value, Vec<Value>)> {
+    let tag_value = value.map_get(&Value::symbol(Symbol::intern("tag")))?;
+    let tag = tag_value.with_str(str::to_owned)?;
+    let attrs = value.map_get(&Value::symbol(Symbol::intern("attrs")))?;
+    let children = value.map_get(&Value::symbol(Symbol::intern("children")))?;
+    attrs.with_map(|_| ())?;
+    let children = children.with_list(<[Value]>::to_vec)?;
+    Some((tag, attrs, children))
+}
+
+fn dom_replace_patch(path: &[usize], node: Value) -> Value {
+    dom_patch(
+        "replace",
+        path,
+        [(Value::symbol(Symbol::intern("node")), node)],
+    )
+}
+
+fn dom_patch(op: &str, path: &[usize], entries: impl IntoIterator<Item = (Value, Value)>) -> Value {
+    let mut fields = vec![
+        (Value::symbol(Symbol::intern("op")), Value::string(op)),
+        (Value::symbol(Symbol::intern("path")), dom_path_value(path)),
+    ];
+    fields.extend(entries);
+    Value::map(fields)
+}
+
+fn dom_path_value(path: &[usize]) -> Value {
+    Value::list(path.iter().map(|index| {
+        Value::int(i64::try_from(*index).expect("DOM path index should fit in i64")).unwrap()
+    }))
 }
 
 fn string_len_builtin(
@@ -4400,6 +5023,102 @@ mod tests {
         assert!(matches!(
             runner.run_source("return lower(\"North\")").unwrap().outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("north")
+        ));
+    }
+
+    #[test]
+    fn runner_json_and_dom_primitives_build_wire_values() {
+        let mut runner = SourceRunner::new_empty();
+
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return json_encode({:message -> \"hello\", :values -> [1, true, nothing]})"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("{\"message\":\"hello\",\"values\":[1,true,null]}")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return json_encode(dom_element(\"button\", {:id -> \"send\", :type -> \"submit\"}, [dom_text(\"Send\")]))"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("{\"attrs\":{\"id\":\"send\",\"type\":\"submit\"},\"children\":[{\"text\":\"Send\"}],\"tag\":\"button\"}")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return dom_html(dom_element(\"button\", {:id -> \"send\", :type -> \"submit\"}, [dom_text(\"Send & go\")]))"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("<button id=\"send\" type=\"submit\">Send &amp; go</button>")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return to_xml(dom_element(\"widget\", {\"data-id\" -> 7}, [dom_text(\"Send & go\")]))"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("<widget data-id=\"7\">Send &amp; go</widget>")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return to_xml([dom_raw(\"<!doctype html>\"), dom_element(\"script\", {:type -> \"module\"}, [dom_raw(\"if (a < b) go();\")])])"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("<!doctype html><script type=\"module\">if (a < b) go();</script>")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return json_encode(from_xml(\"<button id='send' type='submit'>Send</button>\"))"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("{\"attrs\":{\"id\":\"send\",\"type\":\"submit\"},\"children\":[{\"text\":\"Send\"}],\"tag\":\"button\"}")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return to_xml(from_xml(\"<form id='chat-composer'><input id='actor'/><button>Send</button></form>\"))"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("<form id=\"chat-composer\"><input id=\"actor\"></input><button>Send</button></form>")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return json_encode(dom_diff(dom_text(\"old\"), dom_text(\"new\")))"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("[{\"op\":\"set_text\",\"path\":[],\"text\":\"new\"}]")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return json_encode(dom_diff(dom_element(\"ul\", {}, []), dom_element(\"ul\", {:id -> \"messages\"}, [dom_text(\"hi\")])))"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("[{\"name\":\"id\",\"op\":\"set_attr\",\"path\":[],\"value\":\"messages\"},{\"node\":{\"text\":\"hi\"},\"op\":\"append_child\",\"path\":[]}]")
         ));
     }
 
