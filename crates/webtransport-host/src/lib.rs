@@ -715,14 +715,14 @@ mod tests {
             assert_eq!(envelope.view_id, 11);
             assert_eq!(envelope.client_revision, 13);
             assert_eq!(envelope.client_signature, 17);
-            assert_eq!(envelope.server_revision, 20);
+            assert_eq!(envelope.server_revision, 1);
             assert_eq!(
                 envelope.server_signature,
-                20 + envelope.payload.len() as u64
+                1 + envelope.payload.len() as u64
             );
             assert_eq!(
                 std::str::from_utf8(&envelope.payload).unwrap(),
-                "{\"view\":11,\"revision\":20,\"root\":{\"id\":\"#sync_root\",\"tag\":\"main\",\"children\":[{\"text\":\"snapshot\"}]}}"
+                "{\"view\":11,\"revision\":1,\"root\":{\"id\":\"chat-root\",\"tag\":\"main\",\"children\":[{\"tag\":\"ul\",\"id\":\"messages\",\"children\":[{\"tag\":\"li\",\"children\":[{\"tag\":\"span\",\"class\":\"author\",\"children\":[{\"text\":\"#alice\"}]},{\"text\":\": \"},{\"text\":\"hello\"}]}]},{\"tag\":\"section\",\"id\":\"composer\",\"children\":[{\"text\":\"composer\"}]}]}}"
             );
         });
     }
