@@ -31,6 +31,7 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "autocomplete",
   "data-sync-action",
   "data-sync-event",
+  "data-sync-key",
   "class",
   "id",
   "name",
@@ -207,6 +208,14 @@ function applyPatch(mount, patch) {
       throw new Error("append_child patch target is not an element");
     }
     target.append(renderNode(patch.node));
+    return;
+  }
+  if (patch.op === "insert_child") {
+    if (target.nodeType !== Node.ELEMENT_NODE) {
+      throw new Error("insert_child patch target is not an element");
+    }
+    const index = Number(patch.index);
+    target.insertBefore(renderNode(patch.node), target.childNodes[index] ?? null);
     return;
   }
   if (patch.op === "remove_child") {

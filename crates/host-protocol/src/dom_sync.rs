@@ -13,7 +13,7 @@
 
 use mica_var::{Symbol, Value, ValueKind};
 use serde_json::{Map, Value as JsonValue, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOM_PATCH_PAYLOAD_TYPE: &str = "dom_patch";
 pub const DOM_EVENT_PAYLOAD_TYPE: &str = "dom_event";
@@ -26,6 +26,7 @@ pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
     "class",
     "data-sync-action",
     "data-sync-event",
+    "data-sync-key",
     "id",
     "name",
     "placeholder",
@@ -70,6 +71,11 @@ pub enum DomPatch {
     },
     AppendChild {
         path: Vec<usize>,
+        node: DomNode,
+    },
+    InsertChild {
+        path: Vec<usize>,
+        index: usize,
         node: DomNode,
     },
     RemoveChild {
@@ -211,6 +217,20 @@ impl DomPatch {
                 path,
                 [(Value::symbol(Symbol::intern("node")), node.to_mica_value())],
             ),
+            Self::InsertChild { path, index, node } => dom_patch_value(
+                "insert_child",
+                path,
+                [
+                    (
+                        Value::symbol(Symbol::intern("index")),
+                        Value::int(
+                            i64::try_from(*index).expect("DOM child index should fit in i64"),
+                        )
+                        .unwrap(),
+                    ),
+                    (Value::symbol(Symbol::intern("node")), node.to_mica_value()),
+                ],
+            ),
             Self::RemoveChild { path } => dom_patch_value("remove_child", path, []),
         }
     }
@@ -241,6 +261,12 @@ impl DomPatch {
             Self::AppendChild { path, node } => json!({
                 "op": "append_child",
                 "path": path,
+                "node": node.to_json_value(),
+            }),
+            Self::InsertChild { path, index, node } => json!({
+                "op": "insert_child",
+                "path": path,
+                "index": index,
                 "node": node.to_json_value(),
             }),
             Self::RemoveChild { path } => json!({
@@ -491,6 +517,11 @@ fn diff_dom_children(
     path: &mut Vec<usize>,
     patches: &mut Vec<DomPatch>,
 ) {
+    if let (Some(before_keys), Some(after_keys)) = (child_keys(before), child_keys(after)) {
+        diff_keyed_dom_children(before, &before_keys, after, &after_keys, path, patches);
+        return;
+    }
+
     let shared = before.len().min(after.len());
     for index in 0..shared {
         path.push(index);
@@ -508,6 +539,90 @@ fn diff_dom_children(
         child_path.push(index);
         patches.push(DomPatch::RemoveChild { path: child_path });
     }
+}
+
+fn diff_keyed_dom_children(
+    before: &[DomNode],
+    before_keys: &[String],
+    after: &[DomNode],
+    after_keys: &[String],
+    path: &mut Vec<usize>,
+    patches: &mut Vec<DomPatch>,
+) {
+    let after_key_set = after_keys.iter().collect::<BTreeSet<_>>();
+    let mut current = before.to_vec();
+    let mut current_keys = before_keys.to_vec();
+
+    for index in (0..current.len()).rev() {
+        if !after_key_set.contains(&current_keys[index]) {
+            let mut child_path = path.clone();
+            child_path.push(index);
+            patches.push(DomPatch::RemoveChild { path: child_path });
+            current.remove(index);
+            current_keys.remove(index);
+        }
+    }
+
+    for (index, (after_child, after_key)) in after.iter().zip(after_keys).enumerate() {
+        if current_keys.get(index) == Some(after_key) {
+            path.push(index);
+            diff_dom_node(&current[index], after_child, path, patches);
+            path.pop();
+            current[index] = after_child.clone();
+            continue;
+        }
+
+        if let Some(found) = current_keys
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find_map(|(found, key)| (key == after_key).then_some(found))
+        {
+            let mut child_path = path.clone();
+            child_path.push(found);
+            patches.push(DomPatch::RemoveChild { path: child_path });
+            current.remove(found);
+            current_keys.remove(found);
+        }
+
+        if index == current.len() {
+            patches.push(DomPatch::AppendChild {
+                path: path.clone(),
+                node: after_child.clone(),
+            });
+        } else {
+            patches.push(DomPatch::InsertChild {
+                path: path.clone(),
+                index,
+                node: after_child.clone(),
+            });
+        }
+        current.insert(index, after_child.clone());
+        current_keys.insert(index, after_key.clone());
+    }
+}
+
+fn child_keys(children: &[DomNode]) -> Option<Vec<String>> {
+    let mut seen = BTreeSet::new();
+    let mut keys = Vec::with_capacity(children.len());
+    for child in children {
+        let key = dom_node_key(child)?;
+        if !seen.insert(key.clone()) {
+            return None;
+        }
+        keys.push(key);
+    }
+    Some(keys)
+}
+
+fn dom_node_key(node: &DomNode) -> Option<String> {
+    let DomNode::Element { attrs, .. } = node else {
+        return None;
+    };
+    attrs
+        .get("data-sync-key")
+        .or_else(|| attrs.get("id"))
+        .cloned()
 }
 
 fn json_attrs(attrs: &BTreeMap<String, String>) -> JsonValue {
@@ -591,6 +706,54 @@ mod tests {
         assert_eq!(json["view"], 11);
         assert_eq!(json["revision"], 20);
         assert_eq!(json["root"]["text"], "hello");
+    }
+
+    #[test]
+    fn keyed_children_insert_without_replacing_existing_nodes() {
+        let before = DomNode::Element {
+            tag: "ul".to_owned(),
+            attrs: BTreeMap::from([("id".to_owned(), "messages".to_owned())]),
+            children: vec![DomNode::Element {
+                tag: "li".to_owned(),
+                attrs: BTreeMap::from([("data-sync-key".to_owned(), "msg-2".to_owned())]),
+                children: vec![DomNode::Text("second".to_owned())],
+            }],
+        };
+        let after = DomNode::Element {
+            tag: "ul".to_owned(),
+            attrs: BTreeMap::from([("id".to_owned(), "messages".to_owned())]),
+            children: vec![
+                DomNode::Element {
+                    tag: "li".to_owned(),
+                    attrs: BTreeMap::from([("data-sync-key".to_owned(), "msg-1".to_owned())]),
+                    children: vec![DomNode::Text("first".to_owned())],
+                },
+                DomNode::Element {
+                    tag: "li".to_owned(),
+                    attrs: BTreeMap::from([("data-sync-key".to_owned(), "msg-2".to_owned())]),
+                    children: vec![DomNode::Text("second updated".to_owned())],
+                },
+            ],
+        };
+
+        assert_eq!(
+            diff_dom_nodes(&before, &after),
+            vec![
+                DomPatch::InsertChild {
+                    path: vec![],
+                    index: 0,
+                    node: DomNode::Element {
+                        tag: "li".to_owned(),
+                        attrs: BTreeMap::from([("data-sync-key".to_owned(), "msg-1".to_owned())]),
+                        children: vec![DomNode::Text("first".to_owned())],
+                    },
+                },
+                DomPatch::SetText {
+                    path: vec![1, 0],
+                    text: "second updated".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]

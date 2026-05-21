@@ -51,7 +51,7 @@ verb chat_message_node(message)
   let author = one MessageAuthor(message, ?author)
   let text = one MessageText(message, ?text)
   let author_node = dom_element("span", {:class -> "author"}, [dom_text(author)])
-  return dom_element("li", {}, [author_node, dom_text(": "), dom_text(text)])
+  return dom_element("li", {"data-sync-key" -> to_literal(message)}, [author_node, dom_text(": "), dom_text(text)])
 end
 
 verb chat_composer_node()

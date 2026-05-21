@@ -3026,7 +3026,7 @@ fn validate_dom_tag(tag: &str) -> Result<(), RuntimeError> {
 fn validate_dom_attr(name: &str) -> Result<(), RuntimeError> {
     match name {
         "aria-label" | "autocomplete" | "class" | "data-sync-action" | "data-sync-event" | "id"
-        | "name" | "placeholder" | "type" | "value" => Ok(()),
+        | "data-sync-key" | "name" | "placeholder" | "type" | "value" => Ok(()),
         _ => Err(invalid_builtin_call(
             "dom_html",
             format!("unsupported DOM attribute: {name}"),
