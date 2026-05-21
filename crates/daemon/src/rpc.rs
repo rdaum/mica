@@ -13,7 +13,7 @@
 
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_protocol::{HostMessage, PROTOCOL_VERSION};
-use mica_host_zmq::{ZmqHostSocket, ZmqTransportError};
+use mica_host_zmq::{PeerId, ZmqHostSocket, ZmqTransportError};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -21,9 +21,12 @@ use std::fmt;
 const DEFAULT_DRAIN_LIMIT: u32 = 64;
 const MAX_DRAIN_LIMIT: u32 = 1024;
 
+type RoutedReplies = Vec<(PeerId, HostMessage)>;
+
 pub(crate) struct RpcHandler {
     driver: CompioTaskDriver,
     endpoints: BTreeMap<Identity, EndpointState>,
+    tasks: BTreeMap<u64, PeerId>,
 }
 
 #[derive(Debug)]
@@ -31,8 +34,8 @@ pub(crate) enum RpcServerError {
     Transport(ZmqTransportError),
 }
 
-#[derive(Default)]
 struct EndpointState {
+    peer: PeerId,
     actor: Option<Identity>,
     output: VecDeque<Value>,
 }
@@ -58,9 +61,11 @@ pub(crate) async fn serve_zmq_rpc_once(
     handler: &mut RpcHandler,
 ) -> Result<(), RpcServerError> {
     let request = socket.recv_routed_message().await?;
-    let replies = handler.dispatch_message(request.message).await;
-    for reply in replies {
-        socket.send_routed_message(&request.peer, &reply).await?;
+    let replies = handler
+        .dispatch_message(request.peer, request.message)
+        .await;
+    for (peer, reply) in replies {
+        socket.send_routed_message(&peer, &reply).await?;
     }
     Ok(())
 }
@@ -90,12 +95,17 @@ impl RpcHandler {
         Self {
             driver,
             endpoints: BTreeMap::new(),
+            tasks: BTreeMap::new(),
         }
     }
 
-    pub(crate) async fn dispatch_message(&mut self, message: HostMessage) -> Vec<HostMessage> {
+    pub(crate) async fn dispatch_message(
+        &mut self,
+        peer: PeerId,
+        message: HostMessage,
+    ) -> RoutedReplies {
         let is_request = is_request_message(&message);
-        let mut replies = match message {
+        let replies = match message {
             HostMessage::Hello { .. } => vec![HostMessage::HelloAck {
                 protocol_version: PROTOCOL_VERSION,
                 feature_bits: 0,
@@ -119,11 +129,11 @@ impl RpcHandler {
                 actor,
                 protocol,
                 grant_token,
-            } => self.open_endpoint(request_id, endpoint, actor, protocol, grant_token),
+            } => self.open_endpoint(&peer, request_id, endpoint, actor, protocol, grant_token),
             HostMessage::CloseEndpoint {
                 request_id,
                 endpoint,
-            } => self.close_endpoint(request_id, endpoint),
+            } => self.close_endpoint(&peer, request_id, endpoint),
             HostMessage::ResolveIdentity { request_id, name } => {
                 self.resolve_identity(request_id, name)
             }
@@ -133,30 +143,31 @@ impl RpcHandler {
                 actor,
                 source,
             } => {
-                self.submit_source(request_id, endpoint, actor, source)
+                self.submit_source(&peer, request_id, endpoint, actor, source)
                     .await
             }
             HostMessage::SubmitInput {
                 request_id,
                 endpoint,
                 value,
-            } => self.submit_input(request_id, endpoint, value).await,
+            } => self.submit_input(&peer, request_id, endpoint, value).await,
             HostMessage::DrainOutput {
                 request_id,
                 endpoint,
                 limit,
-            } => self.drain_output(request_id, endpoint, limit),
+            } => self.drain_output(&peer, request_id, endpoint, limit),
         };
         if is_request {
             let mut events = self.drain_driver_messages();
-            events.append(&mut replies);
+            events.append(&mut addressed(&peer, replies));
             return events;
         }
-        replies
+        addressed(&peer, replies)
     }
 
     fn open_endpoint(
         &mut self,
+        peer: &PeerId,
         request_id: u64,
         endpoint: Identity,
         actor: Option<Identity>,
@@ -170,6 +181,17 @@ impl RpcHandler {
                 "grant tokens are not implemented yet",
             )];
         }
+        if self
+            .endpoints
+            .get(&endpoint)
+            .is_some_and(|state| state.peer != *peer)
+        {
+            return vec![rejected(
+                request_id,
+                "E_ENDPOINT_IN_USE",
+                "endpoint is already open for another peer",
+            )];
+        }
         match self
             .driver
             .open_endpoint(endpoint, actor, Symbol::intern(&protocol))
@@ -177,8 +199,12 @@ impl RpcHandler {
             Ok(()) => {
                 self.endpoints
                     .entry(endpoint)
-                    .and_modify(|state| state.actor = actor)
+                    .and_modify(|state| {
+                        state.peer = peer.clone();
+                        state.actor = actor;
+                    })
                     .or_insert_with(|| EndpointState {
+                        peer: peer.clone(),
                         actor,
                         output: VecDeque::new(),
                     });
@@ -188,7 +214,19 @@ impl RpcHandler {
         }
     }
 
-    fn close_endpoint(&mut self, request_id: u64, endpoint: Identity) -> Vec<HostMessage> {
+    fn close_endpoint(
+        &mut self,
+        peer: &PeerId,
+        request_id: u64,
+        endpoint: Identity,
+    ) -> Vec<HostMessage> {
+        if !self.endpoint_belongs_to_peer(endpoint, peer) {
+            return vec![rejected(
+                request_id,
+                "E_NO_ENDPOINT",
+                "endpoint is not open",
+            )];
+        }
         let closed = self.driver.close_endpoint(endpoint);
         self.endpoints.remove(&endpoint);
         vec![
@@ -217,12 +255,13 @@ impl RpcHandler {
 
     async fn submit_source(
         &mut self,
+        peer: &PeerId,
         request_id: u64,
         endpoint: Identity,
         actor: Identity,
         source: String,
     ) -> Vec<HostMessage> {
-        if !self.endpoints.contains_key(&endpoint) {
+        if !self.endpoint_belongs_to_peer(endpoint, peer) {
             return vec![rejected(
                 request_id,
                 "E_NO_ENDPOINT",
@@ -234,18 +273,22 @@ impl RpcHandler {
             .submit_source_as_actor(endpoint, actor, source)
             .await
         {
-            Ok(submitted) => vec![accepted(request_id, Some(submitted.task_id))],
+            Ok(submitted) => {
+                self.tasks.insert(submitted.task_id, peer.clone());
+                vec![accepted(request_id, Some(submitted.task_id))]
+            }
             Err(error) => vec![rejected(request_id, "E_SUBMIT_SOURCE", error.to_string())],
         }
     }
 
     async fn submit_input(
         &mut self,
+        peer: &PeerId,
         request_id: u64,
         endpoint: Identity,
         value: Value,
     ) -> Vec<HostMessage> {
-        if !self.endpoints.contains_key(&endpoint) {
+        if !self.endpoint_belongs_to_peer(endpoint, peer) {
             return vec![rejected(
                 request_id,
                 "E_NO_ENDPOINT",
@@ -260,6 +303,7 @@ impl RpcHandler {
 
     fn drain_output(
         &mut self,
+        peer: &PeerId,
         request_id: u64,
         endpoint: Identity,
         limit: u32,
@@ -271,6 +315,13 @@ impl RpcHandler {
                 "endpoint is not open",
             )];
         };
+        if state.peer != *peer {
+            return vec![rejected(
+                request_id,
+                "E_NO_ENDPOINT",
+                "endpoint is not open",
+            )];
+        }
         let limit = normalized_drain_limit(limit) as usize;
         let count = limit.min(state.output.len());
         let mut values = Vec::with_capacity(count);
@@ -286,7 +337,7 @@ impl RpcHandler {
         ]
     }
 
-    fn drain_driver_messages(&mut self) -> Vec<HostMessage> {
+    fn drain_driver_messages(&mut self) -> RoutedReplies {
         self.driver
             .drain_events()
             .into_iter()
@@ -294,29 +345,50 @@ impl RpcHandler {
             .collect()
     }
 
-    fn route_driver_event(&mut self, event: DriverEvent) -> Vec<HostMessage> {
+    fn route_driver_event(&mut self, event: DriverEvent) -> RoutedReplies {
         match event {
-            DriverEvent::TaskCompleted { task_id, value } => {
-                vec![HostMessage::TaskCompleted { task_id, value }]
-            }
-            DriverEvent::TaskAborted { task_id, error } => {
-                vec![HostMessage::TaskFailed { task_id, error }]
-            }
-            DriverEvent::TaskFailed { task_id, error } => vec![HostMessage::TaskFailed {
-                task_id,
-                error: Value::error(Symbol::intern("E_DRIVER"), Some(error), None),
-            }],
+            DriverEvent::TaskCompleted { task_id, value } => self
+                .tasks
+                .remove(&task_id)
+                .map(|peer| (peer, HostMessage::TaskCompleted { task_id, value }))
+                .into_iter()
+                .collect(),
+            DriverEvent::TaskAborted { task_id, error } => self
+                .tasks
+                .remove(&task_id)
+                .map(|peer| (peer, HostMessage::TaskFailed { task_id, error }))
+                .into_iter()
+                .collect(),
+            DriverEvent::TaskFailed { task_id, error } => self
+                .tasks
+                .remove(&task_id)
+                .map(|peer| {
+                    (
+                        peer,
+                        HostMessage::TaskFailed {
+                            task_id,
+                            error: Value::error(Symbol::intern("E_DRIVER"), Some(error), None),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
             DriverEvent::TaskSuspended { .. } => Vec::new(),
             DriverEvent::Effect(effect) => {
                 let targets = self.effect_targets(effect.target);
                 let mut messages = Vec::with_capacity(targets.len());
                 for target in targets {
-                    let state = self.endpoints.entry(target).or_default();
+                    let Some(state) = self.endpoints.get_mut(&target) else {
+                        continue;
+                    };
                     state.output.push_back(effect.value.clone());
-                    messages.push(HostMessage::OutputReady {
-                        endpoint: target,
-                        buffered: state.output.len().try_into().unwrap_or(u32::MAX),
-                    });
+                    messages.push((
+                        state.peer.clone(),
+                        HostMessage::OutputReady {
+                            endpoint: target,
+                            buffered: state.output.len().try_into().unwrap_or(u32::MAX),
+                        },
+                    ));
                 }
                 messages
             }
@@ -334,6 +406,12 @@ impl RpcHandler {
             }
         }
         targets
+    }
+
+    fn endpoint_belongs_to_peer(&self, endpoint: Identity, peer: &PeerId) -> bool {
+        self.endpoints
+            .get(&endpoint)
+            .is_some_and(|state| state.peer == *peer)
     }
 }
 
@@ -362,6 +440,13 @@ fn rejected(request_id: u64, code: &str, message: impl Into<String>) -> HostMess
         code: Symbol::intern(code),
         message: message.into(),
     }
+}
+
+fn addressed(peer: &PeerId, messages: Vec<HostMessage>) -> RoutedReplies {
+    messages
+        .into_iter()
+        .map(|message| (peer.clone(), message))
+        .collect()
 }
 
 fn normalized_drain_limit(limit: u32) -> u32 {
@@ -394,6 +479,24 @@ mod tests {
         (CompioTaskDriver::spawn(runner).unwrap(), alice)
     }
 
+    fn peer(id: u8) -> PeerId {
+        PeerId::new(vec![id])
+    }
+
+    async fn dispatch(handler: &mut RpcHandler, message: HostMessage) -> Vec<HostMessage> {
+        messages_for_peer(handler.dispatch_message(peer(1), message).await, &peer(1))
+    }
+
+    fn messages_for_peer(replies: RoutedReplies, expected_peer: &PeerId) -> Vec<HostMessage> {
+        replies
+            .into_iter()
+            .map(|(peer, message)| {
+                assert_eq!(&peer, expected_peer);
+                message
+            })
+            .collect()
+    }
+
     #[test]
     fn rpc_handler_accepts_endpoint_and_submits_source() {
         compio::runtime::Runtime::new().unwrap().block_on(async {
@@ -402,26 +505,30 @@ mod tests {
             let mut handler = RpcHandler::new(driver);
 
             assert_eq!(
-                handler
-                    .dispatch_message(HostMessage::OpenEndpoint {
+                dispatch(
+                    &mut handler,
+                    HostMessage::OpenEndpoint {
                         request_id: 1,
                         endpoint,
                         actor: None,
                         protocol: "test".to_owned(),
                         grant_token: None,
-                    })
-                    .await,
+                    },
+                )
+                .await,
                 vec![accepted(1, None)]
             );
 
-            let replies = handler
-                .dispatch_message(HostMessage::SubmitSource {
+            let replies = dispatch(
+                &mut handler,
+                HostMessage::SubmitSource {
                     request_id: 2,
                     endpoint,
                     actor,
                     source: "emit(#endpoint, \"hello\")\nreturn actor()".to_owned(),
-                })
-                .await;
+                },
+            )
+            .await;
             assert!(matches!(
                 &replies[..],
                 [
@@ -434,13 +541,15 @@ mod tests {
                 ] if *target == endpoint && *value == Value::identity(actor)
             ));
 
-            let replies = handler
-                .dispatch_message(HostMessage::DrainOutput {
+            let replies = dispatch(
+                &mut handler,
+                HostMessage::DrainOutput {
                     request_id: 3,
                     endpoint,
                     limit: 10,
-                })
-                .await;
+                },
+            )
+            .await;
             assert_eq!(
                 replies,
                 vec![
@@ -460,15 +569,17 @@ mod tests {
             let (driver, _) = seeded_driver();
             let mut handler = RpcHandler::new(driver);
             assert_eq!(
-                handler
-                    .dispatch_message(HostMessage::OpenEndpoint {
+                dispatch(
+                    &mut handler,
+                    HostMessage::OpenEndpoint {
                         request_id: 1,
                         endpoint: endpoint(0x00ef_0000_0000_0002),
                         actor: None,
                         protocol: "test".to_owned(),
                         grant_token: Some("token".to_owned()),
-                    })
-                    .await,
+                    },
+                )
+                .await,
                 vec![rejected(
                     1,
                     "E_GRANT_UNSUPPORTED",
@@ -484,24 +595,28 @@ mod tests {
             let (driver, actor) = seeded_driver();
             let endpoint = endpoint(0x00ef_0000_0000_0003);
             let mut handler = RpcHandler::new(driver);
-            handler
-                .dispatch_message(HostMessage::OpenEndpoint {
+            dispatch(
+                &mut handler,
+                HostMessage::OpenEndpoint {
                     request_id: 1,
                     endpoint,
                     actor: None,
                     protocol: "test".to_owned(),
                     grant_token: None,
-                })
-                .await;
+                },
+            )
+            .await;
 
-            let replies = handler
-                .dispatch_message(HostMessage::SubmitSource {
+            let replies = dispatch(
+                &mut handler,
+                HostMessage::SubmitSource {
                     request_id: 2,
                     endpoint,
                     actor,
                     source: "return 1 / 0".to_owned(),
-                })
-                .await;
+                },
+            )
+            .await;
             assert!(matches!(
                 &replies[..],
                 [
@@ -521,24 +636,28 @@ mod tests {
             let (driver, actor) = seeded_driver();
             let endpoint = endpoint(0x00ef_0000_0000_0007);
             let mut handler = RpcHandler::new(driver);
-            handler
-                .dispatch_message(HostMessage::OpenEndpoint {
+            dispatch(
+                &mut handler,
+                HostMessage::OpenEndpoint {
                     request_id: 1,
                     endpoint,
                     actor: Some(actor),
                     protocol: "test".to_owned(),
                     grant_token: None,
-                })
-                .await;
+                },
+            )
+            .await;
 
-            let replies = handler
-                .dispatch_message(HostMessage::SubmitSource {
+            let replies = dispatch(
+                &mut handler,
+                HostMessage::SubmitSource {
                     request_id: 2,
                     endpoint,
                     actor,
                     source: "emit(#alice, \"hello actor\")".to_owned(),
-                })
-                .await;
+                },
+            )
+            .await;
             assert!(matches!(
                 &replies[..],
                 [
@@ -547,13 +666,15 @@ mod tests {
                     HostMessage::RequestAccepted { request_id: 2, .. },
                 ] if *target == endpoint
             ));
-            let replies = handler
-                .dispatch_message(HostMessage::DrainOutput {
+            let replies = dispatch(
+                &mut handler,
+                HostMessage::DrainOutput {
                     request_id: 3,
                     endpoint,
                     limit: 1,
-                })
-                .await;
+                },
+            )
+            .await;
             assert_eq!(
                 replies,
                 vec![
@@ -574,12 +695,14 @@ mod tests {
             let mut handler = RpcHandler::new(driver);
 
             assert_eq!(
-                handler
-                    .dispatch_message(HostMessage::ResolveIdentity {
+                dispatch(
+                    &mut handler,
+                    HostMessage::ResolveIdentity {
                         request_id: 12,
                         name: Symbol::intern("alice"),
-                    })
-                    .await,
+                    },
+                )
+                .await,
                 vec![HostMessage::IdentityResolved {
                     request_id: 12,
                     name: Symbol::intern("alice"),
@@ -588,10 +711,15 @@ mod tests {
             );
 
             assert!(matches!(
-                handler.dispatch_message(HostMessage::ResolveIdentity {
-                    request_id: 13,
-                    name: Symbol::intern("missing"),
-                }).await.as_slice(),
+                dispatch(
+                    &mut handler,
+                    HostMessage::ResolveIdentity {
+                        request_id: 13,
+                        name: Symbol::intern("missing"),
+                    },
+                )
+                .await
+                .as_slice(),
                 [HostMessage::RequestRejected { request_id: 13, code, .. }]
                     if *code == Symbol::intern("E_UNKNOWN_IDENTITY")
             ));
@@ -730,23 +858,27 @@ mod tests {
             let (driver, actor) = seeded_driver();
             let endpoint = endpoint(0x00ef_0000_0000_0006);
             let mut handler = RpcHandler::new(driver);
-            handler
-                .dispatch_message(HostMessage::OpenEndpoint {
+            dispatch(
+                &mut handler,
+                HostMessage::OpenEndpoint {
                     request_id: 1,
                     endpoint,
                     actor: None,
                     protocol: "test".to_owned(),
                     grant_token: None,
-                })
-                .await;
-            let replies = handler
-                .dispatch_message(HostMessage::SubmitSource {
+                },
+            )
+            .await;
+            let replies = dispatch(
+                &mut handler,
+                HostMessage::SubmitSource {
                     request_id: 2,
                     endpoint,
                     actor,
                     source: "suspend(0.001)\nemit(#endpoint, \"awake\")".to_owned(),
-                })
-                .await;
+                },
+            )
+            .await;
             assert!(matches!(
                 &replies[..],
                 [HostMessage::RequestAccepted {
@@ -756,7 +888,7 @@ mod tests {
             ));
 
             compio::time::sleep(std::time::Duration::from_millis(20)).await;
-            let events = handler.drain_driver_messages();
+            let events = messages_for_peer(handler.drain_driver_messages(), &peer(1));
             assert!(matches!(
                 &events[..],
                 [
@@ -764,6 +896,80 @@ mod tests {
                     HostMessage::TaskCompleted { .. },
                 ] if *target == endpoint
             ));
+        });
+    }
+
+    #[test]
+    fn rpc_handler_routes_delayed_events_to_endpoint_peer() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (driver, actor) = seeded_driver();
+            let endpoint = endpoint(0x00ef_0000_0000_0008);
+            let mut handler = RpcHandler::new(driver);
+            let owner = peer(1);
+            let other = peer(2);
+
+            let replies = handler
+                .dispatch_message(
+                    owner.clone(),
+                    HostMessage::OpenEndpoint {
+                        request_id: 1,
+                        endpoint,
+                        actor: None,
+                        protocol: "test".to_owned(),
+                        grant_token: None,
+                    },
+                )
+                .await;
+            assert_eq!(messages_for_peer(replies, &owner), vec![accepted(1, None)]);
+
+            let replies = handler
+                .dispatch_message(
+                    owner.clone(),
+                    HostMessage::SubmitSource {
+                        request_id: 2,
+                        endpoint,
+                        actor,
+                        source: "suspend(0.001)\nemit(#endpoint, \"awake\")".to_owned(),
+                    },
+                )
+                .await;
+            assert_eq!(messages_for_peer(replies, &owner).len(), 1);
+
+            compio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let routed = handler
+                .dispatch_message(
+                    other.clone(),
+                    HostMessage::ResolveIdentity {
+                        request_id: 3,
+                        name: Symbol::intern("alice"),
+                    },
+                )
+                .await;
+
+            assert!(routed.iter().any(|(peer, message)| {
+                peer == &owner
+                    && matches!(
+                        message,
+                        HostMessage::OutputReady {
+                            endpoint: target,
+                            buffered: 1,
+                        } if *target == endpoint
+                    )
+            }));
+            assert!(routed.iter().any(|(peer, message)| {
+                peer == &owner && matches!(message, HostMessage::TaskCompleted { .. })
+            }));
+            assert!(routed.iter().any(|(peer, message)| {
+                peer == &other
+                    && matches!(message, HostMessage::IdentityResolved { request_id: 3, .. })
+            }));
+            assert!(!routed.iter().any(|(peer, message)| {
+                peer == &other
+                    && matches!(
+                        message,
+                        HostMessage::OutputReady { .. } | HostMessage::TaskCompleted { .. }
+                    )
+            }));
         });
     }
 
