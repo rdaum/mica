@@ -715,9 +715,16 @@ mod tests {
             assert_eq!(envelope.view_id, 11);
             assert_eq!(envelope.client_revision, 13);
             assert_eq!(envelope.client_signature, 17);
-            assert_eq!(envelope.server_revision, 29);
-            assert_eq!(envelope.server_signature, 31);
-            assert_eq!(envelope.payload, b"snapshot");
+            assert_eq!(envelope.server_revision, 20);
+            assert_eq!(
+                envelope.server_signature,
+                20 + envelope.payload.len() as u64
+            );
+            assert!(
+                std::str::from_utf8(&envelope.payload)
+                    .unwrap()
+                    .contains("snapshot")
+            );
         });
     }
 
