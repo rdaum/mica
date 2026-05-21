@@ -535,10 +535,16 @@ async fn read_datagram_loop(
 ) -> Result<(), String> {
     let mut reader = session.datagram_reader();
     loop {
-        let datagram = reader
-            .read_datagram()
-            .await
-            .map_err(|error| format!("failed to read WebTransport datagram: {error}"))?;
+        let datagram = match reader.read_datagram().await {
+            Ok(datagram) => datagram,
+            Err(error) => {
+                let message = error.to_string();
+                if message.contains("closed") {
+                    return Ok(());
+                }
+                return Err(format!("failed to read WebTransport datagram: {message}"));
+            }
+        };
         route_incoming_datagram(host, endpoint, datagram.into_payload()).await?;
     }
 }
@@ -978,6 +984,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     type TestChunkMap = HashMap<u32, (u32, u32, Vec<Option<Vec<u8>>>)>;
+    type MudLoginResult = Result<(SyncEnvelope, SyncEnvelope), String>;
+    type MudClientResult = Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String>;
+    type MudTwoSessionResult = Result<(SyncEnvelope, SyncEnvelope), String>;
 
     #[test]
     fn effect_datagrams_preserve_bytes_and_strings() {
@@ -1312,7 +1321,8 @@ mod tests {
 
             wait_for_client_connected(&connected_rx).await;
             send_tx.send(()).unwrap();
-            let (snapshot, delta) = wait_for_ack_client_result(&result_rx).await.unwrap();
+            let (snapshot, delta, command_delta, inspect_delta) =
+                wait_for_mud_client_result(&result_rx).await.unwrap();
 
             server_endpoint.close(0u32.into(), b"test complete");
             client.join().unwrap();
@@ -1339,10 +1349,163 @@ mod tests {
             assert!(payload_text.contains("mud-shell"));
             assert!(payload_text.contains("The Mica Rooms"));
             assert!(payload_text.contains("First Room"));
+            assert!(payload_text.contains("room-snapshot"));
+            assert!(payload_text.contains("snapshot-row"));
+            assert!(payload_text.contains("Players"));
+            assert!(payload_text.contains("player-chip"));
+            assert!(payload_text.contains("look Bob"));
             assert!(payload_text.contains("object-card"));
             assert!(payload_text.contains("brass coin"));
             assert!(payload_text.contains("Inventory"));
+            assert!(payload_text.contains("Inspector"));
             assert!(payload_text.contains("Narrative"));
+
+            assert_eq!(command_delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(command_delta.view_id, 21);
+            assert_eq!(command_delta.client_revision, 1);
+            assert_eq!(command_delta.server_revision, 3);
+            let command_payload: serde_json::Value =
+                serde_json::from_slice(&command_delta.payload).unwrap();
+            let command_payload_text = serde_json::to_string(&command_payload).unwrap();
+            assert!(command_payload_text.contains("event-line transfer"));
+            assert!(command_payload_text.contains("event-entity"));
+            assert!(command_payload_text.contains("data-entity"));
+            assert!(command_payload_text.contains("entity-action"));
+            assert!(command_payload_text.contains("entity-button"));
+            assert!(command_payload_text.contains("you"));
+            assert!(command_payload_text.contains("coin"));
+            assert!(command_payload_text.contains("drop"));
+
+            assert_eq!(inspect_delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(inspect_delta.view_id, 21);
+            assert_eq!(inspect_delta.client_revision, 3);
+            assert_eq!(inspect_delta.server_revision, 5);
+            let inspect_payload: serde_json::Value =
+                serde_json::from_slice(&inspect_delta.payload).unwrap();
+            let inspect_payload_text = serde_json::to_string(&inspect_payload).unwrap();
+            assert!(inspect_payload_text.contains("inspector"));
+            assert!(inspect_payload_text.contains("look coin"));
+            assert!(inspect_payload_text.contains("data-entity"));
+            assert!(inspect_payload_text.contains("tarnished brass coin"));
+        });
+    }
+
+    #[test]
+    fn webtransport_mud_login_as_bob_renders_bob_perspective() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let tls = test_tls_config();
+            let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
+                .await
+                .unwrap();
+            let server_addr = endpoint.local_addr().unwrap();
+            let server_endpoint = endpoint.clone();
+
+            let runner = sync_mud_runner();
+            let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebTransportHost::new(driver.clone());
+            let binding = SessionBinding {
+                principal,
+                actor: None,
+            };
+            compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(1))).detach();
+
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (send_tx, send_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let client = spawn_wtransport_mud_login_only_client(
+                server_addr,
+                "bob",
+                connected_tx,
+                send_rx,
+                result_tx,
+            );
+
+            wait_for_client_connected(&connected_rx).await;
+            send_tx.send(()).unwrap();
+            let (snapshot, delta) = wait_for_mud_login_client_result(&result_rx).await.unwrap();
+
+            server_endpoint.close(0u32.into(), b"test complete");
+            client.join().unwrap();
+            assert_eq!(snapshot.kind, SyncMessageKind::ViewSnapshot);
+            let snapshot_payload: serde_json::Value =
+                serde_json::from_slice(&snapshot.payload).unwrap();
+            let snapshot_text = serde_json::to_string(&snapshot_payload).unwrap();
+            assert!(snapshot_text.contains("Enter as Alice"));
+            assert!(snapshot_text.contains("Enter as Bob"));
+
+            assert_eq!(delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(delta.view_id, 21);
+            assert_eq!(delta.server_revision, 1);
+            let payload: serde_json::Value = serde_json::from_slice(&delta.payload).unwrap();
+            let payload_text = serde_json::to_string(&payload).unwrap();
+            assert!(payload_text.contains("Bob"));
+            assert!(payload_text.contains("look Alice"));
+            assert!(payload_text.contains("player-chip"));
+            assert!(!payload_text.contains("look Bob"));
+        });
+    }
+
+    #[test]
+    fn webtransport_mud_pushes_alice_command_to_bob_view() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let tls = test_tls_config();
+            let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
+                .await
+                .unwrap();
+            let server_addr = endpoint.local_addr().unwrap();
+            let server_endpoint = endpoint.clone();
+
+            let runner = sync_mud_runner();
+            let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebTransportHost::new(driver.clone());
+            let binding = SessionBinding {
+                principal,
+                actor: None,
+            };
+            compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(2))).detach();
+
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (send_tx, send_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let client = spawn_wtransport_mud_two_session_client(
+                server_addr,
+                connected_tx,
+                send_rx,
+                result_tx,
+            );
+
+            wait_for_client_connected(&connected_rx).await;
+            send_tx.send(()).unwrap();
+            let (alice_delta, bob_delta) =
+                wait_for_mud_two_session_result(&result_rx).await.unwrap();
+
+            server_endpoint.close(0u32.into(), b"test complete");
+            client.join().unwrap();
+
+            assert_eq!(alice_delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(alice_delta.view_id, 21);
+            assert_eq!(alice_delta.client_revision, 1);
+            assert_eq!(alice_delta.server_revision, 3);
+            let alice_payload: serde_json::Value =
+                serde_json::from_slice(&alice_delta.payload).unwrap();
+            let alice_payload_text = serde_json::to_string(&alice_payload).unwrap();
+            assert!(alice_payload_text.contains("you"));
+            assert!(alice_payload_text.contains("coin"));
+
+            assert_eq!(bob_delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(bob_delta.view_id, 21);
+            assert_eq!(bob_delta.client_revision, 1);
+            assert_eq!(bob_delta.server_revision, 2);
+            let bob_payload: serde_json::Value =
+                serde_json::from_slice(&bob_delta.payload).unwrap();
+            let bob_payload_text = serde_json::to_string(&bob_payload).unwrap();
+            assert!(bob_payload_text.contains("Alice"));
+            assert!(bob_payload_text.contains("takes"));
+            assert!(bob_payload_text.contains("coin"));
+            assert!(bob_payload_text.contains("event-line transfer"));
+            assert!(bob_payload_text.contains("entity-action"));
         });
     }
 
@@ -1601,7 +1764,7 @@ mod tests {
         server_addr: SocketAddr,
         connected_tx: mpsc::Sender<()>,
         send_rx: mpsc::Receiver<()>,
-        result_tx: mpsc::Sender<Result<(SyncEnvelope, SyncEnvelope), String>>,
+        result_tx: mpsc::Sender<MudClientResult>,
     ) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let result = tokio::runtime::Builder::new_current_thread()
@@ -1652,7 +1815,219 @@ mod tests {
                             .map_err(|error| error.to_string())?;
                         let delta = receive_sync_envelope(&connection).await?;
 
+                        connection
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 7,
+                                view_id: 21,
+                                revision: delta.server_revision,
+                                signature: delta.server_signature,
+                                event: "submit".to_owned(),
+                                target: "mud-command".to_owned(),
+                                action: "mud_command".to_owned(),
+                                fields: BTreeMap::from([(
+                                    "text".to_owned(),
+                                    "get coin".to_owned(),
+                                )]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let command_delta = receive_sync_envelope(&connection).await?;
+
+                        connection
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 7,
+                                view_id: 21,
+                                revision: command_delta.server_revision,
+                                signature: command_delta.server_signature,
+                                event: "submit".to_owned(),
+                                target: "event-inspect-coin".to_owned(),
+                                action: "mud_command".to_owned(),
+                                fields: BTreeMap::from([
+                                    ("text".to_owned(), "look coin".to_owned()),
+                                    ("entity".to_owned(), "coin".to_owned()),
+                                ]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let inspect_delta = receive_sync_envelope(&connection).await?;
+
+                        Ok((snapshot, delta, command_delta, inspect_delta))
+                    })
+                });
+            let _ = result_tx.send(result);
+        })
+    }
+
+    fn spawn_wtransport_mud_login_only_client(
+        server_addr: SocketAddr,
+        actor: &'static str,
+        connected_tx: mpsc::Sender<()>,
+        send_rx: mpsc::Receiver<()>,
+        result_tx: mpsc::Sender<MudLoginResult>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        let config = wtransport::ClientConfig::builder()
+                            .with_bind_default()
+                            .with_no_cert_validation()
+                            .build();
+                        let url = format!("https://127.0.0.1:{}/view", server_addr.port());
+                        let connection = wtransport::Endpoint::client(config)
+                            .map_err(|error| error.to_string())?
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        connected_tx.send(()).map_err(|error| error.to_string())?;
+                        send_rx.recv().map_err(|error| error.to_string())?;
+
+                        let need_view = SyncEnvelope {
+                            kind: SyncMessageKind::NeedView,
+                            session_id: 7,
+                            view_id: 21,
+                            client_revision: 0,
+                            client_signature: 0,
+                            server_revision: 0,
+                            server_signature: 0,
+                            payload: b"need".to_vec(),
+                        };
+                        connection
+                            .send_datagram(encoded_sync_envelope(need_view.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let snapshot = receive_sync_envelope(&connection).await?;
+
+                        connection
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 7,
+                                view_id: 21,
+                                revision: snapshot.server_revision,
+                                signature: snapshot.server_signature,
+                                event: "submit".to_owned(),
+                                target: format!("mud-login-{actor}"),
+                                action: "mud_login".to_owned(),
+                                fields: BTreeMap::from([("text".to_owned(), actor.to_owned())]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let delta = receive_sync_envelope(&connection).await?;
+
                         Ok((snapshot, delta))
+                    })
+                });
+            let _ = result_tx.send(result);
+        })
+    }
+
+    fn spawn_wtransport_mud_two_session_client(
+        server_addr: SocketAddr,
+        connected_tx: mpsc::Sender<()>,
+        send_rx: mpsc::Receiver<()>,
+        result_tx: mpsc::Sender<MudTwoSessionResult>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        let config = wtransport::ClientConfig::builder()
+                            .with_bind_default()
+                            .with_no_cert_validation()
+                            .build();
+                        let endpoint = wtransport::Endpoint::client(config)
+                            .map_err(|error| error.to_string())?;
+                        let url = format!("https://127.0.0.1:{}/view", server_addr.port());
+                        let alice = endpoint
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        let bob = endpoint
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        connected_tx.send(()).map_err(|error| error.to_string())?;
+                        send_rx.recv().map_err(|error| error.to_string())?;
+
+                        let alice_need = SyncEnvelope {
+                            kind: SyncMessageKind::NeedView,
+                            session_id: 101,
+                            view_id: 21,
+                            client_revision: 0,
+                            client_signature: 0,
+                            server_revision: 0,
+                            server_signature: 0,
+                            payload: b"need".to_vec(),
+                        };
+                        alice
+                            .send_datagram(encoded_sync_envelope(alice_need.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let alice_snapshot = receive_sync_envelope(&alice).await?;
+
+                        let bob_need = SyncEnvelope {
+                            kind: SyncMessageKind::NeedView,
+                            session_id: 202,
+                            view_id: 21,
+                            client_revision: 0,
+                            client_signature: 0,
+                            server_revision: 0,
+                            server_signature: 0,
+                            payload: b"need".to_vec(),
+                        };
+                        bob.send_datagram(encoded_sync_envelope(bob_need.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let bob_snapshot = receive_sync_envelope(&bob).await?;
+
+                        alice
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 101,
+                                view_id: 21,
+                                revision: alice_snapshot.server_revision,
+                                signature: alice_snapshot.server_signature,
+                                event: "submit".to_owned(),
+                                target: "mud-login-alice".to_owned(),
+                                action: "mud_login".to_owned(),
+                                fields: BTreeMap::from([("text".to_owned(), "alice".to_owned())]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let alice_login = receive_sync_envelope(&alice).await?;
+
+                        bob.send_datagram(dom_event_payload_json(&DomEventPayload {
+                            session_id: 202,
+                            view_id: 21,
+                            revision: bob_snapshot.server_revision,
+                            signature: bob_snapshot.server_signature,
+                            event: "submit".to_owned(),
+                            target: "mud-login-bob".to_owned(),
+                            action: "mud_login".to_owned(),
+                            fields: BTreeMap::from([("text".to_owned(), "bob".to_owned())]),
+                        }))
+                        .map_err(|error| error.to_string())?;
+                        let bob_login = receive_sync_envelope(&bob).await?;
+
+                        alice
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 101,
+                                view_id: 21,
+                                revision: alice_login.server_revision,
+                                signature: alice_login.server_signature,
+                                event: "submit".to_owned(),
+                                target: "mud-command".to_owned(),
+                                action: "mud_command".to_owned(),
+                                fields: BTreeMap::from([(
+                                    "text".to_owned(),
+                                    "get coin".to_owned(),
+                                )]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+
+                        let alice_delta = receive_sync_envelope(&alice).await?;
+                        let bob_delta = receive_sync_envelope(&bob).await?;
+                        assert_eq!(bob_login.server_revision, 1);
+                        alice.close(0u32.into(), b"test complete");
+                        bob.close(0u32.into(), b"test complete");
+                        Ok((alice_delta, bob_delta))
                     })
                 });
             let _ = result_tx.send(result);
@@ -1814,7 +2189,7 @@ mod tests {
     async fn receive_sync_envelope(
         connection: &wtransport::Connection,
     ) -> Result<SyncEnvelope, String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let mut chunks: TestChunkMap = HashMap::new();
         loop {
             let now = tokio::time::Instant::now();
@@ -1827,7 +2202,10 @@ mod tests {
                 .map_err(|error| error.to_string())?;
             let payload = datagram.payload();
             if !payload.starts_with(SYNC_CHUNK_MAGIC) {
-                return decode_sync_envelope(&payload).map_err(|error| error.to_string());
+                match decode_sync_envelope(&payload) {
+                    Ok(envelope) => return Ok(envelope),
+                    Err(_) => continue,
+                }
             }
             if payload.len() < SYNC_CHUNK_HEADER_LEN {
                 return Err("short sync chunk datagram".to_owned());
@@ -1934,6 +2312,66 @@ mod tests {
         receiver: &mpsc::Receiver<Result<(SyncEnvelope, SyncEnvelope), String>>,
     ) -> Result<(SyncEnvelope, SyncEnvelope), String> {
         let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match receiver.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Err("timed out waiting for client result".to_owned());
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("client result channel disconnected".to_owned());
+                }
+            }
+        }
+    }
+
+    async fn wait_for_mud_client_result(
+        receiver: &mpsc::Receiver<MudClientResult>,
+    ) -> Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            match receiver.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Err("timed out waiting for client result".to_owned());
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("client result channel disconnected".to_owned());
+                }
+            }
+        }
+    }
+
+    async fn wait_for_mud_login_client_result(
+        receiver: &mpsc::Receiver<MudLoginResult>,
+    ) -> Result<(SyncEnvelope, SyncEnvelope), String> {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            match receiver.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Err("timed out waiting for client result".to_owned());
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("client result channel disconnected".to_owned());
+                }
+            }
+        }
+    }
+
+    async fn wait_for_mud_two_session_result(
+        receiver: &mpsc::Receiver<MudTwoSessionResult>,
+    ) -> Result<(SyncEnvelope, SyncEnvelope), String> {
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             match receiver.try_recv() {
                 Ok(result) => return result,

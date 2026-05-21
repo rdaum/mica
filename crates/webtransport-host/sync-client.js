@@ -443,6 +443,14 @@ function reconcileChildren(parent, nodes) {
   }
 }
 
+export function focusAfterSubmit(form) {
+  const preferred =
+    document.getElementById("command") ??
+    form.querySelector("input[name='text']:not([type='hidden'])") ??
+    document.querySelector("input[name='text']:not([type='hidden'])");
+  preferred?.focus();
+}
+
 export class MicaWebTransportSyncClient {
   constructor(options) {
     this.url = options.url;
@@ -654,7 +662,7 @@ export function bootstrapServerRenderedSync(mount, status) {
         fields,
       });
       form.reset();
-      form.elements.namedItem("actor")?.focus();
+      focusAfterSubmit(form);
     } finally {
       submit.disabled = false;
     }
