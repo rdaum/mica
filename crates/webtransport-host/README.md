@@ -22,6 +22,7 @@ Run through the daemon with a certificate and private key:
 
 ```sh
 cargo run --bin mica-daemon -- \
+  --filein examples/sync-view-provider.mica \
   --webtransport-bind 127.0.0.1:4433 \
   --webtransport-cert cert.pem \
   --webtransport-key key.pem
@@ -30,3 +31,8 @@ cargo run --bin mica-daemon -- \
 The default WebTransport principal is `#web`; use
 `mica-daemon --webtransport-principal NAME` to select another identity with
 suitable endpoint authority.
+
+`browser-smoke.html` is a static browser smoke page for the native browser
+`WebTransport` API. Open it in a browser after the certificate is trusted by that
+browser, connect to `https://127.0.0.1:4433/view`, then send `NeedView` to
+receive the snapshot emitted by `examples/sync-view-provider.mica`.

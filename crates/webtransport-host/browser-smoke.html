@@ -1,0 +1,230 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mica WebTransport Smoke</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    font-family: system-ui, sans-serif;
+  }
+
+  body {
+    margin: 0;
+    padding: 24px;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  h1 {
+    margin: 0 0 20px;
+    font-size: 24px;
+    font-weight: 650;
+  }
+
+  form {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    align-items: end;
+  }
+
+  label {
+    display: grid;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  label.url {
+    grid-column: 1 / -1;
+  }
+
+  input,
+  button,
+  pre {
+    font: inherit;
+  }
+
+  input {
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, CanvasText 30%, Canvas);
+    border-radius: 6px;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  button {
+    min-height: 38px;
+    border: 1px solid color-mix(in srgb, CanvasText 35%, Canvas);
+    border-radius: 6px;
+    background: ButtonFace;
+    color: ButtonText;
+  }
+
+  button:disabled {
+    opacity: 0.55;
+  }
+
+  pre {
+    min-height: 280px;
+    margin: 18px 0 0;
+    padding: 12px;
+    overflow: auto;
+    border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+    border-radius: 6px;
+    background: color-mix(in srgb, CanvasText 5%, Canvas);
+    white-space: pre-wrap;
+  }
+</style>
+<main>
+  <h1>Mica WebTransport Smoke</h1>
+  <form id="controls">
+    <label class="url">
+      URL
+      <input id="url" value="https://127.0.0.1:4433/view" autocomplete="off">
+    </label>
+    <label>
+      Session
+      <input id="session" type="number" min="0" value="7">
+    </label>
+    <label>
+      View
+      <input id="view" type="number" min="0" value="11">
+    </label>
+    <label>
+      Revision
+      <input id="revision" type="number" min="0" value="13">
+    </label>
+    <label>
+      Signature
+      <input id="signature" type="number" min="0" value="17">
+    </label>
+    <button id="connect" type="button">Connect</button>
+    <button id="need" type="button" disabled>Need View</button>
+    <button id="have" type="button" disabled>Have View</button>
+  </form>
+  <pre id="log"></pre>
+</main>
+<script>
+  const MAGIC = [0x4d, 0x53, 0x59, 0x31];
+  const HEADER_LEN = 56;
+  const KIND = new Map([
+    [1, "HaveView"],
+    [2, "NeedView"],
+    [3, "ViewSnapshot"],
+    [4, "ViewDelta"],
+  ]);
+
+  const controls = document.getElementById("controls");
+  const logEl = document.getElementById("log");
+  const connectButton = document.getElementById("connect");
+  const needButton = document.getElementById("need");
+  const haveButton = document.getElementById("have");
+  let transport;
+  let writer;
+
+  function field(id) {
+    return document.getElementById(id);
+  }
+
+  function numberField(id) {
+    return BigInt(field(id).value || "0");
+  }
+
+  function log(line, data) {
+    const suffix = data === undefined ? "" : ` ${JSON.stringify(data)}`;
+    logEl.textContent += `${new Date().toISOString()} ${line}${suffix}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function writeU64(view, offset, value) {
+    view.setBigUint64(offset, BigInt(value), true);
+  }
+
+  function readU64(view, offset) {
+    return view.getBigUint64(offset, true).toString();
+  }
+
+  function encodeEnvelope(kind, payloadText) {
+    const payload = new TextEncoder().encode(payloadText);
+    const bytes = new Uint8Array(HEADER_LEN + payload.length);
+    bytes.set(MAGIC, 0);
+    bytes[4] = kind;
+    const view = new DataView(bytes.buffer);
+    writeU64(view, 8, numberField("session"));
+    writeU64(view, 16, numberField("view"));
+    writeU64(view, 24, numberField("revision"));
+    writeU64(view, 32, numberField("signature"));
+    writeU64(view, 40, 0n);
+    writeU64(view, 48, 0n);
+    bytes.set(payload, HEADER_LEN);
+    return bytes;
+  }
+
+  function decodeEnvelope(bytes) {
+    if (bytes.length < HEADER_LEN || !MAGIC.every((byte, i) => bytes[i] === byte)) {
+      return { raw: Array.from(bytes) };
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return {
+      kind: KIND.get(bytes[4]) || `0x${bytes[4].toString(16)}`,
+      session: readU64(view, 8),
+      view: readU64(view, 16),
+      clientRevision: readU64(view, 24),
+      clientSignature: readU64(view, 32),
+      serverRevision: readU64(view, 40),
+      serverSignature: readU64(view, 48),
+      payload: new TextDecoder().decode(bytes.slice(HEADER_LEN)),
+    };
+  }
+
+  async function readLoop() {
+    const reader = transport.datagrams.readable.getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) {
+        log("reader closed");
+        return;
+      }
+      log("recv", decodeEnvelope(value));
+    }
+  }
+
+  connectButton.addEventListener("click", async () => {
+    controls.querySelectorAll("button").forEach((button) => {
+      button.disabled = true;
+    });
+    try {
+      transport = new WebTransport(field("url").value);
+      await transport.ready;
+      writer = transport.datagrams.writable.getWriter();
+      needButton.disabled = false;
+      haveButton.disabled = false;
+      connectButton.disabled = true;
+      log("connected");
+      readLoop().catch((error) => log("read error", String(error)));
+      transport.closed.then(
+        () => log("closed"),
+        (error) => log("closed with error", String(error)),
+      );
+    } catch (error) {
+      connectButton.disabled = false;
+      log("connect error", String(error));
+    }
+  });
+
+  needButton.addEventListener("click", async () => {
+    await writer.write(encodeEnvelope(2, "need"));
+    log("sent NeedView");
+  });
+
+  haveButton.addEventListener("click", async () => {
+    await writer.write(encodeEnvelope(1, "have"));
+    log("sent HaveView");
+  });
+</script>
