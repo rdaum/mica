@@ -17,6 +17,7 @@ mod error;
 mod frame;
 mod message;
 mod payload;
+mod sync;
 
 pub use error::HostProtocolError;
 pub use frame::{
@@ -24,6 +25,10 @@ pub use frame::{
     encode_frame_segments, encoded_frame,
 };
 pub use message::{HostMessage, MessageType};
+pub use sync::{
+    SYNC_ENVELOPE_HEADER_LEN, SYNC_ENVELOPE_MAGIC, SyncEnvelope, SyncEnvelopeRef, SyncMessageKind,
+    decode_sync_envelope, encode_sync_envelope, encoded_sync_envelope,
+};
 
 pub const MAGIC: [u8; 4] = *b"MHP1";
 pub const PROTOCOL_VERSION: u16 = 1;

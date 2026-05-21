@@ -29,6 +29,10 @@ pub enum HostProtocolError {
     },
     TrailingFrameBytes(usize),
     TrailingPayload(usize),
+    InvalidSyncEnvelopeMagic([u8; 4]),
+    UnsupportedSyncEnvelopeFlags(u8),
+    UnsupportedSyncEnvelopeReserved(u16),
+    UnknownSyncMessageKind(u8),
     UnsupportedFlags(u16),
     InvalidUtf8(String),
     InvalidIdentity(u64),
@@ -63,6 +67,21 @@ impl fmt::Display for HostProtocolError {
             }
             Self::TrailingPayload(count) => {
                 write!(f, "trailing bytes in host message payload: {count}")
+            }
+            Self::InvalidSyncEnvelopeMagic(magic) => {
+                write!(f, "invalid sync envelope magic {magic:?}")
+            }
+            Self::UnsupportedSyncEnvelopeFlags(flags) => {
+                write!(f, "unsupported sync envelope flags 0x{flags:02x}")
+            }
+            Self::UnsupportedSyncEnvelopeReserved(reserved) => {
+                write!(
+                    f,
+                    "unsupported sync envelope reserved bits 0x{reserved:04x}"
+                )
+            }
+            Self::UnknownSyncMessageKind(kind) => {
+                write!(f, "unknown sync message kind 0x{kind:02x}")
             }
             Self::UnsupportedFlags(flags) => {
                 write!(f, "unsupported host frame flags 0x{flags:04x}")
