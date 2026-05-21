@@ -1,0 +1,500 @@
+// Copyright (C) 2026 Ryan Daum <ryan.daum@gmail.com> This program is free
+// software: you can redistribute it and/or modify it under the terms of the GNU
+// Affero General Public License as published by the Free Software Foundation,
+// version 3.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+// details.
+//
+// You should have received a copy of the GNU Affero General Public License along
+// with this program. If not, see <https://www.gnu.org/licenses/>.
+
+use bytes::Bytes;
+use compio::runtime::ResumeUnwind;
+use compio_quic::{Endpoint, ServerBuilder};
+use h3_webtransport::server::WebTransportSession;
+use mica_driver::{CompioTaskDriver, DriverEvent};
+use mica_var::{Identity, Symbol, Value};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use std::collections::{BTreeMap, VecDeque};
+use std::fs::File;
+use std::future::Future;
+use std::io::BufReader;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+
+pub const DEFAULT_BIND: &str = "127.0.0.1:4433";
+pub const DAEMON_ENDPOINT_ID_START: u64 = 0x00ea_0000_0000_0000;
+
+const ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS: usize = 128;
+const ENDPOINT_OUTPUT_DRAIN_DATAGRAMS: usize = 64;
+
+type H3RequestStream =
+    compio_quic::h3::server::RequestStream<compio_quic::h3::BidiStream<Bytes>, Bytes>;
+type WtSession = WebTransportSession<compio_quic::Connection, Bytes>;
+
+#[derive(Clone, Debug)]
+pub struct SessionBinding {
+    pub principal: Identity,
+    pub actor: Option<Identity>,
+}
+
+pub struct WebTransportTlsConfig {
+    cert_chain: Vec<CertificateDer<'static>>,
+    key_der: PrivateKeyDer<'static>,
+}
+
+pub struct InProcessWebTransportHost {
+    driver: Arc<CompioTaskDriver>,
+    sessions: Arc<Mutex<BTreeMap<Identity, Arc<SessionOutput>>>>,
+    stop_events: Arc<AtomicBool>,
+    next_endpoint: AtomicU64,
+}
+
+#[derive(Default)]
+struct SessionOutput {
+    state: Mutex<SessionOutputState>,
+}
+
+#[derive(Default)]
+struct SessionOutputState {
+    datagrams: VecDeque<Bytes>,
+    closed: bool,
+    waker: Option<Waker>,
+}
+
+struct SessionOutputRecv<'a> {
+    output: &'a SessionOutput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SessionOutputReady {
+    Ready { buffered: usize },
+    HighWater { buffered: usize },
+    Closed,
+}
+
+impl WebTransportTlsConfig {
+    pub fn from_pem_files(
+        cert_path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
+    ) -> Result<Self, String> {
+        let cert_path = cert_path.as_ref();
+        let key_path = key_path.as_ref();
+        let cert_file = File::open(cert_path).map_err(|error| {
+            format!(
+                "failed to open certificate {}: {error}",
+                cert_path.display()
+            )
+        })?;
+        let mut cert_reader = BufReader::new(cert_file);
+        let cert_chain = rustls_pemfile::certs(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!(
+                    "failed to read certificate {}: {error}",
+                    cert_path.display()
+                )
+            })?;
+        if cert_chain.is_empty() {
+            return Err(format!(
+                "certificate file {} did not contain any certificates",
+                cert_path.display()
+            ));
+        }
+
+        let key_file = File::open(key_path).map_err(|error| {
+            format!("failed to open private key {}: {error}", key_path.display())
+        })?;
+        let mut key_reader = BufReader::new(key_file);
+        let key_der = rustls_pemfile::private_key(&mut key_reader)
+            .map_err(|error| format!("failed to read private key {}: {error}", key_path.display()))?
+            .ok_or_else(|| {
+                format!(
+                    "private key file {} did not contain a supported key",
+                    key_path.display()
+                )
+            })?;
+
+        Ok(Self {
+            cert_chain,
+            key_der,
+        })
+    }
+}
+
+impl InProcessWebTransportHost {
+    pub fn new(driver: CompioTaskDriver) -> Self {
+        let driver = Arc::new(driver);
+        let sessions = Arc::new(Mutex::new(BTreeMap::new()));
+        let stop_events = Arc::new(AtomicBool::new(false));
+        start_event_pump(driver.clone(), sessions.clone(), stop_events.clone());
+        Self {
+            driver,
+            sessions,
+            stop_events,
+            next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_without_event_pump(driver: CompioTaskDriver) -> Self {
+        Self {
+            driver: Arc::new(driver),
+            sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            stop_events: Arc::new(AtomicBool::new(false)),
+            next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
+        }
+    }
+
+    fn allocate_endpoint(&self) -> Result<Identity, String> {
+        let raw = self.next_endpoint.fetch_add(1, Ordering::Relaxed);
+        Identity::new(raw).ok_or_else(|| "endpoint identity space is exhausted".to_owned())
+    }
+}
+
+impl Drop for InProcessWebTransportHost {
+    fn drop(&mut self) {
+        self.stop_events.store(true, Ordering::Relaxed);
+    }
+}
+
+pub async fn bind_server_endpoint(
+    bind: SocketAddr,
+    tls: WebTransportTlsConfig,
+) -> Result<Endpoint, String> {
+    ServerBuilder::new_with_single_cert(tls.cert_chain, tls.key_der)
+        .map_err(|error| format!("failed to configure WebTransport TLS: {error}"))?
+        .with_alpn_protocols(&["h3"])
+        .bind(bind)
+        .await
+        .map_err(|error| format!("failed to bind WebTransport listener {bind}: {error}"))
+}
+
+pub async fn serve_in_process(
+    endpoint: Endpoint,
+    host: InProcessWebTransportHost,
+    binding: SessionBinding,
+    max_connections: Option<usize>,
+) -> Result<(), String> {
+    let host = Arc::new(host);
+    let mut accepted = 0usize;
+    while let Some(incoming) = endpoint.wait_incoming().await {
+        let host = host.clone();
+        let binding = binding.clone();
+        compio::runtime::spawn(async move {
+            match incoming.await {
+                Ok(connection) => {
+                    if let Err(error) = handle_quic_connection(connection, host, binding).await {
+                        eprintln!("WebTransport connection failed: {error}");
+                    }
+                }
+                Err(error) => eprintln!("WebTransport handshake failed: {error}"),
+            }
+        })
+        .detach();
+        accepted += 1;
+        if max_connections.is_some_and(|max| accepted >= max) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+impl SessionOutput {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn send(&self, datagram: Bytes) -> Result<(), String> {
+        let waker = {
+            let mut state = self.state.lock().unwrap();
+            if state.closed {
+                return Err("session writer is closed".to_owned());
+            }
+            state.datagrams.push_back(datagram);
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        Ok(())
+    }
+
+    fn close(&self) {
+        let waker = {
+            let mut state = self.state.lock().unwrap();
+            state.closed = true;
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn recv(&self) -> SessionOutputRecv<'_> {
+        SessionOutputRecv { output: self }
+    }
+
+    fn drain_batch(&self, max_datagrams: usize) -> Vec<Bytes> {
+        let mut state = self.state.lock().unwrap();
+        let count = max_datagrams.min(state.datagrams.len());
+        let mut datagrams = Vec::with_capacity(count);
+        for _ in 0..count {
+            let Some(datagram) = state.datagrams.pop_front() else {
+                break;
+            };
+            datagrams.push(datagram);
+        }
+        datagrams
+    }
+
+    #[cfg(test)]
+    fn try_recv(&self) -> Option<Bytes> {
+        self.state.lock().unwrap().datagrams.pop_front()
+    }
+}
+
+impl Future for SessionOutputRecv<'_> {
+    type Output = SessionOutputReady;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut state = self.output.state.lock().unwrap();
+        if state.datagrams.len() >= ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS {
+            return Poll::Ready(SessionOutputReady::HighWater {
+                buffered: state.datagrams.len(),
+            });
+        }
+        if !state.datagrams.is_empty() {
+            return Poll::Ready(SessionOutputReady::Ready {
+                buffered: state.datagrams.len(),
+            });
+        }
+        if state.closed {
+            return Poll::Ready(SessionOutputReady::Closed);
+        }
+        state.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+async fn handle_quic_connection(
+    connection: compio_quic::Connection,
+    host: Arc<InProcessWebTransportHost>,
+    binding: SessionBinding,
+) -> Result<(), String> {
+    let mut builder = compio_quic::h3::server::builder();
+    builder
+        .enable_extended_connect(true)
+        .enable_datagram(true)
+        .enable_webtransport(true)
+        .max_webtransport_sessions(1);
+    let mut connection = builder
+        .build::<_, Bytes>(connection)
+        .await
+        .map_err(|error| format!("failed to start HTTP/3 connection: {error}"))?;
+
+    loop {
+        let Some(resolver) = connection
+            .accept()
+            .await
+            .map_err(|error| format!("failed to accept HTTP/3 request: {error}"))?
+        else {
+            return Ok(());
+        };
+        let (request, stream) = resolver
+            .resolve_request()
+            .await
+            .map_err(|error| format!("failed to resolve HTTP/3 request: {error}"))?;
+        if is_webtransport_connect(&request) {
+            let session = WebTransportSession::accept(request, stream, connection)
+                .await
+                .map_err(|error| format!("failed to accept WebTransport session: {error}"))?;
+            return handle_session(Rc::new(session), host, binding).await;
+        }
+        reject_non_webtransport_request(stream).await?;
+    }
+}
+
+fn is_webtransport_connect(request: &http::Request<()>) -> bool {
+    let protocol = request.extensions().get::<compio_quic::h3::ext::Protocol>();
+    matches!(
+        (request.method(), protocol),
+        (&http::Method::CONNECT, Some(protocol))
+            if protocol == &compio_quic::h3::ext::Protocol::WEB_TRANSPORT
+    )
+}
+
+async fn reject_non_webtransport_request(mut stream: H3RequestStream) -> Result<(), String> {
+    let response = http::Response::builder()
+        .status(http::StatusCode::NOT_FOUND)
+        .body(())
+        .map_err(|error| format!("failed to build HTTP/3 response: {error}"))?;
+    stream
+        .send_response(response)
+        .await
+        .map_err(|error| format!("failed to reject HTTP/3 request: {error}"))
+}
+
+async fn handle_session(
+    session: Rc<WtSession>,
+    host: Arc<InProcessWebTransportHost>,
+    binding: SessionBinding,
+) -> Result<(), String> {
+    let endpoint = host.allocate_endpoint()?;
+    let output = SessionOutput::new();
+    host.sessions
+        .lock()
+        .unwrap()
+        .insert(endpoint, output.clone());
+    if let Err(error) = host.driver.open_endpoint_with_context(
+        endpoint,
+        Some(binding.principal),
+        binding.actor,
+        Symbol::intern("webtransport"),
+    ) {
+        drop_session_writer(&host, endpoint);
+        return Err(format_driver_error(error));
+    }
+
+    let writer = compio::runtime::spawn(write_datagram_loop(session.clone(), output));
+    let result = read_datagram_loop(session, &host, endpoint).await;
+    let _ = host.driver.close_endpoint(endpoint);
+    drop_session_writer(&host, endpoint);
+    let _ = writer.await.resume_unwind();
+    result
+}
+
+async fn read_datagram_loop(
+    session: Rc<WtSession>,
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+) -> Result<(), String> {
+    let mut reader = session.datagram_reader();
+    loop {
+        let datagram = reader
+            .read_datagram()
+            .await
+            .map_err(|error| format!("failed to read WebTransport datagram: {error}"))?;
+        host.driver
+            .input(endpoint, Value::bytes(datagram.into_payload()))
+            .await
+            .map_err(format_driver_error)?;
+    }
+}
+
+async fn write_datagram_loop(
+    session: Rc<WtSession>,
+    output: Arc<SessionOutput>,
+) -> Result<(), String> {
+    let mut sender = session.datagram_sender();
+    while let SessionOutputReady::Ready { .. } | SessionOutputReady::HighWater { .. } =
+        output.recv().await
+    {
+        for datagram in output.drain_batch(ENDPOINT_OUTPUT_DRAIN_DATAGRAMS) {
+            sender
+                .send_datagram(datagram)
+                .map_err(|error| format!("failed to send WebTransport datagram: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn drop_session_writer(host: &InProcessWebTransportHost, endpoint: Identity) {
+    if let Some(output) = host.sessions.lock().unwrap().remove(&endpoint) {
+        output.close();
+    }
+}
+
+fn start_event_pump(
+    driver: Arc<CompioTaskDriver>,
+    sessions: Arc<Mutex<BTreeMap<Identity, Arc<SessionOutput>>>>,
+    stop_events: Arc<AtomicBool>,
+) {
+    compio::runtime::spawn(async move {
+        while !stop_events.load(Ordering::Relaxed) {
+            let events = driver.wait_events().await;
+            for event in events {
+                route_driver_event(&sessions, event);
+            }
+        }
+    })
+    .detach();
+}
+
+fn route_driver_event(
+    sessions: &Arc<Mutex<BTreeMap<Identity, Arc<SessionOutput>>>>,
+    event: DriverEvent,
+) {
+    if let DriverEvent::Effect(effect) = event {
+        let Some(sender) = sessions.lock().unwrap().get(&effect.target).cloned() else {
+            return;
+        };
+        let _ = sender.send(effect_datagram(&effect.value));
+    }
+}
+
+fn effect_datagram(value: &Value) -> Bytes {
+    if let Some(bytes) = value.with_bytes(Bytes::copy_from_slice) {
+        return bytes;
+    }
+    if let Some(text) = value.with_str(|value| Bytes::copy_from_slice(value.as_bytes())) {
+        return text;
+    }
+    Bytes::from(value.to_string())
+}
+
+fn format_driver_error(error: mica_driver::DriverError) -> String {
+    format!("error: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effect_datagrams_preserve_bytes_and_strings() {
+        assert_eq!(
+            effect_datagram(&Value::bytes([0xde, 0xad, 0xbe, 0xef])).as_ref(),
+            &[0xde, 0xad, 0xbe, 0xef]
+        );
+        assert_eq!(effect_datagram(&Value::string("hello")).as_ref(), b"hello");
+    }
+
+    #[test]
+    fn endpoint_allocation_uses_webtransport_identity_space() {
+        let host = InProcessWebTransportHost::new_without_event_pump(
+            CompioTaskDriver::spawn_empty().unwrap(),
+        );
+        assert_eq!(
+            host.allocate_endpoint().unwrap(),
+            Identity::new(DAEMON_ENDPOINT_ID_START).unwrap()
+        );
+    }
+
+    #[test]
+    fn routed_effect_reaches_session_output() {
+        let endpoint = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
+        let output = SessionOutput::new();
+        let sessions = Arc::new(Mutex::new(BTreeMap::new()));
+        sessions.lock().unwrap().insert(endpoint, output.clone());
+
+        route_driver_event(
+            &sessions,
+            DriverEvent::Effect(mica_runtime::Effect {
+                task_id: 1,
+                target: endpoint,
+                value: Value::string("hello"),
+            }),
+        );
+
+        assert_eq!(output.try_recv().unwrap().as_ref(), b"hello");
+    }
+}

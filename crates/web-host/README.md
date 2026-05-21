@@ -4,8 +4,9 @@
 
 It is deliberately small: HTTP/1.1 parsing uses [`httparse`](https://docs.rs/httparse/)
 and socket I/O uses `compio` directly. This crate does not use a web framework,
-Hyper, Axum, or Tokio. HTTP/2, HTTP/3, TLS, WebTransport, and richer host
-protocol integration are deferred.
+Hyper, Axum, or Tokio. HTTP/2, HTTP/3, TLS, and richer host protocol
+integration are deferred here; browser WebTransport lives in
+`crates/webtransport-host`.
 
 The standalone binary serves a tiny built-in health/root surface. When linked
 in process by `mica-daemon --web-bind`, parsed requests are installed as

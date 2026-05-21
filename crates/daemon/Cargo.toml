@@ -16,6 +16,7 @@ mica-host-zmq.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true
 mica-web-host.workspace = true
+mica-webtransport-host.workspace = true
 zmq.workspace = true
 
 [[bin]]

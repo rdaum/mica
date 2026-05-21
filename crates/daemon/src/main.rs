@@ -22,6 +22,10 @@ use mica_telnet_host::{
 };
 use mica_var::Symbol;
 use mica_web_host::{InProcessWebHost, RequestBinding, serve_in_process as serve_web};
+use mica_webtransport_host::{
+    InProcessWebTransportHost, SessionBinding, WebTransportTlsConfig,
+    bind_server_endpoint as bind_webtransport, serve_in_process as serve_webtransport,
+};
 use std::fs;
 use std::future;
 use std::net::SocketAddr;
@@ -61,6 +65,14 @@ struct Cli {
     telnet_bind: Option<SocketAddr>,
     #[arg(long, value_name = "ADDR")]
     web_bind: Option<SocketAddr>,
+    #[arg(long, value_name = "ADDR")]
+    webtransport_bind: Option<SocketAddr>,
+    #[arg(long, default_value = "web", value_name = "IDENTITY")]
+    webtransport_principal: String,
+    #[arg(long, value_name = "FILE")]
+    webtransport_cert: Option<PathBuf>,
+    #[arg(long, value_name = "FILE")]
+    webtransport_key: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -81,12 +93,25 @@ fn run() -> Result<(), String> {
 }
 
 async fn run_async(cli: Cli) -> Result<(), String> {
-    if cli.rpc_bind.is_none() && cli.telnet_bind.is_none() && cli.web_bind.is_none() {
-        return Err(
-            "daemon needs at least one endpoint: use --rpc-bind, --telnet-bind, or --web-bind"
-                .to_owned(),
-        );
+    if cli.rpc_bind.is_none()
+        && cli.telnet_bind.is_none()
+        && cli.web_bind.is_none()
+        && cli.webtransport_bind.is_none()
+    {
+        return Err("daemon needs at least one endpoint: use --rpc-bind, --telnet-bind, --web-bind, or --webtransport-bind".to_owned());
     }
+    let webtransport_tls =
+        if cli.webtransport_bind.is_some() {
+            let cert = cli.webtransport_cert.as_ref().ok_or_else(|| {
+                "--webtransport-cert is required with --webtransport-bind".to_owned()
+            })?;
+            let key = cli.webtransport_key.as_ref().ok_or_else(|| {
+                "--webtransport-key is required with --webtransport-bind".to_owned()
+            })?;
+            Some(WebTransportTlsConfig::from_pem_files(cert, key)?)
+        } else {
+            None
+        };
     let mut runner = SourceRunner::new_empty();
     for filein in fileins_or_defaults(&cli.fileins) {
         let source = fs::read_to_string(&filein)
@@ -117,6 +142,18 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     } else {
         None
     };
+    let webtransport_binding = if cli.webtransport_bind.is_some() {
+        let principal_name = actor_name(&cli.webtransport_principal)?;
+        let principal = runner
+            .named_identity(Symbol::intern(&principal_name))
+            .map_err(format_source_error)?;
+        Some(SessionBinding {
+            principal,
+            actor: None,
+        })
+    } else {
+        None
+    };
     let driver = CompioTaskDriver::spawn_with_workers(runner, cli.driver_threads)
         .map_err(format_driver_error)?;
     if let Some(rpc_bind) = cli.rpc_bind {
@@ -138,6 +175,27 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             }
         })
         .detach();
+    }
+    if let Some(webtransport_bind) = cli.webtransport_bind {
+        let binding = webtransport_binding
+            .expect("WebTransport principal should be resolved before driver spawn");
+        let tls = webtransport_tls.expect("WebTransport TLS should be loaded before driver spawn");
+        let endpoint = bind_webtransport(webtransport_bind, tls).await?;
+        println!(
+            "mica-daemon WebTransport listening on {}",
+            endpoint.local_addr().unwrap()
+        );
+        let host = InProcessWebTransportHost::new(driver.clone());
+        if cli.telnet_bind.is_some() {
+            compio::runtime::spawn(async move {
+                if let Err(error) = serve_webtransport(endpoint, host, binding, None).await {
+                    eprintln!("WebTransport host failed: {error}");
+                }
+            })
+            .detach();
+        } else {
+            return serve_webtransport(endpoint, host, binding, None).await;
+        }
     }
     if let Some(telnet_bind) = cli.telnet_bind {
         let actor = telnet_actor.expect("telnet actor should be resolved before driver spawn");
