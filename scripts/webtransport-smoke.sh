@@ -81,7 +81,7 @@ encoded_url="${encoded_url//\//%2F}"
 smoke_url="http://${http_host}:${http_port}/${page}?url=${encoded_url}&certHash=${cert_hash}"
 
 cat <<EOF
-Mica chat sync fixture is starting.
+Mica WebTransport sync fixture is starting.
 
 Browser URL:
   ${smoke_url}

@@ -1,0 +1,43 @@
+// HTTP document route for the DOM-synced MUD app.
+
+assert CanInvoke(#web, :http_request)
+assert CanInvoke(#web, :mud_document)
+assert CanInvoke(#web, :mud_mount_node)
+assert CanInvoke(#web, :mud_style)
+assert CanInvoke(#web, :mud_bootstrap_script)
+
+verb http_request(request)
+  let http_method = one RequestMethod(request, ?m)
+  let path = one RequestPath(request, ?path)
+
+  if http_method == "GET" && (path == "/" || path == "/mud" || string_starts_with(path, "/mud?"))
+    return http_html(200, mud_document(21))
+  end
+
+  return http_text(404, "not found")
+end
+
+verb mud_document(view)
+  let snapshot = sync_snapshot(view)
+  let payload = sync_snapshot_payload(view)
+  let signature = sync_snapshot_signature(view, payload)
+  let root = sync_snapshot_tree(view)
+  let mount = mud_mount_node(view, snapshot[:revision], signature, root)
+  let head = dom_element("head", {}, [dom_element("meta", {:charset -> "utf-8"}, []), dom_element("title", {}, [dom_text("Mica MUD")]), dom_element("style", {}, [dom_raw(mud_style())])])
+  let status = dom_element("div", {:id -> "status", :class -> "sync-status"}, [dom_text("Synced revision "), dom_text(to_literal(snapshot[:revision]))])
+  let body = dom_element("body", {}, [mount, status, dom_element("script", {:type -> "module"}, [dom_raw(mud_bootstrap_script())])])
+  return to_xml([dom_raw("<!doctype html>"), dom_element("html", {}, [head, body])])
+end
+
+verb mud_mount_node(view, revision, signature, root)
+  let attrs = {:id -> "mount", "data-view" -> view, "data-revision" -> revision, "data-signature" -> signature, "data-webtransport-url" -> "https://127.0.0.1:4433/view"}
+  return dom_element("div", attrs, [root])
+end
+
+verb mud_style()
+  return "body{margin:0;background:#16171a;color:#f5f0e8;font-family:Inter,ui-sans-serif,system-ui,sans-serif}button,input{font:inherit}#mount{min-height:100dvh}.sync-status{position:fixed;right:16px;bottom:12px;color:#b6b0a8;font-size:12px}.mud-login{min-height:100dvh;display:grid;place-items:center;padding:24px;box-sizing:border-box;background:radial-gradient(circle at 50% 0,#34302a 0,#16171a 52%)}.login-card{width:min(560px,100%);border:1px solid #4e463d;background:#222225;padding:28px;border-radius:10px;box-shadow:0 20px 80px #0008}.login-card h1,.topbar h1{margin:0;font-size:28px}.lede{color:#d8cab8;line-height:1.5}.login-form,.command-form{display:grid;grid-template-columns:1fr auto;gap:10px}.login-form input,.command-form input{min-width:0;border:1px solid #5b534a;background:#101114;color:#fff;border-radius:8px;padding:12px}.login-form button,.command-form button,.chip,.mini-button{border:1px solid #62584f;background:#2b2a2e;color:#fff;border-radius:999px;padding:9px 14px;cursor:pointer}.mud-shell{min-height:100dvh;display:grid;grid-template-rows:auto 1fr auto;gap:14px;max-width:1120px;margin:0 auto;padding:16px;box-sizing:border-box}.topbar{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #39383d;padding-bottom:12px}.status{color:#c8bcae}.mud-grid{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 280px;grid-template-rows:auto 1fr;gap:12px}.panel{border:1px solid #47434a;background:#202126;border-radius:10px;padding:16px}.room-panel{grid-column:1;grid-row:1 / span 2}.inventory{grid-column:2;grid-row:1}.narrative{grid-column:2;grid-row:2;min-height:260px;overflow:auto}.panel h2{margin:0 0 10px;font-size:18px}.room-description{font-size:18px;line-height:1.45;color:#efe6dc}.exit-row,.command-chips,.object-actions{display:flex;gap:8px;flex-wrap:wrap}.mud-action{display:inline}.objects ul,.inventory ul,.narrative ul{list-style:none;margin:0;padding:0}.object-card{margin:10px 0;padding:12px;border-radius:8px;background:#2a292f}.object-card p{margin:6px 0 10px;color:#d4ccc3}.mini-button{font-size:13px;padding:6px 10px}.danger{border-color:#8d4e46;background:#42282a}.event-line{padding:7px 0;border-bottom:1px solid #333238;line-height:1.35}.event-seq{display:inline-block;min-width:34px;color:#928a82;font-size:12px}.muted{color:#9e968c}.command-deck{border-top:1px solid #39383d;padding-top:12px}.command-chips{margin-bottom:10px}@media(max-width:820px){.mud-shell{padding:12px}.topbar,.login-form,.command-form{display:grid;grid-template-columns:1fr}.mud-grid{grid-template-columns:1fr}.room-panel,.inventory,.narrative{grid-column:1;grid-row:auto}}"
+end
+
+verb mud_bootstrap_script()
+  return "import{bootstrapServerRenderedSync}from'/sync-client.js';window.micaMud=bootstrapServerRenderedSync(document.getElementById('mount'),document.getElementById('status'));"
+end

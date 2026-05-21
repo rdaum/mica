@@ -53,3 +53,12 @@ can still run with a temporary local certificate rather than a locally trusted
 CA. The chat page accepts the certificate hash as a `certHash` query parameter.
 The smoke page accepts the same values as query parameters, including
 `auto=need` for a one-shot protocol run.
+
+The MUD DOM sync fixture can be started with:
+
+```sh
+scripts/mud-webtransport-smoke.sh
+```
+
+It loads the shared sync helpers, the MUD app fileins, and `apps/mud/http.mica`,
+then serves `/mud` as a server-owned DOM view over the same sync client.

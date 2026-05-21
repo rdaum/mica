@@ -63,3 +63,13 @@ curl -i http://127.0.0.1:8080/hello
 curl -i http://127.0.0.1:8080/admin
 curl -i http://127.0.0.1:8080/missing
 ```
+
+Run the first DOM-synced MUD web fixture:
+
+```sh
+scripts/mud-webtransport-smoke.sh
+```
+
+Open the printed `/mud` URL in a browser. The initial document is a
+server-rendered login view; after entering the demo actor, WebTransport DOM sync
+replaces it with the server-owned room view and command input.

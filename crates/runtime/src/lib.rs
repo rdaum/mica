@@ -3013,9 +3013,8 @@ fn dom_attr_value(value: &Value) -> Result<String, RuntimeError> {
 
 fn validate_dom_tag(tag: &str) -> Result<(), RuntimeError> {
     match tag {
-        "button" | "div" | "form" | "input" | "li" | "main" | "p" | "section" | "span" | "ul" => {
-            Ok(())
-        }
+        "aside" | "button" | "div" | "form" | "h1" | "h2" | "header" | "input" | "li" | "main"
+        | "nav" | "p" | "section" | "span" | "strong" | "ul" => Ok(()),
         _ => Err(invalid_builtin_call(
             "dom_html",
             format!("unsupported DOM tag: {tag}"),
@@ -3025,8 +3024,9 @@ fn validate_dom_tag(tag: &str) -> Result<(), RuntimeError> {
 
 fn validate_dom_attr(name: &str) -> Result<(), RuntimeError> {
     match name {
-        "aria-label" | "autocomplete" | "class" | "data-sync-action" | "data-sync-event" | "id"
-        | "data-sync-key" | "name" | "placeholder" | "type" | "value" => Ok(()),
+        "aria-label" | "aria-live" | "autocomplete" | "class" | "data-command" | "data-entity"
+        | "data-sync-action" | "data-sync-event" | "id" | "data-sync-key" | "name"
+        | "placeholder" | "type" | "value" => Ok(()),
         _ => Err(invalid_builtin_call(
             "dom_html",
             format!("unsupported DOM attribute: {name}"),

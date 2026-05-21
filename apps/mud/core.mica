@@ -17,6 +17,7 @@ make_identity(:drop_event)
 make_identity(:put_event)
 make_identity(:say_event)
 make_identity(:button_event)
+make_identity(:mud_event)
 
 make_identity(:alice)
 make_identity(:coin)
@@ -75,6 +76,9 @@ make_relation(:ParserNoun, 2)
 make_relation(:ParserAlias, 2)
 make_relation(:ParserName, 2)
 make_relation(:VisibleTo, 2)
+make_relation(:MudEventDelivery, 2)
+make_functional_relation(:MudEventSeq, 2, [0])
+make_functional_relation(:MudEventText, 2, [0])
 make_relation(:TrustedForNameParsing, 2)
 make_relation(:NameMatchable, 2)
 make_relation(:TrustedForCommandGrammar, 2)
@@ -96,6 +100,7 @@ assert Delegates(#drop_event, #event, 0)
 assert Delegates(#put_event, #event, 0)
 assert Delegates(#say_event, #event, 0)
 assert Delegates(#button_event, #event, 0)
+assert Delegates(#mud_event, #event, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
 assert Delegates(#bob, #player, 0)
@@ -255,6 +260,7 @@ assert TrustedForCommandGrammar(#alice, #north_room)
 assert TrustedForCommandGrammar(#alice, #attic)
 
 assert CanRead(#alice, :Name)
+assert CanRead(#alice, :Delegates)
 assert CanRead(#alice, :Description)
 assert CanRead(#alice, :LocatedIn)
 assert CanRead(#alice, :ProperNoun)
@@ -278,6 +284,9 @@ assert CanRead(#alice, :ParserNoun)
 assert CanRead(#alice, :ParserAlias)
 assert CanRead(#alice, :ParserName)
 assert CanRead(#alice, :VisibleTo)
+assert CanRead(#alice, :MudEventDelivery)
+assert CanRead(#alice, :MudEventSeq)
+assert CanRead(#alice, :MudEventText)
 assert CanRead(#alice, :TrustedForNameParsing)
 assert CanRead(#alice, :NameMatchable)
 assert CanRead(#alice, :TrustedForCommandGrammar)
@@ -286,6 +295,9 @@ assert CanRead(#alice, :CommandHandlerScope)
 
 assert CanWrite(#alice, :LocatedIn)
 assert CanWrite(#alice, :ButtonArmed)
+assert CanWrite(#alice, :MudEventDelivery)
+assert CanWrite(#alice, :MudEventSeq)
+assert CanWrite(#alice, :MudEventText)
 
 assert CanInvoke(#alice, :command)
 assert CanInvoke(#alice, :match_object)
@@ -305,6 +317,8 @@ assert CanInvoke(#alice, :render_event)
 assert CanInvoke(#alice, :event_literal)
 assert CanInvoke(#alice, :emit_room_event)
 assert CanInvoke(#alice, :emit_room_event_except)
+assert CanInvoke(#alice, :mud_next_event_seq)
+assert CanInvoke(#alice, :mud_record_text)
 assert CanInvoke(#alice, :get)
 assert CanInvoke(#alice, :get_from)
 assert CanInvoke(#alice, :drop)
@@ -400,10 +414,35 @@ CommandHandlerScope(actor, actor) :-
 CommandHandlerScope(actor, room) :-
   LocatedIn(actor, room)
 
+verb mud_next_event_seq(listener @ #player)
+  let seq = 0
+  for found in MudEventDelivery(listener, ?event)
+    let event_seq = one MudEventSeq(found[:event], ?event_seq)
+    if event_seq > seq
+      seq = event_seq
+    end
+  end
+
+  return seq + 1
+end
+
+verb mud_record_text(listener @ #player, text @ #string)
+  let seq = mud_next_event_seq(listener)
+  let event = #mud_event<[listener, seq]>
+
+  assert MudEventDelivery(listener, event)
+  assert MudEventSeq(event, seq)
+  assert MudEventText(event, text)
+
+  return event
+end
+
 verb emit_room_event(room @ #room, event @ #event<_>)
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
-    emit(listener, render_event(event, listener))
+    let text = render_event(event, listener)
+    mud_record_text(listener, text)
+    emit(listener, text)
   end
 
   return true
@@ -413,7 +452,9 @@ verb emit_room_event_except(room @ #room, skipped @ #identity, event @ #event<_>
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
     if listener != skipped
-      emit(listener, render_event(event, listener))
+      let text = render_event(event, listener)
+      mud_record_text(listener, text)
+      emit(listener, text)
     end
   end
 

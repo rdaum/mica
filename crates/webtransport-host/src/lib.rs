@@ -34,7 +34,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
@@ -43,6 +43,11 @@ pub const DAEMON_ENDPOINT_ID_START: u64 = 0x00ea_0000_0000_0000;
 
 const ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS: usize = 128;
 const ENDPOINT_OUTPUT_DRAIN_DATAGRAMS: usize = 64;
+const SYNC_DATAGRAM_MAX_LEN: usize = 1024;
+const SYNC_CHUNK_HEADER_LEN: usize = 24;
+const SYNC_CHUNK_PAYLOAD_LEN: usize = SYNC_DATAGRAM_MAX_LEN - SYNC_CHUNK_HEADER_LEN;
+const SYNC_CHUNK_MAGIC: &[u8; 4] = b"MSC1";
+static NEXT_SYNC_CHUNK_ID: AtomicU32 = AtomicU32::new(1);
 
 type H3RequestStream =
     compio_quic::h3::server::RequestStream<compio_quic::h3::BidiStream<Bytes>, Bytes>;
@@ -289,9 +294,10 @@ impl InProcessWebTransportHost {
         let Some(state) = self.sessions.lock().unwrap().get(&endpoint).cloned() else {
             return Ok(());
         };
-        state
-            .output
-            .send(Bytes::from(encoded_sync_envelope(envelope.as_ref())))
+        for datagram in sync_envelope_datagrams(envelope.as_ref()) {
+            state.output.send(datagram)?;
+        }
+        Ok(())
     }
 
     fn active_rendered_sync_view(
@@ -577,7 +583,8 @@ async fn route_dom_event(
         return send_recovery_snapshot(host, endpoint, &event).await;
     }
 
-    host.driver
+    let submitted = host
+        .driver
         .submit_invocation_for_endpoint(
             endpoint,
             Symbol::intern("sync_event"),
@@ -592,6 +599,15 @@ async fn route_dom_event(
         )
         .await
         .map_err(format_driver_error)?;
+    match submitted.outcome {
+        TaskOutcome::Complete { .. } => {}
+        TaskOutcome::Aborted { error, .. } => {
+            return Err(format!("sync_event aborted: {error}"));
+        }
+        TaskOutcome::Suspended { .. } => {
+            return Err("sync_event suspended".to_owned());
+        }
+    }
     refresh_active_sync_views(host).await
 }
 
@@ -898,10 +914,17 @@ fn route_driver_event(
         let Some(state) = sessions.lock().unwrap().get(&effect.target).cloned() else {
             return;
         };
-        let _ = state
-            .output
-            .send(effect_datagram(effect.target, &effect.value));
+        for datagram in effect_datagrams(effect.target, &effect.value) {
+            let _ = state.output.send(datagram);
+        }
     }
+}
+
+fn effect_datagrams(target: Identity, value: &Value) -> Vec<Bytes> {
+    if let Some(envelope) = sync_envelope_from_value(target.raw(), value) {
+        return sync_envelope_datagrams(envelope.as_ref());
+    }
+    vec![effect_datagram(target, value)]
 }
 
 fn effect_datagram(target: Identity, value: &Value) -> Bytes {
@@ -917,6 +940,31 @@ fn effect_datagram(target: Identity, value: &Value) -> Bytes {
     Bytes::from(value.to_string())
 }
 
+fn sync_envelope_datagrams(envelope: mica_host_protocol::SyncEnvelopeRef<'_>) -> Vec<Bytes> {
+    let encoded = encoded_sync_envelope(envelope);
+    if encoded.len() <= SYNC_DATAGRAM_MAX_LEN {
+        return vec![Bytes::from(encoded)];
+    }
+
+    let count = encoded.len().div_ceil(SYNC_CHUNK_PAYLOAD_LEN);
+    let message_id = NEXT_SYNC_CHUNK_ID.fetch_add(1, Ordering::Relaxed);
+    encoded
+        .chunks(SYNC_CHUNK_PAYLOAD_LEN)
+        .enumerate()
+        .map(|(index, chunk)| {
+            let mut datagram = Vec::with_capacity(SYNC_CHUNK_HEADER_LEN + chunk.len());
+            datagram.extend_from_slice(SYNC_CHUNK_MAGIC);
+            datagram.extend_from_slice(&message_id.to_le_bytes());
+            datagram.extend_from_slice(&(index as u32).to_le_bytes());
+            datagram.extend_from_slice(&(count as u32).to_le_bytes());
+            datagram.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+            datagram.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+            datagram.extend_from_slice(chunk);
+            Bytes::from(datagram)
+        })
+        .collect()
+}
+
 fn format_driver_error(error: mica_driver::DriverError) -> String {
     format!("error: {error}")
 }
@@ -928,6 +976,8 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    type TestChunkMap = HashMap<u32, (u32, u32, Vec<Option<Vec<u8>>>)>;
 
     #[test]
     fn effect_datagrams_preserve_bytes_and_strings() {
@@ -1235,6 +1285,68 @@ mod tests {
     }
 
     #[test]
+    fn webtransport_mud_login_pushes_world_delta() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let tls = test_tls_config();
+            let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
+                .await
+                .unwrap();
+            let server_addr = endpoint.local_addr().unwrap();
+            let server_endpoint = endpoint.clone();
+
+            let runner = sync_mud_runner();
+            let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebTransportHost::new(driver.clone());
+            let binding = SessionBinding {
+                principal,
+                actor: None,
+            };
+            compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(1))).detach();
+
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (send_tx, send_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let client =
+                spawn_wtransport_mud_login_client(server_addr, connected_tx, send_rx, result_tx);
+
+            wait_for_client_connected(&connected_rx).await;
+            send_tx.send(()).unwrap();
+            let (snapshot, delta) = wait_for_ack_client_result(&result_rx).await.unwrap();
+
+            server_endpoint.close(0u32.into(), b"test complete");
+            client.join().unwrap();
+            assert_eq!(snapshot.kind, SyncMessageKind::ViewSnapshot);
+            assert_eq!(snapshot.view_id, 21);
+            assert_eq!(snapshot.server_revision, 0);
+            let snapshot_payload: serde_json::Value =
+                serde_json::from_slice(&snapshot.payload).unwrap();
+            assert_eq!(snapshot_payload["root"]["attrs"]["class"], "mud-login");
+            assert_eq!(
+                snapshot_payload["root"]["children"][0]["attrs"]["class"],
+                "login-card"
+            );
+
+            assert_eq!(delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(delta.view_id, 21);
+            assert_eq!(delta.client_revision, 0);
+            assert_eq!(delta.server_revision, 1);
+            let payload: serde_json::Value = serde_json::from_slice(&delta.payload).unwrap();
+            assert_eq!(payload["type"], "dom_patch");
+            assert_eq!(payload["view"], 21);
+            assert_eq!(payload["revision"], 1);
+            let payload_text = serde_json::to_string(&payload).unwrap();
+            assert!(payload_text.contains("mud-shell"));
+            assert!(payload_text.contains("The Mica Rooms"));
+            assert!(payload_text.contains("First Room"));
+            assert!(payload_text.contains("object-card"));
+            assert!(payload_text.contains("brass coin"));
+            assert!(payload_text.contains("Inventory"));
+            assert!(payload_text.contains("Narrative"));
+        });
+    }
+
+    #[test]
     fn webtransport_stale_dom_event_returns_snapshot() {
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let tls = test_tls_config();
@@ -1345,6 +1457,38 @@ mod tests {
         runner
     }
 
+    fn sync_mud_runner() -> SourceRunner {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/sync-host.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/shared/string.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/shared/events.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/core.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/command-parser.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/shared/sync-dom.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/sync.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/http.mica"))
+            .unwrap();
+        runner
+    }
+
     fn spawn_wtransport_smoke_client(
         server_addr: SocketAddr,
         request: Vec<u8>,
@@ -1442,6 +1586,68 @@ mod tests {
                                     ("actor".to_owned(), "bob".to_owned()),
                                     ("text".to_owned(), "hello from sync event".to_owned()),
                                 ]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let delta = receive_sync_envelope(&connection).await?;
+
+                        Ok((snapshot, delta))
+                    })
+                });
+            let _ = result_tx.send(result);
+        })
+    }
+
+    fn spawn_wtransport_mud_login_client(
+        server_addr: SocketAddr,
+        connected_tx: mpsc::Sender<()>,
+        send_rx: mpsc::Receiver<()>,
+        result_tx: mpsc::Sender<Result<(SyncEnvelope, SyncEnvelope), String>>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        let config = wtransport::ClientConfig::builder()
+                            .with_bind_default()
+                            .with_no_cert_validation()
+                            .build();
+                        let url = format!("https://127.0.0.1:{}/view", server_addr.port());
+                        let connection = wtransport::Endpoint::client(config)
+                            .map_err(|error| error.to_string())?
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        connected_tx.send(()).map_err(|error| error.to_string())?;
+                        send_rx.recv().map_err(|error| error.to_string())?;
+
+                        let need_view = SyncEnvelope {
+                            kind: SyncMessageKind::NeedView,
+                            session_id: 7,
+                            view_id: 21,
+                            client_revision: 0,
+                            client_signature: 0,
+                            server_revision: 0,
+                            server_signature: 0,
+                            payload: b"need".to_vec(),
+                        };
+                        connection
+                            .send_datagram(encoded_sync_envelope(need_view.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let snapshot = receive_sync_envelope(&connection).await?;
+
+                        connection
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 7,
+                                view_id: 21,
+                                revision: snapshot.server_revision,
+                                signature: snapshot.server_signature,
+                                event: "submit".to_owned(),
+                                target: "mud-login".to_owned(),
+                                action: "mud_login".to_owned(),
+                                fields: BTreeMap::from([("text".to_owned(), "alice".to_owned())]),
                             }))
                             .map_err(|error| error.to_string())?;
                         let delta = receive_sync_envelope(&connection).await?;
@@ -1608,11 +1814,64 @@ mod tests {
     async fn receive_sync_envelope(
         connection: &wtransport::Connection,
     ) -> Result<SyncEnvelope, String> {
-        let datagram = tokio::time::timeout(Duration::from_secs(3), connection.receive_datagram())
-            .await
-            .map_err(|_| "timed out waiting for WebTransport datagram".to_owned())?
-            .map_err(|error| error.to_string())?;
-        decode_sync_envelope(&datagram.payload()).map_err(|error| error.to_string())
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut chunks: TestChunkMap = HashMap::new();
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err("timed out waiting for WebTransport datagram".to_owned());
+            }
+            let datagram = tokio::time::timeout_at(deadline, connection.receive_datagram())
+                .await
+                .map_err(|_| "timed out waiting for WebTransport datagram".to_owned())?
+                .map_err(|error| error.to_string())?;
+            let payload = datagram.payload();
+            if !payload.starts_with(SYNC_CHUNK_MAGIC) {
+                return decode_sync_envelope(&payload).map_err(|error| error.to_string());
+            }
+            if payload.len() < SYNC_CHUNK_HEADER_LEN {
+                return Err("short sync chunk datagram".to_owned());
+            }
+            let message_id =
+                u32::from_le_bytes(payload[4..8].try_into().map_err(|_| "bad chunk id")?);
+            let index =
+                u32::from_le_bytes(payload[8..12].try_into().map_err(|_| "bad chunk index")?);
+            let count =
+                u32::from_le_bytes(payload[12..16].try_into().map_err(|_| "bad chunk count")?);
+            let total_len =
+                u32::from_le_bytes(payload[16..20].try_into().map_err(|_| "bad chunk len")?);
+            let chunk_len =
+                u32::from_le_bytes(payload[20..24].try_into().map_err(|_| "bad chunk size")?);
+            if count == 0
+                || index >= count
+                || chunk_len as usize > payload.len() - SYNC_CHUNK_HEADER_LEN
+            {
+                return Err("invalid sync chunk datagram".to_owned());
+            }
+            let entry = chunks.entry(message_id).or_insert_with(|| {
+                (
+                    count,
+                    total_len,
+                    vec![None; usize::try_from(count).unwrap_or(0)],
+                )
+            });
+            if entry.0 != count || entry.1 != total_len {
+                return Err("inconsistent sync chunk datagram".to_owned());
+            }
+            entry.2[index as usize] = Some(
+                payload[SYNC_CHUNK_HEADER_LEN..SYNC_CHUNK_HEADER_LEN + chunk_len as usize].to_vec(),
+            );
+            if entry.2.iter().all(Option::is_some) {
+                let mut encoded = Vec::with_capacity(total_len as usize);
+                for part in &entry.2 {
+                    encoded.extend_from_slice(part.as_ref().unwrap());
+                }
+                if encoded.len() != total_len as usize {
+                    return Err("sync chunk length mismatch".to_owned());
+                }
+                return decode_sync_envelope(&encoded).map_err(|error| error.to_string());
+            }
+        }
     }
 
     async fn wait_for_client_connected(receiver: &mpsc::Receiver<()>) {

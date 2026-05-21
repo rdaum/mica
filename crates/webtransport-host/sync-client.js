@@ -1,5 +1,7 @@
 const MAGIC = [0x4d, 0x53, 0x59, 0x31];
 const HEADER_LEN = 56;
+const CHUNK_MAGIC = [0x4d, 0x53, 0x43, 0x31];
+const CHUNK_HEADER_LEN = 24;
 
 export const SyncKind = Object.freeze({
   HaveView: 1,
@@ -15,20 +17,29 @@ const KIND_NAMES = new Map([
   [SyncKind.ViewDelta, "ViewDelta"],
 ]);
 const SUPPORTED_TAGS = new Set([
+  "aside",
   "button",
   "div",
   "form",
+  "h1",
+  "h2",
+  "header",
   "input",
   "li",
   "main",
+  "nav",
   "p",
   "section",
   "span",
+  "strong",
   "ul",
 ]);
 const SUPPORTED_ATTRIBUTES = new Set([
   "aria-label",
+  "aria-live",
   "autocomplete",
+  "data-command",
+  "data-entity",
   "data-sync-action",
   "data-sync-event",
   "data-sync-key",
@@ -49,6 +60,14 @@ function writeU64(view, offset, value) {
 
 function readU64(view, offset) {
   return view.getBigUint64(offset, true).toString();
+}
+
+function readU32(view, offset) {
+  return view.getUint32(offset, true);
+}
+
+function hasMagic(data, magic) {
+  return data.length >= magic.length && magic.every((byte, index) => data[index] === byte);
 }
 
 function payloadBytes(payload) {
@@ -76,7 +95,7 @@ export function encodeSyncEnvelope(envelope) {
 
 export function decodeSyncEnvelope(bytes) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (data.length < HEADER_LEN || !MAGIC.every((byte, index) => data[index] === byte)) {
+  if (data.length < HEADER_LEN || !hasMagic(data, MAGIC)) {
     return { raw: Array.from(data) };
   }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -90,6 +109,65 @@ export function decodeSyncEnvelope(bytes) {
     serverSignature: readU64(view, 48),
     payload: new TextDecoder().decode(data.slice(HEADER_LEN)),
   };
+}
+
+export function decodeChunkedSyncEnvelope(bytes, chunks) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (!hasMagic(data, CHUNK_MAGIC)) {
+    return decodeSyncEnvelope(data);
+  }
+  if (data.length < CHUNK_HEADER_LEN) {
+    return null;
+  }
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const message = readU32(view, 4);
+  const index = readU32(view, 8);
+  const count = readU32(view, 12);
+  const totalLen = readU32(view, 16);
+  const chunkLen = readU32(view, 20);
+  if (
+    count === 0 ||
+    index >= count ||
+    chunkLen > data.length - CHUNK_HEADER_LEN ||
+    totalLen === 0
+  ) {
+    return null;
+  }
+
+  const entry = chunks.get(message) ?? {
+    count,
+    totalLen,
+    received: 0,
+    parts: new Array(count),
+  };
+  if (entry.count !== count || entry.totalLen !== totalLen) {
+    chunks.delete(message);
+    return null;
+  }
+  if (!entry.parts[index]) {
+    entry.parts[index] = data.slice(CHUNK_HEADER_LEN, CHUNK_HEADER_LEN + chunkLen);
+    entry.received += 1;
+  }
+  chunks.set(message, entry);
+
+  if (entry.received !== count) {
+    return null;
+  }
+  chunks.delete(message);
+  const combined = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const part of entry.parts) {
+    if (!part || offset + part.length > combined.length) {
+      return null;
+    }
+    combined.set(part, offset);
+    offset += part.length;
+  }
+  if (offset !== totalLen) {
+    return null;
+  }
+  return decodeSyncEnvelope(combined);
 }
 
 export function certificateHashOptions(hex) {
@@ -374,6 +452,7 @@ export class MicaWebTransportSyncClient {
     this.onError = options.onError;
     this.transport = null;
     this.writer = null;
+    this.chunks = new Map();
   }
 
   async connect() {
@@ -443,7 +522,15 @@ export class MicaWebTransportSyncClient {
       if (done) {
         return;
       }
-      this.onEnvelope?.(decodeSyncEnvelope(value));
+      try {
+        const envelope = decodeChunkedSyncEnvelope(value, this.chunks);
+        if (envelope && !envelope.raw) {
+          this.onEnvelope?.(envelope);
+        }
+      } catch {
+        // Endpoint-targeted legacy emissions can share the datagram channel.
+        // DOM sync state is carried only by sync envelopes.
+      }
     }
   }
 

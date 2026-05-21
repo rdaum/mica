@@ -18,12 +18,16 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const DOM_PATCH_PAYLOAD_TYPE: &str = "dom_patch";
 pub const DOM_EVENT_PAYLOAD_TYPE: &str = "dom_event";
 pub const SUPPORTED_DOM_TAGS: &[&str] = &[
-    "button", "div", "form", "input", "li", "main", "p", "section", "span", "ul",
+    "aside", "button", "div", "form", "h1", "h2", "header", "input", "li", "main", "nav", "p",
+    "section", "span", "strong", "ul",
 ];
 pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
     "aria-label",
+    "aria-live",
     "autocomplete",
     "class",
+    "data-command",
+    "data-entity",
     "data-sync-action",
     "data-sync-event",
     "data-sync-key",
