@@ -935,13 +935,13 @@ mod tests {
     fn routed_command_effect_reaches_endpoint_sender() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../apps/shared/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/events.mica"))
+            .run_filein(include_str!("../../../apps/shared/events.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../apps/mud/core.mica"))
             .unwrap();
         let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
         let host =
@@ -973,19 +973,19 @@ mod tests {
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let mut runner = SourceRunner::new_empty();
             runner
-                .run_filein(include_str!("../../../examples/string.mica"))
+                .run_filein(include_str!("../../../apps/shared/string.mica"))
                 .unwrap();
             runner
-                .run_filein(include_str!("../../../examples/events.mica"))
+                .run_filein(include_str!("../../../apps/shared/events.mica"))
                 .unwrap();
             runner
-                .run_filein(include_str!("../../../examples/mud-core.mica"))
+                .run_filein(include_str!("../../../apps/mud/core.mica"))
                 .unwrap();
             runner
-                .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+                .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
                 .unwrap();
             runner
-                .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
+                .run_filein(include_str!("../../../apps/mud/command-parser.mica"))
                 .unwrap();
             let alice = runner.named_identity(Symbol::intern("alice")).unwrap();
             let host = InProcessTelnetHost::new_without_event_pump(

@@ -34,7 +34,7 @@ For language or runner changes, also consider exercising the current filein
 example:
 
 ```bash
-cargo run --bin mica -- filein examples/mud-core.mica
+cargo run --bin mica -- filein apps/shared/capabilities.mica
 ```
 
 Use narrower commands when the full suite is not practical, and say what you did
@@ -56,7 +56,7 @@ crate boundaries as meaningful:
 - `mica-driver`: compio task driver, wakeups, input, and emissions.
 - `mica-runner`: CLI and REPL binary.
 
-Keep design notes, crate READMEs, and examples aligned with implemented syntax.
+Keep design notes, crate READMEs, and app fileins aligned with implemented syntax.
 When documenting future syntax or semantics, mark it clearly as planned rather
 than current.
 

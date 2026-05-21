@@ -1,12 +1,16 @@
-# Mica Examples
+# Mica Apps
 
-`mud-core.mica` is a small room/object exercise for relations, rules, and verb
-dispatch. `string.mica` documents the low-level string utility surface,
-`event-substitutions.mica` and `events.mica` define narrative event rendering,
-and `mud-command-parser.mica` parses the demo command language in Mica source.
-These are the default fileins for `mica-daemon`, so commands such as `look`,
-`get coin`, `put coin box`, `north`, and `say hello` can exercise telnet
-endpoint input and routed effects.
+`apps/` holds runnable application fileins plus shared support fileins:
+
+- `shared/`: reusable libraries and host policy used by more than one app.
+- `mud/`: room/object, event rendering, and command parser fileins.
+- `web/`: HTTP host handlers and relational route fileins.
+- `chat/`: WebTransport DOM sync chat fileins.
+
+The daemon's default fileins load the shared string and event libraries, the
+MUD room/object model, the MUD command parser, and the minimal HTTP handler.
+Commands such as `look`, `get coin`, `put coin box`, `north`, and `say hello`
+can exercise telnet endpoint input and routed effects.
 
 Try the MUD example over telnet:
 
@@ -14,7 +18,7 @@ Try the MUD example over telnet:
 cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
 ```
 
-`capabilities.mica` shows the intended bootstrap shape for capabilities. It
+`shared/capabilities.mica` shows the intended bootstrap shape for capabilities. It
 declares `Name` as a functional binary relation, then describes policy through
 roles and surfaces. Derived `CanRead`, `CanWrite`, `CanInvoke`, and `CanEffect`
 relations are the effective policy consumed by the runner. Those facts are not
@@ -25,7 +29,7 @@ capabilities for that run.
 Try the capability example with a persistent store:
 
 ```sh
-cargo run --bin mica -- --storage fjall --store demo-db filein --unit caps --replace examples/capabilities.mica
+cargo run --bin mica -- --storage fjall --store demo-db filein --unit caps --replace apps/shared/capabilities.mica
 cargo run --bin mica -- --storage fjall --store demo-db --actor alice eval ':polish(actor: #alice, item: #lamp)'
 cargo run --bin mica -- --storage fjall --store demo-db --actor bob eval 'return #lamp.name'
 cargo run --bin mica -- --storage fjall --store demo-db --actor bob eval '#lamp.name = "stolen"'
@@ -36,10 +40,10 @@ The first actor invocation succeeds and emits an effect because Alice has the
 surface, and emit effects. Bob has the `#visitor` role, so he can read the lamp
 name, but the write attempt is denied.
 
-`http-core.mica` is the minimal default HTTP filein. `relational-router.mica`
+`web/http-core.mica` is the minimal default HTTP filein. `web/relational-router.mica`
 shows the same web-host request facts routed through relations and stratified
 negation. It keeps route matching, access policy, forbidden responses, and
-not-found fallback in Mica source. Both examples define `#web` as the default
+not-found fallback in Mica source. Both fileins define `#web` as the default
 HTTP principal and grant it only the read/invoke authority needed to handle
 requests.
 
@@ -48,12 +52,12 @@ HTTP filein:
 
 ```sh
 cargo run --bin mica-daemon -- \
-  --filein examples/string.mica \
-  --filein examples/events.mica \
-  --filein examples/mud-core.mica \
-  --filein examples/event-substitutions.mica \
-  --filein examples/mud-command-parser.mica \
-  --filein examples/relational-router.mica \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --filein apps/web/relational-router.mica \
   --web-bind 127.0.0.1:8080
 curl -i http://127.0.0.1:8080/hello
 curl -i http://127.0.0.1:8080/admin

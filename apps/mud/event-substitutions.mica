@@ -1,7 +1,7 @@
 // Perspective-sensitive event text built entirely as ordinary Mica code.
 //
 // This file deliberately does not require compiler, runtime, or filein support.
-// File in examples/string.mica first; this library uses its trim() helper.
+// File in apps/shared/string.mica first; this library uses its trim() helper.
 // The world using this library should provide Name, ProperNoun, and Plural
 // relations.
 // Template source strings are compiled into frob values:

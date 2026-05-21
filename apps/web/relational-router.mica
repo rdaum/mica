@@ -1,6 +1,6 @@
 // Relational HTTP routing demo for the in-process web host.
 //
-// Use this instead of examples/http-core.mica when starting mica-daemon. Rust
+// Use this instead of apps/web/http-core.mica when starting mica-daemon. Rust
 // parses HTTP and asserts transient request facts; this file keeps route
 // selection and access policy in ordinary Mica relations and rules.
 

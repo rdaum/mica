@@ -5069,7 +5069,7 @@ mod tests {
     fn runner_string_filein_installs_primitive_prototype_verbs() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../apps/shared/string.mica"))
             .unwrap();
 
         assert!(matches!(
@@ -5187,16 +5187,16 @@ mod tests {
     fn runner_event_substitution_filein_renders_per_viewer() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../apps/shared/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/events.mica"))
+            .run_filein(include_str!("../../../apps/shared/events.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../apps/mud/core.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+            .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
             .unwrap();
 
         assert!(matches!(
@@ -5272,7 +5272,7 @@ mod tests {
     fn runner_submit_invocation_as_adds_actor_and_endpoint_roles() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/capabilities.mica"))
+            .run_filein(include_str!("../../../apps/shared/capabilities.mica"))
             .unwrap();
         let actor = runner.actor_identity(Symbol::intern("alice")).unwrap();
         let endpoint = Identity::new(0x00ee_0000_0000_0002).unwrap();
@@ -5597,16 +5597,16 @@ mod tests {
     fn runner_dispatch_binds_unrestricted_method_params() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../apps/shared/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/events.mica"))
+            .run_filein(include_str!("../../../apps/shared/events.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../apps/mud/core.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+            .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
             .unwrap();
         let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
         let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
@@ -5631,19 +5631,19 @@ mod tests {
     fn runner_mud_command_parser_runs_in_mica() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../apps/shared/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/events.mica"))
+            .run_filein(include_str!("../../../apps/shared/events.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../apps/mud/core.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+            .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/mud-command-parser.mica"))
+            .run_filein(include_str!("../../../apps/mud/command-parser.mica"))
             .unwrap();
         let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
         let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
@@ -5865,16 +5865,16 @@ mod tests {
     fn runner_mud_core_derives_exits_and_recursive_location() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/string.mica"))
+            .run_filein(include_str!("../../../apps/shared/string.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/events.mica"))
+            .run_filein(include_str!("../../../apps/shared/events.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/mud-core.mica"))
+            .run_filein(include_str!("../../../apps/mud/core.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/event-substitutions.mica"))
+            .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
             .unwrap();
         let first_room = runner.named_identity(Symbol::intern("first_room")).unwrap();
         let north_room = runner.named_identity(Symbol::intern("north_room")).unwrap();
@@ -7443,7 +7443,7 @@ mod tests {
     fn runner_mints_actor_authority_from_policy_facts() {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/capabilities.mica"))
+            .run_filein(include_str!("../../../apps/shared/capabilities.mica"))
             .unwrap();
 
         let alice = runner

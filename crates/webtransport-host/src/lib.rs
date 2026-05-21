@@ -1331,16 +1331,16 @@ mod tests {
     fn sync_chat_runner() -> SourceRunner {
         let mut runner = SourceRunner::new_empty();
         runner
-            .run_filein(include_str!("../../../examples/sync-host.mica"))
+            .run_filein(include_str!("../../../apps/shared/sync-host.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/chat-sync.mica"))
+            .run_filein(include_str!("../../../apps/chat/sync.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/sync-dom.mica"))
+            .run_filein(include_str!("../../../apps/shared/sync-dom.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../examples/chat-http.mica"))
+            .run_filein(include_str!("../../../apps/chat/http.mica"))
             .unwrap();
         runner
     }

@@ -22,10 +22,10 @@ Run through the daemon with a certificate and private key:
 
 ```sh
 cargo run --bin mica-daemon -- \
-  --filein examples/sync-host.mica \
-  --filein examples/chat-sync.mica \
-  --filein examples/sync-dom.mica \
-  --filein examples/chat-http.mica \
+  --filein apps/shared/sync-host.mica \
+  --filein apps/chat/sync.mica \
+  --filein apps/shared/sync-dom.mica \
+  --filein apps/chat/http.mica \
   --web-bind 127.0.0.1:8008 \
   --webtransport-bind 127.0.0.1:4433 \
   --webtransport-cert cert.pem \
@@ -36,9 +36,9 @@ The default WebTransport principal is `#web`; use
 `mica-daemon --webtransport-principal NAME` to select another identity with
 suitable endpoint authority.
 
-`examples/chat-http.mica` serves `/chat` through the daemon HTTP host after
-`examples/sync-host.mica`, `examples/chat-sync.mica`, and
-`examples/sync-dom.mica` have been loaded.
+`apps/chat/http.mica` serves `/chat` through the daemon HTTP host after
+`apps/shared/sync-host.mica`, `apps/chat/sync.mica`, and
+`apps/shared/sync-dom.mica` have been loaded.
 The initial response is a Mica-rendered HTML document with the chat DOM already
 mounted, `data-view`, `data-revision`, `data-signature`, a WebTransport endpoint
 URL, and a small bootstrap script. The bootstrap loads `/sync-client.js`, sends

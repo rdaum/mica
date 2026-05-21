@@ -6,7 +6,7 @@
 //
 // Run it with a persistent store:
 //
-//   cargo run --bin mica -- --storage fjall --store demo-db filein --unit caps --replace examples/capabilities.mica
+//   cargo run --bin mica -- --storage fjall --store demo-db filein --unit caps --replace apps/shared/capabilities.mica
 //   cargo run --bin mica -- --storage fjall --store demo-db --actor alice eval ':polish(actor: #alice, item: #lamp)'
 //   cargo run --bin mica -- --storage fjall --store demo-db --actor bob eval 'return #lamp.name'
 //   cargo run --bin mica -- --storage fjall --store demo-db --actor bob eval '#lamp.name = "stolen"'

@@ -13,10 +13,10 @@ elif [[ -n "${MICA_WT_FILEIN:-}" ]]; then
   fileins=("${MICA_WT_FILEIN}")
 else
   fileins=(
-    examples/sync-host.mica
-    examples/chat-sync.mica
-    examples/sync-dom.mica
-    examples/chat-http.mica
+    apps/shared/sync-host.mica
+    apps/chat/sync.mica
+    apps/shared/sync-dom.mica
+    apps/chat/http.mica
   )
 fi
 cert_path="${MICA_WT_CERT:-/tmp/mica-wt-cert.pem}"

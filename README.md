@@ -54,7 +54,7 @@ behaviour on, and keep alive across restarts. Its slots, parent links, methods,
 permissions, and derived state are represented as relations around a durable
 identity rather than fields in one fixed record.
 
-In these examples, `#lamp` is an identity value, `:get(...)` invokes a verb,
+In the current app fileins, `#lamp` is an identity value, `:get(...)` invokes a verb,
 and relation names such as `HeldBy`, `LocatedIn`, and `Name` name stored or
 derived facts.
 
@@ -278,7 +278,7 @@ rule layer that says what those memories are about and how they may be used.
 
 ## MOO-Like Worlds
 
-The current examples show how Mica can model
+The current app fileins show how Mica can model
 [MOO-like](https://en.wikipedia.org/wiki/MOO) pieces: rooms, containers,
 players, verbs, live source loading, telnet interaction, and shared
 programmable space.
@@ -289,8 +289,8 @@ state is facts, inheritance is delegation over identities, verbs dispatch over
 roles, and policies like visibility or containment can be relations and rules
 instead of privileged server internals.
 
-MUD-like examples are useful because rooms, exits, containers, and inventory are
-easy to understand. They are examples of the model, not the boundary of the
+MUD-like apps are useful because rooms, exits, containers, and inventory are
+easy to understand. They are demonstrations of the model, not the boundary of the
 project.
 
 ## Background
@@ -342,7 +342,7 @@ Mica's implementation is still early. The current tree has:
 - actor-derived authority contexts and runtime capability checks;
 - Fjall-backed durable relation state with strict and relaxed commit modes;
 - a simple runner and REPL;
-- small filein examples, including a Mica-authored command parser.
+- small app fileins, including a Mica-authored command parser.
 
 Relaxed durability accepts commits into the provider's ordered writer queue.
 Strict durability waits for the Fjall batch to be applied before the commit
@@ -351,7 +351,7 @@ returns.
 Run the example:
 
 ```sh
-cargo run --bin mica -- filein examples/capabilities.mica
+cargo run --bin mica -- filein apps/shared/capabilities.mica
 ```
 
 Run the telnet MUD demo:
@@ -413,11 +413,11 @@ is not committed yet.
   host and `httparse`-based codec.
 - [`crates/telnet-host`](crates/telnet-host/README.md): telnet listener,
   telnet codec, and host-side endpoint session handling.
-- `examples/mud-core.mica`: small ontology proving relations, rules, filein,
+- `apps/mud/core.mica`: small ontology proving relations, rules, filein,
   verbs, and dispatch.
-- `examples/event-substitutions.mica` and `examples/events.mica`: compiled
+- `apps/mud/event-substitutions.mica` and `apps/shared/events.mica`: compiled
   narrative substitutions and structured event values.
-- `examples/mud-command-parser.mica`: command parsing authored in Mica, using
+- `apps/mud/command-parser.mica`: command parsing authored in Mica, using
   low-level string primitives rather than Rust command matching.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,
   and the relation kernel.

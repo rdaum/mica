@@ -1,4 +1,4 @@
-// Shared host policy and HTTP helpers for sync examples.
+// Shared host policy and HTTP helpers for sync apps.
 
 make_identity(:web)
 

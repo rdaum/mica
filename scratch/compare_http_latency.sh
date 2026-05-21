@@ -19,14 +19,6 @@ RESULT_DIR="${RESULT_DIR:-$ROOT/scratch/http_baseline}"
 WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/mica-http-baseline.XXXXXX")}"
 TARGET_DIR="${TARGET_DIR:-$ROOT/target/http-baseline}"
 
-COMMON_FILEINS=(
-    examples/string.mica
-    examples/events.mica
-    examples/mud-core.mica
-    examples/event-substitutions.mica
-    examples/mud-command-parser.mica
-)
-
 cleanup_pids=()
 DAEMON_PID=""
 cleanup() {
@@ -70,6 +62,27 @@ daemon_bin() {
     printf '%s/%s/mica-daemon\n' "$TARGET_DIR" "$profile_dir"
 }
 
+filein_path() {
+    local tree="$1"
+    local app_path="$2"
+    local old_path="$3"
+    if [[ -f "$tree/apps/$app_path" ]]; then
+        printf '%s/apps/%s\n' "$tree" "$app_path"
+    else
+        printf '%s/examples/%s\n' "$tree" "$old_path"
+    fi
+}
+
+add_common_fileins() {
+    local -n args_ref="$1"
+    local tree="$2"
+    args_ref+=(--filein "$(filein_path "$tree" shared/string.mica string.mica)")
+    args_ref+=(--filein "$(filein_path "$tree" shared/events.mica events.mica)")
+    args_ref+=(--filein "$(filein_path "$tree" mud/core.mica mud-core.mica)")
+    args_ref+=(--filein "$(filein_path "$tree" mud/event-substitutions.mica event-substitutions.mica)")
+    args_ref+=(--filein "$(filein_path "$tree" mud/command-parser.mica mud-command-parser.mica)")
+}
+
 start_daemon() {
     local tree="$1"
     local port="$2"
@@ -77,15 +90,13 @@ start_daemon() {
     local log_file="$4"
     local filein_args=()
 
-    for filein in "${COMMON_FILEINS[@]}"; do
-        filein_args+=(--filein "$tree/$filein")
-    done
+    add_common_fileins filein_args "$tree"
     case "$mode" in
         core)
-            filein_args+=(--filein "$tree/examples/http-core.mica")
+            filein_args+=(--filein "$(filein_path "$tree" web/http-core.mica http-core.mica)")
             ;;
         router)
-            filein_args+=(--filein "$tree/examples/relational-router.mica")
+            filein_args+=(--filein "$(filein_path "$tree" web/relational-router.mica relational-router.mica)")
             ;;
         *)
             echo "unknown daemon mode: $mode" >&2
@@ -170,7 +181,8 @@ build_daemon "$WORK_DIR/after"
 
 run_case before-core "$WORK_DIR/before" core "$BASE_PORT"
 run_case after-core "$WORK_DIR/after" core "$((BASE_PORT + 1))"
-if [[ -f "$WORK_DIR/after/examples/relational-router.mica" ]]; then
+if [[ -f "$WORK_DIR/after/apps/web/relational-router.mica" ||
+    -f "$WORK_DIR/after/examples/relational-router.mica" ]]; then
     run_case after-router "$WORK_DIR/after" router "$((BASE_PORT + 2))"
 fi
 

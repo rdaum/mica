@@ -68,7 +68,7 @@ machine.
 The core route is effectively flat across the async driver refactor in this
 local run: sequential latency is slightly higher after the refactor, while the
 loaded average is slightly lower. The router demo is a current-only measurement
-because `examples/relational-router.mica` did not exist at the before ref.
+because `apps/web/relational-router.mica` did not exist at the before ref.
 
 ## Batched Transient Request Facts
 

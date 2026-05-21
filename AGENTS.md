@@ -45,7 +45,7 @@ crates/
 
 Supporting material:
 
-- [examples/](./examples/) contains runnable Mica fileins.
+- [apps/](./apps/) contains runnable application and shared Mica fileins.
 - [sketches/](./sketches/) contains design notes; treat them as informative,
   not automatically authoritative over current code.
 - [CODING-STYLE.md](./CODING-STYLE.md) is binding for code style.
@@ -123,13 +123,13 @@ cargo fmt --all
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run --bin mica
-cargo run --bin mica -- filein examples/capabilities.mica
+cargo run --bin mica -- filein apps/shared/capabilities.mica
 ```
 
 For example fileins that need persistence:
 
 ```sh
-cargo run --bin mica -- --storage fjall --store demo-db filein --unit caps --replace examples/capabilities.mica
+cargo run --bin mica -- --storage fjall --store demo-db filein --unit caps --replace apps/shared/capabilities.mica
 cargo run --bin mica -- --storage fjall --store demo-db --actor alice eval ':polish(actor: #alice, item: #lamp)'
 ```
 
