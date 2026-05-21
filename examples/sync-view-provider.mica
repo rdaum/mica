@@ -1,0 +1,34 @@
+// Minimal sync view provider for the WebTransport sync ABI.
+
+make_identity(:web)
+
+make_relation(:CanRead, 2)
+make_relation(:CanInvoke, 2)
+make_relation(:CanEffect, 1)
+make_relation(:SyncViewPayload, 2)
+make_relation(:SyncViewRevision, 2)
+make_relation(:SyncViewSignature, 2)
+
+assert CanRead(#web, :SyncViewPayload)
+assert CanRead(#web, :SyncViewRevision)
+assert CanRead(#web, :SyncViewSignature)
+assert CanInvoke(#web, :sync_need_view)
+assert CanInvoke(#web, :sync_have_view)
+assert CanEffect(#web)
+
+assert SyncViewPayload(11, "snapshot")
+assert SyncViewRevision(11, 29)
+assert SyncViewSignature(11, 31)
+
+verb sync_need_view(endpoint, session, view, client_revision, client_signature, server_revision, server_signature, payload)
+  let body = one SyncViewPayload(view, ?body)
+  let revision = one SyncViewRevision(view, ?revision)
+  let signature = one SyncViewSignature(view, ?signature)
+
+  emit(endpoint, [:view_snapshot, session, view, client_revision, client_signature, revision, signature, body])
+  return body
+end
+
+verb sync_have_view(endpoint, session, view, client_revision, client_signature, server_revision, server_signature, payload)
+  return server_revision == one SyncViewRevision(view, ?revision) && server_signature == one SyncViewSignature(view, ?signature)
+end

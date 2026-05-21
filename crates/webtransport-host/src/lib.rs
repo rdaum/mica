@@ -668,17 +668,7 @@ mod tests {
 
             let mut runner = SourceRunner::new_empty();
             runner
-                .run_source(
-                    "make_identity(:web)\n\
-                     make_relation(:CanInvoke, 2)\n\
-                     make_relation(:CanEffect, 1)\n\
-                     assert CanInvoke(#web, :sync_need_view)\n\
-                     assert CanEffect(#web)\n\
-                     verb sync_need_view(endpoint, session, view, client_revision, client_signature, server_revision, server_signature, payload)\n\
-                       emit(endpoint, [:view_snapshot, session, view, client_revision, client_signature, 29, 31, \"snapshot\"])\n\
-                       return payload\n\
-                     end\n",
-                )
+                .run_filein(include_str!("../../../examples/sync-view-provider.mica"))
                 .unwrap();
             let principal = runner.named_identity(Symbol::intern("web")).unwrap();
             let driver = CompioTaskDriver::spawn(runner).unwrap();
