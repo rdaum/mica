@@ -88,6 +88,10 @@
       URL
       <input id="url" value="https://127.0.0.1:4433/view" autocomplete="off">
     </label>
+    <label class="url">
+      Certificate SHA-256
+      <input id="certHash" autocomplete="off" placeholder="optional hex-encoded certificate hash">
+    </label>
     <label>
       Session
       <input id="session" type="number" min="0" value="7">
@@ -127,6 +131,23 @@
   const haveButton = document.getElementById("have");
   let transport;
   let writer;
+  const smoke = {
+    events: [],
+    lastEnvelope: null,
+    snapshot: null,
+    error: null,
+  };
+  window.micaWebTransportSmoke = smoke;
+
+  function applyQueryParams() {
+    const params = new URLSearchParams(location.search);
+    for (const id of ["url", "certHash", "session", "view", "revision", "signature"]) {
+      const value = params.get(id);
+      if (value !== null) {
+        field(id).value = value;
+      }
+    }
+  }
 
   function field(id) {
     return document.getElementById(id);
@@ -140,6 +161,7 @@
     const suffix = data === undefined ? "" : ` ${JSON.stringify(data)}`;
     logEl.textContent += `${new Date().toISOString()} ${line}${suffix}\n`;
     logEl.scrollTop = logEl.scrollHeight;
+    smoke.events.push({ line, data });
   }
 
   function writeU64(view, offset, value) {
@@ -183,6 +205,36 @@
     };
   }
 
+  function hexToBytes(hex) {
+    const clean = hex.replace(/[^0-9a-f]/gi, "");
+    if (clean.length === 0) {
+      return null;
+    }
+    if (clean.length !== 64) {
+      throw new Error("certificate hash must be 32 bytes of hex");
+    }
+    const bytes = new Uint8Array(32);
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
+  }
+
+  function transportOptions() {
+    const hash = hexToBytes(field("certHash").value);
+    if (hash === null) {
+      return undefined;
+    }
+    return {
+      serverCertificateHashes: [
+        {
+          algorithm: "sha-256",
+          value: hash,
+        },
+      ],
+    };
+  }
+
   async function readLoop() {
     const reader = transport.datagrams.readable.getReader();
     for (;;) {
@@ -191,16 +243,22 @@
         log("reader closed");
         return;
       }
-      log("recv", decodeEnvelope(value));
+      const envelope = decodeEnvelope(value);
+      smoke.lastEnvelope = envelope;
+      if (envelope.kind === "ViewSnapshot") {
+        smoke.snapshot = envelope;
+      }
+      log("recv", envelope);
     }
   }
 
-  connectButton.addEventListener("click", async () => {
+  async function connect() {
     controls.querySelectorAll("button").forEach((button) => {
       button.disabled = true;
     });
     try {
-      transport = new WebTransport(field("url").value);
+      smoke.error = null;
+      transport = new WebTransport(field("url").value, transportOptions());
       await transport.ready;
       writer = transport.datagrams.writable.getWriter();
       needButton.disabled = false;
@@ -214,17 +272,42 @@
       );
     } catch (error) {
       connectButton.disabled = false;
+      smoke.error = String(error);
       log("connect error", String(error));
+      throw error;
     }
-  });
+  }
 
-  needButton.addEventListener("click", async () => {
+  async function sendNeedView() {
     await writer.write(encodeEnvelope(2, "need"));
     log("sent NeedView");
-  });
+  }
 
-  haveButton.addEventListener("click", async () => {
+  async function sendHaveView() {
     await writer.write(encodeEnvelope(1, "have"));
     log("sent HaveView");
+  }
+
+  connectButton.addEventListener("click", connect);
+
+  needButton.addEventListener("click", sendNeedView);
+
+  haveButton.addEventListener("click", sendHaveView);
+
+  applyQueryParams();
+
+  window.micaWebTransportSmoke.connect = connect;
+  window.micaWebTransportSmoke.sendNeedView = sendNeedView;
+  window.micaWebTransportSmoke.sendHaveView = sendHaveView;
+
+  window.addEventListener("load", () => {
+    const auto = new URLSearchParams(location.search).get("auto");
+    if (auto === "need") {
+      connect()
+        .then(sendNeedView)
+        .catch((error) => {
+          smoke.error = String(error);
+        });
+    }
   });
 </script>

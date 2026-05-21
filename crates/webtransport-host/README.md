@@ -36,3 +36,10 @@ suitable endpoint authority.
 `WebTransport` API. Open it in a browser after the certificate is trusted by that
 browser, connect to `https://127.0.0.1:4433/view`, then send `NeedView` to
 receive the snapshot emitted by `examples/sync-view-provider.mica`.
+
+For an untrusted local certificate, use a short-lived ECDSA certificate and put
+the hex SHA-256 hash of the DER certificate in the `Certificate SHA-256` field.
+Browsers use the `serverCertificateHashes` option for that path, so the daemon
+can still run with a temporary local certificate rather than a locally trusted
+CA. The page also accepts the same values as query parameters, including
+`auto=need` for a one-shot smoke run.
