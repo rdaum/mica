@@ -11,7 +11,10 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::codec::{HttpCodecError, HttpRequest, HttpResponse};
+use crate::codec::{
+    HttpCodecError, HttpRequest, HttpResponse, is_valid_header_name, is_valid_header_value,
+    is_valid_response_reason,
+};
 use mica_runtime::{SubmittedTask, TaskOutcome};
 use mica_var::{Symbol, Value};
 
@@ -98,9 +101,13 @@ pub(crate) fn decode_response_value(value: Value, close: bool) -> Result<HttpRes
     }
     let reason =
         map_string(&value, "reason")?.unwrap_or_else(|| standard_reason(status as u16).to_owned());
+    if !is_valid_response_reason(&reason) {
+        return Err(":reason contains invalid HTTP reason phrase characters".to_owned());
+    }
     let body = map_body(&value)?.unwrap_or_default();
     let mut response = HttpResponse::new(status as u16, reason, body);
     for (name, value) in map_headers(&value)? {
+        validate_response_header(&name, &value)?;
         response = response.with_header(name, value);
     }
     Ok(with_connection_header(response, close))
@@ -171,6 +178,16 @@ fn header_pair(value: &Value) -> Result<(String, Vec<u8>), String> {
             Ok((name, value))
         })
         .ok_or_else(|| "header entries must be lists".to_owned())?
+}
+
+fn validate_response_header(name: &str, value: &[u8]) -> Result<(), String> {
+    if !is_valid_header_name(name) {
+        return Err("header name contains invalid HTTP token characters".to_owned());
+    }
+    if !is_valid_header_value(value) {
+        return Err("header value contains invalid HTTP field characters".to_owned());
+    }
+    Ok(())
 }
 
 fn standard_reason(status: u16) -> &'static str {
@@ -298,6 +315,66 @@ mod tests {
                 .find(|header| header.name.eq_ignore_ascii_case("content-type"))
                 .map(|header| header.value.as_slice()),
             Some(b"text/plain".as_slice())
+        );
+    }
+
+    #[test]
+    fn rejects_mica_response_header_name_injection() {
+        let error = decode_response_value(
+            Value::map([
+                (
+                    Value::symbol(Symbol::intern("headers")),
+                    Value::list([Value::list([
+                        Value::string("x-test\r\nset-cookie"),
+                        Value::string("1"),
+                    ])]),
+                ),
+                (Value::symbol(Symbol::intern("body")), Value::string("bad")),
+            ]),
+            false,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "header name contains invalid HTTP token characters");
+    }
+
+    #[test]
+    fn rejects_mica_response_header_value_injection() {
+        let error = decode_response_value(
+            Value::map([
+                (
+                    Value::symbol(Symbol::intern("headers")),
+                    Value::list([Value::list([
+                        Value::string("x-test"),
+                        Value::string("ok\r\nset-cookie: bad"),
+                    ])]),
+                ),
+                (Value::symbol(Symbol::intern("body")), Value::string("bad")),
+            ]),
+            false,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "header value contains invalid HTTP field characters");
+    }
+
+    #[test]
+    fn rejects_mica_response_reason_injection() {
+        let error = decode_response_value(
+            Value::map([
+                (
+                    Value::symbol(Symbol::intern("reason")),
+                    Value::string("OK\r\nInjected"),
+                ),
+                (Value::symbol(Symbol::intern("body")), Value::string("bad")),
+            ]),
+            false,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            ":reason contains invalid HTTP reason phrase characters"
         );
     }
 }

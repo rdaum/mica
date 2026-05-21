@@ -158,7 +158,8 @@ impl Drop for EndpointScope {
 
 async fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<(), String> {
     let mut out = Vec::new();
-    encode_response(&response, &mut out);
+    encode_response(&response, &mut out)
+        .map_err(|error| format!("failed to encode HTTP response: {error}"))?;
     let (result, _) = stream.write_all(out).await.into();
     result.map_err(|error| format!("failed to write to connection: {error}"))
 }

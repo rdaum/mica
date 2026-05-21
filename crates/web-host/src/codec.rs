@@ -51,6 +51,9 @@ pub enum HttpCodecError {
     InvalidContentLength,
     DuplicateContentLength,
     UnsupportedTransferEncoding,
+    InvalidResponseReason,
+    InvalidResponseHeaderName,
+    InvalidResponseHeaderValue,
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +76,11 @@ impl fmt::Display for HttpCodecError {
             }
             Self::UnsupportedTransferEncoding => {
                 f.write_str("HTTP transfer encoding is not supported")
+            }
+            Self::InvalidResponseReason => f.write_str("HTTP response reason is invalid"),
+            Self::InvalidResponseHeaderName => f.write_str("HTTP response header name is invalid"),
+            Self::InvalidResponseHeaderValue => {
+                f.write_str("HTTP response header value is invalid")
             }
         }
     }
@@ -231,7 +239,8 @@ impl HttpCodec {
     }
 }
 
-pub fn encode_response(response: &HttpResponse, out: &mut Vec<u8>) {
+pub fn encode_response(response: &HttpResponse, out: &mut Vec<u8>) -> Result<(), HttpCodecError> {
+    validate_response(response)?;
     out.extend_from_slice(
         format!("HTTP/1.1 {} {}\r\n", response.status, response.reason).as_bytes(),
     );
@@ -250,6 +259,61 @@ pub fn encode_response(response: &HttpResponse, out: &mut Vec<u8>) {
     }
     out.extend_from_slice(b"\r\n");
     out.extend_from_slice(&response.body);
+    Ok(())
+}
+
+fn validate_response(response: &HttpResponse) -> Result<(), HttpCodecError> {
+    if !is_valid_response_reason(&response.reason) {
+        return Err(HttpCodecError::InvalidResponseReason);
+    }
+    for header in &response.headers {
+        if !is_valid_header_name(&header.name) {
+            return Err(HttpCodecError::InvalidResponseHeaderName);
+        }
+        if !is_valid_header_value(&header.value) {
+            return Err(HttpCodecError::InvalidResponseHeaderValue);
+        }
+    }
+    Ok(())
+}
+
+pub fn is_valid_header_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(is_header_name_byte)
+}
+
+pub fn is_valid_header_value(value: &[u8]) -> bool {
+    value
+        .iter()
+        .all(|byte| matches!(byte, b'\t' | b' '..=b'~' | 0x80..=0xff))
+}
+
+pub fn is_valid_response_reason(reason: &str) -> bool {
+    reason
+        .bytes()
+        .all(|byte| matches!(byte, b'\t' | b' '..=b'~' | 0x80..=0xff))
+}
+
+fn is_header_name_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'!' | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'\''
+            | b'*'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~'
+            | b'0'..=b'9'
+            | b'A'..=b'Z'
+            | b'a'..=b'z'
+    )
 }
 
 fn content_length(headers: &[HttpHeader]) -> Result<usize, HttpCodecError> {
@@ -417,11 +481,48 @@ mod tests {
     #[test]
     fn encodes_response_with_content_length() {
         let mut out = Vec::new();
-        encode_response(&HttpResponse::text(200, "OK", "ok\n"), &mut out);
+        encode_response(&HttpResponse::text(200, "OK", "ok\n"), &mut out).unwrap();
 
         assert_eq!(
             out,
             b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 3\r\n\r\nok\n"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_response_header_name() {
+        let mut out = Vec::new();
+        let response =
+            HttpResponse::new(200, "OK", Vec::new()).with_header("x-bad\r\nset-cookie", b"1");
+
+        assert_eq!(
+            encode_response(&response, &mut out),
+            Err(HttpCodecError::InvalidResponseHeaderName)
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_response_header_value() {
+        let mut out = Vec::new();
+        let response = HttpResponse::new(200, "OK", Vec::new()).with_header("x-test", b"ok\r\nbad");
+
+        assert_eq!(
+            encode_response(&response, &mut out),
+            Err(HttpCodecError::InvalidResponseHeaderValue)
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_response_reason() {
+        let mut out = Vec::new();
+        let response = HttpResponse::new(200, "OK\r\nInjected", Vec::new());
+
+        assert_eq!(
+            encode_response(&response, &mut out),
+            Err(HttpCodecError::InvalidResponseReason)
+        );
+        assert!(out.is_empty());
     }
 }
