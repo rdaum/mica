@@ -302,6 +302,8 @@
     await client.sendDomEvent({
       session: numberField("session"),
       view: numberField("view"),
+      revision: numberField("revision"),
+      signature: numberField("signature"),
       event: "submit",
       target: "chat-composer",
       action: "chat_post",
@@ -310,7 +312,7 @@
         text: field("chatText").value,
       },
     });
-    log("sent sync_event");
+    log("sent dom_event");
   }
 
   connectButton.addEventListener("click", connect);

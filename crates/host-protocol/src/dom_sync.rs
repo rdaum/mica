@@ -16,6 +16,7 @@ use serde_json::{Map, Value as JsonValue, json};
 use std::collections::BTreeMap;
 
 pub const DOM_PATCH_PAYLOAD_TYPE: &str = "dom_patch";
+pub const DOM_EVENT_PAYLOAD_TYPE: &str = "dom_event";
 pub const SUPPORTED_DOM_TAGS: &[&str] = &[
     "button", "div", "form", "input", "li", "main", "p", "section", "span", "ul",
 ];
@@ -74,6 +75,18 @@ pub enum DomPatch {
     RemoveChild {
         path: Vec<usize>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DomEventPayload {
+    pub session_id: u64,
+    pub view_id: u64,
+    pub revision: u64,
+    pub signature: u64,
+    pub event: String,
+    pub target: String,
+    pub action: String,
+    pub fields: BTreeMap<String, String>,
 }
 
 impl DomNode {
@@ -263,6 +276,61 @@ pub fn dom_patch_payload_json(view: u64, revision: u64, patches: &[DomPatch]) ->
     .expect("DOM patch payload should serialize")
 }
 
+pub fn dom_event_payload_json(event: &DomEventPayload) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "type": DOM_EVENT_PAYLOAD_TYPE,
+        "session": event.session_id,
+        "view": event.view_id,
+        "revision": event.revision,
+        "signature": event.signature,
+        "event": event.event,
+        "target": event.target,
+        "action": event.action,
+        "fields": event.fields,
+    }))
+    .expect("DOM event payload should serialize")
+}
+
+pub fn decode_dom_event_payload(bytes: &[u8]) -> Result<Option<DomEventPayload>, String> {
+    let Ok(value) = serde_json::from_slice::<JsonValue>(bytes) else {
+        return Ok(None);
+    };
+    let Some(object) = value.as_object() else {
+        return Ok(None);
+    };
+    if object.get("type").and_then(JsonValue::as_str) != Some(DOM_EVENT_PAYLOAD_TYPE) {
+        return Ok(None);
+    }
+
+    let fields = object
+        .get("fields")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "dom_event requires fields object".to_owned())?
+        .iter()
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .ok_or_else(|| format!("dom_event field {key} must be a string"))?;
+            Ok((key.clone(), value.to_owned()))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+
+    Ok(Some(DomEventPayload {
+        session_id: required_u64(object, "session")?,
+        view_id: required_u64(object, "view")?,
+        revision: required_u64(object, "revision")?,
+        signature: required_u64(object, "signature")?,
+        event: required_string(object, "event")?,
+        target: required_string(object, "target")?,
+        action: object
+            .get("action")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        fields,
+    }))
+}
+
 /// Hashes a revision and canonical state payload. Delta envelopes carry the
 /// signature of the resulting rendered state, not the delta payload bytes.
 pub fn sync_payload_signature(revision: u64, payload: &[u8]) -> u64 {
@@ -272,6 +340,29 @@ pub fn sync_payload_signature(revision: u64, payload: &[u8]) -> u64 {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash & SIGNATURE_MASK
+}
+
+fn required_u64(object: &Map<String, JsonValue>, field: &str) -> Result<u64, String> {
+    let Some(value) = object.get(field) else {
+        return Err(format!("dom_event requires numeric {field}"));
+    };
+    if let Some(raw) = value.as_u64() {
+        return Ok(raw);
+    }
+    if let Some(text) = value.as_str()
+        && let Ok(raw) = text.parse()
+    {
+        return Ok(raw);
+    }
+    Err(format!("dom_event requires numeric {field}"))
+}
+
+fn required_string(object: &Map<String, JsonValue>, field: &str) -> Result<String, String> {
+    object
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("dom_event requires string {field}"))
 }
 
 fn mica_attrs(value: &Value) -> Result<BTreeMap<String, String>, String> {
@@ -500,5 +591,36 @@ mod tests {
         assert_eq!(json["view"], 11);
         assert_eq!(json["revision"], 20);
         assert_eq!(json["root"]["text"], "hello");
+    }
+
+    #[test]
+    fn dom_event_payload_round_trips() {
+        let event = DomEventPayload {
+            session_id: 7,
+            view_id: 11,
+            revision: 13,
+            signature: 17,
+            event: "submit".to_owned(),
+            target: "chat-composer".to_owned(),
+            action: "chat_post".to_owned(),
+            fields: BTreeMap::from([
+                ("actor".to_owned(), "bob".to_owned()),
+                ("text".to_owned(), "hello".to_owned()),
+            ]),
+        };
+        let payload = dom_event_payload_json(&event);
+
+        assert_eq!(decode_dom_event_payload(&payload).unwrap(), Some(event));
+        assert_eq!(
+            decode_dom_event_payload(br#"{"type":"other","fields":{}}"#).unwrap(),
+            None
+        );
+        assert!(decode_dom_event_payload(br#"{"type":"dom_event"}"#).is_err());
+        assert!(
+            decode_dom_event_payload(
+                br#"{"type":"dom_event","session":7,"view":11,"revision":1,"signature":2,"event":"submit","target":"chat-composer","fields":{"text":2}}"#
+            )
+            .is_err()
+        );
     }
 }

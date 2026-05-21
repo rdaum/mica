@@ -413,9 +413,11 @@ export class MicaWebTransportSyncClient {
     await this.writer.write(
       new TextEncoder().encode(
         JSON.stringify({
-          type: "sync_event",
-          session: Number(event.session),
-          view: Number(event.view),
+          type: "dom_event",
+          session: BigInt(event.session).toString(),
+          view: BigInt(event.view).toString(),
+          revision: BigInt(event.revision).toString(),
+          signature: BigInt(event.signature).toString(),
           event: String(event.event),
           target: String(event.target ?? ""),
           action: String(event.action ?? ""),
@@ -548,6 +550,8 @@ export function bootstrapServerRenderedSync(mount, status) {
       await client.sendDomEvent({
         session: state.session,
         view: state.view,
+        revision: state.revision,
+        signature: state.signature,
         event: "submit",
         target: form.id,
         action: form.dataset.syncAction ?? "",
