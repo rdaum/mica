@@ -218,9 +218,19 @@
       smoke.delta = envelope;
       smoke.deltaPayload = delta.payload;
       smoke.deltaValid = delta.valid;
-      if (delta.valid) {
+      try {
+        if (!delta.valid) {
+          throw new Error("invalid delta signature");
+        }
         applyDelta(mount, delta.payload);
         updateClientView(envelope);
+      } catch (error) {
+        smoke.error = String(error);
+        log("delta recovery", String(error));
+        requestFullSnapshot().catch((requestError) => {
+          smoke.error = String(requestError);
+          log("recovery error", String(requestError));
+        });
       }
     }
     log("recv", envelope);
@@ -270,6 +280,17 @@
   async function sendNeedView() {
     await client.needView(viewState("need"));
     log("sent NeedView");
+  }
+
+  async function requestFullSnapshot() {
+    await client.needView({
+      session: numberField("session"),
+      view: numberField("view"),
+      clientRevision: 0n,
+      clientSignature: 0n,
+      payload: "recover",
+    });
+    log("sent recovery NeedView");
   }
 
   async function sendHaveView() {

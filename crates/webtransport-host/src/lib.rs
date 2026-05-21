@@ -818,6 +818,34 @@ mod tests {
     }
 
     #[test]
+    fn drop_session_writer_removes_active_views() {
+        let endpoint = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
+        let host = InProcessWebTransportHost::new_without_event_pump(
+            CompioTaskDriver::spawn_empty().unwrap(),
+        );
+        let state = SessionState::new();
+        state
+            .sync
+            .lock()
+            .unwrap()
+            .record_incoming_view(&SyncEnvelope {
+                kind: SyncMessageKind::HaveView,
+                session_id: 7,
+                view_id: 11,
+                client_revision: 1,
+                client_signature: 305,
+                server_revision: 1,
+                server_signature: 305,
+                payload: Vec::new(),
+            });
+        host.sessions.lock().unwrap().insert(endpoint, state);
+
+        assert_eq!(host.active_sync_views().len(), 1);
+        drop_session_writer(&host, endpoint);
+        assert!(host.active_sync_views().is_empty());
+    }
+
+    #[test]
     fn endpoint_allocation_uses_webtransport_identity_space() {
         let host = InProcessWebTransportHost::new_without_event_pump(
             CompioTaskDriver::spawn_empty().unwrap(),
