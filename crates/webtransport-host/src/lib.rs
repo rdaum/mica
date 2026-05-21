@@ -22,7 +22,7 @@ use mica_host_protocol::{
 };
 use mica_var::{Identity, Symbol, Value};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::future::Future;
 use std::io::BufReader;
@@ -70,7 +70,13 @@ struct SessionState {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct SessionSyncState {
-    sessions: HashMap<u64, HashSet<u64>>,
+    sessions: HashMap<u64, HashMap<u64, ActiveViewState>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ActiveViewState {
+    client_revision: u64,
+    client_signature: u64,
 }
 
 #[derive(Default)]
@@ -101,6 +107,8 @@ struct ActiveSyncView {
     endpoint: Identity,
     session_id: u64,
     view_id: u64,
+    client_revision: u64,
+    client_signature: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,14 +138,20 @@ impl SessionSyncState {
         self.sessions
             .entry(envelope.session_id)
             .or_default()
-            .insert(envelope.view_id);
+            .insert(
+                envelope.view_id,
+                ActiveViewState {
+                    client_revision: envelope.client_revision,
+                    client_signature: envelope.client_signature,
+                },
+            );
     }
 
     #[cfg(test)]
     fn has_active_view(&self, session_id: u64, view_id: u64) -> bool {
         self.sessions
             .get(&session_id)
-            .is_some_and(|views| views.contains(&view_id))
+            .is_some_and(|views| views.contains_key(&view_id))
     }
 }
 
@@ -494,8 +508,8 @@ async fn refresh_active_sync_views(host: &InProcessWebTransportHost) -> Result<(
             kind: SyncMessageKind::NeedView,
             session_id: active.session_id,
             view_id: active.view_id,
-            client_revision: 0,
-            client_signature: 0,
+            client_revision: active.client_revision,
+            client_signature: active.client_signature,
             server_revision: 0,
             server_signature: 0,
             payload: Vec::new(),
@@ -619,11 +633,13 @@ fn active_sync_views(
     for (endpoint, state) in states {
         let sync = state.sync.lock().unwrap();
         for (session_id, views) in &sync.sessions {
-            for view_id in views {
+            for (view_id, view_state) in views {
                 active.push(ActiveSyncView {
                     endpoint,
                     session_id: *session_id,
                     view_id: *view_id,
+                    client_revision: view_state.client_revision,
+                    client_signature: view_state.client_signature,
                 });
             }
         }
@@ -794,6 +810,8 @@ mod tests {
                 endpoint,
                 session_id: 7,
                 view_id: 11,
+                client_revision: 0,
+                client_signature: 0,
             }]
         );
         assert!(state.sync.try_lock().is_ok());

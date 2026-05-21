@@ -140,7 +140,9 @@
 <script type="module">
   import {
     MicaWebTransportSyncClient,
+    applyDelta,
     applySnapshot,
+    validateDeltaEnvelope,
     validateSnapshotEnvelope,
   } from "./sync-client.js";
 
@@ -158,6 +160,9 @@
     snapshot: null,
     snapshotPayload: null,
     snapshotValid: false,
+    delta: null,
+    deltaPayload: null,
+    deltaValid: false,
     error: null,
   };
   window.micaWebTransportSmoke = smoke;
@@ -206,9 +211,28 @@
       smoke.snapshotValid = snapshot.valid;
       if (snapshot.valid) {
         applySnapshot(mount, snapshot.payload);
+        updateClientView(envelope);
+      }
+    } else if (envelope.kind === "ViewDelta") {
+      const delta = validateDeltaEnvelope(envelope);
+      smoke.delta = envelope;
+      smoke.deltaPayload = delta.payload;
+      smoke.deltaValid = delta.valid;
+      if (delta.valid) {
+        applyDelta(mount, delta.payload);
+        updateClientView(envelope);
       }
     }
     log("recv", envelope);
+  }
+
+  function updateClientView(envelope) {
+    field("revision").value = envelope.serverRevision;
+    field("signature").value = envelope.serverSignature;
+    client.haveView(viewState("have")).catch((error) => {
+      smoke.error = String(error);
+      log("have error", String(error));
+    });
   }
 
   async function connect() {
@@ -218,6 +242,7 @@
     try {
       smoke.error = null;
       smoke.snapshotValid = false;
+      smoke.deltaValid = false;
       client = new MicaWebTransportSyncClient({
         url: field("url").value,
         certificateHash: field("certHash").value,

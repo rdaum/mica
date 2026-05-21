@@ -111,8 +111,33 @@ export function validateSnapshotEnvelope(envelope) {
   };
 }
 
+export function validateDeltaEnvelope(envelope) {
+  const payload = JSON.parse(envelope.payload);
+  const expectedSignature =
+    BigInt(envelope.serverRevision) + BigInt(envelope.payload.length);
+  return {
+    payload,
+    valid:
+      payload.type === "append_message" &&
+      String(payload.view) === envelope.view &&
+      String(payload.revision) === envelope.serverRevision &&
+      expectedSignature.toString() === envelope.serverSignature,
+  };
+}
+
 export function applySnapshot(mount, payload) {
   mount.replaceChildren(renderNode(payload.root));
+}
+
+export function applyDelta(mount, payload) {
+  if (payload.type !== "append_message") {
+    throw new Error(`unsupported delta type: ${payload.type}`);
+  }
+  const messages = mount.querySelector("#messages");
+  if (messages === null) {
+    throw new Error("snapshot delta requires #messages mount");
+  }
+  messages.append(renderNode(payload.message));
 }
 
 function renderNode(node) {
