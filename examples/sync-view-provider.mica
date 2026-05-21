@@ -34,7 +34,12 @@ verb sync_snapshot(view)
 end
 
 verb sync_snapshot_payload(view)
-  return to_literal(sync_snapshot(view))
+  let snapshot = sync_snapshot(view)
+  let revision = one ViewRevision(view, ?revision)
+  let prefix = string_concat("{\"view\":", to_literal(view), ",\"revision\":", to_literal(revision))
+  let root = string_concat(",\"root\":{\"id\":\"", to_literal(snapshot[:root]), "\",\"tag\":", to_literal(snapshot[:tag]))
+  let children = string_concat(",\"children\":[{\"text\":", to_literal(snapshot[:text]), "}]}}")
+  return string_concat(prefix, root, children)
 end
 
 verb sync_snapshot_signature(view, payload)

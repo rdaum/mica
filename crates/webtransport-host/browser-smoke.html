@@ -135,6 +135,8 @@
     events: [],
     lastEnvelope: null,
     snapshot: null,
+    snapshotPayload: null,
+    snapshotValid: false,
     error: null,
   };
   window.micaWebTransportSmoke = smoke;
@@ -247,6 +249,12 @@
       smoke.lastEnvelope = envelope;
       if (envelope.kind === "ViewSnapshot") {
         smoke.snapshot = envelope;
+        smoke.snapshotPayload = JSON.parse(envelope.payload);
+        smoke.snapshotValid =
+          String(smoke.snapshotPayload.view) === envelope.view &&
+          String(smoke.snapshotPayload.revision) === envelope.serverRevision &&
+          String(BigInt(envelope.serverRevision) + BigInt(envelope.payload.length)) ===
+            envelope.serverSignature;
       }
       log("recv", envelope);
     }

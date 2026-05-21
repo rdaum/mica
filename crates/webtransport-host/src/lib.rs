@@ -720,10 +720,9 @@ mod tests {
                 envelope.server_signature,
                 20 + envelope.payload.len() as u64
             );
-            assert!(
-                std::str::from_utf8(&envelope.payload)
-                    .unwrap()
-                    .contains("snapshot")
+            assert_eq!(
+                std::str::from_utf8(&envelope.payload).unwrap(),
+                "{\"view\":11,\"revision\":20,\"root\":{\"id\":\"#sync_root\",\"tag\":\"main\",\"children\":[{\"text\":\"snapshot\"}]}}"
             );
         });
     }
