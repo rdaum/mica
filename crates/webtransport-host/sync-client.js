@@ -196,6 +196,7 @@ export class MicaWebTransportSyncClient {
         JSON.stringify({
           type: "chat_post",
           room: Number(message.room),
+          actor: String(message.actor),
           text: String(message.text),
         }),
       ),

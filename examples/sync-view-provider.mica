@@ -13,7 +13,6 @@ make_relation(:MessageAuthor, 2)
 make_relation(:MessageText, 2)
 make_relation(:ChatView, 2)
 
-make_identity(:alice)
 make_identity(:msg_1)
 make_identity(:chat_message)
 
@@ -41,7 +40,7 @@ assert ChatRoom(1)
 assert ChatView(11, 1)
 assert ChatMessage(1, #msg_1)
 assert MessageSeq(#msg_1, 1)
-assert MessageAuthor(#msg_1, #alice)
+assert MessageAuthor(#msg_1, "alice")
 assert MessageText(#msg_1, "hello")
 
 verb chat_room_revision(room)
@@ -59,19 +58,19 @@ end
 verb chat_message_node(message)
   let author = one MessageAuthor(message, ?author)
   let text = one MessageText(message, ?text)
-  let author_text = to_literal(to_literal(author))
+  let author_text = to_literal(author)
   let author_node = string_concat("{\"tag\":\"span\",\"class\":\"author\",\"children\":[{\"text\":", author_text, "}]}")
   let text_node = string_concat("{\"text\":", to_literal(text), "}")
   return string_concat("{\"tag\":\"li\",\"children\":[", author_node, ",{\"text\":\": \"},", text_node, "]}")
 end
 
-verb chat_post(endpoint, room, text)
+verb chat_post(endpoint, room, actor, text)
   let seq = chat_room_revision(room) + 1
   let message = #chat_message<[room, seq]>
 
   assert ChatMessage(room, message)
   assert MessageSeq(message, seq)
-  assert MessageAuthor(message, #alice)
+  assert MessageAuthor(message, actor)
   assert MessageText(message, text)
 
   return true

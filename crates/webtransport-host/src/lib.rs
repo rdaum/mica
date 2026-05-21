@@ -92,6 +92,7 @@ struct SessionOutputRecv<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ChatPostAction {
     room: u64,
+    actor: String,
     text: String,
 }
 
@@ -471,6 +472,7 @@ async fn route_plain_datagram(
                 Symbol::intern("chat_post"),
                 vec![
                     (Symbol::intern("room"), sync_u64_value(action.room)),
+                    (Symbol::intern("actor"), Value::string(action.actor)),
                     (Symbol::intern("text"), Value::string(action.text)),
                 ],
             )
@@ -526,12 +528,17 @@ fn decode_chat_post_action(datagram: &[u8]) -> Result<Option<ChatPostAction>, St
         .get("room")
         .and_then(|value| value.as_u64())
         .ok_or_else(|| "chat_post action requires numeric room".to_owned())?;
+    let actor = object
+        .get("actor")
+        .and_then(|value| value.as_str())
+        .unwrap_or("alice")
+        .to_owned();
     let text = object
         .get("text")
         .and_then(|value| value.as_str())
         .ok_or_else(|| "chat_post action requires text".to_owned())?
         .to_owned();
-    Ok(Some(ChatPostAction { room, text }))
+    Ok(Some(ChatPostAction { room, actor, text }))
 }
 
 async fn route_sync_envelope(
@@ -735,9 +742,21 @@ mod tests {
     #[test]
     fn decodes_chat_post_actions() {
         assert_eq!(
+            decode_chat_post_action(
+                br#"{"type":"chat_post","room":1,"actor":"bob","text":"hello"}"#
+            )
+            .unwrap(),
+            Some(ChatPostAction {
+                room: 1,
+                actor: "bob".to_owned(),
+                text: "hello".to_owned(),
+            })
+        );
+        assert_eq!(
             decode_chat_post_action(br#"{"type":"chat_post","room":1,"text":"hello"}"#).unwrap(),
             Some(ChatPostAction {
                 room: 1,
+                actor: "alice".to_owned(),
                 text: "hello".to_owned(),
             })
         );
@@ -882,7 +901,7 @@ mod tests {
             );
             assert_eq!(
                 std::str::from_utf8(&envelope.payload).unwrap(),
-                "{\"view\":11,\"revision\":1,\"root\":{\"id\":\"chat-root\",\"tag\":\"main\",\"children\":[{\"tag\":\"ul\",\"id\":\"messages\",\"children\":[{\"tag\":\"li\",\"children\":[{\"tag\":\"span\",\"class\":\"author\",\"children\":[{\"text\":\"#alice\"}]},{\"text\":\": \"},{\"text\":\"hello\"}]}]},{\"tag\":\"section\",\"id\":\"composer\",\"children\":[{\"text\":\"composer\"}]}]}}"
+                "{\"view\":11,\"revision\":1,\"root\":{\"id\":\"chat-root\",\"tag\":\"main\",\"children\":[{\"tag\":\"ul\",\"id\":\"messages\",\"children\":[{\"tag\":\"li\",\"children\":[{\"tag\":\"span\",\"class\":\"author\",\"children\":[{\"text\":\"alice\"}]},{\"text\":\": \"},{\"text\":\"hello\"}]}]},{\"tag\":\"section\",\"id\":\"composer\",\"children\":[{\"text\":\"composer\"}]}]}}"
             );
         });
     }

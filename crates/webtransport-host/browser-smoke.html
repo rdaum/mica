@@ -128,6 +128,10 @@
       Message
       <input id="chatText" value="hello from browser" autocomplete="off">
     </label>
+    <label>
+      Actor
+      <input id="actor" value="browser" autocomplete="off">
+    </label>
     <button id="post" type="button" disabled>Post</button>
   </form>
   <div id="mount"></div>
@@ -160,7 +164,7 @@
 
   function applyQueryParams() {
     const params = new URLSearchParams(location.search);
-    for (const id of ["url", "certHash", "session", "view", "room", "revision", "signature", "chatText"]) {
+    for (const id of ["url", "certHash", "session", "view", "room", "revision", "signature", "chatText", "actor"]) {
       const value = params.get(id);
       if (value !== null) {
         field(id).value = value;
@@ -251,6 +255,7 @@
   async function sendChatPost() {
     await client.postChat({
       room: numberField("room"),
+      actor: field("actor").value,
       text: field("chatText").value,
     });
     log("sent chat_post");
