@@ -19,3 +19,6 @@ rustls-pki-types.workspace = true
 
 [dev-dependencies]
 mica-runtime.workspace = true
+rcgen.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+wtransport.workspace = true

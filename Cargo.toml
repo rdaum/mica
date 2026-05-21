@@ -50,8 +50,11 @@ fjall = "3.1"
 h3-webtransport = "0.1.2"
 httparse = "1.10"
 http = "1.4"
+rcgen = "0.14"
 rustls-pemfile = "2.2"
 rustls-pki-types = "1.13"
+tokio = "1.49"
+wtransport = { version = "0.7", features = ["dangerous-configuration"] }
 zmq = { git = "https://github.com/rdaum/rust-zmq.git", branch = "main" }
 
 # for util

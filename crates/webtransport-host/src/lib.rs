@@ -458,6 +458,10 @@ fn format_driver_error(error: mica_driver::DriverError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn effect_datagrams_preserve_bytes_and_strings() {
@@ -496,5 +500,161 @@ mod tests {
         );
 
         assert_eq!(output.try_recv().unwrap().as_ref(), b"hello");
+    }
+
+    #[test]
+    fn webtransport_datagram_smoke_round_trips_mica_endpoint_input_and_emission() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let tls = test_tls_config();
+            let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
+                .await
+                .unwrap();
+            let server_addr = endpoint.local_addr().unwrap();
+            let server_endpoint = endpoint.clone();
+
+            let mut runner = SourceRunner::new_empty();
+            runner.run_source("return make_identity(:web)").unwrap();
+            let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebTransportHost::new(driver.clone());
+            let binding = SessionBinding {
+                principal,
+                actor: None,
+            };
+            compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(1))).detach();
+
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (send_tx, send_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let client =
+                spawn_wtransport_smoke_client(server_addr, connected_tx, send_rx, result_tx);
+
+            wait_for_client_connected(&connected_rx).await;
+            let endpoint_identity = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
+            submit_waiting_echo_task(&driver, endpoint_identity).await;
+
+            send_tx.send(()).unwrap();
+            let received = wait_for_client_result(&result_rx).await.unwrap();
+
+            server_endpoint.close(0u32.into(), b"test complete");
+            client.join().unwrap();
+            assert_eq!(received, b"need-view");
+        });
+    }
+
+    fn test_tls_config() -> WebTransportTlsConfig {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        WebTransportTlsConfig {
+            cert_chain: vec![cert.der().clone()],
+            key_der: signing_key.serialize_der().try_into().unwrap(),
+        }
+    }
+
+    fn spawn_wtransport_smoke_client(
+        server_addr: SocketAddr,
+        connected_tx: mpsc::Sender<()>,
+        send_rx: mpsc::Receiver<()>,
+        result_tx: mpsc::Sender<Result<Vec<u8>, String>>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        let config = wtransport::ClientConfig::builder()
+                            .with_bind_default()
+                            .with_no_cert_validation()
+                            .build();
+                        let url = format!("https://127.0.0.1:{}/view", server_addr.port());
+                        let connection = wtransport::Endpoint::client(config)
+                            .map_err(|error| error.to_string())?
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        connected_tx.send(()).map_err(|error| error.to_string())?;
+                        send_rx.recv().map_err(|error| error.to_string())?;
+                        connection
+                            .send_datagram(b"need-view")
+                            .map_err(|error| error.to_string())?;
+                        let datagram = tokio::time::timeout(
+                            Duration::from_secs(3),
+                            connection.receive_datagram(),
+                        )
+                        .await
+                        .map_err(|_| "timed out waiting for WebTransport datagram".to_owned())?
+                        .map_err(|error| error.to_string())?;
+                        Ok(datagram.payload().to_vec())
+                    })
+                });
+            let _ = result_tx.send(result);
+        })
+    }
+
+    async fn wait_for_client_connected(receiver: &mpsc::Receiver<()>) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match receiver.try_recv() {
+                Ok(()) => return,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(mpsc::TryRecvError::Empty) => panic!("timed out waiting for client connect"),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    panic!("client disconnected before connect")
+                }
+            }
+        }
+    }
+
+    async fn submit_waiting_echo_task(driver: &CompioTaskDriver, endpoint: Identity) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let source = "let payload = read(:datagram)\n\
+                      emit(endpoint(), payload)\n\
+                      return payload"
+            .to_owned();
+        loop {
+            match driver
+                .submit_source(endpoint, SourceRunner::root_source_request(source.clone()))
+                .await
+            {
+                Ok(submitted) => {
+                    assert!(matches!(
+                        submitted.outcome,
+                        TaskOutcome::Suspended {
+                            kind: SuspendKind::WaitingForInput(_),
+                            ..
+                        }
+                    ));
+                    return;
+                }
+                Err(_) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("failed to submit endpoint echo task: {error}"),
+            }
+        }
+    }
+
+    async fn wait_for_client_result(
+        receiver: &mpsc::Receiver<Result<Vec<u8>, String>>,
+    ) -> Result<Vec<u8>, String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match receiver.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Err("timed out waiting for client result".to_owned());
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("client result channel disconnected".to_owned());
+                }
+            }
+        }
     }
 }
