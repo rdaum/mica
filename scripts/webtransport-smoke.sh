@@ -68,7 +68,7 @@ for filein in "${fileins[@]}"; do
   filein_args+=(--filein "${filein}")
 done
 
-cargo run --bin mica-daemon -- \
+cargo run ${MICA_WT_BUILD_FLAGS:-} --bin mica-daemon -- \
   "${filein_args[@]}" \
   --web-bind "${http_host}:${http_port}" \
   --webtransport-bind "${wt_bind}" \

@@ -29,7 +29,7 @@ assert CanInvoke(#web, :http_text)
 assert CanEffect(#web)
 
 verb http_response(status, content_type, body)
-  return {:status -> status, :headers -> [["content-type", content_type]], :body -> body}
+  return {:status -> status, :headers -> [["content-type", content_type], ["cache-control", "no-store"]], :body -> body}
 end
 
 verb http_html(status, body)

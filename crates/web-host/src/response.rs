@@ -21,12 +21,13 @@ use mica_var::{Symbol, Value};
 pub(crate) fn route_request(request: &HttpRequest, close: bool) -> HttpResponse {
     let response = match request.method.as_str() {
         "GET" if request.path == "/healthz" => HttpResponse::text(200, "OK", "ok\n"),
-        "GET" if request.path == "/sync-client.js" => HttpResponse::new(
+        "GET" if is_sync_client_path(&request.path) => HttpResponse::new(
             200,
             "OK",
             include_bytes!("../../webtransport-host/sync-client.js").to_vec(),
         )
-        .with_header("content-type", b"text/javascript; charset=utf-8".as_slice()),
+        .with_header("content-type", b"text/javascript; charset=utf-8".as_slice())
+        .with_header("cache-control", b"no-store".as_slice()),
         "GET" if request.path == "/" => HttpResponse::html(
             200,
             "OK",
@@ -42,6 +43,10 @@ pub(crate) fn route_request(request: &HttpRequest, close: bool) -> HttpResponse 
             .with_header("Allow", b"GET".as_slice()),
     };
     with_connection_header(response, close)
+}
+
+pub(crate) fn is_sync_client_path(path: &str) -> bool {
+    path == "/sync-client.js" || path.starts_with("/sync-client.js?")
 }
 
 pub(crate) fn error_response(error: HttpCodecError, close: bool) -> HttpResponse {
@@ -291,6 +296,26 @@ mod tests {
                 .map(|header| header.value.as_slice()),
             Some(b"text/javascript; charset=utf-8".as_slice())
         );
+        assert_eq!(
+            response
+                .headers
+                .iter()
+                .find(|header| header.name.eq_ignore_ascii_case("cache-control"))
+                .map(|header| header.value.as_slice()),
+            Some(b"no-store".as_slice())
+        );
+
+        let cache_busted = route_request(
+            &HttpRequest {
+                method: "GET".to_owned(),
+                path: "/sync-client.js?surface=mud".to_owned(),
+                version: 1,
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+            false,
+        );
+        assert_eq!(cache_busted.status, 200);
     }
 
     #[test]

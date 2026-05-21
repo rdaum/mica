@@ -12,7 +12,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::codec::{HttpRequest, HttpResponse};
-use crate::response::{internal_error_response, response_from_submitted, route_request};
+use crate::response::{
+    internal_error_response, is_sync_client_path, response_from_submitted, route_request,
+};
 use crate::{InProcessWebHost, RequestBinding, format_driver_error};
 use mica_runtime::Tuple;
 use mica_var::{Identity, Symbol, Value};
@@ -38,7 +40,7 @@ pub(crate) async fn handle_in_process_request(
     request: &HttpRequest,
     close: bool,
 ) -> HttpResponse {
-    if request.method == "GET" && (request.path == "/healthz" || request.path == "/sync-client.js")
+    if request.method == "GET" && (request.path == "/healthz" || is_sync_client_path(&request.path))
     {
         return route_request(request, close);
     }

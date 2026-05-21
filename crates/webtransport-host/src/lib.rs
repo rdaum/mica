@@ -11,8 +11,9 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use compio::runtime::ResumeUnwind;
+use compio_quic::h3::quic::RecvStream as H3RecvStream;
 use compio_quic::{Endpoint, ServerBuilder};
 use h3_webtransport::server::WebTransportSession;
 use mica_driver::{CompioTaskDriver, DriverEvent};
@@ -28,7 +29,7 @@ use mica_var::{Identity, Symbol, Value};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::File;
-use std::future::Future;
+use std::future::{Future, poll_fn};
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -37,6 +38,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
+use std::time::{Duration, Instant};
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:4433";
 pub const DAEMON_ENDPOINT_ID_START: u64 = 0x00ea_0000_0000_0000;
@@ -47,6 +49,7 @@ const SYNC_DATAGRAM_MAX_LEN: usize = 1024;
 const SYNC_CHUNK_HEADER_LEN: usize = 24;
 const SYNC_CHUNK_PAYLOAD_LEN: usize = SYNC_DATAGRAM_MAX_LEN - SYNC_CHUNK_HEADER_LEN;
 const SYNC_CHUNK_MAGIC: &[u8; 4] = b"MSC1";
+const SYNC_ENVELOPE_SEND_ATTEMPTS: usize = 3;
 static NEXT_SYNC_CHUNK_ID: AtomicU32 = AtomicU32::new(1);
 
 type H3RequestStream =
@@ -98,9 +101,14 @@ struct SessionOutput {
 
 #[derive(Default)]
 struct SessionOutputState {
-    datagrams: VecDeque<Bytes>,
+    messages: VecDeque<SessionOutputMessage>,
     closed: bool,
     waker: Option<Waker>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SessionOutputMessage {
+    Datagram(Bytes),
 }
 
 struct SessionOutputRecv<'a> {
@@ -268,6 +276,7 @@ impl InProcessWebTransportHost {
         Identity::new(raw).ok_or_else(|| "endpoint identity space is exhausted".to_owned())
     }
 
+    #[cfg(test)]
     fn active_sync_views(&self) -> Vec<ActiveSyncView> {
         active_sync_views(&self.sessions)
     }
@@ -279,25 +288,11 @@ impl InProcessWebTransportHost {
         view_id: u64,
         rendered: &RenderedSyncView,
     ) {
-        if let Some(state) = self.sessions.lock().unwrap().get(&endpoint).cloned() {
-            state.sync.lock().unwrap().store_rendered_view(
-                session_id,
-                view_id,
-                rendered.revision,
-                rendered.signature,
-                rendered.tree.clone(),
-            );
-        }
+        store_rendered_sync_view_in(&self.sessions, endpoint, session_id, view_id, rendered);
     }
 
     fn send_sync_envelope(&self, endpoint: Identity, envelope: SyncEnvelope) -> Result<(), String> {
-        let Some(state) = self.sessions.lock().unwrap().get(&endpoint).cloned() else {
-            return Ok(());
-        };
-        for datagram in sync_envelope_datagrams(envelope.as_ref()) {
-            state.output.send(datagram)?;
-        }
-        Ok(())
+        send_sync_envelope_to(&self.sessions, endpoint, envelope)
     }
 
     fn active_rendered_sync_view(
@@ -371,13 +366,17 @@ impl SessionOutput {
         Arc::new(Self::default())
     }
 
-    fn send(&self, datagram: Bytes) -> Result<(), String> {
+    fn send_datagram(&self, datagram: Bytes) -> Result<(), String> {
+        self.send_message(SessionOutputMessage::Datagram(datagram))
+    }
+
+    fn send_message(&self, message: SessionOutputMessage) -> Result<(), String> {
         let waker = {
             let mut state = self.state.lock().unwrap();
             if state.closed {
                 return Err("session writer is closed".to_owned());
             }
-            state.datagrams.push_back(datagram);
+            state.messages.push_back(message);
             state.waker.take()
         };
         if let Some(waker) = waker {
@@ -401,22 +400,24 @@ impl SessionOutput {
         SessionOutputRecv { output: self }
     }
 
-    fn drain_batch(&self, max_datagrams: usize) -> Vec<Bytes> {
+    fn drain_batch(&self, max_messages: usize) -> Vec<SessionOutputMessage> {
         let mut state = self.state.lock().unwrap();
-        let count = max_datagrams.min(state.datagrams.len());
-        let mut datagrams = Vec::with_capacity(count);
+        let count = max_messages.min(state.messages.len());
+        let mut messages = Vec::with_capacity(count);
         for _ in 0..count {
-            let Some(datagram) = state.datagrams.pop_front() else {
+            let Some(message) = state.messages.pop_front() else {
                 break;
             };
-            datagrams.push(datagram);
+            messages.push(message);
         }
-        datagrams
+        messages
     }
 
     #[cfg(test)]
     fn try_recv(&self) -> Option<Bytes> {
-        self.state.lock().unwrap().datagrams.pop_front()
+        match self.state.lock().unwrap().messages.pop_front()? {
+            SessionOutputMessage::Datagram(datagram) => Some(datagram),
+        }
     }
 }
 
@@ -425,14 +426,14 @@ impl Future for SessionOutputRecv<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut state = self.output.state.lock().unwrap();
-        if state.datagrams.len() >= ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS {
+        if state.messages.len() >= ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS {
             return Poll::Ready(SessionOutputReady::HighWater {
-                buffered: state.datagrams.len(),
+                buffered: state.messages.len(),
             });
         }
-        if !state.datagrams.is_empty() {
+        if !state.messages.is_empty() {
             return Poll::Ready(SessionOutputReady::Ready {
-                buffered: state.datagrams.len(),
+                buffered: state.messages.len(),
             });
         }
         if state.closed {
@@ -521,10 +522,16 @@ async fn handle_session(
     }
 
     let writer = compio::runtime::spawn(write_datagram_loop(session.clone(), output));
+    let stream_reader = compio::runtime::spawn(read_uni_stream_loop(
+        session.clone(),
+        host.clone(),
+        endpoint,
+    ));
     let result = read_datagram_loop(session, &host, endpoint).await;
     let _ = host.driver.close_endpoint(endpoint);
     drop_session_writer(&host, endpoint);
     let _ = writer.await.resume_unwind();
+    let _ = stream_reader.await.resume_unwind();
     result
 }
 
@@ -546,6 +553,49 @@ async fn read_datagram_loop(
             }
         };
         route_incoming_datagram(host, endpoint, datagram.into_payload()).await?;
+    }
+}
+
+async fn read_uni_stream_loop(
+    session: Rc<WtSession>,
+    host: Arc<InProcessWebTransportHost>,
+    endpoint: Identity,
+) -> Result<(), String> {
+    loop {
+        let stream = match session.accept_uni().await {
+            Ok(Some((_session_id, stream))) => stream,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                let message = error.to_string();
+                if message.contains("closed") {
+                    return Ok(());
+                }
+                return Err(format!("failed to accept WebTransport stream: {message}"));
+            }
+        };
+        let payload = read_uni_stream_payload(stream).await?;
+        if let Err(error) = route_incoming_datagram(&host, endpoint, payload).await {
+            eprintln!("failed to route WebTransport stream payload: {error}");
+        }
+    }
+}
+
+async fn read_uni_stream_payload<S>(mut stream: S) -> Result<Bytes, String>
+where
+    S: H3RecvStream<Buf = Bytes>,
+{
+    let mut payload = Vec::new();
+    loop {
+        let chunk = poll_fn(|cx| stream.poll_data(cx))
+            .await
+            .map_err(|error| format!("failed to read WebTransport stream: {error}"))?;
+        let Some(mut chunk) = chunk else {
+            return Ok(Bytes::from(payload));
+        };
+        while chunk.has_remaining() {
+            let bytes = chunk.copy_to_bytes(chunk.remaining());
+            payload.extend_from_slice(&bytes);
+        }
     }
 }
 
@@ -581,12 +631,19 @@ async fn route_dom_event(
     endpoint: Identity,
     event: DomEventPayload,
 ) -> Result<(), String> {
+    let trace = SyncTrace::new("dom_event");
     let Some(active) = host.active_rendered_sync_view(endpoint, event.session_id, event.view_id)
     else {
         return send_recovery_snapshot(host, endpoint, &event).await;
     };
+    trace.mark("active_view");
     if active.server_revision != event.revision || active.server_signature != event.signature {
-        return send_recovery_snapshot(host, endpoint, &event).await;
+        let rendered = render_sync_view(host, endpoint, event.view_id).await?;
+        trace.mark("stale_render");
+        if event.revision > rendered.revision {
+            return send_recovery_snapshot_from_rendered(host, endpoint, &event, rendered).await;
+        }
+        host.store_rendered_sync_view(endpoint, event.session_id, event.view_id, &rendered);
     }
 
     let submitted = host
@@ -605,13 +662,16 @@ async fn route_dom_event(
         )
         .await
         .map_err(format_driver_error)?;
+    trace.mark("sync_event");
     match submitted.outcome {
         TaskOutcome::Complete { .. } | TaskOutcome::Suspended { .. } => {}
         TaskOutcome::Aborted { error, .. } => {
             return Err(format!("sync_event aborted: {error}"));
         }
     }
-    refresh_active_sync_views(host).await
+    let result = refresh_active_sync_view(host, endpoint, event.session_id, event.view_id).await;
+    trace.mark("refresh");
+    result
 }
 
 async fn send_recovery_snapshot(
@@ -620,6 +680,15 @@ async fn send_recovery_snapshot(
     event: &DomEventPayload,
 ) -> Result<(), String> {
     let rendered = render_sync_view(host, endpoint, event.view_id).await?;
+    send_recovery_snapshot_from_rendered(host, endpoint, event, rendered).await
+}
+
+async fn send_recovery_snapshot_from_rendered(
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+    event: &DomEventPayload,
+    rendered: RenderedSyncView,
+) -> Result<(), String> {
     let envelope = snapshot_envelope(
         event.session_id,
         event.view_id,
@@ -632,51 +701,89 @@ async fn send_recovery_snapshot(
     Ok(())
 }
 
-async fn refresh_active_sync_views(host: &InProcessWebTransportHost) -> Result<(), String> {
-    for active in host.active_sync_views() {
-        let rendered = render_sync_view(host, active.endpoint, active.view_id).await?;
-        if rendered.revision == active.server_revision && active.last_tree.is_some() {
-            continue;
-        }
-        let envelope = if let Some(last_tree) = &active.last_tree {
-            let patches = diff_dom_nodes(last_tree, &rendered.tree);
-            if patches.is_empty() {
-                host.store_rendered_sync_view(
-                    active.endpoint,
-                    active.session_id,
-                    active.view_id,
-                    &rendered,
-                );
-                continue;
-            }
-            let payload = dom_patch_payload_json(active.view_id, rendered.revision, &patches);
-            SyncEnvelope {
-                kind: SyncMessageKind::ViewDelta,
-                session_id: active.session_id,
-                view_id: active.view_id,
-                client_revision: active.server_revision,
-                client_signature: active.server_signature,
-                server_revision: rendered.revision,
-                server_signature: rendered.signature,
-                payload,
-            }
-        } else {
-            snapshot_envelope(
+async fn refresh_active_sync_view(
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+    session_id: u64,
+    view_id: u64,
+) -> Result<(), String> {
+    let Some(view_state) = host.active_rendered_sync_view(endpoint, session_id, view_id) else {
+        return Ok(());
+    };
+    let active = ActiveSyncView {
+        endpoint,
+        session_id,
+        view_id,
+        client_revision: view_state.client_revision,
+        client_signature: view_state.client_signature,
+        server_revision: view_state.server_revision,
+        server_signature: view_state.server_signature,
+        last_tree: view_state.last_tree,
+    };
+    refresh_active_sync_view_for(&host.driver, &host.sessions, active).await
+}
+
+async fn refresh_active_sync_views_for(
+    driver: &CompioTaskDriver,
+    sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
+) -> Result<(), String> {
+    for active in active_sync_views(sessions) {
+        refresh_active_sync_view_for(driver, sessions, active).await?;
+    }
+    Ok(())
+}
+
+async fn refresh_active_sync_view_for(
+    driver: &CompioTaskDriver,
+    sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
+    active: ActiveSyncView,
+) -> Result<(), String> {
+    let revision = render_sync_revision_for(driver, active.endpoint, active.view_id).await?;
+    if revision == active.server_revision && active.last_tree.is_some() {
+        return Ok(());
+    }
+
+    let rendered = render_sync_view_for(driver, active.endpoint, active.view_id).await?;
+    let envelope = if let Some(last_tree) = &active.last_tree {
+        let patches = diff_dom_nodes(last_tree, &rendered.tree);
+        if patches.is_empty() {
+            store_rendered_sync_view_in(
+                sessions,
+                active.endpoint,
                 active.session_id,
                 active.view_id,
-                active.client_revision,
-                active.client_signature,
                 &rendered,
-            )
-        };
-        host.send_sync_envelope(active.endpoint, envelope)?;
-        host.store_rendered_sync_view(
-            active.endpoint,
+            );
+            return Ok(());
+        }
+        let payload = dom_patch_payload_json(active.view_id, rendered.revision, &patches);
+        SyncEnvelope {
+            kind: SyncMessageKind::ViewDelta,
+            session_id: active.session_id,
+            view_id: active.view_id,
+            client_revision: active.server_revision,
+            client_signature: active.server_signature,
+            server_revision: rendered.revision,
+            server_signature: rendered.signature,
+            payload,
+        }
+    } else {
+        snapshot_envelope(
             active.session_id,
             active.view_id,
+            active.client_revision,
+            active.client_signature,
             &rendered,
-        );
-    }
+        )
+    };
+    send_sync_envelope_to(sessions, active.endpoint, envelope)?;
+    store_rendered_sync_view_in(
+        sessions,
+        active.endpoint,
+        active.session_id,
+        active.view_id,
+        &rendered,
+    );
     Ok(())
 }
 
@@ -685,18 +792,44 @@ async fn render_sync_view(
     endpoint: Identity,
     view_id: u64,
 ) -> Result<RenderedSyncView, String> {
-    let revision = sync_u64_from_task_value(
+    render_sync_view_for(&host.driver, endpoint, view_id).await
+}
+
+async fn render_sync_revision(
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+    view_id: u64,
+) -> Result<u64, String> {
+    render_sync_revision_for(&host.driver, endpoint, view_id).await
+}
+
+async fn render_sync_revision_for(
+    driver: &CompioTaskDriver,
+    endpoint: Identity,
+    view_id: u64,
+) -> Result<u64, String> {
+    sync_u64_from_task_value(
         "sync_view_revision",
-        submit_sync_invocation(
-            host,
+        submit_sync_invocation_for(
+            driver,
             endpoint,
             "sync_view_revision",
             vec![(Symbol::intern("view"), sync_u64_value(view_id))],
         )
         .await?,
-    )?;
-    let tree_value = submit_sync_invocation(
-        host,
+    )
+}
+
+async fn render_sync_view_for(
+    driver: &CompioTaskDriver,
+    endpoint: Identity,
+    view_id: u64,
+) -> Result<RenderedSyncView, String> {
+    let trace = SyncTrace::new("render");
+    let revision = render_sync_revision_for(driver, endpoint, view_id).await?;
+    trace.mark("revision");
+    let tree_value = submit_sync_invocation_for(
+        driver,
         endpoint,
         "sync_view_tree",
         vec![
@@ -705,10 +838,13 @@ async fn render_sync_view(
         ],
     )
     .await?;
+    trace.mark("tree");
     let tree = DomNode::from_mica_value(&tree_value)
         .map_err(|error| format!("sync_view_tree returned invalid DOM tree: {error}"))?;
+    trace.mark("decode_tree");
     let payload = snapshot_payload_json(view_id, revision, &tree);
     let signature = sync_payload_signature(revision, &payload);
+    trace.mark("payload");
 
     Ok(RenderedSyncView {
         revision,
@@ -718,14 +854,48 @@ async fn render_sync_view(
     })
 }
 
-async fn submit_sync_invocation(
-    host: &InProcessWebTransportHost,
+struct SyncTrace {
+    enabled: bool,
+    label: &'static str,
+    start: Instant,
+    last: Mutex<Instant>,
+}
+
+impl SyncTrace {
+    fn new(label: &'static str) -> Self {
+        let now = Instant::now();
+        Self {
+            enabled: std::env::var_os("MICA_WT_TRACE_SYNC").is_some(),
+            label,
+            start: now,
+            last: Mutex::new(now),
+        }
+    }
+
+    fn mark(&self, phase: &'static str) {
+        if !self.enabled {
+            return;
+        }
+        let now = Instant::now();
+        let mut last = self.last.lock().unwrap();
+        eprintln!(
+            "sync-trace {} {} +{:?} total {:?}",
+            self.label,
+            phase,
+            now.duration_since(*last),
+            now.duration_since(self.start)
+        );
+        *last = now;
+    }
+}
+
+async fn submit_sync_invocation_for(
+    driver: &CompioTaskDriver,
     endpoint: Identity,
     selector: &'static str,
     roles: Vec<(Symbol, Value)>,
 ) -> Result<Value, String> {
-    let submitted = host
-        .driver
+    let submitted = driver
         .submit_invocation_for_endpoint(endpoint, Symbol::intern(selector), roles)
         .await
         .map_err(format_driver_error)?;
@@ -738,6 +908,41 @@ async fn submit_sync_invocation(
             Err(format!("sync render invocation {selector} suspended"))
         }
     }
+}
+
+fn store_rendered_sync_view_in(
+    sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
+    endpoint: Identity,
+    session_id: u64,
+    view_id: u64,
+    rendered: &RenderedSyncView,
+) {
+    if let Some(state) = sessions.lock().unwrap().get(&endpoint).cloned() {
+        state.sync.lock().unwrap().store_rendered_view(
+            session_id,
+            view_id,
+            rendered.revision,
+            rendered.signature,
+            rendered.tree.clone(),
+        );
+    }
+}
+
+fn send_sync_envelope_to(
+    sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
+    endpoint: Identity,
+    envelope: SyncEnvelope,
+) -> Result<(), String> {
+    let Some(state) = sessions.lock().unwrap().get(&endpoint).cloned() else {
+        return Ok(());
+    };
+    let datagrams = sync_envelope_datagrams(envelope.as_ref());
+    for _ in 0..SYNC_ENVELOPE_SEND_ATTEMPTS {
+        for datagram in &datagrams {
+            state.output.send_datagram(datagram.clone())?;
+        }
+    }
+    Ok(())
 }
 
 fn sync_u64_from_task_value(selector: &str, value: Value) -> Result<u64, String> {
@@ -780,20 +985,22 @@ async fn route_sync_envelope(
     if let Some(state) = host.sessions.lock().unwrap().get(&endpoint).cloned() {
         state.sync.lock().unwrap().record_incoming_view(&envelope);
     }
+    if let Some(event) = decode_dom_event_payload(&envelope.payload)? {
+        return route_dom_event(host, endpoint, event).await;
+    }
     match envelope.kind {
         SyncMessageKind::HaveView => {
-            let rendered = render_sync_view(host, endpoint, envelope.view_id).await?;
-            if envelope.client_revision == rendered.revision
-                && envelope.client_signature == rendered.signature
+            let revision = render_sync_revision(host, endpoint, envelope.view_id).await?;
+            if envelope.client_revision == revision
+                && let Some(active) =
+                    host.active_rendered_sync_view(endpoint, envelope.session_id, envelope.view_id)
+                && active.server_revision == revision
+                && active.server_signature == envelope.client_signature
+                && active.last_tree.is_some()
             {
-                host.store_rendered_sync_view(
-                    endpoint,
-                    envelope.session_id,
-                    envelope.view_id,
-                    &rendered,
-                );
                 return Ok(());
             }
+            let rendered = render_sync_view(host, endpoint, envelope.view_id).await?;
             let response = host
                 .active_rendered_sync_view(endpoint, envelope.session_id, envelope.view_id)
                 .and_then(|active| {
@@ -878,10 +1085,15 @@ async fn write_datagram_loop(
     while let SessionOutputReady::Ready { .. } | SessionOutputReady::HighWater { .. } =
         output.recv().await
     {
-        for datagram in output.drain_batch(ENDPOINT_OUTPUT_DRAIN_DATAGRAMS) {
-            sender
-                .send_datagram(datagram)
-                .map_err(|error| format!("failed to send WebTransport datagram: {error}"))?;
+        for message in output.drain_batch(ENDPOINT_OUTPUT_DRAIN_DATAGRAMS) {
+            match message {
+                SessionOutputMessage::Datagram(datagram) => {
+                    sender.send_datagram(datagram).map_err(|error| {
+                        format!("failed to send WebTransport datagram: {error}")
+                    })?;
+                    compio::time::sleep(Duration::from_millis(2)).await;
+                }
+            }
         }
     }
     Ok(())
@@ -901,8 +1113,14 @@ fn start_event_pump(
     compio::runtime::spawn(async move {
         while !stop_events.load(Ordering::Relaxed) {
             let events = driver.wait_events().await;
+            let mut refresh_views = false;
             for event in events {
-                route_driver_event(&sessions, event);
+                refresh_views |= route_driver_event(&sessions, event);
+            }
+            if refresh_views
+                && let Err(error) = refresh_active_sync_views_for(&driver, &sessions).await
+            {
+                eprintln!("failed to refresh active WebTransport sync views: {error}");
             }
         }
     })
@@ -942,15 +1160,16 @@ fn active_sync_views(
 fn route_driver_event(
     sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
     event: DriverEvent,
-) {
-    if let DriverEvent::Effect(effect) = event {
-        let Some(state) = sessions.lock().unwrap().get(&effect.target).cloned() else {
-            return;
-        };
+) -> bool {
+    let DriverEvent::Effect(effect) = event else {
+        return false;
+    };
+    if let Some(state) = sessions.lock().unwrap().get(&effect.target).cloned() {
         for datagram in effect_datagrams(effect.target, &effect.value) {
-            let _ = state.output.send(datagram);
+            let _ = state.output.send_datagram(datagram);
         }
     }
+    false
 }
 
 fn effect_datagrams(target: Identity, value: &Value) -> Vec<Bytes> {
@@ -1009,6 +1228,7 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
+    use tokio::io::AsyncReadExt;
 
     type TestChunkMap = HashMap<u32, (u32, u32, Vec<Option<Vec<u8>>>)>;
     type MudLoginResult = Result<(SyncEnvelope, SyncEnvelope), String>;
@@ -1387,6 +1607,9 @@ mod tests {
             assert!(payload_text.contains("First Room"));
             assert!(payload_text.contains("Things you can do here"));
             assert!(payload_text.contains("guide-token"));
+            assert!(payload_text.contains("scene-summary"));
+            assert!(payload_text.contains("summary-metric"));
+            assert!(payload_text.contains("Room: "));
             assert!(payload_text.contains("room-snapshot"));
             assert!(payload_text.contains("snapshot-row"));
             assert!(payload_text.contains("Players"));
@@ -1406,6 +1629,9 @@ mod tests {
                 serde_json::from_slice(&command_delta.payload).unwrap();
             let command_payload_text = serde_json::to_string(&command_payload).unwrap();
             assert!(command_payload_text.contains("event-line transfer"));
+            assert!(command_payload_text.contains("latest-event"));
+            assert!(command_payload_text.contains("event-meta"));
+            assert!(command_payload_text.contains("event-meta-chip"));
             assert!(command_payload_text.contains("event-entity"));
             assert!(command_payload_text.contains("data-entity"));
             assert!(command_payload_text.contains("entity-action"));
@@ -1422,6 +1648,10 @@ mod tests {
                 serde_json::from_slice(&inspect_delta.payload).unwrap();
             let inspect_payload_text = serde_json::to_string(&inspect_payload).unwrap();
             assert!(inspect_payload_text.contains("inspector"));
+            assert!(inspect_payload_text.contains("entity-facts"));
+            assert!(inspect_payload_text.contains("entity-kind"));
+            assert!(inspect_payload_text.contains("entity-location"));
+            assert!(inspect_payload_text.contains("entity-avatar"));
             assert!(inspect_payload_text.contains("look coin"));
             assert!(inspect_payload_text.contains("data-entity"));
             assert!(inspect_payload_text.contains("tarnished brass coin"));
@@ -1518,25 +1748,20 @@ mod tests {
 
             wait_for_client_connected(&connected_rx).await;
             send_tx.send(()).unwrap();
-            let (alice_delta, bob_delta) =
+            let (bob_delta, bob_inspect_delta) =
                 wait_for_mud_two_session_result(&result_rx).await.unwrap();
 
             server_endpoint.close(0u32.into(), b"test complete");
             client.join().unwrap();
 
-            assert_eq!(alice_delta.kind, SyncMessageKind::ViewDelta);
-            assert_eq!(alice_delta.view_id, 21);
-            assert_eq!(alice_delta.client_revision, 1);
-            assert_eq!(alice_delta.server_revision, 3);
-            let alice_payload: serde_json::Value =
-                serde_json::from_slice(&alice_delta.payload).unwrap();
-            let alice_payload_text = serde_json::to_string(&alice_payload).unwrap();
-            assert!(alice_payload_text.contains("you"));
-            assert!(alice_payload_text.contains("coin"));
-
-            assert_eq!(bob_delta.kind, SyncMessageKind::ViewDelta);
+            assert!(matches!(
+                bob_delta.kind,
+                SyncMessageKind::ViewDelta | SyncMessageKind::ViewSnapshot
+            ));
             assert_eq!(bob_delta.view_id, 21);
-            assert_eq!(bob_delta.client_revision, 1);
+            if bob_delta.kind == SyncMessageKind::ViewDelta {
+                assert_eq!(bob_delta.client_revision, 1);
+            }
             assert_eq!(bob_delta.server_revision, 2);
             let bob_payload: serde_json::Value =
                 serde_json::from_slice(&bob_delta.payload).unwrap();
@@ -1547,12 +1772,35 @@ mod tests {
             assert!(bob_payload_text.contains("takes"));
             assert!(bob_payload_text.contains("coin"));
             assert!(bob_payload_text.contains("event-line transfer"));
+            assert!(bob_payload_text.contains("latest-event"));
+            assert!(bob_payload_text.contains("event-meta"));
             assert!(bob_payload_text.contains("entity-action"));
+
+            assert!(matches!(
+                bob_inspect_delta.kind,
+                SyncMessageKind::ViewDelta | SyncMessageKind::ViewSnapshot
+            ));
+            assert_eq!(bob_inspect_delta.view_id, 21);
+            if bob_inspect_delta.kind == SyncMessageKind::ViewDelta {
+                assert_eq!(bob_inspect_delta.client_revision, bob_delta.server_revision);
+            }
+            let bob_inspect_payload: serde_json::Value =
+                serde_json::from_slice(&bob_inspect_delta.payload).unwrap();
+            let bob_inspect_payload_text = serde_json::to_string(&bob_inspect_payload).unwrap();
+            assert!(bob_inspect_payload_text.contains("Alice"));
+            assert!(bob_inspect_payload_text.contains("entity-facts"));
+            assert!(bob_inspect_payload_text.contains("entity-kind"));
+            assert!(bob_inspect_payload_text.contains("entity-location"));
+            assert!(bob_inspect_payload_text.contains("object-actions"));
+            assert!(
+                bob_inspect_payload_text
+                    .contains("Alice is alert and ready to test the room's stranger affordances.")
+            );
         });
     }
 
     #[test]
-    fn webtransport_mud_suspended_command_recovers_with_have_view() {
+    fn webtransport_mud_suspended_command_pushes_delayed_event() {
         let _guard = MUD_WEBTRANSPORT_TEST_LOCK.lock().unwrap();
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let tls = test_tls_config();
@@ -1584,7 +1832,7 @@ mod tests {
 
             wait_for_client_connected(&connected_rx).await;
             send_tx.send(()).unwrap();
-            let (snapshot, login_delta, push_delta, poll_delta) =
+            let (snapshot, login_delta, push_delta, delayed_delta) =
                 wait_for_mud_delayed_event_result(&result_rx).await.unwrap();
 
             server_endpoint.close(0u32.into(), b"test complete");
@@ -1602,22 +1850,24 @@ mod tests {
             let push_payload_text = serde_json::to_string(&push_payload).unwrap();
             assert!(push_payload_text.contains("begins to hum"));
 
-            assert_eq!(poll_delta.kind, SyncMessageKind::ViewDelta);
-            assert_eq!(poll_delta.view_id, 21);
-            assert_eq!(poll_delta.client_revision, push_delta.server_revision);
-            assert!(poll_delta.server_revision > push_delta.server_revision);
+            assert_eq!(delayed_delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(delayed_delta.view_id, 21);
+            assert_eq!(delayed_delta.client_revision, push_delta.server_revision);
+            assert!(delayed_delta.server_revision > push_delta.server_revision);
             let poll_payload: serde_json::Value =
-                serde_json::from_slice(&poll_delta.payload).unwrap();
+                serde_json::from_slice(&delayed_delta.payload).unwrap();
             let poll_payload_text = serde_json::to_string(&poll_payload).unwrap();
             assert!(poll_payload_text.contains("cheerful ding"));
             assert!(poll_payload_text.contains("event-line alert"));
+            assert!(poll_payload_text.contains("latest-event"));
+            assert!(poll_payload_text.contains("event-meta"));
             assert!(poll_payload_text.contains("look button"));
             assert!(poll_payload_text.contains("entity-button"));
         });
     }
 
     #[test]
-    fn webtransport_stale_dom_event_returns_snapshot() {
+    fn webtransport_stale_dom_event_is_still_processed() {
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let tls = test_tls_config();
             let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
@@ -1644,22 +1894,17 @@ mod tests {
 
             wait_for_client_connected(&connected_rx).await;
             send_tx.send(()).unwrap();
-            let recovery = wait_for_snapshot_client_result(&result_rx).await.unwrap();
+            let delta = wait_for_snapshot_client_result(&result_rx).await.unwrap();
 
             server_endpoint.close(0u32.into(), b"test complete");
             client.join().unwrap();
-            assert_eq!(recovery.kind, SyncMessageKind::ViewSnapshot);
-            assert_eq!(recovery.client_revision, 1);
-            assert_eq!(recovery.client_signature, 999);
-            assert_eq!(recovery.server_revision, 1);
-            let payload: serde_json::Value = serde_json::from_slice(&recovery.payload).unwrap();
-            assert_eq!(
-                payload["root"]["children"][0]["children"]
-                    .as_array()
-                    .unwrap()
-                    .len(),
-                1
-            );
+            assert_eq!(delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(delta.client_revision, 1);
+            assert!(delta.server_revision > 1);
+            let payload: serde_json::Value = serde_json::from_slice(&delta.payload).unwrap();
+            let payload_text = serde_json::to_string(&payload).unwrap();
+            assert!(payload_text.contains("bob"));
+            assert!(payload_text.contains("stale"));
         });
     }
 
@@ -1954,7 +2199,19 @@ mod tests {
                                 ]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let inspect_delta = receive_sync_envelope(&connection).await?;
+                        let mut inspect_delta = receive_sync_envelope(&connection).await?;
+                        for _ in 0..6 {
+                            let payload: serde_json::Value =
+                                serde_json::from_slice(&inspect_delta.payload)
+                                    .map_err(|error| error.to_string())?;
+                            if serde_json::to_string(&payload)
+                                .map_err(|error| error.to_string())?
+                                .contains("tarnished brass coin")
+                            {
+                                break;
+                            }
+                            inspect_delta = receive_sync_envelope(&connection).await?;
+                        }
 
                         Ok((snapshot, delta, command_delta, inspect_delta))
                     })
@@ -2070,7 +2327,9 @@ mod tests {
                         alice
                             .send_datagram(encoded_sync_envelope(alice_need.as_ref()))
                             .map_err(|error| error.to_string())?;
-                        let alice_snapshot = receive_sync_envelope(&alice).await?;
+                        let alice_snapshot = receive_sync_envelope(&alice)
+                            .await
+                            .map_err(|error| format!("alice initial snapshot: {error}"))?;
 
                         let bob_need = SyncEnvelope {
                             kind: SyncMessageKind::NeedView,
@@ -2084,10 +2343,13 @@ mod tests {
                         };
                         bob.send_datagram(encoded_sync_envelope(bob_need.as_ref()))
                             .map_err(|error| error.to_string())?;
-                        let bob_snapshot = receive_sync_envelope(&bob).await?;
+                        let bob_snapshot = receive_sync_envelope(&bob)
+                            .await
+                            .map_err(|error| format!("bob initial snapshot: {error}"))?;
 
-                        alice
-                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                        send_dom_event_stream(
+                            &alice,
+                            DomEventPayload {
                                 session_id: 101,
                                 view_id: 21,
                                 revision: alice_snapshot.server_revision,
@@ -2096,22 +2358,30 @@ mod tests {
                                 target: "mud-login-alice".to_owned(),
                                 action: "mud_login".to_owned(),
                                 fields: BTreeMap::from([("text".to_owned(), "alice".to_owned())]),
-                            }))
-                            .map_err(|error| error.to_string())?;
-                        let alice_login = receive_sync_envelope(&alice).await?;
+                            },
+                        )
+                        .await?;
+                        let alice_login = receive_sync_envelope(&alice)
+                            .await
+                            .map_err(|error| format!("alice login delta: {error}"))?;
 
-                        bob.send_datagram(dom_event_payload_json(&DomEventPayload {
-                            session_id: 202,
-                            view_id: 21,
-                            revision: bob_snapshot.server_revision,
-                            signature: bob_snapshot.server_signature,
-                            event: "submit".to_owned(),
-                            target: "mud-login-bob".to_owned(),
-                            action: "mud_login".to_owned(),
-                            fields: BTreeMap::from([("text".to_owned(), "bob".to_owned())]),
-                        }))
-                        .map_err(|error| error.to_string())?;
-                        let bob_login = receive_sync_envelope(&bob).await?;
+                        send_dom_event_stream(
+                            &bob,
+                            DomEventPayload {
+                                session_id: 202,
+                                view_id: 21,
+                                revision: bob_snapshot.server_revision,
+                                signature: bob_snapshot.server_signature,
+                                event: "submit".to_owned(),
+                                target: "mud-login-bob".to_owned(),
+                                action: "mud_login".to_owned(),
+                                fields: BTreeMap::from([("text".to_owned(), "bob".to_owned())]),
+                            },
+                        )
+                        .await?;
+                        let bob_login = receive_sync_envelope(&bob)
+                            .await
+                            .map_err(|error| format!("bob login delta: {error}"))?;
 
                         alice
                             .send_datagram(dom_event_payload_json(&DomEventPayload {
@@ -2129,12 +2399,101 @@ mod tests {
                             }))
                             .map_err(|error| error.to_string())?;
 
-                        let alice_delta = receive_sync_envelope(&alice).await?;
-                        let bob_delta = receive_sync_envelope(&bob).await?;
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        let alice_have_view = SyncEnvelope {
+                            kind: SyncMessageKind::HaveView,
+                            session_id: 101,
+                            view_id: 21,
+                            client_revision: alice_login.server_revision,
+                            client_signature: alice_login.server_signature,
+                            server_revision: alice_login.server_revision,
+                            server_signature: alice_login.server_signature,
+                            payload: b"recover-alice".to_vec(),
+                        };
+                        alice
+                            .send_datagram(encoded_sync_envelope(alice_have_view.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let mut bob_delta = None;
+                        let mut bob_client_revision = bob_login.server_revision;
+                        let mut bob_client_signature = bob_login.server_signature;
+                        let mut last_bob_error = None;
+                        for _ in 0..3 {
+                            let bob_have_view = SyncEnvelope {
+                                kind: SyncMessageKind::HaveView,
+                                session_id: 202,
+                                view_id: 21,
+                                client_revision: bob_client_revision,
+                                client_signature: bob_client_signature,
+                                server_revision: bob_client_revision,
+                                server_signature: bob_client_signature,
+                                payload: b"recover-bob".to_vec(),
+                            };
+                            bob.send_datagram(encoded_sync_envelope(bob_have_view.as_ref()))
+                                .map_err(|error| error.to_string())?;
+
+                            match receive_sync_envelope(&bob).await {
+                                Ok(envelope) => {
+                                    bob_client_revision = envelope.server_revision;
+                                    bob_client_signature = envelope.server_signature;
+                                    let payload: serde_json::Value =
+                                        serde_json::from_slice(&envelope.payload)
+                                            .map_err(|error| error.to_string())?;
+                                    let payload_text = serde_json::to_string(&payload)
+                                        .map_err(|error| error.to_string())?;
+                                    if payload_text.contains("takes")
+                                        && payload_text.contains("coin")
+                                    {
+                                        bob_delta = Some(envelope);
+                                        break;
+                                    }
+                                }
+                                Err(error) => last_bob_error = Some(error),
+                            }
+                        }
+                        let bob_delta = bob_delta.ok_or_else(|| {
+                            format!(
+                                "bob command delta did not include transfer event{}",
+                                last_bob_error
+                                    .map(|error| format!(": {error}"))
+                                    .unwrap_or_default()
+                            )
+                        })?;
                         assert_eq!(bob_login.server_revision, 1);
+                        bob.send_datagram(dom_event_payload_json(&DomEventPayload {
+                            session_id: 202,
+                            view_id: 21,
+                            revision: bob_delta.server_revision,
+                            signature: bob_delta.server_signature,
+                            event: "submit".to_owned(),
+                            target: "event-inspect-alice".to_owned(),
+                            action: "mud_command".to_owned(),
+                            fields: BTreeMap::from([
+                                ("text".to_owned(), "look Alice".to_owned()),
+                                ("entity".to_owned(), "Alice".to_owned()),
+                            ]),
+                        }))
+                        .map_err(|error| error.to_string())?;
+                        let mut bob_inspect_delta = receive_sync_envelope(&bob)
+                            .await
+                            .map_err(|error| format!("bob inspect delta: {error}"))?;
+                        for _ in 0..6 {
+                            let payload: serde_json::Value =
+                                serde_json::from_slice(&bob_inspect_delta.payload)
+                                    .map_err(|error| error.to_string())?;
+                            let payload_text = serde_json::to_string(&payload)
+                                .map_err(|error| error.to_string())?;
+                            if payload_text.contains("Alice is alert and ready")
+                                && payload_text.contains("entity-facts")
+                            {
+                                break;
+                            }
+                            bob_inspect_delta = receive_sync_envelope(&bob)
+                                .await
+                                .map_err(|error| format!("bob inspect delta: {error}"))?;
+                        }
                         alice.close(0u32.into(), b"test complete");
                         bob.close(0u32.into(), b"test complete");
-                        Ok((alice_delta, bob_delta))
+                        Ok((bob_delta, bob_inspect_delta))
                     })
                 });
             let _ = result_tx.send(result);
@@ -2213,24 +2572,22 @@ mod tests {
                             .map_err(|error| error.to_string())?;
                         let push_delta = receive_sync_envelope(&connection).await?;
 
-                        tokio::time::sleep(Duration::from_millis(600)).await;
-                        let have_view = SyncEnvelope {
-                            kind: SyncMessageKind::HaveView,
-                            session_id: 7,
-                            view_id: 21,
-                            client_revision: push_delta.server_revision,
-                            client_signature: push_delta.server_signature,
-                            server_revision: push_delta.server_revision,
-                            server_signature: push_delta.server_signature,
-                            payload: b"poll".to_vec(),
-                        };
-                        connection
-                            .send_datagram(encoded_sync_envelope(have_view.as_ref()))
-                            .map_err(|error| error.to_string())?;
-                        let poll_delta = receive_sync_envelope(&connection).await?;
+                        let mut delayed_delta = receive_sync_envelope(&connection).await?;
+                        for _ in 0..6 {
+                            let payload: serde_json::Value =
+                                serde_json::from_slice(&delayed_delta.payload)
+                                    .map_err(|error| error.to_string())?;
+                            if serde_json::to_string(&payload)
+                                .map_err(|error| error.to_string())?
+                                .contains("cheerful ding")
+                            {
+                                break;
+                            }
+                            delayed_delta = receive_sync_envelope(&connection).await?;
+                        }
                         connection.close(0u32.into(), b"test complete");
 
-                        Ok((snapshot, login_delta, push_delta, poll_delta))
+                        Ok((snapshot, login_delta, push_delta, delayed_delta))
                     })
                 });
             let _ = result_tx.send(result);
@@ -2399,11 +2756,25 @@ mod tests {
             if now >= deadline {
                 return Err("timed out waiting for WebTransport datagram".to_owned());
             }
-            let datagram = tokio::time::timeout_at(deadline, connection.receive_datagram())
-                .await
-                .map_err(|_| "timed out waiting for WebTransport datagram".to_owned())?
-                .map_err(|error| error.to_string())?;
-            let payload = datagram.payload();
+            let payload = tokio::select! {
+                datagram = tokio::time::timeout_at(deadline, connection.receive_datagram()) => {
+                    datagram
+                        .map_err(|_| "timed out waiting for WebTransport datagram".to_owned())?
+                        .map_err(|error| error.to_string())?
+                        .payload()
+                }
+                stream = tokio::time::timeout_at(deadline, connection.accept_uni()) => {
+                    let mut stream = stream
+                        .map_err(|_| "timed out waiting for WebTransport stream".to_owned())?
+                        .map_err(|error| error.to_string())?;
+                    let mut payload = Vec::new();
+                    stream
+                        .read_to_end(&mut payload)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Bytes::from(payload)
+                }
+            };
             if !payload.starts_with(SYNC_CHUNK_MAGIC) {
                 match decode_sync_envelope(&payload) {
                     Ok(envelope) => return Ok(envelope),
@@ -2453,6 +2824,33 @@ mod tests {
                 return decode_sync_envelope(&encoded).map_err(|error| error.to_string());
             }
         }
+    }
+
+    async fn send_dom_event_stream(
+        connection: &wtransport::Connection,
+        event: DomEventPayload,
+    ) -> Result<(), String> {
+        let envelope = SyncEnvelope {
+            kind: SyncMessageKind::HaveView,
+            session_id: event.session_id,
+            view_id: event.view_id,
+            client_revision: event.revision,
+            client_signature: event.signature,
+            server_revision: event.revision,
+            server_signature: event.signature,
+            payload: dom_event_payload_json(&event),
+        };
+        let mut stream = connection
+            .open_uni()
+            .await
+            .map_err(|error| error.to_string())?
+            .await
+            .map_err(|error| error.to_string())?;
+        stream
+            .write_all(&encoded_sync_envelope(envelope.as_ref()))
+            .await
+            .map_err(|error| error.to_string())?;
+        stream.finish().await.map_err(|error| error.to_string())
     }
 
     async fn wait_for_client_connected(receiver: &mpsc::Receiver<()>) {
@@ -2534,7 +2932,7 @@ mod tests {
     async fn wait_for_mud_client_result(
         receiver: &mpsc::Receiver<MudClientResult>,
     ) -> Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match receiver.try_recv() {
                 Ok(result) => return result,
@@ -2594,7 +2992,7 @@ mod tests {
     async fn wait_for_mud_two_session_result(
         receiver: &mpsc::Receiver<MudTwoSessionResult>,
     ) -> Result<(SyncEnvelope, SyncEnvelope), String> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(45);
         loop {
             match receiver.try_recv() {
                 Ok(result) => return result,

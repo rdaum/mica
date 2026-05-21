@@ -28,6 +28,7 @@ pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
     "class",
     "data-command",
     "data-entity",
+    "data-sync-follow",
     "data-sync-action",
     "data-sync-event",
     "data-sync-key",

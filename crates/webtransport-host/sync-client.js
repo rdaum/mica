@@ -40,6 +40,7 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "autocomplete",
   "data-command",
   "data-entity",
+  "data-sync-follow",
   "data-sync-action",
   "data-sync-event",
   "data-sync-key",
@@ -237,15 +238,49 @@ function syncPayloadSignature(revision, payload) {
 }
 
 export function applySnapshot(mount, payload) {
+  const follow = captureFollowBottomTargets(mount);
   reconcileChildren(mount, [payload.root]);
+  restoreFollowBottomTargets(mount, follow);
 }
 
 export function applyDelta(mount, payload) {
   if (payload.type !== "dom_patch") {
     throw new Error(`unsupported delta type: ${payload.type}`);
   }
+  const follow = captureFollowBottomTargets(mount);
   for (const patch of payload.patches) {
     applyPatch(mount, patch);
+  }
+  restoreFollowBottomTargets(mount, follow);
+}
+
+function captureFollowBottomTargets(mount) {
+  if (!mount?.querySelectorAll) {
+    return [];
+  }
+  return Array.from(mount.querySelectorAll('[data-sync-follow="bottom"]')).map(
+    (element) => ({
+      id: element.id || "",
+      element,
+      follow:
+        element.scrollHeight <= element.clientHeight ||
+        element.scrollTop + element.clientHeight >= element.scrollHeight - 24,
+    }),
+  );
+}
+
+function restoreFollowBottomTargets(mount, targets) {
+  for (const target of targets) {
+    if (!target.follow) {
+      continue;
+    }
+    const element =
+      target.id && globalThis.document?.getElementById
+        ? globalThis.document.getElementById(target.id)
+        : target.element;
+    if (element && mount.contains(element)) {
+      element.scrollTop = element.scrollHeight;
+    }
   }
 }
 
@@ -451,6 +486,15 @@ export function focusAfterSubmit(form) {
   preferred?.focus();
 }
 
+function randomSessionId() {
+  if (globalThis.crypto?.getRandomValues) {
+    const values = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(values);
+    return String(values[0] || 1);
+  }
+  return String(Date.now());
+}
+
 export class MicaWebTransportSyncClient {
   constructor(options) {
     this.url = options.url;
@@ -469,8 +513,19 @@ export class MicaWebTransportSyncClient {
       certificateHashOptions(this.certificateHash),
     );
     await this.transport.ready;
+    this.transport.datagrams.incomingHighWaterMark = Math.max(
+      this.transport.datagrams.incomingHighWaterMark ?? 1,
+      64,
+    );
+    this.transport.datagrams.outgoingHighWaterMark = Math.max(
+      this.transport.datagrams.outgoingHighWaterMark ?? 1,
+      64,
+    );
     this.writer = this.transport.datagrams.writable.getWriter();
     this.readLoop().catch((error) => {
+      this.onError?.(error);
+    });
+    this.readStreamLoop().catch((error) => {
       this.onError?.(error);
     });
     this.transport.closed.then(
@@ -483,8 +538,19 @@ export class MicaWebTransportSyncClient {
     await this.writer.write(encodeSyncEnvelope(envelope));
   }
 
+  async sendStreamEnvelope(envelope) {
+    const payload = encodeSyncEnvelope(envelope);
+    const stream = await this.transport.createUnidirectionalStream();
+    const writer = stream.getWriter();
+    try {
+      await writer.write(payload);
+    } finally {
+      await writer.close();
+    }
+  }
+
   async needView(viewState) {
-    await this.sendEnvelope({
+    await this.sendStreamEnvelope({
       kind: SyncKind.NeedView,
       session: viewState.session,
       view: viewState.view,
@@ -494,33 +560,47 @@ export class MicaWebTransportSyncClient {
     });
   }
 
-  async haveView(viewState) {
-    await this.sendEnvelope({
+  async haveView(viewState, options = {}) {
+    const envelope = {
       kind: SyncKind.HaveView,
       session: viewState.session,
       view: viewState.view,
       clientRevision: viewState.clientRevision,
       clientSignature: viewState.clientSignature,
       payload: viewState.payload ?? "have",
-    });
+    };
+    if (options.reliable) {
+      await this.sendStreamEnvelope(envelope);
+      return;
+    }
+    await this.sendEnvelope(envelope);
   }
 
   async sendDomEvent(event) {
-    await this.writer.write(
-      new TextEncoder().encode(
-        JSON.stringify({
-          type: "dom_event",
-          session: BigInt(event.session).toString(),
-          view: BigInt(event.view).toString(),
-          revision: BigInt(event.revision).toString(),
-          signature: BigInt(event.signature).toString(),
-          event: String(event.event),
-          target: String(event.target ?? ""),
-          action: String(event.action ?? ""),
-          fields: event.fields ?? {},
-        }),
-      ),
-    );
+    const session = BigInt(event.session);
+    const view = BigInt(event.view);
+    const revision = BigInt(event.revision);
+    const signature = BigInt(event.signature);
+    await this.sendStreamEnvelope({
+      kind: SyncKind.HaveView,
+      session,
+      view,
+      clientRevision: revision,
+      clientSignature: signature,
+      serverRevision: revision,
+      serverSignature: signature,
+      payload: JSON.stringify({
+        type: "dom_event",
+        session: session.toString(),
+        view: view.toString(),
+        revision: revision.toString(),
+        signature: signature.toString(),
+        event: String(event.event),
+        target: String(event.target ?? ""),
+        action: String(event.action ?? ""),
+        fields: event.fields ?? {},
+      }),
+    });
   }
 
   async readLoop() {
@@ -542,9 +622,50 @@ export class MicaWebTransportSyncClient {
     }
   }
 
+  async readStreamLoop() {
+    const incoming = this.transport.incomingUnidirectionalStreams;
+    if (!incoming) {
+      return;
+    }
+    const reader = incoming.getReader();
+    for (;;) {
+      const { value: stream, done } = await reader.read();
+      if (done) {
+        return;
+      }
+      try {
+        const envelope = decodeSyncEnvelope(await readAllStreamBytes(stream));
+        this.onEnvelope?.(envelope);
+      } catch (error) {
+        this.onError?.(error);
+      }
+    }
+  }
+
   close() {
     this.transport?.close();
   }
+}
+
+async function readAllStreamBytes(stream) {
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 export function bootstrapServerRenderedSync(mount, status) {
@@ -552,7 +673,7 @@ export function bootstrapServerRenderedSync(mount, status) {
   const state = {
     url: params.get("url") ?? mount.dataset.webtransportUrl,
     certificateHash: params.get("certHash") ?? "",
-    session: BigInt(params.get("session") ?? String(Date.now() % 1000000)),
+    session: BigInt(params.get("session") ?? randomSessionId()),
     view: BigInt(mount.dataset.view),
     revision: BigInt(mount.dataset.revision),
     signature: BigInt(mount.dataset.signature),
@@ -560,11 +681,27 @@ export function bootstrapServerRenderedSync(mount, status) {
   let connected = false;
   let client;
   let connectPromise;
+  let connectError = null;
+  let initialSyncResolve;
+  let initialSyncReject;
+  let initialSynced = false;
+  const initialSyncPromise = new Promise((resolve, reject) => {
+    initialSyncResolve = resolve;
+    initialSyncReject = reject;
+  });
   let pollTimer = null;
   const api = { client: null, state };
 
   function setStatus(text) {
     status.textContent = text;
+  }
+
+  function connectionFailureText(error) {
+    const message = String(error ?? connectError ?? "connection failed");
+    if (!state.certificateHash) {
+      return `${message}. Open the URL printed by the smoke script, including certHash.`;
+    }
+    return message;
   }
 
   function viewState(payload) {
@@ -599,11 +736,23 @@ export function bootstrapServerRenderedSync(mount, status) {
     mount.dataset.revision = envelope.serverRevision;
     mount.dataset.signature = envelope.serverSignature;
     setStatus(`Synced revision ${envelope.serverRevision}`);
-    client.haveView(viewState("have")).catch((error) => setStatus(String(error)));
+    if (!initialSynced) {
+      initialSynced = true;
+      initialSyncResolve(true);
+    }
   }
 
   function handle(envelope) {
     if (envelope.kind === "ViewSnapshot") {
+      const serverRevision = BigInt(envelope.serverRevision);
+      const serverSignature = BigInt(envelope.serverSignature);
+      if (
+        initialSynced &&
+        (serverRevision < state.revision ||
+          (serverRevision === state.revision && serverSignature === state.signature))
+      ) {
+        return;
+      }
       const snapshot = validateSnapshotEnvelope(envelope);
       if (!snapshot.valid) {
         setStatus("Snapshot rejected");
@@ -614,6 +763,23 @@ export function bootstrapServerRenderedSync(mount, status) {
       return;
     }
     if (envelope.kind === "ViewDelta") {
+      const serverRevision = BigInt(envelope.serverRevision);
+      const serverSignature = BigInt(envelope.serverSignature);
+      if (
+        serverRevision < state.revision ||
+        (serverRevision === state.revision && serverSignature === state.signature)
+      ) {
+        return;
+      }
+      if (
+        BigInt(envelope.clientRevision) !== state.revision ||
+        BigInt(envelope.clientSignature) !== state.signature
+      ) {
+        client
+          .haveView(viewState("stale"), { reliable: true })
+          .catch((error) => setStatus(String(error)));
+        return;
+      }
       const delta = validateDeltaEnvelope(envelope);
       try {
         if (!delta.valid) {
@@ -625,6 +791,9 @@ export function bootstrapServerRenderedSync(mount, status) {
         setStatus("Recovering");
         state.revision = 0n;
         state.signature = 0n;
+        if (!initialSynced) {
+          initialSyncReject(error);
+        }
         client
           .needView(viewState("recover"))
           .catch((requestError) => setStatus(String(requestError)));
@@ -640,46 +809,64 @@ export function bootstrapServerRenderedSync(mount, status) {
       onClose: () => {
         connected = false;
         stopPolling();
+        if (!initialSynced) {
+          initialSyncReject(new Error("WebTransport closed before initial sync"));
+        }
         setStatus("Disconnected");
       },
       onError: (error) => {
         connected = false;
         stopPolling();
+        if (!initialSynced) {
+          initialSyncReject(error);
+        }
         setStatus(String(error));
       },
     });
     api.client = client;
     await client.connect();
-    connected = true;
+    connectError = null;
     startPolling();
-    await client.haveView(viewState("initial"));
+    await client.needView(viewState("initial"));
+    await initialSyncPromise;
+    connected = true;
   }
 
-  mount.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!connected) {
+  async function sendForm(form, submit) {
+    if (!connected || !initialSynced) {
+      if (connectError) {
+        setStatus(connectionFailureText(connectError));
+        return;
+      }
       setStatus("Connecting");
       try {
         if (!(await connectPromise)) {
+          setStatus(connectionFailureText(connectError));
           return;
         }
-      } catch {
+      } catch (error) {
+        connectError = error;
+        setStatus(connectionFailureText(error));
         return;
       }
     }
-    const form = event.target;
     if (
       !(form instanceof HTMLFormElement) ||
       form.dataset.syncEvent !== "submit"
     ) {
       return;
     }
-    const submit = form.querySelector("button[type='submit']");
+    submit ??= form.querySelector("button");
     const fields = Object.fromEntries(new FormData(form).entries());
-    if (String(fields.text ?? "").trim().length === 0) {
+    if (
+      form.dataset.syncAction === "mud_command" &&
+      String(fields.text ?? "").trim().length === 0
+    ) {
       return;
     }
-    submit.disabled = true;
+    if (submit) {
+      submit.disabled = true;
+    }
     try {
       await client.sendDomEvent({
         session: state.session,
@@ -693,15 +880,25 @@ export function bootstrapServerRenderedSync(mount, status) {
       });
       form.reset();
       focusAfterSubmit(form);
+    } catch (error) {
+      setStatus(`Event failed: ${String(error)}`);
     } finally {
-      submit.disabled = false;
+      if (submit) {
+        submit.disabled = false;
+      }
     }
+  }
+
+  mount.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await sendForm(event.target, event.submitter);
   });
 
   connectPromise = connect().then(
     () => true,
     (error) => {
-      setStatus(String(error));
+      connectError = error;
+      setStatus(connectionFailureText(error));
       return false;
     },
   );
