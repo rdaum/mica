@@ -102,20 +102,21 @@ async fn handle_in_process_connection(
     binding: RequestBinding,
 ) -> Result<(), String> {
     let connection_endpoint = host.allocate_endpoint()?;
-    host.driver
-        .open_endpoint_with_context(
-            connection_endpoint,
-            Some(binding.principal),
-            binding.actor,
-            Symbol::intern("http"),
-        )
-        .map_err(format_driver_error)?;
+    if let Err(error) = host.driver.open_endpoint_with_context(
+        connection_endpoint,
+        Some(binding.principal),
+        binding.actor,
+        Symbol::intern("http"),
+    ) {
+        host.driver.close_endpoint(connection_endpoint);
+        return Err(format_driver_error(error));
+    }
+    let _connection_scope = EndpointScope::new(host.clone(), connection_endpoint);
     let mut codec = HttpCodec::new();
     loop {
         let (result, buffer) = stream.read([0u8; 8192]).await.into();
         let bytes = result.map_err(|error| format!("failed to read from connection: {error}"))?;
         if bytes == 0 {
-            host.driver.close_endpoint(connection_endpoint);
             return Ok(());
         }
         match codec.decode(&buffer[..bytes]) {
@@ -126,17 +127,32 @@ async fn handle_in_process_connection(
                         handle_in_process_request(&host, &binding, &request, close).await;
                     write_response(&mut stream, response).await?;
                     if close {
-                        host.driver.close_endpoint(connection_endpoint);
                         return Ok(());
                     }
                 }
             }
             Err(error) => {
                 write_response(&mut stream, error_response(error, true)).await?;
-                host.driver.close_endpoint(connection_endpoint);
                 return Ok(());
             }
         }
+    }
+}
+
+struct EndpointScope {
+    host: Arc<InProcessWebHost>,
+    endpoint: mica_var::Identity,
+}
+
+impl EndpointScope {
+    fn new(host: Arc<InProcessWebHost>, endpoint: mica_var::Identity) -> Self {
+        Self { host, endpoint }
+    }
+}
+
+impl Drop for EndpointScope {
+    fn drop(&mut self) {
+        self.host.driver.close_endpoint(self.endpoint);
     }
 }
 
