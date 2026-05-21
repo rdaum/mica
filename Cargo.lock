@@ -1634,6 +1634,7 @@ dependencies = [
  "h3-webtransport",
  "http",
  "mica-driver",
+ "mica-host-protocol",
  "mica-runtime",
  "mica-var",
  "rcgen",

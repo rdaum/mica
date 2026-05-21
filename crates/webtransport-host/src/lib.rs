@@ -16,6 +16,9 @@ use compio::runtime::ResumeUnwind;
 use compio_quic::{Endpoint, ServerBuilder};
 use h3_webtransport::server::WebTransportSession;
 use mica_driver::{CompioTaskDriver, DriverEvent};
+use mica_host_protocol::{
+    SyncEnvelope, SyncEnvelopeRef, SyncMessageKind, decode_sync_envelope, encoded_sync_envelope,
+};
 use mica_var::{Identity, Symbol, Value};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::collections::{BTreeMap, VecDeque};
@@ -35,6 +38,8 @@ pub const DAEMON_ENDPOINT_ID_START: u64 = 0x00ea_0000_0000_0000;
 
 const ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS: usize = 128;
 const ENDPOINT_OUTPUT_DRAIN_DATAGRAMS: usize = 64;
+const SYNC_NEED_VIEW_SELECTOR: &str = "sync_need_view";
+const SYNC_HAVE_VIEW_SELECTOR: &str = "sync_have_view";
 
 type H3RequestStream =
     compio_quic::h3::server::RequestStream<compio_quic::h3::BidiStream<Bytes>, Bytes>;
@@ -383,11 +388,55 @@ async fn read_datagram_loop(
             .read_datagram()
             .await
             .map_err(|error| format!("failed to read WebTransport datagram: {error}"))?;
-        host.driver
-            .input(endpoint, Value::bytes(datagram.into_payload()))
-            .await
-            .map_err(format_driver_error)?;
+        route_incoming_datagram(host, endpoint, datagram.into_payload()).await?;
     }
+}
+
+async fn route_incoming_datagram(
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+    datagram: Bytes,
+) -> Result<(), String> {
+    match decode_sync_envelope(&datagram) {
+        Ok(envelope) => route_sync_envelope(host, endpoint, envelope).await,
+        Err(_) => host
+            .driver
+            .input(endpoint, Value::bytes(datagram))
+            .await
+            .map(|_| ())
+            .map_err(format_driver_error),
+    }
+}
+
+async fn route_sync_envelope(
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+    envelope: SyncEnvelope,
+) -> Result<(), String> {
+    let selector = match envelope.kind {
+        SyncMessageKind::NeedView => SYNC_NEED_VIEW_SELECTOR,
+        SyncMessageKind::HaveView => SYNC_HAVE_VIEW_SELECTOR,
+        SyncMessageKind::ViewSnapshot | SyncMessageKind::ViewDelta => {
+            return host
+                .driver
+                .input(
+                    endpoint,
+                    Value::bytes(encoded_sync_envelope(envelope.as_ref())),
+                )
+                .await
+                .map(|_| ())
+                .map_err(format_driver_error);
+        }
+    };
+    host.driver
+        .submit_invocation_for_endpoint(
+            endpoint,
+            Symbol::intern(selector),
+            sync_invocation_roles(&envelope),
+        )
+        .await
+        .map(|_| ())
+        .map_err(format_driver_error)
 }
 
 async fn write_datagram_loop(
@@ -437,11 +486,49 @@ fn route_driver_event(
         let Some(sender) = sessions.lock().unwrap().get(&effect.target).cloned() else {
             return;
         };
-        let _ = sender.send(effect_datagram(&effect.value));
+        let _ = sender.send(effect_datagram(effect.target, &effect.value));
     }
 }
 
-fn effect_datagram(value: &Value) -> Bytes {
+fn sync_invocation_roles(envelope: &SyncEnvelope) -> Vec<(Symbol, Value)> {
+    vec![
+        (
+            Symbol::intern("session"),
+            u64_to_mica_value(envelope.session_id),
+        ),
+        (Symbol::intern("view"), u64_to_mica_value(envelope.view_id)),
+        (
+            Symbol::intern("client_revision"),
+            u64_to_mica_value(envelope.client_revision),
+        ),
+        (
+            Symbol::intern("client_signature"),
+            u64_to_mica_value(envelope.client_signature),
+        ),
+        (
+            Symbol::intern("server_revision"),
+            u64_to_mica_value(envelope.server_revision),
+        ),
+        (
+            Symbol::intern("server_signature"),
+            u64_to_mica_value(envelope.server_signature),
+        ),
+        (Symbol::intern("payload"), Value::bytes(&envelope.payload)),
+    ]
+}
+
+fn u64_to_mica_value(value: u64) -> Value {
+    i64::try_from(value)
+        .map(Value::int)
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_else(|| Value::bytes(value.to_le_bytes()))
+}
+
+fn effect_datagram(target: Identity, value: &Value) -> Bytes {
+    if let Some(datagram) = sync_effect_datagram(target, value) {
+        return datagram;
+    }
     if let Some(bytes) = value.with_bytes(Bytes::copy_from_slice) {
         return bytes;
     }
@@ -451,6 +538,72 @@ fn effect_datagram(value: &Value) -> Bytes {
     Bytes::from(value.to_string())
 }
 
+fn sync_effect_datagram(target: Identity, value: &Value) -> Option<Bytes> {
+    value.with_list(|values| {
+        let [
+            kind,
+            session,
+            view,
+            client_revision,
+            client_signature,
+            server_revision,
+            server_signature,
+            payload,
+        ] = values
+        else {
+            return None;
+        };
+        let kind = sync_kind_from_value(kind)?;
+        let session_id = u64_from_value(session).unwrap_or_else(|| target.raw());
+        let payload = payload_bytes_from_value(payload)?;
+        let envelope = SyncEnvelopeRef {
+            kind,
+            session_id,
+            view_id: u64_from_value(view)?,
+            client_revision: u64_from_value(client_revision)?,
+            client_signature: u64_from_value(client_signature)?,
+            server_revision: u64_from_value(server_revision)?,
+            server_signature: u64_from_value(server_signature)?,
+            payload: &payload,
+        };
+        Some(Bytes::from(encoded_sync_envelope(envelope)))
+    })?
+}
+
+fn sync_kind_from_value(value: &Value) -> Option<SyncMessageKind> {
+    let name = value
+        .as_symbol()
+        .and_then(Symbol::name)
+        .map(str::to_owned)
+        .or_else(|| value.with_str(str::to_owned))?;
+    match name.as_str() {
+        "view_snapshot" => Some(SyncMessageKind::ViewSnapshot),
+        "view_delta" => Some(SyncMessageKind::ViewDelta),
+        "need_view" => Some(SyncMessageKind::NeedView),
+        "have_view" => Some(SyncMessageKind::HaveView),
+        _ => None,
+    }
+}
+
+fn u64_from_value(value: &Value) -> Option<u64> {
+    if let Some(raw) = value.as_identity().map(Identity::raw) {
+        return Some(raw);
+    }
+    if let Some(raw) = value.as_int().and_then(|value| u64::try_from(value).ok()) {
+        return Some(raw);
+    }
+    value.with_bytes(|bytes| {
+        let bytes: [u8; 8] = bytes.try_into().ok()?;
+        Some(u64::from_le_bytes(bytes))
+    })?
+}
+
+fn payload_bytes_from_value(value: &Value) -> Option<Vec<u8>> {
+    value
+        .with_bytes(<[u8]>::to_vec)
+        .or_else(|| value.with_str(|text| text.as_bytes().to_vec()))
+}
+
 fn format_driver_error(error: mica_driver::DriverError) -> String {
     format!("error: {error}")
 }
@@ -458,18 +611,50 @@ fn format_driver_error(error: mica_driver::DriverError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
+    use mica_runtime::SourceRunner;
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
     #[test]
     fn effect_datagrams_preserve_bytes_and_strings() {
+        let endpoint = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
         assert_eq!(
-            effect_datagram(&Value::bytes([0xde, 0xad, 0xbe, 0xef])).as_ref(),
+            effect_datagram(endpoint, &Value::bytes([0xde, 0xad, 0xbe, 0xef])).as_ref(),
             &[0xde, 0xad, 0xbe, 0xef]
         );
-        assert_eq!(effect_datagram(&Value::string("hello")).as_ref(), b"hello");
+        assert_eq!(
+            effect_datagram(endpoint, &Value::string("hello")).as_ref(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn sync_effect_values_encode_view_datagrams() {
+        let endpoint = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
+        let datagram = effect_datagram(
+            endpoint,
+            &Value::list([
+                Value::symbol(Symbol::intern("view_delta")),
+                Value::identity(endpoint),
+                Value::int(9).unwrap(),
+                Value::int(1).unwrap(),
+                Value::int(2).unwrap(),
+                Value::int(3).unwrap(),
+                Value::int(4).unwrap(),
+                Value::string("patch"),
+            ]),
+        );
+        let envelope = decode_sync_envelope(&datagram).unwrap();
+
+        assert_eq!(envelope.kind, SyncMessageKind::ViewDelta);
+        assert_eq!(envelope.session_id, endpoint.raw());
+        assert_eq!(envelope.view_id, 9);
+        assert_eq!(envelope.client_revision, 1);
+        assert_eq!(envelope.client_signature, 2);
+        assert_eq!(envelope.server_revision, 3);
+        assert_eq!(envelope.server_signature, 4);
+        assert_eq!(envelope.payload, b"patch");
     }
 
     #[test]
@@ -503,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn webtransport_datagram_smoke_round_trips_mica_endpoint_input_and_emission() {
+    fn webtransport_sync_need_view_invokes_mica_and_returns_snapshot() {
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let tls = test_tls_config();
             let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
@@ -513,7 +698,19 @@ mod tests {
             let server_endpoint = endpoint.clone();
 
             let mut runner = SourceRunner::new_empty();
-            runner.run_source("return make_identity(:web)").unwrap();
+            runner
+                .run_source(
+                    "make_identity(:web)\n\
+                     make_relation(:CanInvoke, 2)\n\
+                     make_relation(:CanEffect, 1)\n\
+                     assert CanInvoke(#web, :sync_need_view)\n\
+                     assert CanEffect(#web)\n\
+                     verb sync_need_view(endpoint, session, view, client_revision, client_signature, server_revision, server_signature, payload)\n\
+                       emit(endpoint, [:view_snapshot, session, view, client_revision, client_signature, 29, 31, \"snapshot\"])\n\
+                       return payload\n\
+                     end\n",
+                )
+                .unwrap();
             let principal = runner.named_identity(Symbol::intern("web")).unwrap();
             let driver = CompioTaskDriver::spawn(runner).unwrap();
             let host = InProcessWebTransportHost::new(driver.clone());
@@ -526,19 +723,42 @@ mod tests {
             let (connected_tx, connected_rx) = mpsc::channel();
             let (send_tx, send_rx) = mpsc::channel();
             let (result_tx, result_rx) = mpsc::channel();
-            let client =
-                spawn_wtransport_smoke_client(server_addr, connected_tx, send_rx, result_tx);
+            let request = encoded_sync_envelope(
+                SyncEnvelope {
+                    kind: SyncMessageKind::NeedView,
+                    session_id: 7,
+                    view_id: 11,
+                    client_revision: 13,
+                    client_signature: 17,
+                    server_revision: 19,
+                    server_signature: 23,
+                    payload: b"need".to_vec(),
+                }
+                .as_ref(),
+            );
+            let client = spawn_wtransport_smoke_client(
+                server_addr,
+                request,
+                connected_tx,
+                send_rx,
+                result_tx,
+            );
 
             wait_for_client_connected(&connected_rx).await;
-            let endpoint_identity = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
-            submit_waiting_echo_task(&driver, endpoint_identity).await;
-
             send_tx.send(()).unwrap();
             let received = wait_for_client_result(&result_rx).await.unwrap();
+            let envelope = decode_sync_envelope(&received).unwrap();
 
             server_endpoint.close(0u32.into(), b"test complete");
             client.join().unwrap();
-            assert_eq!(received, b"need-view");
+            assert_eq!(envelope.kind, SyncMessageKind::ViewSnapshot);
+            assert_eq!(envelope.session_id, 7);
+            assert_eq!(envelope.view_id, 11);
+            assert_eq!(envelope.client_revision, 13);
+            assert_eq!(envelope.client_signature, 17);
+            assert_eq!(envelope.server_revision, 29);
+            assert_eq!(envelope.server_signature, 31);
+            assert_eq!(envelope.payload, b"snapshot");
         });
     }
 
@@ -553,6 +773,7 @@ mod tests {
 
     fn spawn_wtransport_smoke_client(
         server_addr: SocketAddr,
+        request: Vec<u8>,
         connected_tx: mpsc::Sender<()>,
         send_rx: mpsc::Receiver<()>,
         result_tx: mpsc::Sender<Result<Vec<u8>, String>>,
@@ -577,7 +798,7 @@ mod tests {
                         connected_tx.send(()).map_err(|error| error.to_string())?;
                         send_rx.recv().map_err(|error| error.to_string())?;
                         connection
-                            .send_datagram(b"need-view")
+                            .send_datagram(request)
                             .map_err(|error| error.to_string())?;
                         let datagram = tokio::time::timeout(
                             Duration::from_secs(3),
@@ -605,35 +826,6 @@ mod tests {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     panic!("client disconnected before connect")
                 }
-            }
-        }
-    }
-
-    async fn submit_waiting_echo_task(driver: &CompioTaskDriver, endpoint: Identity) {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let source = "let payload = read(:datagram)\n\
-                      emit(endpoint(), payload)\n\
-                      return payload"
-            .to_owned();
-        loop {
-            match driver
-                .submit_source(endpoint, SourceRunner::root_source_request(source.clone()))
-                .await
-            {
-                Ok(submitted) => {
-                    assert!(matches!(
-                        submitted.outcome,
-                        TaskOutcome::Suspended {
-                            kind: SuspendKind::WaitingForInput(_),
-                            ..
-                        }
-                    ));
-                    return;
-                }
-                Err(_) if Instant::now() < deadline => {
-                    compio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Err(error) => panic!("failed to submit endpoint echo task: {error}"),
             }
         }
     }
