@@ -95,6 +95,13 @@ struct ChatPostAction {
     text: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActiveSyncView {
+    endpoint: Identity,
+    session_id: u64,
+    view_id: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SessionOutputReady {
     Ready { buffered: usize },
@@ -209,6 +216,10 @@ impl InProcessWebTransportHost {
     fn allocate_endpoint(&self) -> Result<Identity, String> {
         let raw = self.next_endpoint.fetch_add(1, Ordering::Relaxed);
         Identity::new(raw).ok_or_else(|| "endpoint identity space is exhausted".to_owned())
+    }
+
+    fn active_sync_views(&self) -> Vec<ActiveSyncView> {
+        active_sync_views(&self.sessions)
     }
 }
 
@@ -454,8 +465,7 @@ async fn route_plain_datagram(
     datagram: Bytes,
 ) -> Result<(), String> {
     if let Some(action) = decode_chat_post_action(&datagram)? {
-        return host
-            .driver
+        host.driver
             .submit_invocation_for_endpoint(
                 endpoint,
                 Symbol::intern("chat_post"),
@@ -465,8 +475,8 @@ async fn route_plain_datagram(
                 ],
             )
             .await
-            .map(|_| ())
-            .map_err(format_driver_error);
+            .map_err(format_driver_error)?;
+        return refresh_active_sync_views(host).await;
     }
 
     host.driver
@@ -474,6 +484,31 @@ async fn route_plain_datagram(
         .await
         .map(|_| ())
         .map_err(format_driver_error)
+}
+
+async fn refresh_active_sync_views(host: &InProcessWebTransportHost) -> Result<(), String> {
+    for active in host.active_sync_views() {
+        let envelope = SyncEnvelope {
+            kind: SyncMessageKind::NeedView,
+            session_id: active.session_id,
+            view_id: active.view_id,
+            client_revision: 0,
+            client_signature: 0,
+            server_revision: 0,
+            server_signature: 0,
+            payload: Vec::new(),
+        };
+        host.driver
+            .submit_invocation_for_endpoint(
+                active.endpoint,
+                sync_invocation_selector(SyncMessageKind::NeedView)
+                    .expect("NeedView should have an invocation selector"),
+                sync_invocation_roles(&envelope),
+            )
+            .await
+            .map_err(format_driver_error)?;
+    }
+    Ok(())
 }
 
 fn decode_chat_post_action(datagram: &[u8]) -> Result<Option<ChatPostAction>, String> {
@@ -562,6 +597,31 @@ fn start_event_pump(
         }
     })
     .detach();
+}
+
+fn active_sync_views(
+    sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
+) -> Vec<ActiveSyncView> {
+    let states = sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(endpoint, state)| (*endpoint, state.clone()))
+        .collect::<Vec<_>>();
+    let mut active = Vec::new();
+    for (endpoint, state) in states {
+        let sync = state.sync.lock().unwrap();
+        for (session_id, views) in &sync.sessions {
+            for view_id in views {
+                active.push(ActiveSyncView {
+                    endpoint,
+                    session_id: *session_id,
+                    view_id: *view_id,
+                });
+            }
+        }
+    }
+    active
 }
 
 fn route_driver_event(
@@ -686,6 +746,38 @@ mod tests {
             None
         );
         assert!(decode_chat_post_action(br#"{"type":"chat_post"}"#).is_err());
+    }
+
+    #[test]
+    fn active_sync_views_snapshot_does_not_hold_session_lock() {
+        let endpoint = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let state = SessionState::new();
+        state
+            .sync
+            .lock()
+            .unwrap()
+            .record_incoming_view(&SyncEnvelope {
+                kind: SyncMessageKind::NeedView,
+                session_id: 7,
+                view_id: 11,
+                client_revision: 0,
+                client_signature: 0,
+                server_revision: 0,
+                server_signature: 0,
+                payload: Vec::new(),
+            });
+        sessions.lock().unwrap().insert(endpoint, state.clone());
+
+        assert_eq!(
+            active_sync_views(&sessions),
+            vec![ActiveSyncView {
+                endpoint,
+                session_id: 7,
+                view_id: 11,
+            }]
+        );
+        assert!(state.sync.try_lock().is_ok());
     }
 
     #[test]
