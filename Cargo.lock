@@ -1523,6 +1523,7 @@ name = "mica-host-protocol"
 version = "0.1.0"
 dependencies = [
  "mica-var",
+ "serde_json",
 ]
 
 [[package]]
@@ -1576,6 +1577,7 @@ name = "mica-runtime"
 version = "0.1.0"
 dependencies = [
  "mica-compiler",
+ "mica-host-protocol",
  "mica-relation-kernel",
  "mica-var",
  "mica-vm",

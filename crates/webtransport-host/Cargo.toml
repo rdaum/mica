@@ -14,13 +14,13 @@ h3-webtransport.workspace = true
 http.workspace = true
 mica-driver.workspace = true
 mica-host-protocol.workspace = true
+mica-runtime.workspace = true
 mica-var.workspace = true
 rustls-pemfile.workspace = true
 rustls-pki-types.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-mica-runtime.workspace = true
 rcgen.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 wtransport.workspace = true

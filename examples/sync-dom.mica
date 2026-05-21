@@ -1,12 +1,10 @@
-// Generic DOM snapshot and patch-delta sync verbs.
+// Generic DOM snapshot helpers. WebTransport session state, snapshots, and
+// patches are owned by the host.
 
-assert CanInvoke(#web, :sync_need_view)
-assert CanInvoke(#web, :sync_have_view)
 assert CanInvoke(#web, :sync_snapshot)
 assert CanInvoke(#web, :sync_snapshot_payload)
 assert CanInvoke(#web, :sync_snapshot_tree)
 assert CanInvoke(#web, :sync_snapshot_signature)
-assert CanInvoke(#web, :sync_dom_delta_payload)
 
 verb sync_snapshot(view)
   return {:view -> view, :revision -> sync_view_revision(view)}
@@ -14,7 +12,7 @@ end
 
 verb sync_snapshot_payload(view)
   let snapshot = sync_snapshot(view)
-  return json_encode({:view -> view, :revision -> snapshot[:revision], :root -> sync_view_tree(view, snapshot[:revision])})
+  return dom_snapshot_payload(view, snapshot[:revision], sync_view_tree(view, snapshot[:revision]))
 end
 
 verb sync_snapshot_tree(view)
@@ -22,33 +20,5 @@ verb sync_snapshot_tree(view)
 end
 
 verb sync_snapshot_signature(view, payload)
-  return sync_view_revision(view) + string_len(payload)
-end
-
-verb sync_dom_delta_payload(view, before_revision, after_revision)
-  let before_root = sync_view_tree(view, before_revision)
-  let after_root = sync_view_tree(view, after_revision)
-  return json_encode({:type -> "dom_patch", :view -> view, :revision -> after_revision, :patches -> dom_diff(before_root, after_root)})
-end
-
-verb sync_need_view(endpoint, session, view, client_revision, client_signature, server_revision, server_signature, payload)
-  let revision = sync_view_revision(view)
-
-  if client_revision > 0 && client_revision < revision
-    let delta = sync_dom_delta_payload(view, client_revision, revision)
-    let delta_signature = revision + string_len(delta)
-    emit(endpoint, [:view_delta, session, view, client_revision, client_signature, revision, delta_signature, delta])
-    return delta
-  end
-
-  let body = sync_snapshot_payload(view)
-  let signature = sync_snapshot_signature(view, body)
-
-  emit(endpoint, [:view_snapshot, session, view, client_revision, client_signature, revision, signature, body])
-  return body
-end
-
-verb sync_have_view(endpoint, session, view, client_revision, client_signature, server_revision, server_signature, payload)
-  let body = sync_snapshot_payload(view)
-  return server_revision == sync_view_revision(view) && server_signature == sync_snapshot_signature(view, body)
+  return sync_signature(sync_view_revision(view), payload)
 end

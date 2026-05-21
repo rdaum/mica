@@ -36,6 +36,7 @@ use mica_compiler::{
     MethodKind, MethodRelations, NodeId, compile_semantic, install_methods,
     install_rules_from_source, parse, parse_semantic,
 };
+use mica_host_protocol::{DomNode, diff_dom_nodes, snapshot_payload_json, sync_payload_signature};
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
     RelationKernel, RelationMetadata, RelationRead,
@@ -106,6 +107,8 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "to_xml",
     "from_xml",
     "dom_diff",
+    "dom_snapshot_payload",
+    "sync_signature",
     "string_len",
     "string_chars",
     "string_slice",
@@ -2486,6 +2489,8 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("to_xml", to_xml_builtin)
         .with_builtin("from_xml", from_xml_builtin)
         .with_builtin("dom_diff", dom_diff_builtin)
+        .with_builtin("dom_snapshot_payload", dom_snapshot_payload_builtin)
+        .with_builtin("sync_signature", sync_signature_builtin)
         .with_builtin("string_len", string_len_builtin)
         .with_builtin("string_chars", string_chars_builtin)
         .with_builtin("string_slice", string_slice_builtin)
@@ -2748,9 +2753,72 @@ fn dom_diff_builtin(
             "expected dom_diff(before, after)",
         ));
     }
-    let mut patches = Vec::new();
-    dom_diff_node(&args[0], &args[1], &mut Vec::new(), &mut patches);
-    Ok(Value::list(patches))
+    let before = DomNode::from_mica_value(&args[0])
+        .map_err(|error| invalid_builtin_call("dom_diff", error))?;
+    let after = DomNode::from_mica_value(&args[1])
+        .map_err(|error| invalid_builtin_call("dom_diff", error))?;
+    Ok(Value::list(
+        diff_dom_nodes(&before, &after)
+            .into_iter()
+            .map(|patch| patch.to_mica_value()),
+    ))
+}
+
+fn dom_snapshot_payload_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 3 {
+        return Err(invalid_builtin_call(
+            "dom_snapshot_payload",
+            "expected dom_snapshot_payload(view, revision, root)",
+        ));
+    }
+    let view = args[0]
+        .as_int()
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| {
+            invalid_builtin_call(
+                "dom_snapshot_payload",
+                "view must be a non-negative integer",
+            )
+        })?;
+    let revision = args[1]
+        .as_int()
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| {
+            invalid_builtin_call(
+                "dom_snapshot_payload",
+                "revision must be a non-negative integer",
+            )
+        })?;
+    let root = DomNode::from_mica_value(&args[2])
+        .map_err(|error| invalid_builtin_call("dom_snapshot_payload", error))?;
+    String::from_utf8(snapshot_payload_json(view, revision, &root))
+        .map(Value::string)
+        .map_err(|error| invalid_builtin_call("dom_snapshot_payload", error.to_string()))
+}
+
+fn sync_signature_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "sync_signature",
+            "expected sync_signature(revision, payload)",
+        ));
+    }
+    let revision = args[0]
+        .as_int()
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| {
+            invalid_builtin_call("sync_signature", "revision must be a non-negative integer")
+        })?;
+    let payload = builtin_string_arg("sync_signature", args, 1)?;
+    let signature = sync_payload_signature(revision, payload.as_bytes());
+    Value::int(i64::try_from(signature).expect("sync signatures fit in signed integers"))
+        .map_err(|_| invalid_builtin_call("sync_signature", "signature is out of range"))
 }
 
 fn json_value(value: &Value) -> Result<serde_json::Value, RuntimeError> {
@@ -3097,108 +3165,6 @@ fn escape_html_attr(value: &str, out: &mut String) {
     }
 }
 
-fn dom_diff_node(before: &Value, after: &Value, path: &mut Vec<usize>, patches: &mut Vec<Value>) {
-    if before == after {
-        return;
-    }
-    if let (Some(before_text), Some(after_text)) = (dom_text(before), dom_text(after)) {
-        if before_text != after_text {
-            patches.push(dom_patch(
-                "set_text",
-                path,
-                [(
-                    Value::symbol(Symbol::intern("text")),
-                    Value::string(after_text),
-                )],
-            ));
-        }
-        return;
-    }
-
-    let Some((before_tag, before_attrs, before_children)) = dom_element(before) else {
-        patches.push(dom_replace_patch(path, after.clone()));
-        return;
-    };
-    let Some((after_tag, after_attrs, after_children)) = dom_element(after) else {
-        patches.push(dom_replace_patch(path, after.clone()));
-        return;
-    };
-    if before_tag != after_tag {
-        patches.push(dom_replace_patch(path, after.clone()));
-        return;
-    }
-
-    dom_diff_attrs(&before_attrs, &after_attrs, path, patches);
-    dom_diff_children(&before_children, &after_children, path, patches);
-}
-
-fn dom_diff_attrs(before: &Value, after: &Value, path: &[usize], patches: &mut Vec<Value>) {
-    let before_entries = before
-        .with_map(<[(Value, Value)]>::to_vec)
-        .unwrap_or_default();
-    let after_entries = after
-        .with_map(<[(Value, Value)]>::to_vec)
-        .unwrap_or_default();
-
-    for (key, before_value) in &before_entries {
-        match after.map_get(key) {
-            Some(after_value) if after_value == *before_value => {}
-            Some(after_value) => patches.push(dom_patch(
-                "set_attr",
-                path,
-                [
-                    (Value::symbol(Symbol::intern("name")), key.clone()),
-                    (Value::symbol(Symbol::intern("value")), after_value),
-                ],
-            )),
-            None => patches.push(dom_patch(
-                "remove_attr",
-                path,
-                [(Value::symbol(Symbol::intern("name")), key.clone())],
-            )),
-        }
-    }
-
-    for (key, after_value) in &after_entries {
-        if before.map_get(key).is_none() {
-            patches.push(dom_patch(
-                "set_attr",
-                path,
-                [
-                    (Value::symbol(Symbol::intern("name")), key.clone()),
-                    (Value::symbol(Symbol::intern("value")), after_value.clone()),
-                ],
-            ));
-        }
-    }
-}
-
-fn dom_diff_children(
-    before: &[Value],
-    after: &[Value],
-    path: &mut Vec<usize>,
-    patches: &mut Vec<Value>,
-) {
-    let shared = before.len().min(after.len());
-    for index in 0..shared {
-        path.push(index);
-        dom_diff_node(&before[index], &after[index], path, patches);
-        path.pop();
-    }
-    for child in &after[shared..] {
-        patches.push(dom_patch(
-            "append_child",
-            path,
-            [(Value::symbol(Symbol::intern("node")), child.clone())],
-        ));
-    }
-    for index in (after.len()..before.len()).rev() {
-        let mut child_path = path.to_owned();
-        child_path.push(index);
-        patches.push(dom_patch("remove_child", &child_path, []));
-    }
-}
-
 fn dom_text(value: &Value) -> Option<String> {
     value
         .map_get(&Value::symbol(Symbol::intern("text")))?
@@ -3219,29 +3185,6 @@ fn dom_element(value: &Value) -> Option<(String, Value, Vec<Value>)> {
     attrs.with_map(|_| ())?;
     let children = children.with_list(<[Value]>::to_vec)?;
     Some((tag, attrs, children))
-}
-
-fn dom_replace_patch(path: &[usize], node: Value) -> Value {
-    dom_patch(
-        "replace",
-        path,
-        [(Value::symbol(Symbol::intern("node")), node)],
-    )
-}
-
-fn dom_patch(op: &str, path: &[usize], entries: impl IntoIterator<Item = (Value, Value)>) -> Value {
-    let mut fields = vec![
-        (Value::symbol(Symbol::intern("op")), Value::string(op)),
-        (Value::symbol(Symbol::intern("path")), dom_path_value(path)),
-    ];
-    fields.extend(entries);
-    Value::map(fields)
-}
-
-fn dom_path_value(path: &[usize]) -> Value {
-    Value::list(path.iter().map(|index| {
-        Value::int(i64::try_from(*index).expect("DOM path index should fit in i64")).unwrap()
-    }))
 }
 
 fn string_len_builtin(

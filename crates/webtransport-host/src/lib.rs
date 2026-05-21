@@ -17,9 +17,11 @@ use compio_quic::{Endpoint, ServerBuilder};
 use h3_webtransport::server::WebTransportSession;
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_protocol::{
-    SyncEnvelope, SyncMessageKind, decode_sync_envelope, encoded_sync_envelope,
-    sync_envelope_from_value, sync_invocation_roles, sync_invocation_selector, sync_u64_value,
+    DomNode, SyncEnvelope, SyncMessageKind, decode_sync_envelope, diff_dom_nodes,
+    dom_patch_payload_json, encoded_sync_envelope, snapshot_payload_json, sync_envelope_from_value,
+    sync_payload_signature, sync_u64_value,
 };
+use mica_runtime::TaskOutcome;
 use mica_var::{Identity, Symbol, Value};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::collections::{HashMap, VecDeque};
@@ -73,10 +75,13 @@ struct SessionSyncState {
     sessions: HashMap<u64, HashMap<u64, ActiveViewState>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ActiveViewState {
     client_revision: u64,
     client_signature: u64,
+    server_revision: u64,
+    server_signature: u64,
+    last_tree: Option<DomNode>,
 }
 
 #[derive(Default)]
@@ -105,13 +110,24 @@ struct SyncDomEvent {
     fields: Vec<(String, String)>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ActiveSyncView {
     endpoint: Identity,
     session_id: u64,
     view_id: u64,
     client_revision: u64,
     client_signature: u64,
+    server_revision: u64,
+    server_signature: u64,
+    last_tree: Option<DomNode>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RenderedSyncView {
+    revision: u64,
+    signature: u64,
+    tree: DomNode,
+    payload: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,16 +154,35 @@ impl SessionSyncState {
         ) {
             return;
         }
-        self.sessions
+        let view = self
+            .sessions
             .entry(envelope.session_id)
             .or_default()
-            .insert(
-                envelope.view_id,
-                ActiveViewState {
-                    client_revision: envelope.client_revision,
-                    client_signature: envelope.client_signature,
-                },
-            );
+            .entry(envelope.view_id)
+            .or_default();
+        view.client_revision = envelope.client_revision;
+        view.client_signature = envelope.client_signature;
+    }
+
+    fn store_rendered_view(
+        &mut self,
+        session_id: u64,
+        view_id: u64,
+        revision: u64,
+        signature: u64,
+        tree: DomNode,
+    ) {
+        let view = self
+            .sessions
+            .entry(session_id)
+            .or_default()
+            .entry(view_id)
+            .or_default();
+        view.client_revision = revision;
+        view.client_signature = signature;
+        view.server_revision = revision;
+        view.server_signature = signature;
+        view.last_tree = Some(tree);
     }
 
     #[cfg(test)]
@@ -238,6 +273,33 @@ impl InProcessWebTransportHost {
 
     fn active_sync_views(&self) -> Vec<ActiveSyncView> {
         active_sync_views(&self.sessions)
+    }
+
+    fn store_rendered_sync_view(
+        &self,
+        endpoint: Identity,
+        session_id: u64,
+        view_id: u64,
+        rendered: &RenderedSyncView,
+    ) {
+        if let Some(state) = self.sessions.lock().unwrap().get(&endpoint).cloned() {
+            state.sync.lock().unwrap().store_rendered_view(
+                session_id,
+                view_id,
+                rendered.revision,
+                rendered.signature,
+                rendered.tree.clone(),
+            );
+        }
+    }
+
+    fn send_sync_envelope(&self, endpoint: Identity, envelope: SyncEnvelope) -> Result<(), String> {
+        let Some(state) = self.sessions.lock().unwrap().get(&endpoint).cloned() else {
+            return Ok(());
+        };
+        state
+            .output
+            .send(Bytes::from(encoded_sync_envelope(envelope.as_ref())))
     }
 }
 
@@ -510,27 +572,134 @@ async fn route_plain_datagram(
 
 async fn refresh_active_sync_views(host: &InProcessWebTransportHost) -> Result<(), String> {
     for active in host.active_sync_views() {
-        let envelope = SyncEnvelope {
-            kind: SyncMessageKind::NeedView,
-            session_id: active.session_id,
-            view_id: active.view_id,
-            client_revision: active.client_revision,
-            client_signature: active.client_signature,
-            server_revision: 0,
-            server_signature: 0,
-            payload: Vec::new(),
-        };
-        host.driver
-            .submit_invocation_for_endpoint(
-                active.endpoint,
-                sync_invocation_selector(SyncMessageKind::NeedView)
-                    .expect("NeedView should have an invocation selector"),
-                sync_invocation_roles(&envelope),
+        let rendered = render_sync_view(host, active.endpoint, active.view_id).await?;
+        if rendered.revision == active.server_revision && active.last_tree.is_some() {
+            continue;
+        }
+        let envelope = if let Some(last_tree) = &active.last_tree {
+            let patches = diff_dom_nodes(last_tree, &rendered.tree);
+            if patches.is_empty() {
+                host.store_rendered_sync_view(
+                    active.endpoint,
+                    active.session_id,
+                    active.view_id,
+                    &rendered,
+                );
+                continue;
+            }
+            let payload = dom_patch_payload_json(active.view_id, rendered.revision, &patches);
+            SyncEnvelope {
+                kind: SyncMessageKind::ViewDelta,
+                session_id: active.session_id,
+                view_id: active.view_id,
+                client_revision: active.server_revision,
+                client_signature: active.server_signature,
+                server_revision: rendered.revision,
+                server_signature: rendered.signature,
+                payload,
+            }
+        } else {
+            snapshot_envelope(
+                active.session_id,
+                active.view_id,
+                active.client_revision,
+                active.client_signature,
+                &rendered,
             )
-            .await
-            .map_err(format_driver_error)?;
+        };
+        host.send_sync_envelope(active.endpoint, envelope)?;
+        host.store_rendered_sync_view(
+            active.endpoint,
+            active.session_id,
+            active.view_id,
+            &rendered,
+        );
     }
     Ok(())
+}
+
+async fn render_sync_view(
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+    view_id: u64,
+) -> Result<RenderedSyncView, String> {
+    let revision = sync_u64_from_task_value(
+        "sync_view_revision",
+        submit_sync_invocation(
+            host,
+            endpoint,
+            "sync_view_revision",
+            vec![(Symbol::intern("view"), sync_u64_value(view_id))],
+        )
+        .await?,
+    )?;
+    let tree_value = submit_sync_invocation(
+        host,
+        endpoint,
+        "sync_view_tree",
+        vec![
+            (Symbol::intern("view"), sync_u64_value(view_id)),
+            (Symbol::intern("revision"), sync_u64_value(revision)),
+        ],
+    )
+    .await?;
+    let tree = DomNode::from_mica_value(&tree_value)
+        .map_err(|error| format!("sync_view_tree returned invalid DOM tree: {error}"))?;
+    let payload = snapshot_payload_json(view_id, revision, &tree);
+    let signature = sync_payload_signature(revision, &payload);
+
+    Ok(RenderedSyncView {
+        revision,
+        signature,
+        tree,
+        payload,
+    })
+}
+
+async fn submit_sync_invocation(
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+    selector: &'static str,
+    roles: Vec<(Symbol, Value)>,
+) -> Result<Value, String> {
+    let submitted = host
+        .driver
+        .submit_invocation_for_endpoint(endpoint, Symbol::intern(selector), roles)
+        .await
+        .map_err(format_driver_error)?;
+    match submitted.outcome {
+        TaskOutcome::Complete { value, .. } => Ok(value),
+        TaskOutcome::Aborted { error, .. } => Err(format!(
+            "sync render invocation {selector} aborted: {error}"
+        )),
+        TaskOutcome::Suspended { .. } => {
+            Err(format!("sync render invocation {selector} suspended"))
+        }
+    }
+}
+
+fn sync_u64_from_task_value(selector: &str, value: Value) -> Result<u64, String> {
+    mica_host_protocol::sync_u64_from_value(&value)
+        .ok_or_else(|| format!("{selector} returned non-u64 value: {value}"))
+}
+
+fn snapshot_envelope(
+    session_id: u64,
+    view_id: u64,
+    client_revision: u64,
+    client_signature: u64,
+    rendered: &RenderedSyncView,
+) -> SyncEnvelope {
+    SyncEnvelope {
+        kind: SyncMessageKind::ViewSnapshot,
+        session_id,
+        view_id,
+        client_revision,
+        client_signature,
+        server_revision: rendered.revision,
+        server_signature: rendered.signature,
+        payload: rendered.payload.clone(),
+    }
 }
 
 fn decode_sync_dom_event(datagram: &[u8]) -> Result<Option<SyncDomEvent>, String> {
@@ -605,8 +774,55 @@ async fn route_sync_envelope(
     if let Some(state) = host.sessions.lock().unwrap().get(&endpoint).cloned() {
         state.sync.lock().unwrap().record_incoming_view(&envelope);
     }
-    let Some(selector) = sync_invocation_selector(envelope.kind) else {
-        return host
+    match envelope.kind {
+        SyncMessageKind::HaveView => {
+            let rendered = render_sync_view(host, endpoint, envelope.view_id).await?;
+            if envelope.client_revision == rendered.revision
+                && envelope.client_signature == rendered.signature
+            {
+                host.store_rendered_sync_view(
+                    endpoint,
+                    envelope.session_id,
+                    envelope.view_id,
+                    &rendered,
+                );
+                return Ok(());
+            }
+            let response = snapshot_envelope(
+                envelope.session_id,
+                envelope.view_id,
+                envelope.client_revision,
+                envelope.client_signature,
+                &rendered,
+            );
+            host.send_sync_envelope(endpoint, response)?;
+            host.store_rendered_sync_view(
+                endpoint,
+                envelope.session_id,
+                envelope.view_id,
+                &rendered,
+            );
+            Ok(())
+        }
+        SyncMessageKind::NeedView => {
+            let rendered = render_sync_view(host, endpoint, envelope.view_id).await?;
+            let response = snapshot_envelope(
+                envelope.session_id,
+                envelope.view_id,
+                envelope.client_revision,
+                envelope.client_signature,
+                &rendered,
+            );
+            host.send_sync_envelope(endpoint, response)?;
+            host.store_rendered_sync_view(
+                endpoint,
+                envelope.session_id,
+                envelope.view_id,
+                &rendered,
+            );
+            Ok(())
+        }
+        SyncMessageKind::ViewSnapshot | SyncMessageKind::ViewDelta => host
             .driver
             .input(
                 endpoint,
@@ -614,13 +830,8 @@ async fn route_sync_envelope(
             )
             .await
             .map(|_| ())
-            .map_err(format_driver_error);
-    };
-    host.driver
-        .submit_invocation_for_endpoint(endpoint, selector, sync_invocation_roles(&envelope))
-        .await
-        .map(|_| ())
-        .map_err(format_driver_error)
+            .map_err(format_driver_error),
+    }
 }
 
 async fn write_datagram_loop(
@@ -682,6 +893,9 @@ fn active_sync_views(
                     view_id: *view_id,
                     client_revision: view_state.client_revision,
                     client_signature: view_state.client_signature,
+                    server_revision: view_state.server_revision,
+                    server_signature: view_state.server_signature,
+                    last_tree: view_state.last_tree.clone(),
                 });
             }
         }
@@ -857,6 +1071,9 @@ mod tests {
                 view_id: 11,
                 client_revision: 0,
                 client_signature: 0,
+                server_revision: 0,
+                server_signature: 0,
+                last_tree: None,
             }]
         );
         assert!(state.sync.try_lock().is_ok());
@@ -927,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn webtransport_sync_need_view_invokes_mica_and_returns_snapshot() {
+    fn webtransport_sync_need_view_renders_snapshot() {
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let tls = test_tls_config();
             let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
@@ -983,7 +1200,10 @@ mod tests {
             assert_eq!(envelope.client_revision, 13);
             assert_eq!(envelope.client_signature, 17);
             assert_eq!(envelope.server_revision, 1);
-            assert_eq!(envelope.server_signature, 1 + envelope.payload.len() as u64);
+            assert_eq!(
+                envelope.server_signature,
+                sync_payload_signature(envelope.server_revision, &envelope.payload)
+            );
             let payload: serde_json::Value = serde_json::from_slice(&envelope.payload).unwrap();
             assert_eq!(payload["view"], 11);
             assert_eq!(payload["revision"], 1);
@@ -1021,18 +1241,18 @@ mod tests {
             };
             compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(1))).detach();
 
-            let have_view = SyncEnvelope {
-                kind: SyncMessageKind::HaveView,
+            let need_view = SyncEnvelope {
+                kind: SyncMessageKind::NeedView,
                 session_id: 7,
                 view_id: 11,
-                client_revision: 1,
+                client_revision: 0,
                 client_signature: 0,
-                server_revision: 1,
+                server_revision: 0,
                 server_signature: 0,
-                payload: b"have".to_vec(),
+                payload: b"need".to_vec(),
             };
             let messages = vec![
-                (encoded_sync_envelope(have_view.as_ref()), false),
+                (encoded_sync_envelope(need_view.as_ref()), true),
                 (
                     br#"{"type":"sync_event","session":7,"view":11,"event":"submit","target":"chat-composer","action":"chat_post","fields":{"actor":"bob","text":"hello from sync event"}}"#
                         .to_vec(),
@@ -1051,14 +1271,16 @@ mod tests {
 
             server_endpoint.close(0u32.into(), b"test complete");
             client.join().unwrap();
-            assert_eq!(received.len(), 1);
-            let delta = decode_sync_envelope(&received[0]).unwrap();
+            assert_eq!(received.len(), 2);
+            let snapshot = decode_sync_envelope(&received[0]).unwrap();
+            assert_eq!(snapshot.kind, SyncMessageKind::ViewSnapshot);
+            let delta = decode_sync_envelope(&received[1]).unwrap();
             assert_eq!(delta.kind, SyncMessageKind::ViewDelta);
             assert_eq!(delta.session_id, 7);
             assert_eq!(delta.view_id, 11);
             assert_eq!(delta.client_revision, 1);
             assert_eq!(delta.server_revision, 2);
-            assert_eq!(delta.server_signature, 2 + delta.payload.len() as u64);
+            assert_ne!(delta.server_signature, 0);
             let payload: serde_json::Value = serde_json::from_slice(&delta.payload).unwrap();
             assert_eq!(payload["type"], "dom_patch");
             assert_eq!(payload["view"], 11);
@@ -1074,6 +1296,44 @@ mod tests {
                 payload["patches"][0]["node"]["children"][2]["text"],
                 "hello from sync event"
             );
+        });
+    }
+
+    #[test]
+    fn webtransport_have_view_ack_does_not_snapshot_current_state() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let tls = test_tls_config();
+            let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
+                .await
+                .unwrap();
+            let server_addr = endpoint.local_addr().unwrap();
+            let server_endpoint = endpoint.clone();
+
+            let runner = sync_chat_runner();
+            let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebTransportHost::new(driver.clone());
+            let binding = SessionBinding {
+                principal,
+                actor: None,
+            };
+            compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(1))).detach();
+
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (send_tx, send_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let client = spawn_wtransport_ack_client(server_addr, connected_tx, send_rx, result_tx);
+
+            wait_for_client_connected(&connected_rx).await;
+            send_tx.send(()).unwrap();
+            let (snapshot, delta) = wait_for_ack_client_result(&result_rx).await.unwrap();
+
+            server_endpoint.close(0u32.into(), b"test complete");
+            client.join().unwrap();
+            assert_eq!(snapshot.kind, SyncMessageKind::ViewSnapshot);
+            assert_eq!(delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(delta.server_revision, 2);
+            assert_ne!(delta.server_signature, 0);
         });
     }
 
@@ -1196,6 +1456,96 @@ mod tests {
         })
     }
 
+    fn spawn_wtransport_ack_client(
+        server_addr: SocketAddr,
+        connected_tx: mpsc::Sender<()>,
+        send_rx: mpsc::Receiver<()>,
+        result_tx: mpsc::Sender<Result<(SyncEnvelope, SyncEnvelope), String>>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        let config = wtransport::ClientConfig::builder()
+                            .with_bind_default()
+                            .with_no_cert_validation()
+                            .build();
+                        let url = format!("https://127.0.0.1:{}/view", server_addr.port());
+                        let connection = wtransport::Endpoint::client(config)
+                            .map_err(|error| error.to_string())?
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        connected_tx.send(()).map_err(|error| error.to_string())?;
+                        send_rx.recv().map_err(|error| error.to_string())?;
+
+                        let need_view = SyncEnvelope {
+                            kind: SyncMessageKind::NeedView,
+                            session_id: 7,
+                            view_id: 11,
+                            client_revision: 0,
+                            client_signature: 0,
+                            server_revision: 0,
+                            server_signature: 0,
+                            payload: b"need".to_vec(),
+                        };
+                        connection
+                            .send_datagram(encoded_sync_envelope(need_view.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let snapshot = receive_sync_envelope(&connection).await?;
+
+                        connection
+                            .send_datagram(
+                                br#"{"type":"sync_event","session":7,"view":11,"event":"submit","target":"chat-composer","action":"chat_post","fields":{"actor":"bob","text":"ack check"}}"#
+                            )
+                            .map_err(|error| error.to_string())?;
+                        let delta = receive_sync_envelope(&connection).await?;
+
+                        let have_view = SyncEnvelope {
+                            kind: SyncMessageKind::HaveView,
+                            session_id: 7,
+                            view_id: 11,
+                            client_revision: delta.server_revision,
+                            client_signature: delta.server_signature,
+                            server_revision: delta.server_revision,
+                            server_signature: delta.server_signature,
+                            payload: b"have".to_vec(),
+                        };
+                        connection
+                            .send_datagram(encoded_sync_envelope(have_view.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        match tokio::time::timeout(
+                            Duration::from_millis(200),
+                            connection.receive_datagram(),
+                        )
+                        .await
+                        {
+                            Err(_) => Ok((snapshot, delta)),
+                            Ok(Ok(datagram)) => Err(format!(
+                                "unexpected HaveView response: {:?}",
+                                decode_sync_envelope(&datagram.payload())
+                            )),
+                            Ok(Err(error)) => Err(error.to_string()),
+                        }
+                    })
+                });
+            let _ = result_tx.send(result);
+        })
+    }
+
+    async fn receive_sync_envelope(
+        connection: &wtransport::Connection,
+    ) -> Result<SyncEnvelope, String> {
+        let datagram = tokio::time::timeout(Duration::from_secs(3), connection.receive_datagram())
+            .await
+            .map_err(|_| "timed out waiting for WebTransport datagram".to_owned())?
+            .map_err(|error| error.to_string())?;
+        decode_sync_envelope(&datagram.payload()).map_err(|error| error.to_string())
+    }
+
     async fn wait_for_client_connected(receiver: &mpsc::Receiver<()>) {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -1235,6 +1585,26 @@ mod tests {
     async fn wait_for_client_sequence_result(
         receiver: &mpsc::Receiver<Result<Vec<Vec<u8>>, String>>,
     ) -> Result<Vec<Vec<u8>>, String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match receiver.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Err("timed out waiting for client result".to_owned());
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("client result channel disconnected".to_owned());
+                }
+            }
+        }
+    }
+
+    async fn wait_for_ack_client_result(
+        receiver: &mpsc::Receiver<Result<(SyncEnvelope, SyncEnvelope), String>>,
+    ) -> Result<(SyncEnvelope, SyncEnvelope), String> {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match receiver.try_recv() {

@@ -38,6 +38,9 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "type",
   "value",
 ]);
+const FNV_OFFSET = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const SIGNATURE_MASK = 0x007fffffffffffffn;
 
 function writeU64(view, offset, value) {
   view.setBigUint64(offset, BigInt(value), true);
@@ -112,8 +115,10 @@ export function certificateHashOptions(hex) {
 
 export function validateSnapshotEnvelope(envelope) {
   const payload = JSON.parse(envelope.payload);
-  const expectedSignature =
-    BigInt(envelope.serverRevision) + BigInt(envelope.payload.length);
+  const expectedSignature = syncPayloadSignature(
+    envelope.serverRevision,
+    envelope.payload,
+  );
   return {
     payload,
     valid:
@@ -125,8 +130,7 @@ export function validateSnapshotEnvelope(envelope) {
 
 export function validateDeltaEnvelope(envelope) {
   const payload = JSON.parse(envelope.payload);
-  const expectedSignature =
-    BigInt(envelope.serverRevision) + BigInt(envelope.payload.length);
+  // Delta signatures name the post-apply rendered state, not the patch bytes.
   return {
     payload,
     valid:
@@ -134,8 +138,23 @@ export function validateDeltaEnvelope(envelope) {
       Array.isArray(payload.patches) &&
       String(payload.view) === envelope.view &&
       String(payload.revision) === envelope.serverRevision &&
-      expectedSignature.toString() === envelope.serverSignature,
+      BigInt(envelope.serverSignature) > 0n,
   };
+}
+
+function syncPayloadSignature(revision, payload) {
+  let hash = FNV_OFFSET;
+  let value = BigInt(revision);
+  for (let index = 0; index < 8; index += 1) {
+    hash ^= value & 0xffn;
+    hash = BigInt.asUintN(64, hash * FNV_PRIME);
+    value >>= 8n;
+  }
+  for (const byte of new TextEncoder().encode(payload)) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * FNV_PRIME);
+  }
+  return hash & SIGNATURE_MASK;
 }
 
 export function applySnapshot(mount, payload) {

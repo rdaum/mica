@@ -8,6 +8,7 @@ description = "Live Mica runtime environment"
 
 [dependencies]
 mica-compiler.workspace = true
+mica-host-protocol.workspace = true
 mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
 mica-var.workspace = true
 mica-vm.workspace = true

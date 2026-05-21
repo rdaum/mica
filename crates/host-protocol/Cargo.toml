@@ -8,3 +8,4 @@ description = "Language-neutral host protocol framing for Mica"
 
 [dependencies]
 mica-var.workspace = true
+serde_json.workspace = true

@@ -13,12 +13,17 @@
 
 //! Language-neutral host protocol framing for Mica.
 
+mod dom_sync;
 mod error;
 mod frame;
 mod message;
 mod payload;
 mod sync;
 
+pub use dom_sync::{
+    DOM_PATCH_PAYLOAD_TYPE, DomNode, DomPatch, SUPPORTED_DOM_ATTRIBUTES, SUPPORTED_DOM_TAGS,
+    diff_dom_nodes, dom_patch_payload_json, snapshot_payload_json, sync_payload_signature,
+};
 pub use error::HostProtocolError;
 pub use frame::{
     EncodedFrameSegments, FrameDecoder, FrameRef, decode_frame, encode_frame,
