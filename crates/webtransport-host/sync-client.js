@@ -190,6 +190,18 @@ export class MicaWebTransportSyncClient {
     });
   }
 
+  async postChat(message) {
+    await this.writer.write(
+      new TextEncoder().encode(
+        JSON.stringify({
+          type: "chat_post",
+          room: Number(message.room),
+          text: String(message.text),
+        }),
+      ),
+    );
+  }
+
   async readLoop() {
     const reader = this.transport.datagrams.readable.getReader();
     for (;;) {

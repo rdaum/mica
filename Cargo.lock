@@ -1640,6 +1640,7 @@ dependencies = [
  "rcgen",
  "rustls-pemfile",
  "rustls-pki-types",
+ "serde_json",
  "tokio",
  "wtransport",
 ]

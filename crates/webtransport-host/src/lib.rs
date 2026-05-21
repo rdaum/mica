@@ -18,7 +18,7 @@ use h3_webtransport::server::WebTransportSession;
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_protocol::{
     SyncEnvelope, SyncMessageKind, decode_sync_envelope, encoded_sync_envelope,
-    sync_envelope_from_value, sync_invocation_roles, sync_invocation_selector,
+    sync_envelope_from_value, sync_invocation_roles, sync_invocation_selector, sync_u64_value,
 };
 use mica_var::{Identity, Symbol, Value};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
@@ -87,6 +87,12 @@ struct SessionOutputState {
 
 struct SessionOutputRecv<'a> {
     output: &'a SessionOutput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ChatPostAction {
+    room: u64,
+    text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -438,13 +444,59 @@ async fn route_incoming_datagram(
 ) -> Result<(), String> {
     match decode_sync_envelope(&datagram) {
         Ok(envelope) => route_sync_envelope(host, endpoint, envelope).await,
-        Err(_) => host
+        Err(_) => route_plain_datagram(host, endpoint, datagram).await,
+    }
+}
+
+async fn route_plain_datagram(
+    host: &InProcessWebTransportHost,
+    endpoint: Identity,
+    datagram: Bytes,
+) -> Result<(), String> {
+    if let Some(action) = decode_chat_post_action(&datagram)? {
+        return host
             .driver
-            .input(endpoint, Value::bytes(datagram))
+            .submit_invocation_for_endpoint(
+                endpoint,
+                Symbol::intern("chat_post"),
+                vec![
+                    (Symbol::intern("room"), sync_u64_value(action.room)),
+                    (Symbol::intern("text"), Value::string(action.text)),
+                ],
+            )
             .await
             .map(|_| ())
-            .map_err(format_driver_error),
+            .map_err(format_driver_error);
     }
+
+    host.driver
+        .input(endpoint, Value::bytes(datagram))
+        .await
+        .map(|_| ())
+        .map_err(format_driver_error)
+}
+
+fn decode_chat_post_action(datagram: &[u8]) -> Result<Option<ChatPostAction>, String> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(datagram) else {
+        return Ok(None);
+    };
+    let Some(object) = value.as_object() else {
+        return Ok(None);
+    };
+    if object.get("type").and_then(|value| value.as_str()) != Some("chat_post") {
+        return Ok(None);
+    }
+
+    let room = object
+        .get("room")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| "chat_post action requires numeric room".to_owned())?;
+    let text = object
+        .get("text")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "chat_post action requires text".to_owned())?
+        .to_owned();
+    Ok(Some(ChatPostAction { room, text }))
 }
 
 async fn route_sync_envelope(
@@ -618,6 +670,22 @@ mod tests {
 
         assert!(state.has_active_view(7, 11));
         assert!(!state.has_active_view(7, 12));
+    }
+
+    #[test]
+    fn decodes_chat_post_actions() {
+        assert_eq!(
+            decode_chat_post_action(br#"{"type":"chat_post","room":1,"text":"hello"}"#).unwrap(),
+            Some(ChatPostAction {
+                room: 1,
+                text: "hello".to_owned(),
+            })
+        );
+        assert_eq!(
+            decode_chat_post_action(br#"{"type":"other","room":1,"text":"hello"}"#).unwrap(),
+            None
+        );
+        assert!(decode_chat_post_action(br#"{"type":"chat_post"}"#).is_err());
     }
 
     #[test]

@@ -17,6 +17,7 @@ mica-host-protocol.workspace = true
 mica-var.workspace = true
 rustls-pemfile.workspace = true
 rustls-pki-types.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 mica-runtime.workspace = true
