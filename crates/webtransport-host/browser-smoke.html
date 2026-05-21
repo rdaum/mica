@@ -45,6 +45,7 @@
 
   input,
   button,
+  #mount,
   pre {
     font: inherit;
   }
@@ -70,14 +71,22 @@
     opacity: 0.55;
   }
 
+  #mount,
   pre {
-    min-height: 280px;
     margin: 18px 0 0;
     padding: 12px;
-    overflow: auto;
     border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
     border-radius: 6px;
     background: color-mix(in srgb, CanvasText 5%, Canvas);
+  }
+
+  #mount {
+    min-height: 52px;
+  }
+
+  pre {
+    min-height: 280px;
+    overflow: auto;
     white-space: pre-wrap;
   }
 </style>
@@ -112,25 +121,23 @@
     <button id="need" type="button" disabled>Need View</button>
     <button id="have" type="button" disabled>Have View</button>
   </form>
+  <div id="mount"></div>
   <pre id="log"></pre>
 </main>
-<script>
-  const MAGIC = [0x4d, 0x53, 0x59, 0x31];
-  const HEADER_LEN = 56;
-  const KIND = new Map([
-    [1, "HaveView"],
-    [2, "NeedView"],
-    [3, "ViewSnapshot"],
-    [4, "ViewDelta"],
-  ]);
+<script type="module">
+  import {
+    MicaWebTransportSyncClient,
+    applySnapshot,
+    validateSnapshotEnvelope,
+  } from "./sync-client.js";
 
   const controls = document.getElementById("controls");
+  const mount = document.getElementById("mount");
   const logEl = document.getElementById("log");
   const connectButton = document.getElementById("connect");
   const needButton = document.getElementById("need");
   const haveButton = document.getElementById("have");
-  let transport;
-  let writer;
+  let client;
   const smoke = {
     events: [],
     lastEnvelope: null,
@@ -166,98 +173,28 @@
     smoke.events.push({ line, data });
   }
 
-  function writeU64(view, offset, value) {
-    view.setBigUint64(offset, BigInt(value), true);
-  }
-
-  function readU64(view, offset) {
-    return view.getBigUint64(offset, true).toString();
-  }
-
-  function encodeEnvelope(kind, payloadText) {
-    const payload = new TextEncoder().encode(payloadText);
-    const bytes = new Uint8Array(HEADER_LEN + payload.length);
-    bytes.set(MAGIC, 0);
-    bytes[4] = kind;
-    const view = new DataView(bytes.buffer);
-    writeU64(view, 8, numberField("session"));
-    writeU64(view, 16, numberField("view"));
-    writeU64(view, 24, numberField("revision"));
-    writeU64(view, 32, numberField("signature"));
-    writeU64(view, 40, 0n);
-    writeU64(view, 48, 0n);
-    bytes.set(payload, HEADER_LEN);
-    return bytes;
-  }
-
-  function decodeEnvelope(bytes) {
-    if (bytes.length < HEADER_LEN || !MAGIC.every((byte, i) => bytes[i] === byte)) {
-      return { raw: Array.from(bytes) };
-    }
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  function viewState(payload) {
     return {
-      kind: KIND.get(bytes[4]) || `0x${bytes[4].toString(16)}`,
-      session: readU64(view, 8),
-      view: readU64(view, 16),
-      clientRevision: readU64(view, 24),
-      clientSignature: readU64(view, 32),
-      serverRevision: readU64(view, 40),
-      serverSignature: readU64(view, 48),
-      payload: new TextDecoder().decode(bytes.slice(HEADER_LEN)),
+      session: numberField("session"),
+      view: numberField("view"),
+      clientRevision: numberField("revision"),
+      clientSignature: numberField("signature"),
+      payload,
     };
   }
 
-  function hexToBytes(hex) {
-    const clean = hex.replace(/[^0-9a-f]/gi, "");
-    if (clean.length === 0) {
-      return null;
-    }
-    if (clean.length !== 64) {
-      throw new Error("certificate hash must be 32 bytes of hex");
-    }
-    const bytes = new Uint8Array(32);
-    for (let i = 0; i < bytes.length; i += 1) {
-      bytes[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-    }
-    return bytes;
-  }
-
-  function transportOptions() {
-    const hash = hexToBytes(field("certHash").value);
-    if (hash === null) {
-      return undefined;
-    }
-    return {
-      serverCertificateHashes: [
-        {
-          algorithm: "sha-256",
-          value: hash,
-        },
-      ],
-    };
-  }
-
-  async function readLoop() {
-    const reader = transport.datagrams.readable.getReader();
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) {
-        log("reader closed");
-        return;
+  function handleEnvelope(envelope) {
+    smoke.lastEnvelope = envelope;
+    if (envelope.kind === "ViewSnapshot") {
+      const snapshot = validateSnapshotEnvelope(envelope);
+      smoke.snapshot = envelope;
+      smoke.snapshotPayload = snapshot.payload;
+      smoke.snapshotValid = snapshot.valid;
+      if (snapshot.valid) {
+        applySnapshot(mount, snapshot.payload);
       }
-      const envelope = decodeEnvelope(value);
-      smoke.lastEnvelope = envelope;
-      if (envelope.kind === "ViewSnapshot") {
-        smoke.snapshot = envelope;
-        smoke.snapshotPayload = JSON.parse(envelope.payload);
-        smoke.snapshotValid =
-          String(smoke.snapshotPayload.view) === envelope.view &&
-          String(smoke.snapshotPayload.revision) === envelope.serverRevision &&
-          String(BigInt(envelope.serverRevision) + BigInt(envelope.payload.length)) ===
-            envelope.serverSignature;
-      }
-      log("recv", envelope);
     }
+    log("recv", envelope);
   }
 
   async function connect() {
@@ -266,18 +203,22 @@
     });
     try {
       smoke.error = null;
-      transport = new WebTransport(field("url").value, transportOptions());
-      await transport.ready;
-      writer = transport.datagrams.writable.getWriter();
+      smoke.snapshotValid = false;
+      client = new MicaWebTransportSyncClient({
+        url: field("url").value,
+        certificateHash: field("certHash").value,
+        onEnvelope: handleEnvelope,
+        onClose: () => log("closed"),
+        onError: (error) => {
+          smoke.error = String(error);
+          log("transport error", String(error));
+        },
+      });
+      await client.connect();
       needButton.disabled = false;
       haveButton.disabled = false;
       connectButton.disabled = true;
       log("connected");
-      readLoop().catch((error) => log("read error", String(error)));
-      transport.closed.then(
-        () => log("closed"),
-        (error) => log("closed with error", String(error)),
-      );
     } catch (error) {
       connectButton.disabled = false;
       smoke.error = String(error);
@@ -287,12 +228,12 @@
   }
 
   async function sendNeedView() {
-    await writer.write(encodeEnvelope(2, "need"));
+    await client.needView(viewState("need"));
     log("sent NeedView");
   }
 
   async function sendHaveView() {
-    await writer.write(encodeEnvelope(1, "have"));
+    await client.haveView(viewState("have"));
     log("sent HaveView");
   }
 

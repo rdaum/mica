@@ -33,9 +33,10 @@ The default WebTransport principal is `#web`; use
 suitable endpoint authority.
 
 `browser-smoke.html` is a static browser smoke page for the native browser
-`WebTransport` API. Open it in a browser after the certificate is trusted by that
-browser, connect to `https://127.0.0.1:4433/view`, then send `NeedView` to
-receive the snapshot emitted by `examples/sync-view-provider.mica`.
+`WebTransport` API. Serve this directory over local HTTP, open the page in a
+browser after the certificate is trusted by that browser, connect to
+`https://127.0.0.1:4433/view`, then send `NeedView` to receive and render the
+snapshot emitted by `examples/sync-view-provider.mica`.
 
 For an untrusted local certificate, use a short-lived ECDSA certificate and put
 the hex SHA-256 hash of the DER certificate in the `Certificate SHA-256` field.
