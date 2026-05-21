@@ -26,8 +26,14 @@ pub use frame::{
 };
 pub use message::{HostMessage, MessageType};
 pub use sync::{
-    SYNC_ENVELOPE_HEADER_LEN, SYNC_ENVELOPE_MAGIC, SyncEnvelope, SyncEnvelopeRef, SyncMessageKind,
-    decode_sync_envelope, encode_sync_envelope, encoded_sync_envelope,
+    SYNC_ENVELOPE_HEADER_LEN, SYNC_ENVELOPE_MAGIC, SYNC_HAVE_VIEW_SELECTOR,
+    SYNC_NEED_VIEW_SELECTOR, SYNC_ROLE_CLIENT_REVISION, SYNC_ROLE_CLIENT_SIGNATURE,
+    SYNC_ROLE_PAYLOAD, SYNC_ROLE_SERVER_REVISION, SYNC_ROLE_SERVER_SIGNATURE, SYNC_ROLE_SESSION,
+    SYNC_ROLE_VIEW, SYNC_VALUE_HAVE_VIEW, SYNC_VALUE_NEED_VIEW, SYNC_VALUE_VIEW_DELTA,
+    SYNC_VALUE_VIEW_SNAPSHOT, SyncEnvelope, SyncEnvelopeRef, SyncMessageKind, decode_sync_envelope,
+    encode_sync_envelope, encoded_sync_envelope, sync_emission_value, sync_envelope_from_value,
+    sync_invocation_roles, sync_invocation_selector, sync_u64_from_value, sync_u64_value,
+    sync_value_kind_symbol,
 };
 
 pub const MAGIC: [u8; 4] = *b"MHP1";

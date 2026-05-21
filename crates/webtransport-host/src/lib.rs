@@ -17,11 +17,12 @@ use compio_quic::{Endpoint, ServerBuilder};
 use h3_webtransport::server::WebTransportSession;
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_protocol::{
-    SyncEnvelope, SyncEnvelopeRef, SyncMessageKind, decode_sync_envelope, encoded_sync_envelope,
+    SyncEnvelope, SyncMessageKind, decode_sync_envelope, encoded_sync_envelope,
+    sync_envelope_from_value, sync_invocation_roles, sync_invocation_selector,
 };
 use mica_var::{Identity, Symbol, Value};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::future::Future;
 use std::io::BufReader;
@@ -38,8 +39,6 @@ pub const DAEMON_ENDPOINT_ID_START: u64 = 0x00ea_0000_0000_0000;
 
 const ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS: usize = 128;
 const ENDPOINT_OUTPUT_DRAIN_DATAGRAMS: usize = 64;
-const SYNC_NEED_VIEW_SELECTOR: &str = "sync_need_view";
-const SYNC_HAVE_VIEW_SELECTOR: &str = "sync_have_view";
 
 type H3RequestStream =
     compio_quic::h3::server::RequestStream<compio_quic::h3::BidiStream<Bytes>, Bytes>;
@@ -58,9 +57,20 @@ pub struct WebTransportTlsConfig {
 
 pub struct InProcessWebTransportHost {
     driver: Arc<CompioTaskDriver>,
-    sessions: Arc<Mutex<BTreeMap<Identity, Arc<SessionOutput>>>>,
+    sessions: Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
     stop_events: Arc<AtomicBool>,
     next_endpoint: AtomicU64,
+}
+
+#[derive(Default)]
+struct SessionState {
+    output: Arc<SessionOutput>,
+    sync: Mutex<SessionSyncState>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SessionSyncState {
+    sessions: HashMap<u64, HashSet<u64>>,
 }
 
 #[derive(Default)]
@@ -84,6 +94,37 @@ enum SessionOutputReady {
     Ready { buffered: usize },
     HighWater { buffered: usize },
     Closed,
+}
+
+impl SessionState {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            output: SessionOutput::new(),
+            sync: Mutex::new(SessionSyncState::default()),
+        })
+    }
+}
+
+impl SessionSyncState {
+    fn record_incoming_view(&mut self, envelope: &SyncEnvelope) {
+        if !matches!(
+            envelope.kind,
+            SyncMessageKind::NeedView | SyncMessageKind::HaveView
+        ) {
+            return;
+        }
+        self.sessions
+            .entry(envelope.session_id)
+            .or_default()
+            .insert(envelope.view_id);
+    }
+
+    #[cfg(test)]
+    fn has_active_view(&self, session_id: u64, view_id: u64) -> bool {
+        self.sessions
+            .get(&session_id)
+            .is_some_and(|views| views.contains(&view_id))
+    }
 }
 
 impl WebTransportTlsConfig {
@@ -138,7 +179,7 @@ impl WebTransportTlsConfig {
 impl InProcessWebTransportHost {
     pub fn new(driver: CompioTaskDriver) -> Self {
         let driver = Arc::new(driver);
-        let sessions = Arc::new(Mutex::new(BTreeMap::new()));
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
         let stop_events = Arc::new(AtomicBool::new(false));
         start_event_pump(driver.clone(), sessions.clone(), stop_events.clone());
         Self {
@@ -153,7 +194,7 @@ impl InProcessWebTransportHost {
     fn new_without_event_pump(driver: CompioTaskDriver) -> Self {
         Self {
             driver: Arc::new(driver),
-            sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             stop_events: Arc::new(AtomicBool::new(false)),
             next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
         }
@@ -354,11 +395,9 @@ async fn handle_session(
     binding: SessionBinding,
 ) -> Result<(), String> {
     let endpoint = host.allocate_endpoint()?;
-    let output = SessionOutput::new();
-    host.sessions
-        .lock()
-        .unwrap()
-        .insert(endpoint, output.clone());
+    let state = SessionState::new();
+    let output = state.output.clone();
+    host.sessions.lock().unwrap().insert(endpoint, state);
     if let Err(error) = host.driver.open_endpoint_with_context(
         endpoint,
         Some(binding.principal),
@@ -413,27 +452,22 @@ async fn route_sync_envelope(
     endpoint: Identity,
     envelope: SyncEnvelope,
 ) -> Result<(), String> {
-    let selector = match envelope.kind {
-        SyncMessageKind::NeedView => SYNC_NEED_VIEW_SELECTOR,
-        SyncMessageKind::HaveView => SYNC_HAVE_VIEW_SELECTOR,
-        SyncMessageKind::ViewSnapshot | SyncMessageKind::ViewDelta => {
-            return host
-                .driver
-                .input(
-                    endpoint,
-                    Value::bytes(encoded_sync_envelope(envelope.as_ref())),
-                )
-                .await
-                .map(|_| ())
-                .map_err(format_driver_error);
-        }
+    if let Some(state) = host.sessions.lock().unwrap().get(&endpoint).cloned() {
+        state.sync.lock().unwrap().record_incoming_view(&envelope);
+    }
+    let Some(selector) = sync_invocation_selector(envelope.kind) else {
+        return host
+            .driver
+            .input(
+                endpoint,
+                Value::bytes(encoded_sync_envelope(envelope.as_ref())),
+            )
+            .await
+            .map(|_| ())
+            .map_err(format_driver_error);
     };
     host.driver
-        .submit_invocation_for_endpoint(
-            endpoint,
-            Symbol::intern(selector),
-            sync_invocation_roles(&envelope),
-        )
+        .submit_invocation_for_endpoint(endpoint, selector, sync_invocation_roles(&envelope))
         .await
         .map(|_| ())
         .map_err(format_driver_error)
@@ -457,14 +491,14 @@ async fn write_datagram_loop(
 }
 
 fn drop_session_writer(host: &InProcessWebTransportHost, endpoint: Identity) {
-    if let Some(output) = host.sessions.lock().unwrap().remove(&endpoint) {
-        output.close();
+    if let Some(state) = host.sessions.lock().unwrap().remove(&endpoint) {
+        state.output.close();
     }
 }
 
 fn start_event_pump(
     driver: Arc<CompioTaskDriver>,
-    sessions: Arc<Mutex<BTreeMap<Identity, Arc<SessionOutput>>>>,
+    sessions: Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
     stop_events: Arc<AtomicBool>,
 ) {
     compio::runtime::spawn(async move {
@@ -479,55 +513,22 @@ fn start_event_pump(
 }
 
 fn route_driver_event(
-    sessions: &Arc<Mutex<BTreeMap<Identity, Arc<SessionOutput>>>>,
+    sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
     event: DriverEvent,
 ) {
     if let DriverEvent::Effect(effect) = event {
-        let Some(sender) = sessions.lock().unwrap().get(&effect.target).cloned() else {
+        let Some(state) = sessions.lock().unwrap().get(&effect.target).cloned() else {
             return;
         };
-        let _ = sender.send(effect_datagram(effect.target, &effect.value));
+        let _ = state
+            .output
+            .send(effect_datagram(effect.target, &effect.value));
     }
 }
 
-fn sync_invocation_roles(envelope: &SyncEnvelope) -> Vec<(Symbol, Value)> {
-    vec![
-        (
-            Symbol::intern("session"),
-            u64_to_mica_value(envelope.session_id),
-        ),
-        (Symbol::intern("view"), u64_to_mica_value(envelope.view_id)),
-        (
-            Symbol::intern("client_revision"),
-            u64_to_mica_value(envelope.client_revision),
-        ),
-        (
-            Symbol::intern("client_signature"),
-            u64_to_mica_value(envelope.client_signature),
-        ),
-        (
-            Symbol::intern("server_revision"),
-            u64_to_mica_value(envelope.server_revision),
-        ),
-        (
-            Symbol::intern("server_signature"),
-            u64_to_mica_value(envelope.server_signature),
-        ),
-        (Symbol::intern("payload"), Value::bytes(&envelope.payload)),
-    ]
-}
-
-fn u64_to_mica_value(value: u64) -> Value {
-    i64::try_from(value)
-        .map(Value::int)
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_else(|| Value::bytes(value.to_le_bytes()))
-}
-
 fn effect_datagram(target: Identity, value: &Value) -> Bytes {
-    if let Some(datagram) = sync_effect_datagram(target, value) {
-        return datagram;
+    if let Some(envelope) = sync_envelope_from_value(target.raw(), value) {
+        return Bytes::from(encoded_sync_envelope(envelope.as_ref()));
     }
     if let Some(bytes) = value.with_bytes(Bytes::copy_from_slice) {
         return bytes;
@@ -536,72 +537,6 @@ fn effect_datagram(target: Identity, value: &Value) -> Bytes {
         return text;
     }
     Bytes::from(value.to_string())
-}
-
-fn sync_effect_datagram(target: Identity, value: &Value) -> Option<Bytes> {
-    value.with_list(|values| {
-        let [
-            kind,
-            session,
-            view,
-            client_revision,
-            client_signature,
-            server_revision,
-            server_signature,
-            payload,
-        ] = values
-        else {
-            return None;
-        };
-        let kind = sync_kind_from_value(kind)?;
-        let session_id = u64_from_value(session).unwrap_or_else(|| target.raw());
-        let payload = payload_bytes_from_value(payload)?;
-        let envelope = SyncEnvelopeRef {
-            kind,
-            session_id,
-            view_id: u64_from_value(view)?,
-            client_revision: u64_from_value(client_revision)?,
-            client_signature: u64_from_value(client_signature)?,
-            server_revision: u64_from_value(server_revision)?,
-            server_signature: u64_from_value(server_signature)?,
-            payload: &payload,
-        };
-        Some(Bytes::from(encoded_sync_envelope(envelope)))
-    })?
-}
-
-fn sync_kind_from_value(value: &Value) -> Option<SyncMessageKind> {
-    let name = value
-        .as_symbol()
-        .and_then(Symbol::name)
-        .map(str::to_owned)
-        .or_else(|| value.with_str(str::to_owned))?;
-    match name.as_str() {
-        "view_snapshot" => Some(SyncMessageKind::ViewSnapshot),
-        "view_delta" => Some(SyncMessageKind::ViewDelta),
-        "need_view" => Some(SyncMessageKind::NeedView),
-        "have_view" => Some(SyncMessageKind::HaveView),
-        _ => None,
-    }
-}
-
-fn u64_from_value(value: &Value) -> Option<u64> {
-    if let Some(raw) = value.as_identity().map(Identity::raw) {
-        return Some(raw);
-    }
-    if let Some(raw) = value.as_int().and_then(|value| u64::try_from(value).ok()) {
-        return Some(raw);
-    }
-    value.with_bytes(|bytes| {
-        let bytes: [u8; 8] = bytes.try_into().ok()?;
-        Some(u64::from_le_bytes(bytes))
-    })?
-}
-
-fn payload_bytes_from_value(value: &Value) -> Option<Vec<u8>> {
-    value
-        .with_bytes(<[u8]>::to_vec)
-        .or_else(|| value.with_str(|text| text.as_bytes().to_vec()))
 }
 
 fn format_driver_error(error: mica_driver::DriverError) -> String {
@@ -658,6 +593,34 @@ mod tests {
     }
 
     #[test]
+    fn session_sync_state_tracks_client_active_views() {
+        let mut state = SessionSyncState::default();
+        state.record_incoming_view(&SyncEnvelope {
+            kind: SyncMessageKind::NeedView,
+            session_id: 7,
+            view_id: 11,
+            client_revision: 0,
+            client_signature: 0,
+            server_revision: 0,
+            server_signature: 0,
+            payload: Vec::new(),
+        });
+        state.record_incoming_view(&SyncEnvelope {
+            kind: SyncMessageKind::ViewSnapshot,
+            session_id: 7,
+            view_id: 12,
+            client_revision: 0,
+            client_signature: 0,
+            server_revision: 0,
+            server_signature: 0,
+            payload: Vec::new(),
+        });
+
+        assert!(state.has_active_view(7, 11));
+        assert!(!state.has_active_view(7, 12));
+    }
+
+    #[test]
     fn endpoint_allocation_uses_webtransport_identity_space() {
         let host = InProcessWebTransportHost::new_without_event_pump(
             CompioTaskDriver::spawn_empty().unwrap(),
@@ -672,8 +635,14 @@ mod tests {
     fn routed_effect_reaches_session_output() {
         let endpoint = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
         let output = SessionOutput::new();
-        let sessions = Arc::new(Mutex::new(BTreeMap::new()));
-        sessions.lock().unwrap().insert(endpoint, output.clone());
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        sessions.lock().unwrap().insert(
+            endpoint,
+            Arc::new(SessionState {
+                output: output.clone(),
+                sync: Mutex::new(SessionSyncState::default()),
+            }),
+        );
 
         route_driver_event(
             &sessions,
