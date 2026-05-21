@@ -606,12 +606,9 @@ async fn route_dom_event(
         .await
         .map_err(format_driver_error)?;
     match submitted.outcome {
-        TaskOutcome::Complete { .. } => {}
+        TaskOutcome::Complete { .. } | TaskOutcome::Suspended { .. } => {}
         TaskOutcome::Aborted { error, .. } => {
             return Err(format!("sync_event aborted: {error}"));
-        }
-        TaskOutcome::Suspended { .. } => {
-            return Err("sync_event suspended".to_owned());
         }
     }
     refresh_active_sync_views(host).await
@@ -797,13 +794,43 @@ async fn route_sync_envelope(
                 );
                 return Ok(());
             }
-            let response = snapshot_envelope(
-                envelope.session_id,
-                envelope.view_id,
-                envelope.client_revision,
-                envelope.client_signature,
-                &rendered,
-            );
+            let response = host
+                .active_rendered_sync_view(endpoint, envelope.session_id, envelope.view_id)
+                .and_then(|active| {
+                    if active.server_revision != envelope.client_revision
+                        || active.server_signature != envelope.client_signature
+                    {
+                        return None;
+                    }
+                    let last_tree = active.last_tree.as_ref()?;
+                    let patches = diff_dom_nodes(last_tree, &rendered.tree);
+                    if patches.is_empty() {
+                        return None;
+                    }
+                    Some(SyncEnvelope {
+                        kind: SyncMessageKind::ViewDelta,
+                        session_id: envelope.session_id,
+                        view_id: envelope.view_id,
+                        client_revision: active.server_revision,
+                        client_signature: active.server_signature,
+                        server_revision: rendered.revision,
+                        server_signature: rendered.signature,
+                        payload: dom_patch_payload_json(
+                            envelope.view_id,
+                            rendered.revision,
+                            &patches,
+                        ),
+                    })
+                })
+                .unwrap_or_else(|| {
+                    snapshot_envelope(
+                        envelope.session_id,
+                        envelope.view_id,
+                        envelope.client_revision,
+                        envelope.client_signature,
+                        &rendered,
+                    )
+                });
             host.send_sync_envelope(endpoint, response)?;
             host.store_rendered_sync_view(
                 endpoint,
@@ -986,7 +1013,10 @@ mod tests {
     type TestChunkMap = HashMap<u32, (u32, u32, Vec<Option<Vec<u8>>>)>;
     type MudLoginResult = Result<(SyncEnvelope, SyncEnvelope), String>;
     type MudClientResult = Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String>;
+    type MudDelayedEventResult =
+        Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String>;
     type MudTwoSessionResult = Result<(SyncEnvelope, SyncEnvelope), String>;
+    static MUD_WEBTRANSPORT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn effect_datagrams_preserve_bytes_and_strings() {
@@ -1295,6 +1325,7 @@ mod tests {
 
     #[test]
     fn webtransport_mud_login_pushes_world_delta() {
+        let _guard = MUD_WEBTRANSPORT_TEST_LOCK.lock().unwrap();
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let tls = test_tls_config();
             let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
@@ -1336,6 +1367,11 @@ mod tests {
                 snapshot_payload["root"]["children"][0]["attrs"]["class"],
                 "login-card"
             );
+            let snapshot_text = serde_json::to_string(&snapshot_payload).unwrap();
+            assert!(snapshot_text.contains("actor-card"));
+            assert!(snapshot_text.contains("Server-owned session view"));
+            assert!(snapshot_text.contains("Enter as Alice"));
+            assert!(snapshot_text.contains("Enter as Bob"));
 
             assert_eq!(delta.kind, SyncMessageKind::ViewDelta);
             assert_eq!(delta.view_id, 21);
@@ -1349,6 +1385,8 @@ mod tests {
             assert!(payload_text.contains("mud-shell"));
             assert!(payload_text.contains("The Mica Rooms"));
             assert!(payload_text.contains("First Room"));
+            assert!(payload_text.contains("Things you can do here"));
+            assert!(payload_text.contains("guide-token"));
             assert!(payload_text.contains("room-snapshot"));
             assert!(payload_text.contains("snapshot-row"));
             assert!(payload_text.contains("Players"));
@@ -1392,6 +1430,7 @@ mod tests {
 
     #[test]
     fn webtransport_mud_login_as_bob_renders_bob_perspective() {
+        let _guard = MUD_WEBTRANSPORT_TEST_LOCK.lock().unwrap();
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let tls = test_tls_config();
             let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
@@ -1448,6 +1487,7 @@ mod tests {
 
     #[test]
     fn webtransport_mud_pushes_alice_command_to_bob_view() {
+        let _guard = MUD_WEBTRANSPORT_TEST_LOCK.lock().unwrap();
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let tls = test_tls_config();
             let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
@@ -1502,10 +1542,77 @@ mod tests {
                 serde_json::from_slice(&bob_delta.payload).unwrap();
             let bob_payload_text = serde_json::to_string(&bob_payload).unwrap();
             assert!(bob_payload_text.contains("Alice"));
+            assert!(bob_payload_text.contains("look Alice"));
+            assert!(bob_payload_text.contains("actor-entity"));
             assert!(bob_payload_text.contains("takes"));
             assert!(bob_payload_text.contains("coin"));
             assert!(bob_payload_text.contains("event-line transfer"));
             assert!(bob_payload_text.contains("entity-action"));
+        });
+    }
+
+    #[test]
+    fn webtransport_mud_suspended_command_recovers_with_have_view() {
+        let _guard = MUD_WEBTRANSPORT_TEST_LOCK.lock().unwrap();
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let tls = test_tls_config();
+            let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
+                .await
+                .unwrap();
+            let server_addr = endpoint.local_addr().unwrap();
+            let server_endpoint = endpoint.clone();
+
+            let runner = sync_mud_runner();
+            let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebTransportHost::new(driver.clone());
+            let binding = SessionBinding {
+                principal,
+                actor: None,
+            };
+            compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(1))).detach();
+
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (send_tx, send_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let client = spawn_wtransport_mud_suspended_command_client(
+                server_addr,
+                connected_tx,
+                send_rx,
+                result_tx,
+            );
+
+            wait_for_client_connected(&connected_rx).await;
+            send_tx.send(()).unwrap();
+            let (snapshot, login_delta, push_delta, poll_delta) =
+                wait_for_mud_delayed_event_result(&result_rx).await.unwrap();
+
+            server_endpoint.close(0u32.into(), b"test complete");
+            client.join().unwrap();
+
+            assert_eq!(snapshot.kind, SyncMessageKind::ViewSnapshot);
+            assert_eq!(login_delta.kind, SyncMessageKind::ViewDelta);
+
+            assert_eq!(push_delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(push_delta.view_id, 21);
+            assert_eq!(push_delta.client_revision, 1);
+            assert!(push_delta.server_revision > login_delta.server_revision);
+            let push_payload: serde_json::Value =
+                serde_json::from_slice(&push_delta.payload).unwrap();
+            let push_payload_text = serde_json::to_string(&push_payload).unwrap();
+            assert!(push_payload_text.contains("begins to hum"));
+
+            assert_eq!(poll_delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(poll_delta.view_id, 21);
+            assert_eq!(poll_delta.client_revision, push_delta.server_revision);
+            assert!(poll_delta.server_revision > push_delta.server_revision);
+            let poll_payload: serde_json::Value =
+                serde_json::from_slice(&poll_delta.payload).unwrap();
+            let poll_payload_text = serde_json::to_string(&poll_payload).unwrap();
+            assert!(poll_payload_text.contains("cheerful ding"));
+            assert!(poll_payload_text.contains("event-line alert"));
+            assert!(poll_payload_text.contains("look button"));
+            assert!(poll_payload_text.contains("entity-button"));
         });
     }
 
@@ -2034,6 +2141,102 @@ mod tests {
         })
     }
 
+    fn spawn_wtransport_mud_suspended_command_client(
+        server_addr: SocketAddr,
+        connected_tx: mpsc::Sender<()>,
+        send_rx: mpsc::Receiver<()>,
+        result_tx: mpsc::Sender<MudDelayedEventResult>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        let config = wtransport::ClientConfig::builder()
+                            .with_bind_default()
+                            .with_no_cert_validation()
+                            .build();
+                        let url = format!("https://127.0.0.1:{}/view", server_addr.port());
+                        let connection = wtransport::Endpoint::client(config)
+                            .map_err(|error| error.to_string())?
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        connected_tx.send(()).map_err(|error| error.to_string())?;
+                        send_rx.recv().map_err(|error| error.to_string())?;
+
+                        let need_view = SyncEnvelope {
+                            kind: SyncMessageKind::NeedView,
+                            session_id: 7,
+                            view_id: 21,
+                            client_revision: 0,
+                            client_signature: 0,
+                            server_revision: 0,
+                            server_signature: 0,
+                            payload: b"need".to_vec(),
+                        };
+                        connection
+                            .send_datagram(encoded_sync_envelope(need_view.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let snapshot = receive_sync_envelope(&connection).await?;
+
+                        connection
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 7,
+                                view_id: 21,
+                                revision: snapshot.server_revision,
+                                signature: snapshot.server_signature,
+                                event: "submit".to_owned(),
+                                target: "mud-login-alice".to_owned(),
+                                action: "mud_login".to_owned(),
+                                fields: BTreeMap::from([("text".to_owned(), "alice".to_owned())]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let login_delta = receive_sync_envelope(&connection).await?;
+
+                        connection
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 7,
+                                view_id: 21,
+                                revision: login_delta.server_revision,
+                                signature: login_delta.server_signature,
+                                event: "submit".to_owned(),
+                                target: "push-red-button".to_owned(),
+                                action: "mud_command".to_owned(),
+                                fields: BTreeMap::from([(
+                                    "text".to_owned(),
+                                    "push button".to_owned(),
+                                )]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let push_delta = receive_sync_envelope(&connection).await?;
+
+                        tokio::time::sleep(Duration::from_millis(600)).await;
+                        let have_view = SyncEnvelope {
+                            kind: SyncMessageKind::HaveView,
+                            session_id: 7,
+                            view_id: 21,
+                            client_revision: push_delta.server_revision,
+                            client_signature: push_delta.server_signature,
+                            server_revision: push_delta.server_revision,
+                            server_signature: push_delta.server_signature,
+                            payload: b"poll".to_vec(),
+                        };
+                        connection
+                            .send_datagram(encoded_sync_envelope(have_view.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let poll_delta = receive_sync_envelope(&connection).await?;
+                        connection.close(0u32.into(), b"test complete");
+
+                        Ok((snapshot, login_delta, push_delta, poll_delta))
+                    })
+                });
+            let _ = result_tx.send(result);
+        })
+    }
+
     fn spawn_wtransport_stale_event_client(
         server_addr: SocketAddr,
         connected_tx: mpsc::Sender<()>,
@@ -2352,6 +2555,26 @@ mod tests {
         receiver: &mpsc::Receiver<MudLoginResult>,
     ) -> Result<(SyncEnvelope, SyncEnvelope), String> {
         let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            match receiver.try_recv() {
+                Ok(result) => return result,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Err("timed out waiting for client result".to_owned());
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("client result channel disconnected".to_owned());
+                }
+            }
+        }
+    }
+
+    async fn wait_for_mud_delayed_event_result(
+        receiver: &mpsc::Receiver<MudDelayedEventResult>,
+    ) -> Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String> {
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             match receiver.try_recv() {
                 Ok(result) => return result,

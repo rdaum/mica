@@ -559,6 +559,8 @@ export function bootstrapServerRenderedSync(mount, status) {
   };
   let connected = false;
   let client;
+  let connectPromise;
+  let pollTimer = null;
   const api = { client: null, state };
 
   function setStatus(text) {
@@ -575,9 +577,27 @@ export function bootstrapServerRenderedSync(mount, status) {
     };
   }
 
+  function stopPolling() {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(() => {
+      if (connected) {
+        client.haveView(viewState("poll")).catch((error) => setStatus(String(error)));
+      }
+    }, 1000);
+  }
+
   function accept(envelope) {
     state.revision = BigInt(envelope.serverRevision);
     state.signature = BigInt(envelope.serverSignature);
+    mount.dataset.revision = envelope.serverRevision;
+    mount.dataset.signature = envelope.serverSignature;
     setStatus(`Synced revision ${envelope.serverRevision}`);
     client.haveView(viewState("have")).catch((error) => setStatus(String(error)));
   }
@@ -619,23 +639,33 @@ export function bootstrapServerRenderedSync(mount, status) {
       onEnvelope: handle,
       onClose: () => {
         connected = false;
+        stopPolling();
         setStatus("Disconnected");
       },
       onError: (error) => {
         connected = false;
+        stopPolling();
         setStatus(String(error));
       },
     });
     api.client = client;
     await client.connect();
     connected = true;
+    startPolling();
     await client.haveView(viewState("initial"));
   }
 
   mount.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!connected) {
-      return;
+      setStatus("Connecting");
+      try {
+        if (!(await connectPromise)) {
+          return;
+        }
+      } catch {
+        return;
+      }
     }
     const form = event.target;
     if (
@@ -668,6 +698,13 @@ export function bootstrapServerRenderedSync(mount, status) {
     }
   });
 
-  connect().catch((error) => setStatus(String(error)));
+  connectPromise = connect().then(
+    () => true,
+    (error) => {
+      setStatus(String(error));
+      return false;
+    },
+  );
+
   return api;
 }

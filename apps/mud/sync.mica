@@ -14,6 +14,7 @@ assert CanInvoke(#web, :sync_event)
 assert CanInvoke(#web, :sync_view_revision)
 assert CanInvoke(#web, :sync_view_tree)
 assert CanInvoke(#web, :mud_login_view_node)
+assert CanInvoke(#web, :mud_login_choice_node)
 assert CanInvoke(#web, :mud_status_revision)
 assert CanInvoke(#web, :mud_current_actor)
 assert CanInvoke(#web, :mud_login_actor)
@@ -69,10 +70,12 @@ assert CanInvoke(#alice, :mud_current_actor)
 assert CanInvoke(#alice, :mud_login_actor)
 assert CanInvoke(#alice, :mud_actor_name)
 assert CanInvoke(#alice, :mud_direction_text)
+assert CanInvoke(#alice, :mud_login_choice_node)
 assert CanInvoke(#alice, :mud_command_form_node)
 assert CanInvoke(#alice, :mud_entity_action_node)
 assert CanInvoke(#alice, :mud_login_view_node)
 assert CanInvoke(#alice, :mud_world_view_node)
+assert CanInvoke(#alice, :mud_guide_node)
 assert CanInvoke(#alice, :mud_room_panel_node)
 assert CanInvoke(#alice, :mud_room_snapshot_node)
 assert CanInvoke(#alice, :mud_snapshot_row_node)
@@ -185,14 +188,36 @@ verb mud_entity_action_node(id, entity, text, label, class)
   return dom_element("form", attrs, [hidden, entity_field, button])
 end
 
+verb mud_login_choice_node(actor, name, initial, detail)
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "text", :value -> actor}, [])
+  let badge = dom_element("span", {:class -> "actor-initial"}, [dom_text(initial)])
+  let title = dom_element("strong", {:class -> "actor-name"}, [dom_text(name)])
+  let copy = dom_element("p", {:class -> "actor-detail"}, [dom_text(detail)])
+  let meta = dom_element("span", {:class -> "actor-meta"}, [dom_text("Server-owned session view")])
+  let button = dom_element("button", {:type -> "submit"}, [dom_text(string_concat("Enter as ", name))])
+  return dom_element("form", {:id -> string_concat("mud-login-", actor), :class -> "login-choice actor-card", "data-sync-event" -> "submit", "data-sync-action" -> "mud_login"}, [hidden, badge, title, copy, meta, button])
+end
+
 verb mud_login_view_node()
-  let alice_name = dom_element("input", {:type -> "hidden", :name -> "text", :value -> "alice"}, [])
-  let bob_name = dom_element("input", {:type -> "hidden", :name -> "text", :value -> "bob"}, [])
-  let alice = dom_element("form", {:id -> "mud-login-alice", :class -> "login-choice", "data-sync-event" -> "submit", "data-sync-action" -> "mud_login"}, [alice_name, dom_element("button", {:type -> "submit"}, [dom_text("Enter as Alice")])])
-  let bob = dom_element("form", {:id -> "mud-login-bob", :class -> "login-choice", "data-sync-event" -> "submit", "data-sync-action" -> "mud_login"}, [bob_name, dom_element("button", {:type -> "submit"}, [dom_text("Enter as Bob")])])
+  let alice = mud_login_choice_node("alice", "Alice", "A", "Starts in the first room with the brass coin, the box, and the suspicious red button.")
+  let bob = mud_login_choice_node("bob", "Bob", "B", "A second browser can enter as Bob and watch Alice's actions arrive as DOM-synced events.")
   let choices = dom_element("div", {:class -> "login-choices"}, [alice, bob])
   let copy = dom_element("p", {:class -> "lede"}, [dom_text("Choose a demo actor. No password yet; each browser session gets its own server-owned world view.")])
   return dom_element("main", {:id -> "mud-root", :class -> "mud-login"}, [dom_element("section", {:class -> "login-card"}, [dom_element("h1", {}, [dom_text("Mica MUD")]), copy, choices])])
+end
+
+verb mud_guide_node()
+  let commands = []
+  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("look")])]
+  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("north")])]
+  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("examine <thing>")])]
+  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("get <thing>")])]
+  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("drop <thing>")])]
+  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("say <message>")])]
+  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("push button")])]
+  let line = dom_element("div", {:class -> "guide-line"}, commands)
+  let detail = dom_element("p", {:class -> "guide-detail"}, [dom_text("Click room entities for object actions, or type a command below.")])
+  return dom_element("section", {:class -> "room-guide", "aria-label" -> "Things you can do here"}, [dom_element("strong", {:class -> "guide-title"}, [dom_text("Things you can do here")]), line, detail])
 end
 
 verb mud_room_panel_node(actor @ #player)
@@ -201,7 +226,7 @@ verb mud_room_panel_node(actor @ #player)
   let description = one Description(room, ?description)
   let heading = dom_element("h2", {}, [dom_text(title)])
   let body = dom_element("p", {:class -> "room-description"}, [dom_text(description)])
-  return dom_element("section", {:id -> "room", :class -> "panel room-panel"}, [heading, body, mud_room_snapshot_node(actor, room), mud_room_objects_node(actor, room)])
+  return dom_element("section", {:id -> "room", :class -> "panel room-panel"}, [mud_guide_node(), heading, body, mud_room_snapshot_node(actor, room), mud_room_objects_node(actor, room)])
 end
 
 verb mud_snapshot_row_node(label, chips)
@@ -331,10 +356,10 @@ end
 verb mud_event_actor_node(value @ #identity, viewer)
   let name = mud_actor_name(value)
   if value == viewer
-    name = "you"
+    return dom_element("strong", {:class -> "event-entity", "data-entity" -> to_literal(value)}, [dom_text("you")])
   end
 
-  return dom_element("strong", {:class -> "event-entity", "data-entity" -> to_literal(value)}, [dom_text(name)])
+  return mud_entity_action_node("", value, string_concat("look ", name), name, "entity-button event-entity actor-entity")
 end
 
 verb mud_event_object_node(event, value @ #identity, viewer)
@@ -358,7 +383,11 @@ verb mud_event_body_node(event, viewer)
   let kind = one MudEventKind(event, ?kind)
   let actor = one MudEventActor(event, ?actor)
 
-  if kind == #take_event
+  if kind == #movement_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " move away.", " moves away."))])
+  elseif kind == #arrival_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " arrive.", " arrives."))])
+  elseif kind == #take_event
     return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
   elseif kind == #take_from_event
     return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" from "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
@@ -368,6 +397,8 @@ verb mud_event_body_node(event, viewer)
     return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " put ", " puts ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" in "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
   elseif kind == #say_event
     return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", one MudEventMessage(event, ?message), "\""))])])
+  elseif kind == #button_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_object_node(event, #red_button, viewer), dom_text(" gives one final cheerful ding.")])
   end
 
   return dom_element("div", {:class -> "event-text"}, [dom_text(one MudEventText(event, ?text))])
