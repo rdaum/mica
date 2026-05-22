@@ -38,9 +38,9 @@ verb chat_mount_node(view, revision, signature, root)
 end
 
 verb chat_style()
-  return "#shell{display:grid;grid-template-rows:auto 1fr;min-height:100dvh;max-width:760px;margin:0 auto;padding:18px;gap:14px;box-sizing:border-box}body{margin:0;background:#1f1e26;color:#fff;font-family:system-ui,sans-serif}#shell>header{display:flex;gap:12px;align-items:center;justify-content:space-between}#shell h1{margin:0;font-size:22px;font-weight:650}.status{font-size:13px;color:#bbb}#mount{min-height:0;overflow:auto;border:1px solid #55515f;border-radius:8px;background:#26242d}#chat-root{display:grid;grid-template-rows:1fr auto;min-height:100%}#messages{margin:0;padding:14px;list-style:none}#messages li{display:block;width:fit-content;max-width:min(92%,560px);margin:0 0 8px;padding:8px 10px;border-radius:8px;background:#302e38;overflow-wrap:anywhere}.author{font-weight:700}#chat-composer{display:grid;grid-template-columns:minmax(120px,180px) 1fr auto;gap:10px;padding:14px}#chat-composer input,#chat-composer button{min-width:0;min-height:42px;box-sizing:border-box;border:1px solid #625e6d;border-radius:8px;padding:9px 11px;font:inherit;background:#1f1e26;color:#fff}#chat-composer button{padding-inline:18px;background:#2b2933}@media(max-width:640px){#shell{padding:12px}#chat-composer{grid-template-columns:1fr}#shell>header{display:grid}}"
+  return include_text("style.css")
 end
 
 verb chat_bootstrap_script()
-  return "import{bootstrapServerRenderedSync}from'/sync-client.js';window.micaChat=bootstrapServerRenderedSync(document.getElementById('mount'),document.getElementById('status'));"
+  return include_text("bootstrap.js")
 end

@@ -30,7 +30,7 @@ use std::fs;
 use std::future;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[allow(dead_code)]
@@ -116,7 +116,10 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     for filein in fileins_or_defaults(&cli.fileins) {
         let source = fs::read_to_string(&filein)
             .map_err(|error| format!("failed to read {}: {error}", filein.display()))?;
-        runner.run_filein(&source).map_err(format_source_error)?;
+        let include_base = filein.parent().unwrap_or_else(|| Path::new("."));
+        runner
+            .run_filein_with_include_loader(&source, |path| read_filein_include(include_base, path))
+            .map_err(format_source_error)?;
     }
     let telnet_actor = if cli.telnet_bind.is_some() {
         let actor_name = actor_name(&cli.actor)?;
@@ -238,6 +241,12 @@ fn fileins_or_defaults(fileins: &[PathBuf]) -> Vec<PathBuf> {
         return DEFAULT_FILEINS.iter().map(PathBuf::from).collect();
     }
     fileins.to_vec()
+}
+
+fn read_filein_include(base: &Path, path: &str) -> Result<String, String> {
+    let include_path = base.join(path);
+    fs::read_to_string(&include_path)
+        .map_err(|error| format!("failed to read {}: {error}", include_path.display()))
 }
 
 fn actor_name(actor: &str) -> Result<String, String> {

@@ -1967,7 +1967,10 @@ mod tests {
             .run_filein(include_str!("../../../apps/shared/sync-dom.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../apps/chat/http.mica"))
+            .run_filein_with_include_loader(
+                include_str!("../../../apps/chat/http.mica"),
+                chat_http_include,
+            )
             .unwrap();
         runner
     }
@@ -2008,9 +2011,31 @@ mod tests {
             .run_filein(include_str!("../../../apps/mud/ui-actions.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../apps/mud/http.mica"))
+            .run_filein_with_include_loader(
+                include_str!("../../../apps/mud/http.mica"),
+                mud_http_include,
+            )
             .unwrap();
         runner
+    }
+
+    fn chat_http_include(path: &str) -> Result<String, String> {
+        match path {
+            "style.css" => Ok(include_str!("../../../apps/chat/style.css").to_owned()),
+            "bootstrap.js" => Ok(include_str!("../../../apps/chat/bootstrap.js").to_owned()),
+            other => Err(format!("unknown chat HTTP include {other}")),
+        }
+    }
+
+    fn mud_http_include(path: &str) -> Result<String, String> {
+        match path {
+            "style.css" => Ok(include_str!("../../../apps/mud/style.css").to_owned()),
+            "login.css" => Ok(include_str!("../../../apps/mud/login.css").to_owned()),
+            "presence.css" => Ok(include_str!("../../../apps/mud/presence.css").to_owned()),
+            "narrative.css" => Ok(include_str!("../../../apps/mud/narrative.css").to_owned()),
+            "bootstrap.js" => Ok(include_str!("../../../apps/mud/bootstrap.js").to_owned()),
+            other => Err(format!("unknown MUD HTTP include {other}")),
+        }
     }
 
     fn spawn_wtransport_smoke_client(

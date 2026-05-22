@@ -1,0 +1,106 @@
+.narrative-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+.narrative-heading h2 {
+  margin: 0;
+}
+.narrative-count {
+  color: #9e968c;
+  font-size: 12px;
+}
+.latest-event {
+  border: 1px solid #3d3a40;
+  background: #191a1e;
+  border-radius: 8px;
+  padding: 10px;
+  margin: 0 0 12px;
+}
+.latest-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.latest-heading strong {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #d8d0c7;
+}
+.latest-body {
+  line-height: 1.35;
+}
+.latest-event .event-meta {
+  margin-left: 0;
+}
+.latest-event.empty {
+  color: #9e968c;
+}
+.event-line-main {
+  display: block;
+}
+.event-kind {
+  display: inline-block;
+  min-width: 58px;
+  margin-right: 8px;
+  border: 1px solid #49444d;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #d8cab8;
+  background: #191a1e;
+  font-size: 11px;
+  text-align: center;
+  text-transform: uppercase;
+}
+.event-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0 2px 34px;
+}
+.event-meta-chip {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  border: 1px solid #37343a;
+  border-radius: 999px;
+  background: #18191d;
+  padding: 2px 7px;
+  font-size: 11px;
+}
+.event-meta-label {
+  color: #8f8780;
+  text-transform: uppercase;
+}
+.event-meta-value {
+  color: #d8d0c7;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event-line.speech .event-kind,
+.latest-event.speech .event-kind {
+  border-color: #3f5870;
+  color: #b9d7ff;
+}
+.event-line.transfer .event-kind,
+.latest-event.transfer .event-kind {
+  border-color: #6b5a35;
+  color: #f3d38a;
+}
+.event-line.alert .event-kind,
+.latest-event.alert .event-kind {
+  border-color: #7b4946;
+  color: #ffb4a8;
+}
+.event-line.movement .event-kind,
+.latest-event.movement .event-kind {
+  border-color: #4c665c;
+  color: #bce0ca;
+}
