@@ -18,6 +18,17 @@ verb mud_sync_selected_entity(actor @ #player, line, fields)
 end
 
 verb sync_event(endpoint, session, view, event, target, action, fields)
+  if event == "scroll" && action == "mud_load_older_events"
+    let current_limit = one MudNarrativeLimit(endpoint, ?limit)
+    if current_limit == nothing
+      current_limit = 40
+    end
+    let new_limit = current_limit + 40
+    retract MudNarrativeLimit(endpoint, _)
+    assert MudNarrativeLimit(endpoint, new_limit)
+    return true
+  end
+
   if view != 21 || event != "submit"
     return false
   end

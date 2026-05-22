@@ -221,8 +221,7 @@ verb mud_latest_event_node(actor @ #player, revision)
   return dom_element("section", {:id -> "latest-event", :class -> string_concat("latest-event ", mud_event_label(source))}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text(mud_event_label(source))])]), dom_element("div", {:class -> "latest-body"}, [mud_event_body_node(latest, actor)]), mud_event_meta_node(source, latest_seq)])
 end
 
-verb mud_narrative_node(actor @ #player, revision)
-  let max_events = 40
+verb mud_narrative_node(actor @ #player, revision, limit)
   let events = []
   let count = 0
 
@@ -237,16 +236,18 @@ verb mud_narrative_node(actor @ #player, revision)
     events = [dom_element("li", {:class -> "muted"}, [dom_text("The room is quiet.")])]
   else
     let first_rendered = 0
-    if count > max_events
-      first_rendered = count - max_events
+    if count > limit
+      first_rendered = count - limit
     end
 
+    let rendered = 0
     let index = 0
     for found in MudEventDelivery(actor, ?event)
       let seq = one MudEventSeq(found[:event], ?seq)
       if seq < revision
-        if index > first_rendered || index == first_rendered
+        if index >= first_rendered
           events = [@events, mud_event_node(found[:event])]
+          rendered = rendered + 1
         end
         index = index + 1
       end
@@ -254,5 +255,9 @@ verb mud_narrative_node(actor @ #player, revision)
   end
 
   let heading = dom_element("div", {:class -> "narrative-heading"}, [dom_element("h2", {}, [dom_text("Narrative")]), dom_element("span", {:class -> "narrative-count"}, [dom_text(to_literal(count)), dom_text(" events")])])
-  return dom_element("section", {:id -> "narrative", :class -> "panel narrative", "aria-live" -> "polite", "data-sync-follow" -> "bottom"}, [heading, dom_element("ul", {}, events)])
+  let list_attrs = {:class -> "event-list"}
+  if count > limit
+    list_attrs = {:class -> "event-list", "data-sync-on-viewport-top" -> "mud_load_older_events", "data-sync-viewport-threshold" -> "24"}
+  end
+  return dom_element("section", {:id -> "narrative", :class -> "panel narrative", "aria-live" -> "polite", "data-sync-follow" -> "bottom"}, [heading, dom_element("ul", list_attrs, events)])
 end

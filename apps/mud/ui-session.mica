@@ -4,6 +4,7 @@ make_relation(:CanAssumeActor, 2)
 make_relation(:MudView, 1)
 make_functional_relation(:MudSessionActor, 2, [0])
 make_functional_relation(:MudSessionInspect, 2, [0])
+make_functional_relation(:MudNarrativeLimit, 2, [0])
 
 assert MudView(21)
 
@@ -30,6 +31,7 @@ assert CanInvoke(#web, :trim)
 assert CanRead(#web, :MudView)
 assert CanRead(#web, :MudSessionActor)
 assert CanRead(#web, :MudSessionInspect)
+assert CanRead(#web, :MudNarrativeLimit)
 assert CanRead(#web, :CanAssumeActor)
 assert CanRead(#web, :Delegates)
 assert CanRead(#web, :Name)
@@ -42,6 +44,7 @@ assert CanWrite(#web, :MudEventText)
 assert CanWrite(#web, :MudEventSource)
 assert CanWrite(#web, :MudSessionActor)
 assert CanWrite(#web, :MudSessionInspect)
+assert CanWrite(#web, :MudNarrativeLimit)
 
 CanRead(#web, relation) :-
   RoleCanRead(#player, relation)
@@ -121,7 +124,9 @@ assert RoleCanInvoke(#player, :trim)
 assert RoleCanRead(#player, :MudSessionActor)
 assert RoleCanRead(#player, :MudSessionInspect)
 assert RoleCanRead(#player, :MudEventSource)
+assert RoleCanRead(#player, :MudNarrativeLimit)
 assert RoleCanWrite(#player, :MudSessionInspect)
+assert RoleCanWrite(#player, :MudNarrativeLimit)
 
 verb mud_actor_name(obj)
   let name = one Name(obj, ?name)
@@ -192,5 +197,9 @@ verb sync_view_tree(view, revision)
     return mud_login_view_node()
   end
 
-  return mud_world_view_node(current, revision)
+  let limit = one MudNarrativeLimit(endpoint(), ?limit)
+  if limit == nothing
+    limit = 40
+  end
+  return mud_world_view_node(current, revision, limit)
 end

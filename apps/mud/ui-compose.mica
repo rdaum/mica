@@ -361,11 +361,11 @@ verb mud_command_bar_node(actor @ #player)
   return dom_element("section", {:class -> "command-deck"}, [mud_context_actions_node(actor), dom_element("div", {:class -> "command-chips"}, chips), composer])
 end
 
-verb mud_world_view_node(actor @ #player, revision)
+verb mud_world_view_node(actor @ #player, revision, limit)
   let title = dom_element("h1", {}, [dom_text("The Mica Rooms")])
   let status = dom_element("div", {:class -> "status"}, [dom_text(mud_actor_name(actor)), dom_text(" · revision "), dom_text(to_literal(revision))])
   let header = dom_element("header", {:class -> "topbar"}, [title, status])
   let sidebar = dom_element("div", {:class -> "mud-sidebar"}, [mud_presence_node(actor), mud_inventory_node(actor), mud_inspector_node(actor)])
-  let stage = dom_element("div", {:class -> "mud-grid"}, [mud_room_panel_node(actor), mud_narrative_node(actor, revision), sidebar])
+  let stage = dom_element("div", {:class -> "mud-grid"}, [mud_room_panel_node(actor), mud_narrative_node(actor, revision, limit), sidebar])
   return dom_element("main", {:id -> "mud-root", :class -> "mud-shell"}, [header, stage, mud_command_bar_node(actor)])
 end

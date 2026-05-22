@@ -44,6 +44,8 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "data-sync-action",
   "data-sync-event",
   "data-sync-key",
+  "data-sync-on-viewport-top",
+  "data-sync-viewport-threshold",
   "class",
   "id",
   "name",
@@ -280,6 +282,64 @@ function restoreFollowBottomTargets(mount, targets) {
         : target.element;
     if (element && mount.contains(element)) {
       element.scrollTop = element.scrollHeight;
+    }
+  }
+}
+
+function bindViewportObservers(mount, sendFn) {
+  const elements = mount?.querySelectorAll
+    ? mount.querySelectorAll("[data-sync-on-viewport-top]")
+    : [];
+  const seen = new Set();
+  for (const element of elements) {
+    const eventName = element.getAttribute("data-sync-on-viewport-top");
+    if (!eventName) {
+      continue;
+    }
+    const id = element.id || "";
+    const key = `${id}:${eventName}`;
+    seen.add(key);
+    if (element._viewportKey === key) {
+      element._viewportFired = false;
+      continue;
+    }
+    if (element._viewportKey) {
+      element.removeEventListener("scroll", element._viewportHandler);
+    }
+    element._viewportKey = key;
+    element._viewportFired = false;
+    element._viewportHandler = () => {
+      if (element._viewportFired) {
+        return;
+      }
+      const threshold = parseInt(
+        element.getAttribute("data-sync-viewport-threshold") || "80",
+        10,
+      );
+      if (
+        element.scrollTop <= threshold &&
+        element.scrollHeight > element.clientHeight + threshold
+      ) {
+        element._viewportFired = true;
+        sendFn({
+          event: eventName,
+          scrollTop: element.scrollTop,
+          scrollHeight: element.scrollHeight,
+          clientHeight: element.clientHeight,
+        });
+      }
+    };
+    element.addEventListener("scroll", element._viewportHandler, {
+      passive: true,
+    });
+  }
+
+  for (const element of mount.querySelectorAll("*") || []) {
+    if (element._viewportKey && !seen.has(element._viewportKey)) {
+      element.removeEventListener("scroll", element._viewportHandler);
+      delete element._viewportKey;
+      delete element._viewportFired;
+      delete element._viewportHandler;
     }
   }
 }
@@ -730,6 +790,28 @@ export function bootstrapServerRenderedSync(mount, status) {
     }, 1000);
   }
 
+  function sendViewportEvent(data) {
+    if (!connected || !initialSynced) {
+      return;
+    }
+    client
+      .sendDomEvent({
+        session: state.session,
+        view: state.view,
+        revision: state.revision,
+        signature: state.signature,
+        event: "scroll",
+        target: "",
+        action: data.event,
+        fields: {
+          scroll_top: String(data.scrollTop),
+          scroll_height: String(data.scrollHeight),
+          client_height: String(data.clientHeight),
+        },
+      })
+      .catch((error) => setStatus(`Viewport event failed: ${String(error)}`));
+  }
+
   function accept(envelope) {
     state.revision = BigInt(envelope.serverRevision);
     state.signature = BigInt(envelope.serverSignature);
@@ -740,6 +822,7 @@ export function bootstrapServerRenderedSync(mount, status) {
       initialSynced = true;
       initialSyncResolve(true);
     }
+    bindViewportObservers(mount, sendViewportEvent);
   }
 
   function handle(envelope) {

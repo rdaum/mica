@@ -6615,7 +6615,7 @@ mod tests {
                    mud_notify(#alice, text)\n\
                    i = i + 1\n\
                  end\n\
-                 let literal = to_literal(mud_narrative_node(#alice, 100))\n\
+                 let literal = to_literal(mud_narrative_node(#alice, 100, 40))\n\
                  return [string_contains(literal, \"45\"), string_contains(literal, \"oldest-zero\"), string_contains(literal, \"oldest-four\"), string_contains(literal, \"first-kept\"), string_contains(literal, \"latest-kept\")]",
             )
             .unwrap();
