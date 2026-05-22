@@ -1940,6 +1940,28 @@ fn is_ownable_fact_relation(relation: Identity) -> bool {
     )
 }
 
+fn is_read_only_system_relation(relation: Identity) -> bool {
+    matches!(
+        relation.raw(),
+        RELATION_RELATION_ID
+            | RELATION_NAME_RELATION_ID
+            | ARITY_RELATION_ID
+            | RULE_RELATION_ID
+            | RULE_HEAD_RELATION_ID
+            | RULE_SOURCE_RELATION_ID
+            | ACTIVE_RULE_RELATION_ID
+            | ARGUMENT_NAME_RELATION_ID
+            | CONFLICT_POLICY_RELATION_ID
+            | FUNCTIONAL_KEY_RELATION_ID
+            | INDEX_RELATION_ID
+            | INDEX_POSITION_RELATION_ID
+            | INDEX_STORAGE_KIND_RELATION_ID
+            | SUBJECT_FACT_RELATION_ID
+            | MENTIONED_FACT_RELATION_ID
+            | EXTENSIONAL_MENTIONED_FACT_RELATION_ID
+    )
+}
+
 fn ownership_fact_tuple(unit: Symbol, relation: Identity, tuple: Tuple) -> Tuple {
     Tuple::from([
         Value::symbol(unit),
@@ -4131,6 +4153,9 @@ fn destroy_identity_builtin(
     let facts = context.tx().subject_facts(&value)?;
     let mut retracted = BTreeSet::new();
     for fact in facts {
+        if is_read_only_system_relation(fact.relation) {
+            continue;
+        }
         if retracted.insert((fact.relation, fact.tuple.clone())) {
             context.tx().retract(fact.relation, fact.tuple)?;
         }
