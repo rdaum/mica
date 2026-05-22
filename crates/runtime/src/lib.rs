@@ -6369,6 +6369,64 @@ mod tests {
     }
 
     #[test]
+    fn runner_mud_narrative_renders_recent_event_window() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/string.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/shared/events.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/core.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/ui-narrative.mica"))
+            .unwrap();
+
+        let report = runner
+            .run_source(
+                "let i = 0\n\
+                 while i < 45\n\
+                   let text = string_concat(\"message \", to_literal(i))\n\
+                   if i == 0\n\
+                     text = \"oldest-zero\"\n\
+                   elseif i == 4\n\
+                     text = \"oldest-four\"\n\
+                   elseif i == 5\n\
+                     text = \"first-kept\"\n\
+                   elseif i == 44\n\
+                     text = \"latest-kept\"\n\
+                   end\n\
+                   mud_notify(#alice, text)\n\
+                   i = i + 1\n\
+                 end\n\
+                 let literal = to_literal(mud_narrative_node(#alice, 100))\n\
+                 return [string_contains(literal, \"45\"), string_contains(literal, \"oldest-zero\"), string_contains(literal, \"oldest-four\"), string_contains(literal, \"first-kept\"), string_contains(literal, \"latest-kept\")]",
+            )
+            .unwrap();
+
+        assert!(
+            matches!(
+                report.outcome,
+                TaskOutcome::Complete { ref value, .. }
+                    if *value == Value::list([
+                        Value::bool(true),
+                        Value::bool(false),
+                        Value::bool(false),
+                        Value::bool(true),
+                        Value::bool(true),
+                    ])
+            ),
+            "{}",
+            report.render()
+        );
+    }
+
+    #[test]
     fn runner_resume_task_uses_continuation_request_authority() {
         let mut runner = SourceRunner::new_empty();
         let program = Arc::new(
