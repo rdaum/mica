@@ -6237,6 +6237,7 @@ mod tests {
         let first_room = runner.named_identity(Symbol::intern("first_room")).unwrap();
         let north_room = runner.named_identity(Symbol::intern("north_room")).unwrap();
         let attic = runner.named_identity(Symbol::intern("attic")).unwrap();
+        let coin = runner.named_identity(Symbol::intern("coin")).unwrap();
 
         let report = runner
             .run_source("return one Exit(#north_room, :south, ?destination)")
@@ -6255,6 +6256,20 @@ mod tests {
         runner
             .run_source("return :get(actor: #alice, item: #coin)")
             .unwrap();
+        let report = runner
+            .run_source(
+                "let event = one MudEventDelivery(#alice, ?event)\n\
+                 let source = one MudEventSource(event, ?source)\n\
+                 return [frob_delegate(source), event_bindings(source)[:item]]",
+            )
+            .unwrap();
+        let take_event = runner.named_identity(Symbol::intern("take_event")).unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([Value::identity(take_event), Value::identity(coin)])
+        ));
+
         let report = runner.run_source("return Carrying(#alice, #coin)").unwrap();
         assert!(matches!(
             report.outcome,

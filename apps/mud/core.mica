@@ -79,11 +79,7 @@ make_relation(:VisibleTo, 2)
 make_relation(:MudEventDelivery, 2)
 make_functional_relation(:MudEventSeq, 2, [0])
 make_functional_relation(:MudEventText, 2, [0])
-make_functional_relation(:MudEventKind, 2, [0])
-make_functional_relation(:MudEventActor, 2, [0])
-make_functional_relation(:MudEventItem, 2, [0])
-make_functional_relation(:MudEventContainer, 2, [0])
-make_functional_relation(:MudEventMessage, 2, [0])
+make_functional_relation(:MudEventSource, 2, [0])
 make_relation(:TrustedForNameParsing, 2)
 make_relation(:NameMatchable, 2)
 make_relation(:TrustedForCommandGrammar, 2)
@@ -303,11 +299,7 @@ assert RoleCanRead(#player, :VisibleTo)
 assert RoleCanRead(#player, :MudEventDelivery)
 assert RoleCanRead(#player, :MudEventSeq)
 assert RoleCanRead(#player, :MudEventText)
-assert RoleCanRead(#player, :MudEventKind)
-assert RoleCanRead(#player, :MudEventActor)
-assert RoleCanRead(#player, :MudEventItem)
-assert RoleCanRead(#player, :MudEventContainer)
-assert RoleCanRead(#player, :MudEventMessage)
+assert RoleCanRead(#player, :MudEventSource)
 assert RoleCanRead(#player, :TrustedForNameParsing)
 assert RoleCanRead(#player, :NameMatchable)
 assert RoleCanRead(#player, :TrustedForCommandGrammar)
@@ -319,11 +311,7 @@ assert RoleCanWrite(#player, :ButtonArmed)
 assert RoleCanWrite(#player, :MudEventDelivery)
 assert RoleCanWrite(#player, :MudEventSeq)
 assert RoleCanWrite(#player, :MudEventText)
-assert RoleCanWrite(#player, :MudEventKind)
-assert RoleCanWrite(#player, :MudEventActor)
-assert RoleCanWrite(#player, :MudEventItem)
-assert RoleCanWrite(#player, :MudEventContainer)
-assert RoleCanWrite(#player, :MudEventMessage)
+assert RoleCanWrite(#player, :MudEventSource)
 
 assert RoleCanInvoke(#player, :command)
 assert RoleCanInvoke(#player, :match_object)
@@ -478,29 +466,11 @@ verb mud_record_event(listener @ #player, source @ #event<_>)
   let seq = mud_next_event_seq(listener)
   let event = #mud_event<[listener, seq]>
   let text = render_event(source, listener)
-  let kind = frob_delegate(source)
-  let bindings = event_bindings(source)
 
   assert MudEventDelivery(listener, event)
   assert MudEventSeq(event, seq)
   assert MudEventText(event, text)
-  assert MudEventKind(event, kind)
-
-  if bindings[:actor] != nothing
-    assert MudEventActor(event, bindings[:actor])
-  end
-
-  if bindings[:item] != nothing
-    assert MudEventItem(event, bindings[:item])
-  end
-
-  if bindings[:container] != nothing
-    assert MudEventContainer(event, bindings[:container])
-  end
-
-  if bindings[:message] != nothing
-    assert MudEventMessage(event, bindings[:message])
-  end
+  assert MudEventSource(event, source)
 
   return event
 end

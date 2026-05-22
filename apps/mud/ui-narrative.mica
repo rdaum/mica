@@ -27,122 +27,131 @@ verb mud_event_verb(actor, viewer, self, other)
 end
 
 verb mud_event_body_node(event, viewer)
-  let kind = one MudEventKind(event, ?kind)
-  return mud_event_body_for(kind, event, viewer)
+  let source = one MudEventSource(event, ?source)
+  if source == nothing
+    return dom_element("div", {:class -> "event-text"}, [dom_text(one MudEventText(event, ?text))])
+  end
+
+  return mud_event_body_for(source, viewer)
 end
 
-verb mud_event_body_for(kind, event, viewer)
-  return dom_element("div", {:class -> "event-text"}, [dom_text(one MudEventText(event, ?text))])
+verb mud_event_body_for(source, viewer)
+  return dom_element("div", {:class -> "event-text"}, [dom_text(render_event(source, viewer))])
 end
 
-verb mud_event_body_for(kind @ #movement_event, event, viewer)
-  let actor = one MudEventActor(event, ?actor)
+verb mud_event_body_for(source @ #movement_event<_>, viewer)
+  let actor = event_bindings(source)[:actor]
   return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " move away.", " moves away."))])
 end
 
-verb mud_event_body_for(kind @ #arrival_event, event, viewer)
-  let actor = one MudEventActor(event, ?actor)
+verb mud_event_body_for(source @ #arrival_event<_>, viewer)
+  let actor = event_bindings(source)[:actor]
   return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " arrive.", " arrives."))])
 end
 
-verb mud_event_body_for(kind @ #take_event, event, viewer)
-  let actor = one MudEventActor(event, ?actor)
-  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
+verb mud_event_body_for(source @ #take_event<_>, viewer)
+  let bindings = event_bindings(source)
+  let actor = bindings[:actor]
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(source, bindings[:item], viewer), dom_text(".")])
 end
 
-verb mud_event_body_for(kind @ #take_from_event, event, viewer)
-  let actor = one MudEventActor(event, ?actor)
-  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" from "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
+verb mud_event_body_for(source @ #take_from_event<_>, viewer)
+  let bindings = event_bindings(source)
+  let actor = bindings[:actor]
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(source, bindings[:item], viewer), dom_text(" from "), mud_event_object_node(source, bindings[:container], viewer), dom_text(".")])
 end
 
-verb mud_event_body_for(kind @ #drop_event, event, viewer)
-  let actor = one MudEventActor(event, ?actor)
-  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " drop ", " drops ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
+verb mud_event_body_for(source @ #drop_event<_>, viewer)
+  let bindings = event_bindings(source)
+  let actor = bindings[:actor]
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " drop ", " drops ")), mud_event_object_node(source, bindings[:item], viewer), dom_text(".")])
 end
 
-verb mud_event_body_for(kind @ #put_event, event, viewer)
-  let actor = one MudEventActor(event, ?actor)
-  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " put ", " puts ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" in "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
+verb mud_event_body_for(source @ #put_event<_>, viewer)
+  let bindings = event_bindings(source)
+  let actor = bindings[:actor]
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " put ", " puts ")), mud_event_object_node(source, bindings[:item], viewer), dom_text(" in "), mud_event_object_node(source, bindings[:container], viewer), dom_text(".")])
 end
 
-verb mud_event_body_for(kind @ #say_event, event, viewer)
-  let actor = one MudEventActor(event, ?actor)
-  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", one MudEventMessage(event, ?message), "\""))])])
+verb mud_event_body_for(source @ #say_event<_>, viewer)
+  let bindings = event_bindings(source)
+  let actor = bindings[:actor]
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", bindings[:message], "\""))])])
 end
 
-verb mud_event_body_for(kind @ #button_event, event, viewer)
-  return dom_element("div", {:class -> "event-text"}, [mud_event_object_node(event, #red_button, viewer), dom_text(" gives one final cheerful ding.")])
+verb mud_event_body_for(source @ #button_event<_>, viewer)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_object_node(source, #red_button, viewer), dom_text(" gives one final cheerful ding.")])
 end
 
-verb mud_event_class(kind)
+verb mud_event_class(source)
   return "event-line"
 end
 
-verb mud_event_class(kind @ #movement_event)
+verb mud_event_class(source @ #movement_event<_>)
   return "event-line movement"
 end
 
-verb mud_event_class(kind @ #arrival_event)
+verb mud_event_class(source @ #arrival_event<_>)
   return "event-line movement"
 end
 
-verb mud_event_class(kind @ #take_event)
+verb mud_event_class(source @ #take_event<_>)
   return "event-line transfer"
 end
 
-verb mud_event_class(kind @ #take_from_event)
+verb mud_event_class(source @ #take_from_event<_>)
   return "event-line transfer"
 end
 
-verb mud_event_class(kind @ #drop_event)
+verb mud_event_class(source @ #drop_event<_>)
   return "event-line transfer"
 end
 
-verb mud_event_class(kind @ #put_event)
+verb mud_event_class(source @ #put_event<_>)
   return "event-line transfer"
 end
 
-verb mud_event_class(kind @ #say_event)
+verb mud_event_class(source @ #say_event<_>)
   return "event-line speech"
 end
 
-verb mud_event_class(kind @ #button_event)
+verb mud_event_class(source @ #button_event<_>)
   return "event-line alert"
 end
 
-verb mud_event_label(kind)
+verb mud_event_label(source)
   return "system"
 end
 
-verb mud_event_label(kind @ #movement_event)
+verb mud_event_label(source @ #movement_event<_>)
   return "movement"
 end
 
-verb mud_event_label(kind @ #arrival_event)
+verb mud_event_label(source @ #arrival_event<_>)
   return "movement"
 end
 
-verb mud_event_label(kind @ #take_event)
+verb mud_event_label(source @ #take_event<_>)
   return "transfer"
 end
 
-verb mud_event_label(kind @ #take_from_event)
+verb mud_event_label(source @ #take_from_event<_>)
   return "transfer"
 end
 
-verb mud_event_label(kind @ #drop_event)
+verb mud_event_label(source @ #drop_event<_>)
   return "transfer"
 end
 
-verb mud_event_label(kind @ #put_event)
+verb mud_event_label(source @ #put_event<_>)
   return "transfer"
 end
 
-verb mud_event_label(kind @ #say_event)
+verb mud_event_label(source @ #say_event<_>)
   return "speech"
 end
 
-verb mud_event_label(kind @ #button_event)
+verb mud_event_label(source @ #button_event<_>)
   return "alert"
 end
 
@@ -150,24 +159,25 @@ verb mud_event_meta_chip_node(label, value)
   return dom_element("span", {:class -> "event-meta-chip"}, [dom_element("span", {:class -> "event-meta-label"}, [dom_text(label)]), dom_element("span", {:class -> "event-meta-value"}, [dom_text(value)])])
 end
 
-verb mud_event_meta_node(event, seq, kind)
-  let chips = [mud_event_meta_chip_node("seq", to_literal(seq)), mud_event_meta_chip_node("kind", mud_event_label(kind))]
-  let actor = one MudEventActor(event, ?actor)
+verb mud_event_meta_node(source, seq)
+  let chips = [mud_event_meta_chip_node("seq", to_literal(seq)), mud_event_meta_chip_node("kind", mud_event_label(source))]
+  let bindings = event_bindings(source)
+  let actor = bindings[:actor]
   if actor != nothing
     chips = [@chips, mud_event_meta_chip_node("actor", mud_actor_name(actor))]
   end
 
-  let item = one MudEventItem(event, ?item)
+  let item = bindings[:item]
   if item != nothing
     chips = [@chips, mud_event_meta_chip_node("item", mud_actor_name(item))]
   end
 
-  let container = one MudEventContainer(event, ?container)
+  let container = bindings[:container]
   if container != nothing
     chips = [@chips, mud_event_meta_chip_node("container", mud_actor_name(container))]
   end
 
-  let message = one MudEventMessage(event, ?message)
+  let message = bindings[:message]
   if message != nothing
     chips = [@chips, mud_event_meta_chip_node("message", message)]
   end
@@ -178,13 +188,13 @@ end
 verb mud_event_node(event)
   let seq = one MudEventSeq(event, ?seq)
   let text = one MudEventText(event, ?text)
-  let kind = one MudEventKind(event, ?kind)
-  if kind == nothing
+  let source = one MudEventSource(event, ?source)
+  if source == nothing
     return dom_element("li", {"data-sync-key" -> to_literal(event), :class -> "event-line"}, [dom_element("span", {:class -> "event-seq"}, [dom_text(string_concat("#", to_literal(seq)))]), dom_text(text)])
   end
 
-  let badge = dom_element("span", {:class -> "event-kind"}, [dom_text(mud_event_label(kind))])
-  return dom_element("li", {"data-sync-key" -> to_literal(event), :class -> mud_event_class(kind)}, [dom_element("div", {:class -> "event-line-main"}, [dom_element("span", {:class -> "event-seq"}, [dom_text(string_concat("#", to_literal(seq)))]), badge, mud_event_body_node(event, mud_current_actor())])])
+  let badge = dom_element("span", {:class -> "event-kind"}, [dom_text(mud_event_label(source))])
+  return dom_element("li", {"data-sync-key" -> to_literal(event), :class -> mud_event_class(source)}, [dom_element("div", {:class -> "event-line-main"}, [dom_element("span", {:class -> "event-seq"}, [dom_text(string_concat("#", to_literal(seq)))]), badge, mud_event_body_node(event, mud_current_actor())])])
 end
 
 verb mud_latest_event_node(actor @ #player, revision)
@@ -203,12 +213,12 @@ verb mud_latest_event_node(actor @ #player, revision)
   end
 
   let text = one MudEventText(latest, ?text)
-  let kind = one MudEventKind(latest, ?kind)
-  if kind == nothing
+  let source = one MudEventSource(latest, ?source)
+  if source == nothing
     return dom_element("section", {:id -> "latest-event", :class -> "latest-event system"}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text("system")])]), dom_element("div", {:class -> "latest-body"}, [dom_text(text)])])
   end
 
-  return dom_element("section", {:id -> "latest-event", :class -> string_concat("latest-event ", mud_event_label(kind))}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text(mud_event_label(kind))])]), dom_element("div", {:class -> "latest-body"}, [mud_event_body_node(latest, actor)]), mud_event_meta_node(latest, latest_seq, kind)])
+  return dom_element("section", {:id -> "latest-event", :class -> string_concat("latest-event ", mud_event_label(source))}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text(mud_event_label(source))])]), dom_element("div", {:class -> "latest-body"}, [mud_event_body_node(latest, actor)]), mud_event_meta_node(source, latest_seq)])
 end
 
 verb mud_narrative_node(actor @ #player, revision)
