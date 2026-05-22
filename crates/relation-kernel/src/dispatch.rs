@@ -116,7 +116,7 @@ pub fn applicable_method_entries(
 
     methods.sort_by(|left, right| left.method.cmp(&right.method));
     methods.dedup_by(|left, right| left.method == right.method);
-    Ok(methods)
+    prune_named_methods(reader, relations.delegates, methods)
 }
 
 pub fn applicable_method_calls(
@@ -176,23 +176,15 @@ pub(crate) fn applicable_method_calls_uncached(
     selector: &Value,
     roles: &[(Value, Value)],
 ) -> Result<Vec<ApplicableMethodCall>, KernelError> {
-    let mut methods = Vec::new();
-
-    reader.visit_relation(
-        relations.method_selector,
-        &[None, Some(selector.clone())],
-        &mut |row| {
-            let method = row.values()[0].clone();
-            if let Some(args) = method_call_args(reader, relations, &method, roles)? {
-                methods.push(ApplicableMethodCall { method, args });
-            }
-            Ok(ScanControl::Continue)
-        },
-    )?;
-
-    methods.sort_by(|left, right| left.method.cmp(&right.method));
-    methods.dedup_by(|left, right| left.method == right.method);
-    Ok(methods)
+    applicable_method_entries(reader, relations, selector.clone(), roles).map(|methods| {
+        methods
+            .into_iter()
+            .map(|entry| ApplicableMethodCall {
+                args: method_call_args_from_params(&entry.params, roles),
+                method: entry.method,
+            })
+            .collect()
+    })
 }
 
 pub fn applicable_positional_methods(
@@ -218,15 +210,20 @@ pub fn applicable_positional_methods(
                 },
             )?;
             if positional_params_match(reader, relations.delegates, args, &params)? {
-                methods.push(method);
+                methods.push(ApplicableMethod { method, params });
             }
             Ok(ScanControl::Continue)
         },
     )?;
 
-    methods.sort();
-    methods.dedup();
-    Ok(methods)
+    methods.sort_by(|left, right| left.method.cmp(&right.method));
+    methods.dedup_by(|left, right| left.method == right.method);
+    Ok(
+        prune_positional_methods(reader, relations.delegates, methods)?
+            .into_iter()
+            .map(|entry| entry.method)
+            .collect(),
+    )
 }
 
 pub fn applicable_positional_methods_cached(
@@ -243,50 +240,167 @@ pub fn applicable_positional_methods_cached(
     applicable_positional_methods(reader, relations, selector, args)
 }
 
-fn method_call_args(
-    reader: &impl RelationRead,
-    relations: DispatchRelations,
-    method: &Value,
+fn method_call_args_from_params(
+    params: &[crate::Tuple],
     roles: &[(Value, Value)],
-) -> Result<Option<Option<Vec<Value>>>, KernelError> {
-    let mut args = Vec::new();
-    let mut matched = true;
-    let mut invalid_position = false;
+) -> Option<Vec<Value>> {
+    let mut args = Vec::with_capacity(params.len());
+    let mut ordered = params.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|param| param_position(param).unwrap_or(u16::MAX));
+    if ordered.iter().any(|param| param_position(param).is_none()) {
+        return None;
+    }
 
-    reader.visit_relation(
-        relations.param,
-        &[Some(method.clone()), None, None, None],
-        &mut |param| {
-            let Some(position) = param_position(param) else {
-                invalid_position = true;
-                return Ok(ScanControl::Stop);
-            };
-            let role = &param.values()[1];
-            let restriction = &param.values()[2];
-            let Some(value) = role_value(roles, role) else {
-                matched = false;
-                return Ok(ScanControl::Stop);
-            };
-            if !matches_restriction(reader, relations.delegates, value, restriction)? {
-                matched = false;
-                return Ok(ScanControl::Stop);
+    for param in ordered {
+        let value = role_value(roles, &param.values()[1])?;
+        args.push(value.clone());
+    }
+
+    Some(args)
+}
+
+fn prune_named_methods(
+    reader: &impl RelationRead,
+    delegates_relation: RelationId,
+    methods: Vec<ApplicableMethod>,
+) -> Result<Vec<ApplicableMethod>, KernelError> {
+    let mut pruned = Vec::new();
+    for candidate in &methods {
+        let mut dominated = false;
+        for other in &methods {
+            if candidate.method == other.method {
+                continue;
             }
-            args.push((position, value.clone()));
-            Ok(ScanControl::Continue)
-        },
-    )?;
-
-    if !matched {
-        return Ok(None);
+            if named_method_more_specific(reader, delegates_relation, other, candidate)? {
+                dominated = true;
+                break;
+            }
+        }
+        if !dominated {
+            pruned.push(candidate.clone());
+        }
     }
-    if invalid_position {
-        return Ok(Some(None));
+    Ok(pruned)
+}
+
+fn prune_positional_methods(
+    reader: &impl RelationRead,
+    delegates_relation: RelationId,
+    methods: Vec<ApplicableMethod>,
+) -> Result<Vec<ApplicableMethod>, KernelError> {
+    let mut pruned = Vec::new();
+    for candidate in &methods {
+        let mut dominated = false;
+        for other in &methods {
+            if candidate.method == other.method {
+                continue;
+            }
+            if positional_method_more_specific(reader, delegates_relation, other, candidate)? {
+                dominated = true;
+                break;
+            }
+        }
+        if !dominated {
+            pruned.push(candidate.clone());
+        }
+    }
+    Ok(pruned)
+}
+
+fn named_method_more_specific(
+    reader: &impl RelationRead,
+    delegates_relation: RelationId,
+    left: &ApplicableMethod,
+    right: &ApplicableMethod,
+) -> Result<bool, KernelError> {
+    let mut stricter = left.params.len() > right.params.len();
+
+    for right_param in &right.params {
+        let role = &right_param.values()[1];
+        let Some(left_param) = param_for_role(&left.params, role) else {
+            return Ok(false);
+        };
+        let left_restriction = &left_param.values()[2];
+        let right_restriction = &right_param.values()[2];
+        if !restriction_implies(
+            reader,
+            delegates_relation,
+            left_restriction,
+            right_restriction,
+        )? {
+            return Ok(false);
+        }
+        if !restriction_implies(
+            reader,
+            delegates_relation,
+            right_restriction,
+            left_restriction,
+        )? {
+            stricter = true;
+        }
     }
 
-    args.sort_by_key(|(position, _)| *position);
-    Ok(Some(Some(
-        args.into_iter().map(|(_, value)| value).collect(),
-    )))
+    Ok(stricter)
+}
+
+fn positional_method_more_specific(
+    reader: &impl RelationRead,
+    delegates_relation: RelationId,
+    left: &ApplicableMethod,
+    right: &ApplicableMethod,
+) -> Result<bool, KernelError> {
+    let Some(left_params) = ordered_params(&left.params) else {
+        return Ok(false);
+    };
+    let Some(right_params) = ordered_params(&right.params) else {
+        return Ok(false);
+    };
+    if left_params.len() != right_params.len() {
+        return Ok(false);
+    }
+
+    let mut stricter = false;
+    for (left_param, right_param) in left_params.iter().zip(right_params.iter()) {
+        let left_restriction = &left_param.values()[2];
+        let right_restriction = &right_param.values()[2];
+        if !restriction_implies(
+            reader,
+            delegates_relation,
+            left_restriction,
+            right_restriction,
+        )? {
+            return Ok(false);
+        }
+        if !restriction_implies(
+            reader,
+            delegates_relation,
+            right_restriction,
+            left_restriction,
+        )? {
+            stricter = true;
+        }
+    }
+
+    Ok(stricter)
+}
+
+fn param_for_role<'a>(params: &'a [crate::Tuple], role: &Value) -> Option<&'a crate::Tuple> {
+    params.iter().find(|param| &param.values()[1] == role)
+}
+
+fn restriction_implies(
+    reader: &impl RelationRead,
+    delegates_relation: RelationId,
+    specific: &Value,
+    general: &Value,
+) -> Result<bool, KernelError> {
+    if specific == general || *general == Value::nothing() {
+        return Ok(true);
+    }
+    if *specific == Value::nothing() {
+        return Ok(false);
+    }
+    matches_restriction(reader, delegates_relation, specific, general)
 }
 
 fn params_match(
@@ -723,6 +837,177 @@ mod tests {
             )
             .unwrap(),
             vec![int(100)]
+        );
+    }
+
+    #[test]
+    fn dispatch_selects_most_specific_named_method() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut tx = kernel.begin();
+        let event = Value::identity(Identity::new(200).unwrap());
+        let movement_event = Value::identity(Identity::new(201).unwrap());
+
+        tx.assert(rel(40), Tuple::from([int(100), sym("label")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(100), sym("kind"), Value::nothing(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(rel(40), Tuple::from([int(101), sym("label")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(101), sym("kind"), event.clone(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(rel(40), Tuple::from([int(102), sym("label")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(102), sym("kind"), movement_event.clone(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(
+            rel(42),
+            Tuple::from([movement_event.clone(), event, int(0)]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            applicable_methods(
+                &tx,
+                dispatch_relations(),
+                sym("label"),
+                [(sym("kind"), movement_event)]
+            )
+            .unwrap(),
+            vec![int(102)]
+        );
+    }
+
+    #[test]
+    fn dispatch_keeps_incomparable_named_methods() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut tx = kernel.begin();
+        let player = Value::identity(Identity::new(200).unwrap());
+        let portable = Value::identity(Identity::new(201).unwrap());
+        let alice = Value::identity(Identity::new(202).unwrap());
+        let coin = Value::identity(Identity::new(203).unwrap());
+
+        tx.assert(rel(40), Tuple::from([int(100), sym("act")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(100), sym("actor"), player.clone(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(100), sym("item"), Value::nothing(), int(1)]),
+        )
+        .unwrap();
+        tx.assert(rel(40), Tuple::from([int(101), sym("act")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(101), sym("actor"), Value::nothing(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(101), sym("item"), portable.clone(), int(1)]),
+        )
+        .unwrap();
+        tx.assert(rel(42), Tuple::from([alice.clone(), player, int(0)]))
+            .unwrap();
+        tx.assert(rel(42), Tuple::from([coin.clone(), portable, int(0)]))
+            .unwrap();
+
+        assert_eq!(
+            applicable_methods(
+                &tx,
+                dispatch_relations(),
+                sym("act"),
+                [(sym("actor"), alice), (sym("item"), coin)]
+            )
+            .unwrap(),
+            vec![int(100), int(101)]
+        );
+    }
+
+    #[test]
+    fn dispatch_selects_most_specific_frob_delegate_method() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut tx = kernel.begin();
+        let event = Value::identity(Identity::new(200).unwrap());
+        let take_event_identity = Identity::new(201).unwrap();
+        let take_event = Value::identity(take_event_identity);
+        let event_value = Value::frob(take_event_identity, Value::string("payload"));
+
+        tx.assert(rel(40), Tuple::from([int(100), sym("render")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(100), sym("event"), event.clone(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(rel(40), Tuple::from([int(101), sym("render")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(101), sym("event"), take_event.clone(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(rel(42), Tuple::from([take_event, event, int(0)]))
+            .unwrap();
+
+        assert_eq!(
+            applicable_methods(
+                &tx,
+                dispatch_relations(),
+                sym("render"),
+                [(sym("event"), event_value)]
+            )
+            .unwrap(),
+            vec![int(101)]
+        );
+    }
+
+    #[test]
+    fn positional_dispatch_selects_most_specific_method() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut tx = kernel.begin();
+
+        tx.assert(rel(40), Tuple::from([int(100), sym("describe")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([int(100), sym("value"), Value::nothing(), int(0)]),
+        )
+        .unwrap();
+        tx.assert(rel(40), Tuple::from([int(101), sym("describe")]))
+            .unwrap();
+        tx.assert(
+            rel(41),
+            Tuple::from([
+                int(101),
+                sym("value"),
+                Value::identity(STRING_PROTOTYPE),
+                int(0),
+            ]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            applicable_positional_methods(
+                &tx,
+                dispatch_relations(),
+                sym("describe"),
+                &[Value::string("hello")],
+            )
+            .unwrap(),
+            vec![int(101)]
         );
     }
 

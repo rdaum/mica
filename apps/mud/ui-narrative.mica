@@ -1,26 +1,5 @@
 // Narrative/event-log composition for the server-owned MUD view.
 
-make_functional_relation(:MudEventDisplayLabel, 2, [0])
-make_functional_relation(:MudEventDisplayClass, 2, [0])
-
-assert MudEventDisplayLabel(#movement_event, "movement")
-assert MudEventDisplayLabel(#arrival_event, "movement")
-assert MudEventDisplayLabel(#take_event, "transfer")
-assert MudEventDisplayLabel(#take_from_event, "transfer")
-assert MudEventDisplayLabel(#drop_event, "transfer")
-assert MudEventDisplayLabel(#put_event, "transfer")
-assert MudEventDisplayLabel(#say_event, "speech")
-assert MudEventDisplayLabel(#button_event, "alert")
-
-assert MudEventDisplayClass(#movement_event, "event-line movement")
-assert MudEventDisplayClass(#arrival_event, "event-line movement")
-assert MudEventDisplayClass(#take_event, "event-line transfer")
-assert MudEventDisplayClass(#take_from_event, "event-line transfer")
-assert MudEventDisplayClass(#drop_event, "event-line transfer")
-assert MudEventDisplayClass(#put_event, "event-line transfer")
-assert MudEventDisplayClass(#say_event, "event-line speech")
-assert MudEventDisplayClass(#button_event, "event-line alert")
-
 verb mud_event_actor_node(value @ #identity, viewer)
   let name = mud_actor_name(value)
   if value == viewer
@@ -49,11 +28,10 @@ end
 
 verb mud_event_body_node(event, viewer)
   let kind = one MudEventKind(event, ?kind)
-  let label = one MudEventDisplayLabel(kind, ?label)
-  if label != nothing
-    return mud_event_body_for(kind, event, viewer)
-  end
+  return mud_event_body_for(kind, event, viewer)
+end
 
+verb mud_event_body_for(kind, event, viewer)
   return dom_element("div", {:class -> "event-text"}, [dom_text(one MudEventText(event, ?text))])
 end
 
@@ -97,21 +75,75 @@ verb mud_event_body_for(kind @ #button_event, event, viewer)
 end
 
 verb mud_event_class(kind)
-  let class = one MudEventDisplayClass(kind, ?class)
-  if class != nothing
-    return class
-  end
-
   return "event-line"
 end
 
-verb mud_event_label(kind)
-  let label = one MudEventDisplayLabel(kind, ?label)
-  if label != nothing
-    return label
-  end
+verb mud_event_class(kind @ #movement_event)
+  return "event-line movement"
+end
 
+verb mud_event_class(kind @ #arrival_event)
+  return "event-line movement"
+end
+
+verb mud_event_class(kind @ #take_event)
+  return "event-line transfer"
+end
+
+verb mud_event_class(kind @ #take_from_event)
+  return "event-line transfer"
+end
+
+verb mud_event_class(kind @ #drop_event)
+  return "event-line transfer"
+end
+
+verb mud_event_class(kind @ #put_event)
+  return "event-line transfer"
+end
+
+verb mud_event_class(kind @ #say_event)
+  return "event-line speech"
+end
+
+verb mud_event_class(kind @ #button_event)
+  return "event-line alert"
+end
+
+verb mud_event_label(kind)
   return "system"
+end
+
+verb mud_event_label(kind @ #movement_event)
+  return "movement"
+end
+
+verb mud_event_label(kind @ #arrival_event)
+  return "movement"
+end
+
+verb mud_event_label(kind @ #take_event)
+  return "transfer"
+end
+
+verb mud_event_label(kind @ #take_from_event)
+  return "transfer"
+end
+
+verb mud_event_label(kind @ #drop_event)
+  return "transfer"
+end
+
+verb mud_event_label(kind @ #put_event)
+  return "transfer"
+end
+
+verb mud_event_label(kind @ #say_event)
+  return "speech"
+end
+
+verb mud_event_label(kind @ #button_event)
+  return "alert"
 end
 
 verb mud_event_meta_chip_node(label, value)

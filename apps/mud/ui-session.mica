@@ -133,8 +133,6 @@ assert RoleCanRead(#player, :MudEventActor)
 assert RoleCanRead(#player, :MudEventItem)
 assert RoleCanRead(#player, :MudEventContainer)
 assert RoleCanRead(#player, :MudEventMessage)
-assert RoleCanRead(#player, :MudEventDisplayLabel)
-assert RoleCanRead(#player, :MudEventDisplayClass)
 assert RoleCanWrite(#player, :MudSessionInspect)
 
 verb mud_actor_name(obj)

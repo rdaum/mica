@@ -5511,6 +5511,37 @@ mod tests {
     }
 
     #[test]
+    fn runner_dispatch_selects_most_specific_method() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "make_identity(:event)\n\
+                 make_identity(:take_event)\n\
+                 make_relation(:Delegates, 3)\n\
+                 assert Delegates(#take_event, #event, 0)\n\
+                 verb render(event)\n\
+                   return \"fallback\"\n\
+                 end\n\
+                 verb render(event @ #event<_>)\n\
+                   return \"event\"\n\
+                 end\n\
+                 verb render(event @ #take_event<_>)\n\
+                   return \"take\"\n\
+                 end\n",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source("return :render(event: #take_event<\"payload\">)")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("take")
+        ));
+    }
+
+    #[test]
     fn runner_event_substitution_filein_renders_per_viewer() {
         let mut runner = SourceRunner::new_empty();
         runner
