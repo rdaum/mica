@@ -6069,14 +6069,14 @@ mod tests {
 
         assert!(matches!(
             runner
-                .run_source("return substitution_demo(#alice)")
+                .run_source("return template/demo(#alice)")
                 .unwrap()
                 .outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("You pick up the coin.")
         ));
         assert!(matches!(
             runner
-                .run_source("return substitution_demo(#bob)")
+                .run_source("return template/demo(#bob)")
                 .unwrap()
                 .outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("Alice picks up the coin.")
@@ -6084,8 +6084,8 @@ mod tests {
         assert!(matches!(
             runner
                 .run_source(
-                    "let template = compile_template(\"{Actor} {pick|picks} up {the item}.\")\n\
-                     return decompile_template(template)",
+                    "let template = template/compile(\"{Actor} {pick|picks} up {the item}.\")\n\
+                     return template/decompile(template)",
                 )
                 .unwrap()
                 .outcome,
@@ -6095,8 +6095,8 @@ mod tests {
 
         let literal_report = runner
             .run_source(
-                "let template = compile_template(\"{Actor} {pick|picks} up {the item}.\")\n\
-                 return template_literal(template)",
+                "let template = template/compile(\"{Actor} {pick|picks} up {the item}.\")\n\
+                 return template/literal(template)",
             )
             .unwrap();
         let TaskOutcome::Complete { value, .. } = literal_report.outcome else {
@@ -6105,10 +6105,10 @@ mod tests {
         let Some(literal) = value.with_str(str::to_owned) else {
             panic!("expected template literal to return a string");
         };
-        assert!(literal.starts_with("#subst<["));
-        assert!(literal.contains("#subst_name<"));
-        assert!(literal.contains("#subst_self_alt<"));
-        assert!(literal.contains("#subst_article<"));
+        assert!(literal.starts_with("#template/substitution<["));
+        assert!(literal.contains("#template/name<"));
+        assert!(literal.contains("#template/self_alt<"));
+        assert!(literal.contains("#template/article<"));
     }
 
     #[test]
@@ -6770,7 +6770,7 @@ mod tests {
             .run_source(
                 "let event = one MudEventDelivery(#alice, ?event)\n\
                  let source = one MudEventSource(event, ?source)\n\
-                 return [frob_delegate(source), event_bindings(source)[:item]]",
+                 return [frob_delegate(source), event/bindings(source)[:item]]",
             )
             .unwrap();
         let take_event = runner.named_identity(Symbol::intern("take_event")).unwrap();
@@ -6914,7 +6914,7 @@ mod tests {
                    mud_notify(#alice, text)\n\
                    i = i + 1\n\
                  end\n\
-                 let literal = to_literal(mud_narrative_node(#alice, 100, 40))\n\
+                 let literal = to_literal(ui/narrative_node(#alice, 100, 40))\n\
                  return [string_contains(literal, \"45\"), string_contains(literal, \"oldest-zero\"), string_contains(literal, \"oldest-four\"), string_contains(literal, \"first-kept\"), string_contains(literal, \"latest-kept\")]",
             )
             .unwrap();

@@ -326,11 +326,11 @@ assert RoleCanInvoke(#player, :north)
 assert RoleCanInvoke(#player, :south)
 assert RoleCanInvoke(#player, :up)
 assert RoleCanInvoke(#player, :down)
-assert RoleCanInvoke(#player, :narrative_event)
-assert RoleCanInvoke(#player, :event_bindings)
-assert RoleCanInvoke(#player, :event_template)
-assert RoleCanInvoke(#player, :render_event)
-assert RoleCanInvoke(#player, :event_literal)
+assert RoleCanInvoke(#player, :event/narrative)
+assert RoleCanInvoke(#player, :event/bindings)
+assert RoleCanInvoke(#player, :event/template)
+assert RoleCanInvoke(#player, :event/render)
+assert RoleCanInvoke(#player, :event/literal)
 assert RoleCanInvoke(#player, :emit_room_event)
 assert RoleCanInvoke(#player, :emit_room_event_except)
 assert RoleCanInvoke(#player, :mud_next_event_seq)
@@ -344,21 +344,21 @@ assert RoleCanInvoke(#player, :put)
 assert RoleCanInvoke(#player, :push)
 assert RoleCanInvoke(#player, :button_resolves)
 assert RoleCanInvoke(#player, :say)
-assert RoleCanInvoke(#player, :template_error)
-assert RoleCanInvoke(#player, :capitalize)
-assert RoleCanInvoke(#player, :symbol_from_token)
-assert RoleCanInvoke(#player, :binding_token)
-assert RoleCanInvoke(#player, :split_once)
-assert RoleCanInvoke(#player, :article_for)
-assert RoleCanInvoke(#player, :parse_template_token)
-assert RoleCanInvoke(#player, :compile_template)
-assert RoleCanInvoke(#player, :binding_name)
-assert RoleCanInvoke(#player, :binding_value_text)
-assert RoleCanInvoke(#player, :render_template_part)
-assert RoleCanInvoke(#player, :render_template)
-assert RoleCanInvoke(#player, :template_literal)
-assert RoleCanInvoke(#player, :decompile_template_part)
-assert RoleCanInvoke(#player, :decompile_template)
+assert RoleCanInvoke(#player, :template/error)
+assert RoleCanInvoke(#player, :template/capitalize)
+assert RoleCanInvoke(#player, :template/symbol_from_token)
+assert RoleCanInvoke(#player, :template/binding_token)
+assert RoleCanInvoke(#player, :template/split_once)
+assert RoleCanInvoke(#player, :template/article_for)
+assert RoleCanInvoke(#player, :template/parse_token)
+assert RoleCanInvoke(#player, :template/compile)
+assert RoleCanInvoke(#player, :template/binding_name)
+assert RoleCanInvoke(#player, :template/binding_value_text)
+assert RoleCanInvoke(#player, :template/render_part)
+assert RoleCanInvoke(#player, :template/render)
+assert RoleCanInvoke(#player, :template/literal)
+assert RoleCanInvoke(#player, :template/decompile_part)
+assert RoleCanInvoke(#player, :template/decompile)
 assert RoleCanInvoke(#player, :frob)
 assert RoleCanInvoke(#player, :frob_delegate)
 assert RoleCanInvoke(#player, :frob_value)
@@ -467,7 +467,7 @@ end
 verb mud_record_event(listener @ #player, source @ #event<_>)
   let seq = mud_next_event_seq(listener)
   let event = #mud_event<[listener, seq]>
-  let text = render_event(source, listener)
+  let text = event/render(source, listener)
 
   assert MudEventDelivery(listener, event)
   assert MudEventSeq(event, seq)
@@ -486,7 +486,7 @@ end
 verb emit_room_event(room @ #room, event @ #event<_>)
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
-    let text = render_event(event, listener)
+    let text = event/render(event, listener)
     mud_record_event(listener, event)
     emit(listener, text)
   end
@@ -498,7 +498,7 @@ verb emit_room_event_except(room @ #room, skipped @ #identity, event @ #event<_>
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
     if listener != skipped
-      let text = render_event(event, listener)
+      let text = event/render(event, listener)
       mud_record_event(listener, event)
       emit(listener, text)
     end
@@ -581,10 +581,10 @@ verb go(actor @ #player, direction, leave, arrive)
   end
 
   let bindings = {:actor -> actor}
-  :emit_room_event(room: room, event: narrative_event(#movement_event, leave, bindings))
+  :emit_room_event(room: room, event: event/narrative(#movement_event, leave, bindings))
   retract LocatedIn(actor, _)
   assert LocatedIn(actor, destination)
-  :emit_room_event_except(room: destination, skipped: actor, event: narrative_event(#arrival_event, arrive, bindings))
+  :emit_room_event_except(room: destination, skipped: actor, event: event/narrative(#arrival_event, arrive, bindings))
   mud_notify(actor, one Description(destination, ?text))
   return true
 end
@@ -599,7 +599,7 @@ verb get(actor @ #player, item @ #thing)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, actor)
-    :emit_room_event(room: room, event: narrative_event(#take_event, "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
+    :emit_room_event(room: room, event: event/narrative(#take_event, "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
 
@@ -622,7 +622,7 @@ verb get_from(actor @ #player, item @ #thing, container @ #container)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, actor)
-    :emit_room_event(room: room, event: narrative_event(#take_from_event, "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
+    :emit_room_event(room: room, event: event/narrative(#take_from_event, "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
 
@@ -636,7 +636,7 @@ verb drop(actor @ #player, item @ #thing)
   if Carrying(actor, item)
     retract LocatedIn(item, _)
     assert LocatedIn(item, room)
-    :emit_room_event(room: room, event: narrative_event(#drop_event, "{Actor} {drop|drops} {the item}.", {:actor -> actor, :item -> item}))
+    :emit_room_event(room: room, event: event/narrative(#drop_event, "{Actor} {drop|drops} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
 
@@ -649,7 +649,7 @@ verb put(actor @ #player, item @ #thing, container @ #container)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, container)
-    :emit_room_event(room: room, event: narrative_event(#put_event, "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
+    :emit_room_event(room: room, event: event/narrative(#put_event, "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
 
@@ -681,13 +681,13 @@ verb button_resolves(actor @ #player, target @ #thing, room @ #room)
   end
 
   retract ButtonArmed(target)
-  :emit_room_event(room: room, event: narrative_event(#button_event, "The red button gives one final cheerful ding.", {}))
+  :emit_room_event(room: room, event: event/narrative(#button_event, "The red button gives one final cheerful ding.", {}))
   return true
 end
 
 verb say(actor @ #player, message)
   let room = one LocatedIn(actor, ?room)
-  let event = narrative_event(#say_event, "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message})
+  let event = event/narrative(#say_event, "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message})
   :emit_room_event(room: room, event: event)
   return true
 end

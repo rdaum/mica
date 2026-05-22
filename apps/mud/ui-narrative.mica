@@ -36,45 +36,45 @@ verb ui/event_body_node(event, viewer)
 end
 
 verb ui/event_body_for(source, viewer)
-  return dom_element("div", {:class -> "event-text"}, [dom_text(render_event(source, viewer))])
+  return dom_element("div", {:class -> "event-text"}, [dom_text(event/render(source, viewer))])
 end
 
 verb ui/event_body_for(source @ #movement_event<_>, viewer)
-  let actor = event_bindings(source)[:actor]
+  let actor = event/bindings(source)[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " move away.", " moves away."))])
 end
 
 verb ui/event_body_for(source @ #arrival_event<_>, viewer)
-  let actor = event_bindings(source)[:actor]
+  let actor = event/bindings(source)[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " arrive.", " arrives."))])
 end
 
 verb ui/event_body_for(source @ #take_event<_>, viewer)
-  let bindings = event_bindings(source)
+  let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " take ", " takes ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(".")])
 end
 
 verb ui/event_body_for(source @ #take_from_event<_>, viewer)
-  let bindings = event_bindings(source)
+  let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " take ", " takes ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(" from "), ui/event_object_node(source, bindings[:container], viewer), dom_text(".")])
 end
 
 verb ui/event_body_for(source @ #drop_event<_>, viewer)
-  let bindings = event_bindings(source)
+  let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " drop ", " drops ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(".")])
 end
 
 verb ui/event_body_for(source @ #put_event<_>, viewer)
-  let bindings = event_bindings(source)
+  let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " put ", " puts ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(" in "), ui/event_object_node(source, bindings[:container], viewer), dom_text(".")])
 end
 
 verb ui/event_body_for(source @ #say_event<_>, viewer)
-  let bindings = event_bindings(source)
+  let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", bindings[:message], "\""))])])
 end
@@ -161,7 +161,7 @@ end
 
 verb ui/event_meta_node(source, seq)
   let chips = [ui/event_meta_chip_node("seq", to_literal(seq)), ui/event_meta_chip_node("kind", ui/event_label(source))]
-  let bindings = event_bindings(source)
+  let bindings = event/bindings(source)
   let actor = bindings[:actor]
   if actor != nothing
     chips = [@chips, ui/event_meta_chip_node("actor", ui/actor_name(actor))]

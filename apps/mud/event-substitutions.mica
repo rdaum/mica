@@ -10,30 +10,30 @@
 //
 // becomes roughly:
 //
-//   #subst<[
-//     #subst_name<{:binding -> :actor, :cap -> true}>,
+//   #template/substitution<[
+//     #template/name<{:binding -> :actor, :cap -> true}>,
 //     " ",
-//     #subst_self_alt<{:self -> "pick", :other -> "picks"}>,
+//     #template/self_alt<{:self -> "pick", :other -> "picks"}>,
 //     " up ",
-//     #subst_article<{:article -> :the, :binding -> :item, :cap -> false}>,
+//     #template/article<{:article -> :the, :binding -> :item, :cap -> false}>,
 //     "."
 //   ]>
 //
 // The source string is the authoring form. The frob value is the execution
-// form. Call compile_template() when a string is set or loaded, keep the
-// compiled value, and render it per viewer. Use template_literal() when you
+// form. Call template/compile() when a string is set or loaded, keep the
+// compiled value, and render it per viewer. Use template/literal() when you
 // want Mica source for the compiled execution form.
 
-make_identity(:subst)
-make_identity(:subst_name)
-make_identity(:subst_self_alt)
-make_identity(:subst_article)
+make_identity(:template/substitution)
+make_identity(:template/name)
+make_identity(:template/self_alt)
+make_identity(:template/article)
 
-verb template_error(message @ #string)
+verb template/error(message @ #string)
   raise E_TEMPLATE, message
 end
 
-verb capitalize(text @ #string)
+verb template/capitalize(text @ #string)
   string_len(text) == 0 && return text
   let first = string_slice(text, 0, 1)
   let rest = string_slice(text, 1, string_len(text))
@@ -95,7 +95,7 @@ verb capitalize(text @ #string)
   return text
 end
 
-verb symbol_from_token(token @ #string)
+verb template/symbol_from_token(token @ #string)
   let lowered = lower(trim(token))
 
   if lowered == "actor"
@@ -118,10 +118,10 @@ verb symbol_from_token(token @ #string)
     return :message
   end
 
-  return template_error(string_concat("unknown template binding: ", token))
+  return template/error(string_concat("unknown template binding: ", token))
 end
 
-verb binding_token(binding)
+verb template/binding_token(binding)
   if binding == :actor
     return "actor"
   elseif binding == :this
@@ -145,7 +145,7 @@ verb binding_token(binding)
   return "?"
 end
 
-verb split_once(text @ #string, separator @ #string)
+verb template/split_once(text @ #string, separator @ #string)
   let index = 0
   let limit = string_len(text) - string_len(separator)
 
@@ -159,7 +159,7 @@ verb split_once(text @ #string, separator @ #string)
   return []
 end
 
-verb article_for(noun @ #string)
+verb template/article_for(noun @ #string)
   let lowered = lower(noun)
   string_len(lowered) == 0 && return "a"
 
@@ -175,21 +175,21 @@ verb article_for(noun @ #string)
   return "a"
 end
 
-verb parse_template_token(token @ #string)
+verb template/parse_token(token @ #string)
   let trimmed = trim(token)
-  let branches = split_once(trimmed, "|")
+  let branches = template/split_once(trimmed, "|")
   if branches != []
-    return #subst_self_alt<{:self -> trim(branches[0]), :other -> trim(branches[1])}>
+    return #template/self_alt<{:self -> trim(branches[0]), :other -> trim(branches[1])}>
   end
 
   if string_starts_with(trimmed, "the ")
-    return #subst_article<{:article -> :the, :binding -> symbol_from_token(string_slice(trimmed, 4, string_len(trimmed))), :cap -> false}>
+    return #template/article<{:article -> :the, :binding -> template/symbol_from_token(string_slice(trimmed, 4, string_len(trimmed))), :cap -> false}>
   elseif string_starts_with(trimmed, "The ")
-    return #subst_article<{:article -> :the, :binding -> symbol_from_token(string_slice(trimmed, 4, string_len(trimmed))), :cap -> true}>
+    return #template/article<{:article -> :the, :binding -> template/symbol_from_token(string_slice(trimmed, 4, string_len(trimmed))), :cap -> true}>
   elseif string_starts_with(trimmed, "a ")
-    return #subst_article<{:article -> :a, :binding -> symbol_from_token(string_slice(trimmed, 2, string_len(trimmed))), :cap -> false}>
+    return #template/article<{:article -> :a, :binding -> template/symbol_from_token(string_slice(trimmed, 2, string_len(trimmed))), :cap -> false}>
   elseif string_starts_with(trimmed, "A ")
-    return #subst_article<{:article -> :a, :binding -> symbol_from_token(string_slice(trimmed, 2, string_len(trimmed))), :cap -> true}>
+    return #template/article<{:article -> :a, :binding -> template/symbol_from_token(string_slice(trimmed, 2, string_len(trimmed))), :cap -> true}>
   end
 
   let cap = false
@@ -198,10 +198,10 @@ verb parse_template_token(token @ #string)
     cap = true
   end
 
-  return #subst_name<{:binding -> symbol_from_token(trimmed), :cap -> cap}>
+  return #template/name<{:binding -> template/symbol_from_token(trimmed), :cap -> cap}>
 end
 
-verb compile_template(source @ #string)
+verb template/compile(source @ #string)
   let parts = []
   let literal = []
   let token = []
@@ -210,7 +210,7 @@ verb compile_template(source @ #string)
   for ch in string_chars(source)
     if in_token
       if ch == "}"
-        parts = [@parts, parse_template_token(string_from_chars(token))]
+        parts = [@parts, template/parse_token(string_from_chars(token))]
         token = []
         in_token = false
       else
@@ -228,30 +228,30 @@ verb compile_template(source @ #string)
   end
 
   if in_token
-    return template_error("unclosed template token")
+    return template/error("unclosed template token")
   end
 
   if literal != []
     parts = [@parts, string_from_chars(literal)]
   end
 
-  return #subst<parts>
+  return #template/substitution<parts>
 end
 
-verb binding_name(bindings @ #map, binding, viewer)
+verb template/binding_name(bindings @ #map, binding, viewer)
   let value = bindings[binding]
   if value == nothing
     return "<no-binding>"
   end
 
-  return binding_value_text(value, viewer)
+  return template/binding_value_text(value, viewer)
 end
 
-verb binding_value_text(value @ #string, viewer)
+verb template/binding_value_text(value @ #string, viewer)
   return value
 end
 
-verb binding_value_text(value @ #identity, viewer)
+verb template/binding_value_text(value @ #identity, viewer)
   if value == viewer
     return "you"
   end
@@ -264,18 +264,18 @@ verb binding_value_text(value @ #identity, viewer)
   return "<unnamed>"
 end
 
-verb render_template_part(part @ #subst_name<_>, bindings @ #map, viewer)
+verb template/render_part(part @ #template/name<_>, bindings @ #map, viewer)
   let data = frob_value(part)
-  let name = binding_name(bindings, data[:binding], viewer)
+  let name = template/binding_name(bindings, data[:binding], viewer)
 
   if data[:cap]
-    return capitalize(name)
+    return template/capitalize(name)
   end
 
   return name
 end
 
-verb render_template_part(part @ #subst_self_alt<_>, bindings @ #map, viewer)
+verb template/render_part(part @ #template/self_alt<_>, bindings @ #map, viewer)
   let data = frob_value(part)
 
   if bindings[:actor] == viewer
@@ -285,27 +285,27 @@ verb render_template_part(part @ #subst_self_alt<_>, bindings @ #map, viewer)
   return data[:other]
 end
 
-verb render_template_part(part @ #subst_article<_>, bindings @ #map, viewer)
+verb template/render_part(part @ #template/article<_>, bindings @ #map, viewer)
   let data = frob_value(part)
   let value = bindings[data[:binding]]
   if value == nothing
     return "<no-binding>"
   end
 
-  let name = binding_name(bindings, data[:binding], viewer)
+  let name = template/binding_name(bindings, data[:binding], viewer)
   let article = ""
   if value != viewer && ProperNoun(value) == false
     if data[:article] == :the
       article = "the"
     elseif data[:article] == :a && Plural(value) == false
-      article = article_for(name)
+      article = template/article_for(name)
     end
   end
 
   if data[:cap] && article != ""
-    article = capitalize(article)
+    article = template/capitalize(article)
   elseif data[:cap]
-    name = capitalize(name)
+    name = template/capitalize(name)
   end
 
   if article == ""
@@ -315,68 +315,68 @@ verb render_template_part(part @ #subst_article<_>, bindings @ #map, viewer)
   return string_concat(article, " ", name)
 end
 
-verb render_template_part(part @ #string, bindings @ #map, viewer)
+verb template/render_part(part @ #string, bindings @ #map, viewer)
   return part
 end
 
-verb render_template(template @ #subst<_>, bindings @ #map, viewer)
+verb template/render(template @ #template/substitution<_>, bindings @ #map, viewer)
   let rendered = []
 
   for part in frob_value(template)
-    rendered = [@rendered, render_template_part(part, bindings, viewer)]
+    rendered = [@rendered, template/render_part(part, bindings, viewer)]
   end
 
   return string_join(rendered, "")
 end
 
-verb template_literal(template @ #subst<_>)
+verb template/literal(template @ #template/substitution<_>)
   return to_literal(template)
 end
 
-verb decompile_template_part(part @ #subst_name<_>)
+verb template/decompile_part(part @ #template/name<_>)
   let data = frob_value(part)
-  let name = binding_token(data[:binding])
+  let name = template/binding_token(data[:binding])
   if data[:cap]
-    name = capitalize(name)
+    name = template/capitalize(name)
   end
 
   return string_concat("{", name, "}")
 end
 
-verb decompile_template_part(part @ #subst_self_alt<_>)
+verb template/decompile_part(part @ #template/self_alt<_>)
   let data = frob_value(part)
   return string_concat("{", data[:self], "|", data[:other], "}")
 end
 
-verb decompile_template_part(part @ #subst_article<_>)
+verb template/decompile_part(part @ #template/article<_>)
   let data = frob_value(part)
   let article = "a"
   if data[:article] == :the
     article = "the"
   end
   if data[:cap]
-    article = capitalize(article)
+    article = template/capitalize(article)
   end
 
-  return string_concat("{", article, " ", binding_token(data[:binding]), "}")
+  return string_concat("{", article, " ", template/binding_token(data[:binding]), "}")
 end
 
-verb decompile_template_part(part @ #string)
+verb template/decompile_part(part @ #string)
   return part
 end
 
-verb decompile_template(template @ #subst<_>)
+verb template/decompile(template @ #template/substitution<_>)
   let rendered = []
 
   for part in frob_value(template)
-    rendered = [@rendered, decompile_template_part(part)]
+    rendered = [@rendered, template/decompile_part(part)]
   end
 
   return string_join(rendered, "")
 end
 
-verb substitution_demo(viewer)
-  let template = compile_template("{Actor} {pick|picks} up {the item}.")
+verb template/demo(viewer)
+  let template = template/compile("{Actor} {pick|picks} up {the item}.")
   let bindings = {:actor -> #alice, :item -> #coin}
-  return render_template(template, bindings, viewer)
+  return template/render(template, bindings, viewer)
 end
