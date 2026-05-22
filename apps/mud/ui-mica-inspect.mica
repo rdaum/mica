@@ -12,25 +12,25 @@ make_identity(:ui/mica_inspect_back_action)
 make_identity(:ui/mica_inspect_layout_action)
 make_identity(:ui/mica_method_mode_action)
 
-assert Delegates(#ui/mica_inspect_action, #mud_sync_action, 0)
-assert Delegates(#ui/mica_inspect_close_action, #mud_sync_action, 0)
-assert Delegates(#ui/mica_inspect_back_action, #mud_sync_action, 0)
-assert Delegates(#ui/mica_inspect_layout_action, #mud_sync_action, 0)
-assert Delegates(#ui/mica_method_mode_action, #mud_sync_action, 0)
-assert MudSyncAction("mud_mica_inspect", #ui/mica_inspect_action)
-assert MudSyncAction("mud_mica_inspect_close", #ui/mica_inspect_close_action)
-assert MudSyncAction("mud_mica_inspect_back", #ui/mica_inspect_back_action)
-assert MudSyncAction("mud_mica_inspect_layout", #ui/mica_inspect_layout_action)
-assert MudSyncAction("mud_mica_method_mode", #ui/mica_method_mode_action)
+assert Delegates(#ui/mica_inspect_action, #ui/sync_action, 0)
+assert Delegates(#ui/mica_inspect_close_action, #ui/sync_action, 0)
+assert Delegates(#ui/mica_inspect_back_action, #ui/sync_action, 0)
+assert Delegates(#ui/mica_inspect_layout_action, #ui/sync_action, 0)
+assert Delegates(#ui/mica_method_mode_action, #ui/sync_action, 0)
+assert ui/SyncAction("mud_mica_inspect", #ui/mica_inspect_action)
+assert ui/SyncAction("mud_mica_inspect_close", #ui/mica_inspect_close_action)
+assert ui/SyncAction("mud_mica_inspect_back", #ui/mica_inspect_back_action)
+assert ui/SyncAction("mud_mica_inspect_layout", #ui/mica_inspect_layout_action)
+assert ui/SyncAction("mud_mica_method_mode", #ui/mica_method_mode_action)
 
-assert RoleCanInvoke(#player, :mud_can_program)
+assert RoleCanInvoke(#player, :ui/can_program)
 assert RoleCanInvoke(#player, :ui/try_mica_inspect_command)
 
 assert RoleCanRead(#programmer, :ui/MicaInspect)
 assert RoleCanRead(#programmer, :ui/MicaInspectBack)
 assert RoleCanRead(#programmer, :ui/MicaInspectLayout)
 assert RoleCanRead(#programmer, :ui/MicaMethodMode)
-assert RoleCanRead(#programmer, :MudSessionUiRevision)
+assert RoleCanRead(#programmer, :ui/Revision)
 assert RoleCanRead(#programmer, :ui/MicaPrototype)
 assert RoleCanRead(#programmer, :Relation)
 assert RoleCanRead(#programmer, :RelationName)
@@ -65,7 +65,7 @@ assert RoleCanWrite(#programmer, :ui/MicaInspect)
 assert RoleCanWrite(#programmer, :ui/MicaInspectBack)
 assert RoleCanWrite(#programmer, :ui/MicaInspectLayout)
 assert RoleCanWrite(#programmer, :ui/MicaMethodMode)
-assert RoleCanWrite(#programmer, :MudSessionUiRevision)
+assert RoleCanWrite(#programmer, :ui/Revision)
 assert RoleCanInvoke(#programmer, :ui/mica_inspect_selected)
 assert RoleCanInvoke(#programmer, :ui/mica_inspect_expanded)
 assert RoleCanInvoke(#programmer, :ui/mica_inspect_action_node)
@@ -119,7 +119,7 @@ verb ui/mica_inspect_close_node()
 end
 
 verb ui/mica_inspect_back_node(previous)
-  let button = dom_element("button", {:type -> "submit", :class -> "mini-button"}, [dom_text(string_concat("Back to ", mud_actor_name(previous)))])
+  let button = dom_element("button", {:type -> "submit", :class -> "mini-button"}, [dom_text(string_concat("Back to ", ui/actor_name(previous)))])
   return dom_element("form", {:class -> "mud-action mica-back-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_back"}, [button])
 end
 
@@ -352,7 +352,7 @@ verb ui/mica_inspect_panel_node(actor @ #player)
     return dom_element("section", {:id -> "mica-inspect", :class -> "panel mica-inspect empty"}, [])
   end
 
-  let title = string_concat(mud_actor_name(selected), string_concat(" ", to_literal(selected)))
+  let title = string_concat(ui/actor_name(selected), string_concat(" ", to_literal(selected)))
   let layout = ui/mica_inspect_layout_node("expanded", "Expand")
   if ui/mica_inspect_expanded()
     layout = ui/mica_inspect_layout_node("normal", "Normal")
@@ -380,19 +380,19 @@ verb ui/mica_inspect_set_selected(endpoint, selected)
 end
 
 verb ui/mica_inspect_bump_revision(endpoint)
-  let revision = mud_status_revision() + 1000
-  retract MudSessionUiRevision(endpoint(), _)
-  assert MudSessionUiRevision(endpoint(), revision)
+  let revision = ui/status_revision() + 1000
+  retract ui/Revision(endpoint(), _)
+  assert ui/Revision(endpoint(), revision)
   if endpoint != endpoint()
-    retract MudSessionUiRevision(endpoint, _)
-    assert MudSessionUiRevision(endpoint, revision)
+    retract ui/Revision(endpoint, _)
+    assert ui/Revision(endpoint, revision)
   end
   return revision
 end
 
 verb ui/try_mica_inspect_command(current @ #player, endpoint, line @ #string)
   let lowered = lower(line)
-  if string_starts_with(lowered, "mica inspect ") == false || mud_can_program(current) == false
+  if string_starts_with(lowered, "mica inspect ") == false || ui/can_program(current) == false
     return false
   end
 
@@ -402,17 +402,17 @@ verb ui/try_mica_inspect_command(current @ #player, endpoint, line @ #string)
   end
 
   ui/mica_inspect_set_selected(endpoint, selected)
-  mud_record_text(current, string_concat("> mica inspect ", mud_actor_name(selected)))
+  mud_record_text(current, string_concat("> mica inspect ", ui/actor_name(selected)))
   return true
 end
 
-verb mud_handle_sync_action(source @ #ui/mica_inspect_action<_>, endpoint, session, view, event, target, fields)
-  if MudView(view) == false || event != "submit"
+verb ui/handle_sync_action(source @ #ui/mica_inspect_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
     return false
   end
 
-  let current = mud_current_actor()
-  if current == nothing || mud_can_program(current) == false || fields[:entity] == nothing
+  let current = ui/current_actor()
+  if current == nothing || ui/can_program(current) == false || fields[:entity] == nothing
     return false
   end
 
@@ -422,17 +422,17 @@ verb mud_handle_sync_action(source @ #ui/mica_inspect_action<_>, endpoint, sessi
   end
 
   ui/mica_inspect_set_selected(endpoint, selected)
-  mud_record_text(current, string_concat("> mica inspect ", mud_actor_name(selected)))
+  mud_record_text(current, string_concat("> mica inspect ", ui/actor_name(selected)))
   return true
 end
 
-verb mud_handle_sync_action(source @ #ui/mica_inspect_close_action<_>, endpoint, session, view, event, target, fields)
-  if MudView(view) == false || event != "submit"
+verb ui/handle_sync_action(source @ #ui/mica_inspect_close_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
     return false
   end
 
-  let current = mud_current_actor()
-  if current == nothing || mud_can_program(current) == false
+  let current = ui/current_actor()
+  if current == nothing || ui/can_program(current) == false
     return false
   end
 
@@ -446,13 +446,13 @@ verb mud_handle_sync_action(source @ #ui/mica_inspect_close_action<_>, endpoint,
   return true
 end
 
-verb mud_handle_sync_action(source @ #ui/mica_inspect_back_action<_>, endpoint, session, view, event, target, fields)
-  if MudView(view) == false || event != "submit"
+verb ui/handle_sync_action(source @ #ui/mica_inspect_back_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
     return false
   end
 
-  let current = mud_current_actor()
-  if current == nothing || mud_can_program(current) == false
+  let current = ui/current_actor()
+  if current == nothing || ui/can_program(current) == false
     return false
   end
 
@@ -476,13 +476,13 @@ verb mud_handle_sync_action(source @ #ui/mica_inspect_back_action<_>, endpoint, 
   return true
 end
 
-verb mud_handle_sync_action(source @ #ui/mica_inspect_layout_action<_>, endpoint, session, view, event, target, fields)
-  if MudView(view) == false || event != "submit"
+verb ui/handle_sync_action(source @ #ui/mica_inspect_layout_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
     return false
   end
 
-  let current = mud_current_actor()
-  if current == nothing || mud_can_program(current) == false
+  let current = ui/current_actor()
+  if current == nothing || ui/can_program(current) == false
     return false
   end
 
@@ -501,13 +501,13 @@ verb mud_handle_sync_action(source @ #ui/mica_inspect_layout_action<_>, endpoint
   return true
 end
 
-verb mud_handle_sync_action(source @ #ui/mica_method_mode_action<_>, endpoint, session, view, event, target, fields)
-  if MudView(view) == false || event != "submit"
+verb ui/handle_sync_action(source @ #ui/mica_method_mode_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
     return false
   end
 
-  let current = mud_current_actor()
-  if current == nothing || mud_can_program(current) == false
+  let current = ui/current_actor()
+  if current == nothing || ui/can_program(current) == false
     return false
   end
 

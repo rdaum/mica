@@ -8291,6 +8291,50 @@ mod tests {
     }
 
     #[test]
+    fn runner_fileout_preserves_slash_qualified_names() {
+        let mut runner = SourceRunner::new_empty();
+        let unit = Symbol::intern("ui");
+        runner
+            .run_filein_with_unit(
+                unit,
+                "make_identity(:ui/alice)\n\
+                 make_identity(:ui/lamp)\n\
+                 make_functional_relation(:ui/Name, 2, [0])\n\
+                 make_relation(:ui/Visible, 2)\n\
+                 make_relation(:ui/CanSee, 2)\n\
+                 assert ui/Name(#ui/lamp, \"brass lamp\")\n\
+                 assert ui/Visible(#ui/alice, #ui/lamp)\n\
+                 ui/CanSee(actor, obj) :- ui/Visible(actor, obj)\n\
+                 verb ui/look(actor, item)\n\
+                   return one ui/Name(item, ?name)\n\
+                 end\n",
+                FileinMode::Add,
+            )
+            .unwrap();
+
+        let source = runner.fileout_unit(unit).unwrap();
+
+        assert!(source.contains("make_identity(:ui/lamp)"));
+        assert!(source.contains("make_functional_relation(:ui/Name, 2, [0])"));
+        assert!(source.contains("assert ui/Name(#ui/lamp, \"brass lamp\")"));
+        assert!(source.contains("ui/CanSee(actor, obj) :- ui/Visible(actor, obj)"));
+        assert!(source.contains("verb ui/look(actor, item)"));
+
+        let mut imported = SourceRunner::new_empty();
+        imported
+            .run_filein_with_unit(unit, &source, FileinMode::Add)
+            .unwrap();
+        let query = imported
+            .run_source("return ui/Name(#ui/lamp, ?name)")
+            .unwrap();
+        let dispatch = imported
+            .run_source("return :ui/look(actor: #ui/alice, item: #ui/lamp)")
+            .unwrap();
+        assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+        assert!(dispatch.render().contains("\"brass lamp\""));
+    }
+
+    #[test]
     fn runner_filein_include_text_compiles_and_fileout_preserves_reference() {
         let mut runner = SourceRunner::new_empty();
         let unit = Symbol::intern("web_assets");
