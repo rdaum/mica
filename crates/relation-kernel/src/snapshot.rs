@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::catalog::{is_system_relation, system_relation_rows};
 use crate::commit_bloom::CommitBloom;
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
@@ -231,7 +232,11 @@ impl Snapshot {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
-        self.relation(relation)?.scan(bindings)
+        let relation = self.relation(relation)?;
+        if let Some(rows) = system_relation_rows(self, relation.metadata(), bindings) {
+            return rows;
+        }
+        relation.scan(bindings)
     }
 
     pub(crate) fn join_extensional_relation_scans(
@@ -243,10 +248,15 @@ impl Snapshot {
         right_bindings: &[Option<Value>],
         right_positions: &[u16],
     ) -> Result<Option<Vec<Tuple>>, KernelError> {
-        self.relation(left_relation)?.join_eq(
+        let left = self.relation(left_relation)?;
+        let right = self.relation(right_relation)?;
+        if is_system_relation(left.metadata()) || is_system_relation(right.metadata()) {
+            return Ok(None);
+        }
+        left.join_eq(
             left_bindings,
             left_positions,
-            self.relation(right_relation)?,
+            right,
             right_bindings,
             right_positions,
         )
@@ -257,7 +267,11 @@ impl Snapshot {
         relation: RelationId,
         positions: &[u16],
     ) -> Result<bool, KernelError> {
-        Ok(self.relation(relation)?.has_exact_index(positions))
+        let relation = self.relation(relation)?;
+        if is_system_relation(relation.metadata()) {
+            return Ok(false);
+        }
+        Ok(relation.has_exact_index(positions))
     }
 
     pub(crate) fn estimate_scan(
@@ -282,7 +296,11 @@ impl Snapshot {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
-        self.relation(relation)?.estimate_scan_count(bindings)
+        let relation = self.relation(relation)?;
+        if let Some(rows) = system_relation_rows(self, relation.metadata(), bindings) {
+            return rows.map(|rows| rows.len());
+        }
+        relation.estimate_scan_count(bindings)
     }
 
     pub(crate) fn visit_extensional(
@@ -291,7 +309,16 @@ impl Snapshot {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
-        self.relation(relation)?.visit(bindings, visitor)
+        let relation = self.relation(relation)?;
+        if let Some(rows) = system_relation_rows(self, relation.metadata(), bindings) {
+            for tuple in rows? {
+                if visitor(&tuple)? == ScanControl::Stop {
+                    break;
+                }
+            }
+            return Ok(());
+        }
+        relation.visit(bindings, visitor)
     }
 
     pub(crate) fn relation(&self, relation: RelationId) -> Result<&RelationState, KernelError> {

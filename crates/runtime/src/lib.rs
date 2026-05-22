@@ -67,6 +67,22 @@ const ENDPOINT_ACTOR_RELATION_ID: u64 = 0x00df_ffff_ffff_fff4;
 const ENDPOINT_PRINCIPAL_RELATION_ID: u64 = 0x00df_ffff_ffff_fff3;
 const ENDPOINT_PROTOCOL_RELATION_ID: u64 = 0x00df_ffff_ffff_fff2;
 const ENDPOINT_OPEN_RELATION_ID: u64 = 0x00df_ffff_ffff_fff1;
+const RELATION_RELATION_ID: u64 = 0x00df_ffff_ffff_fff0;
+const RELATION_NAME_RELATION_ID: u64 = 0x00df_ffff_ffff_ffef;
+const ARITY_RELATION_ID: u64 = 0x00df_ffff_ffff_ffee;
+const RULE_RELATION_ID: u64 = 0x00df_ffff_ffff_ffed;
+const RULE_HEAD_RELATION_ID: u64 = 0x00df_ffff_ffff_ffec;
+const RULE_SOURCE_RELATION_ID: u64 = 0x00df_ffff_ffff_ffeb;
+const ACTIVE_RULE_RELATION_ID: u64 = 0x00df_ffff_ffff_ffea;
+const ARGUMENT_NAME_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe9;
+const CONFLICT_POLICY_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe8;
+const FUNCTIONAL_KEY_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe7;
+const INDEX_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe6;
+const INDEX_POSITION_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe5;
+const INDEX_STORAGE_KIND_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe4;
+const SUBJECT_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe3;
+const MENTIONED_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe2;
+const EXTENSIONAL_MENTIONED_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe1;
 
 const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "emit",
@@ -2402,6 +2418,9 @@ fn bootstrap_kernel_with_provider(
     for metadata in endpoint_relation_metadata() {
         kernel.create_relation(metadata).unwrap();
     }
+    for metadata in system_relation_metadata() {
+        kernel.create_relation(metadata).unwrap();
+    }
     seed_primitive_prototype_identities(&kernel);
     kernel
 }
@@ -2662,6 +2681,56 @@ fn endpoint_relation_metadata() -> Vec<RelationMetadata> {
         )
         .with_index([0]),
         RelationMetadata::new(endpoint_open_relation(), Symbol::intern("EndpointOpen"), 1),
+    ]
+}
+
+fn system_relation_metadata() -> Vec<RelationMetadata> {
+    vec![
+        RelationMetadata::new(relation_relation(), Symbol::intern("Relation"), 1),
+        RelationMetadata::new(relation_name_relation(), Symbol::intern("RelationName"), 2)
+            .with_index([1, 0]),
+        RelationMetadata::new(arity_relation(), Symbol::intern("Arity"), 2),
+        RelationMetadata::new(rule_relation(), Symbol::intern("Rule"), 1),
+        RelationMetadata::new(rule_head_relation(), Symbol::intern("RuleHead"), 2)
+            .with_index([1, 0]),
+        RelationMetadata::new(rule_source_relation(), Symbol::intern("RuleSource"), 2),
+        RelationMetadata::new(active_rule_relation(), Symbol::intern("ActiveRule"), 2),
+        RelationMetadata::new(argument_name_relation(), Symbol::intern("ArgumentName"), 3),
+        RelationMetadata::new(
+            conflict_policy_relation(),
+            Symbol::intern("ConflictPolicy"),
+            2,
+        ),
+        RelationMetadata::new(
+            functional_key_relation(),
+            Symbol::intern("FunctionalKey"),
+            3,
+        ),
+        RelationMetadata::new(index_relation(), Symbol::intern("Index"), 2),
+        RelationMetadata::new(
+            index_position_relation(),
+            Symbol::intern("IndexPosition"),
+            3,
+        ),
+        RelationMetadata::new(
+            index_storage_kind_relation(),
+            Symbol::intern("IndexStorageKind"),
+            2,
+        ),
+        RelationMetadata::new(subject_fact_relation(), Symbol::intern("SubjectFact"), 3)
+            .with_index([0]),
+        RelationMetadata::new(
+            mentioned_fact_relation(),
+            Symbol::intern("MentionedFact"),
+            4,
+        )
+        .with_index([0]),
+        RelationMetadata::new(
+            extensional_mentioned_fact_relation(),
+            Symbol::intern("ExtensionalMentionedFact"),
+            4,
+        )
+        .with_index([0]),
     ]
 }
 
@@ -4967,6 +5036,70 @@ fn endpoint_open_relation() -> Identity {
     Identity::new(ENDPOINT_OPEN_RELATION_ID).unwrap()
 }
 
+fn relation_relation() -> Identity {
+    Identity::new(RELATION_RELATION_ID).unwrap()
+}
+
+fn relation_name_relation() -> Identity {
+    Identity::new(RELATION_NAME_RELATION_ID).unwrap()
+}
+
+fn arity_relation() -> Identity {
+    Identity::new(ARITY_RELATION_ID).unwrap()
+}
+
+fn rule_relation() -> Identity {
+    Identity::new(RULE_RELATION_ID).unwrap()
+}
+
+fn rule_head_relation() -> Identity {
+    Identity::new(RULE_HEAD_RELATION_ID).unwrap()
+}
+
+fn rule_source_relation() -> Identity {
+    Identity::new(RULE_SOURCE_RELATION_ID).unwrap()
+}
+
+fn active_rule_relation() -> Identity {
+    Identity::new(ACTIVE_RULE_RELATION_ID).unwrap()
+}
+
+fn argument_name_relation() -> Identity {
+    Identity::new(ARGUMENT_NAME_RELATION_ID).unwrap()
+}
+
+fn conflict_policy_relation() -> Identity {
+    Identity::new(CONFLICT_POLICY_RELATION_ID).unwrap()
+}
+
+fn functional_key_relation() -> Identity {
+    Identity::new(FUNCTIONAL_KEY_RELATION_ID).unwrap()
+}
+
+fn index_relation() -> Identity {
+    Identity::new(INDEX_RELATION_ID).unwrap()
+}
+
+fn index_position_relation() -> Identity {
+    Identity::new(INDEX_POSITION_RELATION_ID).unwrap()
+}
+
+fn index_storage_kind_relation() -> Identity {
+    Identity::new(INDEX_STORAGE_KIND_RELATION_ID).unwrap()
+}
+
+fn subject_fact_relation() -> Identity {
+    Identity::new(SUBJECT_FACT_RELATION_ID).unwrap()
+}
+
+fn mentioned_fact_relation() -> Identity {
+    Identity::new(MENTIONED_FACT_RELATION_ID).unwrap()
+}
+
+fn extensional_mentioned_fact_relation() -> Identity {
+    Identity::new(EXTENSIONAL_MENTIONED_FACT_RELATION_ID).unwrap()
+}
+
 fn item_id(item: &HirItem) -> mica_compiler::NodeId {
     match item {
         HirItem::Expr { id, .. }
@@ -5474,6 +5607,7 @@ mod tests {
         TaskManagerError, TaskOutcome,
     };
     use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
+    use super::{relation_name_relation, subject_fact_relation};
     use mica_var::{Identity, Symbol, Value};
     use std::sync::Arc;
 
@@ -7941,6 +8075,82 @@ mod tests {
         imported.run_source("make_relation(:VisibleTo, 2)").unwrap();
         let installed = imported.run_source(&source).unwrap();
         assert_eq!(installed.render(), "task 3 complete: #rule1 (retries: 0)");
+    }
+
+    #[test]
+    fn runner_queries_system_catalog_relations() {
+        let mut runner = SourceRunner::new_empty();
+
+        let report = runner
+            .run_source("return one RelationName(?relation, :RelationName)")
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::identity(relation_name_relation())
+        ));
+    }
+
+    #[test]
+    fn runner_queries_identity_neighbourhood_relations() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_source(
+                "make_identity(:coin)\n\
+                 make_identity(:room)\n\
+                 make_relation(:LocatedIn, 2)\n\
+                 assert LocatedIn(#coin, #room)",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source(
+                "let relation = one RelationName(?relation, :LocatedIn)\n\
+                 return one MentionedFact(#coin, relation, 0, ?tuple)",
+            )
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([Value::identity(runner.named_identity(Symbol::intern("coin")).unwrap()), Value::identity(runner.named_identity(Symbol::intern("room")).unwrap())])
+        ));
+    }
+
+    #[test]
+    fn runner_queries_method_source_as_relation() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:thing)").unwrap();
+        runner
+            .run_source(
+                "verb inspect(target @ #thing)\n\
+                   return target\n\
+                 end",
+            )
+            .unwrap();
+        let report = runner
+            .run_source(
+                "let rows = MethodSource(?m, ?s)\n\
+                 return rows",
+            )
+            .unwrap();
+
+        assert!(report.render().contains("verb inspect"));
+    }
+
+    #[test]
+    fn runner_rejects_writes_to_system_relations() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:thing)").unwrap();
+
+        let error = runner
+            .run_source("assert SubjectFact(#thing, :bogus, [])")
+            .unwrap_err();
+
+        assert!(
+            format!("{error:?}")
+                .contains(&format!("ReadOnlyRelation({:?})", subject_fact_relation()))
+        );
     }
 
     #[test]

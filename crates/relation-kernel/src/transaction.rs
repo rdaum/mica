@@ -13,6 +13,7 @@
 
 mod overlay;
 
+use crate::catalog::is_system_relation;
 use crate::commit_bloom::CommitBloom;
 use crate::index::{RelationMutationKind, RelationState};
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
@@ -368,6 +369,10 @@ impl<'a> Transaction<'a> {
         tuple: Tuple,
         change: LocalChange,
     ) -> Result<(), KernelError> {
+        let metadata = self.base.relation(relation)?.metadata();
+        if is_system_relation(metadata) {
+            return Err(KernelError::ReadOnlyRelation(relation));
+        }
         self.base.relation(relation)?.validate_tuple(&tuple)?;
         self.writes
             .entry(relation)

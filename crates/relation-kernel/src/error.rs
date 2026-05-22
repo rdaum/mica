@@ -18,6 +18,7 @@ pub enum KernelError {
     UnknownRelation(RelationId),
     UnknownRule(crate::FactId),
     RelationAlreadyExists(RelationId),
+    ReadOnlyRelation(RelationId),
     ArityMismatch {
         relation: RelationId,
         expected: u16,

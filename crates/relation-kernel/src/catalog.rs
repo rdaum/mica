@@ -11,7 +11,8 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{ConflictPolicy, Snapshot, Tuple};
+use crate::tuple::finish_tuple_rows;
+use crate::{ConflictPolicy, KernelError, RelationMetadata, Snapshot, Tuple};
 use mica_var::{Identity, Symbol, Value};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -137,6 +138,153 @@ impl Snapshot {
         }
         facts
     }
+}
+
+pub(crate) fn is_system_relation(metadata: &RelationMetadata) -> bool {
+    system_catalog_predicate(metadata).is_some()
+        || matches!(
+            metadata.name().name(),
+            Some("SubjectFact" | "MentionedFact" | "ExtensionalMentionedFact")
+        )
+}
+
+pub(crate) fn system_relation_rows(
+    snapshot: &Snapshot,
+    metadata: &RelationMetadata,
+    bindings: &[Option<Value>],
+) -> Option<Result<Vec<Tuple>, KernelError>> {
+    if bindings.len() != metadata.arity() as usize {
+        return Some(Err(KernelError::ArityMismatch {
+            relation: metadata.id(),
+            expected: metadata.arity(),
+            actual: bindings.len(),
+        }));
+    }
+
+    if let Some(predicate) = system_catalog_predicate(metadata) {
+        let rows = snapshot
+            .catalog_facts()
+            .into_iter()
+            .filter(|fact| fact.predicate == predicate)
+            .map(|fact| fact.tuple)
+            .filter(|tuple| tuple.matches_bindings(bindings))
+            .collect::<Vec<_>>();
+        return Some(Ok(finish_tuple_rows(rows)));
+    }
+
+    match metadata.name().name() {
+        Some("SubjectFact") if metadata.arity() == 3 => {
+            Some(system_subject_facts(snapshot, bindings))
+        }
+        Some("MentionedFact" | "ExtensionalMentionedFact") if metadata.arity() == 4 => {
+            Some(system_mentioned_facts(snapshot, bindings))
+        }
+        _ => None,
+    }
+}
+
+fn system_catalog_predicate(metadata: &RelationMetadata) -> Option<CatalogPredicate> {
+    let expected = match metadata.name().name()? {
+        "Relation" => (CatalogPredicate::Relation, 1),
+        "RelationName" => (CatalogPredicate::RelationName, 2),
+        "Arity" => (CatalogPredicate::Arity, 2),
+        "Rule" => (CatalogPredicate::Rule, 1),
+        "RuleHead" => (CatalogPredicate::RuleHead, 2),
+        "RuleSource" => (CatalogPredicate::RuleSource, 2),
+        "ActiveRule" => (CatalogPredicate::ActiveRule, 2),
+        "ArgumentName" => (CatalogPredicate::ArgumentName, 3),
+        "ConflictPolicy" => (CatalogPredicate::ConflictPolicy, 2),
+        "FunctionalKey" => (CatalogPredicate::FunctionalKey, 3),
+        "Index" => (CatalogPredicate::Index, 2),
+        "IndexPosition" => (CatalogPredicate::IndexPosition, 3),
+        "IndexStorageKind" => (CatalogPredicate::IndexStorageKind, 2),
+        _ => return None,
+    };
+    if metadata.arity() == expected.1 {
+        Some(expected.0)
+    } else {
+        None
+    }
+}
+
+fn system_subject_facts(
+    snapshot: &Snapshot,
+    bindings: &[Option<Value>],
+) -> Result<Vec<Tuple>, KernelError> {
+    let mut rows = Vec::new();
+    if let Some(subject) = &bindings[0] {
+        rows.extend(subject_fact_rows(snapshot, subject)?);
+    } else {
+        for (relation, tuple) in snapshot.extensional_facts()? {
+            if let Some(subject) = tuple.values().first() {
+                rows.push(subject_fact_tuple(subject.clone(), relation, tuple));
+            }
+        }
+    }
+    Ok(finish_tuple_rows(
+        rows.into_iter()
+            .filter(|tuple| tuple.matches_bindings(bindings))
+            .collect(),
+    ))
+}
+
+fn system_mentioned_facts(
+    snapshot: &Snapshot,
+    bindings: &[Option<Value>],
+) -> Result<Vec<Tuple>, KernelError> {
+    let mut rows = Vec::new();
+    if let Some(value) = &bindings[0] {
+        rows.extend(mentioned_fact_rows(snapshot, value)?);
+    } else {
+        for (relation, tuple) in snapshot.extensional_facts()? {
+            for (position, value) in tuple.values().iter().enumerate() {
+                rows.push(mentioned_fact_tuple(
+                    value.clone(),
+                    relation,
+                    position as u16,
+                    tuple.clone(),
+                ));
+            }
+        }
+    }
+    Ok(finish_tuple_rows(
+        rows.into_iter()
+            .filter(|tuple| tuple.matches_bindings(bindings))
+            .collect(),
+    ))
+}
+
+fn subject_fact_rows(snapshot: &Snapshot, subject: &Value) -> Result<Vec<Tuple>, KernelError> {
+    Ok(snapshot
+        .subject_facts(subject)?
+        .into_iter()
+        .map(|fact| subject_fact_tuple(fact.subject, fact.relation, fact.tuple))
+        .collect())
+}
+
+fn mentioned_fact_rows(snapshot: &Snapshot, value: &Value) -> Result<Vec<Tuple>, KernelError> {
+    Ok(snapshot
+        .mentioned_facts(value)?
+        .into_iter()
+        .map(|fact| mentioned_fact_tuple(fact.identity, fact.relation, fact.position, fact.tuple))
+        .collect())
+}
+
+fn subject_fact_tuple(subject: Value, relation: Identity, tuple: Tuple) -> Tuple {
+    Tuple::from([
+        subject,
+        Value::identity(relation),
+        Value::list(tuple.values().iter().cloned()),
+    ])
+}
+
+fn mentioned_fact_tuple(value: Value, relation: Identity, position: u16, tuple: Tuple) -> Tuple {
+    Tuple::from([
+        value,
+        Value::identity(relation),
+        Value::int(position as i64).unwrap(),
+        Value::list(tuple.values().iter().cloned()),
+    ])
 }
 
 fn push_conflict_policy_facts(
