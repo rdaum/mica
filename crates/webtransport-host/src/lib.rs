@@ -518,7 +518,7 @@ async fn handle_session(
         Symbol::intern("webtransport"),
     ) {
         drop_session_writer(&host, endpoint);
-        return Err(format_driver_error(error));
+        return Err(format_driver_error(&host.driver, error));
     }
 
     let writer = compio::runtime::spawn(write_datagram_loop(session.clone(), output));
@@ -623,7 +623,7 @@ async fn route_plain_datagram(
         .input(endpoint, Value::bytes(datagram))
         .await
         .map(|_| ())
-        .map_err(format_driver_error)
+        .map_err(|error| format_driver_error(&host.driver, error))
 }
 
 async fn route_dom_event(
@@ -661,7 +661,7 @@ async fn route_dom_event(
             ],
         )
         .await
-        .map_err(format_driver_error)?;
+        .map_err(|error| format_driver_error(&host.driver, error))?;
     trace.mark("sync_event");
     match submitted.outcome {
         TaskOutcome::Complete { value, .. } => {
@@ -903,7 +903,7 @@ async fn submit_sync_invocation_for(
     let submitted = driver
         .submit_invocation_for_endpoint(endpoint, Symbol::intern(selector), roles)
         .await
-        .map_err(format_driver_error)?;
+        .map_err(|error| format_driver_error(driver, error))?;
     match submitted.outcome {
         TaskOutcome::Complete { value, .. } => Ok(value),
         TaskOutcome::Aborted { error, .. } => Err(format!(
@@ -1078,7 +1078,7 @@ async fn route_sync_envelope(
             )
             .await
             .map(|_| ())
-            .map_err(format_driver_error),
+            .map_err(|error| format_driver_error(&host.driver, error)),
     }
 }
 
@@ -1223,8 +1223,8 @@ fn sync_envelope_datagrams(envelope: mica_host_protocol::SyncEnvelopeRef<'_>) ->
         .collect()
 }
 
-fn format_driver_error(error: mica_driver::DriverError) -> String {
-    format!("error: {error}")
+fn format_driver_error(driver: &CompioTaskDriver, error: mica_driver::DriverError) -> String {
+    format!("error: {}", driver.format_error(&error))
 }
 
 #[cfg(test)]

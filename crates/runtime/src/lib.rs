@@ -692,6 +692,10 @@ impl SourceRunner {
         self.report(task_id, outcome)
     }
 
+    pub fn render_source_task_error(&self, error: &SourceTaskError) -> String {
+        render_source_task_error(error, &self.identity_names(), &self.relation_names())
+    }
+
     fn report(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
         RunReport {
             task_id,
@@ -1472,6 +1476,10 @@ impl SharedSourceRunner {
 
     pub fn report_outcome(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
         self.report(task_id, outcome)
+    }
+
+    pub fn render_source_task_error(&self, error: &SourceTaskError) -> String {
+        render_source_task_error(error, &self.identity_names(), &self.relation_names())
     }
 
     pub fn completed_len(&self) -> usize {
@@ -5177,6 +5185,137 @@ impl RunReport {
     }
 }
 
+fn render_source_task_error(
+    error: &SourceTaskError,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> String {
+    match error {
+        SourceTaskError::Compile(error) => format!("compile error: {error:?}"),
+        SourceTaskError::TaskManager(error) => {
+            format!(
+                "task manager error: {}",
+                render_task_manager_error(error, identity_names, relation_names)
+            )
+        }
+    }
+}
+
+fn render_task_manager_error(
+    error: &TaskManagerError,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> String {
+    match error {
+        TaskManagerError::UnknownTask(task_id) => format!("unknown task {task_id}"),
+        TaskManagerError::TaskAlreadyCompleted(task_id) => {
+            format!("task {task_id} already completed")
+        }
+        TaskManagerError::Task(error) => render_task_error(error, identity_names, relation_names),
+    }
+}
+
+fn render_task_error(
+    error: &TaskError,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> String {
+    match error {
+        TaskError::Runtime(error) => render_runtime_error(error, identity_names, relation_names),
+        TaskError::ConflictRetriesExceeded { retries } => {
+            format!("commit conflict retries exceeded after {retries} retries")
+        }
+        TaskError::MissingTransaction => "missing transaction".to_owned(),
+        TaskError::UnknownRelation(relation) => format!("unknown relation {relation:?}"),
+    }
+}
+
+fn render_runtime_error(
+    error: &RuntimeError,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> String {
+    match error {
+        RuntimeError::InvalidCallable(value) => format!(
+            "invalid callable {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::NoApplicableMethod { selector } => format!(
+            "no applicable method for {}",
+            render_value(selector, identity_names, relation_names)
+        ),
+        RuntimeError::AmbiguousDispatch { selector, methods } => format!(
+            "ambiguous dispatch for {} among {}",
+            render_value(selector, identity_names, relation_names),
+            render_sequence(
+                "[",
+                "]",
+                methods
+                    .iter()
+                    .map(|method| render_value(method, identity_names, relation_names))
+            )
+        ),
+        RuntimeError::PermissionDenied { operation, target } => format!(
+            "permission denied for {operation} on {}",
+            render_value(target, identity_names, relation_names)
+        ),
+        RuntimeError::MissingMethodProgram { method } => format!(
+            "missing method program for {}",
+            render_value(method, identity_names, relation_names)
+        ),
+        RuntimeError::MissingProgramArtifact { program } => format!(
+            "missing program artifact for {}",
+            render_value(program, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidRaisedValue(value) => format!(
+            "invalid raised value {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidErrorMessage(value) => format!(
+            "invalid error message {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidEffectTarget(value) => format!(
+            "invalid effect target {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidMailboxCapability {
+            operation,
+            capability,
+        } => format!(
+            "invalid mailbox capability for {operation}: {}",
+            render_value(capability, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidSuspendDuration(value) => format!(
+            "invalid suspend duration {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidSpawnSelector(value) => format!(
+            "invalid spawn selector {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidSpawnRole(value) => format!(
+            "invalid spawn role {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidArgumentSplice(value) => format!(
+            "invalid argument splice {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::InvalidRelationSplice(value) => format!(
+            "invalid relation splice {}",
+            render_value(value, identity_names, relation_names)
+        ),
+        RuntimeError::Aborted(value) => {
+            format!(
+                "aborted with {}",
+                render_value(value, identity_names, relation_names)
+            )
+        }
+        _ => format!("{error:?}"),
+    }
+}
+
 fn render_finished(
     label: &str,
     task_id: u64,
@@ -5330,8 +5469,9 @@ fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthorityContext, CompileError, Emission, Instruction, Operand, Program, SYSTEM_ENDPOINT,
-        SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind, TaskOutcome,
+        AuthorityContext, CompileError, Emission, Instruction, Operand, Program, RuntimeError,
+        SYSTEM_ENDPOINT, SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind, TaskError,
+        TaskManagerError, TaskOutcome,
     };
     use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
     use mica_var::{Identity, Symbol, Value};
@@ -7579,6 +7719,26 @@ mod tests {
         assert_eq!(
             report.render(),
             "task 2 complete: [#thing, [:owner: #thing]] (retries: 0)\neffect #thing: [#thing, [:owner: #thing]]"
+        );
+    }
+
+    #[test]
+    fn source_task_error_renders_named_identity_values() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source("return make_identity(:not_callable)")
+            .unwrap();
+        let identity = match report.outcome {
+            TaskOutcome::Complete { value, .. } => value.as_identity().unwrap(),
+            _ => panic!("identity creation did not complete"),
+        };
+        let error = SourceTaskError::TaskManager(TaskManagerError::Task(TaskError::Runtime(
+            RuntimeError::InvalidCallable(Value::identity(identity)),
+        )));
+
+        assert_eq!(
+            runner.render_source_task_error(&error),
+            "task manager error: invalid callable #not_callable"
         );
     }
 

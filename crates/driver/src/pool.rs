@@ -104,6 +104,16 @@ impl CompioTaskDriver {
             .map_err(DriverError::Source)
     }
 
+    pub fn format_error(&self, error: &DriverError) -> String {
+        match error {
+            DriverError::Source(error) => self.inner.runner.render_source_task_error(error),
+            DriverError::Join(error) => format!("driver task failed: {error}"),
+            DriverError::MissingTaskContext(task_id) => {
+                format!("missing task context for task {task_id}")
+            }
+        }
+    }
+
     pub async fn submit_source(
         &self,
         endpoint: Identity,
