@@ -18,7 +18,7 @@ verb mud_sync_selected_entity(actor @ #player, line, fields)
 end
 
 verb sync_event(endpoint, session, view, event, target, action, fields)
-  if event == "scroll" && action == "mud_load_older_events"
+  if action == "mud_load_older_events"
     let current_limit = one MudNarrativeLimit(endpoint, ?limit)
     if current_limit == nothing
       current_limit = 40

@@ -255,9 +255,16 @@ verb mud_narrative_node(actor @ #player, revision, limit)
   end
 
   let heading = dom_element("div", {:class -> "narrative-heading"}, [dom_element("h2", {}, [dom_text("Narrative")]), dom_element("span", {:class -> "narrative-count"}, [dom_text(to_literal(count)), dom_text(" events")])])
+
+  let children = []
+  if count > limit
+    children = [dom_element("form", {:class -> "narrative-older-form", "data-sync-event" -> "submit", "data-sync-action" -> "mud_load_older_events"}, [dom_element("button", {:class -> "mini-button"}, [dom_text(string_concat("Load older (", to_literal(count - limit), " more)"))])])]
+  end
+
   let list_attrs = {:class -> "event-list"}
   if count > limit
     list_attrs = {:class -> "event-list", "data-sync-on-viewport-top" -> "mud_load_older_events", "data-sync-viewport-threshold" -> "24"}
   end
-  return dom_element("section", {:id -> "narrative", :class -> "panel narrative", "aria-live" -> "polite", "data-sync-follow" -> "bottom"}, [heading, dom_element("ul", list_attrs, events)])
+  children = [@children, dom_element("ul", list_attrs, events)]
+  return dom_element("section", {:id -> "narrative", :class -> "panel narrative", "aria-live" -> "polite", "data-sync-follow" -> "bottom", "data-sync-stable-top" -> "true"}, [heading, @children])
 end

@@ -45,6 +45,7 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "data-sync-event",
   "data-sync-key",
   "data-sync-on-viewport-top",
+  "data-sync-stable-top",
   "data-sync-viewport-threshold",
   "class",
   "id",
@@ -241,8 +242,10 @@ function syncPayloadSignature(revision, payload) {
 
 export function applySnapshot(mount, payload) {
   const follow = captureFollowBottomTargets(mount);
+  const stable = captureStableTopTargets(mount);
   reconcileChildren(mount, [payload.root]);
   restoreFollowBottomTargets(mount, follow);
+  restoreStableTopTargets(mount, stable);
 }
 
 export function applyDelta(mount, payload) {
@@ -250,10 +253,12 @@ export function applyDelta(mount, payload) {
     throw new Error(`unsupported delta type: ${payload.type}`);
   }
   const follow = captureFollowBottomTargets(mount);
+  const stable = captureStableTopTargets(mount);
   for (const patch of payload.patches) {
     applyPatch(mount, patch);
   }
   restoreFollowBottomTargets(mount, follow);
+  restoreStableTopTargets(mount, stable);
 }
 
 function captureFollowBottomTargets(mount) {
@@ -282,6 +287,36 @@ function restoreFollowBottomTargets(mount, targets) {
         : target.element;
     if (element && mount.contains(element)) {
       element.scrollTop = element.scrollHeight;
+    }
+  }
+}
+
+function captureStableTopTargets(mount) {
+  if (!mount?.querySelectorAll) {
+    return [];
+  }
+  return Array.from(
+    mount.querySelectorAll('[data-sync-stable-top="true"]'),
+  ).map((element) => ({
+    id: element.id || "",
+    element,
+    scrollTop: element.scrollTop,
+    scrollHeight: element.scrollHeight,
+  }));
+}
+
+function restoreStableTopTargets(mount, targets) {
+  for (const target of targets) {
+    const element =
+      target.id && globalThis.document?.getElementById
+        ? globalThis.document.getElementById(target.id)
+        : target.element;
+    if (!element || !mount.contains(element)) {
+      continue;
+    }
+    const heightDelta = element.scrollHeight - target.scrollHeight;
+    if (heightDelta > 0) {
+      element.scrollTop = target.scrollTop + heightDelta;
     }
   }
 }
