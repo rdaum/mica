@@ -1,5 +1,26 @@
 // Narrative/event-log composition for the server-owned MUD view.
 
+make_functional_relation(:MudEventDisplayLabel, 2, [0])
+make_functional_relation(:MudEventDisplayClass, 2, [0])
+
+assert MudEventDisplayLabel(#movement_event, "movement")
+assert MudEventDisplayLabel(#arrival_event, "movement")
+assert MudEventDisplayLabel(#take_event, "transfer")
+assert MudEventDisplayLabel(#take_from_event, "transfer")
+assert MudEventDisplayLabel(#drop_event, "transfer")
+assert MudEventDisplayLabel(#put_event, "transfer")
+assert MudEventDisplayLabel(#say_event, "speech")
+assert MudEventDisplayLabel(#button_event, "alert")
+
+assert MudEventDisplayClass(#movement_event, "event-line movement")
+assert MudEventDisplayClass(#arrival_event, "event-line movement")
+assert MudEventDisplayClass(#take_event, "event-line transfer")
+assert MudEventDisplayClass(#take_from_event, "event-line transfer")
+assert MudEventDisplayClass(#drop_event, "event-line transfer")
+assert MudEventDisplayClass(#put_event, "event-line transfer")
+assert MudEventDisplayClass(#say_event, "event-line speech")
+assert MudEventDisplayClass(#button_event, "event-line alert")
+
 verb mud_event_actor_node(value @ #identity, viewer)
   let name = mud_actor_name(value)
   if value == viewer
@@ -28,52 +49,66 @@ end
 
 verb mud_event_body_node(event, viewer)
   let kind = one MudEventKind(event, ?kind)
-  let actor = one MudEventActor(event, ?actor)
-
-  if kind == #movement_event
-    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " move away.", " moves away."))])
-  elseif kind == #arrival_event
-    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " arrive.", " arrives."))])
-  elseif kind == #take_event
-    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
-  elseif kind == #take_from_event
-    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" from "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
-  elseif kind == #drop_event
-    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " drop ", " drops ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
-  elseif kind == #put_event
-    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " put ", " puts ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" in "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
-  elseif kind == #say_event
-    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", one MudEventMessage(event, ?message), "\""))])])
-  elseif kind == #button_event
-    return dom_element("div", {:class -> "event-text"}, [mud_event_object_node(event, #red_button, viewer), dom_text(" gives one final cheerful ding.")])
+  let label = one MudEventDisplayLabel(kind, ?label)
+  if label != nothing
+    return mud_event_body_for(kind, event, viewer)
   end
 
   return dom_element("div", {:class -> "event-text"}, [dom_text(one MudEventText(event, ?text))])
 end
 
+verb mud_event_body_for(kind @ #movement_event, event, viewer)
+  let actor = one MudEventActor(event, ?actor)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " move away.", " moves away."))])
+end
+
+verb mud_event_body_for(kind @ #arrival_event, event, viewer)
+  let actor = one MudEventActor(event, ?actor)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " arrive.", " arrives."))])
+end
+
+verb mud_event_body_for(kind @ #take_event, event, viewer)
+  let actor = one MudEventActor(event, ?actor)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
+end
+
+verb mud_event_body_for(kind @ #take_from_event, event, viewer)
+  let actor = one MudEventActor(event, ?actor)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" from "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
+end
+
+verb mud_event_body_for(kind @ #drop_event, event, viewer)
+  let actor = one MudEventActor(event, ?actor)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " drop ", " drops ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
+end
+
+verb mud_event_body_for(kind @ #put_event, event, viewer)
+  let actor = one MudEventActor(event, ?actor)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " put ", " puts ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" in "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
+end
+
+verb mud_event_body_for(kind @ #say_event, event, viewer)
+  let actor = one MudEventActor(event, ?actor)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", one MudEventMessage(event, ?message), "\""))])])
+end
+
+verb mud_event_body_for(kind @ #button_event, event, viewer)
+  return dom_element("div", {:class -> "event-text"}, [mud_event_object_node(event, #red_button, viewer), dom_text(" gives one final cheerful ding.")])
+end
+
 verb mud_event_class(kind)
-  if kind == #movement_event || kind == #arrival_event
-    return "event-line movement"
-  elseif kind == #take_event || kind == #take_from_event || kind == #drop_event || kind == #put_event
-    return "event-line transfer"
-  elseif kind == #say_event
-    return "event-line speech"
-  elseif kind == #button_event
-    return "event-line alert"
+  let class = one MudEventDisplayClass(kind, ?class)
+  if class != nothing
+    return class
   end
 
   return "event-line"
 end
 
 verb mud_event_label(kind)
-  if kind == #movement_event || kind == #arrival_event
-    return "movement"
-  elseif kind == #take_event || kind == #take_from_event || kind == #drop_event || kind == #put_event
-    return "transfer"
-  elseif kind == #say_event
-    return "speech"
-  elseif kind == #button_event
-    return "alert"
+  let label = one MudEventDisplayLabel(kind, ?label)
+  if label != nothing
+    return label
   end
 
   return "system"
