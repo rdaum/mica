@@ -18,6 +18,8 @@ use compio_quic::{Endpoint, ServerBuilder};
 use h3_webtransport::server::WebTransportSession;
 use mica_driver::{CompioTaskDriver, DriverEvent};
 #[cfg(test)]
+use mica_host_protocol::SUPPORTED_DOM_TAGS;
+#[cfg(test)]
 use mica_host_protocol::dom_event_payload_json;
 use mica_host_protocol::{
     DomEventPayload, DomNode, SyncEnvelope, SyncMessageKind, decode_dom_event_payload,
@@ -1238,11 +1240,32 @@ mod tests {
 
     type TestChunkMap = HashMap<u32, (u32, u32, Vec<Option<Vec<u8>>>)>;
     type MudLoginResult = Result<(SyncEnvelope, SyncEnvelope), String>;
-    type MudClientResult = Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String>;
+    type MudClientResult = Result<
+        (
+            SyncEnvelope,
+            SyncEnvelope,
+            SyncEnvelope,
+            SyncEnvelope,
+            SyncEnvelope,
+        ),
+        String,
+    >;
     type MudDelayedEventResult =
         Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String>;
     type MudTwoSessionResult = Result<(SyncEnvelope, SyncEnvelope), String>;
     static MUD_WEBTRANSPORT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn sync_client_accepts_protocol_tags() {
+        let client = include_str!("../sync-client.js");
+
+        for tag in SUPPORTED_DOM_TAGS {
+            assert!(
+                client.contains(&format!("\"{tag}\"")),
+                "sync-client.js is missing supported DOM tag {tag}"
+            );
+        }
+    }
 
     #[test]
     fn effect_datagrams_preserve_bytes_and_strings() {
@@ -1578,7 +1601,7 @@ mod tests {
 
             wait_for_client_connected(&connected_rx).await;
             send_tx.send(()).unwrap();
-            let (snapshot, delta, command_delta, inspect_delta) =
+            let (snapshot, delta, command_delta, inspect_delta, mica_inspect_delta) =
                 wait_for_mud_client_result(&result_rx).await.unwrap();
 
             server_endpoint.close(0u32.into(), b"test complete");
@@ -1622,6 +1645,8 @@ mod tests {
             assert!(payload_text.contains("coin"));
             assert!(payload_text.contains("Inventory"));
             assert!(payload_text.contains("Examine"));
+            assert!(!payload_text.contains("Mica Inspect"));
+            assert!(!payload_text.contains("has-mica-inspect"));
             assert!(payload_text.contains("Narrative"));
 
             assert_eq!(command_delta.kind, SyncMessageKind::ViewDelta);
@@ -1655,8 +1680,22 @@ mod tests {
             assert!(inspect_payload_text.contains("entity-location"));
             assert!(inspect_payload_text.contains("entity-avatar"));
             assert!(inspect_payload_text.contains("look coin"));
+            assert!(inspect_payload_text.contains("Mica inspect"));
             assert!(inspect_payload_text.contains("data-entity"));
             assert!(inspect_payload_text.contains("tarnished brass coin"));
+
+            assert_eq!(mica_inspect_delta.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(mica_inspect_delta.view_id, 21);
+            let mica_inspect_payload: serde_json::Value =
+                serde_json::from_slice(&mica_inspect_delta.payload).unwrap();
+            let mica_inspect_payload_text = serde_json::to_string(&mica_inspect_payload).unwrap();
+            assert!(mica_inspect_payload_text.contains("Mica Inspect"));
+            assert!(mica_inspect_payload_text.contains("Subject facts"));
+            assert!(mica_inspect_payload_text.contains("Relation mentions"));
+            assert!(mica_inspect_payload_text.contains("Method catalogue"));
+            assert!(mica_inspect_payload_text.contains("method-filter active"));
+            assert!(mica_inspect_payload_text.contains("mud_mica_inspect_close"));
+            assert!(mica_inspect_payload_text.contains("tarnished brass coin"));
         });
     }
 
@@ -1714,6 +1753,8 @@ mod tests {
             assert!(payload_text.contains("mud-sidebar"));
             assert!(payload_text.contains("People here"));
             assert!(!payload_text.contains("look Bob"));
+            assert!(!payload_text.contains("Mica Inspect"));
+            assert!(!payload_text.contains("mica-inspect"));
         });
     }
 
@@ -2266,7 +2307,50 @@ mod tests {
                             .map_err(|error| format!("MUD inspect retry delta: {error}"))?;
                         }
 
-                        Ok((snapshot, delta, command_delta, inspect_delta))
+                        connection
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 7,
+                                view_id: 21,
+                                revision: inspect_delta.server_revision,
+                                signature: inspect_delta.server_signature,
+                                event: "submit".to_owned(),
+                                target: "mud-command".to_owned(),
+                                action: "mud_command".to_owned(),
+                                fields: BTreeMap::from([(
+                                    "text".to_owned(),
+                                    "mica inspect coin".to_owned(),
+                                )]),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let mut mica_inspect_delta =
+                            receive_newer_sync_envelope(&connection, inspect_delta.server_revision)
+                                .await
+                                .map_err(|error| format!("MUD Mica inspect delta: {error}"))?;
+                        for _ in 0..6 {
+                            let payload: serde_json::Value =
+                                serde_json::from_slice(&mica_inspect_delta.payload)
+                                    .map_err(|error| error.to_string())?;
+                            if serde_json::to_string(&payload)
+                                .map_err(|error| error.to_string())?
+                                .contains("Relation mentions")
+                            {
+                                break;
+                            }
+                            mica_inspect_delta = receive_newer_sync_envelope(
+                                &connection,
+                                inspect_delta.server_revision,
+                            )
+                            .await
+                            .map_err(|error| format!("MUD Mica inspect retry delta: {error}"))?;
+                        }
+
+                        Ok((
+                            snapshot,
+                            delta,
+                            command_delta,
+                            inspect_delta,
+                            mica_inspect_delta,
+                        ))
                     })
                 });
             let _ = result_tx.send(result);
@@ -3034,7 +3118,7 @@ mod tests {
 
     async fn wait_for_mud_client_result(
         receiver: &mpsc::Receiver<MudClientResult>,
-    ) -> Result<(SyncEnvelope, SyncEnvelope, SyncEnvelope, SyncEnvelope), String> {
+    ) -> MudClientResult {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match receiver.try_recv() {

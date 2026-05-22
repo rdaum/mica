@@ -149,6 +149,9 @@ input {
   padding: 16px;
   box-sizing: border-box;
 }
+.mud-shell.has-mica-inspect {
+  grid-template-rows: auto minmax(0, 1fr) minmax(180px, 34dvh) auto;
+}
 .topbar {
   display: flex;
   align-items: center;
@@ -397,6 +400,211 @@ input {
     0 0 18px #ff766633,
     0 5px 16px #0006;
 }
+.mica-button {
+  border-color: #50706c;
+  background: linear-gradient(180deg, #253d3b 0%, #1b2c2d 100%);
+}
+.mica-button:hover {
+  border-color: #91d8c7;
+  background: linear-gradient(180deg, #2f4e4a 0%, #233939 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff18,
+    0 0 0 1px #91d8c733,
+    0 0 18px #91d8c733,
+    0 5px 16px #0006;
+}
+.mica-inspect {
+  min-height: 0;
+  overflow: auto;
+  border-color: #365f5b;
+  background: linear-gradient(180deg, #182525 0%, #171b20 100%);
+}
+.mica-inspect-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.mica-inspect-title {
+  display: grid;
+  gap: 5px;
+}
+.mica-inspect-header code,
+.mica-row code,
+.mica-method-row code {
+  color: #bff3e7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mica-delegates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+}
+.mica-delegates-label {
+  color: #91d8c7;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mica-delegate-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mica-delegate-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  border: 1px solid #2e4646;
+  background: #11171a99;
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: #bff3e7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mica-inspect-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.mica-inspect-controls,
+.method-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.method-filters {
+  justify-content: flex-start;
+}
+.method-filter.active {
+  border-color: #91d8c7;
+  background: linear-gradient(180deg, #2f4e4a 0%, #203635 100%);
+  color: #dffcf5;
+}
+.mica-close {
+  border-color: #8d4e46;
+}
+.mica-section {
+  min-width: 0;
+  border: 1px solid #2e4646;
+  background: #11171a99;
+  border-radius: 8px;
+  padding: 10px;
+}
+.mica-section h3 {
+  margin: 0 0 8px;
+  color: #91d8c7;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mica-section-body {
+  display: grid;
+  gap: 8px;
+}
+.mica-row,
+.mica-method-row {
+  min-width: 0;
+  border: 1px solid #26383a;
+  background: #0f1418;
+  border-radius: 6px;
+  padding: 8px;
+}
+.mica-row {
+  overflow: hidden;
+}
+.mica-row-summary,
+.mica-method-head {
+  cursor: pointer;
+  list-style-position: outside;
+}
+.mica-row-summary {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.mica-row-title {
+  color: #91d8c7;
+}
+.mica-row-preview {
+  min-width: 0;
+  color: #bff3e7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mica-row-body {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #26383a;
+}
+.mica-relation {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  color: #91d8c7;
+}
+.mica-tuple,
+.mica-source {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.mica-tuple {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 4px;
+  align-items: baseline;
+  color: #bff3e7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mica-identity-action {
+  display: inline;
+}
+.mica-identity-link,
+.mica-relation-link {
+  border: 0;
+  background: transparent;
+  color: #f3d38a;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.mica-relation-link {
+  color: #91d8c7;
+}
+.mica-method-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+}
+.mica-method-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mica-method-row[open] .mica-method-head {
+  margin-bottom: 6px;
+}
+.mica-source {
+  margin: 0;
+  color: #d8eee9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.mica-empty {
+  margin: 0;
+}
 .event-text {
   display: inline;
 }
@@ -500,9 +708,13 @@ input {
   .room-panel,
   .inventory,
   .inspector,
+  .mica-inspect,
   .narrative {
     grid-column: 1;
     grid-row: auto;
+  }
+  .mica-inspect-grid {
+    grid-template-columns: 1fr;
   }
   .narrative {
     min-height: 360px;

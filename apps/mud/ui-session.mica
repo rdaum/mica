@@ -5,21 +5,38 @@ make_relation(:MudView, 1)
 make_functional_relation(:MudSyncAction, 2, [0])
 make_functional_relation(:MudSessionActor, 2, [0])
 make_functional_relation(:MudSessionInspect, 2, [0])
+make_functional_relation(:MudSessionMicaInspect, 2, [0])
+make_functional_relation(:MudSessionMicaInspectBack, 2, [0])
+make_functional_relation(:MudSessionMicaMethodMode, 2, [0])
 make_functional_relation(:MudNarrativeLimit, 2, [0])
+make_functional_relation(:MudSessionUiRevision, 2, [0])
+make_relation(:MudMicaPrototype, 2)
 
 make_identity(:mud_sync_action)
 make_identity(:mud_login_action)
 make_identity(:mud_inspect_action)
+make_identity(:mud_mica_inspect_action)
+make_identity(:mud_mica_inspect_close_action)
+make_identity(:mud_mica_inspect_back_action)
+make_identity(:mud_mica_method_mode_action)
 make_identity(:mud_command_action)
 make_identity(:mud_load_older_events_action)
 
 assert MudView(21)
 assert Delegates(#mud_login_action, #mud_sync_action, 0)
 assert Delegates(#mud_inspect_action, #mud_sync_action, 0)
+assert Delegates(#mud_mica_inspect_action, #mud_sync_action, 0)
+assert Delegates(#mud_mica_inspect_close_action, #mud_sync_action, 0)
+assert Delegates(#mud_mica_inspect_back_action, #mud_sync_action, 0)
+assert Delegates(#mud_mica_method_mode_action, #mud_sync_action, 0)
 assert Delegates(#mud_command_action, #mud_sync_action, 0)
 assert Delegates(#mud_load_older_events_action, #mud_sync_action, 0)
 assert MudSyncAction("mud_login", #mud_login_action)
 assert MudSyncAction("mud_inspect", #mud_inspect_action)
+assert MudSyncAction("mud_mica_inspect", #mud_mica_inspect_action)
+assert MudSyncAction("mud_mica_inspect_close", #mud_mica_inspect_close_action)
+assert MudSyncAction("mud_mica_inspect_back", #mud_mica_inspect_back_action)
+assert MudSyncAction("mud_mica_method_mode", #mud_mica_method_mode_action)
 assert MudSyncAction("mud_command", #mud_command_action)
 assert MudSyncAction("mud_load_older_events", #mud_load_older_events_action)
 
@@ -47,7 +64,10 @@ assert CanRead(#web, :MudView)
 assert CanRead(#web, :MudSyncAction)
 assert CanRead(#web, :MudSessionActor)
 assert CanRead(#web, :MudSessionInspect)
+assert CanRead(#web, :MudSessionMicaInspectBack)
+assert CanRead(#web, :MudSessionMicaMethodMode)
 assert CanRead(#web, :MudNarrativeLimit)
+assert CanRead(#web, :MudSessionUiRevision)
 assert CanRead(#web, :CanAssumeActor)
 assert CanRead(#web, :Delegates)
 assert CanRead(#web, :Name)
@@ -60,7 +80,10 @@ assert CanWrite(#web, :MudEventText)
 assert CanWrite(#web, :MudEventSource)
 assert CanWrite(#web, :MudSessionActor)
 assert CanWrite(#web, :MudSessionInspect)
+assert CanWrite(#web, :MudSessionMicaInspectBack)
+assert CanWrite(#web, :MudSessionMicaMethodMode)
 assert CanWrite(#web, :MudNarrativeLimit)
+assert CanWrite(#web, :MudSessionUiRevision)
 
 CanRead(#web, relation) :-
   RoleCanRead(#player, relation)
@@ -78,6 +101,7 @@ assert RoleCanInvoke(#player, :sync_event)
 assert RoleCanInvoke(#player, :sync_view_revision)
 assert RoleCanInvoke(#player, :sync_view_tree)
 assert RoleCanInvoke(#player, :mud_status_revision)
+assert RoleCanInvoke(#player, :mud_bump_ui_revision)
 assert RoleCanInvoke(#player, :mud_current_actor)
 assert RoleCanInvoke(#player, :mud_login_actor)
 assert RoleCanInvoke(#player, :mud_actor_name)
@@ -111,6 +135,7 @@ assert RoleCanInvoke(#player, :mud_entity_location_text)
 assert RoleCanInvoke(#player, :mud_entity_fact_node)
 assert RoleCanInvoke(#player, :mud_entity_facts_node)
 assert RoleCanInvoke(#player, :mud_inspector_action_node)
+assert RoleCanInvoke(#player, :mud_can_program)
 assert RoleCanInvoke(#player, :mud_sync_selected_entity)
 assert RoleCanInvoke(#player, :mud_narrative_node)
 assert RoleCanInvoke(#player, :mud_latest_event_node)
@@ -140,12 +165,81 @@ assert RoleCanInvoke(#player, :mud_sync_action_source)
 assert RoleCanInvoke(#player, :mud_handle_sync_action)
 assert RoleCanRead(#player, :MudSessionActor)
 assert RoleCanRead(#player, :MudSessionInspect)
+assert RoleCanRead(#player, :MudSessionMicaMethodMode)
 assert RoleCanRead(#player, :MudEventSource)
 assert RoleCanRead(#player, :MudNarrativeLimit)
+assert RoleCanRead(#player, :MudSessionUiRevision)
 assert RoleCanRead(#player, :MudView)
 assert RoleCanRead(#player, :MudSyncAction)
 assert RoleCanWrite(#player, :MudSessionInspect)
+assert RoleCanWrite(#player, :MudSessionMicaMethodMode)
 assert RoleCanWrite(#player, :MudNarrativeLimit)
+assert RoleCanWrite(#player, :MudSessionUiRevision)
+
+assert RoleCanRead(#programmer, :MudSessionMicaInspect)
+assert RoleCanRead(#programmer, :MudSessionMicaInspectBack)
+assert RoleCanRead(#programmer, :MudSessionMicaMethodMode)
+assert RoleCanRead(#programmer, :MudSessionUiRevision)
+assert RoleCanRead(#programmer, :MudMicaPrototype)
+assert RoleCanRead(#programmer, :Relation)
+assert RoleCanRead(#programmer, :RelationName)
+assert RoleCanRead(#programmer, :Arity)
+assert RoleCanRead(#programmer, :ArgumentName)
+assert RoleCanRead(#programmer, :ConflictPolicy)
+assert RoleCanRead(#programmer, :FunctionalKey)
+assert RoleCanRead(#programmer, :Index)
+assert RoleCanRead(#programmer, :IndexPosition)
+assert RoleCanRead(#programmer, :IndexStorageKind)
+assert RoleCanRead(#programmer, :Rule)
+assert RoleCanRead(#programmer, :RuleHead)
+assert RoleCanRead(#programmer, :RuleSource)
+assert RoleCanRead(#programmer, :ActiveRule)
+assert RoleCanRead(#programmer, :SubjectFact)
+assert RoleCanRead(#programmer, :MentionedFact)
+assert RoleCanRead(#programmer, :ExtensionalMentionedFact)
+assert RoleCanRead(#programmer, :MethodSelector)
+assert RoleCanRead(#programmer, :Param)
+assert RoleCanRead(#programmer, :MethodSource)
+assert RoleCanRead(#programmer, :MethodProgram)
+assert RoleCanRead(#programmer, :CanRead)
+assert RoleCanRead(#programmer, :CanWrite)
+assert RoleCanRead(#programmer, :CanInvoke)
+assert RoleCanRead(#programmer, :CanEffect)
+assert RoleCanRead(#programmer, :RoleCanRead)
+assert RoleCanRead(#programmer, :RoleCanWrite)
+assert RoleCanRead(#programmer, :RoleCanInvoke)
+assert RoleCanRead(#programmer, :RoleCanEffect)
+assert RoleCanRead(#programmer, :CanAssumeActor)
+assert RoleCanWrite(#programmer, :MudSessionMicaInspect)
+assert RoleCanWrite(#programmer, :MudSessionMicaInspectBack)
+assert RoleCanWrite(#programmer, :MudSessionMicaMethodMode)
+assert RoleCanWrite(#programmer, :MudSessionUiRevision)
+assert RoleCanInvoke(#programmer, :mud_mica_inspect_action_node)
+assert RoleCanInvoke(#programmer, :mud_mica_inspect_entity_node)
+assert RoleCanInvoke(#programmer, :mud_mica_method_mode_node)
+assert RoleCanInvoke(#programmer, :mud_mica_inspect_close_node)
+assert RoleCanInvoke(#programmer, :mud_mica_inspect_back_node)
+assert RoleCanInvoke(#programmer, :mud_mica_inspect_panel_node)
+assert RoleCanInvoke(#programmer, :mud_mica_section_node)
+assert RoleCanInvoke(#programmer, :mud_mica_empty_node)
+assert RoleCanInvoke(#programmer, :mud_mica_can_link)
+assert RoleCanInvoke(#programmer, :mud_mica_value_node)
+assert RoleCanInvoke(#programmer, :mud_mica_tuple_node)
+assert RoleCanInvoke(#programmer, :mud_relation_label)
+assert RoleCanInvoke(#programmer, :mud_mica_fact_row_node)
+assert RoleCanInvoke(#programmer, :mud_mica_subject_facts_node)
+assert RoleCanInvoke(#programmer, :mud_mica_mentioned_facts_node)
+assert RoleCanInvoke(#programmer, :mud_mica_delegates_header_node)
+assert RoleCanInvoke(#programmer, :mud_mica_method_source_excerpt)
+assert RoleCanInvoke(#programmer, :mud_mica_method_row_node)
+assert RoleCanInvoke(#programmer, :mud_mica_method_catalog_node)
+
+MudMicaPrototype(obj, proto) :-
+  Delegates(obj, proto, ?distance)
+
+MudMicaPrototype(obj, ancestor) :-
+  Delegates(obj, proto, ?distance),
+  MudMicaPrototype(proto, ancestor)
 
 verb mud_actor_name(obj)
   let name = one Name(obj, ?name)
@@ -187,7 +281,34 @@ verb mud_status_revision()
       revision = seq + 1
     end
   end
+  let ui_revision = one MudSessionUiRevision(endpoint(), ?stored_ui_revision)
+  if ui_revision != nothing && ui_revision > revision
+    revision = ui_revision
+  end
 
+  return revision
+end
+
+verb mud_bump_ui_revision(endpoint)
+  let current = mud_current_actor()
+  let revision = 1
+  if current != nothing
+    for found in MudEventDelivery(current, ?event)
+      let seq = one MudEventSeq(found[:event], ?seq)
+      if seq > revision || seq == revision
+        revision = seq + 1
+      end
+    end
+  end
+
+  let ui_revision = one MudSessionUiRevision(endpoint, ?stored_ui_revision)
+  if ui_revision != nothing && ui_revision > revision
+    revision = ui_revision
+  end
+  revision = revision + 1
+
+  retract MudSessionUiRevision(endpoint, _)
+  assert MudSessionUiRevision(endpoint, revision)
   return revision
 end
 

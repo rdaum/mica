@@ -5,6 +5,7 @@
 // are all authorable world state rather than privileged runtime concepts.
 
 make_identity(:player)
+make_identity(:programmer)
 make_identity(:thing)
 make_identity(:portable)
 make_identity(:container)
@@ -98,6 +99,7 @@ make_relation(:RoleCanEffect, 1)
 assert Delegates(#portable, #thing, 0)
 assert Delegates(#container, #thing, 0)
 assert Delegates(#player, #thing, 0)
+assert Delegates(#alice, #programmer, 0)
 assert Delegates(#movement_event, #event, 0)
 assert Delegates(#arrival_event, #event, 0)
 assert Delegates(#take_event, #event, 0)

@@ -22,6 +22,34 @@ verb mud_entity_action_node(id, entity, text, label, class)
   return dom_element("form", attrs, [hidden, button])
 end
 
+verb mud_mica_inspect_action_node(entity, label, class)
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "entity", :value -> to_literal(entity)}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> class, "data-entity" -> to_literal(entity)}, [dom_text(label)])
+  let attrs = {:class -> "mud-action mica-inspect-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect"}
+  return dom_element("form", attrs, [hidden, button])
+end
+
+verb mud_mica_inspect_close_node()
+  let button = dom_element("button", {:type -> "submit", :class -> "mini-button mica-close"}, [dom_text("Close")])
+  return dom_element("form", {:class -> "mud-action mica-close-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_close"}, [button])
+end
+
+verb mud_mica_inspect_back_node(previous)
+  let button = dom_element("button", {:type -> "submit", :class -> "mini-button"}, [dom_text(string_concat("Back to ", mud_actor_name(previous)))])
+  return dom_element("form", {:class -> "mud-action mica-back-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_back"}, [button])
+end
+
+verb mud_mica_method_mode_node(mode, label, selected)
+  let class = "mini-button method-filter"
+  if mode == selected
+    class = "mini-button method-filter active"
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "mode", :value -> mode}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> class}, [dom_text(label)])
+  return dom_element("form", {:class -> "mud-action method-filter-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_method_mode"}, [hidden, button])
+end
+
 verb mud_login_choice_node(actor, name, initial, detail)
   let hidden = dom_element("input", {:type -> "hidden", :name -> "text", :value -> actor}, [])
   let badge = dom_element("span", {:class -> "actor-initial"}, [dom_text(initial)])
@@ -215,6 +243,10 @@ verb mud_inspector_action_node(command, label, class)
   return mud_command_form_node("", command, label, class)
 end
 
+verb mud_can_program(actor @ #player)
+  return Delegates(actor, #programmer, 0)
+end
+
 verb mud_entity_initial(name @ #string)
   if string_len(name) == 0
     return "?"
@@ -293,10 +325,234 @@ verb mud_inspector_node(actor @ #player)
   if selected == #red_button
     actions = [@actions, mud_inspector_action_node("push button", "push", "mini-button danger")]
   end
+  if mud_can_program(actor)
+    actions = [@actions, mud_mica_inspect_action_node(selected, "Mica inspect", "mini-button mica-button")]
+  end
 
   let avatar = dom_element("span", {:class -> "entity-avatar"}, [dom_text(mud_entity_initial(name))])
   let title = dom_element("div", {:class -> "inspector-title-row"}, [avatar, dom_element("div", {}, [dom_element("strong", {:class -> "inspector-title"}, [dom_text(name)]), dom_element("span", {:class -> "inspector-subtitle"}, [dom_text(mud_entity_kind(selected))])])])
   return dom_element("aside", {:id -> "inspector", :class -> "panel inspector", "data-entity" -> to_literal(selected)}, [dom_element("h2", {}, [dom_text("Examine")]), title, dom_element("p", {:class -> "inspector-description"}, [dom_text(description)]), mud_entity_facts_node(actor, selected), dom_element("div", {:class -> "object-actions inspector-actions"}, actions)])
+end
+
+verb mud_relation_label(relation)
+  let name = one RelationName(relation, ?name)
+  if name == nothing
+    return to_literal(relation)
+  end
+
+  return to_literal(name)
+end
+
+verb mud_mica_empty_node(text)
+  return dom_element("p", {:class -> "muted mica-empty"}, [dom_text(text)])
+end
+
+verb mud_mica_section_node(title, children)
+  return dom_element("section", {:class -> "mica-section"}, [dom_element("h3", {}, [dom_text(title)]), dom_element("div", {:class -> "mica-section-body"}, children)])
+end
+
+verb mud_mica_can_link(value)
+  if string_starts_with(to_literal(value), "#") == false
+    return false
+  end
+
+  if one Name(value, ?name) != nothing
+    return true
+  elseif one RelationName(value, ?relation_name) != nothing
+    return true
+  elseif one Delegates(value, ?delegate, ?distance) != nothing
+    return true
+  elseif one MethodSelector(value, ?selector) != nothing
+    return true
+  end
+
+  for found in Param(?method_id, ?role, value, ?position)
+    return true
+  end
+
+  return false
+end
+
+verb mud_mica_inspect_entity_node(value, class)
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "entity", :value -> to_literal(value)}, [])
+  let label = to_literal(value)
+  let name = one Name(value, ?name)
+  if name != nothing
+    label = name
+  else
+    let relation_name = one RelationName(value, ?relation_name)
+    if relation_name != nothing
+      label = to_literal(relation_name)
+    end
+  end
+  let button = dom_element("button", {:type -> "submit", :class -> class, "data-entity" -> to_literal(value)}, [dom_text(label)])
+  return dom_element("form", {:class -> "mud-action mica-identity-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect"}, [hidden, button])
+end
+
+verb mud_mica_value_node(value)
+  if mud_mica_can_link(value)
+    return mud_mica_inspect_entity_node(value, "mica-identity-link")
+  end
+
+  return dom_element("code", {}, [dom_text(to_literal(value))])
+end
+
+verb mud_mica_tuple_node(tuple)
+  let children = [dom_text("[")]
+  let first = true
+  for value in tuple
+    if first
+      first = false
+    else
+      children = [@children, dom_text(", ")]
+    end
+    children = [@children, mud_mica_value_node(value)]
+  end
+  children = [@children, dom_text("]")]
+  return dom_element("div", {:class -> "mica-tuple"}, children)
+end
+
+verb mud_mica_fact_row_node(relation, position, tuple)
+  let heading = dom_element("summary", {:class -> "mica-row-summary"}, [dom_element("code", {:class -> "mica-row-title"}, [dom_text(string_concat(mud_relation_label(relation), string_concat(" @ ", to_literal(position))))]), dom_element("code", {:class -> "mica-row-preview"}, [dom_text(to_literal(tuple))])])
+  let body = dom_element("div", {:class -> "mica-row-body"}, [dom_element("div", {:class -> "mica-relation"}, [mud_mica_inspect_entity_node(relation, "mica-relation-link"), dom_element("code", {}, [dom_text(string_concat(" @ ", to_literal(position)))])]), mud_mica_tuple_node(tuple)])
+  return dom_element("details", {:class -> "mica-row"}, [heading, body])
+end
+
+verb mud_mica_subject_facts_node(entity)
+  let rows = []
+  let count = 0
+  for found in SubjectFact(entity, ?relation, ?tuple)
+    if count < 12
+      rows = [@rows, mud_mica_fact_row_node(found[:relation], 0, found[:tuple])]
+    end
+    count = count + 1
+  end
+
+  if rows == []
+    rows = [mud_mica_empty_node("No subject-position facts are visible.")]
+  end
+  if count > 12
+    rows = [@rows, mud_mica_empty_node(string_concat("Showing 12 of ", to_literal(count)))]
+  end
+
+  return mud_mica_section_node("Subject facts", rows)
+end
+
+verb mud_mica_mentioned_facts_node(entity)
+  let rows = []
+  let count = 0
+  for found in MentionedFact(entity, ?relation, ?position, ?tuple)
+    if count < 16
+      rows = [@rows, mud_mica_fact_row_node(found[:relation], found[:position], found[:tuple])]
+    end
+    count = count + 1
+  end
+
+  if rows == []
+    rows = [mud_mica_empty_node("No relation mentions are visible.")]
+  end
+  if count > 16
+    rows = [@rows, mud_mica_empty_node(string_concat("Showing 16 of ", to_literal(count)))]
+  end
+
+  return mud_mica_section_node("Relation mentions", rows)
+end
+
+verb mud_mica_delegates_header_node(entity)
+  let chips = []
+  for found in Delegates(entity, ?delegate, ?distance)
+    chips = [@chips, dom_element("span", {:class -> "mica-delegate-chip"}, [mud_mica_value_node(found[:delegate]), dom_text(string_concat(" (", string_concat(to_literal(found[:distance]), ")")))])]
+  end
+
+  if chips == []
+    return dom_element("div", {:class -> "mica-delegates muted"}, [dom_text("No direct delegates visible")])
+  end
+
+  return dom_element("div", {:class -> "mica-delegates"}, [dom_element("span", {:class -> "mica-delegates-label"}, [dom_text("Delegates")]), dom_element("div", {:class -> "mica-delegate-list"}, chips)])
+end
+
+verb mud_mica_method_source_excerpt(method_id)
+  let source = one MethodSource(method_id, ?source)
+  if source == nothing
+    return ""
+  end
+  if string_len(source) > 180
+    return string_concat(string_slice(source, 0, 180), " ...")
+  end
+
+  return source
+end
+
+verb mud_mica_method_row_node(method_id, selector, role, restriction, position)
+  let meta = string_concat(to_literal(role), string_concat(" @ ", to_literal(position)))
+  let label = dom_element("div", {:class -> "mica-method-label"}, [dom_element("code", {}, [dom_text(to_literal(selector))]), dom_text(" via "), mud_mica_value_node(restriction)])
+  let summary = dom_element("summary", {:class -> "mica-method-head"}, [label, dom_element("span", {:class -> "muted"}, [dom_text(meta)])])
+  return dom_element("details", {:class -> "mica-method-row"}, [summary, dom_element("pre", {:class -> "mica-source"}, [dom_text(mud_mica_method_source_excerpt(method_id))])])
+end
+
+verb mud_mica_method_catalog_node(entity)
+  let rows = []
+  let count = 0
+  let mode = one MudSessionMicaMethodMode(endpoint(), ?mode)
+  if mode == nothing
+    mode = "all"
+  end
+  let controls = dom_element("div", {:class -> "method-filters", "aria-label" -> "Method catalogue filter"}, [mud_mica_method_mode_node("all", "All", mode), mud_mica_method_mode_node("direct", "Direct", mode), mud_mica_method_mode_node("inherited", "Inherited", mode)])
+  if mode != "inherited"
+    for found in Param(?m, ?role, entity, ?position)
+      let method_id = found[:m]
+      let role = found[:role]
+      let position = found[:position]
+      if count < 8
+        let selector = one MethodSelector(method_id, ?sel)
+        rows = [@rows, mud_mica_method_row_node(method_id, selector, role, entity, position)]
+      end
+      count = count + 1
+    end
+  end
+  if mode != "direct"
+    for inherited in MudMicaPrototype(entity, ?prototype)
+      let prototype = inherited[:prototype]
+      for found in Param(?m, ?role, prototype, ?position)
+        let method_id = found[:m]
+        let role = found[:role]
+        let position = found[:position]
+        if count < 8
+          let selector = one MethodSelector(method_id, ?sel)
+          rows = [@rows, mud_mica_method_row_node(method_id, selector, role, prototype, position)]
+        end
+        count = count + 1
+      end
+    end
+  end
+
+  if rows == []
+    rows = [mud_mica_empty_node("No method parameter restrictions mention this identity or its delegates.")]
+  end
+  if count > 8
+    rows = [@rows, mud_mica_empty_node(string_concat("Showing 8 of ", to_literal(count)))]
+  end
+
+  let children = [controls]
+  for row in rows
+    children = [@children, row]
+  end
+  return mud_mica_section_node("Method catalogue", children)
+end
+
+verb mud_mica_inspect_panel_node(actor @ #player)
+  let selected = one MudSessionMicaInspect(endpoint(), ?selected)
+  if selected == nothing
+    return dom_element("section", {:id -> "mica-inspect", :class -> "panel mica-inspect empty"}, [])
+  end
+
+  let title = string_concat(mud_actor_name(selected), string_concat(" ", to_literal(selected)))
+  let controls = [mud_mica_inspect_close_node()]
+  let previous = one MudSessionMicaInspectBack(endpoint(), ?previous)
+  if previous != nothing
+    controls = [mud_mica_inspect_back_node(previous), mud_mica_inspect_close_node()]
+  end
+  return dom_element("section", {:id -> "mica-inspect", :class -> "panel mica-inspect", "data-entity" -> to_literal(selected)}, [dom_element("div", {:class -> "mica-inspect-header"}, [dom_element("div", {:class -> "mica-inspect-title"}, [dom_element("h2", {}, [dom_text("Mica Inspect")]), dom_element("code", {}, [dom_text(title)]), mud_mica_delegates_header_node(selected)]), dom_element("div", {:class -> "mica-inspect-controls"}, controls)]), dom_element("div", {:class -> "mica-inspect-grid"}, [mud_mica_subject_facts_node(selected), mud_mica_mentioned_facts_node(selected), mud_mica_method_catalog_node(selected)])])
 end
 
 verb mud_command_bar_node(actor @ #player)
@@ -353,5 +609,15 @@ verb mud_world_view_node(actor @ #player, revision, limit)
   let header = dom_element("header", {:class -> "topbar"}, [title, status])
   let sidebar = dom_element("div", {:class -> "mud-sidebar"}, [mud_presence_node(actor), mud_inventory_node(actor), mud_inspector_node(actor)])
   let stage = dom_element("div", {:class -> "mud-grid"}, [mud_room_panel_node(actor), mud_narrative_node(actor, revision, limit), sidebar])
-  return dom_element("main", {:id -> "mud-root", :class -> "mud-shell"}, [header, stage, mud_command_bar_node(actor)])
+  let children = [header, stage]
+  let class = "mud-shell"
+  if mud_can_program(actor)
+    let mica_selected = one MudSessionMicaInspect(endpoint(), ?mica_selected)
+    if mica_selected != nothing
+      children = [@children, mud_mica_inspect_panel_node(actor)]
+      class = "mud-shell has-mica-inspect"
+    end
+  end
+  children = [@children, mud_command_bar_node(actor)]
+  return dom_element("main", {:id -> "mud-root", :class -> class}, children)
 end

@@ -18,8 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const DOM_PATCH_PAYLOAD_TYPE: &str = "dom_patch";
 pub const DOM_EVENT_PAYLOAD_TYPE: &str = "dom_event";
 pub const SUPPORTED_DOM_TAGS: &[&str] = &[
-    "aside", "button", "div", "form", "h1", "h2", "header", "input", "li", "main", "nav", "p",
-    "section", "span", "strong", "ul",
+    "aside", "button", "code", "details", "div", "form", "h1", "h2", "h3", "header", "input", "li",
+    "main", "nav", "p", "pre", "section", "span", "strong", "summary", "ul",
 ];
 pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
     "aria-label",
@@ -714,6 +714,86 @@ mod tests {
         assert_eq!(json["view"], 11);
         assert_eq!(json["revision"], 20);
         assert_eq!(json["root"]["text"], "hello");
+    }
+
+    #[test]
+    fn mica_value_accepts_code_oriented_tags() {
+        let code_row = Value::map([
+            (
+                Value::symbol(Symbol::intern("tag")),
+                Value::string("section"),
+            ),
+            (
+                Value::symbol(Symbol::intern("attrs")),
+                Value::map([(Value::string("class"), Value::string("mica-section"))]),
+            ),
+            (
+                Value::symbol(Symbol::intern("children")),
+                Value::list([
+                    Value::map([
+                        (Value::symbol(Symbol::intern("tag")), Value::string("h3")),
+                        (Value::symbol(Symbol::intern("attrs")), Value::map([])),
+                        (
+                            Value::symbol(Symbol::intern("children")),
+                            Value::list([Value::map([(
+                                Value::symbol(Symbol::intern("text")),
+                                Value::string("Method catalogue"),
+                            )])]),
+                        ),
+                    ]),
+                    Value::map([
+                        (Value::symbol(Symbol::intern("tag")), Value::string("code")),
+                        (Value::symbol(Symbol::intern("attrs")), Value::map([])),
+                        (
+                            Value::symbol(Symbol::intern("children")),
+                            Value::list([Value::map([(
+                                Value::symbol(Symbol::intern("text")),
+                                Value::string(":look"),
+                            )])]),
+                        ),
+                    ]),
+                    Value::map([
+                        (Value::symbol(Symbol::intern("tag")), Value::string("pre")),
+                        (Value::symbol(Symbol::intern("attrs")), Value::map([])),
+                        (
+                            Value::symbol(Symbol::intern("children")),
+                            Value::list([Value::map([(
+                                Value::symbol(Symbol::intern("text")),
+                                Value::string("verb look()"),
+                            )])]),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]);
+
+        let collapsed_row = Value::map([
+            (
+                Value::symbol(Symbol::intern("tag")),
+                Value::string("details"),
+            ),
+            (Value::symbol(Symbol::intern("attrs")), Value::map([])),
+            (
+                Value::symbol(Symbol::intern("children")),
+                Value::list([Value::map([
+                    (
+                        Value::symbol(Symbol::intern("tag")),
+                        Value::string("summary"),
+                    ),
+                    (Value::symbol(Symbol::intern("attrs")), Value::map([])),
+                    (
+                        Value::symbol(Symbol::intern("children")),
+                        Value::list([Value::map([(
+                            Value::symbol(Symbol::intern("text")),
+                            Value::string(":Name @ 0"),
+                        )])]),
+                    ),
+                ])]),
+            ),
+        ]);
+
+        assert!(DomNode::from_mica_value(&code_row).is_ok());
+        assert!(DomNode::from_mica_value(&collapsed_row).is_ok());
     }
 
     #[test]

@@ -42,6 +42,7 @@ verb mud_handle_sync_action(source @ #mud_load_older_events_action<_>, endpoint,
   let new_limit = current_limit + 40
   retract MudNarrativeLimit(endpoint, _)
   assert MudNarrativeLimit(endpoint, new_limit)
+  mud_bump_ui_revision(endpoint())
   return true
 end
 
@@ -84,6 +85,108 @@ verb mud_handle_sync_action(source @ #mud_inspect_action<_>, endpoint, session, 
   return true
 end
 
+verb mud_handle_sync_action(source @ #mud_mica_inspect_action<_>, endpoint, session, view, event, target, fields)
+  if MudView(view) == false || event != "submit"
+    return false
+  end
+
+  let current = mud_current_actor()
+  if current == nothing || mud_can_program(current) == false || fields[:entity] == nothing
+    return false
+  end
+
+  let selected = from_literal(fields[:entity])
+  if selected == nothing
+    return false
+  end
+
+  let previous = one MudSessionMicaInspect(endpoint(), ?previous)
+  if previous != nothing && previous != selected
+    retract MudSessionMicaInspectBack(endpoint(), _)
+    retract MudSessionMicaInspectBack(endpoint, _)
+    assert MudSessionMicaInspectBack(endpoint(), previous)
+    assert MudSessionMicaInspectBack(endpoint, previous)
+  end
+  retract MudSessionMicaInspect(endpoint(), _)
+  retract MudSessionMicaInspect(endpoint, _)
+  assert MudSessionMicaInspect(endpoint(), selected)
+  assert MudSessionMicaInspect(endpoint, selected)
+  mud_bump_ui_revision(endpoint())
+  mud_record_text(current, string_concat("> mica inspect ", mud_actor_name(selected)))
+  return true
+end
+
+verb mud_handle_sync_action(source @ #mud_mica_inspect_close_action<_>, endpoint, session, view, event, target, fields)
+  if MudView(view) == false || event != "submit"
+    return false
+  end
+
+  let current = mud_current_actor()
+  if current == nothing || mud_can_program(current) == false
+    return false
+  end
+
+  retract MudSessionMicaInspect(endpoint(), _)
+  retract MudSessionMicaInspect(endpoint, _)
+  retract MudSessionMicaInspectBack(endpoint(), _)
+  retract MudSessionMicaInspectBack(endpoint, _)
+  mud_bump_ui_revision(endpoint())
+  return true
+end
+
+verb mud_handle_sync_action(source @ #mud_mica_inspect_back_action<_>, endpoint, session, view, event, target, fields)
+  if MudView(view) == false || event != "submit"
+    return false
+  end
+
+  let current = mud_current_actor()
+  if current == nothing || mud_can_program(current) == false
+    return false
+  end
+
+  let previous = one MudSessionMicaInspectBack(endpoint(), ?previous)
+  if previous == nothing
+    return false
+  end
+
+  let selected = one MudSessionMicaInspect(endpoint(), ?selected)
+  retract MudSessionMicaInspect(endpoint(), _)
+  retract MudSessionMicaInspect(endpoint, _)
+  assert MudSessionMicaInspect(endpoint(), previous)
+  assert MudSessionMicaInspect(endpoint, previous)
+  retract MudSessionMicaInspectBack(endpoint(), _)
+  retract MudSessionMicaInspectBack(endpoint, _)
+  if selected != nothing && selected != previous
+    assert MudSessionMicaInspectBack(endpoint(), selected)
+    assert MudSessionMicaInspectBack(endpoint, selected)
+  end
+  mud_bump_ui_revision(endpoint())
+  return true
+end
+
+verb mud_handle_sync_action(source @ #mud_mica_method_mode_action<_>, endpoint, session, view, event, target, fields)
+  if MudView(view) == false || event != "submit"
+    return false
+  end
+
+  let current = mud_current_actor()
+  if current == nothing || mud_can_program(current) == false
+    return false
+  end
+
+  let mode = fields[:mode]
+  if mode != "direct" && mode != "inherited" && mode != "all"
+    return false
+  end
+
+  retract MudSessionMicaMethodMode(endpoint(), _)
+  retract MudSessionMicaMethodMode(endpoint, _)
+  assert MudSessionMicaMethodMode(endpoint(), mode)
+  assert MudSessionMicaMethodMode(endpoint, mode)
+  mud_bump_ui_revision(endpoint())
+  return true
+end
+
 verb mud_handle_sync_action(source @ #mud_command_action<_>, endpoint, session, view, event, target, fields)
   if MudView(view) == false || event != "submit"
     return false
@@ -98,6 +201,28 @@ verb mud_handle_sync_action(source @ #mud_command_action<_>, endpoint, session, 
   if line == ""
     return false
   end
+
+  let lowered = lower(line)
+  if string_starts_with(lowered, "mica inspect ") && mud_can_program(current)
+    let selected = match_object(current, trim(string_slice(line, 13, string_len(line))))
+    if selected != nothing
+      let previous = one MudSessionMicaInspect(endpoint(), ?previous)
+      if previous != nothing && previous != selected
+        retract MudSessionMicaInspectBack(endpoint(), _)
+        retract MudSessionMicaInspectBack(endpoint, _)
+        assert MudSessionMicaInspectBack(endpoint(), previous)
+        assert MudSessionMicaInspectBack(endpoint, previous)
+      end
+      retract MudSessionMicaInspect(endpoint(), _)
+      retract MudSessionMicaInspect(endpoint, _)
+      assert MudSessionMicaInspect(endpoint(), selected)
+      assert MudSessionMicaInspect(endpoint, selected)
+      mud_bump_ui_revision(endpoint())
+      mud_record_text(current, string_concat("> mica inspect ", mud_actor_name(selected)))
+      return true
+    end
+  end
+
   let selected = mud_sync_selected_entity(current, line, fields)
   if selected != nothing
     retract MudSessionInspect(endpoint(), _)
