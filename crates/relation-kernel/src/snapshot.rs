@@ -159,7 +159,7 @@ impl Snapshot {
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
         let mut visible = self.scan_extensional(relation, bindings)?;
-        if self.rules.is_empty() {
+        if !relation_has_active_rule_head(&self.rules, relation) {
             return Ok(visible);
         }
 
@@ -176,7 +176,7 @@ impl Snapshot {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
-        if self.rules.is_empty() {
+        if !relation_has_active_rule_head(&self.rules, relation) {
             return self.visit_extensional(relation, bindings, visitor);
         }
 
@@ -266,7 +266,7 @@ impl Snapshot {
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
         let mut estimate = self.relation(relation)?.estimate_scan_count(bindings)?;
-        if !self.rules.is_empty()
+        if relation_has_active_rule_head(&self.rules, relation)
             && let Some(rows) = self.derived_tuples()?.get(&relation)
         {
             estimate += rows
@@ -348,6 +348,30 @@ impl Snapshot {
         Ok(methods)
     }
 
+    pub(crate) fn cached_applicable_positional_methods(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+    ) -> Result<Vec<Value>, KernelError> {
+        if let Some(methods) = self
+            .dispatch_cache
+            .get_positional(relations, selector, args)
+        {
+            return Ok(methods);
+        }
+
+        let methods = crate::dispatch::applicable_positional_methods(
+            self,
+            relations,
+            selector.clone(),
+            args,
+        )?;
+        self.dispatch_cache
+            .insert_positional(relations, selector, args, methods.clone());
+        Ok(methods)
+    }
+
     pub(crate) fn cached_method_program(
         &self,
         relation: RelationId,
@@ -382,6 +406,15 @@ pub(crate) fn active_rules(rules: &[RuleDefinition]) -> Vec<crate::Rule> {
         .filter(|rule| rule.active())
         .map(|rule| rule.rule().clone())
         .collect()
+}
+
+pub(crate) fn relation_has_active_rule_head(
+    rules: &[RuleDefinition],
+    relation: RelationId,
+) -> bool {
+    rules
+        .iter()
+        .any(|rule| rule.active() && rule.rule().head_relation() == relation)
 }
 
 impl From<RuleEvalError> for KernelError {
@@ -420,6 +453,16 @@ impl DispatchRead for Snapshot {
         method: &Value,
     ) -> Result<Option<Option<Value>>, KernelError> {
         self.cached_method_program(relation, method).map(Some)
+    }
+
+    fn cached_applicable_positional_methods(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+    ) -> Result<Option<Vec<Value>>, KernelError> {
+        self.cached_applicable_positional_methods(relations, selector, args)
+            .map(Some)
     }
 }
 

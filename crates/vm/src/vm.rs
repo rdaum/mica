@@ -22,11 +22,13 @@ use crate::{
 use mica_relation_kernel::{
     ApplicableMethodCall, ComposedTransactionRead, DispatchRead, DispatchRelations, RelationId,
     RelationRead, RelationWorkspace, ScanControl, Transaction, TransientStore, Tuple,
-    applicable_method_calls_normalized, applicable_positional_methods, method_program_id,
+    applicable_method_calls_normalized, applicable_positional_methods_cached, method_program_id,
     normalize_dispatch_roles,
 };
 use mica_var::{FunctionId, Identity, Symbol, Value, ValueKind};
-use std::sync::{Arc, RwLock};
+use std::cell::RefCell;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
@@ -182,6 +184,7 @@ pub struct VmHostContext<'ctx, 'kernel> {
     runtime_context: RuntimeContext,
     transient: Option<TransientAccess<'ctx>>,
     transient_scopes: &'ctx [Identity],
+    trace: VmHostTrace,
 }
 
 impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
@@ -204,6 +207,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
             runtime_context,
             transient: None,
             transient_scopes: &[],
+            trace: VmHostTrace::new(),
         }
     }
 
@@ -226,6 +230,10 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
         self.transient_scopes = transient_scopes;
         self
     }
+
+    pub fn emit_trace_summary(&self, task_id: u64) {
+        self.trace.emit_summary(task_id);
+    }
 }
 
 impl RelationRead for VmHostContext<'_, '_> {
@@ -234,7 +242,8 @@ impl RelationRead for VmHostContext<'_, '_> {
         relation: mica_relation_kernel::RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, mica_relation_kernel::KernelError> {
-        match &self.transient {
+        let start = self.trace.start();
+        let rows = match &self.transient {
             Some(TransientAccess::Exclusive(transient)) => {
                 let reader =
                     ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
@@ -247,7 +256,10 @@ impl RelationRead for VmHostContext<'_, '_> {
                 reader.scan_relation(relation, bindings)
             }
             None => self.tx.scan_relation(relation, bindings),
-        }
+        }?;
+        self.trace
+            .record_relation("scan", relation, bindings, rows.len(), start);
+        Ok(rows)
     }
 
     fn visit_relation(
@@ -256,28 +268,40 @@ impl RelationRead for VmHostContext<'_, '_> {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, mica_relation_kernel::KernelError>,
     ) -> Result<(), mica_relation_kernel::KernelError> {
-        match &self.transient {
+        let start = self.trace.start();
+        let mut rows = 0usize;
+        let result = match &self.transient {
             Some(TransientAccess::Exclusive(transient)) => {
                 let reader =
                     ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
-                reader.visit_relation(relation, bindings, visitor)
+                reader.visit_relation(relation, bindings, &mut |tuple| {
+                    rows += 1;
+                    visitor(tuple)
+                })
             }
             Some(TransientAccess::Shared(transient)) => {
-                let rows = {
+                let tuples = {
                     let transient = transient.read().unwrap();
                     let reader =
                         ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
                     reader.scan_relation(relation, bindings)?
                 };
-                for tuple in rows {
+                for tuple in tuples {
+                    rows += 1;
                     if visitor(&tuple)? == ScanControl::Stop {
                         break;
                     }
                 }
                 Ok(())
             }
-            None => self.tx.visit_relation(relation, bindings, visitor),
-        }
+            None => self.tx.visit_relation(relation, bindings, &mut |tuple| {
+                rows += 1;
+                visitor(tuple)
+            }),
+        };
+        self.trace
+            .record_relation("visit", relation, bindings, rows, start);
+        result
     }
 }
 
@@ -288,7 +312,8 @@ impl DispatchRead for VmHostContext<'_, '_> {
         selector: &Value,
         roles: &[(Value, Value)],
     ) -> Result<Option<Vec<ApplicableMethodCall>>, mica_relation_kernel::KernelError> {
-        match &self.transient {
+        let start = self.trace.start();
+        let calls = match &self.transient {
             Some(TransientAccess::Exclusive(transient)) => {
                 let reader =
                     ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
@@ -303,7 +328,15 @@ impl DispatchRead for VmHostContext<'_, '_> {
             None => {
                 DispatchRead::cached_applicable_method_calls(&*self.tx, relations, selector, roles)
             }
-        }
+        }?;
+        self.trace.record_dispatch(
+            "applicable_methods",
+            selector,
+            roles.len(),
+            calls.as_ref().map_or(0, Vec::len),
+            start,
+        );
+        Ok(calls)
     }
 
     fn cached_method_program(
@@ -311,7 +344,8 @@ impl DispatchRead for VmHostContext<'_, '_> {
         relation: mica_relation_kernel::RelationId,
         method: &Value,
     ) -> Result<Option<Option<Value>>, mica_relation_kernel::KernelError> {
-        match &self.transient {
+        let start = self.trace.start();
+        let program = match &self.transient {
             Some(TransientAccess::Exclusive(transient)) => {
                 let reader =
                     ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
@@ -324,7 +358,43 @@ impl DispatchRead for VmHostContext<'_, '_> {
                 reader.cached_method_program(relation, method)
             }
             None => DispatchRead::cached_method_program(&*self.tx, relation, method),
-        }
+        }?;
+        self.trace
+            .record_method_program(relation, method, program.is_some(), start);
+        Ok(program)
+    }
+
+    fn cached_applicable_positional_methods(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+    ) -> Result<Option<Vec<Value>>, mica_relation_kernel::KernelError> {
+        let start = self.trace.start();
+        let methods = match &self.transient {
+            Some(TransientAccess::Exclusive(transient)) => {
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
+                reader.cached_applicable_positional_methods(relations, selector, args)
+            }
+            Some(TransientAccess::Shared(transient)) => {
+                let transient = transient.read().unwrap();
+                let reader =
+                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
+                reader.cached_applicable_positional_methods(relations, selector, args)
+            }
+            None => DispatchRead::cached_applicable_positional_methods(
+                &*self.tx, relations, selector, args,
+            ),
+        }?;
+        self.trace.record_dispatch(
+            "applicable_positional_methods",
+            selector,
+            args.len(),
+            methods.as_ref().map_or(0, Vec::len),
+            start,
+        );
+        Ok(methods)
     }
 }
 
@@ -364,6 +434,178 @@ impl RelationWorkspace for VmHostContext<'_, '_> {
         }
         Ok(())
     }
+}
+
+struct VmHostTrace {
+    enabled: bool,
+    detail_threshold: Duration,
+    stats: RefCell<VmHostTraceStats>,
+}
+
+#[derive(Default)]
+struct VmHostTraceStats {
+    scan_count: usize,
+    scan_rows: usize,
+    scan_time: Duration,
+    visit_count: usize,
+    visit_rows: usize,
+    visit_time: Duration,
+    dispatch_count: usize,
+    dispatch_calls: usize,
+    dispatch_time: Duration,
+    method_program_count: usize,
+    method_program_hits: usize,
+    method_program_time: Duration,
+}
+
+impl VmHostTrace {
+    fn new() -> Self {
+        Self {
+            enabled: vm_host_trace_enabled(),
+            detail_threshold: vm_host_trace_detail_threshold(),
+            stats: RefCell::new(VmHostTraceStats::default()),
+        }
+    }
+
+    fn start(&self) -> Option<Instant> {
+        self.enabled.then(Instant::now)
+    }
+
+    fn record_relation(
+        &self,
+        op: &'static str,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        rows: usize,
+        start: Option<Instant>,
+    ) {
+        let Some(start) = start else {
+            return;
+        };
+        let elapsed = start.elapsed();
+        {
+            let mut stats = self.stats.borrow_mut();
+            if op == "scan" {
+                stats.scan_count += 1;
+                stats.scan_rows += rows;
+                stats.scan_time += elapsed;
+            } else {
+                stats.visit_count += 1;
+                stats.visit_rows += rows;
+                stats.visit_time += elapsed;
+            }
+        }
+        if elapsed < self.detail_threshold {
+            return;
+        }
+        eprintln!(
+            "vm-host-trace-detail op={} relation={:?} bound={} rows={} +{:?}",
+            op,
+            relation,
+            bindings.iter().filter(|binding| binding.is_some()).count(),
+            rows,
+            elapsed
+        );
+    }
+
+    fn record_dispatch(
+        &self,
+        op: &'static str,
+        selector: &Value,
+        roles: usize,
+        calls: usize,
+        start: Option<Instant>,
+    ) {
+        let Some(start) = start else {
+            return;
+        };
+        let elapsed = start.elapsed();
+        {
+            let mut stats = self.stats.borrow_mut();
+            stats.dispatch_count += 1;
+            stats.dispatch_calls += calls;
+            stats.dispatch_time += elapsed;
+        }
+        if elapsed < self.detail_threshold {
+            return;
+        }
+        eprintln!(
+            "vm-host-trace-detail op={} selector={} roles={} calls={} +{:?}",
+            op, selector, roles, calls, elapsed
+        );
+    }
+
+    fn record_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+        found: bool,
+        start: Option<Instant>,
+    ) {
+        let Some(start) = start else {
+            return;
+        };
+        let elapsed = start.elapsed();
+        {
+            let mut stats = self.stats.borrow_mut();
+            stats.method_program_count += 1;
+            stats.method_program_hits += usize::from(found);
+            stats.method_program_time += elapsed;
+        }
+        if elapsed < self.detail_threshold {
+            return;
+        }
+        eprintln!(
+            "vm-host-trace-detail op=method_program relation={:?} method={} found={} +{:?}",
+            relation, method, found, elapsed
+        );
+    }
+
+    fn emit_summary(&self, task_id: u64) {
+        if !self.enabled {
+            return;
+        }
+        let stats = self.stats.borrow();
+        if stats.scan_count == 0
+            && stats.visit_count == 0
+            && stats.dispatch_count == 0
+            && stats.method_program_count == 0
+        {
+            return;
+        }
+        eprintln!(
+            "vm-host-trace task={} scans={} rows={} time={:?} visits={} rows={} time={:?} dispatches={} calls={} time={:?} method_programs={} hits={} time={:?}",
+            task_id,
+            stats.scan_count,
+            stats.scan_rows,
+            stats.scan_time,
+            stats.visit_count,
+            stats.visit_rows,
+            stats.visit_time,
+            stats.dispatch_count,
+            stats.dispatch_calls,
+            stats.dispatch_time,
+            stats.method_program_count,
+            stats.method_program_hits,
+            stats.method_program_time
+        );
+    }
+}
+
+fn vm_host_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("MICA_VM_HOST_TRACE").is_some())
+}
+
+fn vm_host_trace_detail_threshold() -> Duration {
+    static THRESHOLD: OnceLock<Duration> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("MICA_VM_HOST_TRACE_DETAIL_US")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_micros)
+            .unwrap_or_else(|| Duration::from_millis(10))
+    })
 }
 
 impl VmHost for VmHostContext<'_, '_> {
@@ -1195,8 +1437,12 @@ impl RegisterVm {
                 let selector = self.resolve_operand_ref(program, *selector);
                 let args = self.resolve_operands(program, program.operands(*args));
                 let spec = program.dispatch_spec(*spec);
-                let methods =
-                    applicable_positional_methods(host, spec.relations, selector.clone(), &args)?;
+                let methods = applicable_positional_methods_cached(
+                    host,
+                    spec.relations,
+                    selector.clone(),
+                    &args,
+                )?;
                 let method = select_authorized_method(host.authority(), selector.clone(), methods)?;
                 let program_id = method_program_id(host, spec.program_relation, &method)?
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
@@ -1224,8 +1470,12 @@ impl RegisterVm {
                 let selector = self.resolve_operand_ref(program, *selector);
                 let args = self.resolve_list_items(program, program.list_items(*args))?;
                 let spec = program.dispatch_spec(*spec);
-                let methods =
-                    applicable_positional_methods(host, spec.relations, selector.clone(), &args)?;
+                let methods = applicable_positional_methods_cached(
+                    host,
+                    spec.relations,
+                    selector.clone(),
+                    &args,
+                )?;
                 let method = select_authorized_method(host.authority(), selector.clone(), methods)?;
                 let program_id = method_program_id(host, spec.program_relation, &method)?
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {

@@ -664,7 +664,12 @@ async fn route_dom_event(
         .map_err(format_driver_error)?;
     trace.mark("sync_event");
     match submitted.outcome {
-        TaskOutcome::Complete { .. } | TaskOutcome::Suspended { .. } => {}
+        TaskOutcome::Complete { value, .. } => {
+            if std::env::var_os("MICA_WT_TRACE_SYNC").is_some() {
+                eprintln!("sync-trace dom_event sync_event_value {value}");
+            }
+        }
+        TaskOutcome::Suspended { .. } => {}
         TaskOutcome::Aborted { error, .. } => {
             return Err(format!("sync_event aborted: {error}"));
         }
@@ -1168,6 +1173,7 @@ fn route_driver_event(
         for datagram in effect_datagrams(effect.target, &effect.value) {
             let _ = state.output.send_datagram(datagram);
         }
+        return true;
     }
     false
 }
@@ -1607,14 +1613,10 @@ mod tests {
             assert!(payload_text.contains("First Room"));
             assert!(payload_text.contains("Things you can do here"));
             assert!(payload_text.contains("guide-token"));
-            assert!(payload_text.contains("scene-summary"));
-            assert!(payload_text.contains("summary-metric"));
-            assert!(payload_text.contains("Room: "));
-            assert!(payload_text.contains("room-snapshot"));
-            assert!(payload_text.contains("snapshot-row"));
-            assert!(payload_text.contains("Players"));
-            assert!(payload_text.contains("player-chip"));
-            assert!(payload_text.contains("look Bob"));
+            assert!(payload_text.contains("room-panel"));
+            assert!(payload_text.contains("mud-sidebar"));
+            assert!(payload_text.contains("People here"));
+            assert!(payload_text.contains("presence-card"));
             assert!(payload_text.contains("object-card"));
             assert!(payload_text.contains("brass coin"));
             assert!(payload_text.contains("Inventory"));
@@ -1629,9 +1631,8 @@ mod tests {
                 serde_json::from_slice(&command_delta.payload).unwrap();
             let command_payload_text = serde_json::to_string(&command_payload).unwrap();
             assert!(command_payload_text.contains("event-line transfer"));
-            assert!(command_payload_text.contains("latest-event"));
-            assert!(command_payload_text.contains("event-meta"));
-            assert!(command_payload_text.contains("event-meta-chip"));
+            assert!(command_payload_text.contains("event-line-main"));
+            assert!(command_payload_text.contains("event-kind"));
             assert!(command_payload_text.contains("event-entity"));
             assert!(command_payload_text.contains("data-entity"));
             assert!(command_payload_text.contains("entity-action"));
@@ -1709,8 +1710,8 @@ mod tests {
             let payload: serde_json::Value = serde_json::from_slice(&delta.payload).unwrap();
             let payload_text = serde_json::to_string(&payload).unwrap();
             assert!(payload_text.contains("Bob"));
-            assert!(payload_text.contains("look Alice"));
-            assert!(payload_text.contains("player-chip"));
+            assert!(payload_text.contains("mud-sidebar"));
+            assert!(payload_text.contains("People here"));
             assert!(!payload_text.contains("look Bob"));
         });
     }
@@ -1767,13 +1768,12 @@ mod tests {
                 serde_json::from_slice(&bob_delta.payload).unwrap();
             let bob_payload_text = serde_json::to_string(&bob_payload).unwrap();
             assert!(bob_payload_text.contains("Alice"));
-            assert!(bob_payload_text.contains("look Alice"));
             assert!(bob_payload_text.contains("actor-entity"));
             assert!(bob_payload_text.contains("takes"));
             assert!(bob_payload_text.contains("coin"));
             assert!(bob_payload_text.contains("event-line transfer"));
-            assert!(bob_payload_text.contains("latest-event"));
-            assert!(bob_payload_text.contains("event-meta"));
+            assert!(bob_payload_text.contains("event-line-main"));
+            assert!(bob_payload_text.contains("event-kind"));
             assert!(bob_payload_text.contains("entity-action"));
 
             assert!(matches!(
@@ -1859,9 +1859,9 @@ mod tests {
             let poll_payload_text = serde_json::to_string(&poll_payload).unwrap();
             assert!(poll_payload_text.contains("cheerful ding"));
             assert!(poll_payload_text.contains("event-line alert"));
-            assert!(poll_payload_text.contains("latest-event"));
-            assert!(poll_payload_text.contains("event-meta"));
-            assert!(poll_payload_text.contains("look button"));
+            assert!(poll_payload_text.contains("event-line-main"));
+            assert!(poll_payload_text.contains("event-kind"));
+            assert!(poll_payload_text.contains("data-entity"));
             assert!(poll_payload_text.contains("entity-button"));
         });
     }
@@ -1996,7 +1996,16 @@ mod tests {
             .run_filein(include_str!("../../../apps/shared/sync-dom.mica"))
             .unwrap();
         runner
-            .run_filein(include_str!("../../../apps/mud/sync.mica"))
+            .run_filein(include_str!("../../../apps/mud/ui-session.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/ui-compose.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/ui-narrative.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/ui-actions.mica"))
             .unwrap();
         runner
             .run_filein(include_str!("../../../apps/mud/http.mica"))
@@ -2086,7 +2095,9 @@ mod tests {
                         connection
                             .send_datagram(encoded_sync_envelope(need_view.as_ref()))
                             .map_err(|error| error.to_string())?;
-                        let snapshot = receive_sync_envelope(&connection).await?;
+                        let snapshot = receive_sync_envelope(&connection)
+                            .await
+                            .map_err(|error| format!("initial MUD snapshot: {error}"))?;
 
                         connection
                             .send_datagram(dom_event_payload_json(&DomEventPayload {
@@ -2103,7 +2114,10 @@ mod tests {
                                 ]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let delta = receive_sync_envelope(&connection).await?;
+                        let delta =
+                            receive_newer_sync_envelope(&connection, snapshot.server_revision)
+                                .await
+                                .map_err(|error| format!("MUD login delta: {error}"))?;
 
                         Ok((snapshot, delta))
                     })
@@ -2165,7 +2179,9 @@ mod tests {
                                 fields: BTreeMap::from([("text".to_owned(), "alice".to_owned())]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let delta = receive_sync_envelope(&connection).await?;
+                        let delta =
+                            receive_newer_sync_envelope(&connection, snapshot.server_revision)
+                                .await?;
 
                         connection
                             .send_datagram(dom_event_payload_json(&DomEventPayload {
@@ -2182,7 +2198,10 @@ mod tests {
                                 )]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let command_delta = receive_sync_envelope(&connection).await?;
+                        let command_delta =
+                            receive_newer_sync_envelope(&connection, delta.server_revision)
+                                .await
+                                .map_err(|error| format!("MUD command delta: {error}"))?;
 
                         connection
                             .send_datagram(dom_event_payload_json(&DomEventPayload {
@@ -2199,7 +2218,10 @@ mod tests {
                                 ]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let mut inspect_delta = receive_sync_envelope(&connection).await?;
+                        let mut inspect_delta =
+                            receive_newer_sync_envelope(&connection, command_delta.server_revision)
+                                .await
+                                .map_err(|error| format!("MUD inspect delta: {error}"))?;
                         for _ in 0..6 {
                             let payload: serde_json::Value =
                                 serde_json::from_slice(&inspect_delta.payload)
@@ -2210,7 +2232,12 @@ mod tests {
                             {
                                 break;
                             }
-                            inspect_delta = receive_sync_envelope(&connection).await?;
+                            inspect_delta = receive_newer_sync_envelope(
+                                &connection,
+                                command_delta.server_revision,
+                            )
+                            .await
+                            .map_err(|error| format!("MUD inspect retry delta: {error}"))?;
                         }
 
                         Ok((snapshot, delta, command_delta, inspect_delta))
@@ -2274,7 +2301,9 @@ mod tests {
                                 fields: BTreeMap::from([("text".to_owned(), actor.to_owned())]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let delta = receive_sync_envelope(&connection).await?;
+                        let delta =
+                            receive_newer_sync_envelope(&connection, snapshot.server_revision)
+                                .await?;
 
                         Ok((snapshot, delta))
                     })
@@ -2361,9 +2390,10 @@ mod tests {
                             },
                         )
                         .await?;
-                        let alice_login = receive_sync_envelope(&alice)
-                            .await
-                            .map_err(|error| format!("alice login delta: {error}"))?;
+                        let alice_login =
+                            receive_newer_sync_envelope(&alice, alice_snapshot.server_revision)
+                                .await
+                                .map_err(|error| format!("alice login delta: {error}"))?;
 
                         send_dom_event_stream(
                             &bob,
@@ -2379,9 +2409,10 @@ mod tests {
                             },
                         )
                         .await?;
-                        let bob_login = receive_sync_envelope(&bob)
-                            .await
-                            .map_err(|error| format!("bob login delta: {error}"))?;
+                        let bob_login =
+                            receive_newer_sync_envelope(&bob, bob_snapshot.server_revision)
+                                .await
+                                .map_err(|error| format!("bob login delta: {error}"))?;
 
                         alice
                             .send_datagram(dom_event_payload_json(&DomEventPayload {
@@ -2431,7 +2462,7 @@ mod tests {
                             bob.send_datagram(encoded_sync_envelope(bob_have_view.as_ref()))
                                 .map_err(|error| error.to_string())?;
 
-                            match receive_sync_envelope(&bob).await {
+                            match receive_newer_sync_envelope(&bob, bob_client_revision).await {
                                 Ok(envelope) => {
                                     bob_client_revision = envelope.server_revision;
                                     bob_client_signature = envelope.server_signature;
@@ -2473,9 +2504,10 @@ mod tests {
                             ]),
                         }))
                         .map_err(|error| error.to_string())?;
-                        let mut bob_inspect_delta = receive_sync_envelope(&bob)
-                            .await
-                            .map_err(|error| format!("bob inspect delta: {error}"))?;
+                        let mut bob_inspect_delta =
+                            receive_newer_sync_envelope(&bob, bob_delta.server_revision)
+                                .await
+                                .map_err(|error| format!("bob inspect delta: {error}"))?;
                         for _ in 0..6 {
                             let payload: serde_json::Value =
                                 serde_json::from_slice(&bob_inspect_delta.payload)
@@ -2487,9 +2519,10 @@ mod tests {
                             {
                                 break;
                             }
-                            bob_inspect_delta = receive_sync_envelope(&bob)
-                                .await
-                                .map_err(|error| format!("bob inspect delta: {error}"))?;
+                            bob_inspect_delta =
+                                receive_newer_sync_envelope(&bob, bob_delta.server_revision)
+                                    .await
+                                    .map_err(|error| format!("bob inspect delta: {error}"))?;
                         }
                         alice.close(0u32.into(), b"test complete");
                         bob.close(0u32.into(), b"test complete");
@@ -2553,7 +2586,9 @@ mod tests {
                                 fields: BTreeMap::from([("text".to_owned(), "alice".to_owned())]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let login_delta = receive_sync_envelope(&connection).await?;
+                        let login_delta =
+                            receive_newer_sync_envelope(&connection, snapshot.server_revision)
+                                .await?;
 
                         connection
                             .send_datagram(dom_event_payload_json(&DomEventPayload {
@@ -2570,9 +2605,13 @@ mod tests {
                                 )]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let push_delta = receive_sync_envelope(&connection).await?;
+                        let push_delta =
+                            receive_newer_sync_envelope(&connection, login_delta.server_revision)
+                                .await?;
 
-                        let mut delayed_delta = receive_sync_envelope(&connection).await?;
+                        let mut delayed_delta =
+                            receive_newer_sync_envelope(&connection, push_delta.server_revision)
+                                .await?;
                         for _ in 0..6 {
                             let payload: serde_json::Value =
                                 serde_json::from_slice(&delayed_delta.payload)
@@ -2583,7 +2622,11 @@ mod tests {
                             {
                                 break;
                             }
-                            delayed_delta = receive_sync_envelope(&connection).await?;
+                            delayed_delta = receive_newer_sync_envelope(
+                                &connection,
+                                push_delta.server_revision,
+                            )
+                            .await?;
                         }
                         connection.close(0u32.into(), b"test complete");
 
@@ -2649,7 +2692,7 @@ mod tests {
                                 ]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        receive_sync_envelope(&connection).await
+                        receive_newer_sync_envelope(&connection, snapshot.server_revision).await
                     })
                 });
             let _ = result_tx.send(result);
@@ -2712,7 +2755,9 @@ mod tests {
                                 ]),
                             }))
                             .map_err(|error| error.to_string())?;
-                        let delta = receive_sync_envelope(&connection).await?;
+                        let delta =
+                            receive_newer_sync_envelope(&connection, snapshot.server_revision)
+                                .await?;
 
                         let have_view = SyncEnvelope {
                             kind: SyncMessageKind::HaveView,
@@ -2727,19 +2772,13 @@ mod tests {
                         connection
                             .send_datagram(encoded_sync_envelope(have_view.as_ref()))
                             .map_err(|error| error.to_string())?;
-                        match tokio::time::timeout(
+                        expect_no_newer_sync_envelope(
+                            &connection,
+                            delta.server_revision,
                             Duration::from_millis(200),
-                            connection.receive_datagram(),
                         )
-                        .await
-                        {
-                            Err(_) => Ok((snapshot, delta)),
-                            Ok(Ok(datagram)) => Err(format!(
-                                "unexpected HaveView response: {:?}",
-                                decode_sync_envelope(&datagram.payload())
-                            )),
-                            Ok(Err(error)) => Err(error.to_string()),
-                        }
+                        .await?;
+                        Ok((snapshot, delta))
                     })
                 });
             let _ = result_tx.send(result);
@@ -2750,6 +2789,44 @@ mod tests {
         connection: &wtransport::Connection,
     ) -> Result<SyncEnvelope, String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        receive_sync_envelope_until(connection, deadline).await
+    }
+
+    async fn receive_newer_sync_envelope(
+        connection: &wtransport::Connection,
+        current_revision: u64,
+    ) -> Result<SyncEnvelope, String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let envelope = receive_sync_envelope_until(connection, deadline).await?;
+            if envelope.server_revision > current_revision {
+                return Ok(envelope);
+            }
+        }
+    }
+
+    async fn expect_no_newer_sync_envelope(
+        connection: &wtransport::Connection,
+        current_revision: u64,
+        duration: Duration,
+    ) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + duration;
+        loop {
+            match receive_sync_envelope_until(connection, deadline).await {
+                Ok(envelope) if envelope.server_revision > current_revision => {
+                    return Err(format!("unexpected newer sync envelope: {envelope:?}"));
+                }
+                Ok(_) => {}
+                Err(error) if error.starts_with("timed out waiting") => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn receive_sync_envelope_until(
+        connection: &wtransport::Connection,
+        deadline: tokio::time::Instant,
+    ) -> Result<SyncEnvelope, String> {
         let mut chunks: TestChunkMap = HashMap::new();
         loop {
             let now = tokio::time::Instant::now();

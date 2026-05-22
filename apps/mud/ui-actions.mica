@@ -1,0 +1,71 @@
+// Browser-originated UI action routing for the server-owned MUD view.
+
+verb mud_sync_selected_entity(actor @ #player, line, fields)
+  if fields[:entity] != nothing
+    let selected = match_object(actor, lower(trim(fields[:entity])))
+    if selected != nothing
+      return selected
+    end
+  end
+
+  let trimmed = trim(line)
+  let lowered = lower(trimmed)
+  if string_starts_with(lowered, "look ")
+    return match_object(actor, trim(string_slice(trimmed, 5, string_len(trimmed))))
+  end
+
+  return nothing
+end
+
+verb sync_event(endpoint, session, view, event, target, action, fields)
+  if view != 21 || event != "submit"
+    return false
+  end
+
+  if action == "mud_login"
+    let selected = mud_login_actor(fields[:text])
+    if selected == nothing
+      return false
+    end
+    retract MudSessionActor(endpoint(), _)
+    assert MudSessionActor(endpoint(), selected)
+    assume_actor(selected)
+    return true
+  end
+
+  let current = mud_current_actor()
+  if current == nothing
+    return false
+  end
+
+  if action == "mud_inspect"
+    let selected = from_literal(fields[:entity])
+    if selected == nothing || CanSee(current, selected) == false
+      return false
+    end
+    retract MudSessionInspect(endpoint(), _)
+    retract MudSessionInspect(endpoint, _)
+    assert MudSessionInspect(endpoint(), selected)
+    assert MudSessionInspect(endpoint, selected)
+    mud_record_text(current, string_concat("> inspect ", mud_actor_name(selected)))
+    return true
+  end
+
+  if action == "mud_command"
+    let line = trim(fields[:text])
+    if line == ""
+      return false
+    end
+    let selected = mud_sync_selected_entity(current, line, fields)
+    if selected != nothing
+      retract MudSessionInspect(endpoint(), _)
+      retract MudSessionInspect(endpoint, _)
+      assert MudSessionInspect(endpoint(), selected)
+      assert MudSessionInspect(endpoint, selected)
+    end
+    mud_record_text(current, string_concat("> ", line))
+    return :command(actor: current, endpoint: endpoint, line: line)
+  end
+
+  return false
+end

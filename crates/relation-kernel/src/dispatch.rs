@@ -59,6 +59,15 @@ pub trait DispatchRead: RelationRead {
     ) -> Result<Option<Option<Value>>, KernelError> {
         Ok(None)
     }
+
+    fn cached_applicable_positional_methods(
+        &self,
+        _relations: DispatchRelations,
+        _selector: &Value,
+        _args: &[Value],
+    ) -> Result<Option<Vec<Value>>, KernelError> {
+        Ok(None)
+    }
 }
 
 pub fn applicable_methods(
@@ -218,6 +227,20 @@ pub fn applicable_positional_methods(
     methods.sort();
     methods.dedup();
     Ok(methods)
+}
+
+pub fn applicable_positional_methods_cached(
+    reader: &impl DispatchRead,
+    relations: DispatchRelations,
+    selector: Value,
+    args: &[Value],
+) -> Result<Vec<Value>, KernelError> {
+    if let Some(methods) =
+        reader.cached_applicable_positional_methods(relations, &selector, args)?
+    {
+        return Ok(methods);
+    }
+    applicable_positional_methods(reader, relations, selector, args)
 }
 
 fn method_call_args(
@@ -747,6 +770,54 @@ mod tests {
                 method: int(100),
                 args: Some(Vec::new())
             }]
+        );
+    }
+
+    #[test]
+    fn transaction_dispatch_uses_snapshot_cache_after_unrelated_local_writes() {
+        let kernel = kernel_with_dispatch_relations();
+        kernel
+            .create_relation(RelationMetadata::new(rel(43), Symbol::intern("Event"), 2))
+            .unwrap();
+        let mut seed = kernel.begin();
+        seed.assert(rel(40), Tuple::from([int(100), sym("look")]))
+            .unwrap();
+        seed.commit().unwrap();
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(43), Tuple::from([int(1), int(2)])).unwrap();
+
+        assert_eq!(
+            applicable_method_calls(&tx, dispatch_relations(), sym("look"), &[]).unwrap(),
+            vec![ApplicableMethodCall {
+                method: int(100),
+                args: Some(Vec::new())
+            }]
+        );
+    }
+
+    #[test]
+    fn transaction_positional_dispatch_uses_snapshot_cache_after_unrelated_local_writes() {
+        let kernel = kernel_with_dispatch_relations();
+        kernel
+            .create_relation(RelationMetadata::new(rel(43), Symbol::intern("Event"), 2))
+            .unwrap();
+        let mut seed = kernel.begin();
+        seed.assert(rel(40), Tuple::from([int(100), sym("look")]))
+            .unwrap();
+        seed.commit().unwrap();
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(43), Tuple::from([int(1), int(2)])).unwrap();
+
+        assert_eq!(
+            applicable_positional_methods(&tx, dispatch_relations(), sym("look"), &[]).unwrap(),
+            vec![int(100)]
+        );
+        assert_eq!(
+            applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[])
+                .unwrap(),
+            vec![int(100)]
         );
     }
 

@@ -18,6 +18,7 @@ use crate::index::{RelationMutationKind, RelationState};
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
     active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
+    relation_has_active_rule_head,
 };
 use crate::tuple::{
     difference_ordered_tuple_rows, finish_with_matching_tuple_rows, union_ordered_tuple_rows,
@@ -71,7 +72,7 @@ impl<'a> Transaction<'a> {
         selector: &Value,
         roles: &[(Value, Value)],
     ) -> Result<Vec<ApplicableMethodCall>, KernelError> {
-        if !self.is_read_only() {
+        if self.has_dispatch_writes(relations) {
             return crate::dispatch::applicable_method_calls_uncached(
                 self, relations, selector, roles,
             );
@@ -86,7 +87,7 @@ impl<'a> Transaction<'a> {
         selector: &Value,
         roles: &[(Value, Value)],
     ) -> Result<Vec<ApplicableMethodCall>, KernelError> {
-        if !self.is_read_only() {
+        if self.has_dispatch_writes(relations) {
             return crate::dispatch::applicable_method_calls_uncached(
                 self, relations, selector, roles,
             );
@@ -100,10 +101,34 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         method: &Value,
     ) -> Result<Option<Value>, KernelError> {
-        if !self.is_read_only() {
+        if self.has_local_writes(relation) {
             return crate::dispatch::method_program_id_uncached(self, relation, method);
         }
         self.base.cached_method_program(relation, method)
+    }
+
+    pub(crate) fn cached_applicable_positional_methods(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+    ) -> Result<Vec<Value>, KernelError> {
+        if self.has_dispatch_writes(relations) {
+            return crate::dispatch::applicable_positional_methods(
+                self,
+                relations,
+                selector.clone(),
+                args,
+            );
+        }
+        self.base
+            .cached_applicable_positional_methods(relations, selector, args)
+    }
+
+    fn has_dispatch_writes(&self, relations: DispatchRelations) -> bool {
+        self.has_local_writes(relations.method_selector)
+            || self.has_local_writes(relations.param)
+            || self.has_local_writes(relations.delegates)
     }
 
     pub fn assert(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
@@ -145,7 +170,7 @@ impl<'a> Transaction<'a> {
 
         let mut visible = self.scan_extensional_rows(relation, bindings)?;
 
-        if !self.base.rules().is_empty() {
+        if relation_has_active_rule_head(self.base.rules(), relation) {
             let derived = RuleSet::new(active_rules(self.base.rules()))
                 .evaluate_fixpoint(&ExtensionalTransactionReader { tx: self })
                 .map_err(KernelError::from)?;
@@ -162,7 +187,9 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
-        if self.base.rules().is_empty() && !self.writes.contains_key(&relation) {
+        if !relation_has_active_rule_head(self.base.rules(), relation)
+            && !self.writes.contains_key(&relation)
+        {
             return self.base.estimate_extensional_scan(relation, bindings);
         }
         Ok(self.scan(relation, bindings)?.len())
@@ -185,7 +212,9 @@ impl<'a> Transaction<'a> {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
-        if self.base.rules().is_empty() && !self.writes.contains_key(&relation) {
+        if !relation_has_active_rule_head(self.base.rules(), relation)
+            && !self.writes.contains_key(&relation)
+        {
             return self.base.visit_extensional(relation, bindings, visitor);
         }
 
@@ -551,6 +580,16 @@ impl DispatchRead for Transaction<'_> {
         method: &Value,
     ) -> Result<Option<Option<Value>>, KernelError> {
         self.cached_method_program(relation, method).map(Some)
+    }
+
+    fn cached_applicable_positional_methods(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+    ) -> Result<Option<Vec<Value>>, KernelError> {
+        self.cached_applicable_positional_methods(relations, selector, args)
+            .map(Some)
     }
 }
 

@@ -1,0 +1,164 @@
+// Narrative/event-log composition for the server-owned MUD view.
+
+verb mud_event_actor_node(value @ #identity, viewer)
+  let name = mud_actor_name(value)
+  if value == viewer
+    return dom_element("strong", {:class -> "event-entity", "data-entity" -> to_literal(value)}, [dom_text("you")])
+  end
+
+  return mud_entity_action_node("", value, string_concat("look ", name), name, "entity-button event-entity actor-entity")
+end
+
+verb mud_event_object_node(event, value @ #identity, viewer)
+  let name = mud_actor_name(value)
+  return mud_entity_action_node("", value, string_concat("look ", name), name, "entity-button event-entity")
+end
+
+verb mud_event_object_node(event, value @ #string, viewer)
+  return dom_element("span", {:class -> "event-quote"}, [dom_text(value)])
+end
+
+verb mud_event_verb(actor, viewer, self, other)
+  if actor == viewer
+    return self
+  end
+
+  return other
+end
+
+verb mud_event_body_node(event, viewer)
+  let kind = one MudEventKind(event, ?kind)
+  let actor = one MudEventActor(event, ?actor)
+
+  if kind == #movement_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " move away.", " moves away."))])
+  elseif kind == #arrival_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " arrive.", " arrives."))])
+  elseif kind == #take_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
+  elseif kind == #take_from_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " take ", " takes ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" from "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
+  elseif kind == #drop_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " drop ", " drops ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(".")])
+  elseif kind == #put_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " put ", " puts ")), mud_event_object_node(event, one MudEventItem(event, ?item), viewer), dom_text(" in "), mud_event_object_node(event, one MudEventContainer(event, ?container), viewer), dom_text(".")])
+  elseif kind == #say_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_actor_node(actor, viewer), dom_text(mud_event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", one MudEventMessage(event, ?message), "\""))])])
+  elseif kind == #button_event
+    return dom_element("div", {:class -> "event-text"}, [mud_event_object_node(event, #red_button, viewer), dom_text(" gives one final cheerful ding.")])
+  end
+
+  return dom_element("div", {:class -> "event-text"}, [dom_text(one MudEventText(event, ?text))])
+end
+
+verb mud_event_class(kind)
+  if kind == #movement_event || kind == #arrival_event
+    return "event-line movement"
+  elseif kind == #take_event || kind == #take_from_event || kind == #drop_event || kind == #put_event
+    return "event-line transfer"
+  elseif kind == #say_event
+    return "event-line speech"
+  elseif kind == #button_event
+    return "event-line alert"
+  end
+
+  return "event-line"
+end
+
+verb mud_event_label(kind)
+  if kind == #movement_event || kind == #arrival_event
+    return "movement"
+  elseif kind == #take_event || kind == #take_from_event || kind == #drop_event || kind == #put_event
+    return "transfer"
+  elseif kind == #say_event
+    return "speech"
+  elseif kind == #button_event
+    return "alert"
+  end
+
+  return "system"
+end
+
+verb mud_event_meta_chip_node(label, value)
+  return dom_element("span", {:class -> "event-meta-chip"}, [dom_element("span", {:class -> "event-meta-label"}, [dom_text(label)]), dom_element("span", {:class -> "event-meta-value"}, [dom_text(value)])])
+end
+
+verb mud_event_meta_node(event, seq, kind)
+  let chips = [mud_event_meta_chip_node("seq", to_literal(seq)), mud_event_meta_chip_node("kind", mud_event_label(kind))]
+  let actor = one MudEventActor(event, ?actor)
+  if actor != nothing
+    chips = [@chips, mud_event_meta_chip_node("actor", mud_actor_name(actor))]
+  end
+
+  let item = one MudEventItem(event, ?item)
+  if item != nothing
+    chips = [@chips, mud_event_meta_chip_node("item", mud_actor_name(item))]
+  end
+
+  let container = one MudEventContainer(event, ?container)
+  if container != nothing
+    chips = [@chips, mud_event_meta_chip_node("container", mud_actor_name(container))]
+  end
+
+  let message = one MudEventMessage(event, ?message)
+  if message != nothing
+    chips = [@chips, mud_event_meta_chip_node("message", message)]
+  end
+
+  return dom_element("div", {:class -> "event-meta"}, chips)
+end
+
+verb mud_event_node(event)
+  let seq = one MudEventSeq(event, ?seq)
+  let text = one MudEventText(event, ?text)
+  let kind = one MudEventKind(event, ?kind)
+  if kind == nothing
+    return dom_element("li", {"data-sync-key" -> to_literal(event), :class -> "event-line"}, [dom_element("span", {:class -> "event-seq"}, [dom_text(string_concat("#", to_literal(seq)))]), dom_text(text)])
+  end
+
+  let badge = dom_element("span", {:class -> "event-kind"}, [dom_text(mud_event_label(kind))])
+  return dom_element("li", {"data-sync-key" -> to_literal(event), :class -> mud_event_class(kind)}, [dom_element("div", {:class -> "event-line-main"}, [dom_element("span", {:class -> "event-seq"}, [dom_text(string_concat("#", to_literal(seq)))]), badge, mud_event_body_node(event, mud_current_actor())])])
+end
+
+verb mud_latest_event_node(actor @ #player, revision)
+  let latest = nothing
+  let latest_seq = -1
+  for found in MudEventDelivery(actor, ?event)
+    let seq = one MudEventSeq(found[:event], ?seq)
+    if seq < revision && seq > latest_seq
+      latest = found[:event]
+      latest_seq = seq
+    end
+  end
+
+  if latest == nothing
+    return dom_element("section", {:id -> "latest-event", :class -> "latest-event empty"}, [dom_element("span", {:class -> "muted"}, [dom_text("No events yet.")])])
+  end
+
+  let text = one MudEventText(latest, ?text)
+  let kind = one MudEventKind(latest, ?kind)
+  if kind == nothing
+    return dom_element("section", {:id -> "latest-event", :class -> "latest-event system"}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text("system")])]), dom_element("div", {:class -> "latest-body"}, [dom_text(text)])])
+  end
+
+  return dom_element("section", {:id -> "latest-event", :class -> string_concat("latest-event ", mud_event_label(kind))}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text(mud_event_label(kind))])]), dom_element("div", {:class -> "latest-body"}, [mud_event_body_node(latest, actor)]), mud_event_meta_node(latest, latest_seq, kind)])
+end
+
+verb mud_narrative_node(actor @ #player, revision)
+  let events = []
+  let count = 0
+  for found in MudEventDelivery(actor, ?event)
+    let seq = one MudEventSeq(found[:event], ?seq)
+    if seq < revision
+      events = [@events, mud_event_node(found[:event])]
+      count = count + 1
+    end
+  end
+
+  if events == []
+    events = [dom_element("li", {:class -> "muted"}, [dom_text("The room is quiet.")])]
+  end
+
+  let heading = dom_element("div", {:class -> "narrative-heading"}, [dom_element("h2", {}, [dom_text("Narrative")]), dom_element("span", {:class -> "narrative-count"}, [dom_text(to_literal(count)), dom_text(" events")])])
+  return dom_element("section", {:id -> "narrative", :class -> "panel narrative", "aria-live" -> "polite", "data-sync-follow" -> "bottom"}, [heading, dom_element("ul", {}, events)])
+end

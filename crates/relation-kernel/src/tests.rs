@@ -867,6 +867,33 @@ fn transaction_method_program_cache_bypasses_snapshot_after_local_writes() {
 }
 
 #[test]
+fn transaction_method_program_cache_survives_unrelated_local_writes() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(93), Symbol::intern("MethodProgram"), 2).with_index([0]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(rel(94), Symbol::intern("Event"), 2))
+        .unwrap();
+    let method = Value::identity(rel(95));
+    let program = Value::identity(rel(96));
+    let mut seed = kernel.begin();
+    seed.assert(rel(93), Tuple::from([method.clone(), program.clone()]))
+        .unwrap();
+    seed.commit().unwrap();
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(94), Tuple::from([int(1), int(2)])).unwrap();
+
+    assert_eq!(
+        method_program_id(&tx, rel(93), &method).unwrap(),
+        Some(program)
+    );
+}
+
+#[test]
 fn composed_transaction_method_program_cache_bypasses_transient_relation() {
     let kernel = RelationKernel::new();
     let metadata =

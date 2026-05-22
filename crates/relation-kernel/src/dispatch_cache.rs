@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug)]
 pub(crate) struct DispatchCache {
     entries: Arc<ArcSwap<BTreeMap<DispatchCacheKey, Arc<[ApplicableMethodCall]>>>>,
+    positional_entries: Arc<ArcSwap<BTreeMap<PositionalDispatchCacheKey, Arc<[Value]>>>>,
     publish_lock: Arc<Mutex<()>>,
 }
 
@@ -27,6 +28,7 @@ impl DispatchCache {
     pub(crate) fn new() -> Self {
         Self {
             entries: Arc::new(ArcSwap::from_pointee(BTreeMap::new())),
+            positional_entries: Arc::new(ArcSwap::from_pointee(BTreeMap::new())),
             publish_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -76,6 +78,36 @@ impl DispatchCache {
     ) {
         let key = DispatchCacheKey::new_normalized(relations, selector, roles);
         self.insert_key(key, methods);
+    }
+
+    pub(crate) fn get_positional(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+    ) -> Option<Vec<Value>> {
+        let key = PositionalDispatchCacheKey::new(relations, selector, args);
+        let entries = self.positional_entries.load();
+        entries.get(&key).map(|methods| methods.to_vec())
+    }
+
+    pub(crate) fn insert_positional(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+        methods: Vec<Value>,
+    ) {
+        let key = PositionalDispatchCacheKey::new(relations, selector, args);
+        let _guard = self.publish_lock.lock().unwrap();
+        let entries = self.positional_entries.load_full();
+        if entries.contains_key(&key) {
+            return;
+        }
+        let methods = Arc::<[Value]>::from(methods);
+        let mut next = (*entries).clone();
+        next.insert(key, methods);
+        self.positional_entries.store(Arc::new(next));
     }
 
     fn insert_key(&self, key: DispatchCacheKey, methods: Vec<ApplicableMethodCall>) {
@@ -128,6 +160,23 @@ impl DispatchCacheKey {
             relations: DispatchRelationsKey::from(relations),
             selector: selector.clone(),
             roles,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct PositionalDispatchCacheKey {
+    relations: DispatchRelationsKey,
+    selector: Value,
+    args: Vec<Value>,
+}
+
+impl PositionalDispatchCacheKey {
+    fn new(relations: DispatchRelations, selector: &Value, args: &[Value]) -> Self {
+        Self {
+            relations: DispatchRelationsKey::from(relations),
+            selector: selector.clone(),
+            args: args.to_vec(),
         }
     }
 }

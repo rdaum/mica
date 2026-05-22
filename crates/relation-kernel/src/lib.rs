@@ -55,8 +55,9 @@ pub use closure::{
 pub use dispatch::{
     ApplicableMethod, ApplicableMethodCall, DispatchRead, DispatchRelations,
     applicable_method_calls, applicable_method_calls_normalized, applicable_method_entries,
-    applicable_methods, applicable_positional_methods, method_program_id, named_method_args,
-    normalize_dispatch_roles, ordered_params, positional_method_args, role_value,
+    applicable_methods, applicable_positional_methods, applicable_positional_methods_cached,
+    method_program_id, named_method_args, normalize_dispatch_roles, ordered_params,
+    positional_method_args, role_value,
 };
 pub use error::{Conflict, ConflictKind, KernelError};
 pub use fact::Fact;

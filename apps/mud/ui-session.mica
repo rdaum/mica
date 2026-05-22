@@ -1,0 +1,207 @@
+// Server-owned UI session state and sync adapter selectors for the MUD app.
+
+make_relation(:CanAssumeActor, 2)
+make_relation(:MudView, 1)
+make_functional_relation(:MudSessionActor, 2, [0])
+make_functional_relation(:MudSessionInspect, 2, [0])
+
+assert MudView(21)
+
+assert CanAssumeActor(#web, #alice)
+assert CanAssumeActor(#web, #bob)
+
+assert CanInvoke(#web, :sync_event)
+assert CanInvoke(#web, :sync_view_revision)
+assert CanInvoke(#web, :sync_view_tree)
+assert CanInvoke(#web, :mud_login_view_node)
+assert CanInvoke(#web, :mud_login_choice_node)
+assert CanInvoke(#web, :mud_status_revision)
+assert CanInvoke(#web, :mud_current_actor)
+assert CanInvoke(#web, :mud_entity_from_literal)
+assert CanInvoke(#web, :mud_login_actor)
+assert CanInvoke(#web, :mud_actor_name)
+assert CanInvoke(#web, :mud_next_event_seq)
+assert CanInvoke(#web, :mud_record_text)
+assert CanInvoke(#web, :mud_record_event)
+assert CanInvoke(#web, :assume_actor)
+assert CanInvoke(#web, :string_concat)
+assert CanInvoke(#web, :lower)
+assert CanInvoke(#web, :trim)
+assert CanRead(#web, :MudView)
+assert CanRead(#web, :MudSessionActor)
+assert CanRead(#web, :MudSessionInspect)
+assert CanRead(#web, :CanAssumeActor)
+assert CanRead(#web, :Delegates)
+assert CanRead(#web, :Name)
+assert CanRead(#web, :MudEventDelivery)
+assert CanRead(#web, :MudEventSeq)
+assert CanRead(#web, :MudEventKind)
+assert CanRead(#web, :MudEventActor)
+assert CanRead(#web, :MudEventItem)
+assert CanRead(#web, :MudEventContainer)
+assert CanRead(#web, :MudEventMessage)
+assert CanWrite(#web, :MudEventDelivery)
+assert CanWrite(#web, :MudEventSeq)
+assert CanWrite(#web, :MudEventText)
+assert CanWrite(#web, :MudEventKind)
+assert CanWrite(#web, :MudEventActor)
+assert CanWrite(#web, :MudEventItem)
+assert CanWrite(#web, :MudEventContainer)
+assert CanWrite(#web, :MudEventMessage)
+assert CanWrite(#web, :MudSessionActor)
+assert CanWrite(#web, :MudSessionInspect)
+
+CanRead(#web, relation) :-
+  RoleCanRead(#player, relation)
+
+CanWrite(#web, relation) :-
+  RoleCanWrite(#player, relation)
+
+CanInvoke(#web, selector) :-
+  RoleCanInvoke(#player, selector)
+
+CanEffect(#web) :-
+  RoleCanEffect(#player)
+
+assert RoleCanInvoke(#player, :sync_event)
+assert RoleCanInvoke(#player, :sync_view_revision)
+assert RoleCanInvoke(#player, :sync_view_tree)
+assert RoleCanInvoke(#player, :mud_status_revision)
+assert RoleCanInvoke(#player, :mud_current_actor)
+assert RoleCanInvoke(#player, :mud_login_actor)
+assert RoleCanInvoke(#player, :mud_actor_name)
+assert RoleCanInvoke(#player, :mud_direction_text)
+assert RoleCanInvoke(#player, :mud_login_choice_node)
+assert RoleCanInvoke(#player, :mud_command_form_node)
+assert RoleCanInvoke(#player, :mud_entity_action_node)
+assert RoleCanInvoke(#player, :mud_login_view_node)
+assert RoleCanInvoke(#player, :mud_world_view_node)
+assert RoleCanInvoke(#player, :mud_guide_node)
+assert RoleCanInvoke(#player, :mud_room_panel_node)
+assert RoleCanInvoke(#player, :mud_scene_summary_node)
+assert RoleCanInvoke(#player, :mud_summary_metric_node)
+assert RoleCanInvoke(#player, :mud_room_object_count)
+assert RoleCanInvoke(#player, :mud_room_people_count)
+assert RoleCanInvoke(#player, :mud_room_exit_count)
+assert RoleCanInvoke(#player, :mud_inventory_count)
+assert RoleCanInvoke(#player, :mud_presence_node)
+assert RoleCanInvoke(#player, :mud_presence_card_node)
+assert RoleCanInvoke(#player, :mud_room_snapshot_node)
+assert RoleCanInvoke(#player, :mud_snapshot_row_node)
+assert RoleCanInvoke(#player, :mud_snapshot_exits_node)
+assert RoleCanInvoke(#player, :mud_snapshot_things_node)
+assert RoleCanInvoke(#player, :mud_snapshot_players_node)
+assert RoleCanInvoke(#player, :mud_exits_node)
+assert RoleCanInvoke(#player, :mud_room_objects_node)
+assert RoleCanInvoke(#player, :mud_inventory_node)
+assert RoleCanInvoke(#player, :mud_inspector_node)
+assert RoleCanInvoke(#player, :mud_entity_initial)
+assert RoleCanInvoke(#player, :mud_entity_kind)
+assert RoleCanInvoke(#player, :mud_entity_location_text)
+assert RoleCanInvoke(#player, :mud_entity_fact_node)
+assert RoleCanInvoke(#player, :mud_entity_facts_node)
+assert RoleCanInvoke(#player, :mud_inspector_action_node)
+assert RoleCanInvoke(#player, :mud_context_actions_node)
+assert RoleCanInvoke(#player, :mud_context_action_node)
+assert RoleCanInvoke(#player, :mud_sync_selected_entity)
+assert RoleCanInvoke(#player, :mud_narrative_node)
+assert RoleCanInvoke(#player, :mud_latest_event_node)
+assert RoleCanInvoke(#player, :mud_command_bar_node)
+assert RoleCanInvoke(#player, :mud_event_node)
+assert RoleCanInvoke(#player, :mud_event_label)
+assert RoleCanInvoke(#player, :mud_event_meta_chip_node)
+assert RoleCanInvoke(#player, :mud_event_meta_node)
+assert RoleCanInvoke(#player, :mud_event_body_node)
+assert RoleCanInvoke(#player, :mud_event_class)
+assert RoleCanInvoke(#player, :mud_event_actor_node)
+assert RoleCanInvoke(#player, :mud_event_object_node)
+assert RoleCanInvoke(#player, :mud_event_verb)
+assert RoleCanInvoke(#player, :dom_text)
+assert RoleCanInvoke(#player, :dom_element)
+assert RoleCanInvoke(#player, :to_literal)
+assert RoleCanInvoke(#player, :from_literal)
+assert RoleCanInvoke(#player, :string_concat)
+assert RoleCanInvoke(#player, :string_len)
+assert RoleCanInvoke(#player, :string_slice)
+assert RoleCanInvoke(#player, :lower)
+assert RoleCanInvoke(#player, :trim)
+assert RoleCanRead(#player, :MudSessionActor)
+assert RoleCanRead(#player, :MudSessionInspect)
+assert RoleCanRead(#player, :MudEventKind)
+assert RoleCanRead(#player, :MudEventActor)
+assert RoleCanRead(#player, :MudEventItem)
+assert RoleCanRead(#player, :MudEventContainer)
+assert RoleCanRead(#player, :MudEventMessage)
+assert RoleCanWrite(#player, :MudSessionInspect)
+
+verb mud_actor_name(obj)
+  let name = one Name(obj, ?name)
+  if name == nothing
+    return to_literal(obj)
+  end
+
+  return name
+end
+
+verb mud_direction_text(direction)
+  if direction == :north
+    return "north"
+  elseif direction == :south
+    return "south"
+  elseif direction == :up
+    return "up"
+  elseif direction == :down
+    return "down"
+  end
+
+  return to_literal(direction)
+end
+
+verb mud_current_actor()
+  return one MudSessionActor(endpoint(), ?actor)
+end
+
+verb mud_status_revision()
+  let current = mud_current_actor()
+  if current == nothing
+    return 0
+  end
+
+  let revision = 1
+  for found in MudEventDelivery(current, ?event)
+    let seq = one MudEventSeq(found[:event], ?seq)
+    if seq > revision || seq == revision
+      revision = seq + 1
+    end
+  end
+
+  return revision
+end
+
+verb mud_login_actor(name)
+  let normalized = lower(trim(name))
+  if normalized == "alice"
+    return #alice
+  elseif normalized == "bob"
+    return #bob
+  end
+
+  return nothing
+end
+
+verb sync_view_revision(view)
+  if view != 21
+    return 0
+  end
+
+  return mud_status_revision()
+end
+
+verb sync_view_tree(view, revision)
+  let current = mud_current_actor()
+  if view != 21 || current == nothing
+    return mud_login_view_node()
+  end
+
+  return mud_world_view_node(current, revision)
+end

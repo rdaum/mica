@@ -23,9 +23,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct CompioTaskDriver {
@@ -193,6 +193,9 @@ impl CompioTaskDriver {
         selector: Symbol,
         roles: Vec<(Symbol, Value)>,
     ) -> Result<SubmittedTask, DriverError> {
+        let trace = driver_trace_enabled();
+        let trace_selector = selector;
+        let dispatch_start = Instant::now();
         let runner = Arc::clone(&self.inner.runner);
         let (context, submitted) = self
             .dispatch(move || async move {
@@ -202,7 +205,24 @@ impl CompioTaskDriver {
                 Ok((context, submitted))
             })
             .await?;
+        if trace {
+            eprintln!(
+                "driver-trace invocation selector={} task={} dispatch +{:?}",
+                trace_selector.name().unwrap_or("<unnamed>"),
+                submitted.task_id,
+                dispatch_start.elapsed()
+            );
+        }
+        let handle_start = Instant::now();
         self.handle_submitted(context, submitted.clone()).await?;
+        if trace {
+            eprintln!(
+                "driver-trace invocation selector={} task={} handle_submitted +{:?}",
+                trace_selector.name().unwrap_or("<unnamed>"),
+                submitted.task_id,
+                handle_start.elapsed()
+            );
+        }
         Ok(submitted)
     }
 
@@ -737,6 +757,11 @@ impl PoolState {
         self.mailbox_waiters
             .retain(|_, waiters| !waiters.is_empty());
     }
+}
+
+fn driver_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("MICA_DRIVER_TRACE").is_some())
 }
 
 fn runtime_driver_error(error: RuntimeError) -> DriverError {

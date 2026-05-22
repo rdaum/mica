@@ -32,9 +32,9 @@ pub use task_manager::{
 };
 
 use mica_compiler::{
-    CompileContext, CompileError, HirCollectionItem, HirExpr, HirItem, Literal, MethodInstallation,
-    MethodKind, MethodRelations, NodeId, compile_semantic, install_methods,
-    install_rules_from_source, parse, parse_semantic,
+    BinaryOp, CollectionItem, CompileContext, CompileError, Expr, HirCollectionItem, HirExpr,
+    HirItem, Item, Literal, MethodInstallation, MethodKind, MethodRelations, NodeId, UnaryOp,
+    compile_semantic, install_methods, install_rules_from_source, parse, parse_ast, parse_semantic,
 };
 use mica_host_protocol::{DomNode, diff_dom_nodes, snapshot_payload_json, sync_payload_signature};
 use mica_relation_kernel::{
@@ -99,6 +99,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "frob_value",
     "is_frob",
     "to_literal",
+    "from_literal",
     "json_encode",
     "dom_text",
     "dom_raw",
@@ -2481,6 +2482,7 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("frob_value", frob_value_builtin)
         .with_builtin("is_frob", is_frob_builtin)
         .with_builtin("to_literal", to_literal_builtin)
+        .with_builtin("from_literal", from_literal_builtin)
         .with_builtin("json_encode", json_encode_builtin)
         .with_builtin("dom_text", dom_text_builtin)
         .with_builtin("dom_raw", dom_raw_builtin)
@@ -2642,6 +2644,165 @@ fn to_literal_builtin(
         &identity_names,
         &relation_names,
     )))
+}
+
+fn from_literal_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "from_literal",
+            "expected from_literal(text)",
+        ));
+    }
+    let Some(source) = args[0].with_str(str::to_owned) else {
+        return Err(invalid_builtin_call(
+            "from_literal",
+            "expected from_literal(text)",
+        ));
+    };
+    let ast = parse_ast(&source);
+    if !ast.errors.is_empty() || ast.items.len() != 1 {
+        return Ok(Value::nothing());
+    }
+    let Item::Expr { expr, .. } = &ast.items[0] else {
+        return Ok(Value::nothing());
+    };
+    value_from_literal_expr(context, expr).map(|value| value.unwrap_or_else(Value::nothing))
+}
+
+fn value_from_literal_expr(
+    context: &mut BuiltinContext<'_, '_>,
+    expr: &Expr,
+) -> Result<Option<Value>, RuntimeError> {
+    match expr {
+        Expr::Literal { value, .. } => literal_value(value),
+        Expr::Identity { name, .. } => identity_literal_value(context, name),
+        Expr::Symbol { name, .. } => Ok(Some(Value::symbol(Symbol::intern(name)))),
+        Expr::Frob {
+            delegate, value, ..
+        } => {
+            let Some(delegate) = identity_literal_identity(context, delegate)? else {
+                return Ok(None);
+            };
+            let Some(value) = value_from_literal_expr(context, value)? else {
+                return Ok(None);
+            };
+            Ok(Some(Value::frob(delegate, value)))
+        }
+        Expr::List { items, .. } => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                let CollectionItem::Expr(expr) = item else {
+                    return Ok(None);
+                };
+                let Some(value) = value_from_literal_expr(context, expr)? else {
+                    return Ok(None);
+                };
+                values.push(value);
+            }
+            Ok(Some(Value::list(values)))
+        }
+        Expr::Map { entries, .. } => {
+            let mut values = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                let Some(key) = value_from_literal_expr(context, key)? else {
+                    return Ok(None);
+                };
+                let Some(value) = value_from_literal_expr(context, value)? else {
+                    return Ok(None);
+                };
+                values.push((key, value));
+            }
+            Ok(Some(Value::map(values)))
+        }
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        } => negated_literal_value(context, expr),
+        Expr::Binary {
+            op: BinaryOp::Range,
+            left,
+            right,
+            ..
+        } => {
+            let Some(start) = value_from_literal_expr(context, left)? else {
+                return Ok(None);
+            };
+            let end = if matches!(right.as_ref(), Expr::Hole { .. }) {
+                None
+            } else {
+                Some(value_from_literal_expr(context, right)?.ok_or_else(|| {
+                    invalid_builtin_call("from_literal", "invalid range endpoint literal")
+                })?)
+            };
+            Ok(Some(Value::range(start, end)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn literal_value(literal: &Literal) -> Result<Option<Value>, RuntimeError> {
+    match literal {
+        Literal::Int(value) => value
+            .parse::<i64>()
+            .ok()
+            .and_then(|value| Value::int(value).ok())
+            .map(Some)
+            .ok_or_else(|| invalid_builtin_call("from_literal", "invalid integer literal")),
+        Literal::Float(value) => value
+            .parse::<f64>()
+            .map(Value::float)
+            .map(Some)
+            .map_err(|_| invalid_builtin_call("from_literal", "invalid float literal")),
+        Literal::String(value) => Ok(Some(Value::string(value))),
+        Literal::Bool(value) => Ok(Some(Value::bool(*value))),
+        Literal::ErrorCode(value) => Ok(Some(Value::error_code(Symbol::intern(value)))),
+        Literal::Nothing => Ok(Some(Value::nothing())),
+    }
+}
+
+fn negated_literal_value(
+    context: &mut BuiltinContext<'_, '_>,
+    expr: &Expr,
+) -> Result<Option<Value>, RuntimeError> {
+    let Some(value) = value_from_literal_expr(context, expr)? else {
+        return Ok(None);
+    };
+    if let Some(value) = value.as_int() {
+        let Some(value) = value.checked_neg() else {
+            return Err(invalid_builtin_call(
+                "from_literal",
+                "invalid integer literal",
+            ));
+        };
+        return Value::int(value)
+            .map(Some)
+            .map_err(|_| invalid_builtin_call("from_literal", "invalid integer literal"));
+    }
+    if let Some(value) = value.as_float() {
+        return Ok(Some(Value::float(-value)));
+    }
+    Ok(None)
+}
+
+fn identity_literal_value(
+    context: &mut BuiltinContext<'_, '_>,
+    name: &str,
+) -> Result<Option<Value>, RuntimeError> {
+    Ok(identity_literal_identity(context, name)?.map(Value::identity))
+}
+
+fn identity_literal_identity(
+    context: &mut BuiltinContext<'_, '_>,
+    name: &str,
+) -> Result<Option<Identity>, RuntimeError> {
+    if let Ok(raw) = name.parse::<u64>() {
+        return Ok(Identity::new(raw));
+    }
+    identity_named(context, Symbol::intern(name))
 }
 
 fn json_encode_builtin(
@@ -4193,6 +4354,13 @@ fn authority_for_actor(
             &mut authority,
         )?;
     }
+    mint_role_relation_grants(
+        kernel,
+        actor,
+        "RoleCanRead",
+        CapabilityOp::Read,
+        &mut authority,
+    )?;
     for policy_name in ["CanWrite", "GrantWrite"] {
         mint_relation_grants(
             kernel,
@@ -4202,12 +4370,21 @@ fn authority_for_actor(
             &mut authority,
         )?;
     }
+    mint_role_relation_grants(
+        kernel,
+        actor,
+        "RoleCanWrite",
+        CapabilityOp::Write,
+        &mut authority,
+    )?;
     for policy_name in ["CanInvoke", "GrantInvoke"] {
         mint_invoke_grants(kernel, actor, policy_name, &mut authority)?;
     }
+    mint_role_invoke_grants(kernel, actor, "RoleCanInvoke", &mut authority)?;
     for policy_name in ["CanEffect", "GrantEffect"] {
         mint_effect_grants(kernel, actor, policy_name, &mut authority)?;
     }
+    mint_role_effect_grants(kernel, actor, "RoleCanEffect", &mut authority)?;
     Ok(authority)
 }
 
@@ -4250,6 +4427,57 @@ fn mint_relation_grants(
     Ok(())
 }
 
+fn role_identities(
+    kernel: &RelationKernel,
+    actor: Identity,
+) -> Result<Vec<Identity>, SourceTaskError> {
+    let mut roles = BTreeSet::from([actor]);
+    let Some(delegates) = policy_relation(kernel, "Delegates", 3)? else {
+        return Ok(roles.into_iter().collect());
+    };
+    let snapshot = kernel.snapshot();
+    for tuple in snapshot
+        .scan(delegates, &[Some(Value::identity(actor)), None, None])
+        .map_err(CompileError::from)?
+    {
+        if let Some(role) = tuple.values().get(1).and_then(Value::as_identity) {
+            roles.insert(role);
+        }
+    }
+    Ok(roles.into_iter().collect())
+}
+
+fn mint_role_relation_grants(
+    kernel: &RelationKernel,
+    actor: Identity,
+    policy_name: &str,
+    op: CapabilityOp,
+    authority: &mut AuthorityContext,
+) -> Result<(), SourceTaskError> {
+    let Some(policy_relation) = policy_relation(kernel, policy_name, 2)? else {
+        return Ok(());
+    };
+    let roles = role_identities(kernel, actor)?;
+    let snapshot = kernel.snapshot();
+    for role in roles {
+        let tuples = snapshot
+            .scan(policy_relation, &[Some(Value::identity(role)), None])
+            .map_err(CompileError::from)?;
+        for tuple in tuples {
+            let Some(relation_name) = tuple.values().get(1).and_then(Value::as_symbol) else {
+                return Err(invalid_policy_fact(
+                    policy_name,
+                    "expected relation name symbol",
+                ));
+            };
+            if let Some((relation, _)) = relation_named(kernel, relation_name) {
+                authority.mint(CapabilityGrant::relation(op, relation));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn mint_invoke_grants(
     kernel: &RelationKernel,
     actor: Identity,
@@ -4285,6 +4513,44 @@ fn mint_invoke_grants(
     Ok(())
 }
 
+fn mint_role_invoke_grants(
+    kernel: &RelationKernel,
+    actor: Identity,
+    policy_name: &str,
+    authority: &mut AuthorityContext,
+) -> Result<(), SourceTaskError> {
+    let Some(policy_relation) = policy_relation(kernel, policy_name, 2)? else {
+        return Ok(());
+    };
+    let roles = role_identities(kernel, actor)?;
+    let snapshot = kernel.snapshot();
+    for role in roles {
+        let tuples = snapshot
+            .scan(policy_relation, &[Some(Value::identity(role)), None])
+            .map_err(CompileError::from)?;
+        for tuple in tuples {
+            let Some(selector) = tuple.values().get(1).and_then(Value::as_symbol) else {
+                return Err(invalid_policy_fact(
+                    policy_name,
+                    "expected selector name symbol",
+                ));
+            };
+            for method in snapshot
+                .scan(
+                    method_selector_relation(),
+                    &[None, Some(Value::symbol(selector))],
+                )
+                .map_err(CompileError::from)?
+            {
+                if let Some(method) = method.values().first() {
+                    authority.mint(CapabilityGrant::method(method.clone()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn mint_effect_grants(
     kernel: &RelationKernel,
     actor: Identity,
@@ -4304,6 +4570,32 @@ fn mint_effect_grants(
             [CapabilityOp::Effect],
             CapabilityScope::All,
         ));
+    }
+    Ok(())
+}
+
+fn mint_role_effect_grants(
+    kernel: &RelationKernel,
+    actor: Identity,
+    policy_name: &str,
+    authority: &mut AuthorityContext,
+) -> Result<(), SourceTaskError> {
+    let Some(policy_relation) = policy_relation(kernel, policy_name, 1)? else {
+        return Ok(());
+    };
+    let roles = role_identities(kernel, actor)?;
+    let snapshot = kernel.snapshot();
+    for role in roles {
+        if !snapshot
+            .scan(policy_relation, &[Some(Value::identity(role))])
+            .map_err(CompileError::from)?
+            .is_empty()
+        {
+            authority.mint(CapabilityGrant::new(
+                [CapabilityOp::Effect],
+                CapabilityScope::All,
+            ));
+        }
     }
     Ok(())
 }
@@ -5155,6 +5447,41 @@ mod tests {
                 .unwrap()
                 .outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("#take_event<[\"coin\"]>")
+        ));
+    }
+
+    #[test]
+    fn runner_from_literal_parses_to_literal_output() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:take_event)").unwrap();
+
+        assert!(matches!(
+            runner
+                .run_source(
+                    "let value = [nothing, true, -42, \"x\", :foo, #take_event, {:a -> 1}, 2.._]
+                     return from_literal(to_literal(value)) == value"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return from_literal(to_literal(#take_event<[\"coin\"]>))")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::frob(
+                    runner.named_identity(Symbol::intern("take_event")).unwrap(),
+                    Value::list([Value::string("coin")])
+                )
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return from_literal(\"#missing_identity\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::nothing()
         ));
     }
 
