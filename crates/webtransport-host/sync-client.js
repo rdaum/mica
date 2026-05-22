@@ -772,6 +772,7 @@ export function bootstrapServerRenderedSync(mount, status) {
     view: BigInt(mount.dataset.view),
     revision: BigInt(mount.dataset.revision),
     signature: BigInt(mount.dataset.signature),
+    pollMs: parseInt(params.get("pollMs") ?? "1000", 10),
   };
   let connected = false;
   let client;
@@ -818,11 +819,14 @@ export function bootstrapServerRenderedSync(mount, status) {
 
   function startPolling() {
     stopPolling();
+    if (!Number.isFinite(state.pollMs) || state.pollMs <= 0) {
+      return;
+    }
     pollTimer = setInterval(() => {
       if (connected) {
         client.haveView(viewState("poll")).catch((error) => setStatus(String(error)));
       }
-    }, 1000);
+    }, state.pollMs);
   }
 
   function sendViewportEvent(data) {

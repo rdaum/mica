@@ -22,6 +22,7 @@ fi
 cert_path="${MICA_WT_CERT:-/tmp/mica-wt-cert.pem}"
 key_path="${MICA_WT_KEY:-/tmp/mica-wt-key.pem}"
 page="${MICA_WT_PAGE:-chat}"
+poll_ms="${MICA_WT_POLL_MS:-1000}"
 
 daemon_pid=""
 
@@ -78,7 +79,7 @@ daemon_pid=$!
 
 encoded_url="${wt_url//:/%3A}"
 encoded_url="${encoded_url//\//%2F}"
-smoke_url="http://${http_host}:${http_port}/${page}?url=${encoded_url}&certHash=${cert_hash}"
+smoke_url="http://${http_host}:${http_port}/${page}?url=${encoded_url}&certHash=${cert_hash}&pollMs=${poll_ms}"
 
 cat <<EOF
 Mica WebTransport sync fixture is starting.
