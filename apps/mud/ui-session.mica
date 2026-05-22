@@ -2,11 +2,26 @@
 
 make_relation(:CanAssumeActor, 2)
 make_relation(:MudView, 1)
+make_functional_relation(:MudSyncAction, 2, [0])
 make_functional_relation(:MudSessionActor, 2, [0])
 make_functional_relation(:MudSessionInspect, 2, [0])
 make_functional_relation(:MudNarrativeLimit, 2, [0])
 
+make_identity(:mud_sync_action)
+make_identity(:mud_login_action)
+make_identity(:mud_inspect_action)
+make_identity(:mud_command_action)
+make_identity(:mud_load_older_events_action)
+
 assert MudView(21)
+assert Delegates(#mud_login_action, #mud_sync_action, 0)
+assert Delegates(#mud_inspect_action, #mud_sync_action, 0)
+assert Delegates(#mud_command_action, #mud_sync_action, 0)
+assert Delegates(#mud_load_older_events_action, #mud_sync_action, 0)
+assert MudSyncAction("mud_login", #mud_login_action)
+assert MudSyncAction("mud_inspect", #mud_inspect_action)
+assert MudSyncAction("mud_command", #mud_command_action)
+assert MudSyncAction("mud_load_older_events", #mud_load_older_events_action)
 
 assert CanAssumeActor(#web, #alice)
 assert CanAssumeActor(#web, #bob)
@@ -29,6 +44,7 @@ assert CanInvoke(#web, :string_concat)
 assert CanInvoke(#web, :lower)
 assert CanInvoke(#web, :trim)
 assert CanRead(#web, :MudView)
+assert CanRead(#web, :MudSyncAction)
 assert CanRead(#web, :MudSessionActor)
 assert CanRead(#web, :MudSessionInspect)
 assert CanRead(#web, :MudNarrativeLimit)
@@ -119,10 +135,15 @@ assert RoleCanInvoke(#player, :string_len)
 assert RoleCanInvoke(#player, :string_slice)
 assert RoleCanInvoke(#player, :lower)
 assert RoleCanInvoke(#player, :trim)
+assert RoleCanInvoke(#player, :frob)
+assert RoleCanInvoke(#player, :mud_sync_action_source)
+assert RoleCanInvoke(#player, :mud_handle_sync_action)
 assert RoleCanRead(#player, :MudSessionActor)
 assert RoleCanRead(#player, :MudSessionInspect)
 assert RoleCanRead(#player, :MudEventSource)
 assert RoleCanRead(#player, :MudNarrativeLimit)
+assert RoleCanRead(#player, :MudView)
+assert RoleCanRead(#player, :MudSyncAction)
 assert RoleCanWrite(#player, :MudSessionInspect)
 assert RoleCanWrite(#player, :MudNarrativeLimit)
 
@@ -182,7 +203,7 @@ verb mud_login_actor(name)
 end
 
 verb sync_view_revision(view)
-  if view != 21
+  if MudView(view) == false
     return 0
   end
 
@@ -191,7 +212,7 @@ end
 
 verb sync_view_tree(view, revision)
   let current = mud_current_actor()
-  if view != 21 || current == nothing
+  if MudView(view) == false || current == nothing
     return mud_login_view_node()
   end
 

@@ -17,31 +17,53 @@ verb mud_sync_selected_entity(actor @ #player, line, fields)
   return nothing
 end
 
-verb sync_event(endpoint, session, view, event, target, action, fields)
-  if action == "mud_load_older_events"
-    let current_limit = one MudNarrativeLimit(endpoint, ?limit)
-    if current_limit == nothing
-      current_limit = 40
-    end
-    let new_limit = current_limit + 40
-    retract MudNarrativeLimit(endpoint, _)
-    assert MudNarrativeLimit(endpoint, new_limit)
-    return true
+verb mud_sync_action_source(action)
+  let delegate = one MudSyncAction(action, ?delegate)
+  if delegate == nothing
+    return nothing
   end
 
-  if view != 21 || event != "submit"
+  return frob(delegate, action)
+end
+
+verb mud_handle_sync_action(source @ #mud_sync_action<_>, endpoint, session, view, event, target, fields)
+  return false
+end
+
+verb mud_handle_sync_action(source @ #mud_load_older_events_action<_>, endpoint, session, view, event, target, fields)
+  if MudView(view) == false
     return false
   end
 
-  if action == "mud_login"
-    let selected = mud_login_actor(fields[:text])
-    if selected == nothing
-      return false
-    end
-    retract MudSessionActor(endpoint(), _)
-    assert MudSessionActor(endpoint(), selected)
-    assume_actor(selected)
-    return true
+  let current_limit = one MudNarrativeLimit(endpoint, ?limit)
+  if current_limit == nothing
+    current_limit = 40
+  end
+  let new_limit = current_limit + 40
+  retract MudNarrativeLimit(endpoint, _)
+  assert MudNarrativeLimit(endpoint, new_limit)
+  return true
+end
+
+verb mud_handle_sync_action(source @ #mud_login_action<_>, endpoint, session, view, event, target, fields)
+  if MudView(view) == false || event != "submit"
+    return false
+  end
+
+  let selected = mud_login_actor(fields[:text])
+  if selected == nothing
+    return false
+  end
+
+  retract MudSessionActor(endpoint(), _)
+  assert MudSessionActor(endpoint(), selected)
+  assume_actor(selected)
+  return true
+end
+
+verb mud_handle_sync_action(source @ #mud_inspect_action<_>, endpoint, session, view, event, target, fields)
+  if MudView(view) == false || event != "submit"
+    return false
   end
 
   let current = mud_current_actor()
@@ -49,34 +71,49 @@ verb sync_event(endpoint, session, view, event, target, action, fields)
     return false
   end
 
-  if action == "mud_inspect"
-    let selected = from_literal(fields[:entity])
-    if selected == nothing || CanSee(current, selected) == false
-      return false
-    end
+  let selected = from_literal(fields[:entity])
+  if selected == nothing || CanSee(current, selected) == false
+    return false
+  end
+
+  retract MudSessionInspect(endpoint(), _)
+  retract MudSessionInspect(endpoint, _)
+  assert MudSessionInspect(endpoint(), selected)
+  assert MudSessionInspect(endpoint, selected)
+  mud_record_text(current, string_concat("> examine ", mud_actor_name(selected)))
+  return true
+end
+
+verb mud_handle_sync_action(source @ #mud_command_action<_>, endpoint, session, view, event, target, fields)
+  if MudView(view) == false || event != "submit"
+    return false
+  end
+
+  let current = mud_current_actor()
+  if current == nothing
+    return false
+  end
+
+  let line = trim(fields[:text])
+  if line == ""
+    return false
+  end
+  let selected = mud_sync_selected_entity(current, line, fields)
+  if selected != nothing
     retract MudSessionInspect(endpoint(), _)
     retract MudSessionInspect(endpoint, _)
     assert MudSessionInspect(endpoint(), selected)
     assert MudSessionInspect(endpoint, selected)
-    mud_record_text(current, string_concat("> examine ", mud_actor_name(selected)))
-    return true
+  end
+  mud_record_text(current, string_concat("> ", line))
+  return :command(actor: current, endpoint: endpoint, line: line)
+end
+
+verb sync_event(endpoint, session, view, event, target, action, fields)
+  let source = mud_sync_action_source(action)
+  if source == nothing
+    return false
   end
 
-  if action == "mud_command"
-    let line = trim(fields[:text])
-    if line == ""
-      return false
-    end
-    let selected = mud_sync_selected_entity(current, line, fields)
-    if selected != nothing
-      retract MudSessionInspect(endpoint(), _)
-      retract MudSessionInspect(endpoint, _)
-      assert MudSessionInspect(endpoint(), selected)
-      assert MudSessionInspect(endpoint, selected)
-    end
-    mud_record_text(current, string_concat("> ", line))
-    return :command(actor: current, endpoint: endpoint, line: line)
-  end
-
-  return false
+  return mud_handle_sync_action(source, endpoint, session, view, event, target, fields)
 end
