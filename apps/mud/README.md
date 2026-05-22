@@ -51,6 +51,9 @@ browser UI demonstrate a unified declarative, data-oriented application design.
 - `event-substitutions.mica`: event text/template rendering support.
 - `ui-session.mica`: WebTransport sync view selection, session facts, MUD sync
   action declarations, and web/player authority grants.
+- `ui-mica-inspect.mica`: programmer-facing Mica reflection inspector, including
+  reflection grants, inspect navigation, layout controls, and method catalogue
+  rendering.
 - `ui-compose.mica`: room, inventory, presence, examine panel, command strip,
   and login DOM composition.
 - `ui-narrative.mica`: event/narrative DOM composition and event-source-specific

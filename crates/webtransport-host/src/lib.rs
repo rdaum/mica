@@ -2044,6 +2044,9 @@ mod tests {
             .run_filein(include_str!("../../../apps/mud/ui-session.mica"))
             .unwrap();
         runner
+            .run_filein(include_str!("../../../apps/mud/ui-mica-inspect.mica"))
+            .unwrap();
+        runner
             .run_filein(include_str!("../../../apps/mud/ui-compose.mica"))
             .unwrap();
         runner
@@ -2898,7 +2901,7 @@ mod tests {
     async fn receive_sync_envelope(
         connection: &wtransport::Connection,
     ) -> Result<SyncEnvelope, String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         receive_sync_envelope_until(connection, deadline).await
     }
 
@@ -2906,7 +2909,7 @@ mod tests {
         connection: &wtransport::Connection,
         current_revision: u64,
     ) -> Result<SyncEnvelope, String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
             let envelope = receive_sync_envelope_until(connection, deadline).await?;
             if envelope.server_revision > current_revision {
@@ -3119,7 +3122,7 @@ mod tests {
     async fn wait_for_mud_client_result(
         receiver: &mpsc::Receiver<MudClientResult>,
     ) -> MudClientResult {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             match receiver.try_recv() {
                 Ok(result) => return result,

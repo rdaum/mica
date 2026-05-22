@@ -152,6 +152,9 @@ input {
 .mud-shell.has-mica-inspect {
   grid-template-rows: auto minmax(0, 1fr) minmax(180px, 34dvh) auto;
 }
+.mud-shell.mica-inspect-expanded {
+  grid-template-rows: auto minmax(96px, 18dvh) minmax(0, 1fr) auto;
+}
 .topbar {
   display: flex;
   align-items: center;
@@ -169,6 +172,10 @@ input {
   grid-template-columns: minmax(0, 1fr) 300px;
   grid-template-rows: auto auto 1fr;
   gap: 12px;
+}
+.mud-grid.mica-inspect-preview {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 .panel {
   border: 1px solid #47434a;
@@ -193,6 +200,10 @@ input {
   grid-row: 3;
   min-height: 0;
   overflow: auto;
+}
+.mud-grid.mica-inspect-preview .narrative {
+  grid-column: 1;
+  grid-row: 1;
 }
 .inspector-title-row {
   display: flex;
@@ -494,6 +505,9 @@ input {
   background: #11171a99;
   border-radius: 8px;
   padding: 10px;
+}
+.mica-method-section {
+  grid-column: 1 / -1;
 }
 .mica-section h3 {
   margin: 0 0 8px;
