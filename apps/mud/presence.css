@@ -1,5 +1,5 @@
 .mud-grid {
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 .room-panel {
   grid-column: 1 / -1;
@@ -20,7 +20,7 @@
 .narrative {
   grid-column: 1;
   grid-row: 2;
-  min-height: 360px;
+  min-height: 0;
 }
 .room-guide {
   display: flex;

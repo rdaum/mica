@@ -80,9 +80,10 @@ input {
   cursor: pointer;
 }
 .mud-shell {
+  height: 100dvh;
   min-height: 100dvh;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
   max-width: 1120px;
   margin: 0 auto;
@@ -101,6 +102,7 @@ input {
 }
 .mud-grid {
   min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
   grid-template-rows: auto auto 1fr;
@@ -127,7 +129,7 @@ input {
 .narrative {
   grid-column: 2;
   grid-row: 3;
-  min-height: 260px;
+  min-height: 0;
   overflow: auto;
 }
 .inspector-title-row {
@@ -395,6 +397,7 @@ input {
 }
 @media (max-width: 820px) {
   .mud-shell {
+    height: auto;
     padding: 12px;
   }
   .topbar,
@@ -406,6 +409,7 @@ input {
   }
   .mud-grid {
     grid-template-columns: 1fr;
+    overflow: visible;
   }
   .snapshot-row {
     grid-template-columns: 1fr;
@@ -422,5 +426,8 @@ input {
   .narrative {
     grid-column: 1;
     grid-row: auto;
+  }
+  .narrative {
+    min-height: 360px;
   }
 }
