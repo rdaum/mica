@@ -118,6 +118,7 @@ async fn run() -> Result<(), String> {
             reject_actor(&cli)?;
             let source = fs::read_to_string(file)
                 .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+            let include_base = file.parent().unwrap_or_else(|| std::path::Path::new("."));
             let mut runner = open_runner(&cli)?;
             if let Some(unit) = unit {
                 let mode = if *replace {
@@ -126,17 +127,23 @@ async fn run() -> Result<(), String> {
                     FileinMode::Add
                 };
                 let report = runner
-                    .run_filein_with_unit(
+                    .run_filein_with_unit_and_include_loader(
                         Symbol::intern(unit.trim_start_matches(':')),
                         &source,
                         mode,
+                        |path| read_filein_include(include_base, path),
                     )
                     .map_err(format_source_error)?;
                 for report in report.reports {
                     print_report(report);
                 }
             } else {
-                for report in runner.run_filein(&source).map_err(format_source_error)? {
+                for report in runner
+                    .run_filein_with_include_loader(&source, |path| {
+                        read_filein_include(include_base, path)
+                    })
+                    .map_err(format_source_error)?
+                {
                     print_report(report);
                 }
             }
@@ -198,6 +205,12 @@ fn reject_actor(cli: &Cli) -> Result<(), String> {
         return Err("--actor is only supported for run, eval, and repl".to_owned());
     }
     Ok(())
+}
+
+fn read_filein_include(base: &std::path::Path, path: &str) -> Result<String, String> {
+    let include_path = base.join(path);
+    fs::read_to_string(&include_path)
+        .map_err(|error| format!("failed to read {}: {error}", include_path.display()))
 }
 
 fn open_runner(cli: &Cli) -> Result<SourceRunner, String> {

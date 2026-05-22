@@ -33,3 +33,18 @@ Replacement should be atomic at the unit boundary: a failed filein should not
 leave half of the replacement visible. When a filein spans many definitions,
 the practical implementation may use smaller internal steps, but the authoring
 contract should remain "the unit replacement committed" or "it did not".
+
+Filein can include text files into compiled source with `include_text("path")`.
+The path is resolved relative to the filed-in source file by the `mica filein`
+command. This is intended for large text assets such as CSS and JavaScript
+inside verbs:
+
+```mica
+verb page_style()
+  return include_text("style.css")
+end
+```
+
+Fileout preserves the `include_text(...)` call in stored verb source rather than
+emitting the included text inline. Filing the output back in therefore requires
+the referenced asset file to be present beside the fileout source.

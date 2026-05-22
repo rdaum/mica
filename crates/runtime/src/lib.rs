@@ -262,6 +262,20 @@ impl SourceRunner {
         Ok(self.report(submitted.task_id, submitted.outcome))
     }
 
+    fn run_source_with_stored_source(
+        &mut self,
+        source: &str,
+        stored_source: &str,
+    ) -> Result<RunReport, SourceTaskError> {
+        let submitted = self.submit_root_source_chunk_with_stored_source(
+            source,
+            stored_source,
+            SYSTEM_ENDPOINT,
+            AuthorityContext::root(),
+        )?;
+        Ok(self.report(submitted.task_id, submitted.outcome))
+    }
+
     pub fn root_source_request(source: impl Into<String>) -> TaskRequest {
         TaskRequest {
             principal: None,
@@ -394,7 +408,17 @@ impl SourceRunner {
         endpoint: Identity,
         authority: AuthorityContext,
     ) -> Result<SubmittedTask, SourceTaskError> {
-        if let Some(installation) = self.install_methods_from_source(source)? {
+        self.submit_root_source_chunk_with_stored_source(source, source, endpoint, authority)
+    }
+
+    fn submit_root_source_chunk_with_stored_source(
+        &mut self,
+        source: &str,
+        stored_source: &str,
+        endpoint: Identity,
+        authority: AuthorityContext,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        if let Some(installation) = self.install_methods_from_source(source, stored_source)? {
             let value = installed_method_value(&installation);
             let (task_id, outcome) = self.task_manager.complete_immediate(value);
             self.refresh_context_from_catalog();
@@ -728,11 +752,53 @@ impl SourceRunner {
         Ok(reports)
     }
 
+    pub fn run_filein_with_include_loader(
+        &mut self,
+        source: &str,
+        mut load_include: impl FnMut(&str) -> Result<String, String>,
+    ) -> Result<Vec<RunReport>, SourceTaskError> {
+        let mut reports = Vec::new();
+        for chunk in source_chunks(source) {
+            let expanded = expand_filein_text_includes(&chunk, &mut load_include)?;
+            reports.push(self.run_source_with_stored_source(&expanded, &chunk)?);
+        }
+        Ok(reports)
+    }
+
     pub fn run_filein_with_unit(
         &mut self,
         unit: Symbol,
         source: &str,
         mode: FileinMode,
+    ) -> Result<FileinReport, SourceTaskError> {
+        self.run_filein_with_unit_inner(
+            unit,
+            source,
+            mode,
+            None::<fn(&str) -> Result<String, String>>,
+        )
+    }
+
+    pub fn run_filein_with_unit_and_include_loader(
+        &mut self,
+        unit: Symbol,
+        source: &str,
+        mode: FileinMode,
+        load_include: impl FnMut(&str) -> Result<String, String>,
+    ) -> Result<FileinReport, SourceTaskError> {
+        self.run_filein_with_unit_inner(unit, source, mode, Some(load_include))
+    }
+
+    pub fn fileout_unit(&self, unit: Symbol) -> Result<String, SourceTaskError> {
+        Ok(fileout_unit_source(self.task_manager.kernel(), unit).map_err(CompileError::from)?)
+    }
+
+    fn run_filein_with_unit_inner(
+        &mut self,
+        unit: Symbol,
+        source: &str,
+        mode: FileinMode,
+        include_loader: Option<impl FnMut(&str) -> Result<String, String>>,
     ) -> Result<FileinReport, SourceTaskError> {
         if mode == FileinMode::Replace {
             self.retract_source_unit(unit)?;
@@ -740,7 +806,11 @@ impl SourceRunner {
 
         let declarations = collect_source_declarations(source)?;
         let before = self.source_projection()?;
-        let reports = self.run_filein(source)?;
+        let reports = if let Some(load_include) = include_loader {
+            self.run_filein_with_include_loader(source, load_include)?
+        } else {
+            self.run_filein(source)?
+        };
         let after = self.source_projection()?;
 
         let owned_facts = after
@@ -823,10 +893,6 @@ impl SourceRunner {
         })
     }
 
-    pub fn fileout_unit(&self, unit: Symbol) -> Result<String, SourceTaskError> {
-        Ok(fileout_unit_source(self.task_manager.kernel(), unit).map_err(CompileError::from)?)
-    }
-
     fn actor_identity(&self, actor: Symbol) -> Result<Identity, SourceTaskError> {
         self.named_identity(actor).map_err(|_| {
             unsupported_runner_error(
@@ -843,6 +909,7 @@ impl SourceRunner {
     fn install_methods_from_source(
         &mut self,
         source: &str,
+        stored_source: &str,
     ) -> Result<Option<MethodInstallation>, SourceTaskError> {
         let mut semantic = parse_semantic(source);
         if !semantic
@@ -916,7 +983,7 @@ impl SourceRunner {
             install_tx
                 .assert(
                     method_source_relation(),
-                    Tuple::from([method.method.clone(), Value::string(source)]),
+                    Tuple::from([method.method.clone(), Value::string(stored_source)]),
                 )
                 .map_err(CompileError::from)?;
         }
@@ -1493,6 +1560,150 @@ fn source_chunks(source: &str) -> Vec<String> {
         chunks.push(buffer);
     }
     chunks
+}
+
+fn expand_filein_text_includes(
+    source: &str,
+    load_include: &mut impl FnMut(&str) -> Result<String, String>,
+) -> Result<String, SourceTaskError> {
+    let mut output = String::new();
+    let mut index = 0;
+    let bytes = source.as_bytes();
+    while index < bytes.len() {
+        if bytes[index] == b'"' {
+            let end = skip_string_literal(source, index)?;
+            output.push_str(&source[index..end]);
+            index = end;
+            continue;
+        }
+        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            let end = source[index..]
+                .find('\n')
+                .map(|offset| index + offset + 1)
+                .unwrap_or(source.len());
+            output.push_str(&source[index..end]);
+            index = end;
+            continue;
+        }
+        if include_text_starts_at(source, index) {
+            let (end, path) = parse_include_text_call(source, index)?;
+            let text = load_include(&path).map_err(|error| {
+                unsupported_runner_error(
+                    NodeId(0),
+                    None,
+                    format!("failed to include text file {path:?}: {error}"),
+                )
+            })?;
+            output.push_str(&format_filein_string_literal(&text));
+            index = end;
+            continue;
+        }
+        let ch = source[index..].chars().next().unwrap();
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+    Ok(output)
+}
+
+fn include_text_starts_at(source: &str, index: usize) -> bool {
+    const NAME: &str = "include_text";
+    source[index..].starts_with(NAME)
+        && (index == 0 || !is_identifier_byte(source.as_bytes()[index - 1]))
+        && source
+            .as_bytes()
+            .get(index + NAME.len())
+            .is_some_and(|byte| !is_identifier_byte(*byte))
+}
+
+fn parse_include_text_call(source: &str, start: usize) -> Result<(usize, String), SourceTaskError> {
+    const NAME: &str = "include_text";
+    let mut index = start + NAME.len();
+    index = skip_ascii_space(source, index);
+    if source.as_bytes().get(index) != Some(&b'(') {
+        return Err(include_text_parse_error());
+    }
+    index += 1;
+    index = skip_ascii_space(source, index);
+    if source.as_bytes().get(index) != Some(&b'"') {
+        return Err(include_text_parse_error());
+    }
+    let (next, path) = parse_filein_string_literal(source, index)?;
+    index = skip_ascii_space(source, next);
+    if source.as_bytes().get(index) != Some(&b')') {
+        return Err(include_text_parse_error());
+    }
+    Ok((index + 1, path))
+}
+
+fn include_text_parse_error() -> SourceTaskError {
+    unsupported_runner_error(NodeId(0), None, "expected include_text(\"relative/path\")")
+}
+
+fn skip_ascii_space(source: &str, mut index: usize) -> usize {
+    while source
+        .as_bytes()
+        .get(index)
+        .is_some_and(u8::is_ascii_whitespace)
+    {
+        index += 1;
+    }
+    index
+}
+
+fn skip_string_literal(source: &str, start: usize) -> Result<usize, SourceTaskError> {
+    parse_filein_string_literal(source, start).map(|(end, _)| end)
+}
+
+fn parse_filein_string_literal(
+    source: &str,
+    start: usize,
+) -> Result<(usize, String), SourceTaskError> {
+    let bytes = source.as_bytes();
+    let mut index = start + 1;
+    let mut value = String::new();
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => return Ok((index + 1, value)),
+            b'\\' => {
+                index += 1;
+                let Some(escaped) = bytes.get(index).copied() else {
+                    return Err(unterminated_string_error());
+                };
+                let ch = match escaped {
+                    b'"' => '"',
+                    b'\\' => '\\',
+                    b'n' => '\n',
+                    b'r' => '\r',
+                    b't' => '\t',
+                    other => other as char,
+                };
+                value.push(ch);
+                index += 1;
+            }
+            _ => {
+                let ch = source[index..].chars().next().unwrap();
+                value.push(ch);
+                index += ch.len_utf8();
+            }
+        }
+    }
+    Err(unterminated_string_error())
+}
+
+fn unterminated_string_error() -> SourceTaskError {
+    unsupported_runner_error(
+        NodeId(0),
+        None,
+        "unterminated string literal in filein source",
+    )
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn format_filein_string_literal(text: &str) -> String {
+    format!("{text:?}")
 }
 
 fn source_has_items(source: &str) -> bool {
@@ -7639,6 +7850,47 @@ mod tests {
         assert!(matches!(
             query.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("coin")
+        ));
+    }
+
+    #[test]
+    fn runner_filein_include_text_compiles_and_fileout_preserves_reference() {
+        let mut runner = SourceRunner::new_empty();
+        let unit = Symbol::intern("web_assets");
+        let source = "verb page_style()\n\
+                      return include_text(\"style.css\")\n\
+                    end\n";
+        let css = "body { color: #f5f0e8; }\nbutton::before { content: \"go\"; }\n";
+        runner
+            .run_filein_with_unit_and_include_loader(unit, source, FileinMode::Add, |path| {
+                if path == "style.css" {
+                    Ok(css.to_owned())
+                } else {
+                    Err(format!("unexpected include {path}"))
+                }
+            })
+            .unwrap();
+
+        let report = runner.run_source("return :page_style()").unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string(css)
+        ));
+
+        let filed_out = runner.fileout_unit(unit).unwrap();
+        assert!(filed_out.contains("include_text(\"style.css\")"));
+        assert!(!filed_out.contains("button::before"));
+
+        let mut imported = SourceRunner::new_empty();
+        imported
+            .run_filein_with_unit_and_include_loader(unit, &filed_out, FileinMode::Add, |_| {
+                Ok(css.to_owned())
+            })
+            .unwrap();
+        let report = imported.run_source("return :page_style()").unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string(css)
         ));
     }
 
