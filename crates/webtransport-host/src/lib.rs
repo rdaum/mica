@@ -1611,16 +1611,17 @@ mod tests {
             assert!(payload_text.contains("mud-shell"));
             assert!(payload_text.contains("The Mica Rooms"));
             assert!(payload_text.contains("First Room"));
-            assert!(payload_text.contains("Things you can do here"));
-            assert!(payload_text.contains("guide-token"));
+            assert!(payload_text.contains("Available actions"));
+            assert!(payload_text.contains("exit-chip"));
             assert!(payload_text.contains("room-panel"));
             assert!(payload_text.contains("mud-sidebar"));
             assert!(payload_text.contains("People here"));
             assert!(payload_text.contains("presence-card"));
-            assert!(payload_text.contains("object-card"));
-            assert!(payload_text.contains("brass coin"));
+            assert!(payload_text.contains("object-list"));
+            assert!(payload_text.contains("object-row"));
+            assert!(payload_text.contains("coin"));
             assert!(payload_text.contains("Inventory"));
-            assert!(payload_text.contains("Inspector"));
+            assert!(payload_text.contains("Examine"));
             assert!(payload_text.contains("Narrative"));
 
             assert_eq!(command_delta.kind, SyncMessageKind::ViewDelta);

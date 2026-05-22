@@ -58,7 +58,7 @@ verb sync_event(endpoint, session, view, event, target, action, fields)
     retract MudSessionInspect(endpoint, _)
     assert MudSessionInspect(endpoint(), selected)
     assert MudSessionInspect(endpoint, selected)
-    mud_record_text(current, string_concat("> inspect ", mud_actor_name(selected)))
+    mud_record_text(current, string_concat("> examine ", mud_actor_name(selected)))
     return true
   end
 

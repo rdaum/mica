@@ -22,28 +22,20 @@
   grid-row: 2;
   min-height: 0;
 }
-.room-guide {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin: 0 0 10px;
-  padding: 0 0 10px;
-}
-.guide-title {
-  margin: 0;
-}
-.guide-detail {
-  margin: 0;
-}
 .room-description {
   margin: 6px 0 10px;
   font-size: 16px;
   line-height: 1.35;
 }
-.object-card {
-  margin: 6px 0;
-  padding: 10px;
+.objects {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.objects h2 {
+  margin: 0;
+  font-size: 16px;
 }
 .presence ul {
   list-style: none;

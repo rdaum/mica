@@ -40,27 +40,13 @@ verb mud_login_view_node()
   return dom_element("main", {:id -> "mud-root", :class -> "mud-login"}, [dom_element("section", {:class -> "login-card"}, [dom_element("h1", {}, [dom_text("Mica MUD")]), copy, choices])])
 end
 
-verb mud_guide_node()
-  let commands = []
-  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("look")])]
-  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("north")])]
-  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("examine <thing>")])]
-  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("get <thing>")])]
-  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("drop <thing>")])]
-  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("say <message>")])]
-  commands = [@commands, dom_element("span", {:class -> "guide-token"}, [dom_text("push button")])]
-  let line = dom_element("div", {:class -> "guide-line"}, commands)
-  let detail = dom_element("p", {:class -> "guide-detail"}, [dom_text("Click room entities for object actions, or type a command below.")])
-  return dom_element("section", {:class -> "room-guide", "aria-label" -> "Things you can do here"}, [dom_element("strong", {:class -> "guide-title"}, [dom_text("Things you can do here")]), line, detail])
-end
-
 verb mud_room_panel_node(actor @ #player)
   let room = one LocatedIn(actor, ?room)
   let title = one Name(room, ?title)
   let description = one Description(room, ?description)
   let heading = dom_element("h2", {}, [dom_text(title)])
   let body = dom_element("p", {:class -> "room-description"}, [dom_text(description)])
-  return dom_element("section", {:id -> "room", :class -> "panel room-panel"}, [mud_guide_node(), heading, body, mud_room_objects_node(actor, room)])
+  return dom_element("section", {:id -> "room", :class -> "panel room-panel"}, [heading, body, mud_snapshot_exits_node(room), mud_room_objects_node(actor, room)])
 end
 
 verb mud_room_object_count(actor @ #player, room @ #room)
@@ -199,18 +185,7 @@ verb mud_room_objects_node(actor @ #player, room @ #room)
     let item = found[:item]
     if item != actor && PresentActor(room, item) == false
       let name = mud_actor_name(item)
-      let description = one Description(item, ?description)
-      let actions = [mud_command_form_node(string_concat("look-", to_literal(item)), string_concat("look ", name), "look", "mini-button")]
-      if Portable(item)
-        actions = [@actions, mud_command_form_node(string_concat("get-", to_literal(item)), string_concat("get ", name), "take", "mini-button")]
-      end
-      if item == #red_button
-        actions = [@actions, mud_command_form_node("push-red-button", "push button", "push", "mini-button danger")]
-      end
-      let action_row = dom_element("div", {:class -> "object-actions"}, actions)
-      let label = mud_entity_action_node(string_concat("inspect-", to_literal(item)), item, string_concat("look ", name), name, "entity-button object-link")
-      let detail = dom_element("p", {}, [dom_text(description)])
-      objects = [@objects, dom_element("li", {"data-sync-key" -> to_literal(item), :class -> "object-card"}, [label, detail, action_row])]
+      objects = [@objects, dom_element("li", {"data-sync-key" -> to_literal(item), :class -> "object-row"}, [mud_entity_action_node(string_concat("inspect-", to_literal(item)), item, string_concat("look ", name), name, "entity-button object-link")])]
     end
   end
 
@@ -218,7 +193,7 @@ verb mud_room_objects_node(actor @ #player, room @ #room)
     objects = [dom_element("li", {:class -> "muted"}, [dom_text("Nothing catches your eye.")])]
   end
 
-  return dom_element("section", {:class -> "objects"}, [dom_element("h2", {}, [dom_text("Here")]), dom_element("ul", {}, objects)])
+  return dom_element("section", {:class -> "objects"}, [dom_element("h2", {}, [dom_text("Here")]), dom_element("ul", {:class -> "object-list"}, objects)])
 end
 
 verb mud_inventory_node(actor @ #player)
@@ -237,10 +212,6 @@ verb mud_inventory_node(actor @ #player)
 end
 
 verb mud_inspector_action_node(command, label, class)
-  return mud_command_form_node("", command, label, class)
-end
-
-verb mud_context_action_node(command, label, class)
   return mud_command_form_node("", command, label, class)
 end
 
@@ -307,7 +278,7 @@ end
 verb mud_inspector_node(actor @ #player)
   let selected = one MudSessionInspect(endpoint(), ?selected)
   if selected == nothing || CanSee(actor, selected) == false
-    return dom_element("aside", {:id -> "inspector", :class -> "panel inspector"}, [dom_element("h2", {}, [dom_text("Inspector")]), dom_element("p", {:class -> "muted"}, [dom_text("Select a room object or player.")])])
+    return dom_element("aside", {:id -> "inspector", :class -> "panel inspector"}, [dom_element("h2", {}, [dom_text("Examine")]), dom_element("p", {:class -> "muted"}, [dom_text("Select a room object or player to examine.")])])
   end
 
   let name = mud_actor_name(selected)
@@ -325,40 +296,55 @@ verb mud_inspector_node(actor @ #player)
 
   let avatar = dom_element("span", {:class -> "entity-avatar"}, [dom_text(mud_entity_initial(name))])
   let title = dom_element("div", {:class -> "inspector-title-row"}, [avatar, dom_element("div", {}, [dom_element("strong", {:class -> "inspector-title"}, [dom_text(name)]), dom_element("span", {:class -> "inspector-subtitle"}, [dom_text(mud_entity_kind(selected))])])])
-  return dom_element("aside", {:id -> "inspector", :class -> "panel inspector", "data-entity" -> to_literal(selected)}, [dom_element("h2", {}, [dom_text("Inspector")]), title, dom_element("p", {:class -> "inspector-description"}, [dom_text(description)]), mud_entity_facts_node(actor, selected), dom_element("div", {:class -> "object-actions inspector-actions"}, actions)])
-end
-
-verb mud_context_actions_node(actor @ #player)
-  let selected = one MudSessionInspect(endpoint(), ?selected)
-  if selected == nothing || CanSee(actor, selected) == false
-    return dom_element("section", {:id -> "context-actions", :class -> "context-actions empty"}, [dom_element("span", {:class -> "muted"}, [dom_text("No selection")])])
-  end
-
-  let name = mud_actor_name(selected)
-  let actions = [mud_context_action_node(string_concat("look ", name), "look", "chip")]
-  if Portable(selected) && Carrying(actor, selected) == false
-    actions = [@actions, mud_context_action_node(string_concat("get ", name), "take", "chip")]
-  end
-  if Carrying(actor, selected)
-    actions = [@actions, mud_context_action_node(string_concat("drop ", name), "drop", "chip")]
-  end
-  if selected == #red_button
-    actions = [@actions, mud_context_action_node("push button", "push", "chip danger")]
-  end
-
-  return dom_element("section", {:id -> "context-actions", :class -> "context-actions", "data-entity" -> to_literal(selected)}, [dom_element("span", {:class -> "context-label"}, [dom_text(name)]), dom_element("div", {:class -> "context-buttons"}, actions)])
+  return dom_element("aside", {:id -> "inspector", :class -> "panel inspector", "data-entity" -> to_literal(selected)}, [dom_element("h2", {}, [dom_text("Examine")]), title, dom_element("p", {:class -> "inspector-description"}, [dom_text(description)]), mud_entity_facts_node(actor, selected), dom_element("div", {:class -> "object-actions inspector-actions"}, actions)])
 end
 
 verb mud_command_bar_node(actor @ #player)
-  let chips = []
-  chips = [@chips, mud_command_form_node("cmd-look", "look", "Look", "chip")]
-  chips = [@chips, mud_command_form_node("cmd-inventory", "look in box", "Look in box", "chip")]
-  chips = [@chips, mud_command_form_node("cmd-get", "get coin", "Take coin", "chip")]
-  chips = [@chips, mud_command_form_node("cmd-say", "say hello from the web", "Say hello", "chip")]
   let text = dom_element("input", {:id -> "command", :name -> "text", :autocomplete -> "off", :placeholder -> "Try: look, north, get coin, say hello", "aria-label" -> "Command"}, [])
   let button = dom_element("button", {:id -> "send-command", :type -> "submit"}, [dom_text("Send")])
   let composer = dom_element("form", {:id -> "mud-command", :class -> "command-form", "data-sync-event" -> "submit", "data-sync-action" -> "mud_command"}, [text, button])
-  return dom_element("section", {:class -> "command-deck"}, [mud_context_actions_node(actor), dom_element("div", {:class -> "command-chips"}, chips), composer])
+  return dom_element("section", {:class -> "command-deck"}, [mud_command_chips_node(actor), composer])
+end
+
+verb mud_command_chips_node(actor @ #player)
+  let chips = [mud_command_form_node("", "look", "look", "chip")]
+  let selected = one MudSessionInspect(endpoint(), ?selected)
+  if selected != nothing && CanSee(actor, selected)
+    let name = mud_actor_name(selected)
+    chips = [@chips, mud_command_form_node("", string_concat("look ", name), string_concat("examine ", name), "chip")]
+    if Portable(selected) && Carrying(actor, selected) == false
+      chips = [@chips, mud_command_form_node("", string_concat("get ", name), string_concat("take ", name), "chip")]
+    end
+    if Carrying(actor, selected)
+      chips = [@chips, mud_command_form_node("", string_concat("drop ", name), string_concat("drop ", name), "chip")]
+    end
+    if selected == #red_button
+      chips = [@chips, mud_command_form_node("", "push button", "push button", "chip danger")]
+    end
+    return dom_element("div", {:class -> "command-chips", "aria-label" -> "Available actions"}, chips)
+  end
+
+  let room = one LocatedIn(actor, ?room)
+  for found in Exit(room, ?direction, ?destination)
+    let direction = mud_direction_text(found[:direction])
+    chips = [@chips, mud_command_form_node("", direction, direction, "chip exit-chip")]
+  end
+
+  for found in LocatedIn(?item, room)
+    let item = found[:item]
+    if item != actor && PresentActor(room, item) == false
+      let name = mud_actor_name(item)
+      chips = [@chips, mud_entity_action_node("", item, string_concat("look ", name), string_concat("examine ", name), "chip entity-chip")]
+      if Portable(item)
+        chips = [@chips, mud_command_form_node("", string_concat("get ", name), string_concat("take ", name), "chip")]
+      end
+      if item == #red_button
+        chips = [@chips, mud_command_form_node("", "push button", "push button", "chip danger")]
+      end
+    end
+  end
+
+  return dom_element("div", {:class -> "command-chips", "aria-label" -> "Available actions"}, chips)
 end
 
 verb mud_world_view_node(actor @ #player, revision, limit)
