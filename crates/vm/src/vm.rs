@@ -21,9 +21,9 @@ use crate::{
 };
 use mica_relation_kernel::{
     ApplicableMethodCall, ComposedTransactionRead, DispatchRead, DispatchRelations, RelationId,
-    RelationRead, RelationWorkspace, ScanControl, Transaction, TransientStore, Tuple,
-    applicable_method_calls_normalized, applicable_positional_methods_cached, method_program_id,
-    normalize_dispatch_roles,
+    RelationMetadata, RelationRead, RelationWorkspace, ScanControl, Transaction, TransientStore,
+    Tuple, applicable_method_calls_normalized, applicable_positional_methods_cached,
+    method_program_id, normalize_dispatch_roles, system_row_source_relation,
 };
 use mica_var::{FunctionId, Identity, Symbol, Value, ValueKind};
 use std::cell::RefCell;
@@ -234,6 +234,28 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
     pub fn emit_trace_summary(&self, task_id: u64) {
         self.trace.emit_summary(task_id);
     }
+
+    fn relation_metadata(&self, relation: RelationId) -> Option<RelationMetadata> {
+        self.tx
+            .kernel()
+            .snapshot()
+            .relation_metadata()
+            .find(|metadata| metadata.id() == relation)
+            .cloned()
+    }
+
+    fn system_row_allowed(&self, metadata: Option<&RelationMetadata>, tuple: &Tuple) -> bool {
+        metadata
+            .and_then(|metadata| system_row_source_relation(metadata, tuple))
+            .is_none_or(|source_relation| self.authority.can_read_relation(source_relation))
+    }
+
+    fn filter_authorized_system_rows(&self, relation: RelationId, rows: Vec<Tuple>) -> Vec<Tuple> {
+        let metadata = self.relation_metadata(relation);
+        rows.into_iter()
+            .filter(|tuple| self.system_row_allowed(metadata.as_ref(), tuple))
+            .collect()
+    }
 }
 
 impl RelationRead for VmHostContext<'_, '_> {
@@ -257,6 +279,7 @@ impl RelationRead for VmHostContext<'_, '_> {
             }
             None => self.tx.scan_relation(relation, bindings),
         }?;
+        let rows = self.filter_authorized_system_rows(relation, rows);
         self.trace
             .record_relation("scan", relation, bindings, rows.len(), start);
         Ok(rows)
@@ -270,11 +293,15 @@ impl RelationRead for VmHostContext<'_, '_> {
     ) -> Result<(), mica_relation_kernel::KernelError> {
         let start = self.trace.start();
         let mut rows = 0usize;
+        let metadata = self.relation_metadata(relation);
         let result = match &self.transient {
             Some(TransientAccess::Exclusive(transient)) => {
                 let reader =
                     ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
                 reader.visit_relation(relation, bindings, &mut |tuple| {
+                    if !self.system_row_allowed(metadata.as_ref(), tuple) {
+                        return Ok(ScanControl::Continue);
+                    }
                     rows += 1;
                     visitor(tuple)
                 })
@@ -287,6 +314,9 @@ impl RelationRead for VmHostContext<'_, '_> {
                     reader.scan_relation(relation, bindings)?
                 };
                 for tuple in tuples {
+                    if !self.system_row_allowed(metadata.as_ref(), &tuple) {
+                        continue;
+                    }
                     rows += 1;
                     if visitor(&tuple)? == ScanControl::Stop {
                         break;
@@ -295,6 +325,9 @@ impl RelationRead for VmHostContext<'_, '_> {
                 Ok(())
             }
             None => self.tx.visit_relation(relation, bindings, &mut |tuple| {
+                if !self.system_row_allowed(metadata.as_ref(), tuple) {
+                    return Ok(ScanControl::Continue);
+                }
                 rows += 1;
                 visitor(tuple)
             }),

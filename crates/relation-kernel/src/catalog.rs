@@ -148,6 +148,15 @@ pub(crate) fn is_system_relation(metadata: &RelationMetadata) -> bool {
         )
 }
 
+pub fn system_row_source_relation(metadata: &RelationMetadata, tuple: &Tuple) -> Option<Identity> {
+    match metadata.name().name()? {
+        "SubjectFact" | "MentionedFact" | "ExtensionalMentionedFact" => {
+            tuple.values().get(1)?.as_identity()
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn system_relation_rows(
     snapshot: &Snapshot,
     metadata: &RelationMetadata,
@@ -176,8 +185,11 @@ pub(crate) fn system_relation_rows(
         Some("SubjectFact") if metadata.arity() == 3 => {
             Some(system_subject_facts(snapshot, bindings))
         }
-        Some("MentionedFact" | "ExtensionalMentionedFact") if metadata.arity() == 4 => {
+        Some("MentionedFact") if metadata.arity() == 4 => {
             Some(system_mentioned_facts(snapshot, bindings))
+        }
+        Some("ExtensionalMentionedFact") if metadata.arity() == 4 => {
+            Some(system_extensional_mentioned_facts(snapshot, bindings))
         }
         _ => None,
     }
@@ -268,6 +280,52 @@ fn mentioned_fact_rows(snapshot: &Snapshot, value: &Value) -> Result<Vec<Tuple>,
         .into_iter()
         .map(|fact| mentioned_fact_tuple(fact.identity, fact.relation, fact.position, fact.tuple))
         .collect())
+}
+
+fn system_extensional_mentioned_facts(
+    snapshot: &Snapshot,
+    bindings: &[Option<Value>],
+) -> Result<Vec<Tuple>, KernelError> {
+    let mut rows = Vec::new();
+    if let Some(value) = &bindings[0] {
+        rows.extend(extensional_mentioned_fact_rows(snapshot, value)?);
+    } else {
+        for (relation, tuple) in snapshot.extensional_facts()? {
+            for (position, value) in tuple.values().iter().enumerate() {
+                rows.push(mentioned_fact_tuple(
+                    value.clone(),
+                    relation,
+                    position as u16,
+                    tuple.clone(),
+                ));
+            }
+        }
+    }
+    Ok(finish_tuple_rows(
+        rows.into_iter()
+            .filter(|tuple| tuple.matches_bindings(bindings))
+            .collect(),
+    ))
+}
+
+fn extensional_mentioned_fact_rows(
+    snapshot: &Snapshot,
+    value: &Value,
+) -> Result<Vec<Tuple>, KernelError> {
+    let mut rows = Vec::new();
+    for (relation, tuple) in snapshot.extensional_facts()? {
+        for (position, tuple_value) in tuple.values().iter().enumerate() {
+            if tuple_value == value {
+                rows.push(mentioned_fact_tuple(
+                    value.clone(),
+                    relation,
+                    position as u16,
+                    tuple.clone(),
+                ));
+            }
+        }
+    }
+    Ok(rows)
 }
 
 fn subject_fact_tuple(subject: Value, relation: Identity, tuple: Tuple) -> Tuple {

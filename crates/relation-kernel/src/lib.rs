@@ -48,7 +48,7 @@ mod tests;
 
 use mica_var::Identity;
 
-pub use catalog::{CatalogFact, CatalogPredicate};
+pub use catalog::{CatalogFact, CatalogPredicate, system_row_source_relation};
 pub use closure::{
     delegates_reaches, delegates_star, delegates_star_from, materialize_delegates_star,
 };

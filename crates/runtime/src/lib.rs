@@ -8118,6 +8118,48 @@ mod tests {
     }
 
     #[test]
+    fn runner_filters_reflection_rows_by_underlying_relation_authority() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_source(
+                "make_identity(:programmer)\n\
+                 make_identity(:coin)\n\
+                 make_identity(:room)\n\
+                 make_relation(:CanRead, 2)\n\
+                 make_relation(:LocatedIn, 2)\n\
+                 make_relation(:Secret, 2)\n\
+                 assert LocatedIn(#coin, #room)\n\
+                 assert Secret(#coin, \"hidden\")\n\
+                 assert CanRead(#programmer, :MentionedFact)\n\
+                 assert CanRead(#programmer, :RelationName)\n\
+                 assert CanRead(#programmer, :LocatedIn)",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source_as(
+                Symbol::intern("programmer"),
+                "let located = one RelationName(?located, :LocatedIn)\n\
+                 let secret = one RelationName(?secret, :Secret)\n\
+                 let visible = MentionedFact(#coin, located, ?position, ?tuple)\n\
+                 let hidden = MentionedFact(#coin, secret, ?hidden_position, ?hidden_tuple)\n\
+                 return [visible, hidden]",
+            )
+            .unwrap();
+
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected reflection query to complete");
+        };
+        value
+            .with_list(|results| {
+                assert_eq!(results.len(), 2);
+                assert_eq!(results[0].list_len(), Some(1));
+                assert_eq!(results[1].list_len(), Some(0));
+            })
+            .expect("expected result list");
+    }
+
+    #[test]
     fn runner_queries_method_source_as_relation() {
         let mut runner = SourceRunner::new_empty();
         runner.run_source("make_identity(:thing)").unwrap();
