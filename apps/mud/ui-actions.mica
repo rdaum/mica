@@ -100,7 +100,7 @@ verb mud_handle_sync_action(source @ #mud_command_action<_>, endpoint, session, 
     return false
   end
 
-  if mud_try_mica_inspect_command(current, endpoint, line)
+  if ui/try_mica_inspect_command(current, endpoint, line)
     return true
   end
 

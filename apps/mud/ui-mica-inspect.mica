@@ -1,37 +1,37 @@
 // Programmer-facing Mica reflection inspector for the server-owned MUD view.
 
-make_functional_relation(:MudSessionMicaInspect, 2, [0])
-make_functional_relation(:MudSessionMicaInspectBack, 2, [0])
-make_functional_relation(:MudSessionMicaInspectLayout, 2, [0])
-make_functional_relation(:MudSessionMicaMethodMode, 2, [0])
-make_relation(:MudMicaPrototype, 2)
+make_functional_relation(:ui/MicaInspect, 2, [0])
+make_functional_relation(:ui/MicaInspectBack, 2, [0])
+make_functional_relation(:ui/MicaInspectLayout, 2, [0])
+make_functional_relation(:ui/MicaMethodMode, 2, [0])
+make_relation(:ui/MicaPrototype, 2)
 
-make_identity(:mud_mica_inspect_action)
-make_identity(:mud_mica_inspect_close_action)
-make_identity(:mud_mica_inspect_back_action)
-make_identity(:mud_mica_inspect_layout_action)
-make_identity(:mud_mica_method_mode_action)
+make_identity(:ui/mica_inspect_action)
+make_identity(:ui/mica_inspect_close_action)
+make_identity(:ui/mica_inspect_back_action)
+make_identity(:ui/mica_inspect_layout_action)
+make_identity(:ui/mica_method_mode_action)
 
-assert Delegates(#mud_mica_inspect_action, #mud_sync_action, 0)
-assert Delegates(#mud_mica_inspect_close_action, #mud_sync_action, 0)
-assert Delegates(#mud_mica_inspect_back_action, #mud_sync_action, 0)
-assert Delegates(#mud_mica_inspect_layout_action, #mud_sync_action, 0)
-assert Delegates(#mud_mica_method_mode_action, #mud_sync_action, 0)
-assert MudSyncAction("mud_mica_inspect", #mud_mica_inspect_action)
-assert MudSyncAction("mud_mica_inspect_close", #mud_mica_inspect_close_action)
-assert MudSyncAction("mud_mica_inspect_back", #mud_mica_inspect_back_action)
-assert MudSyncAction("mud_mica_inspect_layout", #mud_mica_inspect_layout_action)
-assert MudSyncAction("mud_mica_method_mode", #mud_mica_method_mode_action)
+assert Delegates(#ui/mica_inspect_action, #mud_sync_action, 0)
+assert Delegates(#ui/mica_inspect_close_action, #mud_sync_action, 0)
+assert Delegates(#ui/mica_inspect_back_action, #mud_sync_action, 0)
+assert Delegates(#ui/mica_inspect_layout_action, #mud_sync_action, 0)
+assert Delegates(#ui/mica_method_mode_action, #mud_sync_action, 0)
+assert MudSyncAction("mud_mica_inspect", #ui/mica_inspect_action)
+assert MudSyncAction("mud_mica_inspect_close", #ui/mica_inspect_close_action)
+assert MudSyncAction("mud_mica_inspect_back", #ui/mica_inspect_back_action)
+assert MudSyncAction("mud_mica_inspect_layout", #ui/mica_inspect_layout_action)
+assert MudSyncAction("mud_mica_method_mode", #ui/mica_method_mode_action)
 
 assert RoleCanInvoke(#player, :mud_can_program)
-assert RoleCanInvoke(#player, :mud_try_mica_inspect_command)
+assert RoleCanInvoke(#player, :ui/try_mica_inspect_command)
 
-assert RoleCanRead(#programmer, :MudSessionMicaInspect)
-assert RoleCanRead(#programmer, :MudSessionMicaInspectBack)
-assert RoleCanRead(#programmer, :MudSessionMicaInspectLayout)
-assert RoleCanRead(#programmer, :MudSessionMicaMethodMode)
+assert RoleCanRead(#programmer, :ui/MicaInspect)
+assert RoleCanRead(#programmer, :ui/MicaInspectBack)
+assert RoleCanRead(#programmer, :ui/MicaInspectLayout)
+assert RoleCanRead(#programmer, :ui/MicaMethodMode)
 assert RoleCanRead(#programmer, :MudSessionUiRevision)
-assert RoleCanRead(#programmer, :MudMicaPrototype)
+assert RoleCanRead(#programmer, :ui/MicaPrototype)
 assert RoleCanRead(#programmer, :Relation)
 assert RoleCanRead(#programmer, :RelationName)
 assert RoleCanRead(#programmer, :Arity)
@@ -61,75 +61,75 @@ assert RoleCanRead(#programmer, :RoleCanWrite)
 assert RoleCanRead(#programmer, :RoleCanInvoke)
 assert RoleCanRead(#programmer, :RoleCanEffect)
 assert RoleCanRead(#programmer, :CanAssumeActor)
-assert RoleCanWrite(#programmer, :MudSessionMicaInspect)
-assert RoleCanWrite(#programmer, :MudSessionMicaInspectBack)
-assert RoleCanWrite(#programmer, :MudSessionMicaInspectLayout)
-assert RoleCanWrite(#programmer, :MudSessionMicaMethodMode)
+assert RoleCanWrite(#programmer, :ui/MicaInspect)
+assert RoleCanWrite(#programmer, :ui/MicaInspectBack)
+assert RoleCanWrite(#programmer, :ui/MicaInspectLayout)
+assert RoleCanWrite(#programmer, :ui/MicaMethodMode)
 assert RoleCanWrite(#programmer, :MudSessionUiRevision)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_selected)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_expanded)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_action_node)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_entity_node)
-assert RoleCanInvoke(#programmer, :mud_mica_method_mode_node)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_layout_node)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_close_node)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_back_node)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_panel_node)
-assert RoleCanInvoke(#programmer, :mud_mica_section_node)
-assert RoleCanInvoke(#programmer, :mud_mica_empty_node)
-assert RoleCanInvoke(#programmer, :mud_mica_can_link)
-assert RoleCanInvoke(#programmer, :mud_mica_value_node)
-assert RoleCanInvoke(#programmer, :mud_mica_tuple_node)
-assert RoleCanInvoke(#programmer, :mud_relation_label)
-assert RoleCanInvoke(#programmer, :mud_mica_fact_row_node)
-assert RoleCanInvoke(#programmer, :mud_mica_subject_facts_node)
-assert RoleCanInvoke(#programmer, :mud_mica_mentioned_facts_node)
-assert RoleCanInvoke(#programmer, :mud_mica_delegates_header_node)
-assert RoleCanInvoke(#programmer, :mud_mica_method_source_excerpt)
-assert RoleCanInvoke(#programmer, :mud_mica_method_row_node)
-assert RoleCanInvoke(#programmer, :mud_mica_method_catalog_node)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_set_selected)
-assert RoleCanInvoke(#programmer, :mud_mica_inspect_bump_revision)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_selected)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_expanded)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_action_node)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_entity_node)
+assert RoleCanInvoke(#programmer, :ui/mica_method_mode_node)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_layout_node)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_close_node)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_back_node)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_panel_node)
+assert RoleCanInvoke(#programmer, :ui/mica_section_node)
+assert RoleCanInvoke(#programmer, :ui/mica_empty_node)
+assert RoleCanInvoke(#programmer, :ui/mica_can_link)
+assert RoleCanInvoke(#programmer, :ui/mica_value_node)
+assert RoleCanInvoke(#programmer, :ui/mica_tuple_node)
+assert RoleCanInvoke(#programmer, :ui/relation_label)
+assert RoleCanInvoke(#programmer, :ui/mica_fact_row_node)
+assert RoleCanInvoke(#programmer, :ui/mica_subject_facts_node)
+assert RoleCanInvoke(#programmer, :ui/mica_mentioned_facts_node)
+assert RoleCanInvoke(#programmer, :ui/mica_delegates_header_node)
+assert RoleCanInvoke(#programmer, :ui/mica_method_source_excerpt)
+assert RoleCanInvoke(#programmer, :ui/mica_method_row_node)
+assert RoleCanInvoke(#programmer, :ui/mica_method_catalog_node)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_set_selected)
+assert RoleCanInvoke(#programmer, :ui/mica_inspect_bump_revision)
 
-MudMicaPrototype(obj, proto) :-
+ui/MicaPrototype(obj, proto) :-
   Delegates(obj, proto, ?distance)
 
-MudMicaPrototype(obj, ancestor) :-
+ui/MicaPrototype(obj, ancestor) :-
   Delegates(obj, proto, ?distance),
-  MudMicaPrototype(proto, ancestor)
+  ui/MicaPrototype(proto, ancestor)
 
-verb mud_mica_inspect_selected()
-  return one MudSessionMicaInspect(endpoint(), ?selected)
+verb ui/mica_inspect_selected()
+  return one ui/MicaInspect(endpoint(), ?selected)
 end
 
-verb mud_mica_inspect_expanded()
-  return one MudSessionMicaInspectLayout(endpoint(), ?mode) == "expanded"
+verb ui/mica_inspect_expanded()
+  return one ui/MicaInspectLayout(endpoint(), ?mode) == "expanded"
 end
 
-verb mud_mica_inspect_action_node(entity, label, class)
+verb ui/mica_inspect_action_node(entity, label, class)
   let hidden = dom_element("input", {:type -> "hidden", :name -> "entity", :value -> to_literal(entity)}, [])
   let button = dom_element("button", {:type -> "submit", :class -> class, "data-entity" -> to_literal(entity)}, [dom_text(label)])
   let attrs = {:class -> "mud-action mica-inspect-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect"}
   return dom_element("form", attrs, [hidden, button])
 end
 
-verb mud_mica_inspect_close_node()
+verb ui/mica_inspect_close_node()
   let button = dom_element("button", {:type -> "submit", :class -> "mini-button mica-close"}, [dom_text("Close")])
   return dom_element("form", {:class -> "mud-action mica-close-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_close"}, [button])
 end
 
-verb mud_mica_inspect_back_node(previous)
+verb ui/mica_inspect_back_node(previous)
   let button = dom_element("button", {:type -> "submit", :class -> "mini-button"}, [dom_text(string_concat("Back to ", mud_actor_name(previous)))])
   return dom_element("form", {:class -> "mud-action mica-back-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_back"}, [button])
 end
 
-verb mud_mica_inspect_layout_node(mode, label)
+verb ui/mica_inspect_layout_node(mode, label)
   let hidden = dom_element("input", {:type -> "hidden", :name -> "mode", :value -> mode}, [])
   let button = dom_element("button", {:type -> "submit", :class -> "mini-button mica-layout-toggle"}, [dom_text(label)])
   return dom_element("form", {:class -> "mud-action mica-layout-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_layout"}, [hidden, button])
 end
 
-verb mud_mica_method_mode_node(mode, label, selected)
+verb ui/mica_method_mode_node(mode, label, selected)
   let class = "mini-button method-filter"
   if mode == selected
     class = "mini-button method-filter active"
@@ -140,7 +140,7 @@ verb mud_mica_method_mode_node(mode, label, selected)
   return dom_element("form", {:class -> "mud-action method-filter-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_method_mode"}, [hidden, button])
 end
 
-verb mud_relation_label(relation)
+verb ui/relation_label(relation)
   let name = one RelationName(relation, ?name)
   if name == nothing
     return to_literal(relation)
@@ -149,15 +149,15 @@ verb mud_relation_label(relation)
   return to_literal(name)
 end
 
-verb mud_mica_empty_node(text)
+verb ui/mica_empty_node(text)
   return dom_element("p", {:class -> "muted mica-empty"}, [dom_text(text)])
 end
 
-verb mud_mica_section_node(title, children)
+verb ui/mica_section_node(title, children)
   return dom_element("section", {:class -> "mica-section"}, [dom_element("h3", {}, [dom_text(title)]), dom_element("div", {:class -> "mica-section-body"}, children)])
 end
 
-verb mud_mica_can_link(value)
+verb ui/mica_can_link(value)
   if string_starts_with(to_literal(value), "#") == false
     return false
   end
@@ -179,7 +179,7 @@ verb mud_mica_can_link(value)
   return false
 end
 
-verb mud_mica_inspect_entity_node(value, class)
+verb ui/mica_inspect_entity_node(value, class)
   let hidden = dom_element("input", {:type -> "hidden", :name -> "entity", :value -> to_literal(value)}, [])
   let label = to_literal(value)
   let name = one Name(value, ?name)
@@ -195,15 +195,15 @@ verb mud_mica_inspect_entity_node(value, class)
   return dom_element("form", {:class -> "mud-action mica-identity-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect"}, [hidden, button])
 end
 
-verb mud_mica_value_node(value)
-  if mud_mica_can_link(value)
-    return mud_mica_inspect_entity_node(value, "mica-identity-link")
+verb ui/mica_value_node(value)
+  if ui/mica_can_link(value)
+    return ui/mica_inspect_entity_node(value, "mica-identity-link")
   end
 
   return dom_element("code", {}, [dom_text(to_literal(value))])
 end
 
-verb mud_mica_tuple_node(tuple)
+verb ui/mica_tuple_node(tuple)
   let children = [dom_text("[")]
   let first = true
   for value in tuple
@@ -212,62 +212,62 @@ verb mud_mica_tuple_node(tuple)
     else
       children = [@children, dom_text(", ")]
     end
-    children = [@children, mud_mica_value_node(value)]
+    children = [@children, ui/mica_value_node(value)]
   end
   children = [@children, dom_text("]")]
   return dom_element("div", {:class -> "mica-tuple"}, children)
 end
 
-verb mud_mica_fact_row_node(relation, position, tuple)
-  let heading = dom_element("summary", {:class -> "mica-row-summary"}, [dom_element("code", {:class -> "mica-row-title"}, [dom_text(string_concat(mud_relation_label(relation), string_concat(" @ ", to_literal(position))))]), dom_element("code", {:class -> "mica-row-preview"}, [dom_text(to_literal(tuple))])])
-  let body = dom_element("div", {:class -> "mica-row-body"}, [dom_element("div", {:class -> "mica-relation"}, [mud_mica_inspect_entity_node(relation, "mica-relation-link"), dom_element("code", {}, [dom_text(string_concat(" @ ", to_literal(position)))])]), mud_mica_tuple_node(tuple)])
+verb ui/mica_fact_row_node(relation, position, tuple)
+  let heading = dom_element("summary", {:class -> "mica-row-summary"}, [dom_element("code", {:class -> "mica-row-title"}, [dom_text(string_concat(ui/relation_label(relation), string_concat(" @ ", to_literal(position))))]), dom_element("code", {:class -> "mica-row-preview"}, [dom_text(to_literal(tuple))])])
+  let body = dom_element("div", {:class -> "mica-row-body"}, [dom_element("div", {:class -> "mica-relation"}, [ui/mica_inspect_entity_node(relation, "mica-relation-link"), dom_element("code", {}, [dom_text(string_concat(" @ ", to_literal(position)))])]), ui/mica_tuple_node(tuple)])
   return dom_element("details", {:class -> "mica-row"}, [heading, body])
 end
 
-verb mud_mica_subject_facts_node(entity)
+verb ui/mica_subject_facts_node(entity)
   let rows = []
   let count = 0
   for found in SubjectFact(entity, ?relation, ?tuple)
     if count < 12
-      rows = [@rows, mud_mica_fact_row_node(found[:relation], 0, found[:tuple])]
+      rows = [@rows, ui/mica_fact_row_node(found[:relation], 0, found[:tuple])]
     end
     count = count + 1
   end
 
   if rows == []
-    rows = [mud_mica_empty_node("No subject-position facts are visible.")]
+    rows = [ui/mica_empty_node("No subject-position facts are visible.")]
   end
   if count > 12
-    rows = [@rows, mud_mica_empty_node(string_concat("Showing 12 of ", to_literal(count)))]
+    rows = [@rows, ui/mica_empty_node(string_concat("Showing 12 of ", to_literal(count)))]
   end
 
-  return mud_mica_section_node("Subject facts", rows)
+  return ui/mica_section_node("Subject facts", rows)
 end
 
-verb mud_mica_mentioned_facts_node(entity)
+verb ui/mica_mentioned_facts_node(entity)
   let rows = []
   let count = 0
   for found in MentionedFact(entity, ?relation, ?position, ?tuple)
     if count < 16
-      rows = [@rows, mud_mica_fact_row_node(found[:relation], found[:position], found[:tuple])]
+      rows = [@rows, ui/mica_fact_row_node(found[:relation], found[:position], found[:tuple])]
     end
     count = count + 1
   end
 
   if rows == []
-    rows = [mud_mica_empty_node("No relation mentions are visible.")]
+    rows = [ui/mica_empty_node("No relation mentions are visible.")]
   end
   if count > 16
-    rows = [@rows, mud_mica_empty_node(string_concat("Showing 16 of ", to_literal(count)))]
+    rows = [@rows, ui/mica_empty_node(string_concat("Showing 16 of ", to_literal(count)))]
   end
 
-  return mud_mica_section_node("Relation mentions", rows)
+  return ui/mica_section_node("Relation mentions", rows)
 end
 
-verb mud_mica_delegates_header_node(entity)
+verb ui/mica_delegates_header_node(entity)
   let chips = []
   for found in Delegates(entity, ?delegate, ?distance)
-    chips = [@chips, dom_element("span", {:class -> "mica-delegate-chip"}, [mud_mica_value_node(found[:delegate]), dom_text(string_concat(" (", string_concat(to_literal(found[:distance]), ")")))])]
+    chips = [@chips, dom_element("span", {:class -> "mica-delegate-chip"}, [ui/mica_value_node(found[:delegate]), dom_text(string_concat(" (", string_concat(to_literal(found[:distance]), ")")))])]
   end
 
   if chips == []
@@ -277,7 +277,7 @@ verb mud_mica_delegates_header_node(entity)
   return dom_element("div", {:class -> "mica-delegates"}, [dom_element("span", {:class -> "mica-delegates-label"}, [dom_text("Delegates")]), dom_element("div", {:class -> "mica-delegate-list"}, chips)])
 end
 
-verb mud_mica_method_source_excerpt(method_id)
+verb ui/mica_method_source_excerpt(method_id)
   let source = one MethodSource(method_id, ?source)
   if source == nothing
     return ""
@@ -289,21 +289,21 @@ verb mud_mica_method_source_excerpt(method_id)
   return source
 end
 
-verb mud_mica_method_row_node(method_id, selector, role, restriction, position)
+verb ui/mica_method_row_node(method_id, selector, role, restriction, position)
   let meta = string_concat(to_literal(role), string_concat(" @ ", to_literal(position)))
-  let label = dom_element("div", {:class -> "mica-method-label"}, [dom_element("code", {}, [dom_text(to_literal(selector))]), dom_text(" via "), mud_mica_value_node(restriction)])
+  let label = dom_element("div", {:class -> "mica-method-label"}, [dom_element("code", {}, [dom_text(to_literal(selector))]), dom_text(" via "), ui/mica_value_node(restriction)])
   let summary = dom_element("summary", {:class -> "mica-method-head"}, [label, dom_element("span", {:class -> "muted"}, [dom_text(meta)])])
-  return dom_element("details", {:class -> "mica-method-row"}, [summary, dom_element("pre", {:class -> "mica-source"}, [dom_text(mud_mica_method_source_excerpt(method_id))])])
+  return dom_element("details", {:class -> "mica-method-row"}, [summary, dom_element("pre", {:class -> "mica-source"}, [dom_text(ui/mica_method_source_excerpt(method_id))])])
 end
 
-verb mud_mica_method_catalog_node(entity)
+verb ui/mica_method_catalog_node(entity)
   let rows = []
   let count = 0
-  let mode = one MudSessionMicaMethodMode(endpoint(), ?mode)
+  let mode = one ui/MicaMethodMode(endpoint(), ?mode)
   if mode == nothing
     mode = "all"
   end
-  let controls = dom_element("div", {:class -> "method-filters", "aria-label" -> "Method catalogue filter"}, [mud_mica_method_mode_node("all", "All", mode), mud_mica_method_mode_node("direct", "Direct", mode), mud_mica_method_mode_node("inherited", "Inherited", mode)])
+  let controls = dom_element("div", {:class -> "method-filters", "aria-label" -> "Method catalogue filter"}, [ui/mica_method_mode_node("all", "All", mode), ui/mica_method_mode_node("direct", "Direct", mode), ui/mica_method_mode_node("inherited", "Inherited", mode)])
   if mode != "inherited"
     for found in Param(?m, ?role, entity, ?position)
       let method_id = found[:m]
@@ -311,13 +311,13 @@ verb mud_mica_method_catalog_node(entity)
       let position = found[:position]
       if count < 8
         let selector = one MethodSelector(method_id, ?sel)
-        rows = [@rows, mud_mica_method_row_node(method_id, selector, role, entity, position)]
+        rows = [@rows, ui/mica_method_row_node(method_id, selector, role, entity, position)]
       end
       count = count + 1
     end
   end
   if mode != "direct"
-    for inherited in MudMicaPrototype(entity, ?prototype)
+    for inherited in ui/MicaPrototype(entity, ?prototype)
       let prototype = inherited[:prototype]
       for found in Param(?m, ?role, prototype, ?position)
         let method_id = found[:m]
@@ -325,7 +325,7 @@ verb mud_mica_method_catalog_node(entity)
         let position = found[:position]
         if count < 8
           let selector = one MethodSelector(method_id, ?sel)
-          rows = [@rows, mud_mica_method_row_node(method_id, selector, role, prototype, position)]
+          rows = [@rows, ui/mica_method_row_node(method_id, selector, role, prototype, position)]
         end
         count = count + 1
       end
@@ -333,10 +333,10 @@ verb mud_mica_method_catalog_node(entity)
   end
 
   if rows == []
-    rows = [mud_mica_empty_node("No method parameter restrictions mention this identity or its delegates.")]
+    rows = [ui/mica_empty_node("No method parameter restrictions mention this identity or its delegates.")]
   end
   if count > 8
-    rows = [@rows, mud_mica_empty_node(string_concat("Showing 8 of ", to_literal(count)))]
+    rows = [@rows, ui/mica_empty_node(string_concat("Showing 8 of ", to_literal(count)))]
   end
 
   let children = [controls]
@@ -346,40 +346,40 @@ verb mud_mica_method_catalog_node(entity)
   return dom_element("section", {:class -> "mica-section mica-method-section"}, [dom_element("h3", {}, [dom_text("Method catalogue")]), dom_element("div", {:class -> "mica-section-body"}, children)])
 end
 
-verb mud_mica_inspect_panel_node(actor @ #player)
-  let selected = mud_mica_inspect_selected()
+verb ui/mica_inspect_panel_node(actor @ #player)
+  let selected = ui/mica_inspect_selected()
   if selected == nothing
     return dom_element("section", {:id -> "mica-inspect", :class -> "panel mica-inspect empty"}, [])
   end
 
   let title = string_concat(mud_actor_name(selected), string_concat(" ", to_literal(selected)))
-  let layout = mud_mica_inspect_layout_node("expanded", "Expand")
-  if mud_mica_inspect_expanded()
-    layout = mud_mica_inspect_layout_node("normal", "Normal")
+  let layout = ui/mica_inspect_layout_node("expanded", "Expand")
+  if ui/mica_inspect_expanded()
+    layout = ui/mica_inspect_layout_node("normal", "Normal")
   end
-  let controls = [layout, mud_mica_inspect_close_node()]
-  let previous = one MudSessionMicaInspectBack(endpoint(), ?previous)
+  let controls = [layout, ui/mica_inspect_close_node()]
+  let previous = one ui/MicaInspectBack(endpoint(), ?previous)
   if previous != nothing
-    controls = [mud_mica_inspect_back_node(previous), layout, mud_mica_inspect_close_node()]
+    controls = [ui/mica_inspect_back_node(previous), layout, ui/mica_inspect_close_node()]
   end
-  return dom_element("section", {:id -> "mica-inspect", :class -> "panel mica-inspect", "data-entity" -> to_literal(selected)}, [dom_element("div", {:class -> "mica-inspect-header"}, [dom_element("div", {:class -> "mica-inspect-title"}, [dom_element("h2", {}, [dom_text("Mica Inspect")]), dom_element("code", {}, [dom_text(title)]), mud_mica_delegates_header_node(selected)]), dom_element("div", {:class -> "mica-inspect-controls"}, controls)]), dom_element("div", {:class -> "mica-inspect-grid"}, [mud_mica_subject_facts_node(selected), mud_mica_mentioned_facts_node(selected), mud_mica_method_catalog_node(selected)])])
+  return dom_element("section", {:id -> "mica-inspect", :class -> "panel mica-inspect", "data-entity" -> to_literal(selected)}, [dom_element("div", {:class -> "mica-inspect-header"}, [dom_element("div", {:class -> "mica-inspect-title"}, [dom_element("h2", {}, [dom_text("Mica Inspect")]), dom_element("code", {}, [dom_text(title)]), ui/mica_delegates_header_node(selected)]), dom_element("div", {:class -> "mica-inspect-controls"}, controls)]), dom_element("div", {:class -> "mica-inspect-grid"}, [ui/mica_subject_facts_node(selected), ui/mica_mentioned_facts_node(selected), ui/mica_method_catalog_node(selected)])])
 end
 
-verb mud_mica_inspect_set_selected(endpoint, selected)
-  let previous = one MudSessionMicaInspect(endpoint(), ?previous)
+verb ui/mica_inspect_set_selected(endpoint, selected)
+  let previous = one ui/MicaInspect(endpoint(), ?previous)
   if previous != nothing && previous != selected
-    retract MudSessionMicaInspectBack(endpoint(), _)
-    retract MudSessionMicaInspectBack(endpoint, _)
-    assert MudSessionMicaInspectBack(endpoint(), previous)
-    assert MudSessionMicaInspectBack(endpoint, previous)
+    retract ui/MicaInspectBack(endpoint(), _)
+    retract ui/MicaInspectBack(endpoint, _)
+    assert ui/MicaInspectBack(endpoint(), previous)
+    assert ui/MicaInspectBack(endpoint, previous)
   end
-  retract MudSessionMicaInspect(endpoint(), _)
-  retract MudSessionMicaInspect(endpoint, _)
-  assert MudSessionMicaInspect(endpoint(), selected)
-  assert MudSessionMicaInspect(endpoint, selected)
+  retract ui/MicaInspect(endpoint(), _)
+  retract ui/MicaInspect(endpoint, _)
+  assert ui/MicaInspect(endpoint(), selected)
+  assert ui/MicaInspect(endpoint, selected)
 end
 
-verb mud_mica_inspect_bump_revision(endpoint)
+verb ui/mica_inspect_bump_revision(endpoint)
   let revision = mud_status_revision() + 1000
   retract MudSessionUiRevision(endpoint(), _)
   assert MudSessionUiRevision(endpoint(), revision)
@@ -390,7 +390,7 @@ verb mud_mica_inspect_bump_revision(endpoint)
   return revision
 end
 
-verb mud_try_mica_inspect_command(current @ #player, endpoint, line @ #string)
+verb ui/try_mica_inspect_command(current @ #player, endpoint, line @ #string)
   let lowered = lower(line)
   if string_starts_with(lowered, "mica inspect ") == false || mud_can_program(current) == false
     return false
@@ -401,12 +401,12 @@ verb mud_try_mica_inspect_command(current @ #player, endpoint, line @ #string)
     return false
   end
 
-  mud_mica_inspect_set_selected(endpoint, selected)
+  ui/mica_inspect_set_selected(endpoint, selected)
   mud_record_text(current, string_concat("> mica inspect ", mud_actor_name(selected)))
   return true
 end
 
-verb mud_handle_sync_action(source @ #mud_mica_inspect_action<_>, endpoint, session, view, event, target, fields)
+verb mud_handle_sync_action(source @ #ui/mica_inspect_action<_>, endpoint, session, view, event, target, fields)
   if MudView(view) == false || event != "submit"
     return false
   end
@@ -421,12 +421,12 @@ verb mud_handle_sync_action(source @ #mud_mica_inspect_action<_>, endpoint, sess
     return false
   end
 
-  mud_mica_inspect_set_selected(endpoint, selected)
+  ui/mica_inspect_set_selected(endpoint, selected)
   mud_record_text(current, string_concat("> mica inspect ", mud_actor_name(selected)))
   return true
 end
 
-verb mud_handle_sync_action(source @ #mud_mica_inspect_close_action<_>, endpoint, session, view, event, target, fields)
+verb mud_handle_sync_action(source @ #ui/mica_inspect_close_action<_>, endpoint, session, view, event, target, fields)
   if MudView(view) == false || event != "submit"
     return false
   end
@@ -436,17 +436,17 @@ verb mud_handle_sync_action(source @ #mud_mica_inspect_close_action<_>, endpoint
     return false
   end
 
-  retract MudSessionMicaInspect(endpoint(), _)
-  retract MudSessionMicaInspect(endpoint, _)
-  retract MudSessionMicaInspectBack(endpoint(), _)
-  retract MudSessionMicaInspectBack(endpoint, _)
-  retract MudSessionMicaInspectLayout(endpoint(), _)
-  retract MudSessionMicaInspectLayout(endpoint, _)
-  mud_mica_inspect_bump_revision(endpoint)
+  retract ui/MicaInspect(endpoint(), _)
+  retract ui/MicaInspect(endpoint, _)
+  retract ui/MicaInspectBack(endpoint(), _)
+  retract ui/MicaInspectBack(endpoint, _)
+  retract ui/MicaInspectLayout(endpoint(), _)
+  retract ui/MicaInspectLayout(endpoint, _)
+  ui/mica_inspect_bump_revision(endpoint)
   return true
 end
 
-verb mud_handle_sync_action(source @ #mud_mica_inspect_back_action<_>, endpoint, session, view, event, target, fields)
+verb mud_handle_sync_action(source @ #ui/mica_inspect_back_action<_>, endpoint, session, view, event, target, fields)
   if MudView(view) == false || event != "submit"
     return false
   end
@@ -456,27 +456,27 @@ verb mud_handle_sync_action(source @ #mud_mica_inspect_back_action<_>, endpoint,
     return false
   end
 
-  let previous = one MudSessionMicaInspectBack(endpoint(), ?previous)
+  let previous = one ui/MicaInspectBack(endpoint(), ?previous)
   if previous == nothing
     return false
   end
 
-  let selected = one MudSessionMicaInspect(endpoint(), ?selected)
-  retract MudSessionMicaInspect(endpoint(), _)
-  retract MudSessionMicaInspect(endpoint, _)
-  assert MudSessionMicaInspect(endpoint(), previous)
-  assert MudSessionMicaInspect(endpoint, previous)
-  retract MudSessionMicaInspectBack(endpoint(), _)
-  retract MudSessionMicaInspectBack(endpoint, _)
+  let selected = one ui/MicaInspect(endpoint(), ?selected)
+  retract ui/MicaInspect(endpoint(), _)
+  retract ui/MicaInspect(endpoint, _)
+  assert ui/MicaInspect(endpoint(), previous)
+  assert ui/MicaInspect(endpoint, previous)
+  retract ui/MicaInspectBack(endpoint(), _)
+  retract ui/MicaInspectBack(endpoint, _)
   if selected != nothing && selected != previous
-    assert MudSessionMicaInspectBack(endpoint(), selected)
-    assert MudSessionMicaInspectBack(endpoint, selected)
+    assert ui/MicaInspectBack(endpoint(), selected)
+    assert ui/MicaInspectBack(endpoint, selected)
   end
-  mud_mica_inspect_bump_revision(endpoint)
+  ui/mica_inspect_bump_revision(endpoint)
   return true
 end
 
-verb mud_handle_sync_action(source @ #mud_mica_inspect_layout_action<_>, endpoint, session, view, event, target, fields)
+verb mud_handle_sync_action(source @ #ui/mica_inspect_layout_action<_>, endpoint, session, view, event, target, fields)
   if MudView(view) == false || event != "submit"
     return false
   end
@@ -491,17 +491,17 @@ verb mud_handle_sync_action(source @ #mud_mica_inspect_layout_action<_>, endpoin
     return false
   end
 
-  retract MudSessionMicaInspectLayout(endpoint(), _)
-  retract MudSessionMicaInspectLayout(endpoint, _)
+  retract ui/MicaInspectLayout(endpoint(), _)
+  retract ui/MicaInspectLayout(endpoint, _)
   if mode == "expanded"
-    assert MudSessionMicaInspectLayout(endpoint(), mode)
-    assert MudSessionMicaInspectLayout(endpoint, mode)
+    assert ui/MicaInspectLayout(endpoint(), mode)
+    assert ui/MicaInspectLayout(endpoint, mode)
   end
-  mud_mica_inspect_bump_revision(endpoint)
+  ui/mica_inspect_bump_revision(endpoint)
   return true
 end
 
-verb mud_handle_sync_action(source @ #mud_mica_method_mode_action<_>, endpoint, session, view, event, target, fields)
+verb mud_handle_sync_action(source @ #ui/mica_method_mode_action<_>, endpoint, session, view, event, target, fields)
   if MudView(view) == false || event != "submit"
     return false
   end
@@ -516,10 +516,10 @@ verb mud_handle_sync_action(source @ #mud_mica_method_mode_action<_>, endpoint, 
     return false
   end
 
-  retract MudSessionMicaMethodMode(endpoint(), _)
-  retract MudSessionMicaMethodMode(endpoint, _)
-  assert MudSessionMicaMethodMode(endpoint(), mode)
-  assert MudSessionMicaMethodMode(endpoint, mode)
-  mud_mica_inspect_bump_revision(endpoint)
+  retract ui/MicaMethodMode(endpoint(), _)
+  retract ui/MicaMethodMode(endpoint, _)
+  assert ui/MicaMethodMode(endpoint(), mode)
+  assert ui/MicaMethodMode(endpoint, mode)
+  ui/mica_inspect_bump_revision(endpoint)
   return true
 end

@@ -254,7 +254,7 @@ impl<'a> Parser<'a> {
                 self.parse_query_var_expr()
             }
             SyntaxKind::Underscore => self.single_token_node(SyntaxKind::HoleExpr),
-            SyntaxKind::Ident => self.single_token_node(SyntaxKind::NameExpr),
+            SyntaxKind::Ident => self.parse_name_expr(),
             SyntaxKind::ErrorCode
             | SyntaxKind::Int
             | SyntaxKind::Float
@@ -590,7 +590,9 @@ impl<'a> Parser<'a> {
 
     fn parse_identity_expr(&mut self) -> CstNode {
         let mut children = vec![self.bump_element()];
-        if matches!(self.current_kind(), SyntaxKind::Ident | SyntaxKind::Int) {
+        if self.current_kind() == SyntaxKind::Ident {
+            children.extend(self.parse_qualified_ident_tokens());
+        } else if self.current_kind() == SyntaxKind::Int {
             children.push(self.bump_element());
         } else {
             children.push(self.missing("expected identity name after '#'"));
@@ -610,7 +612,8 @@ impl<'a> Parser<'a> {
         if self.current_kind() == SyntaxKind::LParen {
             children.push(CstElement::Node(self.parse_group_expr()));
         } else {
-            children.push(self.expect_token(SyntaxKind::Ident, "expected symbol name after ':'"));
+            children
+                .extend(self.parse_qualified_ident_or_missing("expected symbol name after ':'"));
         }
         if self.current_kind() == SyntaxKind::LParen {
             children.push(CstElement::Node(self.parse_arg_list(true)));
@@ -633,10 +636,40 @@ impl<'a> Parser<'a> {
         if self.current_kind() == SyntaxKind::LParen {
             children.push(CstElement::Node(self.parse_group_expr()));
         } else {
-            children.push(self.expect_token(SyntaxKind::Ident, "expected selector after ':'"));
+            children.extend(self.parse_qualified_ident_or_missing("expected selector after ':'"));
         }
         children.push(CstElement::Node(self.parse_arg_list(true)));
         CstNode::new(SyntaxKind::ReceiverCallExpr, children)
+    }
+
+    fn parse_name_expr(&mut self) -> CstNode {
+        if self.looks_like_qualified_callee() {
+            CstNode::new(SyntaxKind::NameExpr, self.parse_qualified_ident_tokens())
+        } else {
+            self.single_token_node(SyntaxKind::NameExpr)
+        }
+    }
+
+    fn parse_qualified_ident_or_missing(&mut self, message: &str) -> Vec<CstElement> {
+        if self.current_kind() == SyntaxKind::Ident {
+            self.parse_qualified_ident_tokens()
+        } else {
+            vec![self.missing(message)]
+        }
+    }
+
+    fn parse_qualified_ident_tokens(&mut self) -> Vec<CstElement> {
+        let mut children = vec![self.expect_token(SyntaxKind::Ident, "expected identifier")];
+        let mut last_end = element_end(children.last().expect("identifier element exists"));
+        while self.qualified_ident_continues(last_end) {
+            let slash = self.bump_element();
+            children.push(slash);
+
+            let ident = self.expect_token(SyntaxKind::Ident, "expected identifier after '/'");
+            last_end = element_end(&ident);
+            children.push(ident);
+        }
+        children
     }
 
     fn parse_index(&mut self, collection: CstNode) -> CstNode {
@@ -785,6 +818,40 @@ impl<'a> Parser<'a> {
         )
     }
 
+    fn looks_like_qualified_callee(&self) -> bool {
+        let first = self.nth_non_ws_token(0);
+        if first.kind != SyntaxKind::Ident {
+            return false;
+        }
+        let mut idx = 1;
+        let mut last_end = first.span.end;
+        let mut saw_slash = false;
+        loop {
+            let slash = self.nth_non_ws_token(idx);
+            let ident = self.nth_non_ws_token(idx + 1);
+            if slash.kind != SyntaxKind::Slash
+                || ident.kind != SyntaxKind::Ident
+                || slash.span.start != last_end
+                || slash.span.end != ident.span.start
+            {
+                break;
+            }
+            saw_slash = true;
+            last_end = ident.span.end;
+            idx += 2;
+        }
+        saw_slash && self.nth_non_ws_token(idx).kind == SyntaxKind::LParen
+    }
+
+    fn qualified_ident_continues(&self, last_end: usize) -> bool {
+        let slash = self.nth_non_ws_token(0);
+        let ident = self.nth_non_ws_token(1);
+        slash.kind == SyntaxKind::Slash
+            && ident.kind == SyntaxKind::Ident
+            && slash.span.start == last_end
+            && slash.span.end == ident.span.start
+    }
+
     fn looks_like_brace_lambda(&self) -> bool {
         let mut idx = self.pos;
         let mut depth = 0usize;
@@ -872,10 +939,18 @@ impl<'a> Parser<'a> {
     }
 
     fn nth_kind(&self, n: usize) -> SyntaxKind {
-        self.nth_non_ws_kind_from(self.pos, n)
+        self.nth_non_ws_token_from(self.pos, n).kind
     }
 
     fn nth_non_ws_kind_from(&self, start: usize, n: usize) -> SyntaxKind {
+        self.nth_non_ws_token_from(start, n).kind
+    }
+
+    fn nth_non_ws_token(&self, n: usize) -> &Token {
+        self.nth_non_ws_token_from(self.pos, n)
+    }
+
+    fn nth_non_ws_token_from(&self, start: usize, n: usize) -> &Token {
         let mut idx = start;
         let mut seen = 0usize;
         loop {
@@ -886,12 +961,12 @@ impl<'a> Parser<'a> {
                 .expect("lexer always emits EOF");
             if !matches!(token.kind, SyntaxKind::Whitespace | SyntaxKind::LineComment) {
                 if seen == n {
-                    return token.kind;
+                    return token;
                 }
                 seen += 1;
             }
             if token.kind == SyntaxKind::Eof {
-                return SyntaxKind::Eof;
+                return token;
             }
             idx += 1;
         }
@@ -923,6 +998,13 @@ impl<'a> Parser<'a> {
     fn error(&mut self, message: &str) {
         let span = self.current_span();
         self.errors.push(ParseError::new(message, span));
+    }
+}
+
+fn element_end(element: &CstElement) -> usize {
+    match element {
+        CstElement::Node(node) => node.span.end,
+        CstElement::Token(token) => token.span.end,
     }
 }
 
@@ -1045,6 +1127,22 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::RoleCallExpr));
         assert!(contains(&parse.root, SyntaxKind::ReceiverCallExpr));
+    }
+
+    #[test]
+    fn parses_slash_qualified_names_without_losing_division() {
+        let parse = parse(
+            "ui/Visible(#lamp)\n\
+             :ui/polish(actor: #ui/alice, item: #lamp)\n\
+             #lamp:ui/examine(actor: #ui/alice)\n\
+             let ratio = total/count",
+        );
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::CallExpr));
+        assert!(contains(&parse.root, SyntaxKind::RoleCallExpr));
+        assert!(contains(&parse.root, SyntaxKind::ReceiverCallExpr));
+        assert!(contains(&parse.root, SyntaxKind::IdentityExpr));
+        assert!(contains(&parse.root, SyntaxKind::BinaryExpr));
     }
 
     #[test]

@@ -1347,7 +1347,10 @@ impl<'a> Analyzer<'a> {
 }
 
 fn looks_like_relation_name(name: &str) -> bool {
-    name.chars()
+    name.rsplit('/')
+        .next()
+        .unwrap_or(name)
+        .chars()
         .next()
         .is_some_and(|ch| ch.is_ascii_uppercase())
 }
@@ -1675,6 +1678,25 @@ mod tests {
                 .iter()
                 .any(|reference| matches!(reference.resolution, ResolvedName::Local(_)))
         );
+    }
+
+    #[test]
+    fn treats_slash_qualified_uppercase_leaf_names_as_relations() {
+        let program = parse_ok(
+            "ui/CanInspect(#ui/alice, #ui/lamp)\n\
+             ui/render_node(#ui/lamp)",
+        );
+        assert_eq!(program.diagnostics, vec![]);
+        assert!(program.references.iter().any(|reference| matches!(
+            &reference.resolution,
+            ResolvedName::External { name, kind: ExternalNameKind::Relation }
+                if name == "ui/CanInspect"
+        )));
+        assert!(program.references.iter().any(|reference| matches!(
+            &reference.resolution,
+            ResolvedName::External { name, kind: ExternalNameKind::Runtime }
+                if name == "ui/render_node"
+        )));
     }
 
     #[test]

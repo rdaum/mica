@@ -294,7 +294,7 @@ verb mud_inspector_node(actor @ #player)
     actions = [@actions, mud_inspector_action_node("push button", "push", "mini-button danger")]
   end
   if mud_can_program(actor)
-    actions = [@actions, mud_mica_inspect_action_node(selected, "Mica inspect", "mini-button mica-button")]
+    actions = [@actions, ui/mica_inspect_action_node(selected, "Mica inspect", "mini-button mica-button")]
   end
 
   let avatar = dom_element("span", {:class -> "entity-avatar"}, [dom_text(mud_entity_initial(name))])
@@ -359,14 +359,14 @@ verb mud_world_view_node(actor @ #player, revision, limit)
   let children = [header, stage]
   let class = "mud-shell"
   if mud_can_program(actor)
-    let mica_selected = mud_mica_inspect_selected()
+    let mica_selected = ui/mica_inspect_selected()
     if mica_selected != nothing
-      if mud_mica_inspect_expanded()
+      if ui/mica_inspect_expanded()
         stage = dom_element("div", {:class -> "mud-grid mica-inspect-preview"}, [mud_narrative_node(actor, revision, 8)])
         children = [header, stage]
         class = "mud-shell has-mica-inspect mica-inspect-expanded"
       end
-      children = [@children, mud_mica_inspect_panel_node(actor)]
+      children = [@children, ui/mica_inspect_panel_node(actor)]
       if class == "mud-shell"
         class = "mud-shell has-mica-inspect"
       end

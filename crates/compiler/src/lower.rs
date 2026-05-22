@@ -151,9 +151,7 @@ impl<'a> Lower<'a> {
         let selector = tokens
             .iter()
             .position(|token| token.kind == SyntaxKind::Colon)
-            .and_then(|idx| tokens.get(idx + 1))
-            .filter(|token| token.kind == SyntaxKind::Ident)
-            .map(|token| self.text(token.span.clone()).to_owned());
+            .and_then(|idx| qualified_name_from_tokens(self.source, &tokens, idx + 1));
         (identity, selector)
     }
 
@@ -164,7 +162,7 @@ impl<'a> Lower<'a> {
         let text = self.text(node.span.clone()).trim().to_owned();
         let selector = text
             .chars()
-            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '/')
             .collect::<String>();
         let selector = (!selector.is_empty()).then_some(selector);
         let param_text = text
@@ -273,10 +271,11 @@ impl<'a> Lower<'a> {
     }
 
     fn lower_name(&mut self, node: &CstNode) -> Expr {
+        let tokens = self.token_children(node).collect::<Vec<_>>();
         Expr::Name {
             id: self.node_id(),
             span: node.span.clone(),
-            name: self.first_text(node, SyntaxKind::Ident).unwrap_or_default(),
+            name: qualified_name_from_tokens(self.source, &tokens, 0).unwrap_or_default(),
         }
     }
 
@@ -321,7 +320,12 @@ impl<'a> Lower<'a> {
     }
 
     fn lower_symbol(&mut self, node: &CstNode) -> Expr {
-        if let Some(name) = self.first_text(node, SyntaxKind::Ident) {
+        let tokens = self.token_children(node).collect::<Vec<_>>();
+        if let Some(colon) = tokens
+            .iter()
+            .position(|token| token.kind == SyntaxKind::Colon)
+            && let Some(name) = qualified_name_from_tokens(self.source, &tokens, colon + 1)
+        {
             Expr::Symbol {
                 id: self.node_id(),
                 span: node.span.clone(),
@@ -518,9 +522,7 @@ impl<'a> Lower<'a> {
         let name = tokens
             .iter()
             .position(|token| token.kind == SyntaxKind::Colon)
-            .and_then(|idx| tokens.get(idx + 1))
-            .filter(|token| token.kind == SyntaxKind::Ident)
-            .map(|token| self.text(token.span.clone()).to_owned())
+            .and_then(|idx| qualified_name_from_tokens(self.source, &tokens, idx + 1))
             .unwrap_or_default();
         Expr::Symbol {
             id: self.node_id(),
@@ -1020,13 +1022,40 @@ impl<'a> Lower<'a> {
 }
 
 fn identity_after_hash(source: &str, tokens: &[&CstToken], start: usize) -> Option<String> {
-    tokens
+    let idx = tokens
         .iter()
         .skip(start)
         .position(|token| token.kind == SyntaxKind::Hash)
-        .and_then(|relative| tokens.get(start + relative + 1))
-        .filter(|token| matches!(token.kind, SyntaxKind::Ident | SyntaxKind::Int))
-        .map(|token| source[token.span.clone()].to_owned())
+        .map(|relative| start + relative + 1)?;
+    if tokens
+        .get(idx)
+        .is_some_and(|token| token.kind == SyntaxKind::Int)
+    {
+        return tokens
+            .get(idx)
+            .map(|token| source[token.span.clone()].to_owned());
+    }
+    qualified_name_from_tokens(source, tokens, idx)
+}
+
+fn qualified_name_from_tokens(source: &str, tokens: &[&CstToken], start: usize) -> Option<String> {
+    let first = tokens
+        .get(start)
+        .filter(|token| token.kind == SyntaxKind::Ident)?;
+    let mut end = first.span.end;
+    let mut idx = start + 1;
+    while let (Some(slash), Some(ident)) = (tokens.get(idx), tokens.get(idx + 1)) {
+        if slash.kind != SyntaxKind::Slash
+            || ident.kind != SyntaxKind::Ident
+            || slash.span.start != end
+            || slash.span.end != ident.span.start
+        {
+            break;
+        }
+        end = ident.span.end;
+        idx += 2;
+    }
+    Some(source[first.span.start..end].to_owned())
 }
 
 fn lower_method_params(clauses: &[String]) -> Vec<MethodParam> {
@@ -1229,6 +1258,57 @@ mod tests {
             panic!("expected receiver call");
         };
         assert!(matches!(&**selector, Expr::Symbol { name, .. } if name == "put"));
+    }
+
+    #[test]
+    fn lowers_slash_qualified_names() {
+        let ast = parse_ast(
+            "ui/Visible(#ui/lamp)\n\
+             :ui/polish(actor: #ui/alice, item: #ui/lamp)\n\
+             #ui/lamp:ui/examine(actor: #ui/alice)\n\
+             method #ui/examine_method :ui/examine\n\
+               roles actor @ #ui/player\n\
+             do\n\
+               return :ui/ok\n\
+             end\n\
+             verb ui/look(actor @ #ui/player)\n\
+               return true\n\
+             end",
+        );
+        assert_eq!(ast.errors, vec![]);
+        assert!(matches!(
+            &ast.items[0],
+            Item::Expr { expr: Expr::Call { callee, args, .. }, .. }
+                if matches!(&**callee, Expr::Name { name, .. } if name == "ui/Visible")
+                    && matches!(&args[0].value, Expr::Identity { name, .. } if name == "ui/lamp")
+        ));
+        assert!(matches!(
+            &ast.items[1],
+            Item::Expr { expr: Expr::RoleCall { selector, args, .. }, .. }
+                if matches!(&**selector, Expr::Symbol { name, .. } if name == "ui/polish")
+                    && matches!(&args[0].value, Expr::Identity { name, .. } if name == "ui/alice")
+        ));
+        assert!(matches!(
+            &ast.items[2],
+            Item::Expr { expr: Expr::ReceiverCall { receiver, selector, .. }, .. }
+                if matches!(&**receiver, Expr::Identity { name, .. } if name == "ui/lamp")
+                    && matches!(&**selector, Expr::Symbol { name, .. } if name == "ui/examine")
+        ));
+        assert!(matches!(
+            &ast.items[3],
+            Item::Method { identity, selector, params, body, .. }
+                if identity.as_deref() == Some("ui/examine_method")
+                    && selector.as_deref() == Some("ui/examine")
+                    && params[0].restriction.as_deref() == Some("ui/player")
+                    && matches!(&body[0], Item::Expr { expr: Expr::Return { value: Some(value), .. }, .. }
+                        if matches!(&**value, Expr::Symbol { name, .. } if name == "ui/ok"))
+        ));
+        assert!(matches!(
+            &ast.items[4],
+            Item::Method { kind: MethodKind::Verb, selector, params, .. }
+                if selector.as_deref() == Some("ui/look")
+                    && params[0].restriction.as_deref() == Some("ui/player")
+        ));
     }
 
     #[test]
