@@ -21,6 +21,7 @@ pub mod codec;
 mod request;
 mod response;
 mod server;
+mod sync;
 
 pub use server::{serve, serve_in_process};
 
@@ -36,14 +37,17 @@ pub struct RequestBinding {
 
 pub struct InProcessWebHost {
     pub(crate) driver: Arc<CompioTaskDriver>,
+    pub(crate) sync: sync::InProcessSyncHost,
     next_endpoint: AtomicU64,
     next_request: AtomicU64,
 }
 
 impl InProcessWebHost {
     pub fn new(driver: CompioTaskDriver) -> Self {
+        let driver = Arc::new(driver);
         Self {
-            driver: Arc::new(driver),
+            sync: sync::InProcessSyncHost::new(driver.clone()),
+            driver,
             next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
             next_request: AtomicU64::new(DAEMON_REQUEST_ID_START),
         }

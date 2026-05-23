@@ -40,11 +40,13 @@ suitable endpoint authority.
 `apps/shared/sync-host.mica`, `apps/chat/sync.mica`, and
 `apps/shared/sync-dom.mica` have been loaded.
 The initial response is a Mica-rendered HTML document with the chat DOM already
-mounted, `data-view`, `data-revision`, `data-signature`, a WebTransport endpoint
-URL, and a small bootstrap script. The bootstrap loads `/sync-client.js`, sends
-`HaveView` over WebTransport, and then applies server DOM patch deltas into the
-page. `browser-smoke.html` remains available as a protocol inspection page when
-this directory is served separately.
+mounted, `data-view`, `data-revision`, `data-signature`, a transport-neutral
+sync mount, and a small bootstrap script. The bootstrap loads `/sync-client.js`;
+when opened with `?transport=webtransport&url=https://127.0.0.1:4433/view`, it
+switches that shared client onto WebTransport, sends `HaveView`, and then
+applies server DOM patch deltas into the page. `browser-smoke.html` remains
+available as a protocol inspection page when this directory is served
+separately.
 
 For an untrusted local certificate, use a short-lived ECDSA certificate and put
 the hex SHA-256 hash of the DER certificate in the `Certificate SHA-256` field.
@@ -57,8 +59,8 @@ The smoke page accepts the same values as query parameters, including
 The MUD DOM sync fixture can be started with:
 
 ```sh
-scripts/mud-webtransport-smoke.sh
+scripts/mud.sh
 ```
 
 It loads the shared sync helpers, the MUD app fileins, and `apps/mud/http.mica`,
-then serves `/mud` as a server-owned DOM view over the same sync client.
+then serves `/mud` as a server-owned DOM view over the same shared sync client.

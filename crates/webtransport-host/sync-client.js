@@ -747,6 +747,126 @@ export class MicaWebTransportSyncClient {
   }
 }
 
+export class MicaSseSyncClient {
+  constructor(options) {
+    this.streamUrl = options.streamUrl;
+    this.sendUrl = options.sendUrl;
+    this.onEnvelope = options.onEnvelope;
+    this.onClose = options.onClose;
+    this.onError = options.onError;
+    this.source = null;
+  }
+
+  async connect() {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const source = new EventSource(this.streamUrl);
+      const fail = (message) => {
+        const error =
+          message instanceof Error ? message : new Error(String(message));
+        if (!settled) {
+          settled = true;
+          reject(error);
+          return;
+        }
+        if (source.readyState === EventSource.CLOSED) {
+          this.onClose?.();
+          return;
+        }
+        this.onError?.(error);
+      };
+      source.addEventListener("open", () => {
+        this.source = source;
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      });
+      source.addEventListener("sync", (event) => {
+        try {
+          this.onEnvelope?.(JSON.parse(event.data));
+        } catch (error) {
+          this.onError?.(error);
+        }
+      });
+      source.addEventListener("error", () => {
+        fail("SSE connection failed");
+      });
+    });
+  }
+
+  async sendEnvelope(envelope) {
+    const response = await fetch(this.sendUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+      },
+      body: encodeSyncEnvelope(envelope),
+    });
+    if (!response.ok) {
+      throw new Error(`sync input failed: ${response.status} ${response.statusText}`);
+    }
+  }
+
+  async sendStreamEnvelope(envelope) {
+    await this.sendEnvelope(envelope);
+  }
+
+  async needView(viewState) {
+    await this.sendEnvelope({
+      kind: SyncKind.NeedView,
+      session: viewState.session,
+      view: viewState.view,
+      clientRevision: viewState.clientRevision,
+      clientSignature: viewState.clientSignature,
+      payload: viewState.payload ?? "need",
+    });
+  }
+
+  async haveView(viewState) {
+    await this.sendEnvelope({
+      kind: SyncKind.HaveView,
+      session: viewState.session,
+      view: viewState.view,
+      clientRevision: viewState.clientRevision,
+      clientSignature: viewState.clientSignature,
+      payload: viewState.payload ?? "have",
+    });
+  }
+
+  async sendDomEvent(event) {
+    const session = BigInt(event.session);
+    const view = BigInt(event.view);
+    const revision = BigInt(event.revision);
+    const signature = BigInt(event.signature);
+    await this.sendEnvelope({
+      kind: SyncKind.HaveView,
+      session,
+      view,
+      clientRevision: revision,
+      clientSignature: signature,
+      serverRevision: revision,
+      serverSignature: signature,
+      payload: JSON.stringify({
+        type: "dom_event",
+        session: session.toString(),
+        view: view.toString(),
+        revision: revision.toString(),
+        signature: signature.toString(),
+        event: String(event.event),
+        target: String(event.target ?? ""),
+        action: String(event.action ?? ""),
+        fields: event.fields ?? {},
+      }),
+    });
+  }
+
+  close() {
+    this.source?.close();
+  }
+}
+
 async function readAllStreamBytes(stream) {
   const reader = stream.getReader();
   const chunks = [];
@@ -770,8 +890,14 @@ async function readAllStreamBytes(stream) {
 
 export function bootstrapServerRenderedSync(mount, status) {
   const params = new URLSearchParams(location.search);
+  const transport =
+    params.get("transport") ??
+    mount.dataset.syncTransport ??
+    (params.get("url") ? "webtransport" : "sse");
   const state = {
-    url: params.get("url") ?? mount.dataset.webtransportUrl,
+    transport,
+    syncUrl: params.get("syncUrl") ?? mount.dataset.syncUrl ?? "/sync",
+    url: params.get("url") ?? mount.dataset.syncTransportUrl ?? "",
     certificateHash: params.get("certHash") ?? "",
     session: BigInt(params.get("session") ?? randomSessionId()),
     view: BigInt(mount.dataset.view),
@@ -799,7 +925,7 @@ export function bootstrapServerRenderedSync(mount, status) {
 
   function connectionFailureText(error) {
     const message = String(error ?? connectError ?? "connection failed");
-    if (!state.certificateHash) {
+    if (state.transport === "webtransport" && !state.certificateHash) {
       return `${message}. Open the URL printed by the smoke script, including certHash.`;
     }
     return message;
@@ -929,27 +1055,52 @@ export function bootstrapServerRenderedSync(mount, status) {
   }
 
   async function connect() {
-    client = new MicaWebTransportSyncClient({
-      url: state.url,
-      certificateHash: state.certificateHash,
-      onEnvelope: handle,
-      onClose: () => {
-        connected = false;
-        stopPolling();
-        if (!initialSynced) {
-          initialSyncReject(new Error("WebTransport closed before initial sync"));
-        }
-        setStatus("Disconnected");
-      },
-      onError: (error) => {
-        connected = false;
-        stopPolling();
-        if (!initialSynced) {
-          initialSyncReject(error);
-        }
-        setStatus(String(error));
-      },
-    });
+    const onClose = () => {
+      connected = false;
+      stopPolling();
+      if (!initialSynced) {
+        initialSyncReject(
+          new Error(
+            state.transport === "webtransport"
+              ? "WebTransport closed before initial sync"
+              : "SSE stream closed before initial sync",
+          ),
+        );
+      }
+      setStatus("Disconnected");
+    };
+    const onError = (error) => {
+      connected = false;
+      stopPolling();
+      if (!initialSynced) {
+        initialSyncReject(error);
+      }
+      setStatus(String(error));
+    };
+    if (state.transport === "webtransport") {
+      if (!state.url) {
+        throw new Error(
+          "missing WebTransport URL; pass ?transport=webtransport&url=https://.../view",
+        );
+      }
+      client = new MicaWebTransportSyncClient({
+        url: state.url,
+        certificateHash: state.certificateHash,
+        onEnvelope: handle,
+        onClose,
+        onError,
+      });
+    } else if (state.transport === "sse") {
+      client = new MicaSseSyncClient({
+        streamUrl: `${state.syncUrl}/events?session=${state.session}`,
+        sendUrl: `${state.syncUrl}/input`,
+        onEnvelope: handle,
+        onClose,
+        onError,
+      });
+    } else {
+      throw new Error(`unsupported sync transport: ${state.transport}`);
+    }
     api.client = client;
     await client.connect();
     connectError = null;

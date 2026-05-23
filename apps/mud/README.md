@@ -49,8 +49,8 @@ browser UI demonstrate a unified declarative, data-oriented application design.
 - `command-parser.mica`: parser support for turning command text into command
   invocations.
 - `event-substitutions.mica`: event text/template rendering support.
-- `ui-session.mica`: WebTransport sync view selection, session facts, MUD sync
-  action declarations, and web/player authority grants.
+- `ui-session.mica`: sync view selection, session facts, MUD sync action
+  declarations, and web/player authority grants.
 - `ui-mica-inspect.mica`: programmer-facing Mica reflection inspector, including
   reflection grants, inspect navigation, layout controls, and method catalogue
   rendering.
@@ -60,7 +60,7 @@ browser UI demonstrate a unified declarative, data-oriented application design.
   rendering.
 - `ui-actions.mica`: browser sync event adapter and delegated sync action
   handlers.
-- `http.mica`: `/mud` HTTP document route and WebTransport bootstrapping.
+- `http.mica`: `/mud` HTTP document route and transport-neutral sync mount.
 - `style.css`, `login.css`, `presence.css`, `narrative.css`: text assets loaded
   by `http.mica` with `include_text(...)`.
 - `bootstrap.js`: browser boot script for the server-rendered sync client.
@@ -86,12 +86,40 @@ put coin box
 push button
 ```
 
+## SSE DOM Sync Fixture
+
+Run the browser fixture with a plain HTTP host:
+
+```sh
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/sync-host.mica \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --filein apps/shared/sync-dom.mica \
+  --filein apps/mud/ui-session.mica \
+  --filein apps/mud/ui-mica-inspect.mica \
+  --filein apps/mud/ui-compose.mica \
+  --filein apps/mud/ui-narrative.mica \
+  --filein apps/mud/ui-actions.mica \
+  --filein apps/mud/http.mica \
+  --web-bind 127.0.0.1:8080
+```
+
+Open `http://127.0.0.1:8080/mud`. The page starts as a server-rendered login
+view, then the browser opens an SSE stream and sends sync envelopes back over
+ordinary HTTP `POST`s. Choosing Alice or Bob switches the view onto the
+server-owned world state without app code caring whether the transport is SSE
+or WebTransport.
+
 ## WebTransport DOM Sync Fixture
 
 Run the browser fixture with:
 
 ```sh
-scripts/mud-webtransport-smoke.sh
+scripts/mud.sh
 ```
 
 The wrapper starts `mica-daemon` with the explicit sync filein set needed by the
@@ -100,8 +128,16 @@ parser, DOM sync support, MUD UI/session/action fileins, and the `/mud` HTTP
 document route.
 
 Open the printed `/mud` URL. The page starts as a server-rendered login view.
-After choosing Alice or Bob, the browser view is driven by WebTransport DOM sync:
-Mica renders the DOM tree, the host diffs it, and the browser applies patches.
+To force the shared bootstrap onto WebTransport, open the printed URL with
+`transport=webtransport`, the WebTransport `url`, and the certificate hash:
+
+```text
+/mud?transport=webtransport&url=https://127.0.0.1:4433/view&certHash=...
+```
+
+After choosing Alice or Bob, the browser view is driven by the same DOM sync
+contract over WebTransport: Mica renders the DOM tree, the host diffs it, and
+the browser applies patches.
 
 The smoke wrapper is quiet by default. Set `MICA_MUD_SMOKE_TRACE=1` to enable
 sync, driver, task, and VM host tracing. Set `MICA_WT_POLL_MS=0` to disable the

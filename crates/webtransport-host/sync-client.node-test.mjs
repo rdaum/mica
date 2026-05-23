@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   SyncKind,
+  MicaSseSyncClient,
   MicaWebTransportSyncClient,
   decodeChunkedSyncEnvelope,
   decodeSyncEnvelope,
@@ -116,6 +117,51 @@ assert.equal(streamWrites.length, 2);
 assert.equal(decodeSyncEnvelope(streamWrites[0]).kind, "NeedView");
 assert.equal(decodeSyncEnvelope(streamWrites[0]).payload, "test-need");
 assert.equal(streamWrites[1], "closed");
+
+const sseWrites = [];
+globalThis.EventSource = class FakeEventSource {
+  static CLOSED = 2;
+
+  constructor(url) {
+    this.url = url;
+    this.readyState = 1;
+    this.listeners = new Map();
+    queueMicrotask(() => {
+      this.listeners.get("open")?.({ type: "open" });
+    });
+  }
+
+  addEventListener(name, handler) {
+    this.listeners.set(name, handler);
+  }
+
+  close() {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+};
+globalThis.fetch = async (_url, options) => {
+  const body =
+    options.body instanceof Uint8Array
+      ? options.body
+      : new Uint8Array(options.body);
+  sseWrites.push(decodeSyncEnvelope(body));
+  return { ok: true, status: 202, statusText: "Accepted" };
+};
+const sseClient = new MicaSseSyncClient({
+  streamUrl: "http://127.0.0.1:8080/sync/events?session=42",
+  sendUrl: "http://127.0.0.1:8080/sync/input",
+});
+await sseClient.connect();
+await sseClient.needView({
+  session: 42n,
+  view: 21n,
+  clientRevision: 3n,
+  clientSignature: 5n,
+  payload: "sse-need",
+});
+assert.equal(sseWrites.length, 1);
+assert.equal(sseWrites[0].kind, "NeedView");
+assert.equal(sseWrites[0].payload, "sse-need");
 
 let commandFocused = false;
 let localFocused = false;

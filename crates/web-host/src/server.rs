@@ -14,6 +14,7 @@
 use crate::codec::{HttpCodec, HttpResponse, encode_response};
 use crate::request::handle_in_process_request;
 use crate::response::{error_response, route_request};
+use crate::sync::{self, SyncRequestKind};
 use crate::{InProcessWebHost, RequestBinding, format_driver_error};
 use compio::io::{AsyncRead, AsyncWriteExt};
 use compio::net::{TcpListener, TcpStream};
@@ -122,6 +123,23 @@ async fn handle_in_process_connection(
         match codec.decode(&buffer[..bytes]) {
             Ok(requests) => {
                 for request in requests {
+                    match sync::request_kind(&request) {
+                        Some(SyncRequestKind::EventStream) => {
+                            return sync::serve_event_stream(stream, host, binding, &request).await;
+                        }
+                        Some(SyncRequestKind::Input) => {
+                            let close = request.connection_should_close();
+                            let response =
+                                sync::handle_sync_input_request(&host, &binding, &request, close)
+                                    .await;
+                            write_response(&mut stream, response).await?;
+                            if close {
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                        None => {}
+                    }
                     let close = request.connection_should_close();
                     let response =
                         handle_in_process_request(&host, &binding, &request, close).await;

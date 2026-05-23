@@ -39,7 +39,7 @@ world:
 Try the browser example:
 
 ```sh
-scripts/mud-webtransport-smoke.sh
+scripts/mud.sh
 ```
 
 The script starts the daemon with the MUD, DOM sync, HTTP, and WebTransport
@@ -366,7 +366,7 @@ returns.
 Run the browser MUD scenario:
 
 ```sh
-scripts/mud-webtransport-smoke.sh
+scripts/mud.sh
 ```
 
 The wrapper starts the daemon with the WebTransport, DOM sync, HTTP, and MUD

@@ -79,15 +79,20 @@ daemon_pid=$!
 
 encoded_url="${wt_url//:/%3A}"
 encoded_url="${encoded_url//\//%2F}"
-smoke_url="http://${http_host}:${http_port}/${page}?url=${encoded_url}&certHash=${cert_hash}&pollMs=${poll_ms}"
+default_url="http://${http_host}:${http_port}/${page}"
+webtransport_url="http://${http_host}:${http_port}/${page}?transport=webtransport&url=${encoded_url}&certHash=${cert_hash}&pollMs=${poll_ms}"
 
 cat <<EOF
-Mica WebTransport sync fixture is starting.
+Mica browser sync fixture is starting.
 
-Browser URL:
-  ${smoke_url}
+Default browser URL (SSE):
+  ${default_url}
+
+WebTransport override URL:
+  ${webtransport_url}
 
 Manual values:
+  SSE sync base: http://${http_host}:${http_port}/sync
   URL: ${wt_url}
   Certificate SHA-256: ${cert_hash}
 

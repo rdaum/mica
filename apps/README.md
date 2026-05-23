@@ -25,7 +25,7 @@ the browser; browser interactions return as sync events handled by Mica verbs.
 Run the DOM-synced MUD web app:
 
 ```sh
-scripts/mud-webtransport-smoke.sh
+scripts/mud.sh
 ```
 
 Open the printed `/mud` URL in a browser. The initial document is a
