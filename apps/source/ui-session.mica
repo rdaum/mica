@@ -1,0 +1,200 @@
+// Server-owned UI session state for the static source viewer.
+
+make_relation(:source/View, 1)
+make_functional_relation(:source/SyncAction, 2, [0])
+
+make_identity(:source/sync_action)
+make_identity(:source/open_file_action)
+
+assert source/View(31)
+assert Delegates(#source/open_file_action, #source/sync_action, 0)
+assert source/SyncAction("source_open_file", #source/open_file_action)
+
+assert CanRead(#web, :source/Repository)
+assert CanRead(#web, :source/RepositoryName)
+assert CanRead(#web, :source/RepositoryRoot)
+assert CanRead(#web, :source/Revision)
+assert CanRead(#web, :source/RevisionOf)
+assert CanRead(#web, :source/RevisionKind)
+assert CanRead(#web, :source/RevisionLabel)
+assert CanRead(#web, :source/SourceFile)
+assert CanRead(#web, :source/FileRevision)
+assert CanRead(#web, :source/FilePath)
+assert CanRead(#web, :source/FileTitle)
+assert CanRead(#web, :source/FileLanguage)
+assert CanRead(#web, :source/FileText)
+assert CanRead(#web, :source/FileOrder)
+assert CanRead(#web, :source/SourceSpan)
+assert CanRead(#web, :source/SpanFile)
+assert CanRead(#web, :source/SpanLabel)
+assert CanRead(#web, :source/SpanStartLine)
+assert CanRead(#web, :source/SpanEndLine)
+assert CanRead(#web, :source/CanBrowseRepository)
+assert CanRead(#web, :source/CanReadSourceFile)
+assert CanRead(#web, :source/CanReadSourceSpan)
+assert CanRead(#web, :source/View)
+assert CanRead(#web, :source/SyncAction)
+assert CanRead(#web, :source/SelectedRepository)
+assert CanRead(#web, :source/SelectedRevision)
+assert CanRead(#web, :source/SelectedPath)
+assert CanRead(#web, :source/ViewRevision)
+assert CanRead(#web, :Delegates)
+
+assert CanWrite(#web, :source/SelectedRepository)
+assert CanWrite(#web, :source/SelectedRevision)
+assert CanWrite(#web, :source/SelectedPath)
+assert CanWrite(#web, :source/ViewRevision)
+
+assert CanInvoke(#web, :sync_event)
+assert CanInvoke(#web, :sync_view_revision)
+assert CanInvoke(#web, :sync_view_tree)
+assert CanInvoke(#web, :source/sync_action_source)
+assert CanInvoke(#web, :source/handle_sync_action)
+assert CanInvoke(#web, :source/current_repository)
+assert CanInvoke(#web, :source/current_revision)
+assert CanInvoke(#web, :source/current_file)
+assert CanInvoke(#web, :source/file_for_path)
+assert CanInvoke(#web, :source/view_revision)
+assert CanInvoke(#web, :source/bump_revision)
+assert CanInvoke(#web, :source/app_node)
+assert CanInvoke(#web, :source/header_node)
+assert CanInvoke(#web, :source/repository_summary_node)
+assert CanInvoke(#web, :source/file_list_node)
+assert CanInvoke(#web, :source/file_button_node)
+assert CanInvoke(#web, :source/code_panel_node)
+assert CanInvoke(#web, :source/span_list_node)
+assert CanInvoke(#web, :source/span_row_node)
+assert CanInvoke(#web, :source/meta_chip_node)
+assert CanInvoke(#web, :source/empty_node)
+assert CanInvoke(#web, :dom_text)
+assert CanInvoke(#web, :dom_raw)
+assert CanInvoke(#web, :dom_element)
+assert CanInvoke(#web, :to_literal)
+assert CanInvoke(#web, :from_literal)
+assert CanInvoke(#web, :string_concat)
+assert CanInvoke(#web, :string_starts_with)
+
+verb source/current_repository()
+  let selected = one source/SelectedRepository(endpoint(), ?repository)
+  if selected != nothing
+    return selected
+  end
+
+  return #source/repo_mica
+end
+
+verb source/current_revision()
+  let selected = one source/SelectedRevision(endpoint(), ?revision)
+  if selected != nothing
+    return selected
+  end
+
+  return #source/rev_worktree
+end
+
+verb source/file_for_path(path)
+  let revision = source/current_revision()
+  for found in source/FilePath(?file, path)
+    if source/FileRevision(found[:file], revision)
+      return found[:file]
+    end
+  end
+
+  return nothing
+end
+
+verb source/current_file()
+  let selected_path = one source/SelectedPath(endpoint(), ?path)
+  if selected_path != nothing
+    let selected_file = source/file_for_path(selected_path)
+    if selected_file != nothing
+      return selected_file
+    end
+  end
+
+  return #source/file_runtime_lib
+end
+
+verb source/view_revision()
+  let revision = one source/ViewRevision(endpoint(), ?revision)
+  if revision == nothing
+    return 1
+  end
+
+  return revision
+end
+
+verb source/bump_revision(endpoint)
+  let revision = one source/ViewRevision(endpoint, ?revision)
+  if revision == nothing
+    revision = 1
+  end
+
+  revision = revision + 1
+  retract source/ViewRevision(endpoint, _)
+  assert source/ViewRevision(endpoint, revision)
+  return revision
+end
+
+verb source/sync_action_source(action)
+  let delegate = one source/SyncAction(action, ?delegate)
+  if delegate == nothing
+    return nothing
+  end
+
+  return frob(delegate, action)
+end
+
+verb source/handle_sync_action(source @ #source/sync_action<_>, endpoint, session, view, event, target, fields)
+  return false
+end
+
+verb source/handle_sync_action(source @ #source/open_file_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  if path == nothing
+    return false
+  end
+
+  let file = source/file_for_path(path)
+  if file == nothing || source/CanReadSourceFile(#web, file) == false
+    return false
+  end
+
+  retract source/SelectedRepository(endpoint, _)
+  retract source/SelectedRevision(endpoint, _)
+  retract source/SelectedPath(endpoint, _)
+  assert source/SelectedRepository(endpoint, #source/repo_mica)
+  assert source/SelectedRevision(endpoint, #source/rev_worktree)
+  assert source/SelectedPath(endpoint, path)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb sync_event(endpoint, session, view, event, target, action, fields)
+  let source = source/sync_action_source(action)
+  if source == nothing
+    return false
+  end
+
+  return source/handle_sync_action(source, endpoint, session, view, event, target, fields)
+end
+
+verb sync_view_revision(view)
+  if source/View(view) == false
+    return 0
+  end
+
+  return source/view_revision()
+end
+
+verb sync_view_tree(view, revision)
+  if source/View(view) == false
+    return source/empty_node("Unknown source view.")
+  end
+
+  return source/app_node(view, revision)
+end

@@ -1,0 +1,108 @@
+// DOM composition for the static source viewer.
+
+verb source/empty_node(message)
+  return dom_element("p", {:class -> "source-empty"}, [dom_text(message)])
+end
+
+verb source/meta_chip_node(label, value)
+  return dom_element("span", {:class -> "source-chip"}, [dom_text(label), dom_text(": "), dom_text(value)])
+end
+
+verb source/header_node(repository, revision)
+  let name = one source/RepositoryName(repository, ?name)
+  let label = one source/RevisionLabel(revision, ?label)
+  let title = dom_element("h1", {}, [dom_text(name)])
+  let deck = dom_element("p", {:class -> "source-deck"}, [dom_text("A Mica-authored source viewer over seeded repository facts.")])
+  let meta = dom_element("div", {:class -> "source-meta"}, [source/meta_chip_node("revision", label), source/meta_chip_node("mode", "static phase 1")])
+  return dom_element("header", {:class -> "source-header"}, [title, deck, meta])
+end
+
+verb source/repository_summary_node(repository, revision)
+  let root = one source/RepositoryRoot(repository, ?root)
+  let file_count = 0
+  for found in source/SourceFile(?file)
+    if source/FileRevision(found[:file], revision)
+      file_count = file_count + 1
+    end
+  end
+
+  return dom_element("section", {:class -> "source-panel source-summary"}, [dom_element("h2", {}, [dom_text("Repository")]), dom_element("p", {}, [dom_text(root)]), dom_element("p", {:class -> "source-muted"}, [dom_text(string_concat(to_literal(file_count), " seeded files"))])])
+end
+
+verb source/file_button_node(file, selected)
+  let path = one source/FilePath(file, ?path)
+  let title = one source/FileTitle(file, ?title)
+  let language = one source/FileLanguage(file, ?language)
+  let class = "source-file-button"
+  if file == selected
+    class = "source-file-button active"
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let title_node = dom_element("span", {:class -> "source-file-title"}, [dom_text(title)])
+  let path_node = dom_element("span", {:class -> "source-file-path"}, [dom_text(path)])
+  let language_node = dom_element("span", {:class -> "source-file-language"}, [dom_text(language)])
+  let button = dom_element("button", {:type -> "submit", :class -> class}, [title_node, path_node, language_node])
+  return dom_element("form", {:class -> "source-file-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_file", "data-sync-key" -> path}, [hidden, button])
+end
+
+verb source/file_list_node(repository, revision, selected)
+  let items = []
+  for found in source/SourceFile(?file)
+    let file = found[:file]
+    if source/FileRevision(file, revision) && source/CanReadSourceFile(#web, file)
+      items = [@items, source/file_button_node(file, selected)]
+    end
+  end
+
+  return dom_element("section", {:class -> "source-panel source-files"}, [dom_element("h2", {}, [dom_text("Files")]), dom_element("div", {:class -> "source-file-list"}, items)])
+end
+
+verb source/span_row_node(span)
+  let label = one source/SpanLabel(span, ?label)
+  let start = one source/SpanStartLine(span, ?start)
+  let finish = one source/SpanEndLine(span, ?finish)
+  let line_range = string_concat("lines ", to_literal(start), "-", to_literal(finish))
+  return dom_element("li", {"data-sync-key" -> to_literal(span)}, [dom_element("span", {:class -> "source-span-label"}, [dom_text(label)]), dom_element("span", {:class -> "source-span-lines"}, [dom_text(line_range)])])
+end
+
+verb source/span_list_node(file)
+  let spans = []
+  for found in source/SpanFile(?span, file)
+    let span = found[:span]
+    if source/CanReadSourceSpan(#web, span)
+      spans = [@spans, source/span_row_node(span)]
+    end
+  end
+
+  if spans == []
+    return source/empty_node("No seeded spans for this file.")
+  end
+
+  return dom_element("ul", {:class -> "source-span-list"}, spans)
+end
+
+verb source/code_panel_node(file)
+  let path = one source/FilePath(file, ?path)
+  let title = one source/FileTitle(file, ?title)
+  let language = one source/FileLanguage(file, ?language)
+  let text = one source/FileText(file, ?text)
+  let title_group = dom_element("div", {}, [dom_element("h2", {}, [dom_text(title)]), dom_element("p", {:class -> "source-path"}, [dom_text(path)])])
+  let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language)])
+  let code = dom_element("pre", {:class -> "source-code"}, [dom_element("code", {}, [dom_text(text)])])
+  let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Seeded spans")]), source/span_list_node(file)])
+  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, code, spans])
+end
+
+verb source/app_node(view, revision)
+  let repository = source/current_repository()
+  let selected_revision = source/current_revision()
+  let selected_file = source/current_file()
+  let header = source/header_node(repository, selected_revision)
+  let summary = source/repository_summary_node(repository, selected_revision)
+  let files = source/file_list_node(repository, selected_revision, selected_file)
+  let code = source/code_panel_node(selected_file)
+  let sidebar = dom_element("aside", {:class -> "source-sidebar"}, [summary, files])
+  let main = dom_element("main", {:class -> "source-shell"}, [sidebar, code])
+  return dom_element("div", {:class -> "source-app"}, [header, main])
+end
