@@ -72,6 +72,7 @@ struct Cli {
 enum EmbeddingProviderMode {
     Deterministic,
     Disabled,
+    Vllm,
 }
 
 impl From<EmbeddingProviderMode> for EmbeddingProviderKind {
@@ -79,6 +80,7 @@ impl From<EmbeddingProviderMode> for EmbeddingProviderKind {
         match value {
             EmbeddingProviderMode::Deterministic => Self::Deterministic,
             EmbeddingProviderMode::Disabled => Self::Disabled,
+            EmbeddingProviderMode::Vllm => Self::Vllm,
         }
     }
 }
