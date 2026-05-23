@@ -1,27 +1,45 @@
 # Mica
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink)](https://github.com/sponsors/rdaum)
+
 <p align="center">
   <img src="assets/mica-logo.png" alt="Mica logo" width="480">
 </p>
 
-Mica is a language runtime and application server for building live,
-programmable systems: collaborative worlds, simulations, knowledge bases,
-agent workspaces, games, and operational tools.
-
-Its object model is relation-first and rule-aware. Long-lived identities,
-facts, derived relations, verbs, and authority can all change while the system
-is running. The result is closer to an object system with a built-in relational
-logic layer than to a conventional application framework.
-
-You build a Mica world by creating persistent objects and teaching them new
-facts, rules, and verbs. The code that defines behaviour is part of the world:
-verbs live alongside the identities they operate on, rather than only in an
-external source tree. Mica is designed for many human authors and software
-agents to extend a running world from inside that world, with authority checks
-on reads, writes, invocations, and effects.
-
 > **NOTE**: If you're looking at this on GitHub be aware this is just a mirror
 > from the canonical Codeberg repository at https://codeberg.org/timbran/mica
+
+Mica is a programming language and runtime for building long-lived
+shared systems.
+
+It is for software that stays live, keeps durable state, and can be
+extended while it is running: collaborative worlds, simulations,
+knowledge bases, agent workspaces, games, and operational tools.
+
+Under the hood, Mica brings together application logic, durable data,
+and server-side execution in one system.
+
+If you think in terms of today's typical stack, it sits across some of
+the space you might otherwise fill with Node, Postgres, background
+jobs, and application glue, but as one coherent system.
+
+## Build
+
+You build a Mica world by creating persistent objects and teaching
+them new facts, rules, and verbs (programs). The code that defines
+behaviour is part of the world: verbs live alongside the identities
+they operate on, rather than in an external source tree.
+
+Mica is designed for many human authors and software agents to extend
+a running world from inside that world, with authority checks on
+reads, writes, invocations, and effects.
+
+## Interact
+
+Mica has affordances for serving content to web browsers, and ships
+with a light framework for building interactive user interfaces that
+are automatically synchronized from server to browser (similar to the
+[Phoenix framework's LiveView](https://www.phoenixframework.org/)).
 
 The screenshot below is from `apps/mud/`, one example application built with
 Mica. It combines a browser-rendered room/object world, command history,
@@ -32,7 +50,7 @@ world:
   <img
     src="assets/screenshot.png"
     alt="Screenshot of the apps/mud browser example, with room view, command history, inventory, and live inspect panes."
-    width="900"
+    width="600"
   >
 </p>
 
@@ -42,14 +60,18 @@ Try the browser example:
 scripts/mud.sh
 ```
 
-The script starts the daemon with the MUD, DOM sync, HTTP, and WebTransport
-fileins, then prints the local `/mud` URL to open. The app is still ordinary
-Mica source: the browser is a host surface over relation facts, rules, verbs,
-authority, and server-rendered DOM values.
+The wrapper starts the daemon with the browser MUD fileins and prints
+the local `/mud` URL to open.
 
-## Core Idea
+## Identify
 
-Mica represents objects as durable identity values described by relation facts:
+Mica represents objects as durable identity values described by relation facts.
+
+> If you come from SQL, a relation is roughly a table, and a fact is
+> roughly a row; in relational terms, that row is a tuple. An "identity"
+> could be seen as a "primary key".  In an OO language, the "identity"
+> is a bit like an object pointer. But while these are useful anchors,
+> they are perhaps a crude translation.
 
 ```mica
 Object(#lamp)
@@ -109,7 +131,7 @@ relations are defined by rules and read through the same relation interface.
 Identities such as `#lamp` are values, not rows; relation tuples are the
 durable facts that describe them.
 
-## Behaviour
+## Behave
 
 Behaviour is also relational. Instead of finding a method by starting from one
 special receiver object, Mica dispatches over named roles:
@@ -189,55 +211,76 @@ The current implementation evaluates rules in the relation kernel and exposes
 derived tuples through ordinary relation reads. More complete rule planning and
 incremental evaluation remain active areas of work.
 
-## Language Shape
+## Express
 
-Mica's surface language is intended to feel familiar to people who know MOO or
-mooR, while borrowing from Dylan, Julia, Datalog, and Algol-family languages.
+Mica's surface language is intended to feel familiar and readable. It
+borrows from Julia, Dylan, Datalog, and Algol-family languages. It
+will also feel broadly familiar to people who have been exposed to MOO
+(and the dialect of it in my [mooR](https://codeberg.org/timbran/moor)
+project.)
 
-Current syntax includes:
+Here's an example snippet which shows various bits of syntax to give
+you a sense of the flavour of the language:
 
 ```mica
 make_identity(:alice)
-make_identity(:coin)
+make_identity(:lamp)
+
+// HeldBy has arity 2 (binary relation): each fact relates an owner and an item.
 make_relation(:HeldBy, 2)
 
-assert HeldBy(#alice, #coin)
+// Position 0 is the key, so each identity has one current Name value.
+// Declared this way, Name can also be read and written as item.name.
+make_functional_relation(:Name, 2, [0])
 
-for key, value in properties
-  render_property(key, value)
+assert Name(#lamp, "brass lamp")
+assert HeldBy(#alice, #lamp)
+
+// Lambdas are ordinary values and can return closures.
+let make_label = fn(prefix) => fn(name) => string_concat(prefix, name)
+
+// Role restrictions dispatch on world identities, not only one receiver.
+verb inspect(actor @ #identity, item @ #identity)
+  // Dot syntax reads the functional Name relation declared above.
+  let summary = {:actor -> actor, :item -> item, :name -> item.name}
+
+  if HeldBy(actor, item)
+    emit(actor, [:inspect, summary])
+    return make_label("You are holding ")(item.name)
+  end
+
+  return make_label("You see ")(item.name)
+end
+
+// Queries bind variables such as ?owner and expose rows as maps.
+for found in HeldBy(?owner, ?item)
+  render_row(found[:owner], found[:item])
 end
 ```
 
 The language is expression-oriented: control forms, assignments, assertions,
-queries, and calls produce values.
+queries, and calls produce values. Lexical scope and structure is defined through
+`begin .. end` type blocks, in the Wirth-ish tradtion.
 
-## Isn't this just a Database?
+## Persist
 
 Mica uses transactional relation storage as part of its programming model. A
 Mica task runs against a transaction snapshot and commits its relation changes
-as one unit.
+as one unit. In database terms, the intended baseline is snapshot isolation:
+roughly PostgreSQL `REPEATABLE READ`, not `SERIALIZABLE`.
 
-The runtime needs:
+That means object state, world rules, and author-visible facts can all live in
+the same durable store instead of being split between a database, a source
+tree, and server internals. Persistence is not an afterthought bolted onto the
+side of the runtime; it is part of how the system represents and evolves a
+world over time.
 
-- stable identities as first-class values;
-- live mutation of relations, methods, and rules;
-- transactional command execution;
-- role-based dispatch;
-- prototype delegation;
-- derived relations;
-- object-neighbourhood inspection;
-- author-facing syntax;
-- durable relation state and restart recovery.
+Because the same relation store carries object state, dispatch metadata, world
+rules, and authority policy, restart recovery brings back the live model
+itself, not only a pile of application data waiting to be reinterpreted by
+server code.
 
-Those concerns overlap with databases, object systems, logic languages, and
-interactive programming environments, but none of those models alone is quite
-the intended shape.
-
-In Mica, relations are the author-visible representation of objects, dispatch,
-world rules, and authority. The runtime executes behaviours inside that same
-transactional relation system.
-
-## For Agents and Tools
+## Recall
 
 Mica gives agents and tools a queryable model of identities, relations, rules,
 verbs, and authority.
@@ -290,23 +333,6 @@ Vector indexes, embedding stores, and external tools can be attached as
 providers or tool-facing facts. Mica's core model is the identity / relation /
 rule layer that says what those memories are about and how they may be used.
 
-## MOO-Like Worlds
-
-The current app fileins show how Mica can model
-[MOO-like](https://en.wikipedia.org/wiki/MOO) pieces: rooms, containers,
-players, verbs, live source loading, telnet interaction, and shared
-programmable space.
-
-MOO showed that a running multiuser world can also be its own authoring
-environment. Mica keeps that immediacy while changing the foundation. Object
-state is facts, inheritance is delegation over identities, verbs dispatch over
-roles, and policies like visibility or containment can be relations and rules
-instead of privileged server internals.
-
-MUD-like apps are useful because rooms, exits, containers, and inventory are
-easy to understand. They are demonstrations of the model, not the boundary of the
-project.
-
 ## Background
 
 Mica grows out of lessons from [mooR](https://codeberg.org/timbran/moor), my
@@ -333,64 +359,32 @@ foundation.
 
 ## Current Status
 
-Mica's implementation is still early. The current tree has:
+Mica is pre-1.0 but is already a working system. The current tree can
+run live applications with durable objects and facts, transactional
+relation updates, derived rules, role-based dispatch, authority
+checks, and host surfaces for browsers, and daemon RPC.
 
-- a compact value layer;
-- a relation kernel with base facts, transactions, indexes, catalogue metadata,
-  and derived rules;
-- a register-based bytecode VM;
-- a runtime environment with task management, builtins, filein/fileout, and
-  transaction lifecycle;
-- compiler for a growing Mica language surface;
-- a compio-driven task driver for timed wakeups, input resumes, and emissions;
-- a telnet host that maps one endpoint identity to each connection and can run
-  in process or over the host RPC/IPC protocol;
-- minimal HTTP/1.1 and WebTransport hosts that route browser traffic into Mica
-  verbs and DOM sync views;
-- a host protocol console for exercising daemon RPC over ZeroMQ;
-- a browser-oriented WASM package that links the compiler, VM, and projected
-  relation store without durable providers;
-- role-based method dispatch;
-- a "filein" syntax for bringing in state-as-initial-blueprint;
-- first-cut fileout for revision-controllable units;
-- actor-derived authority contexts and runtime capability checks;
-- Fjall-backed durable relation state with strict and relaxed commit modes;
-- a simple runner and REPL;
-- small app fileins, including a browser-rendered MUD scenario and a
-  Mica-authored command parser.
+It is still early and uneven. The core model is there, and the shipped
+apps exercise it end to end, but the language surface, browser
+framework, rule engine, tooling, and authoring ergonomics are all
+still in motion. 
 
-Relaxed durability accepts commits into the provider's ordered writer queue.
-Strict durability waits for the Fjall batch to be applied before the commit
-returns.
+Stability of language and API surface is not yet the primary goal;
+that shift will happen as concepts solidify further. Part of this
+happens through the development of applications and services, so I
+encourage to try your hands at the examples and build something of
+your own.
 
-Run the browser MUD scenario:
+The most coherent example today is the browser MUD in `apps/mud/`,
+launched with `scripts/mud.sh`. It shows the current shape of Mica
+better than a subsystem checklist does: a running world whose facts,
+rules, verbs, browser UI, and live inspection views are all authored
+inside the same system.
 
-```sh
-scripts/mud.sh
-```
-
-The wrapper starts the daemon with the WebTransport, DOM sync, HTTP, and MUD
-fileins, then prints the local `/mud` URL. Set `MICA_MUD_SMOKE_TRACE=1` for host
-and VM tracing while developing the app.
-
-Run a small capability filein through the CLI:
-
-```sh
-cargo run --bin mica -- filein apps/shared/capabilities.mica
-```
-
-Run the older telnet-oriented MUD surface:
-
-```sh
-cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
-```
-
-Run the HTTP demo:
-
-```sh
-cargo run --bin mica-daemon -- --web-bind 127.0.0.1:8080
-curl -i http://127.0.0.1:8080/hello
-```
+If you want a smaller entry point, `cargo run --bin mica -- filein
+apps/shared/capabilities.mica` runs a simple filein through the CLI,
+and `cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777`
+starts the older telnet-oriented surface.
 
 HTTP requests run as the `#web` principal by default. The daemon derives
 request-handler authority from Mica policy facts rather than running
@@ -430,20 +424,29 @@ is not committed yet.
 - [`crates/driver`](crates/driver/README.md): compio task driver, wakeups,
   input, and emissions.
 - [`crates/runner`](crates/runner/README.md): CLI and REPL binary.
-- [`crates/daemon`](crates/daemon/README.md): runtime daemon that can link the
-  telnet host in process and expose host RPC over IPC.
+- [`crates/daemon`](crates/daemon/README.md): runtime daemon that wires Mica to
+  telnet, HTTP, WebTransport, and host RPC surfaces.
+- [`crates/host-protocol`](crates/host-protocol/README.md): shared protocol
+  types for host effects, browser DOM sync, and endpoint interactions.
+- [`crates/host-zmq`](crates/host-zmq/README.md): ZeroMQ transport for the host
+  protocol.
 - [`crates/host-console`](crates/host-console/README.md): interactive console
   for testing the host protocol over ZeroMQ.
 - [`crates/web-host`](crates/web-host/README.md): minimal compio HTTP/1.1
-  host and `httparse`-based codec.
+  host, request routing, and server-driven browser sync over HTTP/SSE.
+- [`crates/webtransport-host`](crates/webtransport-host/README.md): compio QUIC
+  and WebTransport host for browser sync sessions over datagrams and streams.
 - [`crates/telnet-host`](crates/telnet-host/README.md): telnet listener,
   telnet codec, and host-side endpoint session handling.
-- `apps/mud/core.mica`: small ontology proving relations, rules, filein,
-  verbs, and dispatch.
-- `apps/mud/event-substitutions.mica` and `apps/shared/events.mica`: compiled
-  narrative substitutions and structured event values.
-- `apps/mud/command-parser.mica`: command parsing authored in Mica, using
-  low-level string primitives rather than Rust command matching.
+- [`crates/testing`](crates/testing): load tools, harnesses, and test support
+  crates.
+- [`apps/shared`](apps/shared): shared Mica fileins for capabilities, strings,
+  events, and browser DOM sync helpers.
+- [`apps/web`](apps/web): core web-serving fileins such as HTTP dispatch and
+  relational routing.
+- [`apps/chat`](apps/chat): minimal browser chat example using the sync layer.
+- [`apps/mud`](apps/mud/README.md): browser and telnet MUD example, including
+  world model, command parsing, UI composition, and sync-driven views.
 - `sketches/MICA_*.md`: design notes for syntax, semantics, standard library,
   and the relation kernel.
 - [`CODING-STYLE.md`](CODING-STYLE.md): project coding guidelines, including
@@ -451,31 +454,29 @@ is not committed yet.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): contribution expectations, checks, and
   licence terms.
 
-## Direction
+## Contributing
 
-The practical target is to build a complete live multiuser server and language
-runtime with the range of capability that mooR has today, without mooR's
-LambdaMOO compatibility constraint. That means Mica needs to support real users
-building, extending, serving, inspecting, exporting, securing, and operating a
-running world.
+Contributions are welcome.
 
-Near-term work includes:
+Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`CODING-STYLE.md`](CODING-STYLE.md) before sending changes. Mica is still
+early, but it is a correctness-sensitive language and runtime project, so the
+bar is intentionally high: changes should be understandable, tested, and
+grounded in the current architecture.
 
-- a fuller standard library for common world, agent, and application relations;
-- richer method and verb cataloguing so behaviour can be found, inspected, and
-  edited from inside the running system;
-- object neighbourhood and outliner queries for browsing identities as live
-  objects;
-- import/export flows that make live state readable, editable, and
-  revision-controllable outside the running store;
-- authority and capability hardening beyond the current `Can*`/`Grant*`
-  minting path;
-- daemon, host, and client surfaces for telnet, web, agents, and tools;
-- durable storage hardening, compaction, recovery, and operational testing;
-- more complete rule evaluation and query planning.
+If you are viewing this on GitHub, please file issues and send pull requests on
+the canonical Codeberg repository instead:
+https://codeberg.org/timbran/mica
 
-The long-term aim is a production-quality relational object system for durable
-multiuser worlds and inspectable agent/tool integrations.
+## Support
+
+If Mica is useful in your work, consider sponsoring development on
+[GitHub Sponsors](https://github.com/sponsors/rdaum).
+
+> [!NOTE]
+> I am also available for consulting in systems engineering, language/runtime
+> design, and Rust development. If this project is useful or interesting for
+> your team, feel free to reach out.
 
 ## Licence
 
