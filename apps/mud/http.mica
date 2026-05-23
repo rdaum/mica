@@ -1,58 +1,58 @@
 // HTTP document route for the DOM-synced MUD app.
 
 assert CanInvoke(#web, :http_request)
-assert CanInvoke(#web, :mud_document)
-assert CanInvoke(#web, :mud_mount_node)
-assert CanInvoke(#web, :mud_style)
-assert CanInvoke(#web, :mud_login_style)
-assert CanInvoke(#web, :mud_presence_style)
-assert CanInvoke(#web, :mud_receiver_style)
-assert CanInvoke(#web, :mud_bootstrap_script)
+assert CanInvoke(#web, :http/document)
+assert CanInvoke(#web, :http/mount_node)
+assert CanInvoke(#web, :http/base_style)
+assert CanInvoke(#web, :http/login_style)
+assert CanInvoke(#web, :http/presence_style)
+assert CanInvoke(#web, :http/narrative_style)
+assert CanInvoke(#web, :http/bootstrap_script)
 
 verb http_request(request)
   let http_method = one RequestMethod(request, ?m)
   let path = one RequestPath(request, ?path)
 
   if http_method == "GET" && (path == "/" || path == "/mud" || string_starts_with(path, "/mud?"))
-    return http_html(200, mud_document(21))
+    return http_html(200, http/document(21))
   end
 
   return http_text(404, "not found")
 end
 
-verb mud_document(view)
+verb http/document(view)
   let snapshot = sync_snapshot(view)
   let payload = sync_snapshot_payload(view)
   let signature = sync_snapshot_signature(view, payload)
   let root = sync_snapshot_tree(view)
-  let mount = mud_mount_node(view, snapshot[:revision], signature, root)
-  let head = dom_element("head", {}, [dom_element("meta", {:charset -> "utf-8"}, []), dom_element("title", {}, [dom_text("Mica MUD")]), dom_element("style", {}, [dom_raw(string_concat(mud_style(), mud_login_style(), mud_presence_style(), mud_receiver_style()))])])
+  let mount = http/mount_node(view, snapshot[:revision], signature, root)
+  let head = dom_element("head", {}, [dom_element("meta", {:charset -> "utf-8"}, []), dom_element("title", {}, [dom_text("Mica MUD")]), dom_element("style", {}, [dom_raw(string_concat(http/base_style(), http/login_style(), http/presence_style(), http/narrative_style()))])])
   let status = dom_element("div", {:id -> "status", :class -> "sync-status"}, [dom_text("Synced revision "), dom_text(to_literal(snapshot[:revision]))])
-  let body = dom_element("body", {}, [mount, status, dom_element("script", {:type -> "module"}, [dom_raw(mud_bootstrap_script())])])
+  let body = dom_element("body", {}, [mount, status, dom_element("script", {:type -> "module"}, [dom_raw(http/bootstrap_script())])])
   return to_xml([dom_raw("<!doctype html>"), dom_element("html", {}, [head, body])])
 end
 
-verb mud_mount_node(view, revision, signature, root)
+verb http/mount_node(view, revision, signature, root)
   let attrs = {:id -> "mount", "data-view" -> view, "data-revision" -> revision, "data-signature" -> signature, "data-webtransport-url" -> "https://127.0.0.1:4433/view"}
   return dom_element("div", attrs, [root])
 end
 
-verb mud_style()
+verb http/base_style()
   return include_text("style.css")
 end
 
-verb mud_login_style()
+verb http/login_style()
   return include_text("login.css")
 end
 
-verb mud_presence_style()
+verb http/presence_style()
   return include_text("presence.css")
 end
 
-verb mud_receiver_style()
+verb http/narrative_style()
   return include_text("narrative.css")
 end
 
-verb mud_bootstrap_script()
+verb http/bootstrap_script()
   return include_text("bootstrap.js")
 end
