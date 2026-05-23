@@ -308,4 +308,94 @@ mod tests {
             .unwrap_err();
         assert!(format!("{error:?}").contains("ReadOnlyRelation"));
     }
+
+    #[test]
+    fn runner_indexes_text_units_with_host_embedding_builtin() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+            .unwrap();
+        runner
+            .run_source(
+                "make_identity(:main_index)\n\
+                 make_identity(:unit_one)\n\
+                 assert TextUnit(#unit_one)\n\
+                 assert TextUnitText(#unit_one, \"red brass lamp\")\n\
+                 return index_text_unit(nothing, #main_index, #unit_one, \"host-test\")",
+            )
+            .unwrap();
+
+        let query = runner
+            .run_source(
+                "let embedding = one VectorIndexContains(#main_index, ?embedding)\n\
+                 let subject = one EmbeddingOf(embedding, ?subject)\n\
+                 let model = one EmbeddingModel(embedding, ?model)\n\
+                 return [embedding, subject, model]",
+            )
+            .unwrap();
+
+        let TaskOutcome::Complete { value, .. } = query.outcome else {
+            panic!("expected complete outcome");
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values.len(), 3);
+                assert_eq!(
+                    values[1],
+                    Value::identity(runner.named_identity(Symbol::intern("unit_one")).unwrap())
+                );
+                assert_eq!(values[2], Value::string("host-test"));
+            })
+            .expect("expected list result");
+    }
+
+    #[test]
+    fn answer_question_records_retrieval_artifacts_and_citations() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+            .unwrap();
+        runner
+            .run_source(
+                "make_identity(:main_index)\n\
+                 make_identity(:unit_one)\n\
+                 make_identity(:unit_two)\n\
+                 assert TextUnit(#unit_one)\n\
+                 assert TextUnit(#unit_two)\n\
+                 assert TextUnitText(#unit_one, \"lamp oil brass light\")\n\
+                 assert TextUnitText(#unit_two, \"apple orchard green fruit\")\n\
+                 index_text_unit(nothing, #main_index, #unit_one, \"host-test\")\n\
+                 return index_text_unit(nothing, #main_index, #unit_two, \"host-test\")",
+            )
+            .unwrap();
+        runner
+            .run_source("return answer_question(#main_index, #main_index, \"brass lamp\", 1)")
+            .unwrap();
+
+        let report = runner
+            .run_source(
+                "let answer = one Answer(?answer)\n\
+                 let question = one Question(?question)\n\
+                 let plan = one RetrievalPlan(?plan)\n\
+                 let context = one RetrievedContext(?context)\n\
+                 let question_text = one QuestionText(question, ?text)\n\
+                 let plan_kind = one PlanKind(plan, ?kind)\n\
+                 let context_reason = one ContextReason(context, ?reason)\n\
+                 let has_citation = one AnswerCitation(answer, ?subject) != nothing\n\
+                 return [question_text, plan_kind, context_reason, has_citation]",
+            )
+            .unwrap();
+
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected complete outcome");
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::string("brass lamp"));
+                assert_eq!(values[1], Value::string("nearest_embedding"));
+                assert_eq!(values[2], Value::string("nearest_embedding"));
+                assert_eq!(values[3], Value::bool(true));
+            })
+            .expect("expected list result");
+    }
 }

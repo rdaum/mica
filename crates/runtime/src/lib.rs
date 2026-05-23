@@ -140,6 +140,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "edit_distance",
     "parse_ordinal",
     "lower",
+    "embed_text",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2824,6 +2825,7 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("edit_distance", edit_distance_builtin)
         .with_builtin("parse_ordinal", parse_ordinal_builtin)
         .with_builtin("lower", lower_builtin)
+        .with_builtin("embed_text", embed_text_builtin)
 }
 
 fn emit_builtin(
@@ -3881,6 +3883,43 @@ fn lower_builtin(
     Ok(Value::string(
         builtin_string_arg("lower", args, 0)?.to_lowercase(),
     ))
+}
+
+fn embed_text_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "embed_text",
+            "expected embed_text(text)",
+        ));
+    }
+    let text = builtin_string_arg("embed_text", args, 0)?;
+    Ok(embed_text_vector(&text))
+}
+
+fn embed_text_vector(text: &str) -> Value {
+    const DIMENSIONS: usize = 8;
+    let mut buckets = [0.0f64; DIMENSIONS];
+    for (index, ch) in text.chars().enumerate() {
+        let slot = ((ch as usize).wrapping_add(index)) % DIMENSIONS;
+        buckets[slot] += 1.0;
+    }
+    let norm = buckets
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    let values = if norm == 0.0 {
+        buckets.into_iter().map(Value::float).collect::<Vec<_>>()
+    } else {
+        buckets
+            .into_iter()
+            .map(|value| Value::float(value / norm))
+            .collect::<Vec<_>>()
+    };
+    Value::list(values)
 }
 
 fn parse_words(value: &str) -> Vec<String> {

@@ -5,6 +5,12 @@
 // - a computed `NearestEmbedding/6` search relation;
 // - review/correction facts for keeping derived memory inspectable.
 
+make_identity(:retrieval/question)
+make_identity(:retrieval/plan)
+make_identity(:retrieval/context)
+make_identity(:retrieval/answer)
+make_identity(:retrieval/embedding)
+
 make_relation(:Document, 1)
 make_functional_relation(:DocumentTitle, 2, [0])
 make_functional_relation(:DocumentSource, 2, [0])
@@ -55,3 +61,88 @@ make_relation(:RejectedFact, 1)
 make_relation(:Correction, 1)
 make_functional_relation(:CorrectionOf, 2, [0])
 make_functional_relation(:CorrectionText, 2, [0])
+
+verb retrieval/question_value(actor, question_text @ #string, index, limit)
+  return frob(#retrieval/question, {:actor -> actor, :index -> index, :limit -> limit, :text -> question_text})
+end
+
+verb retrieval/plan_value(question, index, limit)
+  return frob(#retrieval/plan, {:index -> index, :limit -> limit, :question -> question})
+end
+
+verb retrieval/context_value(plan, subject)
+  return frob(#retrieval/context, {:plan -> plan, :subject -> subject})
+end
+
+verb retrieval/answer_value(question, index, limit)
+  return frob(#retrieval/answer, {:index -> index, :limit -> limit, :question -> question})
+end
+
+verb embed_subject(actor, index, subject, text @ #string, model @ #string)
+  assert VectorIndex(index)
+  assert VectorIndexMetric(index, "cosine")
+  let embedding = frob(#retrieval/embedding, {:index -> index, :model -> model, :subject -> subject, :text -> text})
+  let vector = embed_text(text)
+  assert Embedding(embedding)
+  assert EmbeddingOf(embedding, subject)
+  assert EmbeddingVector(embedding, vector)
+  assert EmbeddingModel(embedding, model)
+  assert VectorIndexContains(index, embedding)
+  return embedding
+end
+
+verb index_text_unit(actor, index, unit, model @ #string)
+  let text = one TextUnitText(unit, ?text)
+  return embed_subject(actor, index, unit, text, model)
+end
+
+verb retrieve_context(actor, index, question_text @ #string, limit)
+  let question = retrieval/question_value(actor, question_text, index, limit)
+  assert Question(question)
+  assert QuestionText(question, question_text)
+  assert AskedBy(question, actor)
+
+  let plan = retrieval/plan_value(question, index, limit)
+  assert RetrievalPlan(plan)
+  assert PlanForQuestion(plan, question)
+  assert PlanKind(plan, "nearest_embedding")
+
+  let query_embedding = embed_text(question_text)
+  let contexts = []
+  for found in NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?version)
+    let subject = found[:subject]
+    let context = retrieval/context_value(plan, subject)
+    assert RetrievedContext(context)
+    assert ContextForPlan(context, plan)
+    assert ContextSubject(context, subject)
+    assert ContextScore(context, found[:score])
+    assert ContextReason(context, "nearest_embedding")
+    contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :version -> found[:version]}]
+  end
+
+  return {:contexts -> contexts, :plan -> plan, :question -> question}
+end
+
+verb answer_question(actor, index, question_text @ #string, limit)
+  let retrieval = retrieve_context(actor, index, question_text, limit)
+  let question = retrieval[:question]
+  let plan = retrieval[:plan]
+  let contexts = retrieval[:contexts]
+  let answer = retrieval/answer_value(question, index, limit)
+  let snippets = []
+  let summary = string_concat("Relevant context for: ", question_text)
+
+  for context in contexts
+    let subject = context[:subject]
+    let snippet = one TextUnitText(subject, ?text)
+    assert AnswerCitation(answer, subject)
+    snippets = [@snippets, snippet]
+    summary = string_concat(summary, string_concat("\n- ", snippet))
+  end
+
+  assert Answer(answer)
+  assert AnswerForQuestion(answer, question)
+  assert AnswerText(answer, summary)
+
+  return {:answer -> answer, :plan -> plan, :question -> question, :snippets -> snippets, :text -> summary}
+end
