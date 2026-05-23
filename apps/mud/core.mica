@@ -18,7 +18,7 @@ make_identity(:drop_event)
 make_identity(:put_event)
 make_identity(:say_event)
 make_identity(:button_event)
-make_identity(:mud_event)
+make_identity(:event/log_entry)
 
 make_identity(:alice)
 make_identity(:coin)
@@ -77,10 +77,10 @@ make_relation(:ParserNoun, 2)
 make_relation(:ParserAlias, 2)
 make_relation(:ParserName, 2)
 make_relation(:VisibleTo, 2)
-make_relation(:MudEventDelivery, 2)
-make_functional_relation(:MudEventSeq, 2, [0])
-make_functional_relation(:MudEventText, 2, [0])
-make_functional_relation(:MudEventSource, 2, [0])
+make_relation(:event/Delivery, 2)
+make_functional_relation(:event/Seq, 2, [0])
+make_functional_relation(:event/Text, 2, [0])
+make_functional_relation(:event/Source, 2, [0])
 make_relation(:TrustedForNameParsing, 2)
 make_relation(:NameMatchable, 2)
 make_relation(:TrustedForCommandGrammar, 2)
@@ -108,7 +108,7 @@ assert Delegates(#drop_event, #event, 0)
 assert Delegates(#put_event, #event, 0)
 assert Delegates(#say_event, #event, 0)
 assert Delegates(#button_event, #event, 0)
-assert Delegates(#mud_event, #event, 0)
+assert Delegates(#event/log_entry, #event, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
 assert Delegates(#bob, #player, 0)
@@ -298,10 +298,10 @@ assert RoleCanRead(#player, :ParserNoun)
 assert RoleCanRead(#player, :ParserAlias)
 assert RoleCanRead(#player, :ParserName)
 assert RoleCanRead(#player, :VisibleTo)
-assert RoleCanRead(#player, :MudEventDelivery)
-assert RoleCanRead(#player, :MudEventSeq)
-assert RoleCanRead(#player, :MudEventText)
-assert RoleCanRead(#player, :MudEventSource)
+assert RoleCanRead(#player, :event/Delivery)
+assert RoleCanRead(#player, :event/Seq)
+assert RoleCanRead(#player, :event/Text)
+assert RoleCanRead(#player, :event/Source)
 assert RoleCanRead(#player, :TrustedForNameParsing)
 assert RoleCanRead(#player, :NameMatchable)
 assert RoleCanRead(#player, :TrustedForCommandGrammar)
@@ -310,10 +310,10 @@ assert RoleCanRead(#player, :CommandHandlerScope)
 
 assert RoleCanWrite(#player, :LocatedIn)
 assert RoleCanWrite(#player, :ButtonArmed)
-assert RoleCanWrite(#player, :MudEventDelivery)
-assert RoleCanWrite(#player, :MudEventSeq)
-assert RoleCanWrite(#player, :MudEventText)
-assert RoleCanWrite(#player, :MudEventSource)
+assert RoleCanWrite(#player, :event/Delivery)
+assert RoleCanWrite(#player, :event/Seq)
+assert RoleCanWrite(#player, :event/Text)
+assert RoleCanWrite(#player, :event/Source)
 
 assert RoleCanInvoke(#player, :command)
 assert RoleCanInvoke(#player, :match_object)
@@ -333,10 +333,10 @@ assert RoleCanInvoke(#player, :event/render)
 assert RoleCanInvoke(#player, :event/literal)
 assert RoleCanInvoke(#player, :emit_room_event)
 assert RoleCanInvoke(#player, :emit_room_event_except)
-assert RoleCanInvoke(#player, :mud_next_event_seq)
-assert RoleCanInvoke(#player, :mud_record_text)
-assert RoleCanInvoke(#player, :mud_record_event)
-assert RoleCanInvoke(#player, :mud_notify)
+assert RoleCanInvoke(#player, :event/next_seq)
+assert RoleCanInvoke(#player, :event/record_text)
+assert RoleCanInvoke(#player, :event/record_source)
+assert RoleCanInvoke(#player, :event/notify)
 assert RoleCanInvoke(#player, :get)
 assert RoleCanInvoke(#player, :get_from)
 assert RoleCanInvoke(#player, :drop)
@@ -441,10 +441,10 @@ CommandHandlerScope(actor, actor) :-
 CommandHandlerScope(actor, room) :-
   LocatedIn(actor, room)
 
-verb mud_next_event_seq(listener @ #player)
+verb event/next_seq(listener @ #player)
   let seq = 0
-  for found in MudEventDelivery(listener, ?event)
-    let event_seq = one MudEventSeq(found[:event], ?event_seq)
+  for found in event/Delivery(listener, ?event)
+    let event_seq = one event/Seq(found[:event], ?event_seq)
     if event_seq > seq
       seq = event_seq
     end
@@ -453,32 +453,32 @@ verb mud_next_event_seq(listener @ #player)
   return seq + 1
 end
 
-verb mud_record_text(listener @ #player, text @ #string)
-  let seq = mud_next_event_seq(listener)
-  let event = #mud_event<[listener, seq]>
+verb event/record_text(listener @ #player, text @ #string)
+  let seq = event/next_seq(listener)
+  let event = #event/log_entry<[listener, seq]>
 
-  assert MudEventDelivery(listener, event)
-  assert MudEventSeq(event, seq)
-  assert MudEventText(event, text)
+  assert event/Delivery(listener, event)
+  assert event/Seq(event, seq)
+  assert event/Text(event, text)
 
   return event
 end
 
-verb mud_record_event(listener @ #player, source @ #event<_>)
-  let seq = mud_next_event_seq(listener)
-  let event = #mud_event<[listener, seq]>
+verb event/record_source(listener @ #player, source @ #event<_>)
+  let seq = event/next_seq(listener)
+  let event = #event/log_entry<[listener, seq]>
   let text = event/render(source, listener)
 
-  assert MudEventDelivery(listener, event)
-  assert MudEventSeq(event, seq)
-  assert MudEventText(event, text)
-  assert MudEventSource(event, source)
+  assert event/Delivery(listener, event)
+  assert event/Seq(event, seq)
+  assert event/Text(event, text)
+  assert event/Source(event, source)
 
   return event
 end
 
-verb mud_notify(listener @ #player, text @ #string)
-  mud_record_text(listener, text)
+verb event/notify(listener @ #player, text @ #string)
+  event/record_text(listener, text)
   emit(listener, text)
   return true
 end
@@ -487,7 +487,7 @@ verb emit_room_event(room @ #room, event @ #event<_>)
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
     let text = event/render(event, listener)
-    mud_record_event(listener, event)
+    event/record_source(listener, event)
     emit(listener, text)
   end
 
@@ -499,7 +499,7 @@ verb emit_room_event_except(room @ #room, skipped @ #identity, event @ #event<_>
     let listener = found[:listener]
     if listener != skipped
       let text = event/render(event, listener)
-      mud_record_event(listener, event)
+      event/record_source(listener, event)
       emit(listener, text)
     end
   end
@@ -509,13 +509,13 @@ end
 
 verb look(actor @ #player)
   let room = one LocatedIn(actor, ?room)
-  mud_notify(actor, one Description(room, ?text))
+  event/notify(actor, one Description(room, ?text))
 
   for found in LocatedIn(?item, room)
     let item = found[:item]
     let text = one Description(item, ?text)
     if item != actor && text != nothing
-      mud_notify(actor, text)
+      event/notify(actor, text)
     end
   end
 
@@ -524,17 +524,17 @@ end
 
 verb examine(actor @ #player, target @ #thing)
   if CanSee(actor, target)
-    mud_notify(actor, one Description(target, ?text))
+    event/notify(actor, one Description(target, ?text))
     return true
   end
 
-  mud_notify(actor, "I do not see that.")
+  event/notify(actor, "I do not see that.")
   return false
 end
 
 verb look_in(actor @ #player, target @ #container)
   if CanSee(actor, target) == false
-    mud_notify(actor, "I do not see that.")
+    event/notify(actor, "I do not see that.")
     return false
   end
 
@@ -544,12 +544,12 @@ verb look_in(actor @ #player, target @ #container)
     let text = one Description(item, ?text)
     if text != nothing
       found_any = true
-      mud_notify(actor, text)
+      event/notify(actor, text)
     end
   end
 
   if found_any == false
-    mud_notify(actor, "It is empty.")
+    event/notify(actor, "It is empty.")
   end
 
   return true
@@ -576,7 +576,7 @@ verb go(actor @ #player, direction, leave, arrive)
   let destination = one Exit(room, direction, ?destination)
 
   if destination == nothing
-    mud_notify(actor, "You cannot go that way.")
+    event/notify(actor, "You cannot go that way.")
     return false
   end
 
@@ -585,7 +585,7 @@ verb go(actor @ #player, direction, leave, arrive)
   retract LocatedIn(actor, _)
   assert LocatedIn(actor, destination)
   :emit_room_event_except(room: destination, skipped: actor, event: event/narrative(#arrival_event, arrive, bindings))
-  mud_notify(actor, one Description(destination, ?text))
+  event/notify(actor, one Description(destination, ?text))
   return true
 end
 
@@ -659,18 +659,18 @@ end
 
 verb push(actor @ #player, target @ #thing)
   if target != #red_button || CanSee(actor, target) == false
-    mud_notify(actor, "That does not seem pushable.")
+    event/notify(actor, "That does not seem pushable.")
     return false
   end
 
   if ButtonArmed(target)
-    mud_notify(actor, "The red button is already humming.")
+    event/notify(actor, "The red button is already humming.")
     return false
   end
 
   let room = one LocatedIn(actor, ?room)
   assert ButtonArmed(target)
-  mud_notify(actor, "You press the red button. It clicks, then begins to hum.")
+  event/notify(actor, "You press the red button. It clicks, then begins to hum.")
   let task = spawn :button_resolves(actor: actor, target: target, room: room) after 0.25
   return task != nothing
 end

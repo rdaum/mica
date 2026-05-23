@@ -81,7 +81,7 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
   retract ui/SessionInspect(endpoint, _)
   assert ui/SessionInspect(endpoint(), selected)
   assert ui/SessionInspect(endpoint, selected)
-  mud_record_text(current, string_concat("> examine ", ui/actor_name(selected)))
+  event/record_text(current, string_concat("> examine ", ui/actor_name(selected)))
   return true
 end
 
@@ -111,7 +111,7 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
     assert ui/SessionInspect(endpoint(), selected)
     assert ui/SessionInspect(endpoint, selected)
   end
-  mud_record_text(current, string_concat("> ", line))
+  event/record_text(current, string_concat("> ", line))
   return :command(actor: current, endpoint: endpoint, line: line)
 end
 

@@ -6768,8 +6768,8 @@ mod tests {
             .unwrap();
         let report = runner
             .run_source(
-                "let event = one MudEventDelivery(#alice, ?event)\n\
-                 let source = one MudEventSource(event, ?source)\n\
+                "let event = one event/Delivery(#alice, ?event)\n\
+                 let source = one event/Source(event, ?source)\n\
                  return [frob_delegate(source), event/bindings(source)[:item]]",
             )
             .unwrap();
@@ -6911,7 +6911,7 @@ mod tests {
                    elseif i == 44\n\
                      text = \"latest-kept\"\n\
                    end\n\
-                   mud_notify(#alice, text)\n\
+                   event/notify(#alice, text)\n\
                    i = i + 1\n\
                  end\n\
                  let literal = to_literal(ui/narrative_node(#alice, 100, 40))\n\

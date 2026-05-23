@@ -402,7 +402,7 @@ verb ui/try_mica_inspect_command(current @ #player, endpoint, line @ #string)
   end
 
   ui/mica_inspect_set_selected(endpoint, selected)
-  mud_record_text(current, string_concat("> mica inspect ", ui/actor_name(selected)))
+  event/record_text(current, string_concat("> mica inspect ", ui/actor_name(selected)))
   return true
 end
 
@@ -422,7 +422,7 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_action<_>, endpoint, sessio
   end
 
   ui/mica_inspect_set_selected(endpoint, selected)
-  mud_record_text(current, string_concat("> mica inspect ", ui/actor_name(selected)))
+  event/record_text(current, string_concat("> mica inspect ", ui/actor_name(selected)))
   return true
 end
 

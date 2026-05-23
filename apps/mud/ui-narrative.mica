@@ -27,9 +27,9 @@ verb ui/event_verb(actor, viewer, self, other)
 end
 
 verb ui/event_body_node(event, viewer)
-  let source = one MudEventSource(event, ?source)
+  let source = one event/Source(event, ?source)
   if source == nothing
-    return dom_element("div", {:class -> "event-text"}, [dom_text(one MudEventText(event, ?text))])
+    return dom_element("div", {:class -> "event-text"}, [dom_text(one event/Text(event, ?text))])
   end
 
   return ui/event_body_for(source, viewer)
@@ -186,9 +186,9 @@ verb ui/event_meta_node(source, seq)
 end
 
 verb ui/event_node(event)
-  let seq = one MudEventSeq(event, ?seq)
-  let text = one MudEventText(event, ?text)
-  let source = one MudEventSource(event, ?source)
+  let seq = one event/Seq(event, ?seq)
+  let text = one event/Text(event, ?text)
+  let source = one event/Source(event, ?source)
   if source == nothing
     return dom_element("li", {"data-sync-key" -> to_literal(event), :class -> "event-line"}, [dom_element("span", {:class -> "event-seq"}, [dom_text(string_concat("#", to_literal(seq)))]), dom_text(text)])
   end
@@ -200,8 +200,8 @@ end
 verb ui/latest_event_node(actor @ #player, revision)
   let latest = nothing
   let latest_seq = -1
-  for found in MudEventDelivery(actor, ?event)
-    let seq = one MudEventSeq(found[:event], ?seq)
+  for found in event/Delivery(actor, ?event)
+    let seq = one event/Seq(found[:event], ?seq)
     if seq < revision && seq > latest_seq
       latest = found[:event]
       latest_seq = seq
@@ -212,8 +212,8 @@ verb ui/latest_event_node(actor @ #player, revision)
     return dom_element("section", {:id -> "latest-event", :class -> "latest-event empty"}, [dom_element("span", {:class -> "muted"}, [dom_text("No events yet.")])])
   end
 
-  let text = one MudEventText(latest, ?text)
-  let source = one MudEventSource(latest, ?source)
+  let text = one event/Text(latest, ?text)
+  let source = one event/Source(latest, ?source)
   if source == nothing
     return dom_element("section", {:id -> "latest-event", :class -> "latest-event system"}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text("system")])]), dom_element("div", {:class -> "latest-body"}, [dom_text(text)])])
   end
@@ -225,8 +225,8 @@ verb ui/narrative_node(actor @ #player, revision, limit)
   let events = []
   let count = 0
 
-  for found in MudEventDelivery(actor, ?event)
-    let seq = one MudEventSeq(found[:event], ?seq)
+  for found in event/Delivery(actor, ?event)
+    let seq = one event/Seq(found[:event], ?seq)
     if seq < revision
       count = count + 1
     end
@@ -242,8 +242,8 @@ verb ui/narrative_node(actor @ #player, revision, limit)
 
     let rendered = 0
     let index = 0
-    for found in MudEventDelivery(actor, ?event)
-      let seq = one MudEventSeq(found[:event], ?seq)
+    for found in event/Delivery(actor, ?event)
+      let seq = one event/Seq(found[:event], ?seq)
       if seq < revision
         if index >= first_rendered
           events = [@events, ui/event_node(found[:event])]
