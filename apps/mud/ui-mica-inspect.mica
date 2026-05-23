@@ -416,7 +416,7 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_action<_>, endpoint, sessio
     return false
   end
 
-  let selected = from_literal(fields[:entity])
+  let selected = ui/entity_from_literal(fields[:entity])
   if selected == nothing
     return false
   end

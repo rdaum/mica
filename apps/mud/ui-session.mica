@@ -34,7 +34,7 @@ assert CanInvoke(#web, :ui/login_view_node)
 assert CanInvoke(#web, :ui/login_choice_node)
 assert CanInvoke(#web, :ui/status_revision)
 assert CanInvoke(#web, :ui/current_actor)
-assert CanInvoke(#web, :mud_entity_from_literal)
+assert CanInvoke(#web, :ui/entity_from_literal)
 assert CanInvoke(#web, :ui/login_actor)
 assert CanInvoke(#web, :ui/actor_name)
 assert CanInvoke(#web, :event/next_seq)
@@ -83,6 +83,7 @@ assert RoleCanInvoke(#player, :sync_view_tree)
 assert RoleCanInvoke(#player, :ui/status_revision)
 assert RoleCanInvoke(#player, :ui/bump_revision)
 assert RoleCanInvoke(#player, :ui/current_actor)
+assert RoleCanInvoke(#player, :ui/entity_from_literal)
 assert RoleCanInvoke(#player, :ui/login_actor)
 assert RoleCanInvoke(#player, :ui/actor_name)
 assert RoleCanInvoke(#player, :ui/direction_text)
@@ -178,6 +179,14 @@ end
 
 verb ui/current_actor()
   return one ui/SessionActor(endpoint(), ?actor)
+end
+
+verb ui/entity_from_literal(text)
+  if text == nothing
+    return nothing
+  end
+
+  return from_literal(text)
 end
 
 verb ui/can_program(actor @ #player)

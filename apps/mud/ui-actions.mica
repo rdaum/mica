@@ -72,7 +72,7 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
     return false
   end
 
-  let selected = from_literal(fields[:entity])
+  let selected = ui/entity_from_literal(fields[:entity])
   if selected == nothing || CanSee(current, selected) == false
     return false
   end
