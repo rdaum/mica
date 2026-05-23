@@ -10,7 +10,7 @@ verb command/match_object(actor @ #player, token @ #string)
 
   for found in command/Name(?obj, lowered)
     let obj = found[:obj]
-    if NameMatchable(actor, obj)
+    if command/NameMatchable(actor, obj)
       return obj
     end
   end
