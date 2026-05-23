@@ -11,9 +11,11 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::computed::ComputedRelation;
 use crate::tuple::finish_tuple_rows;
 use crate::{ConflictPolicy, KernelError, RelationMetadata, Snapshot, Tuple};
 use mica_var::{Identity, Symbol, Value};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum CatalogPredicate {
@@ -148,6 +150,10 @@ pub(crate) fn is_system_relation(metadata: &RelationMetadata) -> bool {
         )
 }
 
+pub fn system_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
+    vec![Arc::new(SystemComputedRelation)]
+}
+
 pub fn system_row_source_relation(metadata: &RelationMetadata, tuple: &Tuple) -> Option<Identity> {
     match metadata.name().name()? {
         "SubjectFact" | "MentionedFact" | "ExtensionalMentionedFact" => {
@@ -192,6 +198,41 @@ pub(crate) fn system_relation_rows(
             Some(system_extensional_mentioned_facts(snapshot, bindings))
         }
         _ => None,
+    }
+}
+
+struct SystemComputedRelation;
+
+impl ComputedRelation for SystemComputedRelation {
+    fn name(&self) -> &'static str {
+        "system-reflection"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        is_system_relation(metadata)
+    }
+
+    fn scan(
+        &self,
+        snapshot: &Snapshot,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        system_relation_rows(snapshot, metadata, bindings).unwrap_or_else(|| {
+            Err(KernelError::InvalidComputedRelation {
+                relation: metadata.id(),
+                message: "system reflection relation did not produce rows".to_owned(),
+            })
+        })
+    }
+
+    fn estimate(
+        &self,
+        snapshot: &Snapshot,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<usize, KernelError> {
+        Ok(self.scan(snapshot, metadata, bindings)?.len())
     }
 }
 

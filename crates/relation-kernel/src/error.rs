@@ -19,10 +19,18 @@ pub enum KernelError {
     UnknownRule(crate::FactId),
     RelationAlreadyExists(RelationId),
     ReadOnlyRelation(RelationId),
+    MissingRequiredBindings {
+        relation: RelationId,
+        positions: Vec<u16>,
+    },
     ArityMismatch {
         relation: RelationId,
         expected: u16,
         actual: usize,
+    },
+    InvalidComputedRelation {
+        relation: RelationId,
+        message: String,
     },
     NonPersistentValue {
         relation: RelationId,

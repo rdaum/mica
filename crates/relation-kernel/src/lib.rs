@@ -22,6 +22,7 @@
 mod catalog;
 mod closure;
 mod commit_bloom;
+mod computed;
 mod dispatch;
 mod dispatch_cache;
 mod error;
@@ -48,10 +49,13 @@ mod tests;
 
 use mica_var::Identity;
 
-pub use catalog::{CatalogFact, CatalogPredicate, system_row_source_relation};
+pub use catalog::{
+    CatalogFact, CatalogPredicate, system_computed_relations, system_row_source_relation,
+};
 pub use closure::{
     delegates_reaches, delegates_star, delegates_star_from, materialize_delegates_star,
 };
+pub use computed::{ComputedRelation, ComputedRelationRegistry};
 pub use dispatch::{
     ApplicableMethod, ApplicableMethodCall, DispatchRead, DispatchRelations,
     applicable_method_calls, applicable_method_calls_normalized, applicable_method_entries,

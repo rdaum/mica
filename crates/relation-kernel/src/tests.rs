@@ -13,10 +13,11 @@
 
 use crate::{
     Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider,
-    ComposedRelationRead, ComposedTransactionRead, Conflict, ConflictKind, ConflictPolicy, Fact,
-    FactChange, FactChangeKind, InMemoryCommitProvider, KernelError, MentionedFact, ProjectedStore,
-    QueryPlan, RelationId, RelationKernel, RelationMetadata, RelationRead, RelationWorkspace, Rule,
-    SubjectFact, Term, TransientStore, Tuple, method_program_id,
+    ComposedRelationRead, ComposedTransactionRead, ComputedRelation, Conflict, ConflictKind,
+    ConflictPolicy, Fact, FactChange, FactChangeKind, InMemoryCommitProvider, KernelError,
+    MentionedFact, ProjectedStore, QueryPlan, RelationId, RelationKernel, RelationMetadata,
+    RelationRead, RelationWorkspace, Rule, SubjectFact, Term, TransientStore, Tuple,
+    method_program_id,
 };
 #[cfg(feature = "fjall-provider")]
 use crate::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
@@ -124,6 +125,34 @@ fn kernel_with_located() -> RelationKernel {
     kernel
 }
 
+struct EchoComputedRelation;
+
+impl ComputedRelation for EchoComputedRelation {
+    fn name(&self) -> &'static str {
+        "echo"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("ComputedEcho") && metadata.arity() == 2
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        &[0]
+    }
+
+    fn scan(
+        &self,
+        _snapshot: &crate::Snapshot,
+        _metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        if bindings[0] != Some(int(7)) {
+            return Ok(Vec::new());
+        }
+        Ok(vec![Tuple::from([int(7), int(11)])])
+    }
+}
+
 #[test]
 fn catalog_facts_expose_relation_metadata_as_relations() {
     let kernel = RelationKernel::new();
@@ -178,6 +207,46 @@ fn creating_duplicate_relation_id_is_rejected() {
         .unwrap_err();
 
     assert_eq!(error, KernelError::RelationAlreadyExists(rel(1)));
+}
+
+#[test]
+fn custom_computed_relations_scan_and_reject_writes() {
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        vec![Arc::new(EchoComputedRelation) as Arc<dyn ComputedRelation>],
+    );
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(200),
+            Symbol::intern("ComputedEcho"),
+            2,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        kernel
+            .snapshot()
+            .scan_relation(rel(200), &[Some(int(7)), None])
+            .unwrap(),
+        vec![Tuple::from([int(7), int(11)])]
+    );
+    assert_eq!(
+        kernel
+            .snapshot()
+            .scan_relation(rel(200), &[None, None])
+            .unwrap_err(),
+        KernelError::MissingRequiredBindings {
+            relation: rel(200),
+            positions: vec![0],
+        }
+    );
+
+    let mut tx = kernel.begin();
+    assert_eq!(
+        tx.assert(rel(200), Tuple::from([int(7), int(11)]))
+            .unwrap_err(),
+        KernelError::ReadOnlyRelation(rel(200))
+    );
 }
 
 #[test]

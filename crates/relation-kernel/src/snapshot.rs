@@ -11,8 +11,8 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::catalog::{is_system_relation, system_relation_rows};
 use crate::commit_bloom::CommitBloom;
+use crate::computed::ComputedRelationRegistry;
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
@@ -143,6 +143,7 @@ pub struct Snapshot {
     pub(crate) version: Version,
     pub(crate) relations: HashMap<RelationId, RelationState>,
     pub(crate) rules: Vec<RuleDefinition>,
+    pub(crate) computed_relations: Arc<ComputedRelationRegistry>,
     pub(crate) derived_cache: DerivedCache,
     pub(crate) dispatch_cache: DispatchCache,
     pub(crate) method_program_cache: MethodProgramCache,
@@ -233,7 +234,10 @@ impl Snapshot {
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
         let relation = self.relation(relation)?;
-        if let Some(rows) = system_relation_rows(self, relation.metadata(), bindings) {
+        if let Some(rows) = self
+            .computed_relations
+            .scan(self, relation.metadata(), bindings)
+        {
             return rows;
         }
         relation.scan(bindings)
@@ -250,7 +254,13 @@ impl Snapshot {
     ) -> Result<Option<Vec<Tuple>>, KernelError> {
         let left = self.relation(left_relation)?;
         let right = self.relation(right_relation)?;
-        if is_system_relation(left.metadata()) || is_system_relation(right.metadata()) {
+        if self
+            .computed_relations
+            .is_computed_relation(left.metadata())
+            || self
+                .computed_relations
+                .is_computed_relation(right.metadata())
+        {
             return Ok(None);
         }
         left.join_eq(
@@ -268,7 +278,10 @@ impl Snapshot {
         positions: &[u16],
     ) -> Result<bool, KernelError> {
         let relation = self.relation(relation)?;
-        if is_system_relation(relation.metadata()) {
+        if self
+            .computed_relations
+            .is_computed_relation(relation.metadata())
+        {
             return Ok(false);
         }
         Ok(relation.has_exact_index(positions))
@@ -297,8 +310,11 @@ impl Snapshot {
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
         let relation = self.relation(relation)?;
-        if let Some(rows) = system_relation_rows(self, relation.metadata(), bindings) {
-            return rows.map(|rows| rows.len());
+        if let Some(estimate) =
+            self.computed_relations
+                .estimate(self, relation.metadata(), bindings)
+        {
+            return estimate;
         }
         relation.estimate_scan_count(bindings)
     }
@@ -310,7 +326,10 @@ impl Snapshot {
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
         let relation = self.relation(relation)?;
-        if let Some(rows) = system_relation_rows(self, relation.metadata(), bindings) {
+        if let Some(rows) = self
+            .computed_relations
+            .scan(self, relation.metadata(), bindings)
+        {
             for tuple in rows? {
                 if visitor(&tuple)? == ScanControl::Stop {
                     break;

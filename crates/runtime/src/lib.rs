@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+mod retrieval;
 mod task;
 mod task_manager;
 
@@ -245,8 +246,12 @@ impl SourceRunner {
         let kernel = if persisted.version == 0 && persisted.relations.is_empty() {
             bootstrap_kernel_with_provider(provider)
         } else {
-            RelationKernel::load_from_state(persisted, provider)
-                .map_err(|error| format!("failed to load relation kernel state: {error:?}"))?
+            RelationKernel::load_from_state_and_computed_relations(
+                persisted,
+                provider,
+                retrieval::default_computed_relations(),
+            )
+            .map_err(|error| format!("failed to load relation kernel state: {error:?}"))?
         };
         Ok(Self::with_kernel(kernel))
     }
@@ -2421,7 +2426,10 @@ fn bootstrap_kernel() -> RelationKernel {
 fn bootstrap_kernel_with_provider(
     provider: Arc<dyn mica_relation_kernel::CommitProvider>,
 ) -> RelationKernel {
-    let kernel = RelationKernel::with_provider(provider);
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        provider,
+        retrieval::default_computed_relations(),
+    );
     kernel
         .create_relation(
             RelationMetadata::new(

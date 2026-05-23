@@ -1,0 +1,57 @@
+// Minimal retrieval and answer-trace vocabulary.
+//
+// This file intentionally keeps the first cut small:
+// - relation facts for documents, chunks, embeddings, questions, and answers;
+// - a computed `NearestEmbedding/6` search relation;
+// - review/correction facts for keeping derived memory inspectable.
+
+make_relation(:Document, 1)
+make_functional_relation(:DocumentTitle, 2, [0])
+make_functional_relation(:DocumentSource, 2, [0])
+
+make_relation(:DocumentRevision, 1)
+make_functional_relation(:RevisionOf, 2, [0])
+make_functional_relation(:RevisionContentHash, 2, [0])
+
+make_relation(:TextUnit, 1)
+make_functional_relation(:TextUnitOf, 2, [0])
+make_functional_relation(:TextUnitOrdinal, 2, [0])
+make_functional_relation(:TextUnitText, 2, [0])
+
+make_relation(:Embedding, 1)
+make_functional_relation(:EmbeddingOf, 2, [0])
+make_functional_relation(:EmbeddingVector, 2, [0])
+make_functional_relation(:EmbeddingModel, 2, [0])
+
+make_relation(:VectorIndex, 1)
+make_relation(:VectorIndexContains, 2)
+make_functional_relation(:VectorIndexMetric, 2, [0])
+
+// Read-only computed relation implemented by the runtime.
+make_relation(:NearestEmbedding, 6)
+
+make_relation(:Question, 1)
+make_functional_relation(:QuestionText, 2, [0])
+make_functional_relation(:AskedBy, 2, [0])
+
+make_relation(:RetrievalPlan, 1)
+make_functional_relation(:PlanForQuestion, 2, [0])
+make_functional_relation(:PlanKind, 2, [0])
+
+make_relation(:RetrievedContext, 1)
+make_functional_relation(:ContextForPlan, 2, [0])
+make_functional_relation(:ContextSubject, 2, [0])
+make_functional_relation(:ContextScore, 2, [0])
+make_functional_relation(:ContextReason, 2, [0])
+
+make_relation(:Answer, 1)
+make_functional_relation(:AnswerForQuestion, 2, [0])
+make_functional_relation(:AnswerText, 2, [0])
+make_relation(:AnswerCitation, 2)
+
+make_relation(:NeedsReview, 1)
+make_relation(:ApprovedFact, 1)
+make_relation(:RejectedFact, 1)
+make_relation(:Correction, 1)
+make_functional_relation(:CorrectionOf, 2, [0])
+make_functional_relation(:CorrectionText, 2, [0])

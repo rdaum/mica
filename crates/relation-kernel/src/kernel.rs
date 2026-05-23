@@ -17,8 +17,9 @@ use crate::snapshot::{
     empty_method_program_cache,
 };
 use crate::{
-    CatalogChange, Commit, CommitProvider, FactChangeKind, KernelError, RelationMetadata, Rule,
-    RuleDefinition, RuleSet, Snapshot, Transaction,
+    CatalogChange, Commit, CommitProvider, ComputedRelation, ComputedRelationRegistry,
+    FactChangeKind, KernelError, RelationMetadata, Rule, RuleDefinition, RuleSet, Snapshot,
+    Transaction,
 };
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
@@ -38,11 +39,20 @@ impl RelationKernel {
     }
 
     pub fn with_provider(provider: Arc<dyn CommitProvider>) -> Self {
+        Self::with_provider_and_computed_relations(provider, [])
+    }
+
+    pub fn with_provider_and_computed_relations(
+        provider: Arc<dyn CommitProvider>,
+        computed_relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>,
+    ) -> Self {
+        let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
         Self {
             root: ArcSwap::new(Arc::new(Snapshot {
                 version: 0,
                 relations: HashMap::new(),
                 rules: Vec::new(),
+                computed_relations: computed_relations.clone(),
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
                 method_program_cache: empty_method_program_cache(),
@@ -58,10 +68,20 @@ impl RelationKernel {
         commits: impl IntoIterator<Item = Commit>,
         provider: Arc<dyn CommitProvider>,
     ) -> Result<Self, KernelError> {
+        Self::load_from_commits_and_computed_relations(relations, commits, provider, [])
+    }
+
+    pub fn load_from_commits_and_computed_relations(
+        relations: impl IntoIterator<Item = RelationMetadata>,
+        commits: impl IntoIterator<Item = Commit>,
+        provider: Arc<dyn CommitProvider>,
+        computed_relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>,
+    ) -> Result<Self, KernelError> {
         let mut states = HashMap::new();
         for metadata in relations {
             states.insert(metadata.id(), RelationState::empty(metadata)?);
         }
+        let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
 
         let commits = commits.into_iter().collect::<Vec<_>>();
         let mut rules = Vec::new();
@@ -103,6 +123,7 @@ impl RelationKernel {
                 version,
                 relations: states,
                 rules,
+                computed_relations: computed_relations.clone(),
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
                 method_program_cache: empty_method_program_cache(),
@@ -117,9 +138,18 @@ impl RelationKernel {
         commits: impl IntoIterator<Item = Commit>,
         provider: Arc<dyn CommitProvider>,
     ) -> Result<Self, KernelError> {
+        Self::load_from_commit_log_and_computed_relations(commits, provider, [])
+    }
+
+    pub fn load_from_commit_log_and_computed_relations(
+        commits: impl IntoIterator<Item = Commit>,
+        provider: Arc<dyn CommitProvider>,
+        computed_relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>,
+    ) -> Result<Self, KernelError> {
         let commits = commits.into_iter().collect::<Vec<_>>();
         let mut states = HashMap::new();
         let mut rules = Vec::new();
+        let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
 
         for commit in &commits {
             for change in commit.catalog_changes() {
@@ -165,6 +195,7 @@ impl RelationKernel {
                 version,
                 relations: states,
                 rules,
+                computed_relations: computed_relations.clone(),
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
                 method_program_cache: empty_method_program_cache(),
@@ -179,10 +210,19 @@ impl RelationKernel {
         state: crate::PersistedKernelState,
         provider: Arc<dyn CommitProvider>,
     ) -> Result<Self, KernelError> {
+        Self::load_from_state_and_computed_relations(state, provider, [])
+    }
+
+    pub fn load_from_state_and_computed_relations(
+        state: crate::PersistedKernelState,
+        provider: Arc<dyn CommitProvider>,
+        computed_relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>,
+    ) -> Result<Self, KernelError> {
         let mut states = HashMap::new();
         for metadata in state.relations {
             states.insert(metadata.id(), RelationState::empty(metadata)?);
         }
+        let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
 
         for rule in &state.rules {
             validate_rule_definition_against_relations(&states, rule)?;
@@ -210,6 +250,7 @@ impl RelationKernel {
                 version: state.version,
                 relations: states,
                 rules: state.rules,
+                computed_relations: computed_relations.clone(),
                 derived_cache: empty_derived_cache(),
                 dispatch_cache: empty_dispatch_cache(),
                 method_program_cache: empty_method_program_cache(),
