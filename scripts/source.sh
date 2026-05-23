@@ -3,9 +3,23 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-wt_bind="${MICA_SOURCE_WT_BIND:-127.0.0.1:4433}"
-wt_url="${MICA_SOURCE_WT_URL:-https://127.0.0.1:4433/view}"
-http_host="${MICA_SOURCE_HTTP_HOST:-127.0.0.1}"
+default_public_host() {
+  if command -v tailscale >/dev/null 2>&1; then
+    local tailscale_ip
+    tailscale_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+    if [[ -n "${tailscale_ip}" ]]; then
+      printf '%s\n' "${tailscale_ip}"
+      return
+    fi
+  fi
+  hostname -f 2>/dev/null || hostname 2>/dev/null || printf '127.0.0.1\n'
+}
+
+public_host="${MICA_SOURCE_PUBLIC_HOST:-$(default_public_host)}"
+wt_bind="${MICA_SOURCE_WT_BIND:-0.0.0.0:4433}"
+wt_port="${MICA_SOURCE_WT_PORT:-${wt_bind##*:}}"
+wt_url="${MICA_SOURCE_WT_URL:-https://${public_host}:${wt_port}/view}"
+http_host="${MICA_SOURCE_HTTP_HOST:-0.0.0.0}"
 http_port="${MICA_SOURCE_HTTP_PORT:-8008}"
 cert_path="${MICA_SOURCE_WT_CERT:-/tmp/mica-source-wt-cert.pem}"
 key_path="${MICA_SOURCE_WT_KEY:-/tmp/mica-source-wt-key.pem}"
@@ -76,8 +90,8 @@ daemon_pid=$!
 
 encoded_url="${wt_url//:/%3A}"
 encoded_url="${encoded_url//\//%2F}"
-default_url="http://${http_host}:${http_port}/source"
-webtransport_url="http://${http_host}:${http_port}/source?transport=webtransport&url=${encoded_url}&certHash=${cert_hash}&pollMs=${poll_ms}"
+default_url="http://${public_host}:${http_port}/source"
+webtransport_url="http://${public_host}:${http_port}/source?transport=webtransport&url=${encoded_url}&certHash=${cert_hash}&pollMs=${poll_ms}"
 
 cat <<EOF
 Mica source viewer is starting.
@@ -89,7 +103,9 @@ WebTransport override URL:
   ${webtransport_url}
 
 Manual values:
-  SSE sync base: http://${http_host}:${http_port}/sync
+  HTTP bind: ${http_host}:${http_port}
+  WebTransport bind: ${wt_bind}
+  SSE sync base: http://${public_host}:${http_port}/sync
   URL: ${wt_url}
   Certificate SHA-256: ${cert_hash}
 
