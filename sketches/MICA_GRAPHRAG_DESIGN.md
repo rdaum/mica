@@ -52,7 +52,7 @@ EmbeddingOf(embedding, subject)
 Vector indexes then provide a fast way to propose candidates:
 
 ```text
-NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?version)
+NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?snapshot_version)
 ```
 
 Mica rules and verbs decide what those candidates mean. They join vector
@@ -89,6 +89,7 @@ same computed-relation shape once the semantics are clear.
 | community reports       | `CommunityReport`, `ReportFinding`, `ReportEvidence`                       |
 | embeddings              | `Embedding`, `EmbeddingOf`, `EmbeddingVector`, `EmbeddingModel`            |
 | vector store            | computed search relations backed by in-process or external indexes         |
+| retrieval authority     | `CanRetrieveSubject` plus domain authority rules such as `CanSee`          |
 | local search            | Mica verb/rules expanding from candidate chunks/entities                   |
 | global search           | Mica verb/rules over community reports and report evidence                 |
 | DRIFT search            | Mica retrieval plan combining report-level and local graph expansion       |
@@ -737,7 +738,7 @@ relation-shaped query model.
 Example vector search surface:
 
 ```mica
-NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?index_version)
+NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?snapshot_version)
 NearestTextUnit(index, query_embedding, limit, ?unit, ?score, ?index_version)
 NearestEntity(index, query_embedding, limit, ?entity, ?score, ?index_version)
 NearestReport(index, query_embedding, limit, ?report, ?score, ?index_version)
@@ -754,6 +755,10 @@ These relations are access-pattern constrained:
 The relation is computed because Mica does not store all possible nearest
 neighbour answers as base facts. It computes candidate rows from an index or
 other specialized search structure.
+
+The exact first cut is not backed by a separate ANN build, so
+`NearestEmbedding` returns the relation snapshot version. Approximate search
+relations should return an explicit index or build version instead.
 
 ### Existing Precedent
 
@@ -796,6 +801,9 @@ The important semantic boundary is:
 - computed relations may require bound inputs;
 - computed relations are read-only;
 - computed results are not durable truth;
+- computed rows may participate in ordinary relation reads and rules, but
+  callers must still validate existence, freshness, and authority through
+  ordinary facts before recording or exposing context;
 - computed relations must report enough score/rank/version metadata for Mica to
   validate and explain results;
 - computed relations must not bypass authority.
@@ -822,11 +830,13 @@ should make that visible.
 
 Recommended behaviour:
 
-1. The computed relation returns `index_version` with each candidate.
-2. Mica validates that the candidate subject and embedding still exist in the
+1. Exact search returns the relation snapshot version with each candidate.
+2. Approximate search returns an index or build version with each candidate.
+3. Mica validates that the candidate subject and embedding still exist in the
    current transaction snapshot.
-3. Mica filters candidates through authority and trust rules.
-4. If the index is too stale for the retrieval policy, the retrieval verb can
+4. Mica filters candidates through authority and trust rules before recording
+   context or passing context to a model.
+5. If the index is too stale for the retrieval policy, the retrieval verb can
    fail, warn, or fall back to exact scan.
 
 Useful relations:
@@ -866,6 +876,7 @@ Example rules:
 CandidateTextUnit(actor, query, unit, score) :-
   QueryEmbedding(query, embedding),
   NearestTextUnit(#text_index, embedding, 50, unit, score, ?index_version),
+  CanRetrieveSubject(actor, unit),
   UsableTextUnit(actor, unit)
 
 CandidateEntity(actor, query, entity) :-
@@ -928,13 +939,13 @@ Mica rules can union and rerank candidates:
 ```mica
 CandidateSubject(actor, query, subject, score, :vector) :-
   QueryEmbedding(query, embedding),
-  NearestEmbedding(#main_index, embedding, 100, subject, score, ?version),
-  CanUseSubject(actor, subject)
+  NearestEmbedding(#main_index, embedding, 100, subject, score, ?snapshot_version),
+  CanRetrieveSubject(actor, subject)
 
 CandidateSubject(actor, query, subject, score, :keyword) :-
   QueryText(query, text),
   KeywordMatch(#keyword_index, text, 100, subject, score, ?version),
-  CanUseSubject(actor, subject)
+  CanRetrieveSubject(actor, subject)
 ```
 
 The first version can use simple score normalization in runtime code. Later,
@@ -1038,20 +1049,20 @@ the access pattern should fail at compile time when possible, or at runtime with
 a precise error.
 
 For `NearestEmbedding(index, query_embedding, limit, ?subject, ?score,
-?index_version)`, positions 0, 1, and 2 are required.
+?snapshot_version)`, positions 0, 1, and 2 are required.
 
 ### Cardinality And Ordering
 
 Search providers return ordered candidates. Ordinary relations are sets; search
-results have rank. The output should include explicit score and possibly rank:
+results have rank. The first cut records score and snapshot version:
 
 ```mica
-NearestEmbedding(index, query, limit, ?subject, ?score, ?rank, ?version)
+NearestEmbedding(index, query, limit, ?subject, ?score, ?snapshot_version)
 ```
 
-Whether rank is a separate output should be decided before implementation. Rank
-is useful because two candidates can share a score, and approximate indexes
-often return order as part of their observable behaviour.
+Rank can be added to a later search relation if ordering needs to become
+inspectable. It is useful because two candidates can share a score, and
+approximate indexes often return order as part of their observable behaviour.
 
 ### Approximation
 
@@ -1110,6 +1121,12 @@ Answer generation should receive structured context:
 
 Generated answers should cite Mica identities, not only raw strings. Rendering
 can turn those identities into human-readable citations.
+
+The current `answer_question` filein is intentionally not a model call. It
+records the question, retrieved context, prompt text, context text, answer text,
+and citations, then returns an extractive summary. A model-backed answer verb
+should reuse those artefacts and add a separate model-call/effect trace rather
+than hiding context assembly inside a host call.
 
 ## Review And Correction Workflow
 
@@ -1281,18 +1298,28 @@ needs provenance and staleness relations from the beginning.
 
 The smallest useful version is:
 
-1. Define `Document`, `TextUnit`, `Entity`, `Mention`, `Relationship`, `Claim`,
-   `Embedding`, and provenance relations in an example filein.
-2. Store embeddings as opaque bytes or list values.
+1. Define `Document`, `TextUnit`, `Embedding`, retrieval plan, retrieved
+   context, answer, citation, review, and correction relations in an example
+   filein.
+2. Store embeddings as list values while the value model is still settling.
 3. Implement `NearestEmbedding` as an exact in-process computed relation with
-   required bound inputs.
-4. Write a `hybrid_answer` example that:
+   required bound inputs and snapshot-version output.
+4. Require `CanRetrieveSubject(actor, subject)` before retrieved context is
+   recorded.
+5. Write a text-unit-only `answer_question` example that:
     - embeds the query;
     - gets candidate text units;
-    - expands to mentioned entities and relationships;
     - filters through authority;
-    - records retrieved context and citations.
-5. Add ANN indexing only after the computed-relation semantics and retrieval
+    - records retrieved context, prompt/context text, and citations;
+    - returns an inspectable extractive summary rather than pretending to be a
+      model-generated answer.
+
+The entity, mention, relationship, claim, community, and report vocabulary
+should come next, but it is not required to validate the first retrieval slice.
+For the MUD demo, using world identities directly as `TextUnit` identities is an
+acceptable shortcut because the described object and the retrievable text are
+the same small object. Larger examples should separate those identities.
+6. Add ANN indexing only after the computed-relation semantics and retrieval
    records feel right.
 
 That first cut would be enough to show the core thesis:

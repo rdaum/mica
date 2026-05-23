@@ -5,6 +5,10 @@
 // - lifecycle state for embeddings and answers;
 // - a computed `NearestEmbedding/6` search relation;
 // - review/correction facts for keeping derived memory inspectable.
+//
+// This first slice is deliberately text-unit-only. Applications may use domain
+// identities as text units for small demos, but larger systems should separate
+// the subject being described from the text unit that describes it.
 
 make_identity(:retrieval/question)
 make_identity(:retrieval/plan)
@@ -24,6 +28,10 @@ make_relation(:TextUnit, 1)
 make_functional_relation(:TextUnitOf, 2, [0])
 make_functional_relation(:TextUnitOrdinal, 2, [0])
 make_functional_relation(:TextUnitText, 2, [0])
+
+// Applications must define who may retrieve each subject before context is
+// recorded. In the MUD this is derived from `CanSee`.
+make_relation(:CanRetrieveSubject, 2)
 
 make_relation(:Embedding, 1)
 make_functional_relation(:EmbeddingOf, 2, [0])
@@ -57,12 +65,13 @@ make_functional_relation(:ContextForPlan, 2, [0])
 make_functional_relation(:ContextSubject, 2, [0])
 make_functional_relation(:ContextScore, 2, [0])
 make_functional_relation(:ContextReason, 2, [0])
-make_functional_relation(:ContextVersion, 2, [0])
+make_functional_relation(:ContextSnapshotVersion, 2, [0])
 
 make_relation(:Answer, 1)
 make_functional_relation(:AnswerForQuestion, 2, [0])
 make_functional_relation(:AnswerText, 2, [0])
 make_functional_relation(:AnswerPromptText, 2, [0])
+make_functional_relation(:AnswerContextText, 2, [0])
 make_functional_relation(:AnswerStatus, 2, [0])
 make_relation(:AnswerCitation, 2)
 make_functional_relation(:AnswerCitationText, 3, [0, 1])
@@ -184,16 +193,18 @@ verb retrieve_context(actor, index, question_text @ #string, limit, model @ #str
 
   let query_embedding = embed_text(model, question_text)
   let contexts = []
-  for found in NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?version)
+  for found in NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?snapshot_version)
     let subject = found[:subject]
-    let context = retrieval/context_value(plan, subject)
-    assert RetrievedContext(context)
-    assert ContextForPlan(context, plan)
-    assert ContextSubject(context, subject)
-    assert ContextScore(context, found[:score])
-    assert ContextReason(context, "nearest_embedding")
-    assert ContextVersion(context, found[:version])
-    contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :version -> found[:version]}]
+    if CanRetrieveSubject(actor, subject)
+      let context = retrieval/context_value(plan, subject)
+      assert RetrievedContext(context)
+      assert ContextForPlan(context, plan)
+      assert ContextSubject(context, subject)
+      assert ContextScore(context, found[:score])
+      assert ContextReason(context, "nearest_embedding")
+      assert ContextSnapshotVersion(context, found[:snapshot_version])
+      contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :snapshot_version -> found[:snapshot_version]}]
+    end
   end
 
   return {:contexts -> contexts, :plan -> plan, :question -> question}
@@ -231,6 +242,7 @@ verb answer_question(actor, index, question_text @ #string, limit, model @ #stri
   let contexts = retrieval[:contexts]
   let answer = retrieval/answer_value(question, index, limit, model)
   let snippets = []
+  let context_text = ""
   let summary = string_concat("Relevant context for: ", question_text)
 
   for context in contexts
@@ -239,12 +251,14 @@ verb answer_question(actor, index, question_text @ #string, limit, model @ #stri
     assert AnswerCitation(answer, subject)
     assert AnswerCitationText(answer, subject, snippet)
     snippets = [@snippets, snippet]
+    context_text = string_concat(context_text, string_concat("\n- ", snippet))
     summary = string_concat(summary, string_concat("\n- ", snippet))
   end
 
   assert Answer(answer)
   assert AnswerForQuestion(answer, question)
   assert AnswerPromptText(answer, question_text)
+  assert AnswerContextText(answer, context_text)
   assert AnswerText(answer, summary)
   assert AnswerStatus(answer, "fresh")
   retract AnswerNeedsReview(answer)

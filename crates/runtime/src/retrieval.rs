@@ -110,7 +110,7 @@ impl ComputedRelation for ExactEmbeddingSearchRelation {
                 .or_insert(score);
         }
 
-        let version = Value::int(reader.version() as i64)
+        let snapshot_version = Value::int(reader.version() as i64)
             .map_err(|_| invalid_relation(metadata.id(), "snapshot version exceeds i64"))?;
         let mut rows = best_by_subject
             .into_iter()
@@ -126,7 +126,7 @@ impl ComputedRelation for ExactEmbeddingSearchRelation {
                         bindings[2].clone().expect("validated limit should exist"),
                         subject,
                         Value::float(score),
-                        version.clone(),
+                        snapshot_version.clone(),
                     ]),
                 ))
             })
@@ -282,7 +282,7 @@ mod tests {
 
         let report = runner
             .run_source(
-                "let rows = NearestEmbedding(#main_index, [1.0, 0.0], 2, ?subject, ?score, ?version)\n\
+                "let rows = NearestEmbedding(#main_index, [1.0, 0.0], 2, ?subject, ?score, ?snapshot_version)\n\
                  return [rows[0][:subject], rows[1][:subject]]",
             )
             .unwrap();
@@ -494,9 +494,10 @@ mod tests {
                  assert TextUnit(#unit_two)\n\
                  assert TextUnitText(#unit_one, \"lamp oil brass light\")\n\
                  assert TextUnitText(#unit_two, \"apple orchard green fruit\")\n\
+                 assert CanRetrieveSubject(#main_index, #unit_one)\n\
                  index_text_unit(nothing, #main_index, #unit_one, \"host-test\")\n\
                  index_text_unit(nothing, #main_index, #unit_two, \"host-test\")\n\
-                 return answer_question(#main_index, #main_index, \"brass lamp\", 1, \"host-test\")",
+                 return answer_question(#main_index, #main_index, \"brass lamp\", 2, \"host-test\")",
             )
             .unwrap();
 
@@ -511,9 +512,11 @@ mod tests {
                  let plan_kind = one PlanKind(plan, ?kind)\n\
                  let plan_model = one PlanModel(plan, ?model)\n\
                  let context_reason = one ContextReason(context, ?reason)\n\
+                 let context_version = one ContextSnapshotVersion(context, ?snapshot_version)\n\
+                 let answer_context = one AnswerContextText(answer, ?context_text)\n\
                  let answer_status = one AnswerStatus(answer, ?status)\n\
                  let embedding_status = one EmbeddingStatus(embedding, ?status)\n\
-                 return [question_text, plan_kind, plan_model, context_reason, answer_status, embedding_status]",
+                 return [question_text, plan_kind, plan_model, context_reason, context_version != nothing, string_contains(answer_context, \"lamp oil\"), answer_status, embedding_status]",
             )
             .unwrap();
 
@@ -526,8 +529,62 @@ mod tests {
                 assert_eq!(values[1], Value::string("nearest_embedding"));
                 assert_eq!(values[2], Value::string("host-test"));
                 assert_eq!(values[3], Value::string("nearest_embedding"));
-                assert_eq!(values[4], Value::string("fresh"));
-                assert_eq!(values[5], Value::string("ready"));
+                assert_eq!(values[4], Value::bool(true));
+                assert_eq!(values[5], Value::bool(true));
+                assert_eq!(values[6], Value::string("fresh"));
+                assert_eq!(values[7], Value::string("ready"));
+            })
+            .expect("expected list result");
+    }
+
+    #[test]
+    fn retrieve_context_records_only_authorized_subjects() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+            .unwrap();
+        runner
+            .run_source(
+                "make_identity(:main_index)\n\
+                 make_identity(:actor)\n\
+                 make_identity(:unit_allowed)\n\
+                 make_identity(:unit_hidden)\n\
+                 assert VectorIndex(#main_index)\n\
+                 assert VectorIndexMetric(#main_index, \"cosine\")\n\
+                 assert TextUnit(#unit_allowed)\n\
+                 assert TextUnit(#unit_hidden)\n\
+                 assert TextUnitText(#unit_allowed, \"lamp oil brass light\")\n\
+                 assert TextUnitText(#unit_hidden, \"lamp oil secret room\")\n\
+                 assert CanRetrieveSubject(#actor, #unit_allowed)\n\
+                 index_text_unit(nothing, #main_index, #unit_allowed, \"host-test\")\n\
+                 index_text_unit(nothing, #main_index, #unit_hidden, \"host-test\")\n\
+                 return retrieve_context(#actor, #main_index, \"brass lamp\", 5, \"host-test\")",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source(
+                "let has_allowed = false\n\
+                 let has_hidden = false\n\
+                 for found in RetrievedContext(?context)\n\
+                   let subject = one ContextSubject(found[:context], ?subject)\n\
+                   if subject == #unit_allowed\n\
+                     has_allowed = true\n\
+                   elseif subject == #unit_hidden\n\
+                     has_hidden = true\n\
+                   end\n\
+                 end\n\
+                 return [has_allowed, has_hidden]",
+            )
+            .unwrap();
+
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected complete outcome, got {:?}", report.outcome);
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::bool(true));
+                assert_eq!(values[1], Value::bool(false));
             })
             .expect("expected list result");
     }
@@ -546,6 +603,7 @@ mod tests {
                  assert VectorIndexMetric(#main_index, \"cosine\")\n\
                  assert TextUnit(#unit_one)\n\
                  assert TextUnitText(#unit_one, \"red brass lamp\")\n\
+                 assert CanRetrieveSubject(#main_index, #unit_one)\n\
                  index_text_unit(nothing, #main_index, #unit_one, \"host-test\")\n\
                  answer_question(#main_index, #main_index, \"brass lamp\", 1, \"host-test\")\n\
                  retract TextUnitText(#unit_one, _)\n\
