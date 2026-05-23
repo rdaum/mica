@@ -12,7 +12,9 @@ The core runtime concepts are:
 - a driver that resumes tasks after timers, input, child-spawn completion, or
   mailbox readiness;
 - hosts that translate protocol traffic into task submissions, input, and
-  effects.
+  effects;
+- retrieval helpers that use ordinary relations plus computed search relations
+  to record embeddings, retrieved context, and answer artefacts.
 
 The runtime is transactional by default. Code can feel direct and live while
 still committing state changes, effects, and mailbox sends at explicit

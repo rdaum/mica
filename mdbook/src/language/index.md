@@ -27,6 +27,8 @@ The main language pieces are:
   runtime capabilities;
 - relations: named facts about values;
 - rules: derived facts, including recursive relationships;
+- computed relations: read-only relation-shaped candidate rows produced by
+  runtime code;
 - verbs: installed behaviour selected by named-role dispatch;
 - authority: policy facts compiled into cheap runtime checks;
 - effects: committed outputs to hosts and endpoints;

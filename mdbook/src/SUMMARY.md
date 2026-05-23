@@ -14,6 +14,7 @@
 - [Relational Mental Model](./language/relational-mental-model.md)
 - [Relations](./language/relations.md)
 - [Rules](./language/rules.md)
+- [Computed Relations](./language/computed-relations.md)
 - [Assertions and Retractions](./language/assertions-and-retractions.md)
 - [Verbs, Roles, and Dispatch](./language/verbs-roles-dispatch.md)
 - [Frobs](./language/frobs.md)
@@ -25,4 +26,5 @@
 - [Runtime Overview](./runtime/index.md)
 - [Tasks and Transactions](./runtime/tasks-and-transactions.md)
 - [Task Control](./runtime/task-control.md)
+- [Retrieval and Embeddings](./runtime/retrieval-and-embeddings.md)
 - [Filein and Fileout](./runtime/filein-fileout.md)
