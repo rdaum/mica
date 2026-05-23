@@ -24,6 +24,12 @@ Slash commands expose the lower-level protocol surface:
 Run a daemon RPC listener, then connect the console:
 
 ```sh
-cargo run --bin mica-daemon -- --rpc-bind ipc:///tmp/mica-rpc.sock
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --rpc-bind ipc:///tmp/mica-rpc.sock
 cargo run --bin mica-host-console -- --rpc ipc:///tmp/mica-rpc.sock --actor alice
 ```

@@ -14,7 +14,13 @@ The in-process mode is exposed by `mica-daemon --telnet-bind`. The
 ZeroMQ-backed mode is exposed by the `mica-telnet-host` binary:
 
 ```sh
-cargo run --bin mica-daemon -- --rpc-bind ipc:///tmp/mica-rpc.sock
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --rpc-bind ipc:///tmp/mica-rpc.sock
 cargo run --bin mica-telnet-host -- --rpc ipc:///tmp/mica-rpc.sock --bind 127.0.0.1:7778
 ```
 

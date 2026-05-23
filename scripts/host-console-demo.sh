@@ -20,7 +20,13 @@ trap cleanup EXIT INT TERM
 cd "${repo_root}"
 rm -f "${rpc_sock}"
 
-cargo run --bin mica-daemon -- --rpc-bind "${rpc_endpoint}" &
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --rpc-bind "${rpc_endpoint}" &
 daemon_pid=$!
 
 for _ in {1..50}; do

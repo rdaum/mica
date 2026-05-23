@@ -67,12 +67,17 @@ browser UI demonstrate a unified declarative, data-oriented application design.
 
 ## Telnet Fixture
 
-The daemon default fileins load the shared string/event support, the MUD core,
-event substitutions, command parser, and the minimal HTTP handler. That is
-enough for a telnet-oriented MUD session:
+Load the shared string/event support, the MUD core, event substitutions, and
+the command parser for a telnet-oriented MUD session:
 
 ```sh
-cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --telnet-bind 127.0.0.1:7777
 ```
 
 Then connect with a telnet client and try commands such as:

@@ -1,50 +1,111 @@
 # mica-daemon
 
-`mica-daemon` starts a Mica runtime and exposes host endpoints.
+`mica-daemon` starts a Mica runtime, files in whatever Mica source files you
+pass with `--filein`, and binds whichever host surfaces you ask it to expose.
 
-The telnet listener itself lives in `mica-telnet-host`, and the HTTP listener
-lives in `mica-web-host`. Keeping hosts outside the daemon lets the same host
-shape run either linked in process or as an out-of-process host over the host
-RPC/IPC protocol.
+In practice, this is the process that turns a Mica world into a running
+service. It can host:
 
-The daemon currently files in Mica source files at startup. By default it loads
-`apps/shared/string.mica`, `apps/shared/events.mica`, `apps/mud/core.mica`,
-`apps/mud/event-substitutions.mica`,
-`apps/mud/command-parser.mica`, and `apps/web/http-core.mica`. Line input
-is submitted to the in-core `:command(...)` verb; HTTP requests are submitted
-to the in-core `:http_request(...)` verb. The Rust transports only own protocol
-parsing and connection control. HTTP handlers run as the configured web
-principal, `#web` by default, so request handling uses ordinary Mica authority
-policy instead of root authority.
+- HTTP;
+- WebTransport;
+- telnet;
+- host RPC over ZeroMQ.
 
-Run the daemon with an in-process telnet listener:
+The daemon itself is not where request handling or command behaviour lives.
+Those stay in Mica source. The Rust side owns transport setup, protocol
+parsing, connection lifecycles, and routing host input into the runtime.
+
+The daemon does not load an app by default. Wrapper scripts such as
+`scripts/chat.sh` and `scripts/mud.sh`, or your own command line, are expected
+to provide the filein set.
+
+## Browser Surface
+
+For a minimal HTTP route, load `apps/web/http-core.mica`:
 
 ```sh
-cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
+cargo run --bin mica-daemon -- \
+  --filein apps/web/http-core.mica \
+  --web-bind 127.0.0.1:8008
 ```
 
-Then connect with a telnet client and try commands such as `look`,
-`get coin`, `put coin box`, `north`, and `say hello`.
+HTTP requests are routed into the Mica `:http_request(...)` verb. Request
+handlers run as the configured web principal, `#web` by default, so ordinary
+Mica authority policy still applies.
 
-Run the daemon with a ZeroMQ RPC listener and a separate telnet host:
+If you also want the WebTransport host:
 
 ```sh
-cargo run --bin mica-daemon -- --rpc-bind ipc:///tmp/mica-rpc.sock
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/sync-host.mica \
+  --filein apps/chat/sync.mica \
+  --filein apps/shared/sync-dom.mica \
+  --filein apps/chat/http.mica \
+  --web-bind 127.0.0.1:8008 \
+  --webtransport-bind 127.0.0.1:4433 \
+  --webtransport-cert cert.pem \
+  --webtransport-key key.pem
+```
+
+WebTransport sessions are bound into the same runtime, under the configured
+WebTransport principal, `#web` by default.
+
+If you just want to launch the browser examples, use the wrapper scripts at the
+workspace root instead:
+
+```sh
+scripts/chat.sh
+scripts/mud.sh
+```
+
+## Telnet Surface
+
+To expose the older telnet-oriented surface:
+
+```sh
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --telnet-bind 127.0.0.1:7777
+```
+
+Line input is routed into the in-world `:command(...)` verb. The telnet actor
+defaults to `#alice`, and can be changed with `--actor`.
+
+## RPC Surface
+
+To expose host RPC over ZeroMQ, for example with the MUD command surface loaded:
+
+```sh
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --rpc-bind ipc:///tmp/mica-rpc.sock
+```
+
+That lets separate host processes connect to the runtime over the host
+protocol. For example, a separate telnet host can bind through the RPC socket:
+
+```sh
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --rpc-bind ipc:///tmp/mica-rpc.sock
 cargo run --bin mica-telnet-host -- --rpc ipc:///tmp/mica-rpc.sock --bind 127.0.0.1:7778
 ```
 
-The daemon may also expose both surfaces in one process:
+## Notes
 
-```sh
-cargo run --bin mica-daemon -- --rpc-bind ipc:///tmp/mica-rpc.sock --telnet-bind 127.0.0.1:7777
-```
-
-Run the daemon with an in-process HTTP listener:
-
-```sh
-cargo run --bin mica-daemon -- --web-bind 127.0.0.1:8080
-curl -i http://127.0.0.1:8080/hello
-```
-
-Use `--web-principal NAME` to run HTTP request handlers as a different
-principal identity.
+- The daemon needs at least one surface: `--rpc-bind`, `--telnet-bind`,
+  `--web-bind`, or `--webtransport-bind`.
+- WebTransport requires `--webtransport-cert` and `--webtransport-key`.
+- Multiple surfaces can be hosted in one process.

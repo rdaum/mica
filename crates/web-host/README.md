@@ -40,7 +40,9 @@ curl -i http://127.0.0.1:8080/
 Run through the daemon and Mica route:
 
 ```sh
-cargo run --bin mica-daemon -- --web-bind 127.0.0.1:8080
+cargo run --bin mica-daemon -- \
+  --filein apps/web/http-core.mica \
+  --web-bind 127.0.0.1:8080
 curl -i http://127.0.0.1:8080/hello
 ```
 

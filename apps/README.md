@@ -36,11 +36,17 @@ The MUD app is described in more detail in [`mud/README.md`](./mud/README.md).
 
 ## MUD Telnet
 
-The daemon default fileins load enough of the MUD for a text session. This path
-exercises command parsing and routed effects without the browser sync stack:
+This path exercises command parsing and routed effects without the browser sync
+stack:
 
 ```sh
-cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --telnet-bind 127.0.0.1:7777
 ```
 
 Commands such as `look`, `get coin`, `put coin box`, `north`, and `say hello`

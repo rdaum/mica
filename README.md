@@ -382,9 +382,18 @@ rules, verbs, browser UI, and live inspection views are all authored
 inside the same system.
 
 If you want a smaller entry point, `cargo run --bin mica -- filein
-apps/shared/capabilities.mica` runs a simple filein through the CLI,
-and `cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777`
-starts the older telnet-oriented surface.
+apps/shared/capabilities.mica` runs a simple filein through the CLI.
+For the older telnet-oriented surface, load the MUD fileins explicitly:
+
+```sh
+cargo run --bin mica-daemon -- \
+  --filein apps/shared/string.mica \
+  --filein apps/shared/events.mica \
+  --filein apps/mud/core.mica \
+  --filein apps/mud/event-substitutions.mica \
+  --filein apps/mud/command-parser.mica \
+  --telnet-bind 127.0.0.1:7777
+```
 
 HTTP requests run as the `#web` principal by default. The daemon derives
 request-handler authority from Mica policy facts rather than running

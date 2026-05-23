@@ -36,15 +36,6 @@ use std::process::ExitCode;
 #[allow(dead_code)]
 mod rpc;
 
-const DEFAULT_FILEINS: &[&str] = &[
-    "apps/shared/string.mica",
-    "apps/shared/events.mica",
-    "apps/mud/core.mica",
-    "apps/mud/event-substitutions.mica",
-    "apps/mud/command-parser.mica",
-    "apps/web/http-core.mica",
-];
-
 #[derive(Parser)]
 #[command(
     name = "mica-daemon",
@@ -113,7 +104,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             None
         };
     let mut runner = SourceRunner::new_empty();
-    for filein in fileins_or_defaults(&cli.fileins) {
+    for filein in &cli.fileins {
         let source = fs::read_to_string(&filein)
             .map_err(|error| format!("failed to read {}: {error}", filein.display()))?;
         let include_base = filein.parent().unwrap_or_else(|| Path::new("."));
@@ -234,13 +225,6 @@ fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), St
     })
     .detach();
     Ok(())
-}
-
-fn fileins_or_defaults(fileins: &[PathBuf]) -> Vec<PathBuf> {
-    if fileins.is_empty() {
-        return DEFAULT_FILEINS.iter().map(PathBuf::from).collect();
-    }
-    fileins.to_vec()
 }
 
 fn read_filein_include(base: &Path, path: &str) -> Result<String, String> {
