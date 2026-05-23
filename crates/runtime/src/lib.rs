@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+mod embedding;
 mod retrieval;
 mod task;
 mod task_manager;
@@ -18,6 +19,7 @@ mod task_manager;
 #[cfg(test)]
 mod vm_tests;
 
+pub use embedding::{EmbeddingProvider, EmbeddingProviderKind};
 pub use mica_relation_kernel::Tuple;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
@@ -235,12 +237,31 @@ impl From<TaskManagerError> for SourceTaskError {
 
 impl SourceRunner {
     pub fn new_empty() -> Self {
-        Self::with_kernel(bootstrap_kernel())
+        Self::new_empty_with_embedding_provider(EmbeddingProviderKind::Deterministic)
+    }
+
+    pub fn new_empty_with_embedding_provider(kind: EmbeddingProviderKind) -> Self {
+        Self::with_kernel_and_embedding_provider(
+            bootstrap_kernel(),
+            embedding::embedding_provider(kind),
+        )
     }
 
     pub fn open_fjall(
         path: impl AsRef<Path>,
         durability: FjallDurabilityMode,
+    ) -> Result<Self, String> {
+        Self::open_fjall_with_embedding_provider(
+            path,
+            durability,
+            EmbeddingProviderKind::Deterministic,
+        )
+    }
+
+    pub fn open_fjall_with_embedding_provider(
+        path: impl AsRef<Path>,
+        durability: FjallDurabilityMode,
+        embedding_provider: EmbeddingProviderKind,
     ) -> Result<Self, String> {
         let provider = Arc::new(FjallStateProvider::open_with_durability(path, durability)?);
         let persisted = provider.load_state()?;
@@ -254,14 +275,25 @@ impl SourceRunner {
             )
             .map_err(|error| format!("failed to load relation kernel state: {error:?}"))?
         };
-        Ok(Self::with_kernel(kernel))
+        Ok(Self::with_kernel_and_embedding_provider(
+            kernel,
+            embedding::embedding_provider(embedding_provider),
+        ))
     }
 
     pub fn with_kernel(kernel: RelationKernel) -> Self {
+        Self::with_kernel_and_embedding_provider(kernel, embedding::default_embedding_provider())
+    }
+
+    pub fn with_kernel_and_embedding_provider(
+        kernel: RelationKernel,
+        embedding_provider: Arc<dyn embedding::EmbeddingProvider>,
+    ) -> Self {
         let next_method_identity_id = next_generated_method_identity_id(&kernel);
         let mut runner = Self {
             context: CompileContext::new().with_method_relations(method_relations()),
-            task_manager: TaskManager::new(kernel).with_builtins(Arc::new(default_builtins())),
+            task_manager: TaskManager::new(kernel)
+                .with_builtins(Arc::new(default_builtins(embedding_provider))),
             next_method_identity_id,
         };
         runner.refresh_context_from_catalog();
@@ -2771,7 +2803,7 @@ fn endpoint_metadata(relation: Identity) -> Option<RelationMetadata> {
         .find(|metadata| metadata.id() == relation)
 }
 
-fn default_builtins() -> BuiltinRegistry {
+fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -> BuiltinRegistry {
     BuiltinRegistry::new()
         .with_builtin("emit", emit_builtin)
         .with_builtin("mailbox", mailbox_builtin)
@@ -2825,7 +2857,10 @@ fn default_builtins() -> BuiltinRegistry {
         .with_builtin("edit_distance", edit_distance_builtin)
         .with_builtin("parse_ordinal", parse_ordinal_builtin)
         .with_builtin("lower", lower_builtin)
-        .with_builtin("embed_text", embed_text_builtin)
+        .with_builtin(
+            "embed_text",
+            embedding::EmbedTextBuiltin::new(embedding_provider),
+        )
 }
 
 fn emit_builtin(
@@ -3883,43 +3918,6 @@ fn lower_builtin(
     Ok(Value::string(
         builtin_string_arg("lower", args, 0)?.to_lowercase(),
     ))
-}
-
-fn embed_text_builtin(
-    _context: &mut BuiltinContext<'_, '_>,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
-    if args.len() != 1 {
-        return Err(invalid_builtin_call(
-            "embed_text",
-            "expected embed_text(text)",
-        ));
-    }
-    let text = builtin_string_arg("embed_text", args, 0)?;
-    Ok(embed_text_vector(&text))
-}
-
-fn embed_text_vector(text: &str) -> Value {
-    const DIMENSIONS: usize = 8;
-    let mut buckets = [0.0f64; DIMENSIONS];
-    for (index, ch) in text.chars().enumerate() {
-        let slot = ((ch as usize).wrapping_add(index)) % DIMENSIONS;
-        buckets[slot] += 1.0;
-    }
-    let norm = buckets
-        .iter()
-        .map(|value| value * value)
-        .sum::<f64>()
-        .sqrt();
-    let values = if norm == 0.0 {
-        buckets.into_iter().map(Value::float).collect::<Vec<_>>()
-    } else {
-        buckets
-            .into_iter()
-            .map(|value| Value::float(value / norm))
-            .collect::<Vec<_>>()
-    };
-    Value::list(values)
 }
 
 fn parse_words(value: &str) -> Vec<String> {

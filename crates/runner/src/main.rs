@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use mica_compiler::parse;
 use mica_driver::{CompioTaskDriver, DriverError, DriverEvent};
 use mica_relation_kernel::FjallDurabilityMode;
-use mica_runtime::{FileinMode, SourceRunner, SuspendKind, TaskOutcome};
+use mica_runtime::{EmbeddingProviderKind, FileinMode, SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -36,6 +36,8 @@ struct Cli {
     store: Option<PathBuf>,
     #[arg(long, global = true, value_enum, default_value_t = DurabilityMode::Relaxed)]
     durability: DurabilityMode,
+    #[arg(long, global = true, value_enum, default_value_t = EmbeddingProviderMode::Deterministic)]
+    embedding_provider: EmbeddingProviderMode,
     #[arg(long, global = true, value_name = "IDENTITY")]
     actor: Option<String>,
     #[command(subcommand)]
@@ -54,11 +56,26 @@ enum DurabilityMode {
     Strict,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum EmbeddingProviderMode {
+    Deterministic,
+    Disabled,
+}
+
 impl From<DurabilityMode> for FjallDurabilityMode {
     fn from(value: DurabilityMode) -> Self {
         match value {
             DurabilityMode::Relaxed => Self::Relaxed,
             DurabilityMode::Strict => Self::Strict,
+        }
+    }
+}
+
+impl From<EmbeddingProviderMode> for EmbeddingProviderKind {
+    fn from(value: EmbeddingProviderMode) -> Self {
+        match value {
+            EmbeddingProviderMode::Deterministic => Self::Deterministic,
+            EmbeddingProviderMode::Disabled => Self::Disabled,
         }
     }
 }
@@ -216,13 +233,19 @@ fn read_filein_include(base: &std::path::Path, path: &str) -> Result<String, Str
 fn open_runner(cli: &Cli) -> Result<SourceRunner, String> {
     let use_fjall = cli.storage == StorageMode::Fjall || cli.store.is_some();
     if !use_fjall {
-        return Ok(SourceRunner::new_empty());
+        return Ok(SourceRunner::new_empty_with_embedding_provider(
+            cli.embedding_provider.into(),
+        ));
     }
     let store = cli
         .store
         .as_ref()
         .ok_or_else(|| "--store is required with --storage fjall".to_owned())?;
-    SourceRunner::open_fjall(store, cli.durability.into())
+    SourceRunner::open_fjall_with_embedding_provider(
+        store,
+        cli.durability.into(),
+        cli.embedding_provider.into(),
+    )
 }
 
 fn open_cli_session(cli: &Cli, protocol: Symbol) -> Result<CliSession, String> {

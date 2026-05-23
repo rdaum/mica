@@ -23,6 +23,7 @@ cert_path="${MICA_WT_CERT:-/tmp/mica-wt-cert.pem}"
 key_path="${MICA_WT_KEY:-/tmp/mica-wt-key.pem}"
 page="${MICA_WT_PAGE:-chat}"
 poll_ms="${MICA_WT_POLL_MS:-1000}"
+embedding_provider="${MICA_WT_EMBEDDING_PROVIDER:-deterministic}"
 
 daemon_pid=""
 
@@ -71,6 +72,7 @@ done
 
 cargo run ${MICA_WT_BUILD_FLAGS:-} --bin mica-daemon -- \
   "${filein_args[@]}" \
+  --embedding-provider "${embedding_provider}" \
   --web-bind "${http_host}:${http_port}" \
   --webtransport-bind "${wt_bind}" \
   --webtransport-cert "${cert_path}" \

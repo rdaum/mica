@@ -299,7 +299,7 @@ verb ui/inspector_node(actor @ #player)
 
   let avatar = dom_element("span", {:class -> "entity-avatar"}, [dom_text(ui/entity_initial(name))])
   let title = dom_element("div", {:class -> "inspector-title-row"}, [avatar, dom_element("div", {}, [dom_element("strong", {:class -> "inspector-title"}, [dom_text(name)]), dom_element("span", {:class -> "inspector-subtitle"}, [dom_text(ui/entity_kind(selected))])])])
-  return dom_element("aside", {:id -> "inspector", :class -> "panel inspector", "data-entity" -> to_literal(selected)}, [dom_element("h2", {}, [dom_text("Examine")]), title, dom_element("p", {:class -> "inspector-description"}, [dom_text(description)]), ui/entity_facts_node(actor, selected), dom_element("div", {:class -> "object-actions inspector-actions"}, actions)])
+  return dom_element("aside", {:id -> "inspector", :class -> "panel inspector", "data-entity" -> to_literal(selected)}, [dom_element("h2", {}, [dom_text("Examine")]), title, dom_element("p", {:class -> "inspector-description"}, [dom_text(description)]), ui/entity_facts_node(actor, selected), ui/retrieval_panel_node(actor, selected), dom_element("div", {:class -> "object-actions inspector-actions"}, actions)])
 end
 
 verb ui/command_bar_node(actor @ #player)

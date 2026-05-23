@@ -1,0 +1,201 @@
+// Retrieval-backed inspector panel for the browser MUD view.
+
+make_identity(:ui/retrieval_action)
+make_identity(:retrieval/mud_world)
+
+make_functional_relation(:session/RetrievalPlan, 2, [0])
+
+assert Delegates(#ui/retrieval_action, #ui/sync_action, 0)
+assert ui/SyncAction("mud_retrieve_related", #ui/retrieval_action)
+
+assert RoleCanRead(#player, :session/RetrievalPlan)
+assert RoleCanWrite(#player, :session/RetrievalPlan)
+
+assert RoleCanInvoke(#player, :ui/retrieval_model)
+assert RoleCanInvoke(#player, :ui/retrieval_index)
+assert RoleCanInvoke(#player, :ui/retrieval_seed_world)
+assert RoleCanInvoke(#player, :ui/retrieval_text)
+assert RoleCanInvoke(#player, :ui/retrieval_action_node)
+assert RoleCanInvoke(#player, :ui/retrieval_result_row_node)
+assert RoleCanInvoke(#player, :ui/retrieval_panel_node)
+assert RoleCanInvoke(#player, :ui/retrieval_query_selected)
+assert RoleCanInvoke(#player, :retrieval/question_value)
+assert RoleCanInvoke(#player, :retrieval/plan_value)
+assert RoleCanInvoke(#player, :retrieval/context_value)
+assert RoleCanInvoke(#player, :retrieval/answer_value)
+assert RoleCanInvoke(#player, :answer_refresh_status)
+assert RoleCanInvoke(#player, :retrieve_context)
+assert RoleCanInvoke(#player, :answer_question)
+assert RoleCanInvoke(#player, :index_text_unit)
+assert RoleCanInvoke(#player, :ensure_subject_embedding)
+assert RoleCanInvoke(#player, :retrieval/index_entry_status)
+assert RoleCanInvoke(#player, :retrieval/text_unit_status)
+
+assert RoleCanRead(#player, :TextUnit)
+assert RoleCanRead(#player, :TextUnitText)
+assert RoleCanRead(#player, :Embedding)
+assert RoleCanRead(#player, :EmbeddingOf)
+assert RoleCanRead(#player, :EmbeddingVector)
+assert RoleCanRead(#player, :EmbeddingModel)
+assert RoleCanRead(#player, :EmbeddingSourceText)
+assert RoleCanRead(#player, :EmbeddingStatus)
+assert RoleCanRead(#player, :VectorIndex)
+assert RoleCanRead(#player, :VectorIndexContains)
+assert RoleCanRead(#player, :VectorIndexMetric)
+assert RoleCanRead(#player, :NearestEmbedding)
+assert RoleCanRead(#player, :IndexEntryEmbedding)
+assert RoleCanRead(#player, :IndexEntrySourceText)
+assert RoleCanRead(#player, :IndexEntryStatus)
+assert RoleCanRead(#player, :EmbeddingRefreshNeeded)
+assert RoleCanRead(#player, :Question)
+assert RoleCanRead(#player, :QuestionText)
+assert RoleCanRead(#player, :AskedBy)
+assert RoleCanRead(#player, :RetrievalPlan)
+assert RoleCanRead(#player, :PlanForQuestion)
+assert RoleCanRead(#player, :PlanKind)
+assert RoleCanRead(#player, :PlanModel)
+assert RoleCanRead(#player, :RetrievedContext)
+assert RoleCanRead(#player, :ContextForPlan)
+assert RoleCanRead(#player, :ContextSubject)
+assert RoleCanRead(#player, :ContextScore)
+assert RoleCanRead(#player, :ContextReason)
+assert RoleCanRead(#player, :ContextVersion)
+assert RoleCanRead(#player, :Answer)
+assert RoleCanRead(#player, :AnswerForQuestion)
+assert RoleCanRead(#player, :AnswerText)
+assert RoleCanRead(#player, :AnswerPromptText)
+assert RoleCanRead(#player, :AnswerStatus)
+assert RoleCanRead(#player, :AnswerCitation)
+assert RoleCanRead(#player, :AnswerCitationText)
+assert RoleCanRead(#player, :AnswerNeedsReview)
+assert RoleCanRead(#player, :AnswerRefreshNeeded)
+
+assert RoleCanWrite(#player, :TextUnit)
+assert RoleCanWrite(#player, :TextUnitText)
+assert RoleCanWrite(#player, :Embedding)
+assert RoleCanWrite(#player, :EmbeddingOf)
+assert RoleCanWrite(#player, :EmbeddingVector)
+assert RoleCanWrite(#player, :EmbeddingModel)
+assert RoleCanWrite(#player, :EmbeddingSourceText)
+assert RoleCanWrite(#player, :EmbeddingStatus)
+assert RoleCanWrite(#player, :VectorIndex)
+assert RoleCanWrite(#player, :VectorIndexContains)
+assert RoleCanWrite(#player, :VectorIndexMetric)
+assert RoleCanWrite(#player, :IndexEntryEmbedding)
+assert RoleCanWrite(#player, :IndexEntrySourceText)
+assert RoleCanWrite(#player, :IndexEntryStatus)
+assert RoleCanWrite(#player, :EmbeddingRefreshNeeded)
+assert RoleCanWrite(#player, :Question)
+assert RoleCanWrite(#player, :QuestionText)
+assert RoleCanWrite(#player, :AskedBy)
+assert RoleCanWrite(#player, :RetrievalPlan)
+assert RoleCanWrite(#player, :PlanForQuestion)
+assert RoleCanWrite(#player, :PlanKind)
+assert RoleCanWrite(#player, :PlanModel)
+assert RoleCanWrite(#player, :RetrievedContext)
+assert RoleCanWrite(#player, :ContextForPlan)
+assert RoleCanWrite(#player, :ContextSubject)
+assert RoleCanWrite(#player, :ContextScore)
+assert RoleCanWrite(#player, :ContextReason)
+assert RoleCanWrite(#player, :ContextVersion)
+
+verb ui/retrieval_model()
+  return "mud-world"
+end
+
+verb ui/retrieval_index()
+  return #retrieval/mud_world
+end
+
+verb ui/retrieval_text(entity)
+  let text = ui/actor_name(entity)
+  let description = one Description(entity, ?description)
+  if description != nothing
+    text = string_concat(text, string_concat(": ", description))
+  end
+  return text
+end
+
+verb ui/retrieval_seed_world(actor @ #player)
+  let index = ui/retrieval_index()
+  let model = ui/retrieval_model()
+  assert VectorIndex(index)
+  assert VectorIndexMetric(index, "cosine")
+
+  let entities = [#alice, #bob, #coin, #box, #red_button, #first_room, #north_room, #attic]
+  for entity in entities
+    assert TextUnit(entity)
+    retract TextUnitText(entity, _)
+    assert TextUnitText(entity, ui/retrieval_text(entity))
+    index_text_unit(actor, index, entity, model)
+  end
+  return true
+end
+
+verb ui/retrieval_query_selected(actor @ #player, endpoint, selected)
+  ui/retrieval_seed_world(actor)
+  let retrieval = retrieve_context(actor, ui/retrieval_index(), ui/retrieval_text(selected), 5, ui/retrieval_model())
+  retract session/RetrievalPlan(endpoint(), _)
+  retract session/RetrievalPlan(endpoint, _)
+  assert session/RetrievalPlan(endpoint(), retrieval[:plan])
+  assert session/RetrievalPlan(endpoint, retrieval[:plan])
+  ui/bump_revision(endpoint)
+  return retrieval[:plan]
+end
+
+verb ui/retrieval_action_node()
+  let button = dom_element("button", {:class -> "mini-button retrieval-button", :type -> "submit"}, [dom_text("Related context")])
+  return dom_element("form", {:class -> "mud-action retrieval-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_retrieve_related"}, [button])
+end
+
+verb ui/retrieval_result_row_node(actor @ #player, subject, score, status @ #string)
+  let inspect = ui/entity_action_node(string_concat("related-", to_literal(subject)), subject, string_concat("look ", ui/actor_name(subject)), ui/actor_name(subject), "entity-button related-link")
+  let meta = dom_element("div", {:class -> "retrieval-meta"}, [dom_element("span", {:class -> string_concat("retrieval-status retrieval-status-", status)}, [dom_text(status)]), dom_element("span", {:class -> "retrieval-score"}, [dom_text(to_literal(score))])])
+  return dom_element("li", {"data-sync-key" -> to_literal(subject), :class -> "retrieval-row"}, [inspect, meta])
+end
+
+verb ui/retrieval_panel_node(actor @ #player, selected)
+  let children = [dom_element("div", {:class -> "retrieval-toolbar"}, [ui/retrieval_action_node()])]
+  let plan = one session/RetrievalPlan(endpoint(), ?plan)
+  if plan == nothing
+    children = [@children, dom_element("p", {:class -> "muted"}, [dom_text("Run retrieval to see related rooms, people, and objects.")])]
+    return dom_element("section", {:class -> "panel retrieval-panel"}, [dom_element("h3", {}, [dom_text("Related context")]), @children])
+  end
+
+  let items = []
+  for found in ContextForPlan(?context, plan)
+    let context = found[:context]
+    let subject = one ContextSubject(context, ?subject)
+    if subject != selected && CanSee(actor, subject)
+      let score = one ContextScore(context, ?score)
+      let status = one IndexEntryStatus(ui/retrieval_index(), subject, ui/retrieval_model(), ?status)
+      if status == nothing
+        status = "unknown"
+      end
+      items = [@items, ui/retrieval_result_row_node(actor, subject, score, status)]
+    end
+  end
+
+  if items == []
+    children = [@children, dom_element("p", {:class -> "muted"}, [dom_text("No related context found yet.")])]
+  else
+    children = [@children, dom_element("ul", {:class -> "retrieval-results"}, items)]
+  end
+  return dom_element("section", {:class -> "panel retrieval-panel"}, [dom_element("h3", {}, [dom_text("Related context")]), @children])
+end
+
+verb ui/handle_sync_action(source @ #ui/retrieval_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
+    return false
+  end
+
+  let current = ui/current_actor()
+  let selected = one session/Inspect(endpoint, ?selected)
+  if current == nothing || selected == nothing || CanSee(current, selected) == false
+    return false
+  end
+
+  ui/retrieval_query_selected(current, endpoint, selected)
+  event/record_text(current, string_concat("> related ", ui/actor_name(selected)))
+  return true
+end

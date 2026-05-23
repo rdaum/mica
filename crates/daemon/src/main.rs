@@ -16,7 +16,7 @@ use compio::net::TcpListener;
 use compio::runtime::Runtime;
 use mica_driver::CompioTaskDriver;
 use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
-use mica_runtime::SourceRunner;
+use mica_runtime::{EmbeddingProviderKind, SourceRunner};
 use mica_telnet_host::{
     ActorBinding as TelnetActorBinding, InProcessTelnetHost, serve_in_process as serve_telnet,
 };
@@ -44,6 +44,8 @@ mod rpc;
 struct Cli {
     #[arg(long = "filein", value_name = "FILE")]
     fileins: Vec<PathBuf>,
+    #[arg(long, value_enum, default_value_t = EmbeddingProviderMode::Deterministic)]
+    embedding_provider: EmbeddingProviderMode,
     #[arg(long, default_value = "alice", value_name = "IDENTITY")]
     actor: String,
     #[arg(long, default_value = "web", value_name = "IDENTITY")]
@@ -64,6 +66,21 @@ struct Cli {
     webtransport_cert: Option<PathBuf>,
     #[arg(long, value_name = "FILE")]
     webtransport_key: Option<PathBuf>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+enum EmbeddingProviderMode {
+    Deterministic,
+    Disabled,
+}
+
+impl From<EmbeddingProviderMode> for EmbeddingProviderKind {
+    fn from(value: EmbeddingProviderMode) -> Self {
+        match value {
+            EmbeddingProviderMode::Deterministic => Self::Deterministic,
+            EmbeddingProviderMode::Disabled => Self::Disabled,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -103,7 +120,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         } else {
             None
         };
-    let mut runner = SourceRunner::new_empty();
+    let mut runner = SourceRunner::new_empty_with_embedding_provider(cli.embedding_provider.into());
     for filein in &cli.fileins {
         let source = fs::read_to_string(&filein)
             .map_err(|error| format!("failed to read {}: {error}", filein.display()))?;

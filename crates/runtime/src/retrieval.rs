@@ -245,6 +245,15 @@ fn cosine_similarity(
 mod tests {
     use crate::{SourceRunner, TaskOutcome};
     use mica_var::{Symbol, Value};
+    use std::sync::Arc;
+
+    struct ConstantEmbeddingProvider;
+
+    impl crate::embedding::EmbeddingProvider for ConstantEmbeddingProvider {
+        fn embed_text(&self, model: &str, text: &str) -> Result<Vec<f64>, String> {
+            Ok(vec![model.len() as f64, text.len() as f64])
+        }
+    }
 
     #[test]
     fn runner_queries_exact_nearest_embedding_relation() {
@@ -279,7 +288,7 @@ mod tests {
             .unwrap();
 
         let TaskOutcome::Complete { value, .. } = report.outcome else {
-            panic!("expected complete outcome");
+            panic!("expected complete outcome, got {:?}", report.outcome);
         };
         value
             .with_list(|values| {
@@ -320,6 +329,8 @@ mod tests {
             .run_source(
                 "make_identity(:main_index)\n\
                  make_identity(:unit_one)\n\
+                 assert VectorIndex(#main_index)\n\
+                 assert VectorIndexMetric(#main_index, \"cosine\")\n\
                  assert TextUnit(#unit_one)\n\
                  assert TextUnitText(#unit_one, \"red brass lamp\")\n\
                  return index_text_unit(nothing, #main_index, #unit_one, \"host-test\")",
@@ -351,6 +362,122 @@ mod tests {
     }
 
     #[test]
+    fn runner_uses_configured_embedding_provider() {
+        let mut runner = SourceRunner::with_kernel_and_embedding_provider(
+            crate::bootstrap_kernel(),
+            Arc::new(ConstantEmbeddingProvider),
+        );
+        runner
+            .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+            .unwrap();
+        runner
+            .run_source(
+                "make_identity(:main_index)\n\
+                 make_identity(:unit_one)\n\
+                 assert VectorIndex(#main_index)\n\
+                 assert VectorIndexMetric(#main_index, \"cosine\")\n\
+                 assert TextUnit(#unit_one)\n\
+                 assert TextUnitText(#unit_one, \"red brass lamp\")\n\
+                 return index_text_unit(nothing, #main_index, #unit_one, \"custom-model\")",
+            )
+            .unwrap();
+
+        let query = runner
+            .run_source(
+                "let embedding = one VectorIndexContains(#main_index, ?embedding)\n\
+                 let vector = one EmbeddingVector(embedding, ?vector)\n\
+                 return vector",
+            )
+            .unwrap();
+
+        let TaskOutcome::Complete { value, .. } = query.outcome else {
+            panic!("expected complete outcome");
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::float("custom-model".len() as f64));
+                assert_eq!(values[1], Value::float("red brass lamp".len() as f64));
+            })
+            .expect("expected list result");
+    }
+
+    #[test]
+    fn text_unit_status_tracks_missing_ready_and_stale_embeddings() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+            .unwrap();
+
+        let initial = runner
+            .run_source(
+                "make_identity(:main_index)\n\
+                 make_identity(:unit_one)\n\
+                 assert VectorIndex(#main_index)\n\
+                 assert VectorIndexMetric(#main_index, \"cosine\")\n\
+                 assert TextUnit(#unit_one)\n\
+                 return retrieval/text_unit_status(#main_index, #unit_one, \"host-test\")",
+            )
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = initial.outcome else {
+            panic!("expected complete outcome");
+        };
+        assert_eq!(value, Value::string("missing"));
+
+        runner
+            .run_source(
+                "assert TextUnitText(#unit_one, \"red brass lamp\")\n\
+                 index_text_unit(nothing, #main_index, #unit_one, \"host-test\")",
+            )
+            .unwrap();
+
+        let ready = runner
+            .run_source(
+                "let status = retrieval/text_unit_status(#main_index, #unit_one, \"host-test\")\n\
+                 let refresh = EmbeddingRefreshNeeded(#main_index, #unit_one, \"host-test\")\n\
+                 return [status, refresh]",
+            )
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = ready.outcome else {
+            panic!("expected complete outcome");
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::string("ready"));
+                assert_eq!(values[1], Value::bool(false));
+            })
+            .expect("expected list result");
+
+        runner
+            .run_source(
+                "retract TextUnitText(#unit_one, _)\n\
+                 assert TextUnitText(#unit_one, \"blue steel lantern\")",
+            )
+            .unwrap();
+
+        let stale = runner
+            .run_source(
+                "let status = retrieval/text_unit_status(#main_index, #unit_one, \"host-test\")\n\
+                 let refresh = EmbeddingRefreshNeeded(#main_index, #unit_one, \"host-test\")\n\
+                 let embedding = one IndexEntryEmbedding(#main_index, #unit_one, \"host-test\", ?embedding)\n\
+                 let embedding_status = one EmbeddingStatus(embedding, ?status)\n\
+                 let indexed = VectorIndexContains(#main_index, embedding)\n\
+                 return [status, refresh, embedding_status, indexed]",
+            )
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = stale.outcome else {
+            panic!("expected complete outcome");
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::string("stale"));
+                assert_eq!(values[1], Value::bool(true));
+                assert_eq!(values[2], Value::string("stale"));
+                assert_eq!(values[3], Value::bool(false));
+            })
+            .expect("expected list result");
+    }
+
+    #[test]
     fn answer_question_records_retrieval_artifacts_and_citations() {
         let mut runner = SourceRunner::new_empty();
         runner
@@ -361,13 +488,15 @@ mod tests {
                 "make_identity(:main_index)\n\
                  make_identity(:unit_one)\n\
                  make_identity(:unit_two)\n\
+                 assert VectorIndex(#main_index)\n\
+                 assert VectorIndexMetric(#main_index, \"cosine\")\n\
                  assert TextUnit(#unit_one)\n\
                  assert TextUnit(#unit_two)\n\
                  assert TextUnitText(#unit_one, \"lamp oil brass light\")\n\
                  assert TextUnitText(#unit_two, \"apple orchard green fruit\")\n\
                  index_text_unit(nothing, #main_index, #unit_one, \"host-test\")\n\
                  index_text_unit(nothing, #main_index, #unit_two, \"host-test\")\n\
-                 return answer_question(#main_index, #main_index, \"brass lamp\", 1)",
+                 return answer_question(#main_index, #main_index, \"brass lamp\", 1, \"host-test\")",
             )
             .unwrap();
 
@@ -377,24 +506,185 @@ mod tests {
                  let question = one Question(?question)\n\
                  let plan = one RetrievalPlan(?plan)\n\
                  let context = one RetrievedContext(?context)\n\
+                 let embedding = one IndexEntryEmbedding(#main_index, #unit_one, \"host-test\", ?embedding)\n\
                  let question_text = one QuestionText(question, ?text)\n\
                  let plan_kind = one PlanKind(plan, ?kind)\n\
+                 let plan_model = one PlanModel(plan, ?model)\n\
                  let context_reason = one ContextReason(context, ?reason)\n\
-                 let has_citation = one AnswerCitation(answer, ?subject) != nothing\n\
-                 return [question_text, plan_kind, context_reason, has_citation]",
+                 let answer_status = one AnswerStatus(answer, ?status)\n\
+                 let embedding_status = one EmbeddingStatus(embedding, ?status)\n\
+                 return [question_text, plan_kind, plan_model, context_reason, answer_status, embedding_status]",
             )
             .unwrap();
 
         let TaskOutcome::Complete { value, .. } = report.outcome else {
-            panic!("expected complete outcome");
+            panic!("expected complete outcome, got {:?}", report.outcome);
         };
         value
             .with_list(|values| {
                 assert_eq!(values[0], Value::string("brass lamp"));
                 assert_eq!(values[1], Value::string("nearest_embedding"));
-                assert_eq!(values[2], Value::string("nearest_embedding"));
-                assert_eq!(values[3], Value::bool(true));
+                assert_eq!(values[2], Value::string("host-test"));
+                assert_eq!(values[3], Value::string("nearest_embedding"));
+                assert_eq!(values[4], Value::string("fresh"));
+                assert_eq!(values[5], Value::string("ready"));
             })
             .expect("expected list result");
+    }
+
+    #[test]
+    fn answer_refresh_status_marks_answers_stale_after_text_changes() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+            .unwrap();
+        runner
+            .run_source(
+                "make_identity(:main_index)\n\
+                 make_identity(:unit_one)\n\
+                 assert VectorIndex(#main_index)\n\
+                 assert VectorIndexMetric(#main_index, \"cosine\")\n\
+                 assert TextUnit(#unit_one)\n\
+                 assert TextUnitText(#unit_one, \"red brass lamp\")\n\
+                 index_text_unit(nothing, #main_index, #unit_one, \"host-test\")\n\
+                 answer_question(#main_index, #main_index, \"brass lamp\", 1, \"host-test\")\n\
+                 retract TextUnitText(#unit_one, _)\n\
+                 assert TextUnitText(#unit_one, \"blue steel lantern\")\n\
+                 let answer = one Answer(?answer)\n\
+                 return answer_refresh_status(answer)",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source(
+                "let answer = one Answer(?answer)\n\
+                 let status = one AnswerStatus(answer, ?status)\n\
+                 let needs_review = AnswerNeedsReview(answer)\n\
+                 let refresh = AnswerRefreshNeeded(answer)\n\
+                 return [status, needs_review, refresh]",
+            )
+            .unwrap();
+
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected complete outcome, got {:?}", report.outcome);
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::string("stale"));
+                assert_eq!(values[1], Value::bool(true));
+                assert_eq!(values[2], Value::bool(true));
+            })
+            .expect("expected list result");
+    }
+
+    #[test]
+    fn mud_retrieval_query_writes_session_plan_and_ready_index_status() {
+        let mut runner = SourceRunner::new_empty();
+        for filein in [
+            include_str!("../../../apps/shared/sync-host.mica"),
+            include_str!("../../../apps/shared/string.mica"),
+            include_str!("../../../apps/shared/events.mica"),
+            include_str!("../../../apps/mud/core.mica"),
+            include_str!("../../../apps/mud/event-substitutions.mica"),
+            include_str!("../../../apps/mud/command-parser.mica"),
+            include_str!("../../../apps/shared/retrieval.mica"),
+            include_str!("../../../apps/shared/sync-dom.mica"),
+            include_str!("../../../apps/mud/ui-session.mica"),
+            include_str!("../../../apps/mud/ui-retrieval.mica"),
+            include_str!("../../../apps/mud/ui-mica-inspect.mica"),
+            include_str!("../../../apps/mud/ui-compose.mica"),
+            include_str!("../../../apps/mud/ui-narrative.mica"),
+            include_str!("../../../apps/mud/ui-actions.mica"),
+            include_str!("../../../apps/mud/http.mica"),
+        ] {
+            runner.run_filein(filein).unwrap();
+        }
+
+        runner
+            .run_source(
+                "assert session/Actor(endpoint(), #alice)\n\
+                 assert session/Inspect(endpoint(), #coin)\n\
+                 return ui/retrieval_query_selected(#alice, endpoint(), #coin)",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source(
+                "let plan = one session/RetrievalPlan(endpoint(), ?plan)\n\
+                 let question = one PlanForQuestion(plan, ?question)\n\
+                 let has_context = false\n\
+                 for found in ContextForPlan(?context, plan)\n\
+                   has_context = true\n\
+                 end\n\
+                 let status = one IndexEntryStatus(#retrieval/mud_world, #coin, \"mud-world\", ?status)\n\
+                 let prompt = one QuestionText(question, ?text)\n\
+                 return [status, prompt, has_context]",
+            )
+            .unwrap();
+
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected complete outcome, got {:?}", report.outcome);
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::string("ready"));
+                assert_eq!(
+                    values[1],
+                    Value::string("coin: A tarnished brass coin catches the light.")
+                );
+                assert_eq!(values[2], Value::bool(true));
+            })
+            .expect("expected list result");
+    }
+
+    #[test]
+    fn mud_retrieval_sync_event_updates_the_session_panel() {
+        let mut runner = SourceRunner::new_empty();
+        for filein in [
+            include_str!("../../../apps/shared/sync-host.mica"),
+            include_str!("../../../apps/shared/string.mica"),
+            include_str!("../../../apps/shared/events.mica"),
+            include_str!("../../../apps/mud/core.mica"),
+            include_str!("../../../apps/mud/event-substitutions.mica"),
+            include_str!("../../../apps/mud/command-parser.mica"),
+            include_str!("../../../apps/shared/retrieval.mica"),
+            include_str!("../../../apps/shared/sync-dom.mica"),
+            include_str!("../../../apps/mud/ui-session.mica"),
+            include_str!("../../../apps/mud/ui-retrieval.mica"),
+            include_str!("../../../apps/mud/ui-mica-inspect.mica"),
+            include_str!("../../../apps/mud/ui-compose.mica"),
+            include_str!("../../../apps/mud/ui-narrative.mica"),
+            include_str!("../../../apps/mud/ui-actions.mica"),
+            include_str!("../../../apps/mud/http.mica"),
+        ] {
+            runner.run_filein(filein).unwrap();
+        }
+
+        let report = runner
+            .run_source(
+                "assert session/Actor(endpoint(), #alice)\n\
+                 assert session/Inspect(endpoint(), #bob)\n\
+                 return sync_event(endpoint(), nothing, 21, \"submit\", \"\", \"mud_retrieve_related\", {})",
+            )
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected complete outcome, got {:?}", report.outcome);
+        };
+        assert_eq!(value, Value::bool(true));
+
+        let panel = runner
+            .run_source(
+                "let plan = one session/RetrievalPlan(endpoint(), ?plan)\n\
+                 let has_context = false\n\
+                 for found in ContextForPlan(?context, plan)\n\
+                   has_context = true\n\
+                 end\n\
+                 return has_context",
+            )
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = panel.outcome else {
+            panic!("expected complete outcome, got {:?}", panel.outcome);
+        };
+        assert_eq!(value, Value::bool(true));
     }
 }
