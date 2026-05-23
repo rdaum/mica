@@ -1,4 +1,4 @@
-// DOM composition for the static source viewer.
+// DOM composition for the source viewer.
 
 verb source/empty_node(message)
   return dom_element("p", {:class -> "source-empty"}, [dom_text(message)])
@@ -12,8 +12,8 @@ verb source/header_node(repository, revision)
   let name = one source/RepositoryName(repository, ?name)
   let label = one source/RevisionLabel(revision, ?label)
   let title = dom_element("h1", {}, [dom_text(name)])
-  let deck = dom_element("p", {:class -> "source-deck"}, [dom_text("A Mica-authored source viewer over seeded repository facts.")])
-  let meta = dom_element("div", {:class -> "source-meta"}, [source/meta_chip_node("revision", label), source/meta_chip_node("mode", "static phase 1")])
+  let deck = dom_element("p", {:class -> "source-deck"}, [dom_text("A Mica-authored source viewer over provider-backed local worktree reads.")])
+  let meta = dom_element("div", {:class -> "source-meta"}, [source/meta_chip_node("revision", label), source/meta_chip_node("mode", "local file provider")])
   return dom_element("header", {:class -> "source-header"}, [title, deck, meta])
 end
 
@@ -26,15 +26,12 @@ verb source/repository_summary_node(repository, revision)
     end
   end
 
-  return dom_element("section", {:class -> "source-panel source-summary"}, [dom_element("h2", {}, [dom_text("Repository")]), dom_element("p", {}, [dom_text(root)]), dom_element("p", {:class -> "source-muted"}, [dom_text(string_concat(to_literal(file_count), " seeded files"))])])
+  return dom_element("section", {:class -> "source-panel source-summary"}, [dom_element("h2", {}, [dom_text("Repository")]), dom_element("p", {}, [dom_text(root)]), dom_element("p", {:class -> "source-muted"}, [dom_text(string_concat(to_literal(file_count), " curated files"))])])
 end
 
-verb source/file_button_node(file, selected)
-  let path = one source/FilePath(file, ?path)
-  let title = one source/FileTitle(file, ?title)
-  let language = one source/FileLanguage(file, ?language)
+verb source/file_button_node(path, title, language, selected)
   let class = "source-file-button"
-  if file == selected
+  if path == selected
     class = "source-file-button active"
   end
 
@@ -51,11 +48,21 @@ verb source/file_list_node(repository, revision, selected)
   for found in source/SourceFile(?file)
     let file = found[:file]
     if source/FileRevision(file, revision) && source/CanReadSourceFile(#web, file)
-      items = [@items, source/file_button_node(file, selected)]
+      let path = one source/FilePath(file, ?path)
+      let title = one source/FileTitle(file, ?title)
+      let language = one source/FileLanguage(file, ?language)
+      items = [@items, source/file_button_node(path, title, language, selected)]
     end
   end
 
-  return dom_element("section", {:class -> "source-panel source-files"}, [dom_element("h2", {}, [dom_text("Files")]), dom_element("div", {:class -> "source-file-list"}, items)])
+  let entries = []
+  for entry in source/RepositoryEntry(repository, revision, "", ?path, ?kind, ?name)
+    if entry[:kind] == "file"
+      entries = [@entries, source/file_button_node(entry[:path], entry[:path], "file", selected)]
+    end
+  end
+
+  return dom_element("section", {:class -> "source-panel source-files"}, [dom_element("h2", {}, [dom_text("Curated files")]), dom_element("div", {:class -> "source-file-list"}, items), dom_element("h2", {:class -> "source-subhead"}, [dom_text("Repository root")]), dom_element("div", {:class -> "source-file-list"}, entries)])
 end
 
 verb source/span_row_node(span)
@@ -66,12 +73,15 @@ verb source/span_row_node(span)
   return dom_element("li", {"data-sync-key" -> to_literal(span)}, [dom_element("span", {:class -> "source-span-label"}, [dom_text(label)]), dom_element("span", {:class -> "source-span-lines"}, [dom_text(line_range)])])
 end
 
-verb source/span_list_node(file)
+verb source/span_list_node(path)
   let spans = []
-  for found in source/SpanFile(?span, file)
-    let span = found[:span]
-    if source/CanReadSourceSpan(#web, span)
-      spans = [@spans, source/span_row_node(span)]
+  let file_id = one source/FilePath(?file, path)
+  if file_id != nothing
+    for found in source/SpanFile(?span, file_id)
+      let span = found[:span]
+      if source/CanReadSourceSpan(#web, span)
+        spans = [@spans, source/span_row_node(span)]
+      end
     end
   end
 
@@ -82,26 +92,28 @@ verb source/span_list_node(file)
   return dom_element("ul", {:class -> "source-span-list"}, spans)
 end
 
-verb source/code_panel_node(file)
-  let path = one source/FilePath(file, ?path)
-  let title = one source/FileTitle(file, ?title)
-  let language = one source/FileLanguage(file, ?language)
-  let text = one source/FileText(file, ?text)
+verb source/code_panel_node(path)
+  let repository = source/current_repository()
+  let selected_revision = source/current_revision()
+  let title = source/file_title(path)
+  let language = source/file_language(path)
+  let row = one source/FileLines(repository, selected_revision, path, 1, 240, ?lines, ?hash)
+  let text = string_join(row[:lines], "\n")
   let title_group = dom_element("div", {}, [dom_element("h2", {}, [dom_text(title)]), dom_element("p", {:class -> "source-path"}, [dom_text(path)])])
-  let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language)])
+  let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language), source/meta_chip_node("hash", row[:hash])])
   let code = dom_element("pre", {:class -> "source-code"}, [dom_element("code", {}, [dom_text(text)])])
-  let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Seeded spans")]), source/span_list_node(file)])
+  let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Seeded spans")]), source/span_list_node(path)])
   return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, code, spans])
 end
 
 verb source/app_node(view, revision)
   let repository = source/current_repository()
   let selected_revision = source/current_revision()
-  let selected_file = source/current_file()
+  let selected_path = source/current_file()
   let header = source/header_node(repository, selected_revision)
   let summary = source/repository_summary_node(repository, selected_revision)
-  let files = source/file_list_node(repository, selected_revision, selected_file)
-  let code = source/code_panel_node(selected_file)
+  let files = source/file_list_node(repository, selected_revision, selected_path)
+  let code = source/code_panel_node(selected_path)
   let sidebar = dom_element("aside", {:class -> "source-sidebar"}, [summary, files])
   let main = dom_element("main", {:class -> "source-shell"}, [sidebar, code])
   return dom_element("div", {:class -> "source-app"}, [header, main])

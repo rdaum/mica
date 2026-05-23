@@ -11,6 +11,7 @@ cert_path="${MICA_SOURCE_WT_CERT:-/tmp/mica-source-wt-cert.pem}"
 key_path="${MICA_SOURCE_WT_KEY:-/tmp/mica-source-wt-key.pem}"
 poll_ms="${MICA_SOURCE_POLL_MS:-5000}"
 embedding_provider="${MICA_SOURCE_EMBEDDING_PROVIDER:-disabled}"
+export MICA_SOURCE_ROOT="${MICA_SOURCE_ROOT:-${repo_root}}"
 
 daemon_pid=""
 

@@ -108,6 +108,11 @@ input {
   margin: 0 0 0.75rem;
 }
 
+.source-subhead {
+  margin-top: 1rem !important;
+  font-size: 1rem;
+}
+
 .source-muted,
 .source-path,
 .source-file-path,

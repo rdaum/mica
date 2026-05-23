@@ -13,6 +13,7 @@
 
 mod embedding;
 mod retrieval;
+mod source_provider;
 mod task;
 mod task_manager;
 

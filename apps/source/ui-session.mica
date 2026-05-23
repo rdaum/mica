@@ -24,6 +24,9 @@ assert CanRead(#web, :source/FileTitle)
 assert CanRead(#web, :source/FileLanguage)
 assert CanRead(#web, :source/FileText)
 assert CanRead(#web, :source/FileOrder)
+assert CanRead(#web, :source/RepositoryEntry)
+assert CanRead(#web, :source/FileLines)
+assert CanRead(#web, :source/FileContentHash)
 assert CanRead(#web, :source/SourceSpan)
 assert CanRead(#web, :source/SpanFile)
 assert CanRead(#web, :source/SpanLabel)
@@ -54,6 +57,8 @@ assert CanInvoke(#web, :source/current_repository)
 assert CanInvoke(#web, :source/current_revision)
 assert CanInvoke(#web, :source/current_file)
 assert CanInvoke(#web, :source/file_for_path)
+assert CanInvoke(#web, :source/file_title)
+assert CanInvoke(#web, :source/file_language)
 assert CanInvoke(#web, :source/view_revision)
 assert CanInvoke(#web, :source/bump_revision)
 assert CanInvoke(#web, :source/app_node)
@@ -72,6 +77,7 @@ assert CanInvoke(#web, :dom_element)
 assert CanInvoke(#web, :to_literal)
 assert CanInvoke(#web, :from_literal)
 assert CanInvoke(#web, :string_concat)
+assert CanInvoke(#web, :string_join)
 assert CanInvoke(#web, :string_starts_with)
 
 verb source/current_repository()
@@ -93,11 +99,11 @@ verb source/current_revision()
 end
 
 verb source/file_for_path(path)
+  let repository = source/current_repository()
   let revision = source/current_revision()
-  for found in source/FilePath(?file, path)
-    if source/FileRevision(found[:file], revision)
-      return found[:file]
-    end
+  let hash = one source/FileContentHash(repository, revision, path, ?hash)
+  if hash != nothing
+    return path
   end
 
   return nothing
@@ -108,11 +114,35 @@ verb source/current_file()
   if selected_path != nothing
     let selected_file = source/file_for_path(selected_path)
     if selected_file != nothing
-      return selected_file
+      return selected_path
     end
   end
 
-  return #source/file_runtime_lib
+  return "crates/runtime/src/lib.rs"
+end
+
+verb source/file_title(path)
+  let file_id = one source/FilePath(?file, path)
+  if file_id != nothing
+    let title = one source/FileTitle(file_id, ?title)
+    if title != nothing
+      return title
+    end
+  end
+
+  return path
+end
+
+verb source/file_language(path)
+  let file_id = one source/FilePath(?file, path)
+  if file_id != nothing
+    let language = one source/FileLanguage(file_id, ?language)
+    if language != nothing
+      return language
+    end
+  end
+
+  return "file"
 end
 
 verb source/view_revision()
@@ -159,8 +189,8 @@ verb source/handle_sync_action(source @ #source/open_file_action<_>, endpoint, s
     return false
   end
 
-  let file = source/file_for_path(path)
-  if file == nothing || source/CanReadSourceFile(#web, file) == false
+  let readable_path = source/file_for_path(path)
+  if readable_path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
     return false
   end
 

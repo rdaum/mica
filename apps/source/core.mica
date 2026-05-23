@@ -1,8 +1,8 @@
-// Static source-browser fixture for the Mica repository.
+// Source-browser app state for the Mica repository.
 //
-// This file intentionally keeps the Phase 1 source viewer as app state. Later
-// phases can replace the seeded file text with provider-backed relations
-// without changing the browser sync contract.
+// File contents are read through constrained provider-backed computed
+// relations. The durable facts here are repository identity, curated file
+// metadata, session state, source spans, and authority.
 
 make_identity(:source/repo_mica)
 make_identity(:source/rev_worktree)
@@ -29,8 +29,11 @@ make_functional_relation(:source/FileRevision, 2, [0])
 make_functional_relation(:source/FilePath, 2, [0])
 make_functional_relation(:source/FileTitle, 2, [0])
 make_functional_relation(:source/FileLanguage, 2, [0])
-make_functional_relation(:source/FileText, 2, [0])
 make_functional_relation(:source/FileOrder, 2, [0])
+make_relation(:source/RepositoryEntry, 6)
+make_relation(:source/FileText, 5)
+make_relation(:source/FileLines, 7)
+make_relation(:source/FileContentHash, 4)
 
 make_relation(:source/SourceSpan, 1)
 make_functional_relation(:source/SpanFile, 2, [0])
@@ -49,7 +52,7 @@ make_relation(:source/CanReadSourceSpan, 2)
 
 assert source/Repository(#source/repo_mica)
 assert source/RepositoryName(#source/repo_mica, "mica")
-assert source/RepositoryRoot(#source/repo_mica, "/home/ryan/src/mica")
+assert source/RepositoryRoot(#source/repo_mica, ".")
 
 assert source/Revision(#source/rev_worktree)
 assert source/RevisionOf(#source/rev_worktree, #source/repo_mica)
@@ -62,7 +65,6 @@ assert source/FilePath(#source/file_runtime_lib, "crates/runtime/src/lib.rs")
 assert source/FileTitle(#source/file_runtime_lib, "Runtime host surface")
 assert source/FileLanguage(#source/file_runtime_lib, "rust")
 assert source/FileOrder(#source/file_runtime_lib, 10)
-assert source/FileText(#source/file_runtime_lib, include_text("fixtures/runtime-lib.rs.txt"))
 
 assert source/SourceFile(#source/file_computed_relations)
 assert source/FileRevision(#source/file_computed_relations, #source/rev_worktree)
@@ -70,7 +72,6 @@ assert source/FilePath(#source/file_computed_relations, "crates/relation-kernel/
 assert source/FileTitle(#source/file_computed_relations, "Computed relation boundary")
 assert source/FileLanguage(#source/file_computed_relations, "rust")
 assert source/FileOrder(#source/file_computed_relations, 20)
-assert source/FileText(#source/file_computed_relations, include_text("fixtures/computed.rs.txt"))
 
 assert source/SourceFile(#source/file_mud_ui_session)
 assert source/FileRevision(#source/file_mud_ui_session, #source/rev_worktree)
@@ -78,7 +79,6 @@ assert source/FilePath(#source/file_mud_ui_session, "apps/mud/ui-session.mica")
 assert source/FileTitle(#source/file_mud_ui_session, "Server-owned DOM sync")
 assert source/FileLanguage(#source/file_mud_ui_session, "mica")
 assert source/FileOrder(#source/file_mud_ui_session, 30)
-assert source/FileText(#source/file_mud_ui_session, include_text("fixtures/mud-ui-session.mica.txt"))
 
 assert source/SourceFile(#source/file_graph_rag_design)
 assert source/FileRevision(#source/file_graph_rag_design, #source/rev_worktree)
@@ -86,7 +86,6 @@ assert source/FilePath(#source/file_graph_rag_design, "sketches/MICA_GRAPHRAG_DE
 assert source/FileTitle(#source/file_graph_rag_design, "Retrieval design note")
 assert source/FileLanguage(#source/file_graph_rag_design, "markdown")
 assert source/FileOrder(#source/file_graph_rag_design, 40)
-assert source/FileText(#source/file_graph_rag_design, include_text("fixtures/graphrag.md.txt"))
 
 assert source/SourceSpan(#source/span_source_runner)
 assert source/SpanFile(#source/span_source_runner, #source/file_runtime_lib)
