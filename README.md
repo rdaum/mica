@@ -23,15 +23,29 @@ on reads, writes, invocations, and effects.
 > **NOTE**: If you're looking at this on GitHub be aware this is just a mirror
 > from the canonical Codeberg repository at https://codeberg.org/timbran/mica
 
-Try the current telnet demo:
+The screenshot below is from `apps/mud/`, one example application built with
+Mica. It combines a browser-rendered room/object world, command history,
+inventory, and live inspection of the facts and methods in the same running
+world:
+
+<p align="center">
+  <img
+    src="assets/screenshot.png"
+    alt="Screenshot of the apps/mud browser example, with room view, command history, inventory, and live inspect panes."
+    width="900"
+  >
+</p>
+
+Try the browser example:
 
 ```sh
-cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
-telnet 127.0.0.1 7777
+scripts/mud-webtransport-smoke.sh
 ```
 
-Then try commands such as `look`, `get coin`, `put coin box`, `north`, and
-`say hello`.
+The script starts the daemon with the MUD, DOM sync, HTTP, and WebTransport
+fileins, then prints the local `/mud` URL to open. The app is still ordinary
+Mica source: the browser is a host surface over relation facts, rules, verbs,
+authority, and server-rendered DOM values.
 
 ## Core Idea
 
@@ -331,8 +345,8 @@ Mica's implementation is still early. The current tree has:
 - a compio-driven task driver for timed wakeups, input resumes, and emissions;
 - a telnet host that maps one endpoint identity to each connection and can run
   in process or over the host RPC/IPC protocol;
-- a minimal compio HTTP/1.1 host that can route request/response traffic into
-  Mica verbs;
+- minimal HTTP/1.1 and WebTransport hosts that route browser traffic into Mica
+  verbs and DOM sync views;
 - a host protocol console for exercising daemon RPC over ZeroMQ;
 - a browser-oriented WASM package that links the compiler, VM, and projected
   relation store without durable providers;
@@ -342,19 +356,30 @@ Mica's implementation is still early. The current tree has:
 - actor-derived authority contexts and runtime capability checks;
 - Fjall-backed durable relation state with strict and relaxed commit modes;
 - a simple runner and REPL;
-- small app fileins, including a Mica-authored command parser.
+- small app fileins, including a browser-rendered MUD scenario and a
+  Mica-authored command parser.
 
 Relaxed durability accepts commits into the provider's ordered writer queue.
 Strict durability waits for the Fjall batch to be applied before the commit
 returns.
 
-Run the example:
+Run the browser MUD scenario:
+
+```sh
+scripts/mud-webtransport-smoke.sh
+```
+
+The wrapper starts the daemon with the WebTransport, DOM sync, HTTP, and MUD
+fileins, then prints the local `/mud` URL. Set `MICA_MUD_SMOKE_TRACE=1` for host
+and VM tracing while developing the app.
+
+Run a small capability filein through the CLI:
 
 ```sh
 cargo run --bin mica -- filein apps/shared/capabilities.mica
 ```
 
-Run the telnet MUD demo:
+Run the older telnet-oriented MUD surface:
 
 ```sh
 cargo run --bin mica-daemon -- --telnet-bind 127.0.0.1:7777
