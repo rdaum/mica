@@ -2,7 +2,7 @@
 
 verb ui/sync_selected_entity(actor @ #player, line, fields)
   if fields[:entity] != nothing
-    let selected = match_object(actor, lower(trim(fields[:entity])))
+    let selected = command/match_object(actor, lower(trim(fields[:entity])))
     if selected != nothing
       return selected
     end
@@ -11,7 +11,7 @@ verb ui/sync_selected_entity(actor @ #player, line, fields)
   let trimmed = trim(line)
   let lowered = lower(trimmed)
   if string_starts_with(lowered, "look ")
-    return match_object(actor, trim(string_slice(trimmed, 5, string_len(trimmed))))
+    return command/match_object(actor, trim(string_slice(trimmed, 5, string_len(trimmed))))
   end
 
   return nothing

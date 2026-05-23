@@ -5,10 +5,10 @@
 // and rules from mud-core.mica. Rust supplies string primitives and dynamic
 // role-map dispatch through invoke(selector, roles).
 
-verb match_object(actor @ #player, token @ #string)
+verb command/match_object(actor @ #player, token @ #string)
   let lowered = lower(token)
 
-  for found in ParserName(?obj, lowered)
+  for found in command/Name(?obj, lowered)
     let obj = found[:obj]
     if NameMatchable(actor, obj)
       return obj
@@ -18,14 +18,14 @@ verb match_object(actor @ #player, token @ #string)
   return nothing
 end
 
-verb bind_command_pattern(actor @ #player, raw @ #string, tokens @ #list, pattern)
+verb command/bind_pattern(actor @ #player, raw @ #string, tokens @ #list, pattern)
   let roles = {:actor -> actor}
   let position = 1
   let consumes_rest = false
   let pattern_index = 0
 
   while true
-    let part = one PatternPart(pattern, pattern_index, ?kind, ?argument)
+    let part = one command/PatternPart(pattern, pattern_index, ?kind, ?argument)
     if part == nothing
       break
     end
@@ -34,11 +34,11 @@ verb bind_command_pattern(actor @ #player, raw @ #string, tokens @ #list, patter
     let argument = part[:argument]
 
     if kind == :optional_prep
-      if Preposition(argument, tokens[position])
+      if command/Preposition(argument, tokens[position])
         position = position + 1
       end
     elseif kind == :prep
-      if Preposition(argument, tokens[position]) == false
+      if command/Preposition(argument, tokens[position]) == false
         return {:status -> :no_match}
       end
       roles[:prep] = argument
@@ -48,7 +48,7 @@ verb bind_command_pattern(actor @ #player, raw @ #string, tokens @ #list, patter
         return {:status -> :no_match}
       end
 
-      let obj = match_object(actor, tokens[position])
+      let obj = command/match_object(actor, tokens[position])
       if obj == nothing
         return {:status -> :not_visible}
       end
@@ -89,15 +89,15 @@ verb command(actor @ #player, endpoint, line)
     return false
   end
 
-  let selector = one CommandAlias(tokens[0], ?selector)
+  let selector = one command/VerbAlias(tokens[0], ?selector)
   if selector == nothing
     emit(endpoint, "I do not understand that.")
     return false
   end
 
   let saw_not_visible = false
-  for found in CommandPattern(selector, ?dispatch_selector, ?pattern)
-    let bound = bind_command_pattern(actor, raw, tokens, found[:pattern])
+  for found in command/Pattern(selector, ?dispatch_selector, ?pattern)
+    let bound = command/bind_pattern(actor, raw, tokens, found[:pattern])
     if bound[:status] == :ok
       return invoke(found[:dispatch_selector], bound[:roles])
     elseif bound[:status] == :not_visible

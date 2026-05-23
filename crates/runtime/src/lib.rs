@@ -6522,7 +6522,7 @@ mod tests {
             .run_source("assert Delegates(#polluted_coin, #thing, 0)")
             .unwrap();
         runner
-            .run_source("assert ParserNoun(#polluted_coin, \"coin\")")
+            .run_source("assert command/Noun(#polluted_coin, \"coin\")")
             .unwrap();
         runner
             .run_source("assert LocatedIn(#polluted_coin, #first_room)")
