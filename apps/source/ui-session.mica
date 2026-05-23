@@ -5,10 +5,13 @@ make_functional_relation(:source/SyncAction, 2, [0])
 
 make_identity(:source/sync_action)
 make_identity(:source/open_file_action)
+make_identity(:source/jump_to_line_action)
 
 assert source/View(31)
 assert Delegates(#source/open_file_action, #source/sync_action, 0)
+assert Delegates(#source/jump_to_line_action, #source/sync_action, 0)
 assert source/SyncAction("source_open_file", #source/open_file_action)
+assert source/SyncAction("source_jump_to_line", #source/jump_to_line_action)
 
 assert CanRead(#web, :source/Repository)
 assert CanRead(#web, :source/RepositoryName)
@@ -27,6 +30,9 @@ assert CanRead(#web, :source/FileOrder)
 assert CanRead(#web, :source/RepositoryEntry)
 assert CanRead(#web, :source/FileLines)
 assert CanRead(#web, :source/FileContentHash)
+assert CanRead(#web, :source/SyntaxLine)
+assert CanRead(#web, :source/SyntaxOutline)
+assert CanRead(#web, :source/SyntaxNodeAt)
 assert CanRead(#web, :source/SourceSpan)
 assert CanRead(#web, :source/SpanFile)
 assert CanRead(#web, :source/SpanLabel)
@@ -40,12 +46,14 @@ assert CanRead(#web, :source/SyncAction)
 assert CanRead(#web, :source/SelectedRepository)
 assert CanRead(#web, :source/SelectedRevision)
 assert CanRead(#web, :source/SelectedPath)
+assert CanRead(#web, :source/SelectedLine)
 assert CanRead(#web, :source/ViewRevision)
 assert CanRead(#web, :Delegates)
 
 assert CanWrite(#web, :source/SelectedRepository)
 assert CanWrite(#web, :source/SelectedRevision)
 assert CanWrite(#web, :source/SelectedPath)
+assert CanWrite(#web, :source/SelectedLine)
 assert CanWrite(#web, :source/ViewRevision)
 
 assert CanInvoke(#web, :sync_event)
@@ -56,6 +64,8 @@ assert CanInvoke(#web, :source/handle_sync_action)
 assert CanInvoke(#web, :source/current_repository)
 assert CanInvoke(#web, :source/current_revision)
 assert CanInvoke(#web, :source/current_file)
+assert CanInvoke(#web, :source/current_line)
+assert CanInvoke(#web, :source/current_window_start)
 assert CanInvoke(#web, :source/file_for_path)
 assert CanInvoke(#web, :source/file_title)
 assert CanInvoke(#web, :source/file_language)
@@ -67,6 +77,10 @@ assert CanInvoke(#web, :source/repository_summary_node)
 assert CanInvoke(#web, :source/file_list_node)
 assert CanInvoke(#web, :source/file_button_node)
 assert CanInvoke(#web, :source/code_panel_node)
+assert CanInvoke(#web, :source/code_line_node)
+assert CanInvoke(#web, :source/code_segment_node)
+assert CanInvoke(#web, :source/outline_panel_node)
+assert CanInvoke(#web, :source/outline_item_node)
 assert CanInvoke(#web, :source/span_list_node)
 assert CanInvoke(#web, :source/span_row_node)
 assert CanInvoke(#web, :source/meta_chip_node)
@@ -119,6 +133,24 @@ verb source/current_file()
   end
 
   return "crates/runtime/src/lib.rs"
+end
+
+verb source/current_line()
+  let selected = one source/SelectedLine(endpoint(), ?line)
+  if selected != nothing && selected > 0
+    return selected
+  end
+
+  return 1
+end
+
+verb source/current_window_start()
+  let line = source/current_line()
+  if line > 12
+    return line - 8
+  end
+
+  return 1
 end
 
 verb source/file_title(path)
@@ -197,9 +229,44 @@ verb source/handle_sync_action(source @ #source/open_file_action<_>, endpoint, s
   retract source/SelectedRepository(endpoint, _)
   retract source/SelectedRevision(endpoint, _)
   retract source/SelectedPath(endpoint, _)
+  retract source/SelectedLine(endpoint, _)
   assert source/SelectedRepository(endpoint, #source/repo_mica)
   assert source/SelectedRevision(endpoint, #source/rev_worktree)
   assert source/SelectedPath(endpoint, path)
+  assert source/SelectedLine(endpoint, 1)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/jump_to_line_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  let raw_line = fields[:line]
+  if path == nothing || raw_line == nothing
+    return false
+  end
+
+  let line = from_literal(raw_line)
+  if line == nothing || line < 1
+    return false
+  end
+
+  let readable_path = source/file_for_path(path)
+  if readable_path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  retract source/SelectedRepository(endpoint, _)
+  retract source/SelectedRevision(endpoint, _)
+  retract source/SelectedPath(endpoint, _)
+  retract source/SelectedLine(endpoint, _)
+  assert source/SelectedRepository(endpoint, #source/repo_mica)
+  assert source/SelectedRevision(endpoint, #source/rev_worktree)
+  assert source/SelectedPath(endpoint, path)
+  assert source/SelectedLine(endpoint, line)
   source/bump_revision(endpoint)
   return true
 end

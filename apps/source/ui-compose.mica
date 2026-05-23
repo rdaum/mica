@@ -92,18 +92,83 @@ verb source/span_list_node(path)
   return dom_element("ul", {:class -> "source-span-list"}, spans)
 end
 
+verb source/code_segment_node(segment)
+  let kind = segment[:kind]
+  let text = segment[:text]
+  if kind == nothing
+    kind = "plain"
+  end
+  if text == nothing
+    text = ""
+  end
+
+  return dom_element("span", {:class -> string_concat("source-token source-token-", kind)}, [dom_text(text)])
+end
+
+verb source/code_line_node(path, line, selected_line, segments)
+  let class = "source-code-line"
+  if line == selected_line
+    class = "source-code-line selected"
+  end
+
+  let children = []
+  for segment in segments
+    children = [@children, source/code_segment_node(segment)]
+  end
+
+  let number = dom_element("span", {:class -> "source-line-number", :id -> string_concat("L", to_literal(line))}, [dom_text(to_literal(line))])
+  let code = dom_element("code", {:class -> "source-line-text"}, children)
+  return dom_element("div", {:class -> class, "data-sync-key" -> string_concat(path, ":", to_literal(line))}, [number, code])
+end
+
+verb source/outline_item_node(path, item)
+  let line = item[:start_line]
+  let label = item[:name]
+  let kind = item[:kind]
+  let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let hidden_line = dom_element("input", {:type -> "hidden", :name -> "line", :value -> to_literal(line)}, [])
+  let line_label = string_concat("line ", to_literal(line))
+  let button = dom_element("button", {:type -> "submit", :class -> "source-outline-button"}, [dom_element("span", {:class -> "source-outline-name"}, [dom_text(label)]), dom_element("span", {:class -> "source-outline-meta"}, [dom_text(kind), dom_text(" / "), dom_text(line_label)])])
+  return dom_element("form", {:class -> "source-outline-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> item[:node]}, [hidden_path, hidden_line, button])
+end
+
+verb source/outline_panel_node(repository, revision, path)
+  let items = []
+  let count = 0
+  for item in source/SyntaxOutline(repository, revision, path, ?node, ?kind, ?name, ?start_line, ?end_line, ?start_byte, ?end_byte)
+    items = [@items, source/outline_item_node(path, item)]
+    count = count + 1
+    if count > 40
+      break
+    end
+  end
+
+  if items == []
+    return dom_element("aside", {:class -> "source-outline"}, [dom_element("h3", {}, [dom_text("Outline")]), source/empty_node("No outline available for this file.")])
+  end
+
+  return dom_element("aside", {:class -> "source-outline"}, [dom_element("h3", {}, [dom_text("Outline")]), dom_element("div", {:class -> "source-outline-list"}, items)])
+end
+
 verb source/code_panel_node(path)
   let repository = source/current_repository()
   let selected_revision = source/current_revision()
+  let selected_line = source/current_line()
+  let start_line = source/current_window_start()
   let title = source/file_title(path)
   let language = source/file_language(path)
-  let row = one source/FileLines(repository, selected_revision, path, 1, 240, ?lines, ?hash)
-  let text = string_join(row[:lines], "\n")
+  let rows = []
+  let hash = ""
+  for row in source/SyntaxLine(repository, selected_revision, path, start_line, 180, ?line, ?segments, ?hash)
+    hash = row[:hash]
+    rows = [@rows, source/code_line_node(path, row[:line], selected_line, row[:segments])]
+  end
   let title_group = dom_element("div", {}, [dom_element("h2", {}, [dom_text(title)]), dom_element("p", {:class -> "source-path"}, [dom_text(path)])])
-  let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language), source/meta_chip_node("hash", row[:hash])])
-  let code = dom_element("pre", {:class -> "source-code"}, [dom_element("code", {}, [dom_text(text)])])
+  let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language), source/meta_chip_node("hash", hash)])
+  let code = dom_element("pre", {:class -> "source-code"}, rows)
+  let outline = source/outline_panel_node(repository, selected_revision, path)
   let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Seeded spans")]), source/span_list_node(path)])
-  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, code, spans])
+  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, dom_element("div", {:class -> "source-code-grid"}, [code, outline]), spans])
 end
 
 verb source/app_node(view, revision)
