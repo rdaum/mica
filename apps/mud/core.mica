@@ -10,14 +10,14 @@ make_identity(:thing)
 make_identity(:portable)
 make_identity(:container)
 make_identity(:room)
-make_identity(:movement_event)
-make_identity(:arrival_event)
-make_identity(:take_event)
-make_identity(:take_from_event)
-make_identity(:drop_event)
-make_identity(:put_event)
-make_identity(:say_event)
-make_identity(:button_event)
+make_identity(:event/movement)
+make_identity(:event/arrival)
+make_identity(:event/take)
+make_identity(:event/take_from)
+make_identity(:event/drop)
+make_identity(:event/put)
+make_identity(:event/say)
+make_identity(:event/button)
 make_identity(:event/log_entry)
 
 make_identity(:alice)
@@ -100,14 +100,14 @@ assert Delegates(#portable, #thing, 0)
 assert Delegates(#container, #thing, 0)
 assert Delegates(#player, #thing, 0)
 assert Delegates(#alice, #programmer, 0)
-assert Delegates(#movement_event, #event, 0)
-assert Delegates(#arrival_event, #event, 0)
-assert Delegates(#take_event, #event, 0)
-assert Delegates(#take_from_event, #event, 0)
-assert Delegates(#drop_event, #event, 0)
-assert Delegates(#put_event, #event, 0)
-assert Delegates(#say_event, #event, 0)
-assert Delegates(#button_event, #event, 0)
+assert Delegates(#event/movement, #event, 0)
+assert Delegates(#event/arrival, #event, 0)
+assert Delegates(#event/take, #event, 0)
+assert Delegates(#event/take_from, #event, 0)
+assert Delegates(#event/drop, #event, 0)
+assert Delegates(#event/put, #event, 0)
+assert Delegates(#event/say, #event, 0)
+assert Delegates(#event/button, #event, 0)
 assert Delegates(#event/log_entry, #event, 0)
 assert Delegates(#coin, #portable, 0)
 assert Delegates(#alice, #player, 0)
@@ -581,10 +581,10 @@ verb go(actor @ #player, direction, leave, arrive)
   end
 
   let bindings = {:actor -> actor}
-  :emit_room_event(room: room, event: event/narrative(#movement_event, leave, bindings))
+  :emit_room_event(room: room, event: event/narrative(#event/movement, leave, bindings))
   retract LocatedIn(actor, _)
   assert LocatedIn(actor, destination)
-  :emit_room_event_except(room: destination, skipped: actor, event: event/narrative(#arrival_event, arrive, bindings))
+  :emit_room_event_except(room: destination, skipped: actor, event: event/narrative(#event/arrival, arrive, bindings))
   event/notify(actor, one Description(destination, ?text))
   return true
 end
@@ -599,7 +599,7 @@ verb get(actor @ #player, item @ #thing)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, actor)
-    :emit_room_event(room: room, event: event/narrative(#take_event, "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
+    :emit_room_event(room: room, event: event/narrative(#event/take, "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
 
@@ -622,7 +622,7 @@ verb get_from(actor @ #player, item @ #thing, container @ #container)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, actor)
-    :emit_room_event(room: room, event: event/narrative(#take_from_event, "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
+    :emit_room_event(room: room, event: event/narrative(#event/take_from, "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
 
@@ -636,7 +636,7 @@ verb drop(actor @ #player, item @ #thing)
   if Carrying(actor, item)
     retract LocatedIn(item, _)
     assert LocatedIn(item, room)
-    :emit_room_event(room: room, event: event/narrative(#drop_event, "{Actor} {drop|drops} {the item}.", {:actor -> actor, :item -> item}))
+    :emit_room_event(room: room, event: event/narrative(#event/drop, "{Actor} {drop|drops} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
 
@@ -649,7 +649,7 @@ verb put(actor @ #player, item @ #thing, container @ #container)
     let room = one LocatedIn(actor, ?room)
     retract LocatedIn(item, _)
     assert LocatedIn(item, container)
-    :emit_room_event(room: room, event: event/narrative(#put_event, "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
+    :emit_room_event(room: room, event: event/narrative(#event/put, "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
 
@@ -681,13 +681,13 @@ verb button_resolves(actor @ #player, target @ #thing, room @ #room)
   end
 
   retract ButtonArmed(target)
-  :emit_room_event(room: room, event: event/narrative(#button_event, "The red button gives one final cheerful ding.", {}))
+  :emit_room_event(room: room, event: event/narrative(#event/button, "The red button gives one final cheerful ding.", {}))
   return true
 end
 
 verb say(actor @ #player, message)
   let room = one LocatedIn(actor, ?room)
-  let event = event/narrative(#say_event, "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message})
+  let event = event/narrative(#event/say, "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message})
   :emit_room_event(room: room, event: event)
   return true
 end

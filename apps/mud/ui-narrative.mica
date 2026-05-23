@@ -39,47 +39,47 @@ verb ui/event_body_for(source, viewer)
   return dom_element("div", {:class -> "event-text"}, [dom_text(event/render(source, viewer))])
 end
 
-verb ui/event_body_for(source @ #movement_event<_>, viewer)
+verb ui/event_body_for(source @ #event/movement<_>, viewer)
   let actor = event/bindings(source)[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " move away.", " moves away."))])
 end
 
-verb ui/event_body_for(source @ #arrival_event<_>, viewer)
+verb ui/event_body_for(source @ #event/arrival<_>, viewer)
   let actor = event/bindings(source)[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " arrive.", " arrives."))])
 end
 
-verb ui/event_body_for(source @ #take_event<_>, viewer)
+verb ui/event_body_for(source @ #event/take<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " take ", " takes ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(".")])
 end
 
-verb ui/event_body_for(source @ #take_from_event<_>, viewer)
+verb ui/event_body_for(source @ #event/take_from<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " take ", " takes ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(" from "), ui/event_object_node(source, bindings[:container], viewer), dom_text(".")])
 end
 
-verb ui/event_body_for(source @ #drop_event<_>, viewer)
+verb ui/event_body_for(source @ #event/drop<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " drop ", " drops ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(".")])
 end
 
-verb ui/event_body_for(source @ #put_event<_>, viewer)
+verb ui/event_body_for(source @ #event/put<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " put ", " puts ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(" in "), ui/event_object_node(source, bindings[:container], viewer), dom_text(".")])
 end
 
-verb ui/event_body_for(source @ #say_event<_>, viewer)
+verb ui/event_body_for(source @ #event/say<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
   return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", bindings[:message], "\""))])])
 end
 
-verb ui/event_body_for(source @ #button_event<_>, viewer)
+verb ui/event_body_for(source @ #event/button<_>, viewer)
   return dom_element("div", {:class -> "event-text"}, [ui/event_object_node(source, #red_button, viewer), dom_text(" gives one final cheerful ding.")])
 end
 
@@ -87,35 +87,35 @@ verb ui/event_class(source)
   return "event-line"
 end
 
-verb ui/event_class(source @ #movement_event<_>)
+verb ui/event_class(source @ #event/movement<_>)
   return "event-line movement"
 end
 
-verb ui/event_class(source @ #arrival_event<_>)
+verb ui/event_class(source @ #event/arrival<_>)
   return "event-line movement"
 end
 
-verb ui/event_class(source @ #take_event<_>)
+verb ui/event_class(source @ #event/take<_>)
   return "event-line transfer"
 end
 
-verb ui/event_class(source @ #take_from_event<_>)
+verb ui/event_class(source @ #event/take_from<_>)
   return "event-line transfer"
 end
 
-verb ui/event_class(source @ #drop_event<_>)
+verb ui/event_class(source @ #event/drop<_>)
   return "event-line transfer"
 end
 
-verb ui/event_class(source @ #put_event<_>)
+verb ui/event_class(source @ #event/put<_>)
   return "event-line transfer"
 end
 
-verb ui/event_class(source @ #say_event<_>)
+verb ui/event_class(source @ #event/say<_>)
   return "event-line speech"
 end
 
-verb ui/event_class(source @ #button_event<_>)
+verb ui/event_class(source @ #event/button<_>)
   return "event-line alert"
 end
 
@@ -123,35 +123,35 @@ verb ui/event_label(source)
   return "system"
 end
 
-verb ui/event_label(source @ #movement_event<_>)
+verb ui/event_label(source @ #event/movement<_>)
   return "movement"
 end
 
-verb ui/event_label(source @ #arrival_event<_>)
+verb ui/event_label(source @ #event/arrival<_>)
   return "movement"
 end
 
-verb ui/event_label(source @ #take_event<_>)
+verb ui/event_label(source @ #event/take<_>)
   return "transfer"
 end
 
-verb ui/event_label(source @ #take_from_event<_>)
+verb ui/event_label(source @ #event/take_from<_>)
   return "transfer"
 end
 
-verb ui/event_label(source @ #drop_event<_>)
+verb ui/event_label(source @ #event/drop<_>)
   return "transfer"
 end
 
-verb ui/event_label(source @ #put_event<_>)
+verb ui/event_label(source @ #event/put<_>)
   return "transfer"
 end
 
-verb ui/event_label(source @ #say_event<_>)
+verb ui/event_label(source @ #event/say<_>)
   return "speech"
 end
 
-verb ui/event_label(source @ #button_event<_>)
+verb ui/event_label(source @ #event/button<_>)
   return "alert"
 end
 

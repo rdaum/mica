@@ -6773,7 +6773,7 @@ mod tests {
                  return [frob_delegate(source), event/bindings(source)[:item]]",
             )
             .unwrap();
-        let take_event = runner.named_identity(Symbol::intern("take_event")).unwrap();
+        let take_event = runner.named_identity(Symbol::intern("event/take")).unwrap();
         assert!(matches!(
             report.outcome,
             TaskOutcome::Complete { value, .. }
