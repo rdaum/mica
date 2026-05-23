@@ -55,7 +55,7 @@ pub use catalog::{
 pub use closure::{
     delegates_reaches, delegates_star, delegates_star_from, materialize_delegates_star,
 };
-pub use computed::{ComputedRelation, ComputedRelationRegistry};
+pub use computed::{ComputedRelation, ComputedRelationRead, ComputedRelationRegistry};
 pub use dispatch::{
     ApplicableMethod, ApplicableMethodCall, DispatchRead, DispatchRelations,
     applicable_method_calls, applicable_method_calls_normalized, applicable_method_entries,

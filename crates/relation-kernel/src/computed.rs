@@ -11,11 +11,21 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::snapshot::Snapshot;
-use crate::{KernelError, RelationMetadata, Tuple};
+use crate::query::RelationRead;
+use crate::{KernelError, RelationId, RelationMetadata, RuleDefinition, Tuple, Version};
 use mica_var::Value;
 use std::fmt;
 use std::sync::Arc;
+
+pub trait ComputedRelationRead: RelationRead {
+    fn version(&self) -> Version;
+
+    fn relation_metadata_vec(&self) -> Vec<RelationMetadata>;
+
+    fn rules_vec(&self) -> Vec<RuleDefinition>;
+
+    fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError>;
+}
 
 pub trait ComputedRelation: Send + Sync {
     fn name(&self) -> &'static str;
@@ -28,18 +38,18 @@ pub trait ComputedRelation: Send + Sync {
 
     fn scan(
         &self,
-        snapshot: &Snapshot,
+        reader: &dyn ComputedRelationRead,
         metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError>;
 
     fn estimate(
         &self,
-        snapshot: &Snapshot,
+        reader: &dyn ComputedRelationRead,
         metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
-        Ok(self.scan(snapshot, metadata, bindings)?.len())
+        Ok(self.scan(reader, metadata, bindings)?.len())
     }
 }
 
@@ -61,29 +71,24 @@ impl ComputedRelationRegistry {
 
     pub fn scan(
         &self,
-        snapshot: &Snapshot,
+        reader: &dyn ComputedRelationRead,
         metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Option<Result<Vec<Tuple>, KernelError>> {
         let relation = self.find(metadata)?;
-        Some(scan_checked(
-            relation.as_ref(),
-            snapshot,
-            metadata,
-            bindings,
-        ))
+        Some(scan_checked(relation.as_ref(), reader, metadata, bindings))
     }
 
     pub fn estimate(
         &self,
-        snapshot: &Snapshot,
+        reader: &dyn ComputedRelationRead,
         metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Option<Result<usize, KernelError>> {
         let relation = self.find(metadata)?;
         Some(estimate_checked(
             relation.as_ref(),
-            snapshot,
+            reader,
             metadata,
             bindings,
         ))
@@ -111,22 +116,22 @@ impl fmt::Debug for ComputedRelationRegistry {
 
 fn scan_checked(
     relation: &dyn ComputedRelation,
-    snapshot: &Snapshot,
+    reader: &dyn ComputedRelationRead,
     metadata: &RelationMetadata,
     bindings: &[Option<Value>],
 ) -> Result<Vec<Tuple>, KernelError> {
     validate_bindings(relation, metadata, bindings)?;
-    relation.scan(snapshot, metadata, bindings)
+    relation.scan(reader, metadata, bindings)
 }
 
 fn estimate_checked(
     relation: &dyn ComputedRelation,
-    snapshot: &Snapshot,
+    reader: &dyn ComputedRelationRead,
     metadata: &RelationMetadata,
     bindings: &[Option<Value>],
 ) -> Result<usize, KernelError> {
     validate_bindings(relation, metadata, bindings)?;
-    relation.estimate(snapshot, metadata, bindings)
+    relation.estimate(reader, metadata, bindings)
 }
 
 fn validate_bindings(

@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::computed::ComputedRelation;
+use crate::computed::{ComputedRelation, ComputedRelationRead};
 use crate::tuple::finish_tuple_rows;
 use crate::{ConflictPolicy, KernelError, RelationMetadata, Snapshot, Tuple};
 use mica_var::{Identity, Symbol, Value};
@@ -62,84 +62,85 @@ pub struct CatalogFact {
 
 impl Snapshot {
     pub fn catalog_facts(&self) -> Vec<CatalogFact> {
-        let mut facts = Vec::new();
-        for (relation_id, relation) in &self.relations {
-            let metadata = relation.metadata();
-            facts.push(catalog_fact(
-                CatalogPredicate::Relation,
-                [Value::identity(*relation_id)],
-            ));
-            facts.push(catalog_fact(
-                CatalogPredicate::RelationName,
-                [
-                    Value::identity(*relation_id),
-                    Value::symbol(metadata.name()),
-                ],
-            ));
-            facts.push(catalog_fact(
-                CatalogPredicate::Arity,
-                [
-                    Value::identity(*relation_id),
-                    Value::int(metadata.arity() as i64).unwrap(),
-                ],
-            ));
-            for position in 0..metadata.arity() {
-                if let Some(name) = metadata.argument_name(position) {
-                    facts.push(catalog_fact(
-                        CatalogPredicate::ArgumentName,
-                        [
-                            Value::identity(*relation_id),
-                            Value::int(position as i64).unwrap(),
-                            Value::symbol(name),
-                        ],
-                    ));
-                }
-            }
-
-            push_conflict_policy_facts(&mut facts, *relation_id, metadata.conflict_policy());
-            for (ordinal, index) in metadata.indexes().iter().enumerate() {
-                let index_value = Value::identity(index_identity(*relation_id, ordinal as u16));
-                facts.push(catalog_fact(
-                    CatalogPredicate::Index,
-                    [Value::identity(*relation_id), index_value.clone()],
-                ));
-                facts.push(catalog_fact(
-                    CatalogPredicate::IndexStorageKind,
-                    [index_value.clone(), Value::symbol(Symbol::intern("btree"))],
-                ));
-                for (slot, position) in index.positions().iter().enumerate() {
-                    facts.push(catalog_fact(
-                        CatalogPredicate::IndexPosition,
-                        [
-                            index_value.clone(),
-                            Value::int(slot as i64).unwrap(),
-                            Value::int(*position as i64).unwrap(),
-                        ],
-                    ));
-                }
-            }
-        }
-        for rule in &self.rules {
-            let rule_id = Value::identity(rule.id());
-            facts.push(catalog_fact(CatalogPredicate::Rule, [rule_id.clone()]));
-            facts.push(catalog_fact(
-                CatalogPredicate::RuleHead,
-                [
-                    rule_id.clone(),
-                    Value::identity(rule.rule().head_relation()),
-                ],
-            ));
-            facts.push(catalog_fact(
-                CatalogPredicate::RuleSource,
-                [rule_id.clone(), Value::string(rule.source())],
-            ));
-            facts.push(catalog_fact(
-                CatalogPredicate::ActiveRule,
-                [rule_id, Value::bool(rule.active())],
-            ));
-        }
-        facts
+        catalog_facts(self)
     }
+}
+
+pub(crate) fn catalog_facts(reader: &dyn ComputedRelationRead) -> Vec<CatalogFact> {
+    let mut facts = Vec::new();
+    for metadata in reader.relation_metadata_vec() {
+        let relation_id = metadata.id();
+        facts.push(catalog_fact(
+            CatalogPredicate::Relation,
+            [Value::identity(relation_id)],
+        ));
+        facts.push(catalog_fact(
+            CatalogPredicate::RelationName,
+            [Value::identity(relation_id), Value::symbol(metadata.name())],
+        ));
+        facts.push(catalog_fact(
+            CatalogPredicate::Arity,
+            [
+                Value::identity(relation_id),
+                Value::int(metadata.arity() as i64).unwrap(),
+            ],
+        ));
+        for position in 0..metadata.arity() {
+            if let Some(name) = metadata.argument_name(position) {
+                facts.push(catalog_fact(
+                    CatalogPredicate::ArgumentName,
+                    [
+                        Value::identity(relation_id),
+                        Value::int(position as i64).unwrap(),
+                        Value::symbol(name),
+                    ],
+                ));
+            }
+        }
+
+        push_conflict_policy_facts(&mut facts, relation_id, metadata.conflict_policy());
+        for (ordinal, index) in metadata.indexes().iter().enumerate() {
+            let index_value = Value::identity(index_identity(relation_id, ordinal as u16));
+            facts.push(catalog_fact(
+                CatalogPredicate::Index,
+                [Value::identity(relation_id), index_value.clone()],
+            ));
+            facts.push(catalog_fact(
+                CatalogPredicate::IndexStorageKind,
+                [index_value.clone(), Value::symbol(Symbol::intern("btree"))],
+            ));
+            for (slot, position) in index.positions().iter().enumerate() {
+                facts.push(catalog_fact(
+                    CatalogPredicate::IndexPosition,
+                    [
+                        index_value.clone(),
+                        Value::int(slot as i64).unwrap(),
+                        Value::int(*position as i64).unwrap(),
+                    ],
+                ));
+            }
+        }
+    }
+    for rule in reader.rules_vec() {
+        let rule_id = Value::identity(rule.id());
+        facts.push(catalog_fact(CatalogPredicate::Rule, [rule_id.clone()]));
+        facts.push(catalog_fact(
+            CatalogPredicate::RuleHead,
+            [
+                rule_id.clone(),
+                Value::identity(rule.rule().head_relation()),
+            ],
+        ));
+        facts.push(catalog_fact(
+            CatalogPredicate::RuleSource,
+            [rule_id.clone(), Value::string(rule.source())],
+        ));
+        facts.push(catalog_fact(
+            CatalogPredicate::ActiveRule,
+            [rule_id, Value::bool(rule.active())],
+        ));
+    }
+    facts
 }
 
 pub(crate) fn is_system_relation(metadata: &RelationMetadata) -> bool {
@@ -164,7 +165,7 @@ pub fn system_row_source_relation(metadata: &RelationMetadata, tuple: &Tuple) ->
 }
 
 pub(crate) fn system_relation_rows(
-    snapshot: &Snapshot,
+    reader: &dyn ComputedRelationRead,
     metadata: &RelationMetadata,
     bindings: &[Option<Value>],
 ) -> Option<Result<Vec<Tuple>, KernelError>> {
@@ -177,8 +178,7 @@ pub(crate) fn system_relation_rows(
     }
 
     if let Some(predicate) = system_catalog_predicate(metadata) {
-        let rows = snapshot
-            .catalog_facts()
+        let rows = catalog_facts(reader)
             .into_iter()
             .filter(|fact| fact.predicate == predicate)
             .map(|fact| fact.tuple)
@@ -189,13 +189,13 @@ pub(crate) fn system_relation_rows(
 
     match metadata.name().name() {
         Some("SubjectFact") if metadata.arity() == 3 => {
-            Some(system_subject_facts(snapshot, bindings))
+            Some(system_subject_facts(reader, bindings))
         }
         Some("MentionedFact") if metadata.arity() == 4 => {
-            Some(system_mentioned_facts(snapshot, bindings))
+            Some(system_mentioned_facts(reader, bindings))
         }
         Some("ExtensionalMentionedFact") if metadata.arity() == 4 => {
-            Some(system_extensional_mentioned_facts(snapshot, bindings))
+            Some(system_extensional_mentioned_facts(reader, bindings))
         }
         _ => None,
     }
@@ -214,11 +214,11 @@ impl ComputedRelation for SystemComputedRelation {
 
     fn scan(
         &self,
-        snapshot: &Snapshot,
+        reader: &dyn ComputedRelationRead,
         metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
-        system_relation_rows(snapshot, metadata, bindings).unwrap_or_else(|| {
+        system_relation_rows(reader, metadata, bindings).unwrap_or_else(|| {
             Err(KernelError::InvalidComputedRelation {
                 relation: metadata.id(),
                 message: "system reflection relation did not produce rows".to_owned(),
@@ -228,11 +228,11 @@ impl ComputedRelation for SystemComputedRelation {
 
     fn estimate(
         &self,
-        snapshot: &Snapshot,
+        reader: &dyn ComputedRelationRead,
         metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
-        Ok(self.scan(snapshot, metadata, bindings)?.len())
+        Ok(self.scan(reader, metadata, bindings)?.len())
     }
 }
 
@@ -261,14 +261,14 @@ fn system_catalog_predicate(metadata: &RelationMetadata) -> Option<CatalogPredic
 }
 
 fn system_subject_facts(
-    snapshot: &Snapshot,
+    reader: &dyn ComputedRelationRead,
     bindings: &[Option<Value>],
 ) -> Result<Vec<Tuple>, KernelError> {
     let mut rows = Vec::new();
     if let Some(subject) = &bindings[0] {
-        rows.extend(subject_fact_rows(snapshot, subject)?);
+        rows.extend(subject_fact_rows(reader, subject)?);
     } else {
-        for (relation, tuple) in snapshot.extensional_facts()? {
+        for (relation, tuple) in reader.extensional_facts()? {
             if let Some(subject) = tuple.values().first() {
                 rows.push(subject_fact_tuple(subject.clone(), relation, tuple));
             }
@@ -282,14 +282,14 @@ fn system_subject_facts(
 }
 
 fn system_mentioned_facts(
-    snapshot: &Snapshot,
+    reader: &dyn ComputedRelationRead,
     bindings: &[Option<Value>],
 ) -> Result<Vec<Tuple>, KernelError> {
     let mut rows = Vec::new();
     if let Some(value) = &bindings[0] {
-        rows.extend(mentioned_fact_rows(snapshot, value)?);
+        rows.extend(mentioned_fact_rows(reader, value)?);
     } else {
-        for (relation, tuple) in snapshot.extensional_facts()? {
+        for (relation, tuple) in reader.extensional_facts()? {
             for (position, value) in tuple.values().iter().enumerate() {
                 rows.push(mentioned_fact_tuple(
                     value.clone(),
@@ -307,31 +307,37 @@ fn system_mentioned_facts(
     ))
 }
 
-fn subject_fact_rows(snapshot: &Snapshot, subject: &Value) -> Result<Vec<Tuple>, KernelError> {
-    Ok(snapshot
-        .subject_facts(subject)?
-        .into_iter()
-        .map(|fact| subject_fact_tuple(fact.subject, fact.relation, fact.tuple))
-        .collect())
+fn subject_fact_rows(
+    reader: &dyn ComputedRelationRead,
+    subject: &Value,
+) -> Result<Vec<Tuple>, KernelError> {
+    let mut rows = Vec::new();
+    for (relation, tuple) in reader.extensional_facts()? {
+        if let Some(tuple_subject) = tuple.values().first()
+            && tuple_subject == subject
+        {
+            rows.push(subject_fact_tuple(subject.clone(), relation, tuple));
+        }
+    }
+    Ok(rows)
 }
 
-fn mentioned_fact_rows(snapshot: &Snapshot, value: &Value) -> Result<Vec<Tuple>, KernelError> {
-    Ok(snapshot
-        .mentioned_facts(value)?
-        .into_iter()
-        .map(|fact| mentioned_fact_tuple(fact.identity, fact.relation, fact.position, fact.tuple))
-        .collect())
+fn mentioned_fact_rows(
+    reader: &dyn ComputedRelationRead,
+    value: &Value,
+) -> Result<Vec<Tuple>, KernelError> {
+    extensional_mentioned_fact_rows(reader, value)
 }
 
 fn system_extensional_mentioned_facts(
-    snapshot: &Snapshot,
+    reader: &dyn ComputedRelationRead,
     bindings: &[Option<Value>],
 ) -> Result<Vec<Tuple>, KernelError> {
     let mut rows = Vec::new();
     if let Some(value) = &bindings[0] {
-        rows.extend(extensional_mentioned_fact_rows(snapshot, value)?);
+        rows.extend(extensional_mentioned_fact_rows(reader, value)?);
     } else {
-        for (relation, tuple) in snapshot.extensional_facts()? {
+        for (relation, tuple) in reader.extensional_facts()? {
             for (position, value) in tuple.values().iter().enumerate() {
                 rows.push(mentioned_fact_tuple(
                     value.clone(),
@@ -350,11 +356,11 @@ fn system_extensional_mentioned_facts(
 }
 
 fn extensional_mentioned_fact_rows(
-    snapshot: &Snapshot,
+    reader: &dyn ComputedRelationRead,
     value: &Value,
 ) -> Result<Vec<Tuple>, KernelError> {
     let mut rows = Vec::new();
-    for (relation, tuple) in snapshot.extensional_facts()? {
+    for (relation, tuple) in reader.extensional_facts()? {
         for (position, tuple_value) in tuple.values().iter().enumerate() {
             if tuple_value == value {
                 rows.push(mentioned_fact_tuple(

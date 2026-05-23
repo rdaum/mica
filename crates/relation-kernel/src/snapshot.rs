@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::commit_bloom::CommitBloom;
-use crate::computed::ComputedRelationRegistry;
+use crate::computed::{ComputedRelationRead, ComputedRelationRegistry};
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
@@ -579,6 +579,24 @@ impl RelationRead for Snapshot {
             left_positions,
             right_positions,
         )))
+    }
+}
+
+impl ComputedRelationRead for Snapshot {
+    fn version(&self) -> Version {
+        Snapshot::version(self)
+    }
+
+    fn relation_metadata_vec(&self) -> Vec<RelationMetadata> {
+        self.relation_metadata().cloned().collect()
+    }
+
+    fn rules_vec(&self) -> Vec<RuleDefinition> {
+        Snapshot::rules(self).to_vec()
+    }
+
+    fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {
+        Snapshot::extensional_facts(self)
     }
 }
 

@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_relation_kernel::{
-    ComputedRelation, KernelError, RelationId, RelationMetadata, RelationRead, Snapshot, Tuple,
-    system_computed_relations,
+    ComputedRelation, ComputedRelationRead, KernelError, RelationId, RelationMetadata,
+    RelationRead, Tuple, system_computed_relations,
 };
 use mica_var::Value;
 use std::cmp::Ordering;
@@ -45,7 +45,7 @@ impl ComputedRelation for ExactEmbeddingSearchRelation {
 
     fn scan(
         &self,
-        snapshot: &Snapshot,
+        reader: &dyn ComputedRelationRead,
         metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
@@ -69,30 +69,30 @@ impl ComputedRelation for ExactEmbeddingSearchRelation {
         )?;
 
         let vector_index_contains =
-            relation_id(snapshot, "VectorIndexContains", 2).ok_or_else(|| {
+            relation_id(reader, "VectorIndexContains", 2).ok_or_else(|| {
                 invalid_relation(metadata.id(), "missing relation VectorIndexContains/2")
             })?;
-        let embedding_of = relation_id(snapshot, "EmbeddingOf", 2)
+        let embedding_of = relation_id(reader, "EmbeddingOf", 2)
             .ok_or_else(|| invalid_relation(metadata.id(), "missing relation EmbeddingOf/2"))?;
-        let embedding_vector = relation_id(snapshot, "EmbeddingVector", 2)
+        let embedding_vector = relation_id(reader, "EmbeddingVector", 2)
             .ok_or_else(|| invalid_relation(metadata.id(), "missing relation EmbeddingVector/2"))?;
 
         let mut best_by_subject = BTreeMap::<Value, f64>::new();
         for membership in
-            snapshot.scan_relation(vector_index_contains, &[Some(index.clone()), None])?
+            reader.scan_relation(vector_index_contains, &[Some(index.clone()), None])?
         {
             let Some(embedding) = membership.values().get(1).cloned() else {
                 continue;
             };
             let vector_row = one_value(
-                snapshot,
+                reader,
                 embedding_vector,
                 &[Some(embedding.clone()), None],
                 metadata.id(),
                 "expected EmbeddingVector(embedding, payload)",
             )?;
             let subject = one_value(
-                snapshot,
+                reader,
                 embedding_of,
                 &[Some(embedding.clone()), None],
                 metadata.id(),
@@ -110,7 +110,7 @@ impl ComputedRelation for ExactEmbeddingSearchRelation {
                 .or_insert(score);
         }
 
-        let version = Value::int(snapshot.version() as i64)
+        let version = Value::int(reader.version() as i64)
             .map_err(|_| invalid_relation(metadata.id(), "snapshot version exceeds i64"))?;
         let mut rows = best_by_subject
             .into_iter()
@@ -153,11 +153,12 @@ fn invalid_relation(relation: RelationId, message: impl Into<String>) -> KernelE
     }
 }
 
-fn relation_id(snapshot: &Snapshot, name: &str, arity: u16) -> Option<RelationId> {
-    snapshot
-        .relation_metadata()
+fn relation_id(reader: &dyn ComputedRelationRead, name: &str, arity: u16) -> Option<RelationId> {
+    reader
+        .relation_metadata_vec()
+        .into_iter()
         .find(|metadata| metadata.name().name() == Some(name) && metadata.arity() == arity)
-        .map(RelationMetadata::id)
+        .map(|metadata| metadata.id())
 }
 
 fn parse_limit(relation: RelationId, value: &Value) -> Result<usize, KernelError> {
@@ -192,13 +193,13 @@ fn parse_vector(relation: RelationId, value: &Value) -> Result<Vec<f64>, KernelE
 }
 
 fn one_value(
-    snapshot: &Snapshot,
+    reader: &dyn RelationRead,
     relation: RelationId,
     bindings: &[Option<Value>],
     computed_relation: RelationId,
     message: &str,
 ) -> Result<Value, KernelError> {
-    let rows = snapshot.scan_relation(relation, bindings)?;
+    let rows = reader.scan_relation(relation, bindings)?;
     rows.first()
         .and_then(|row| row.values().get(1))
         .cloned()
@@ -365,11 +366,9 @@ mod tests {
                  assert TextUnitText(#unit_one, \"lamp oil brass light\")\n\
                  assert TextUnitText(#unit_two, \"apple orchard green fruit\")\n\
                  index_text_unit(nothing, #main_index, #unit_one, \"host-test\")\n\
-                 return index_text_unit(nothing, #main_index, #unit_two, \"host-test\")",
+                 index_text_unit(nothing, #main_index, #unit_two, \"host-test\")\n\
+                 return answer_question(#main_index, #main_index, \"brass lamp\", 1)",
             )
-            .unwrap();
-        runner
-            .run_source("return answer_question(#main_index, #main_index, \"brass lamp\", 1)")
             .unwrap();
 
         let report = runner

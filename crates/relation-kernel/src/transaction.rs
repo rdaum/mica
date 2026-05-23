@@ -14,6 +14,7 @@
 mod overlay;
 
 use crate::commit_bloom::CommitBloom;
+use crate::computed::ComputedRelationRead;
 use crate::index::{RelationMutationKind, RelationState};
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
@@ -164,7 +165,11 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
+        let metadata = self.base.relation(relation)?.metadata();
         if self.base.rules().is_empty() && !self.writes.contains_key(&relation) {
+            if self.base.computed_relations.is_computed_relation(metadata) {
+                return self.scan_extensional_rows(relation, bindings);
+            }
             return self.base.scan_extensional(relation, bindings);
         }
 
@@ -187,9 +192,13 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
+        let metadata = self.base.relation(relation)?.metadata();
         if !relation_has_active_rule_head(self.base.rules(), relation)
             && !self.writes.contains_key(&relation)
         {
+            if self.base.computed_relations.is_computed_relation(metadata) {
+                return self.estimate_extensional_scan(relation, bindings);
+            }
             return self.base.estimate_extensional_scan(relation, bindings);
         }
         Ok(self.scan(relation, bindings)?.len())
@@ -200,6 +209,14 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
+        let metadata = self.base.relation(relation)?.metadata();
+        if self.base.computed_relations.is_computed_relation(metadata) {
+            return self
+                .base
+                .computed_relations
+                .estimate(self, metadata, bindings)
+                .expect("computed relation should have a registered handler");
+        }
         if !self.writes.contains_key(&relation) {
             return self.base.estimate_extensional_scan(relation, bindings);
         }
@@ -212,9 +229,18 @@ impl<'a> Transaction<'a> {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
+        let metadata = self.base.relation(relation)?.metadata();
         if !relation_has_active_rule_head(self.base.rules(), relation)
             && !self.writes.contains_key(&relation)
         {
+            if self.base.computed_relations.is_computed_relation(metadata) {
+                for tuple in self.scan_extensional_rows(relation, bindings)? {
+                    if visitor(&tuple)? == ScanControl::Stop {
+                        break;
+                    }
+                }
+                return Ok(());
+            }
             return self.base.visit_extensional(relation, bindings, visitor);
         }
 
@@ -242,6 +268,14 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
+        let metadata = self.base.relation(relation)?.metadata();
+        if self.base.computed_relations.is_computed_relation(metadata) {
+            return self
+                .base
+                .computed_relations
+                .scan(self, metadata, bindings)
+                .expect("computed relation should have a registered handler");
+        }
         let mut visible = self.base.scan_extensional(relation, bindings)?;
 
         if let Some(writes) = self.writes.get(&relation) {
@@ -273,6 +307,23 @@ impl<'a> Transaction<'a> {
         }
 
         Ok(visible)
+    }
+
+    fn extensional_facts_with_local_writes(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {
+        let mut facts = Vec::new();
+        for metadata in self.base.relation_metadata() {
+            if self.base.computed_relations.is_computed_relation(metadata) {
+                continue;
+            }
+            let bindings = vec![None; metadata.arity() as usize];
+            facts.extend(
+                self.scan_extensional_rows(metadata.id(), &bindings)?
+                    .into_iter()
+                    .map(|tuple| (metadata.id(), tuple)),
+            );
+        }
+        facts.sort();
+        Ok(facts)
     }
 
     pub fn reconcile_relation(
@@ -666,6 +717,24 @@ impl RelationRead for Transaction<'_> {
             left_positions,
             right_positions,
         )))
+    }
+}
+
+impl ComputedRelationRead for Transaction<'_> {
+    fn version(&self) -> Version {
+        self.base.version()
+    }
+
+    fn relation_metadata_vec(&self) -> Vec<crate::RelationMetadata> {
+        self.base.relation_metadata().cloned().collect()
+    }
+
+    fn rules_vec(&self) -> Vec<crate::RuleDefinition> {
+        self.base.rules().to_vec()
+    }
+
+    fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {
+        self.extensional_facts_with_local_writes()
     }
 }
 

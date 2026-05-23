@@ -142,7 +142,7 @@ impl ComputedRelation for EchoComputedRelation {
 
     fn scan(
         &self,
-        _snapshot: &crate::Snapshot,
+        _reader: &dyn crate::ComputedRelationRead,
         _metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
@@ -150,6 +150,34 @@ impl ComputedRelation for EchoComputedRelation {
             return Ok(Vec::new());
         }
         Ok(vec![Tuple::from([int(7), int(11)])])
+    }
+}
+
+struct MirrorLocatedInComputedRelation;
+
+impl ComputedRelation for MirrorLocatedInComputedRelation {
+    fn name(&self) -> &'static str {
+        "mirror-located-in"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("MirrorLocatedIn") && metadata.arity() == 2
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        &[0]
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn crate::ComputedRelationRead,
+        _metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let Some(subject) = bindings[0].clone() else {
+            return Ok(Vec::new());
+        };
+        reader.scan_relation(rel(1), &[Some(subject), None])
     }
 }
 
@@ -246,6 +274,33 @@ fn custom_computed_relations_scan_and_reject_writes() {
         tx.assert(rel(200), Tuple::from([int(7), int(11)]))
             .unwrap_err(),
         KernelError::ReadOnlyRelation(rel(200))
+    );
+}
+
+#[test]
+fn transaction_computed_relations_see_same_task_writes() {
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        vec![Arc::new(MirrorLocatedInComputedRelation) as Arc<dyn ComputedRelation>],
+    );
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(1), Symbol::intern("LocatedIn"), 2).with_index([0]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(201),
+            Symbol::intern("MirrorLocatedIn"),
+            2,
+        ))
+        .unwrap();
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(1), Tuple::from([int(42), int(99)])).unwrap();
+    assert_eq!(
+        tx.scan(rel(201), &[Some(int(42)), None]).unwrap(),
+        vec![Tuple::from([int(42), int(99)])]
     );
 }
 
