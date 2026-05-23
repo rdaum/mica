@@ -1,12 +1,12 @@
 // Server-owned UI session state and sync adapter selectors for the MUD app.
 
-make_relation(:CanAssumeActor, 2)
+make_relation(:session/CanAssumeActor, 2)
 make_relation(:ui/View, 1)
 make_functional_relation(:ui/SyncAction, 2, [0])
-make_functional_relation(:ui/SessionActor, 2, [0])
-make_functional_relation(:ui/SessionInspect, 2, [0])
-make_functional_relation(:ui/NarrativeLimit, 2, [0])
-make_functional_relation(:ui/Revision, 2, [0])
+make_functional_relation(:session/Actor, 2, [0])
+make_functional_relation(:session/Inspect, 2, [0])
+make_functional_relation(:session/NarrativeLimit, 2, [0])
+make_functional_relation(:session/Revision, 2, [0])
 
 make_identity(:ui/sync_action)
 make_identity(:ui/login_action)
@@ -24,8 +24,8 @@ assert ui/SyncAction("mud_inspect", #ui/inspect_action)
 assert ui/SyncAction("mud_command", #ui/command_action)
 assert ui/SyncAction("mud_load_older_events", #ui/load_older_events_action)
 
-assert CanAssumeActor(#web, #alice)
-assert CanAssumeActor(#web, #bob)
+assert session/CanAssumeActor(#web, #alice)
+assert session/CanAssumeActor(#web, #bob)
 
 assert CanInvoke(#web, :sync_event)
 assert CanInvoke(#web, :sync_view_revision)
@@ -46,11 +46,11 @@ assert CanInvoke(#web, :lower)
 assert CanInvoke(#web, :trim)
 assert CanRead(#web, :ui/View)
 assert CanRead(#web, :ui/SyncAction)
-assert CanRead(#web, :ui/SessionActor)
-assert CanRead(#web, :ui/SessionInspect)
-assert CanRead(#web, :ui/NarrativeLimit)
-assert CanRead(#web, :ui/Revision)
-assert CanRead(#web, :CanAssumeActor)
+assert CanRead(#web, :session/Actor)
+assert CanRead(#web, :session/Inspect)
+assert CanRead(#web, :session/NarrativeLimit)
+assert CanRead(#web, :session/Revision)
+assert CanRead(#web, :session/CanAssumeActor)
 assert CanRead(#web, :Delegates)
 assert CanRead(#web, :Name)
 assert CanRead(#web, :event/Delivery)
@@ -60,10 +60,10 @@ assert CanWrite(#web, :event/Delivery)
 assert CanWrite(#web, :event/Seq)
 assert CanWrite(#web, :event/Text)
 assert CanWrite(#web, :event/Source)
-assert CanWrite(#web, :ui/SessionActor)
-assert CanWrite(#web, :ui/SessionInspect)
-assert CanWrite(#web, :ui/NarrativeLimit)
-assert CanWrite(#web, :ui/Revision)
+assert CanWrite(#web, :session/Actor)
+assert CanWrite(#web, :session/Inspect)
+assert CanWrite(#web, :session/NarrativeLimit)
+assert CanWrite(#web, :session/Revision)
 
 CanRead(#web, relation) :-
   RoleCanRead(#player, relation)
@@ -143,16 +143,16 @@ assert RoleCanInvoke(#player, :trim)
 assert RoleCanInvoke(#player, :frob)
 assert RoleCanInvoke(#player, :ui/sync_action_source)
 assert RoleCanInvoke(#player, :ui/handle_sync_action)
-assert RoleCanRead(#player, :ui/SessionActor)
-assert RoleCanRead(#player, :ui/SessionInspect)
+assert RoleCanRead(#player, :session/Actor)
+assert RoleCanRead(#player, :session/Inspect)
 assert RoleCanRead(#player, :event/Source)
-assert RoleCanRead(#player, :ui/NarrativeLimit)
-assert RoleCanRead(#player, :ui/Revision)
+assert RoleCanRead(#player, :session/NarrativeLimit)
+assert RoleCanRead(#player, :session/Revision)
 assert RoleCanRead(#player, :ui/View)
 assert RoleCanRead(#player, :ui/SyncAction)
-assert RoleCanWrite(#player, :ui/SessionInspect)
-assert RoleCanWrite(#player, :ui/NarrativeLimit)
-assert RoleCanWrite(#player, :ui/Revision)
+assert RoleCanWrite(#player, :session/Inspect)
+assert RoleCanWrite(#player, :session/NarrativeLimit)
+assert RoleCanWrite(#player, :session/Revision)
 
 verb ui/actor_name(obj)
   let name = one Name(obj, ?name)
@@ -178,7 +178,7 @@ verb ui/direction_text(direction)
 end
 
 verb ui/current_actor()
-  return one ui/SessionActor(endpoint(), ?actor)
+  return one session/Actor(endpoint(), ?actor)
 end
 
 verb ui/entity_from_literal(text)
@@ -206,7 +206,7 @@ verb ui/status_revision()
       revision = seq + 1
     end
   end
-  let ui_revision = one ui/Revision(endpoint(), ?stored_ui_revision)
+  let ui_revision = one session/Revision(endpoint(), ?stored_ui_revision)
   if ui_revision != nothing && ui_revision > revision
     revision = ui_revision
   end
@@ -226,14 +226,14 @@ verb ui/bump_revision(endpoint)
     end
   end
 
-  let ui_revision = one ui/Revision(endpoint, ?stored_ui_revision)
+  let ui_revision = one session/Revision(endpoint, ?stored_ui_revision)
   if ui_revision != nothing && ui_revision > revision
     revision = ui_revision
   end
   revision = revision + 2
 
-  retract ui/Revision(endpoint, _)
-  assert ui/Revision(endpoint, revision)
+  retract session/Revision(endpoint, _)
+  assert session/Revision(endpoint, revision)
   return revision
 end
 
@@ -262,7 +262,7 @@ verb sync_view_tree(view, revision)
     return ui/login_view_node()
   end
 
-  let limit = one ui/NarrativeLimit(endpoint(), ?limit)
+  let limit = one session/NarrativeLimit(endpoint(), ?limit)
   if limit == nothing
     limit = 40
   end

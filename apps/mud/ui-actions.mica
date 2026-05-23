@@ -35,13 +35,13 @@ verb ui/handle_sync_action(source @ #ui/load_older_events_action<_>, endpoint, s
     return false
   end
 
-  let current_limit = one ui/NarrativeLimit(endpoint, ?limit)
+  let current_limit = one session/NarrativeLimit(endpoint, ?limit)
   if current_limit == nothing
     current_limit = 40
   end
   let new_limit = current_limit + 40
-  retract ui/NarrativeLimit(endpoint, _)
-  assert ui/NarrativeLimit(endpoint, new_limit)
+  retract session/NarrativeLimit(endpoint, _)
+  assert session/NarrativeLimit(endpoint, new_limit)
   ui/bump_revision(endpoint())
   return true
 end
@@ -56,8 +56,8 @@ verb ui/handle_sync_action(source @ #ui/login_action<_>, endpoint, session, view
     return false
   end
 
-  retract ui/SessionActor(endpoint(), _)
-  assert ui/SessionActor(endpoint(), selected)
+  retract session/Actor(endpoint(), _)
+  assert session/Actor(endpoint(), selected)
   assume_actor(selected)
   return true
 end
@@ -77,10 +77,10 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
     return false
   end
 
-  retract ui/SessionInspect(endpoint(), _)
-  retract ui/SessionInspect(endpoint, _)
-  assert ui/SessionInspect(endpoint(), selected)
-  assert ui/SessionInspect(endpoint, selected)
+  retract session/Inspect(endpoint(), _)
+  retract session/Inspect(endpoint, _)
+  assert session/Inspect(endpoint(), selected)
+  assert session/Inspect(endpoint, selected)
   event/record_text(current, string_concat("> examine ", ui/actor_name(selected)))
   return true
 end
@@ -106,10 +106,10 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
 
   let selected = ui/sync_selected_entity(current, line, fields)
   if selected != nothing
-    retract ui/SessionInspect(endpoint(), _)
-    retract ui/SessionInspect(endpoint, _)
-    assert ui/SessionInspect(endpoint(), selected)
-    assert ui/SessionInspect(endpoint, selected)
+    retract session/Inspect(endpoint(), _)
+    retract session/Inspect(endpoint, _)
+    assert session/Inspect(endpoint(), selected)
+    assert session/Inspect(endpoint, selected)
   end
   event/record_text(current, string_concat("> ", line))
   return :command(actor: current, endpoint: endpoint, line: line)

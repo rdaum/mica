@@ -4090,7 +4090,8 @@ fn require_actor_assumption(
             target: Value::identity(actor),
         });
     };
-    let Some(policy_relation) = runtime_policy_relation(context.kernel(), "CanAssumeActor", 2)?
+    let Some(policy_relation) =
+        runtime_policy_relation(context.kernel(), "session/CanAssumeActor", 2)?
     else {
         return Err(RuntimeError::PermissionDenied {
             operation: "assume_actor",
@@ -7497,7 +7498,7 @@ mod tests {
         runner.run_source("make_identity(:alice)").unwrap();
         runner.run_source("make_identity(:bob)").unwrap();
         runner
-            .run_source("make_relation(:CanAssumeActor, 2)")
+            .run_source("make_relation(:session/CanAssumeActor, 2)")
             .unwrap();
         let account = runner.actor_identity(Symbol::intern("account")).unwrap();
         let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
@@ -7519,7 +7520,7 @@ mod tests {
         assert!(format!("{denied:?}").contains("PermissionDenied"));
 
         runner
-            .run_source("assert CanAssumeActor(#account, #bob)")
+            .run_source("assert session/CanAssumeActor(#account, #bob)")
             .unwrap();
         let allowed_request = runner
             .source_request_for_endpoint(endpoint, "return assume_actor(#bob)")

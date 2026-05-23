@@ -276,7 +276,7 @@ verb ui/entity_facts_node(actor @ #player, entity)
 end
 
 verb ui/inspector_node(actor @ #player)
-  let selected = one ui/SessionInspect(endpoint(), ?selected)
+  let selected = one session/Inspect(endpoint(), ?selected)
   if selected == nothing || CanSee(actor, selected) == false
     return dom_element("aside", {:id -> "inspector", :class -> "panel inspector"}, [dom_element("h2", {}, [dom_text("Examine")]), dom_element("p", {:class -> "muted"}, [dom_text("Select a room object or player to examine.")])])
   end
@@ -311,7 +311,7 @@ end
 
 verb ui/command_chips_node(actor @ #player)
   let chips = [ui/command_form_node("", "look", "look", "chip")]
-  let selected = one ui/SessionInspect(endpoint(), ?selected)
+  let selected = one session/Inspect(endpoint(), ?selected)
   if selected != nothing && CanSee(actor, selected)
     let name = ui/actor_name(selected)
     chips = [@chips, ui/command_form_node("", string_concat("look ", name), string_concat("examine ", name), "chip")]
