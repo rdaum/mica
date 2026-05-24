@@ -28,8 +28,8 @@ const SYMBOL_SEARCH_BOUND: &[u16] = &[0, 1, 2, 3];
 const INDEX_VALUE_BOUND: &[u16] = &[];
 const SOURCE_INDEX_ID: &str = "source-index:mica-worktree";
 const SOURCE_INDEX_SCHEMA: &str = "mica-source-index-v1";
-const SOURCE_INDEX_PROVIDER: &str = "mica-source-index/tree-sitter-rust";
-const SOURCE_INDEX_VERSION: &str = "1";
+const SOURCE_INDEX_PROVIDER: &str = "mica-source-index/static-analysis";
+const SOURCE_INDEX_VERSION: &str = "2";
 
 pub(crate) fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
     let provider = Arc::new(LocalSourceProvider::from_env());
@@ -670,9 +670,6 @@ impl ComputedRelation for DefinitionAtRelation {
         let (root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        if SourceLanguage::from_path(&path) != SourceLanguage::Rust {
-            return Ok(Vec::new());
-        }
         let text = read_utf8_file(metadata.id(), &file)?;
         if byte_offset > text.len() {
             return Err(invalid_relation(
@@ -704,6 +701,9 @@ impl ComputedRelation for DefinitionAtRelation {
             .collect::<Result<Vec<_>, KernelError>>()?;
         if !indexed_rows.is_empty() {
             return Ok(filter_bound_rows(indexed_rows, bindings));
+        }
+        if SourceLanguage::from_path(&path) != SourceLanguage::Rust {
+            return Ok(Vec::new());
         }
         let mut locations = self
             .provider
@@ -1515,7 +1515,7 @@ pub fn write_failed_source_index_file(
 }
 
 fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
-    let mut files = rust_source_files(root)?;
+    let mut files = indexed_source_files(root)?;
     files.sort();
     let mut symbols = Vec::new();
     let mut references = Vec::new();
@@ -1634,13 +1634,13 @@ fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
     }))
 }
 
-fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+fn indexed_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
-    collect_rust_source_files(root, &mut files)?;
+    collect_indexed_source_files(root, &mut files)?;
     Ok(files)
 }
 
-fn collect_rust_source_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_indexed_source_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = fs::read_dir(directory)
         .map_err(|error| format!("failed to list {}: {error}", directory.display()))?;
     for entry in entries {
@@ -1656,12 +1656,19 @@ fn collect_rust_source_files(directory: &Path, files: &mut Vec<PathBuf>) -> Resu
             ) {
                 continue;
             }
-            collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            collect_indexed_source_files(&path, files)?;
+        } else if is_indexed_source_path(&path) {
             files.push(path);
         }
     }
     Ok(())
+}
+
+fn is_indexed_source_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("rs" | "mica")
+    )
 }
 
 fn relative_path_string(path: &Path) -> Result<String, String> {
@@ -1687,6 +1694,10 @@ fn byte_line(line_starts: &[usize], byte_offset: usize) -> usize {
 }
 
 fn is_index_identifier(name: &str) -> bool {
+    name.split('/').all(is_index_identifier_segment)
+}
+
+fn is_index_identifier_segment(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -1943,57 +1954,86 @@ fn node_text(node: Node<'_>, text: &str) -> Option<String> {
 }
 
 fn mica_highlights(text: &str) -> Vec<HighlightSpan> {
-    lex(text)
-        .into_iter()
-        .filter_map(|token| {
-            let kind = match token.kind {
-                SyntaxKind::LineComment => "comment",
-                SyntaxKind::String => "string",
-                SyntaxKind::Int | SyntaxKind::Float => "number",
-                SyntaxKind::LetKw
-                | SyntaxKind::ConstKw
-                | SyntaxKind::IfKw
-                | SyntaxKind::ElseIfKw
-                | SyntaxKind::ElseKw
-                | SyntaxKind::EndKw
-                | SyntaxKind::BeginKw
-                | SyntaxKind::ForKw
-                | SyntaxKind::InKw
-                | SyntaxKind::WhileKw
-                | SyntaxKind::ReturnKw
-                | SyntaxKind::RaiseKw
-                | SyntaxKind::RecoverKw
-                | SyntaxKind::OneKw
-                | SyntaxKind::SpawnKw
-                | SyntaxKind::AfterKw
-                | SyntaxKind::NotKw
-                | SyntaxKind::BreakKw
-                | SyntaxKind::ContinueKw
-                | SyntaxKind::TryKw
-                | SyntaxKind::CatchKw
-                | SyntaxKind::AsKw
-                | SyntaxKind::FinallyKw
-                | SyntaxKind::FnKw
-                | SyntaxKind::MethodKw
-                | SyntaxKind::VerbKw
-                | SyntaxKind::DoKw
-                | SyntaxKind::AssertKw
-                | SyntaxKind::RetractKw
-                | SyntaxKind::RequireKw
-                | SyntaxKind::TrueKw
-                | SyntaxKind::FalseKw
-                | SyntaxKind::NothingKw => "keyword",
-                SyntaxKind::Ident => "identifier",
-                SyntaxKind::ErrorCode => "error",
-                _ => return None,
-            };
-            Some(HighlightSpan {
+    let tokens = lex(text);
+    let mut highlights = Vec::new();
+    let mut index = 0;
+    while let Some(token) = tokens.get(index) {
+        if token.kind == SyntaxKind::Ident {
+            let mut end = token.span.end;
+            let mut next_index = index + 1;
+            while let (Some(slash), Some(next)) =
+                (tokens.get(next_index), tokens.get(next_index + 1))
+            {
+                if slash.kind != SyntaxKind::Slash
+                    || next.kind != SyntaxKind::Ident
+                    || slash.span.start != end
+                    || slash.span.end != next.span.start
+                {
+                    break;
+                }
+                end = next.span.end;
+                next_index += 2;
+            }
+            highlights.push(HighlightSpan {
                 start: token.span.start,
-                end: token.span.end,
-                kind,
-            })
-        })
-        .collect()
+                end,
+                kind: "identifier",
+            });
+            index = next_index;
+            continue;
+        }
+
+        let kind = match token.kind {
+            SyntaxKind::LineComment => "comment",
+            SyntaxKind::String => "string",
+            SyntaxKind::Int | SyntaxKind::Float => "number",
+            SyntaxKind::LetKw
+            | SyntaxKind::ConstKw
+            | SyntaxKind::IfKw
+            | SyntaxKind::ElseIfKw
+            | SyntaxKind::ElseKw
+            | SyntaxKind::EndKw
+            | SyntaxKind::BeginKw
+            | SyntaxKind::ForKw
+            | SyntaxKind::InKw
+            | SyntaxKind::WhileKw
+            | SyntaxKind::ReturnKw
+            | SyntaxKind::RaiseKw
+            | SyntaxKind::RecoverKw
+            | SyntaxKind::OneKw
+            | SyntaxKind::SpawnKw
+            | SyntaxKind::AfterKw
+            | SyntaxKind::NotKw
+            | SyntaxKind::BreakKw
+            | SyntaxKind::ContinueKw
+            | SyntaxKind::TryKw
+            | SyntaxKind::CatchKw
+            | SyntaxKind::AsKw
+            | SyntaxKind::FinallyKw
+            | SyntaxKind::FnKw
+            | SyntaxKind::MethodKw
+            | SyntaxKind::VerbKw
+            | SyntaxKind::DoKw
+            | SyntaxKind::AssertKw
+            | SyntaxKind::RetractKw
+            | SyntaxKind::RequireKw
+            | SyntaxKind::TrueKw
+            | SyntaxKind::FalseKw
+            | SyntaxKind::NothingKw => "keyword",
+            SyntaxKind::ErrorCode => "error",
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        highlights.push(HighlightSpan {
+            start: token.span.start,
+            end: token.span.end,
+            kind,
+        });
+        index += 1;
+    }
+    highlights
 }
 
 fn mica_outline(text: &str, line_starts: &[usize]) -> Vec<OutlineItem> {
@@ -2860,6 +2900,13 @@ mod tests {
                 .any(|item| item.kind == "verb" && item.name == "source/app_node")
         );
         assert!(mica.highlights.iter().any(|span| span.kind == "keyword"));
+        assert!(mica.highlights.iter().any(|span| {
+            span.kind == "identifier"
+                && mica
+                    .text
+                    .get(span.start..span.end)
+                    .is_some_and(|text| text == "source/app_node")
+        }));
     }
 
     #[test]
@@ -2964,7 +3011,7 @@ mod tests {
                     "let symbol = {symbol:?}\n\
                      let count = 0\n\
                      for reference in source/ReferencesOf(#repo, #rev, symbol, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)\n\
-                       if reference[:name] == \"LocalSourceProvider\" && reference[:provider] == \"mica-source-index/tree-sitter-rust 1\"\n\
+                       if reference[:name] == \"LocalSourceProvider\" && reference[:provider] == \"mica-source-index/static-analysis 2\"\n\
                          count = count + 1\n\
                        end\n\
                      end\n\
@@ -2992,6 +3039,56 @@ mod tests {
             ));
         });
         let _ = fs::remove_file(index_path);
+    }
+
+    #[test]
+    fn persistent_source_index_keeps_mica_namespace_symbols_whole() {
+        let root_path = env::current_dir().unwrap().join("target").join(format!(
+            "source-index-mica-symbol-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(&root_path).unwrap();
+        let source_path = "session.mica";
+        let source = "make_relation(:session/CanAssumeActor, 2)\n\
+                      assert session/CanAssumeActor(#web, #alice)\n";
+        fs::write(root_path.join(source_path), source).unwrap();
+
+        let index_path = temp_index_path("mica-symbol");
+        build_source_index_file(&root_path, &index_path).unwrap();
+        with_source_index_env(&index_path, Some(Path::new("/bin/false")), || {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations_at(&mut runner, &root_path.display().to_string());
+            let offset =
+                source.find("session/CanAssumeActor(#web").unwrap() + "session/CanAssume".len();
+
+            let report = runner
+                .run_source(&format!(
+                    "for def in source/DefinitionAt(#repo, #rev, {source_path:?}, {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
+                       return [def[:name], def[:kind], def[:target_path], def[:start_line], def[:provider]]\n\
+                     end\n\
+                     return nothing",
+                    source_path = source_path,
+                ))
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::string("session/CanAssumeActor"));
+                    assert_eq!(values[1], Value::string("relation"));
+                    assert_eq!(values[2], Value::string(source_path));
+                    assert_eq!(values[3].as_int(), Some(1));
+                    assert_eq!(
+                        values[4],
+                        Value::string("mica-source-index/static-analysis 2")
+                    );
+                })
+                .expect("expected Mica definition tuple");
+        });
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
     }
 
     #[test]
@@ -3180,7 +3277,7 @@ mod tests {
                      let symbol = one source/SelectedSymbol(endpoint(), ?symbol)\n\
                      let revision = sync_view_revision(31)\n\
                      let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
-                     return [handled, path, symbol != nothing, string_contains(payload, \"mica-source-index/tree-sitter-rust\")]",
+                     return [handled, path, symbol != nothing, string_contains(payload, \"mica-source-index/static-analysis\")]",
                     source_path = source_path,
                     byte = offset.to_string()
                 ))
