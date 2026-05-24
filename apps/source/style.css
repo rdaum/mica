@@ -189,6 +189,26 @@ input {
   color: var(--source-accent-ink);
 }
 
+.source-file-form.sync-submit-loading .source-file-button,
+.source-tree-form.sync-submit-loading .source-tree-row,
+.source-tree-open-form.sync-submit-loading .source-tree-open-button,
+.source-reference-form.sync-submit-loading .source-reference-button,
+.source-outline-form.sync-submit-loading .source-outline-button,
+.source-token-form.sync-submit-loading .source-token-link {
+  cursor: progress;
+  opacity: 0.62;
+}
+
+.source-file-form.sync-submit-loading,
+.source-tree-form.sync-submit-loading,
+.source-tree-open-form.sync-submit-loading,
+.source-reference-form.sync-submit-loading,
+.source-outline-form.sync-submit-loading,
+.source-token-form.sync-submit-loading {
+  outline: 1px solid rgba(237, 172, 73, 0.32);
+  outline-offset: 2px;
+}
+
 .source-file-button:hover .source-file-path,
 .source-file-button:hover .source-file-language,
 .source-file-button.active .source-file-path,

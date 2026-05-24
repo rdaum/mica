@@ -7,6 +7,8 @@ import {
   decodeSyncEnvelope,
   encodeSyncEnvelope,
   applyDelta,
+  beginSubmitLoading,
+  endSubmitLoading,
   focusAfterSubmit,
 } from "./sync-client.js";
 
@@ -188,6 +190,57 @@ assert.equal(fallbackFocused, false);
 localFocused = false;
 focusAfterSubmit({ querySelector: () => null });
 assert.equal(fallbackFocused, true);
+
+const loadingForm = {
+  className: "",
+  attributes: new Map(),
+  elements: [],
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  },
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  },
+};
+const loadingInput = {
+  localName: "input",
+  type: "text",
+  readOnly: false,
+};
+const loadingButton = {
+  localName: "button",
+  type: "submit",
+  disabled: false,
+  className: "",
+  textContent: "Find references",
+  attributes: new Map([["data-sync-disable-with", "Finding..."]]),
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  },
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  },
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  },
+};
+loadingForm.elements = [loadingInput, loadingButton];
+const loadingToken = beginSubmitLoading(loadingForm, loadingButton);
+assert.match(loadingForm.className, /sync-submit-loading/);
+assert.match(loadingButton.className, /sync-submit-loading/);
+assert.equal(loadingForm.attributes.get("aria-busy"), "true");
+assert.equal(loadingButton.attributes.get("aria-busy"), "true");
+assert.equal(loadingInput.readOnly, true);
+assert.equal(loadingButton.disabled, true);
+assert.equal(loadingButton.textContent, "Finding...");
+endSubmitLoading(loadingToken);
+assert.equal(loadingForm.className, "");
+assert.equal(loadingButton.className, "");
+assert.equal(loadingForm.attributes.has("aria-busy"), false);
+assert.equal(loadingButton.attributes.has("aria-busy"), false);
+assert.equal(loadingInput.readOnly, false);
+assert.equal(loadingButton.disabled, false);
+assert.equal(loadingButton.textContent, "Find references");
 
 class FakeText {
   nodeType = Node.TEXT_NODE;

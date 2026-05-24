@@ -141,6 +141,7 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "data-command",
   "data-entity",
   "data-sync-action",
+  "data-sync-disable-with",
   "data-sync-event",
   "data-sync-follow",
   "data-sync-key",
@@ -188,6 +189,8 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "width",
   "wrap",
 ]);
+const SYNC_LOADING_CLASS = "sync-loading";
+const SYNC_SUBMIT_LOADING_CLASS = "sync-submit-loading";
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const SIGNATURE_MASK = 0x007fffffffffffffn;
@@ -736,6 +739,126 @@ export function focusAfterSubmit(form) {
     form.querySelector("input[name='text']:not([type='hidden'])") ??
     document.querySelector("input[name='text']:not([type='hidden'])");
   preferred?.focus();
+}
+
+function addCssClass(element, name) {
+  if (!element) {
+    return;
+  }
+  if (element.classList?.add) {
+    element.classList.add(name);
+    return;
+  }
+  const classes = new Set(String(element.className ?? "").split(/\s+/).filter(Boolean));
+  classes.add(name);
+  element.className = Array.from(classes).join(" ");
+}
+
+function removeCssClass(element, name) {
+  if (!element) {
+    return;
+  }
+  if (element.classList?.remove) {
+    element.classList.remove(name);
+    return;
+  }
+  const classes = String(element.className ?? "")
+    .split(/\s+/)
+    .filter((value) => value && value !== name);
+  element.className = classes.join(" ");
+}
+
+function formControls(form) {
+  if (form?.elements) {
+    return Array.from(form.elements);
+  }
+  return Array.from(form?.querySelectorAll?.("button, input, select, textarea") ?? []);
+}
+
+function isButtonControl(control) {
+  const tag = String(control?.localName ?? control?.tagName ?? "").toLowerCase();
+  return tag === "button" || control?.type === "submit" || control?.type === "button";
+}
+
+function isReadonlyControl(control) {
+  const tag = String(control?.localName ?? control?.tagName ?? "").toLowerCase();
+  return tag === "input" || tag === "textarea";
+}
+
+function setBooleanAttribute(element, name, value) {
+  if (value) {
+    element?.setAttribute?.(name, "true");
+  } else {
+    element?.removeAttribute?.(name);
+  }
+}
+
+export function beginSubmitLoading(form, submit) {
+  const token = {
+    form,
+    submit,
+    disabled: [],
+    readonly: [],
+    disableWith: null,
+  };
+  addCssClass(form, SYNC_LOADING_CLASS);
+  addCssClass(form, SYNC_SUBMIT_LOADING_CLASS);
+  addCssClass(submit, SYNC_LOADING_CLASS);
+  addCssClass(submit, SYNC_SUBMIT_LOADING_CLASS);
+  setBooleanAttribute(form, "aria-busy", true);
+  setBooleanAttribute(submit, "aria-busy", true);
+
+  for (const control of formControls(form)) {
+    if (isButtonControl(control)) {
+      if (!control.disabled) {
+        token.disabled.push(control);
+        control.disabled = true;
+      }
+      continue;
+    }
+    if (isReadonlyControl(control) && control.type !== "hidden" && !control.readOnly) {
+      token.readonly.push(control);
+      control.readOnly = true;
+    }
+  }
+
+  const disableWith = submit?.getAttribute?.("data-sync-disable-with");
+  if (disableWith !== null && disableWith !== undefined) {
+    token.disableWith = { text: submit.textContent, value: disableWith };
+    if (disableWith !== "") {
+      submit.textContent = disableWith;
+    }
+  }
+  return token;
+}
+
+export function endSubmitLoading(token) {
+  if (!token) {
+    return;
+  }
+  for (const control of token.disabled) {
+    control.disabled = false;
+  }
+  for (const control of token.readonly) {
+    control.readOnly = false;
+  }
+  if (token.disableWith) {
+    token.submit.textContent = token.disableWith.text;
+  }
+  setBooleanAttribute(token.form, "aria-busy", false);
+  setBooleanAttribute(token.submit, "aria-busy", false);
+  removeCssClass(token.form, SYNC_LOADING_CLASS);
+  removeCssClass(token.form, SYNC_SUBMIT_LOADING_CLASS);
+  removeCssClass(token.submit, SYNC_LOADING_CLASS);
+  removeCssClass(token.submit, SYNC_SUBMIT_LOADING_CLASS);
+}
+
+export function dispatchSyncLoading(kind, detail) {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
+    return;
+  }
+  const EventCtor = globalThis.CustomEvent ?? Event;
+  window.dispatchEvent(new EventCtor(`mica:sync-loading-${kind}`, { detail }));
 }
 
 function randomSessionId() {
@@ -1294,9 +1417,12 @@ export function bootstrapServerRenderedSync(mount, status) {
     ) {
       return;
     }
-    if (submit) {
-      submit.disabled = true;
-    }
+    const loading = beginSubmitLoading(form, submit);
+    dispatchSyncLoading("start", {
+      kind: "submit",
+      target: form,
+      action: form.dataset.syncAction ?? "",
+    });
     try {
       await client.sendDomEvent({
         session: state.session,
@@ -1313,9 +1439,12 @@ export function bootstrapServerRenderedSync(mount, status) {
     } catch (error) {
       setStatus(`Event failed: ${String(error)}`);
     } finally {
-      if (submit) {
-        submit.disabled = false;
-      }
+      endSubmitLoading(loading);
+      dispatchSyncLoading("stop", {
+        kind: "submit",
+        target: form,
+        action: form.dataset.syncAction ?? "",
+      });
     }
   }
 

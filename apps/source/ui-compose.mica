@@ -58,7 +58,7 @@ verb source/file_button_node(path, title, language, selected)
   let title_node = dom_element("span", {:class -> "source-file-title"}, [dom_text(title)])
   let path_node = dom_element("span", {:class -> "source-file-path"}, [dom_text(path)])
   let language_node = dom_element("span", {:class -> "source-file-language"}, [dom_text(language)])
-  let button = dom_element("button", {:type -> "submit", :class -> class}, [title_node, path_node, language_node])
+  let button = dom_element("button", {:type -> "submit", :class -> class, "data-sync-disable-with" -> "Opening..."}, [title_node, path_node, language_node])
   return dom_element("form", {:class -> "source-file-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_file", "data-sync-key" -> path}, [hidden, button])
 end
 
@@ -92,7 +92,7 @@ verb source/tree_file_node(path, name, selected)
   end
 
   let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
-  let button = dom_element("button", {:type -> "submit", :class -> class}, [dom_element("span", {:class -> "source-tree-kind"}, [dom_text("file")]), dom_element("span", {:class -> "source-tree-name"}, [dom_text(label)])])
+  let button = dom_element("button", {:type -> "submit", :class -> class, "data-sync-disable-with" -> "Opening..."}, [dom_element("span", {:class -> "source-tree-kind"}, [dom_text("file")]), dom_element("span", {:class -> "source-tree-name"}, [dom_text(label)])])
   return dom_element("form", {:class -> "source-tree-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_file", "data-sync-key" -> path}, [hidden, button])
 end
 
@@ -121,7 +121,7 @@ verb source/tree_directory_node(repository, revision, selected, path, name, dept
   end
 
   let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
-  let open_button = dom_element("button", {:type -> "submit", :class -> "source-tree-open-button"}, [dom_text("open")])
+  let open_button = dom_element("button", {:type -> "submit", :class -> "source-tree-open-button", "data-sync-disable-with" -> "..."}, [dom_text("open")])
   let open_form = dom_element("form", {:class -> "source-tree-open-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_directory", "data-sync-key" -> string_concat("dir:", path)}, [hidden, open_button])
   let summary = dom_element("summary", {:class -> "source-tree-summary"}, [dom_element("span", {:class -> "source-tree-kind"}, [dom_text("dir")]), dom_element("span", {:class -> "source-tree-name"}, [dom_text(label)]), open_form])
   return dom_element("details", attrs, [summary, dom_element("div", {:class -> "source-tree-children"}, children)])
@@ -274,7 +274,7 @@ verb source/symbol_reference_node(reference)
 end
 
 verb source/find_references_button_node(symbol)
-  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button"}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text("Find references")]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(symbol)])])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button", "data-sync-disable-with" -> "Finding references..."}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text("Find references")]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(symbol)])])
   return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_find_references", "data-sync-key" -> string_concat("references:", symbol)}, [button])
 end
 
