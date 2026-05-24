@@ -2,7 +2,7 @@
 //
 // File contents are read through constrained provider-backed computed
 // relations. The durable facts here are repository identity, curated file
-// metadata, session state, source spans, and authority.
+// metadata, session state, source annotations, and authority.
 
 make_identity(:source/repo_mica)
 make_identity(:source/rev_worktree)

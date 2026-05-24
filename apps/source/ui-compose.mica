@@ -184,7 +184,7 @@ verb source/span_list_node(path)
   end
 
   if spans == []
-    return source/empty_node("No seeded spans for this file.")
+    return source/empty_node("No annotations for this file.")
   end
 
   return dom_element("ul", {:class -> "source-span-list"}, spans)
@@ -334,7 +334,7 @@ verb source/code_panel_node(path)
   let code = dom_element("div", {:class -> "source-code"}, rows)
   let outline = source/outline_panel_node(repository, selected_revision, path)
   let symbol = source/symbol_panel_node(repository, selected_revision)
-  let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Seeded spans")]), source/span_list_node(path)])
+  let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Annotations")]), source/span_list_node(path)])
   let code_frame = dom_element("div", {:class -> "source-code-frame"}, [code])
   let code_stack = dom_element("div", {:class -> "source-code-stack"}, [code_frame, symbol])
   let inspector = dom_element("aside", {:class -> "source-inspector-rail"}, [outline, spans])
