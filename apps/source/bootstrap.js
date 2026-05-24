@@ -125,8 +125,33 @@ function installSplitters() {
   });
 }
 
+function installSelectedLineFocus() {
+  const mount = document.getElementById("mount");
+  if (!mount) {
+    return;
+  }
+
+  let selectedKey = "";
+  const focusSelectedLine = () => {
+    const selected = mount.querySelector(".source-code-line.selected");
+    const nextKey = selected?.getAttribute("data-sync-key") ?? "";
+    if (!selected || nextKey === selectedKey) {
+      return;
+    }
+    selectedKey = nextKey;
+    selected.scrollIntoView({ block: "center", inline: "nearest" });
+  };
+
+  focusSelectedLine();
+  new MutationObserver(focusSelectedLine).observe(mount, {
+    childList: true,
+    subtree: true,
+  });
+}
+
 restoreStoredLayout();
 installSplitters();
+installSelectedLineFocus();
 
 window.micaSource = bootstrapServerRenderedSync(
   document.getElementById("mount"),

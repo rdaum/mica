@@ -484,7 +484,7 @@ input {
 
 .source-code-line {
   display: grid;
-  grid-template-columns: 4ch minmax(0, 1fr);
+  grid-template-columns: 5.5ch minmax(0, 1fr);
   min-width: max-content;
 }
 
@@ -496,11 +496,15 @@ input {
 }
 
 .source-line-number {
-  padding-right: 1rem;
+  display: inline-flex;
+  gap: 0.2rem;
+  justify-content: flex-end;
+  padding-right: 0.6rem;
   color: rgba(246, 236, 215, 0.42);
   text-align: right;
   text-decoration: none;
   user-select: none;
+  white-space: nowrap;
 }
 
 .source-line-number:hover {
@@ -880,7 +884,18 @@ body.source-splitter-dragging-horizontal {
 }
 
 .source-span-list li {
+  margin: 0;
+}
+
+.source-span-form {
+  display: block;
+  margin: 0;
+}
+
+.source-span-button {
+  appearance: none;
   display: flex;
+  width: 100%;
   gap: 0.55rem;
   align-items: baseline;
   justify-content: space-between;
@@ -888,6 +903,16 @@ body.source-splitter-dragging-horizontal {
   border: 1px solid rgba(111, 71, 34, 0.2);
   padding: 0.45rem 0.55rem;
   background: rgba(255, 255, 255, 0.44);
+  color: var(--source-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-span-button:hover,
+.source-span-button:focus-visible {
+  border-color: rgba(155, 79, 24, 0.45);
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .source-span-label {
@@ -902,6 +927,19 @@ body.source-splitter-dragging-horizontal {
   font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
   font-size: 0.7rem;
   white-space: nowrap;
+}
+
+.source-line-annotation-marker,
+.source-line-annotation-space {
+  display: inline-block;
+  width: 0.6rem;
+  text-align: center;
+}
+
+.source-line-annotation-marker {
+  color: #f4d06f;
+  font-size: 0.8rem;
+  line-height: inherit;
 }
 
 .source-sync-status {

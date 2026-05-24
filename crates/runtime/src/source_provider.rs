@@ -3303,6 +3303,74 @@ mod tests {
     }
 
     #[test]
+    fn source_app_annotation_cards_link_to_source_lines() {
+        with_source_provider_env(|| {
+            let root = env::current_dir()
+                .unwrap()
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .display()
+                .to_string();
+            let old_source_root = env::var_os("MICA_SOURCE_ROOT");
+            unsafe {
+                env::set_var("MICA_SOURCE_ROOT", &root);
+            }
+            let mut runner = SourceRunner::new_empty();
+            for filein in [
+                include_str!("../../../apps/shared/sync-host.mica"),
+                include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/ui-session.mica"),
+                include_str!("../../../apps/source/ui-compose.mica"),
+                include_str!("../../../apps/source/http.mica"),
+            ] {
+                runner.run_filein(filein).unwrap();
+            }
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+
+            let report = runner
+                .run_source(
+                    "let fields = {:path -> \"apps/mud/ui-session.mica\"}\n\
+                     let opened = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_file\", fields)\n\
+                     let revision = sync_view_revision(31)\n\
+                     let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
+                     let jump_fields = {:path -> \"apps/mud/ui-session.mica\", :line -> \"8\"}\n\
+                     let jumped = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_jump_to_line\", jump_fields)\n\
+                     let selected = one source/SelectedLine(endpoint(), ?line)\n\
+                     return [opened, string_contains(payload, \"source-span-form\"), string_contains(payload, \"source-span-button\"), string_contains(payload, \"source-line-annotation-marker\"), string_contains(payload, \"The app returns a DOM tree to the host\"), jumped, selected]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2], Value::bool(true));
+                    assert_eq!(values[3], Value::bool(true));
+                    assert_eq!(values[4], Value::bool(true));
+                    assert_eq!(values[5], Value::bool(true));
+                    assert_eq!(values[6].as_int(), Some(8));
+                })
+                .expect("expected annotation link tuple");
+            unsafe {
+                if let Some(old_source_root) = old_source_root {
+                    env::set_var("MICA_SOURCE_ROOT", old_source_root);
+                } else {
+                    env::remove_var("MICA_SOURCE_ROOT");
+                }
+            }
+        });
+    }
+
+    #[test]
     fn source_app_unknown_rust_symbol_is_noop() {
         let root_path = env::current_dir().unwrap().join(".cache").join(format!(
             "source-app-unknown-symbol-fixture-{}-{}",
