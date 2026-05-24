@@ -10,6 +10,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tree_sitter::{Language, Node, Parser};
 
+mod rust_analyzer;
+use rust_analyzer::{LspLocation, RustAnalyzerProvider};
+
 const REPOSITORY_ENTRY_BOUND: &[u16] = &[0, 1, 2];
 const FILE_TEXT_BOUND: &[u16] = &[0, 1, 2];
 const FILE_LINES_BOUND: &[u16] = &[0, 1, 2, 3, 4];
@@ -17,6 +20,8 @@ const FILE_CONTENT_HASH_BOUND: &[u16] = &[0, 1, 2];
 const SYNTAX_LINE_BOUND: &[u16] = &[0, 1, 2, 3, 4];
 const SYNTAX_OUTLINE_BOUND: &[u16] = &[0, 1, 2];
 const SYNTAX_NODE_AT_BOUND: &[u16] = &[0, 1, 2, 3];
+const DEFINITION_AT_BOUND: &[u16] = &[0, 1, 2, 3];
+const REFERENCES_OF_BOUND: &[u16] = &[0, 1, 2];
 
 pub(crate) fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
     let provider = Arc::new(LocalSourceProvider::from_env());
@@ -39,13 +44,20 @@ pub(crate) fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
         Arc::new(SyntaxOutlineRelation {
             provider: provider.clone(),
         }),
-        Arc::new(SyntaxNodeAtRelation { provider }),
+        Arc::new(SyntaxNodeAtRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(DefinitionAtRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(ReferencesOfRelation { provider }),
     ]
 }
 
 #[derive(Debug)]
 struct LocalSourceProvider {
     allowed_roots: Vec<PathBuf>,
+    rust_analyzer: RustAnalyzerProvider,
 }
 
 impl LocalSourceProvider {
@@ -58,7 +70,10 @@ impl LocalSourceProvider {
             .into_iter()
             .filter_map(|root| root.canonicalize().ok())
             .collect();
-        Self { allowed_roots }
+        Self {
+            allowed_roots,
+            rust_analyzer: RustAnalyzerProvider::from_env(),
+        }
     }
 
     fn repository_root(
@@ -535,6 +550,152 @@ impl ComputedRelation for SyntaxNodeAtRelation {
     }
 }
 
+struct DefinitionAtRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for DefinitionAtRelation {
+    fn name(&self) -> &'static str {
+        "rust-analyzer-definition-at"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/DefinitionAt") && metadata.arity() == 13
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        DEFINITION_AT_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let revision = bound_value(metadata.id(), bindings, 1, "revision")?;
+        let path = bound_string(metadata.id(), bindings, 2, "path")?;
+        let byte_offset = bound_non_negative_int(metadata.id(), bindings, 3, "byte offset")?;
+        let (root, file) =
+            self.provider
+                .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
+        if SourceLanguage::from_path(&path) != SourceLanguage::Rust {
+            return Ok(Vec::new());
+        }
+        let text = read_utf8_file(metadata.id(), &file)?;
+        if byte_offset > text.len() {
+            return Err(invalid_relation(
+                metadata.id(),
+                "byte offset is beyond source file length",
+            ));
+        }
+        let position = byte_offset_to_lsp_position(metadata.id(), &text, byte_offset)?;
+        let locations = self
+            .provider
+            .rust_analyzer
+            .definition(&rust_workspace_root(&root), &file, &text, position)
+            .map_err(|error| invalid_relation(metadata.id(), error))?;
+        let mut rows = Vec::new();
+        for location in locations {
+            let Some(location) = semantic_location(metadata.id(), &root, location)? else {
+                continue;
+            };
+            let symbol = semantic_symbol(&location);
+            rows.push(Tuple::from([
+                repository.clone(),
+                revision.clone(),
+                Value::string(&path),
+                int_value(metadata.id(), byte_offset as i64)?,
+                Value::string(symbol),
+                Value::string(location.name),
+                Value::string(location.kind),
+                Value::string(location.path),
+                int_value(metadata.id(), location.start_line as i64)?,
+                int_value(metadata.id(), location.end_line as i64)?,
+                int_value(metadata.id(), location.start_byte as i64)?,
+                int_value(metadata.id(), location.end_byte as i64)?,
+                Value::string(location.provider),
+            ]));
+        }
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
+struct ReferencesOfRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for ReferencesOfRelation {
+    fn name(&self) -> &'static str {
+        "rust-analyzer-references-of"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/ReferencesOf") && metadata.arity() == 10
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        REFERENCES_OF_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let revision = bound_value(metadata.id(), bindings, 1, "revision")?;
+        let symbol = bound_string(metadata.id(), bindings, 2, "symbol")?;
+        let Some(request) = SemanticSymbol::parse(&symbol) else {
+            return Ok(Vec::new());
+        };
+        let root = self
+            .provider
+            .repository_root(reader, metadata.id(), &repository, &revision)?;
+        validate_relative_path(metadata.id(), &request.path)?;
+        let file = root.join(&request.path).canonicalize().map_err(|error| {
+            invalid_relation(
+                metadata.id(),
+                format!("failed to resolve symbol path: {error}"),
+            )
+        })?;
+        if !file.starts_with(&root) {
+            return Err(invalid_relation(
+                metadata.id(),
+                "symbol path escapes repository root",
+            ));
+        }
+        let text = read_utf8_file(metadata.id(), &file)?;
+        let position = byte_offset_to_lsp_position(metadata.id(), &text, request.start_byte)?;
+        let locations = self
+            .provider
+            .rust_analyzer
+            .references(&rust_workspace_root(&root), &file, &text, position)
+            .map_err(|error| invalid_relation(metadata.id(), error))?;
+        let mut rows = Vec::new();
+        for location in locations {
+            let Some(location) = semantic_location(metadata.id(), &root, location)? else {
+                continue;
+            };
+            rows.push(Tuple::from([
+                repository.clone(),
+                revision.clone(),
+                Value::string(&symbol),
+                Value::string(location.path),
+                int_value(metadata.id(), location.start_line as i64)?,
+                int_value(metadata.id(), location.end_line as i64)?,
+                int_value(metadata.id(), location.start_byte as i64)?,
+                int_value(metadata.id(), location.end_byte as i64)?,
+                Value::string(location.provider),
+                Value::string(location.name),
+            ]));
+        }
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
 #[derive(Clone, Debug)]
 struct SyntaxDocument {
     text: String,
@@ -641,6 +802,38 @@ struct OutlineItem {
 struct SyntaxLine {
     number: usize,
     segments: Vec<Value>,
+}
+
+#[derive(Clone, Debug)]
+struct SemanticLocation {
+    path: String,
+    name: String,
+    kind: String,
+    start_line: usize,
+    end_line: usize,
+    start_byte: usize,
+    end_byte: usize,
+    provider: String,
+}
+
+#[derive(Clone, Debug)]
+struct SemanticSymbol {
+    path: String,
+    start_byte: usize,
+}
+
+impl SemanticSymbol {
+    fn parse(symbol: &str) -> Option<Self> {
+        let mut parts = symbol.splitn(5, ':');
+        if parts.next()? != "ra" {
+            return None;
+        }
+        let path = parts.next()?.to_owned();
+        let start_byte = parts.next()?.parse().ok()?;
+        let _end_byte = parts.next()?.parse::<usize>().ok()?;
+        let _name = parts.next()?;
+        Some(Self { path, start_byte })
+    }
 }
 
 fn parse_tree(language: SourceLanguage, text: &str) -> Option<(Language, tree_sitter::Tree)> {
@@ -1167,6 +1360,130 @@ fn outline_item(
     }
 }
 
+fn semantic_location(
+    relation: RelationId,
+    root: &Path,
+    location: LspLocation,
+) -> Result<Option<SemanticLocation>, KernelError> {
+    let Some(file) = location.path else {
+        return Ok(None);
+    };
+    let file = file.canonicalize().map_err(|error| {
+        invalid_relation(
+            relation,
+            format!("failed to resolve rust-analyzer location: {error}"),
+        )
+    })?;
+    if !file.starts_with(root) {
+        return Ok(None);
+    }
+    let relative = file.strip_prefix(root).map_err(|_| {
+        invalid_relation(relation, "rust-analyzer location escaped repository root")
+    })?;
+    let path = path_to_mica_string(relation, relative)?;
+    let text = read_utf8_file(relation, &file)?;
+    let start_byte = lsp_position_to_byte_offset(
+        relation,
+        &text,
+        location.start_line,
+        location.start_character,
+    )?;
+    let end_byte =
+        lsp_position_to_byte_offset(relation, &text, location.end_line, location.end_character)?;
+    let syntax = SyntaxDocument::parse(&path, &text);
+    let node = syntax.node_at(start_byte);
+    let name = node
+        .as_ref()
+        .map(|node| node.name.clone())
+        .or_else(|| text.get(start_byte..end_byte).map(str::to_owned))
+        .unwrap_or_else(|| "symbol".to_owned());
+    let kind = node
+        .as_ref()
+        .map(|node| node.kind.clone())
+        .unwrap_or_else(|| "rust".to_owned());
+    Ok(Some(SemanticLocation {
+        path,
+        name,
+        kind,
+        start_line: location.start_line + 1,
+        end_line: location.end_line + 1,
+        start_byte,
+        end_byte,
+        provider: location.provider,
+    }))
+}
+
+fn semantic_symbol(location: &SemanticLocation) -> String {
+    format!(
+        "ra:{}:{}:{}:{}",
+        location.path, location.start_byte, location.end_byte, location.name
+    )
+}
+
+fn byte_offset_to_lsp_position(
+    relation: RelationId,
+    text: &str,
+    byte_offset: usize,
+) -> Result<rust_analyzer::LspPosition, KernelError> {
+    if byte_offset > text.len() || !text.is_char_boundary(byte_offset) {
+        return Err(invalid_relation(
+            relation,
+            "byte offset is not on a utf-8 character boundary",
+        ));
+    }
+    let starts = line_starts(text);
+    let line_index = starts
+        .partition_point(|start| *start <= byte_offset)
+        .saturating_sub(1);
+    let line_start = starts.get(line_index).copied().unwrap_or(0);
+    let prefix = text
+        .get(line_start..byte_offset)
+        .ok_or_else(|| invalid_relation(relation, "line boundary is not utf-8"))?;
+    let character = prefix.encode_utf16().count();
+    Ok(rust_analyzer::LspPosition {
+        line: line_index,
+        character,
+    })
+}
+
+fn lsp_position_to_byte_offset(
+    relation: RelationId,
+    text: &str,
+    line: usize,
+    character: usize,
+) -> Result<usize, KernelError> {
+    let starts = line_starts(text);
+    let line_start = starts
+        .get(line)
+        .copied()
+        .ok_or_else(|| invalid_relation(relation, "rust-analyzer line is outside file"))?;
+    let line_end = line_end_without_newline(text, &starts, line);
+    let line_text = text
+        .get(line_start..line_end)
+        .ok_or_else(|| invalid_relation(relation, "line boundary is not utf-8"))?;
+    let mut utf16 = 0;
+    for (byte, ch) in line_text.char_indices() {
+        if utf16 == character {
+            return Ok(line_start + byte);
+        }
+        utf16 += ch.len_utf16();
+        if utf16 > character {
+            return Err(invalid_relation(
+                relation,
+                "rust-analyzer character offset splits a unicode scalar",
+            ));
+        }
+    }
+    if utf16 == character {
+        Ok(line_end)
+    } else {
+        Err(invalid_relation(
+            relation,
+            "rust-analyzer character offset is outside line",
+        ))
+    }
+}
+
 fn relation_id(reader: &dyn ComputedRelationRead, name: &str, arity: u16) -> Option<RelationId> {
     reader
         .relation_metadata_vec()
@@ -1284,6 +1601,24 @@ fn read_file_bytes(relation: RelationId, file: &Path) -> Result<Vec<u8>, KernelE
         .map_err(|error| invalid_relation(relation, format!("failed to read file: {error}")))
 }
 
+fn read_utf8_file(relation: RelationId, file: &Path) -> Result<String, KernelError> {
+    let bytes = read_file_bytes(relation, file)?;
+    String::from_utf8(bytes)
+        .map_err(|error| invalid_relation(relation, format!("source file is not utf-8: {error}")))
+}
+
+fn rust_workspace_root(repository_root: &Path) -> PathBuf {
+    for ancestor in repository_root.ancestors() {
+        let manifest = ancestor.join("Cargo.toml");
+        if fs::read_to_string(&manifest)
+            .is_ok_and(|source| source.lines().any(|line| line.trim() == "[workspace]"))
+        {
+            return ancestor.to_owned();
+        }
+    }
+    repository_root.to_owned()
+}
+
 fn path_to_mica_string(relation: RelationId, path: &Path) -> Result<String, KernelError> {
     path.to_str()
         .map(|path| path.replace('\\', "/"))
@@ -1342,6 +1677,8 @@ mod tests {
                  make_relation(:source/SyntaxLine, 8)\n\
                  make_relation(:source/SyntaxOutline, 10)\n\
                  make_relation(:source/SyntaxNodeAt, 11)\n\
+                 make_relation(:source/DefinitionAt, 13)\n\
+                 make_relation(:source/ReferencesOf, 10)\n\
                  assert source/RepositoryRoot(#repo, {root:?})\n\
                  assert source/RevisionOf(#rev, #repo)"
             ))
@@ -1570,12 +1907,70 @@ mod tests {
                 .any(|span| span.kind == "heading")
         );
 
-        let mica = SyntaxDocument::parse("ui.mica", "verb source/app_node(view)\n  return true\nend\n");
+        let mica = SyntaxDocument::parse(
+            "ui.mica",
+            "verb source/app_node(view)\n  return true\nend\n",
+        );
         assert!(
             mica.outline
                 .iter()
                 .any(|item| item.kind == "verb" && item.name == "source/app_node")
         );
         assert!(mica.highlights.iter().any(|span| span.kind == "keyword"));
+    }
+
+    #[test]
+    fn rust_analyzer_provider_returns_definition_and_references() {
+        if std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+
+        let mut runner = SourceRunner::new_empty();
+        load_source_relations(&mut runner);
+        let source = fs::read_to_string("src/source_provider.rs").unwrap();
+        let offset = source.find("read_utf8_file(metadata").unwrap() + 5;
+
+        let report = runner
+            .run_source(&format!(
+                "for def in source/DefinitionAt(#repo, #rev, \"src/source_provider.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
+                   if def[:target_path] == \"src/source_provider.rs\"\n\
+                     return def\n\
+                   end\n\
+                 end\n\
+                 return nothing"
+            ))
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected complete outcome, got {:?}", report.outcome);
+        };
+        let symbol = value
+            .with_map(|entries| {
+                entries
+                    .iter()
+                    .find(|(key, _)| key == &Value::symbol(Symbol::intern("symbol")))
+                    .map(|(_, value)| value.clone())
+            })
+            .flatten()
+            .and_then(|value| value.with_str(str::to_owned))
+            .expect("expected definition symbol");
+
+        let report = runner
+            .run_source(&format!(
+                "for reference in source/ReferencesOf(#repo, #rev, {symbol:?}, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)\n\
+                   if reference[:path] == \"src/source_provider.rs\"\n\
+                     return reference[:provider]\n\
+                   end\n\
+                 end\n\
+                 return nothing"
+            ))
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value.with_str(|provider| provider.contains("rust-analyzer")).unwrap_or(false)
+        ));
     }
 }

@@ -38,6 +38,8 @@ make_relation(:source/FileContentHash, 4)
 make_relation(:source/SyntaxLine, 8)
 make_relation(:source/SyntaxOutline, 10)
 make_relation(:source/SyntaxNodeAt, 11)
+make_relation(:source/DefinitionAt, 13)
+make_relation(:source/ReferencesOf, 10)
 
 make_relation(:source/SourceSpan, 1)
 make_functional_relation(:source/SpanFile, 2, [0])
