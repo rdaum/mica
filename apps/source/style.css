@@ -9,6 +9,10 @@
   --source-accent-ink: #fff7ea;
   --source-code-bg: #171814;
   --source-code-ink: #f6ecd7;
+  --source-sidebar-width: 18rem;
+  --source-inspector-width: 22rem;
+  --source-symbol-height: 20%;
+  --source-outline-height: 1fr;
 }
 
 * {
@@ -95,8 +99,8 @@ input {
 
 .source-shell {
   display: grid;
-  grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr);
-  gap: 0.75rem;
+  grid-template-columns: minmax(14rem, var(--source-sidebar-width)) 0.45rem minmax(0, 1fr);
+  gap: 0.35rem;
   align-items: start;
   max-width: 1720px;
   margin: 0 auto;
@@ -449,9 +453,9 @@ input {
 
 .source-workbench {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(17rem, 22rem);
+  grid-template-columns: minmax(0, 1fr) 0.45rem minmax(17rem, var(--source-inspector-width));
   align-items: stretch;
-  gap: 0.75rem;
+  gap: 0.35rem;
   height: calc(100vh - 13.5rem);
   margin: 0.75rem;
   min-height: 0;
@@ -459,11 +463,15 @@ input {
 
 .source-code-stack {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(11rem, 34vh);
+  grid-template-rows: minmax(0, 1fr) 0.45rem minmax(8rem, var(--source-symbol-height));
   min-width: 0;
   min-height: 0;
-  gap: 0.75rem;
+  gap: 0.35rem;
   height: 100%;
+}
+
+.source-code-stack.symbol-collapsed {
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .source-code-frame {
@@ -561,8 +569,8 @@ input {
 
 .source-inspector-rail {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 0.55rem;
+  grid-template-rows: minmax(5rem, var(--source-outline-height)) 0.45rem minmax(4rem, 1fr);
+  gap: 0.35rem;
   min-width: 0;
   min-height: 0;
   position: sticky;
@@ -574,6 +582,71 @@ input {
 .source-inspector-rail.both-collapsed {
   grid-template-rows: auto auto;
   align-content: start;
+}
+
+.source-inspector-rail.annotations-collapsed {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.source-splitter {
+  position: relative;
+  z-index: 2;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: transparent;
+  touch-action: none;
+}
+
+.source-splitter::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: "";
+  transition:
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.source-splitter-vertical {
+  width: 0.45rem;
+  min-width: 0.45rem;
+  cursor: col-resize;
+}
+
+.source-splitter-horizontal {
+  height: 0.45rem;
+  min-height: 0.45rem;
+  cursor: row-resize;
+}
+
+.source-splitter-vertical::before {
+  inset: 0.2rem 0.12rem;
+  background: rgba(112, 103, 85, 0.18);
+}
+
+.source-splitter-horizontal::before {
+  inset: 0.12rem 0.2rem;
+  background: rgba(112, 103, 85, 0.18);
+}
+
+.source-splitter:hover::before,
+.source-splitter:focus-visible::before,
+body.source-splitter-dragging .source-splitter::before {
+  background: rgba(155, 79, 24, 0.55);
+  box-shadow: 0 0 0 0.18rem rgba(155, 79, 24, 0.12);
+}
+
+body.source-splitter-dragging {
+  user-select: none;
+}
+
+body.source-splitter-dragging-vertical {
+  cursor: col-resize;
+}
+
+body.source-splitter-dragging-horizontal {
+  cursor: row-resize;
 }
 
 .source-section-header {
@@ -692,6 +765,7 @@ input {
   background: var(--source-code-bg);
   color: var(--source-code-ink);
   font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+  font-size: 0.82rem;
   overflow: auto;
 }
 
@@ -701,8 +775,13 @@ input {
 }
 
 .source-symbol-panel h4 {
-  margin: 1rem 0 0.5rem;
+  margin: 0.75rem 0 0.4rem;
   font-weight: 700;
+}
+
+.source-symbol-panel .source-chip {
+  padding: 0.22rem 0.42rem;
+  font-size: 0.68rem;
 }
 
 .source-symbol-summary {
@@ -771,6 +850,11 @@ input {
   background:
     linear-gradient(135deg, rgba(255, 250, 240, 0.98), rgba(244, 229, 202, 0.86));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.source-inspector-rail .source-spans {
+  max-height: none;
+  overflow: auto;
 }
 
 .source-spans .source-section-header {
@@ -842,6 +926,7 @@ input {
 
   .source-shell {
     grid-template-columns: 1fr;
+    gap: 0.75rem;
   }
 
   .source-sidebar,
@@ -852,12 +937,18 @@ input {
 
   .source-workbench {
     grid-template-columns: 1fr;
+    gap: 0.75rem;
     height: auto;
   }
 
   .source-code-stack {
-    grid-template-rows: minmax(18rem, 52vh) minmax(11rem, 34vh);
+    grid-template-rows: minmax(18rem, 1fr) minmax(8rem, 20vh);
+    gap: 0.75rem;
     height: auto;
+  }
+
+  .source-splitter {
+    display: none;
   }
 
   .source-symbol-panel,

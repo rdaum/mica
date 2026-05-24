@@ -279,6 +279,10 @@ verb source/outline_item_node(path, item)
   return dom_element("form", {:class -> "source-outline-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> item[:node]}, [hidden_path, hidden_line, button])
 end
 
+verb source/splitter_node(kind, label)
+  return dom_element("button", {:type -> "button", :class -> string_concat("source-splitter source-splitter-", kind), :role -> "separator", "aria-label" -> label}, [])
+end
+
 verb source/inspector_section_header_node(section, title)
   let collapsed = source/inspector_section_collapsed(section)
   let next = "true"
@@ -396,7 +400,6 @@ verb source/code_panel_node(path)
   let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language), source/meta_chip_node("hash", hash)])
   let code = dom_element("div", {:class -> "source-code"}, rows)
   let outline = source/outline_panel_node(repository, selected_revision, path)
-  let symbol = source/symbol_panel_node(repository, selected_revision)
   let span_header = source/inspector_section_header_node("annotations", "Annotations")
   let spans = dom_element("aside", {:class -> "source-spans source-inspector-section"}, [span_header, source/span_list_node(path)])
   if source/inspector_section_collapsed("annotations")
@@ -411,9 +414,19 @@ verb source/code_panel_node(path)
     inspector_class = "source-inspector-rail annotations-collapsed"
   end
   let code_frame = dom_element("div", {:class -> "source-code-frame"}, [code])
-  let code_stack = dom_element("div", {:class -> "source-code-stack"}, [code_frame, symbol])
-  let inspector = dom_element("aside", {:class -> inspector_class}, [outline, spans])
-  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, dom_element("div", {:class -> "source-workbench"}, [code_stack, inspector])])
+  let code_stack = dom_element("div", {:class -> "source-code-stack symbol-collapsed"}, [code_frame])
+  if source/current_symbol() != nothing
+    let symbol = source/symbol_panel_node(repository, selected_revision)
+    let code_symbol_splitter = source/splitter_node("horizontal source-splitter-code-symbol", "Resize source and symbol panes")
+    code_stack = dom_element("div", {:class -> "source-code-stack"}, [code_frame, code_symbol_splitter, symbol])
+  end
+  let inspector_children = [outline, spans]
+  if source/inspector_section_collapsed("outline") == false && source/inspector_section_collapsed("annotations") == false
+    inspector_children = [outline, source/splitter_node("horizontal source-splitter-outline-annotations", "Resize outline and annotations panes"), spans]
+  end
+  let inspector = dom_element("aside", {:class -> inspector_class}, inspector_children)
+  let workbench_splitter = source/splitter_node("vertical source-splitter-workbench", "Resize code and inspector panes")
+  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, dom_element("div", {:class -> "source-workbench"}, [code_stack, workbench_splitter, inspector])])
 end
 
 verb source/app_node(view, revision)
@@ -425,6 +438,7 @@ verb source/app_node(view, revision)
   let files = source/file_list_node(repository, selected_revision, selected_path)
   let code = source/code_panel_node(selected_path)
   let sidebar = dom_element("aside", {:class -> "source-sidebar"}, [summary, files])
-  let main = dom_element("main", {:class -> "source-shell"}, [sidebar, code])
+  let splitter = source/splitter_node("vertical source-splitter-sidebar", "Resize navigator and source panes")
+  let main = dom_element("main", {:class -> "source-shell"}, [sidebar, splitter, code])
   return dom_element("div", {:class -> "source-app"}, [header, main])
 end

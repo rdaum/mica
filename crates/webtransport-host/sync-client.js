@@ -1488,6 +1488,9 @@ export function bootstrapServerRenderedSync(mount, status) {
         (serverRevision < state.revision ||
           (serverRevision === state.revision && serverSignature === state.signature))
       ) {
+        if (serverRevision === state.revision && serverSignature === state.signature) {
+          finishInFlightDomEvent();
+        }
         return;
       }
       const snapshot = validateSnapshotEnvelope(envelope);
@@ -1506,6 +1509,9 @@ export function bootstrapServerRenderedSync(mount, status) {
         serverRevision < state.revision ||
         (serverRevision === state.revision && serverSignature === state.signature)
       ) {
+        if (serverRevision === state.revision && serverSignature === state.signature) {
+          finishInFlightDomEvent();
+        }
         return;
       }
       if (

@@ -107,7 +107,8 @@ async fn route_dom_event(
             return Err(format!("sync_event aborted: {error}"));
         }
     }
-    let result = refresh_active_sync_view(host, endpoint, event.session_id, event.view_id).await;
+    let result =
+        refresh_active_sync_view(host, endpoint, event.session_id, event.view_id, true).await;
     trace.mark("refresh");
     result
 }
@@ -144,6 +145,7 @@ async fn refresh_active_sync_view(
     endpoint: Identity,
     session_id: u64,
     view_id: u64,
+    force_ack: bool,
 ) -> Result<(), String> {
     let Some(view_state) = host.active_rendered_sync_view(endpoint, session_id, view_id) else {
         return Ok(());
@@ -158,7 +160,7 @@ async fn refresh_active_sync_view(
         server_signature: view_state.server_signature,
         last_tree: view_state.last_tree,
     };
-    refresh_active_sync_view_for(&host.driver, &host.sessions, active).await
+    refresh_active_sync_view_for(&host.driver, &host.sessions, active, force_ack).await
 }
 
 pub(crate) async fn refresh_active_sync_views_for(
@@ -166,7 +168,7 @@ pub(crate) async fn refresh_active_sync_views_for(
     sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
 ) -> Result<(), String> {
     for active in active_sync_views(sessions) {
-        refresh_active_sync_view_for(driver, sessions, active).await?;
+        refresh_active_sync_view_for(driver, sessions, active, false).await?;
     }
     Ok(())
 }
@@ -175,9 +177,26 @@ async fn refresh_active_sync_view_for(
     driver: &CompioTaskDriver,
     sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
     active: ActiveSyncView,
+    force_ack: bool,
 ) -> Result<(), String> {
     let revision = render_sync_revision_for(driver, active.endpoint, active.view_id).await?;
     if revision == active.server_revision && active.last_tree.is_some() {
+        if force_ack {
+            send_sync_envelope_to(
+                sessions,
+                active.endpoint,
+                SyncEnvelope {
+                    kind: SyncMessageKind::ViewDelta,
+                    session_id: active.session_id,
+                    view_id: active.view_id,
+                    client_revision: active.server_revision,
+                    client_signature: active.server_signature,
+                    server_revision: active.server_revision,
+                    server_signature: active.server_signature,
+                    payload: dom_patch_payload_json(active.view_id, active.server_revision, &[]),
+                },
+            )?;
+        }
         return Ok(());
     }
 

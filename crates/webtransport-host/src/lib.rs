@@ -401,6 +401,50 @@ mod tests {
     }
 
     #[test]
+    fn webtransport_noop_dom_event_sends_same_revision_ack() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let tls = test_tls_config();
+            let endpoint = bind_server_endpoint("127.0.0.1:0".parse().unwrap(), tls)
+                .await
+                .unwrap();
+            let server_addr = endpoint.local_addr().unwrap();
+            let server_endpoint = endpoint.clone();
+
+            let runner = sync_chat_runner();
+            let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebTransportHost::new(driver.clone());
+            let binding = SessionBinding {
+                principal,
+                actor: None,
+            };
+            compio::runtime::spawn(serve_in_process(endpoint, host, binding, Some(1))).detach();
+
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (send_tx, send_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let client =
+                spawn_wtransport_noop_event_client(server_addr, connected_tx, send_rx, result_tx);
+
+            wait_for_client_connected(&connected_rx).await;
+            send_tx.send(()).unwrap();
+            let (snapshot, ack) = wait_for_ack_client_result(&result_rx).await.unwrap();
+
+            server_endpoint.close(0u32.into(), b"test complete");
+            client.join().unwrap();
+            assert_eq!(snapshot.kind, SyncMessageKind::ViewSnapshot);
+            assert_eq!(ack.kind, SyncMessageKind::ViewDelta);
+            assert_eq!(ack.client_revision, snapshot.server_revision);
+            assert_eq!(ack.server_revision, snapshot.server_revision);
+            assert_eq!(ack.client_signature, snapshot.server_signature);
+            assert_eq!(ack.server_signature, snapshot.server_signature);
+            let payload: serde_json::Value = serde_json::from_slice(&ack.payload).unwrap();
+            assert_eq!(payload["type"], "dom_patch");
+            assert_eq!(payload["patches"], serde_json::json!([]));
+        });
+    }
+
+    #[test]
     fn webtransport_mud_login_pushes_world_delta() {
         let _guard = MUD_WEBTRANSPORT_TEST_LOCK.lock().unwrap();
         compio::runtime::Runtime::new().unwrap().block_on(async {
@@ -1018,6 +1062,73 @@ mod tests {
                                 .map_err(|error| format!("MUD login delta: {error}"))?;
 
                         Ok((snapshot, delta))
+                    })
+                });
+            let _ = result_tx.send(result);
+        })
+    }
+
+    fn spawn_wtransport_noop_event_client(
+        server_addr: SocketAddr,
+        connected_tx: mpsc::Sender<()>,
+        send_rx: mpsc::Receiver<()>,
+        result_tx: mpsc::Sender<Result<(SyncEnvelope, SyncEnvelope), String>>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(async move {
+                        let config = wtransport::ClientConfig::builder()
+                            .with_bind_default()
+                            .with_no_cert_validation()
+                            .build();
+                        let url = format!("https://127.0.0.1:{}/view", server_addr.port());
+                        let connection = wtransport::Endpoint::client(config)
+                            .map_err(|error| error.to_string())?
+                            .connect(&url)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        connected_tx.send(()).map_err(|error| error.to_string())?;
+                        send_rx.recv().map_err(|error| error.to_string())?;
+
+                        let need_view = SyncEnvelope {
+                            kind: SyncMessageKind::NeedView,
+                            session_id: 7,
+                            view_id: 11,
+                            client_revision: 0,
+                            client_signature: 0,
+                            server_revision: 0,
+                            server_signature: 0,
+                            payload: b"need".to_vec(),
+                        };
+                        connection
+                            .send_datagram(encoded_sync_envelope(need_view.as_ref()))
+                            .map_err(|error| error.to_string())?;
+                        let snapshot = receive_sync_envelope(&connection).await?;
+
+                        connection
+                            .send_datagram(dom_event_payload_json(&DomEventPayload {
+                                session_id: 7,
+                                view_id: 11,
+                                revision: snapshot.server_revision,
+                                signature: snapshot.server_signature,
+                                event: "submit".to_owned(),
+                                target: "chat-composer".to_owned(),
+                                action: "does_not_exist".to_owned(),
+                                fields: BTreeMap::new(),
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let ack = loop {
+                            let envelope = receive_sync_envelope(&connection).await?;
+                            if envelope.kind == SyncMessageKind::ViewDelta {
+                                break envelope;
+                            }
+                        };
+
+                        Ok((snapshot, ack))
                     })
                 });
             let _ = result_tx.send(result);
