@@ -14,7 +14,7 @@
 use crate::commit_bloom::CommitBloom;
 use crate::{
     Atom, CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, RelationId,
-    RelationMetadata, Rule, RuleDefinition, Term, Tuple,
+    RelationMetadata, Rule, RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleGuard, Term, Tuple,
 };
 use mica_var::{
     Identity, Symbol, Value, decode_value as decode_persisted_value,
@@ -167,10 +167,20 @@ fn encode_rule(rule: &Rule, out: &mut Vec<u8>) -> Result<(), String> {
     write_identity(out, rule.head_relation());
     encode_terms(rule.head_terms(), out)?;
     write_u32(out, rule.body().len())?;
-    for atom in rule.body() {
-        out.push(atom.is_negated() as u8);
-        write_identity(out, atom.relation());
-        encode_terms(atom.terms(), out)?;
+    for item in rule.body() {
+        match item {
+            RuleBodyItem::Atom(atom) => {
+                out.push(atom.is_negated() as u8);
+                write_identity(out, atom.relation());
+                encode_terms(atom.terms(), out)?;
+            }
+            RuleBodyItem::Guard(guard) => {
+                out.push(2);
+                encode_rule_comparison_op(guard.op(), out);
+                encode_term(guard.left(), out)?;
+                encode_term(guard.right(), out)?;
+            }
+        }
     }
     Ok(())
 }
@@ -178,18 +188,34 @@ fn encode_rule(rule: &Rule, out: &mut Vec<u8>) -> Result<(), String> {
 fn encode_terms(terms: &[Term], out: &mut Vec<u8>) -> Result<(), String> {
     write_u32(out, terms.len())?;
     for term in terms {
-        match term {
-            Term::Var(symbol) => {
-                out.push(0);
-                write_symbol(out, *symbol)?;
-            }
-            Term::Value(value) => {
-                out.push(1);
-                encode_persisted_value(value, out).map_err(|error| error.to_string())?;
-            }
+        encode_term(term, out)?;
+    }
+    Ok(())
+}
+
+fn encode_term(term: &Term, out: &mut Vec<u8>) -> Result<(), String> {
+    match term {
+        Term::Var(symbol) => {
+            out.push(0);
+            write_symbol(out, *symbol)?;
+        }
+        Term::Value(value) => {
+            out.push(1);
+            encode_persisted_value(value, out).map_err(|error| error.to_string())?;
         }
     }
     Ok(())
+}
+
+fn encode_rule_comparison_op(op: RuleComparisonOp, out: &mut Vec<u8>) {
+    out.push(match op {
+        RuleComparisonOp::Eq => 0,
+        RuleComparisonOp::Ne => 1,
+        RuleComparisonOp::Lt => 2,
+        RuleComparisonOp::Le => 3,
+        RuleComparisonOp::Gt => 4,
+        RuleComparisonOp::Ge => 5,
+    });
 }
 
 fn encode_fact_change(change: &FactChange, out: &mut Vec<u8>) -> Result<(), String> {
@@ -354,15 +380,26 @@ impl<'a> Reader<'a> {
         let head_relation = self.read_identity()?;
         let head_terms = self.read_terms()?;
         let body_count = self.read_len()?;
-        let mut body = Vec::with_capacity(body_count);
+        let mut body = Vec::<RuleBodyItem>::with_capacity(body_count);
         for _ in 0..body_count {
-            let negated = self.read_bool()?;
-            let relation = self.read_identity()?;
-            let terms = self.read_terms()?;
-            body.push(if negated {
-                Atom::negated(relation, terms)
-            } else {
-                Atom::positive(relation, terms)
+            body.push(match self.read_u8()? {
+                0 => {
+                    let relation = self.read_identity()?;
+                    let terms = self.read_terms()?;
+                    Atom::positive(relation, terms).into()
+                }
+                1 => {
+                    let relation = self.read_identity()?;
+                    let terms = self.read_terms()?;
+                    Atom::negated(relation, terms).into()
+                }
+                2 => RuleGuard::new(
+                    self.read_rule_comparison_op()?,
+                    self.read_term()?,
+                    self.read_term()?,
+                )
+                .into(),
+                tag => return Err(format!("unknown rule body item tag {tag}")),
             });
         }
         Ok(Rule::new(head_relation, head_terms, body))
@@ -372,13 +409,29 @@ impl<'a> Reader<'a> {
         let count = self.read_len()?;
         let mut terms = Vec::with_capacity(count);
         for _ in 0..count {
-            terms.push(match self.read_u8()? {
-                0 => Term::Var(self.read_symbol()?),
-                1 => Term::Value(self.read_value()?),
-                tag => return Err(format!("unknown term tag {tag}")),
-            });
+            terms.push(self.read_term()?);
         }
         Ok(terms)
+    }
+
+    fn read_term(&mut self) -> Result<Term, String> {
+        match self.read_u8()? {
+            0 => Ok(Term::Var(self.read_symbol()?)),
+            1 => Ok(Term::Value(self.read_value()?)),
+            tag => Err(format!("unknown term tag {tag}")),
+        }
+    }
+
+    fn read_rule_comparison_op(&mut self) -> Result<RuleComparisonOp, String> {
+        match self.read_u8()? {
+            0 => Ok(RuleComparisonOp::Eq),
+            1 => Ok(RuleComparisonOp::Ne),
+            2 => Ok(RuleComparisonOp::Lt),
+            3 => Ok(RuleComparisonOp::Le),
+            4 => Ok(RuleComparisonOp::Gt),
+            5 => Ok(RuleComparisonOp::Ge),
+            tag => Err(format!("unknown rule comparison op tag {tag}")),
+        }
     }
 
     fn read_fact_change(&mut self) -> Result<FactChange, String> {

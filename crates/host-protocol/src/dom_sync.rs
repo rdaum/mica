@@ -21,18 +21,24 @@ pub const SUPPORTED_DOM_TAGS: &[&str] = &[
     "a",
     "abbr",
     "address",
+    "area",
     "article",
     "aside",
+    "audio",
     "b",
+    "bdi",
+    "bdo",
     "blockquote",
     "br",
     "button",
+    "canvas",
     "caption",
     "cite",
     "code",
     "col",
     "colgroup",
     "data",
+    "datalist",
     "dd",
     "del",
     "details",
@@ -56,6 +62,7 @@ pub const SUPPORTED_DOM_TAGS: &[&str] = &[
     "header",
     "hr",
     "i",
+    "img",
     "input",
     "ins",
     "kbd",
@@ -63,6 +70,7 @@ pub const SUPPORTED_DOM_TAGS: &[&str] = &[
     "legend",
     "li",
     "main",
+    "map",
     "mark",
     "menu",
     "meter",
@@ -72,14 +80,19 @@ pub const SUPPORTED_DOM_TAGS: &[&str] = &[
     "option",
     "output",
     "p",
+    "picture",
     "pre",
     "progress",
     "q",
+    "rp",
+    "rt",
+    "ruby",
     "s",
     "samp",
     "section",
     "select",
     "small",
+    "source",
     "span",
     "strong",
     "sub",
@@ -88,21 +101,44 @@ pub const SUPPORTED_DOM_TAGS: &[&str] = &[
     "table",
     "tbody",
     "td",
+    "template",
     "textarea",
     "tfoot",
     "th",
     "thead",
     "time",
     "tr",
+    "track",
     "u",
     "ul",
     "var",
+    "video",
+    "wbr",
 ];
 pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
+    "accept",
+    "accept-charset",
+    "action",
+    "alt",
+    "aria-busy",
+    "aria-checked",
+    "aria-controls",
+    "aria-current",
+    "aria-describedby",
+    "aria-disabled",
+    "aria-expanded",
+    "aria-hidden",
     "aria-label",
+    "aria-labelledby",
     "aria-live",
+    "aria-pressed",
+    "aria-selected",
     "autocomplete",
+    "autofocus",
+    "checked",
     "class",
+    "cols",
+    "colspan",
     "data-command",
     "data-entity",
     "data-sync-action",
@@ -112,12 +148,68 @@ pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
     "data-sync-on-viewport-top",
     "data-sync-stable-top",
     "data-sync-viewport-threshold",
+    "datetime",
+    "disabled",
+    "download",
+    "draggable",
+    "for",
+    "height",
+    "hidden",
+    "href",
     "id",
+    "lang",
+    "list",
+    "loading",
+    "max",
+    "maxlength",
+    "method",
+    "min",
+    "minlength",
+    "multiple",
     "name",
+    "open",
+    "pattern",
     "placeholder",
+    "readonly",
+    "rel",
+    "required",
+    "role",
+    "rows",
+    "rowspan",
+    "selected",
+    "size",
+    "span",
+    "src",
+    "step",
+    "tabindex",
+    "target",
+    "title",
     "type",
     "value",
+    "width",
+    "wrap",
 ];
+
+pub fn is_supported_dom_tag(tag: &str) -> bool {
+    SUPPORTED_DOM_TAGS.contains(&tag)
+}
+
+pub fn is_supported_dom_attribute(name: &str) -> bool {
+    SUPPORTED_DOM_ATTRIBUTES.contains(&name)
+        || name
+            .strip_prefix("aria-")
+            .is_some_and(is_custom_attr_suffix)
+        || name
+            .strip_prefix("data-")
+            .is_some_and(is_custom_attr_suffix)
+}
+
+fn is_custom_attr_suffix(suffix: &str) -> bool {
+    !suffix.is_empty()
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -511,15 +603,13 @@ fn mica_attr_value(value: &Value) -> Result<String, String> {
 }
 
 fn validate_dom_tag(tag: &str) -> Result<(), String> {
-    SUPPORTED_DOM_TAGS
-        .contains(&tag)
+    is_supported_dom_tag(tag)
         .then_some(())
         .ok_or_else(|| format!("unsupported DOM sync tag: {tag}"))
 }
 
 fn validate_dom_attr(name: &str) -> Result<(), String> {
-    SUPPORTED_DOM_ATTRIBUTES
-        .contains(&name)
+    is_supported_dom_attribute(name)
         .then_some(())
         .ok_or_else(|| format!("unsupported DOM sync attribute: {name}"))
 }

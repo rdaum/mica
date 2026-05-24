@@ -58,23 +58,79 @@ impl Atom {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuleComparisonOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuleGuard {
+    op: RuleComparisonOp,
+    left: Term,
+    right: Term,
+}
+
+impl RuleGuard {
+    pub fn new(op: RuleComparisonOp, left: Term, right: Term) -> Self {
+        Self { op, left, right }
+    }
+
+    pub fn op(&self) -> RuleComparisonOp {
+        self.op
+    }
+
+    pub fn left(&self) -> &Term {
+        &self.left
+    }
+
+    pub fn right(&self) -> &Term {
+        &self.right
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RuleBodyItem {
+    Atom(Atom),
+    Guard(RuleGuard),
+}
+
+impl From<Atom> for RuleBodyItem {
+    fn from(value: Atom) -> Self {
+        Self::Atom(value)
+    }
+}
+
+impl From<RuleGuard> for RuleBodyItem {
+    fn from(value: RuleGuard) -> Self {
+        Self::Guard(value)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Rule {
     head_relation: RelationId,
     head_terms: Vec<Term>,
-    body: Vec<Atom>,
+    body: Vec<RuleBodyItem>,
 }
 
 impl Rule {
-    pub fn new(
+    pub fn new<T>(
         head_relation: RelationId,
         head_terms: impl IntoIterator<Item = Term>,
-        body: impl IntoIterator<Item = Atom>,
-    ) -> Self {
+        body: impl IntoIterator<Item = T>,
+    ) -> Self
+    where
+        T: Into<RuleBodyItem>,
+    {
         Self {
             head_relation,
             head_terms: head_terms.into_iter().collect(),
-            body: body.into_iter().collect(),
+            body: body.into_iter().map(Into::into).collect(),
         }
     }
 
@@ -86,8 +142,15 @@ impl Rule {
         &self.head_terms
     }
 
-    pub fn body(&self) -> &[Atom] {
+    pub fn body(&self) -> &[RuleBodyItem] {
         &self.body
+    }
+
+    pub fn body_atoms(&self) -> impl Iterator<Item = &Atom> {
+        self.body.iter().filter_map(|item| match item {
+            RuleBodyItem::Atom(atom) => Some(atom),
+            RuleBodyItem::Guard(_) => None,
+        })
     }
 }
 
@@ -240,7 +303,7 @@ impl RuleSet {
             let mut changed = false;
             for rule in &self.rules {
                 let mut head_stratum = strata[&rule.head_relation];
-                for atom in &rule.body {
+                for atom in rule.body_atoms() {
                     if !derived.contains(&atom.relation) {
                         continue;
                     }
@@ -268,6 +331,7 @@ impl RuleSet {
 pub enum RuleError {
     UnstratifiedNegation,
     UnsafeNegation { relation: RelationId },
+    UnsafeGuard,
     UnboundHeadVariable { variable: Symbol },
 }
 
@@ -295,8 +359,14 @@ type Binding = Vec<Option<Value>>;
 struct CompiledRule {
     head_relation: RelationId,
     head_terms: Vec<CompiledTerm>,
-    body: Vec<CompiledAtom>,
+    body: Vec<CompiledBodyItem>,
     slot_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CompiledBodyItem {
+    Atom(CompiledAtom),
+    Guard(CompiledGuard),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -304,6 +374,13 @@ struct CompiledAtom {
     relation: RelationId,
     terms: Vec<CompiledTerm>,
     negated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledGuard {
+    op: RuleComparisonOp,
+    left: CompiledTerm,
+    right: CompiledTerm,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -414,14 +491,21 @@ fn compile_rule(rule: &Rule) -> CompiledRule {
     let body = rule
         .body
         .iter()
-        .map(|atom| CompiledAtom {
-            relation: atom.relation,
-            terms: atom
-                .terms
-                .iter()
-                .map(|term| compile_term(term, &mut variables))
-                .collect(),
-            negated: atom.negated,
+        .map(|item| match item {
+            RuleBodyItem::Atom(atom) => CompiledBodyItem::Atom(CompiledAtom {
+                relation: atom.relation,
+                terms: atom
+                    .terms
+                    .iter()
+                    .map(|term| compile_term(term, &mut variables))
+                    .collect(),
+                negated: atom.negated,
+            }),
+            RuleBodyItem::Guard(guard) => CompiledBodyItem::Guard(CompiledGuard {
+                op: guard.op,
+                left: compile_term(&guard.left, &mut variables),
+                right: compile_term(&guard.right, &mut variables),
+            }),
         })
         .collect();
     CompiledRule {
@@ -453,53 +537,76 @@ fn evaluate_body(
     let mut bindings = vec![vec![None; rule.slot_count]];
     let mut remaining = rule.body.iter().collect::<Vec<_>>();
     while !remaining.is_empty() {
-        let next = select_next_atom(reader, &bindings, &remaining)?;
-        let atom = remaining.remove(next);
-        bindings = if atom.negated {
-            apply_negated_atom(reader, atom, bindings)?
-        } else {
-            apply_positive_atom(reader, atom, bindings)?
+        let next = select_next_item(reader, &bindings, &remaining)?;
+        let item = remaining.remove(next);
+        bindings = match item {
+            CompiledBodyItem::Atom(atom) if atom.negated => {
+                apply_negated_atom(reader, atom, bindings)?
+            }
+            CompiledBodyItem::Atom(atom) => apply_positive_atom(reader, atom, bindings)?,
+            CompiledBodyItem::Guard(guard) => apply_guard(guard, bindings)?,
         };
     }
     Ok(bindings)
 }
 
-fn select_next_atom(
+fn select_next_item(
     reader: &impl RelationRead,
     bindings: &[Binding],
-    atoms: &[&CompiledAtom],
+    items: &[&CompiledBodyItem],
 ) -> Result<usize, RuleEvalError> {
     let mut best = None;
-    for (index, atom) in atoms.iter().enumerate() {
-        if atom.negated
-            && !bindings
-                .iter()
-                .all(|binding| negated_atom_is_safe(atom, binding))
-        {
-            continue;
-        }
-        let estimate = atom_estimate(reader, atom, bindings)?;
-        let bound_terms = bindings
-            .iter()
-            .map(|binding| bound_term_count(atom, binding))
-            .max()
-            .unwrap_or(0);
-        let rank = (
-            estimate,
-            usize::from(atom.negated),
-            usize::MAX - bound_terms,
-            index,
-        );
+    for (index, item) in items.iter().enumerate() {
+        let rank = match item {
+            CompiledBodyItem::Atom(atom)
+                if atom.negated
+                    && !bindings
+                        .iter()
+                        .all(|binding| negated_atom_is_safe(atom, binding)) =>
+            {
+                continue;
+            }
+            CompiledBodyItem::Atom(atom) => {
+                let estimate = atom_estimate(reader, atom, bindings)?;
+                let bound_terms = bindings
+                    .iter()
+                    .map(|binding| bound_term_count(atom, binding))
+                    .max()
+                    .unwrap_or(0);
+                (
+                    estimate,
+                    usize::from(atom.negated),
+                    usize::MAX - bound_terms,
+                    index,
+                )
+            }
+            CompiledBodyItem::Guard(guard) => {
+                if !bindings.iter().all(|binding| guard_is_safe(guard, binding)) {
+                    continue;
+                }
+                (0, 0, 0, index)
+            }
+        };
         if best.is_none_or(|(_, best_rank)| rank < best_rank) {
             best = Some((index, rank));
         }
     }
-    best.map(|(index, _)| index).ok_or_else(|| {
-        RuleError::UnsafeNegation {
-            relation: atoms[0].relation,
+    best.map(|(index, _)| index)
+        .ok_or_else(|| first_unsafe_error(items))
+}
+
+fn first_unsafe_error(items: &[&CompiledBodyItem]) -> RuleEvalError {
+    for item in items {
+        if let CompiledBodyItem::Atom(atom) = item
+            && atom.negated
+        {
+            return RuleError::UnsafeNegation {
+                relation: atom.relation,
+            }
+            .into();
         }
-        .into()
-    })
+    }
+    RuleError::UnsafeGuard.into()
 }
 
 fn atom_estimate(
@@ -534,6 +641,17 @@ fn negated_atom_is_safe(atom: &CompiledAtom, binding: &Binding) -> bool {
         CompiledTerm::Value(_) => true,
         CompiledTerm::Var { slot, .. } => binding[*slot].is_some(),
     })
+}
+
+fn guard_is_safe(guard: &CompiledGuard, binding: &Binding) -> bool {
+    term_is_bound(&guard.left, binding) && term_is_bound(&guard.right, binding)
+}
+
+fn term_is_bound(term: &CompiledTerm, binding: &Binding) -> bool {
+    match term {
+        CompiledTerm::Value(_) => true,
+        CompiledTerm::Var { slot, .. } => binding[*slot].is_some(),
+    }
 }
 
 fn apply_positive_atom(
@@ -573,6 +691,47 @@ fn apply_negated_atom(
         }
     }
     Ok(out)
+}
+
+fn apply_guard(
+    guard: &CompiledGuard,
+    bindings: Vec<Binding>,
+) -> Result<Vec<Binding>, RuleEvalError> {
+    let mut out = Vec::new();
+    for binding in bindings {
+        if !guard_is_safe(guard, &binding) {
+            return Err(RuleError::UnsafeGuard.into());
+        }
+        let left = guard_value(&guard.left, &binding)?;
+        let right = guard_value(&guard.right, &binding)?;
+        if compare_values(guard.op, left, right) {
+            out.push(binding);
+        }
+    }
+    Ok(out)
+}
+
+fn guard_value<'a>(
+    term: &'a CompiledTerm,
+    binding: &'a Binding,
+) -> Result<&'a Value, RuleEvalError> {
+    match term {
+        CompiledTerm::Value(value) => Ok(value),
+        CompiledTerm::Var { symbol, slot } => binding[*slot]
+            .as_ref()
+            .ok_or(RuleError::UnboundHeadVariable { variable: *symbol }.into()),
+    }
+}
+
+fn compare_values(op: RuleComparisonOp, left: &Value, right: &Value) -> bool {
+    match op {
+        RuleComparisonOp::Eq => left == right,
+        RuleComparisonOp::Ne => left != right,
+        RuleComparisonOp::Lt => left < right,
+        RuleComparisonOp::Le => left <= right,
+        RuleComparisonOp::Gt => left > right,
+        RuleComparisonOp::Ge => left >= right,
+    }
 }
 
 fn scan_bindings(
@@ -704,6 +863,71 @@ mod tests {
         assert_eq!(
             RuleSet::new([visible]).evaluate(&tx).unwrap()[&rel(53)],
             vec![Tuple::from([int(99), int(10)])]
+        );
+    }
+
+    #[test]
+    fn rule_evaluation_supports_safe_comparison_guards() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(
+                rel(54),
+                Symbol::intern("FileRevision"),
+                2,
+            ))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                rel(55),
+                Symbol::intern("IndexRevision"),
+                2,
+            ))
+            .unwrap();
+        let mut tx = kernel.begin();
+        tx.assert(rel(54), Tuple::from([int(1), int(10)])).unwrap();
+        tx.assert(rel(54), Tuple::from([int(2), int(20)])).unwrap();
+        tx.assert(rel(55), Tuple::from([int(99), int(10)])).unwrap();
+
+        let stale = Rule::new(
+            rel(56),
+            [var("index"), var("file")],
+            vec![
+                RuleBodyItem::from(Atom::positive(
+                    rel(55),
+                    [var("index"), var("index_revision")],
+                )),
+                RuleBodyItem::from(Atom::positive(rel(54), [var("file"), var("file_revision")])),
+                RuleGuard::new(
+                    RuleComparisonOp::Ne,
+                    var("index_revision"),
+                    var("file_revision"),
+                )
+                .into(),
+            ],
+        );
+
+        assert_eq!(
+            RuleSet::new([stale]).evaluate(&tx).unwrap()[&rel(56)],
+            vec![Tuple::from([int(99), int(2)])]
+        );
+    }
+
+    #[test]
+    fn rule_evaluation_rejects_unsafe_comparison_guards() {
+        let kernel = RelationKernel::new();
+        let rules = RuleSet::new([Rule::new(
+            rel(57),
+            [var("x")],
+            [RuleBodyItem::from(RuleGuard::new(
+                RuleComparisonOp::Ne,
+                var("x"),
+                val(int(1)),
+            ))],
+        )]);
+
+        assert_eq!(
+            rules.evaluate(&kernel.begin()),
+            Err(RuleEvalError::Rule(RuleError::UnsafeGuard))
         );
     }
 

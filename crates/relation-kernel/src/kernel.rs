@@ -415,7 +415,7 @@ fn validate_rule_against_relations(
     rule: &Rule,
 ) -> Result<(), KernelError> {
     validate_rule_atom(relations, rule.head_relation(), rule.head_terms())?;
-    for atom in rule.body() {
+    for atom in rule.body_atoms() {
         validate_rule_atom(relations, atom.relation(), atom.terms())?;
     }
     Ok(())

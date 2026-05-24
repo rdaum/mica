@@ -4,10 +4,12 @@ use mica_relation_kernel::{
     RelationRead, Tuple,
 };
 use mica_var::{Symbol, Value};
+use serde_json::{Value as JsonValue, json};
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 use tree_sitter::{Language, Node, Parser};
 
 mod rust_analyzer;
@@ -22,6 +24,12 @@ const SYNTAX_OUTLINE_BOUND: &[u16] = &[0, 1, 2];
 const SYNTAX_NODE_AT_BOUND: &[u16] = &[0, 1, 2, 3];
 const DEFINITION_AT_BOUND: &[u16] = &[0, 1, 2, 3];
 const REFERENCES_OF_BOUND: &[u16] = &[0, 1, 2];
+const SYMBOL_SEARCH_BOUND: &[u16] = &[0, 1, 2, 3];
+const INDEX_VALUE_BOUND: &[u16] = &[];
+const SOURCE_INDEX_ID: &str = "source-index:mica-worktree";
+const SOURCE_INDEX_SCHEMA: &str = "mica-source-index-v1";
+const SOURCE_INDEX_PROVIDER: &str = "mica-source-index/tree-sitter-rust";
+const SOURCE_INDEX_VERSION: &str = "1";
 
 pub(crate) fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
     let provider = Arc::new(LocalSourceProvider::from_env());
@@ -50,13 +58,39 @@ pub(crate) fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
         Arc::new(DefinitionAtRelation {
             provider: provider.clone(),
         }),
-        Arc::new(ReferencesOfRelation { provider }),
+        Arc::new(ReferencesOfRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(SymbolSearchRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(SourceIndexRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(IndexRepositoryRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(IndexRevisionRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(IndexProviderRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(IndexStatusRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(IndexVersionRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(IndexBuildErrorRelation { provider }),
     ]
 }
 
 #[derive(Debug)]
 struct LocalSourceProvider {
     allowed_roots: Vec<PathBuf>,
+    semantic_index_path: PathBuf,
+    semantic_index_cache: Mutex<Option<CachedSemanticIndex>>,
     rust_analyzer: RustAnalyzerProvider,
 }
 
@@ -70,8 +104,13 @@ impl LocalSourceProvider {
             .into_iter()
             .filter_map(|root| root.canonicalize().ok())
             .collect();
+        let semantic_index_path = env::var_os("MICA_SOURCE_INDEX")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".cache/source-index/mica-worktree.json"));
         Self {
             allowed_roots,
+            semantic_index_path,
+            semantic_index_cache: Mutex::new(None),
             rust_analyzer: RustAnalyzerProvider::from_env(),
         }
     }
@@ -151,6 +190,57 @@ impl LocalSourceProvider {
             ));
         }
         Ok((root, absolute))
+    }
+
+    fn semantic_index(
+        &self,
+        relation: RelationId,
+    ) -> Result<Arc<PersistentSemanticIndex>, KernelError> {
+        let key = semantic_index_key(relation, &self.semantic_index_path)?;
+        let mut cache = self.semantic_index_cache.lock().unwrap();
+        if let Some(cached) = cache.as_ref()
+            && cached.key == key
+        {
+            return Ok(cached.index.clone());
+        }
+        let index = Arc::new(PersistentSemanticIndex::load(
+            relation,
+            &self.semantic_index_path,
+        )?);
+        *cache = Some(CachedSemanticIndex {
+            key,
+            index: index.clone(),
+        });
+        Ok(index)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SemanticIndexKey {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedSemanticIndex {
+    key: Option<SemanticIndexKey>,
+    index: Arc<PersistentSemanticIndex>,
+}
+
+fn semantic_index_key(
+    relation: RelationId,
+    path: &Path,
+) -> Result<Option<SemanticIndexKey>, KernelError> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(SemanticIndexKey {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(invalid_relation(
+            relation,
+            format!("failed to stat semantic index {}: {error}", path.display()),
+        )),
     }
 }
 
@@ -590,6 +680,31 @@ impl ComputedRelation for DefinitionAtRelation {
                 "byte offset is beyond source file length",
             ));
         }
+        let index = self.provider.semantic_index(metadata.id())?;
+        let indexed_rows = index
+            .definition_at(&path, byte_offset)
+            .into_iter()
+            .map(|symbol| {
+                Ok(Tuple::from([
+                    repository.clone(),
+                    revision.clone(),
+                    Value::string(&path),
+                    int_value(metadata.id(), byte_offset as i64)?,
+                    Value::string(symbol.symbol),
+                    Value::string(symbol.name),
+                    Value::string(symbol.kind),
+                    Value::string(symbol.path),
+                    int_value(metadata.id(), symbol.start_line as i64)?,
+                    int_value(metadata.id(), symbol.end_line as i64)?,
+                    int_value(metadata.id(), symbol.start_byte as i64)?,
+                    int_value(metadata.id(), symbol.end_byte as i64)?,
+                    Value::string(format!("{} {}", index.provider, index.version)),
+                ]))
+            })
+            .collect::<Result<Vec<_>, KernelError>>()?;
+        if !indexed_rows.is_empty() {
+            return Ok(filter_bound_rows(indexed_rows, bindings));
+        }
         let mut locations = self
             .provider
             .rust_analyzer
@@ -672,6 +787,28 @@ impl ComputedRelation for ReferencesOfRelation {
         let Some(request) = SemanticSymbol::parse(&symbol) else {
             return Ok(Vec::new());
         };
+        let index = self.provider.semantic_index(metadata.id())?;
+        if request.provider == SemanticSymbolProvider::Index {
+            let rows = index
+                .references_of(&request)
+                .into_iter()
+                .map(|reference| {
+                    Ok(Tuple::from([
+                        repository.clone(),
+                        revision.clone(),
+                        Value::string(&symbol),
+                        Value::string(reference.path),
+                        int_value(metadata.id(), reference.start_line as i64)?,
+                        int_value(metadata.id(), reference.end_line as i64)?,
+                        int_value(metadata.id(), reference.start_byte as i64)?,
+                        int_value(metadata.id(), reference.end_byte as i64)?,
+                        Value::string(format!("{} {}", index.provider, index.version)),
+                        Value::string(reference.name),
+                    ]))
+                })
+                .collect::<Result<Vec<_>, KernelError>>()?;
+            return Ok(filter_bound_rows(rows, bindings));
+        }
         let root = self
             .provider
             .repository_root(reader, metadata.id(), &repository, &revision)?;
@@ -716,6 +853,203 @@ impl ComputedRelation for ReferencesOfRelation {
         Ok(filter_bound_rows(rows, bindings))
     }
 }
+
+struct SymbolSearchRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for SymbolSearchRelation {
+    fn name(&self) -> &'static str {
+        "persistent-source-symbol-search"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/SymbolSearch") && metadata.arity() == 11
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        SYMBOL_SEARCH_BOUND
+    }
+
+    fn scan(
+        &self,
+        _reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let revision = bound_value(metadata.id(), bindings, 1, "revision")?;
+        let query = bound_string(metadata.id(), bindings, 2, "query")?;
+        let limit = bound_non_negative_int(metadata.id(), bindings, 3, "limit")?;
+        let index = self.provider.semantic_index(metadata.id())?;
+        let rows = index
+            .search(&query, limit)
+            .into_iter()
+            .map(|symbol| {
+                Ok(Tuple::from([
+                    repository.clone(),
+                    revision.clone(),
+                    Value::string(&query),
+                    int_value(metadata.id(), limit as i64)?,
+                    Value::string(symbol.symbol),
+                    Value::string(symbol.name),
+                    Value::string(symbol.kind),
+                    Value::string(symbol.path),
+                    int_value(metadata.id(), symbol.start_line as i64)?,
+                    int_value(metadata.id(), symbol.end_line as i64)?,
+                    Value::string(format!("{} {}", index.provider, index.version)),
+                ]))
+            })
+            .collect::<Result<Vec<_>, KernelError>>()?;
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
+macro_rules! index_value_relation {
+    ($name:ident, $relation:literal, $field:ident) => {
+        struct $name {
+            provider: Arc<LocalSourceProvider>,
+        }
+
+        impl ComputedRelation for $name {
+            fn name(&self) -> &'static str {
+                concat!("persistent-source-", $relation)
+            }
+
+            fn matches(&self, metadata: &RelationMetadata) -> bool {
+                metadata.name().name() == Some(concat!("source/", $relation))
+                    && metadata.arity() == 2
+            }
+
+            fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+                INDEX_VALUE_BOUND
+            }
+
+            fn scan(
+                &self,
+                _reader: &dyn ComputedRelationRead,
+                metadata: &RelationMetadata,
+                bindings: &[Option<Value>],
+            ) -> Result<Vec<Tuple>, KernelError> {
+                let index = self.provider.semantic_index(metadata.id())?;
+                Ok(filter_bound_rows(
+                    vec![Tuple::from([
+                        Value::string(&index.id),
+                        Value::string(&index.$field),
+                    ])],
+                    bindings,
+                ))
+            }
+        }
+    };
+}
+
+struct SourceIndexRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for SourceIndexRelation {
+    fn name(&self) -> &'static str {
+        "persistent-source-index"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/SourceIndex") && metadata.arity() == 1
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        &[]
+    }
+
+    fn scan(
+        &self,
+        _reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let index = self.provider.semantic_index(metadata.id())?;
+        Ok(filter_bound_rows(
+            vec![Tuple::from([Value::string(&index.id)])],
+            bindings,
+        ))
+    }
+}
+
+struct IndexRepositoryRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for IndexRepositoryRelation {
+    fn name(&self) -> &'static str {
+        "persistent-source-index-repository"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/IndexRepository") && metadata.arity() == 2
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        INDEX_VALUE_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let index = self.provider.semantic_index(metadata.id())?;
+        let repository_relation = relation_id(reader, "source/Repository", 1).ok_or_else(|| {
+            invalid_relation(metadata.id(), "missing relation source/Repository/1")
+        })?;
+        let rows = reader
+            .scan_relation(repository_relation, &[None])?
+            .into_iter()
+            .map(|row| Tuple::from([Value::string(&index.id), row.values()[0].clone()]))
+            .collect::<Vec<_>>();
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
+struct IndexRevisionRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for IndexRevisionRelation {
+    fn name(&self) -> &'static str {
+        "persistent-source-index-revision"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/IndexRevision") && metadata.arity() == 2
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        INDEX_VALUE_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let index = self.provider.semantic_index(metadata.id())?;
+        let revision_relation = relation_id(reader, "source/Revision", 1)
+            .ok_or_else(|| invalid_relation(metadata.id(), "missing relation source/Revision/1"))?;
+        let rows = reader
+            .scan_relation(revision_relation, &[None])?
+            .into_iter()
+            .map(|row| Tuple::from([Value::string(&index.id), row.values()[0].clone()]))
+            .collect::<Vec<_>>();
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
+index_value_relation!(IndexProviderRelation, "IndexProvider", provider);
+index_value_relation!(IndexStatusRelation, "IndexStatus", status);
+index_value_relation!(IndexVersionRelation, "IndexVersion", version);
+index_value_relation!(IndexBuildErrorRelation, "IndexBuildError", error);
 
 #[derive(Clone, Debug)]
 struct SyntaxDocument {
@@ -839,22 +1173,526 @@ struct SemanticLocation {
 
 #[derive(Clone, Debug)]
 struct SemanticSymbol {
+    id: String,
+    provider: SemanticSymbolProvider,
     path: String,
     start_byte: usize,
+    name: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SemanticSymbolProvider {
+    Index,
+    RustAnalyzer,
 }
 
 impl SemanticSymbol {
     fn parse(symbol: &str) -> Option<Self> {
         let mut parts = symbol.splitn(5, ':');
-        if parts.next()? != "ra" {
-            return None;
-        }
+        let provider = match parts.next()? {
+            "idx" => SemanticSymbolProvider::Index,
+            "ra" => SemanticSymbolProvider::RustAnalyzer,
+            _ => return None,
+        };
         let path = parts.next()?.to_owned();
         let start_byte = parts.next()?.parse().ok()?;
         let _end_byte = parts.next()?.parse::<usize>().ok()?;
-        let _name = parts.next()?;
-        Some(Self { path, start_byte })
+        let name = parts.next()?.to_owned();
+        Some(Self {
+            id: symbol.to_owned(),
+            provider,
+            path,
+            start_byte,
+            name,
+        })
     }
+}
+
+#[derive(Clone, Debug)]
+struct PersistentSemanticIndex {
+    id: String,
+    provider: String,
+    version: String,
+    status: String,
+    error: String,
+    symbols: Vec<IndexedSymbol>,
+    references: Vec<IndexedReference>,
+}
+
+#[derive(Clone, Debug)]
+struct IndexedSymbol {
+    symbol: String,
+    name: String,
+    kind: String,
+    path: String,
+    start_line: usize,
+    end_line: usize,
+    start_byte: usize,
+    end_byte: usize,
+}
+
+#[derive(Clone, Debug)]
+struct IndexedReference {
+    symbol: String,
+    name: String,
+    path: String,
+    start_line: usize,
+    end_line: usize,
+    start_byte: usize,
+    end_byte: usize,
+}
+
+impl PersistentSemanticIndex {
+    fn missing(path: &Path) -> Self {
+        Self {
+            id: SOURCE_INDEX_ID.to_owned(),
+            provider: SOURCE_INDEX_PROVIDER.to_owned(),
+            version: SOURCE_INDEX_VERSION.to_owned(),
+            status: "missing".to_owned(),
+            error: format!("semantic index not found at {}", path.display()),
+            symbols: Vec::new(),
+            references: Vec::new(),
+        }
+    }
+
+    fn load(relation: RelationId, path: &Path) -> Result<Self, KernelError> {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::missing(path));
+            }
+            Err(error) => {
+                return Err(invalid_relation(
+                    relation,
+                    format!("failed to read semantic index {}: {error}", path.display()),
+                ));
+            }
+        };
+        let json = serde_json::from_slice::<JsonValue>(&bytes).map_err(|error| {
+            invalid_relation(
+                relation,
+                format!("failed to parse semantic index {}: {error}", path.display()),
+            )
+        })?;
+        if json.get("schema").and_then(JsonValue::as_str) != Some(SOURCE_INDEX_SCHEMA) {
+            return Err(invalid_relation(
+                relation,
+                format!("semantic index {} has unsupported schema", path.display()),
+            ));
+        }
+        let id = json
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(SOURCE_INDEX_ID)
+            .to_owned();
+        let provider = json
+            .get("provider")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(SOURCE_INDEX_PROVIDER)
+            .to_owned();
+        let version = json
+            .get("version")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(SOURCE_INDEX_VERSION)
+            .to_owned();
+        let status = json
+            .get("status")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("failed")
+            .to_owned();
+        let error = json
+            .get("error")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let symbols = json
+            .get("symbols")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(indexed_symbol_from_json)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(|error| invalid_relation(relation, error))?
+            .unwrap_or_default();
+        let references = json
+            .get("references")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(indexed_reference_from_json)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(|error| invalid_relation(relation, error))?
+            .unwrap_or_default();
+        Ok(Self {
+            id,
+            provider,
+            version,
+            status,
+            error,
+            symbols,
+            references,
+        })
+    }
+
+    fn is_complete(&self) -> bool {
+        self.status == "complete"
+    }
+
+    fn definition_at(&self, path: &str, byte_offset: usize) -> Vec<IndexedSymbol> {
+        if !self.is_complete() {
+            return Vec::new();
+        }
+        let Some(reference) = self
+            .references
+            .iter()
+            .find(|reference| {
+                reference.path == path
+                    && reference.start_byte <= byte_offset
+                    && byte_offset <= reference.end_byte
+            })
+            .or_else(|| {
+                self.references.iter().find(|reference| {
+                    reference.path == path
+                        && reference.start_byte <= byte_offset.saturating_add(1)
+                        && byte_offset <= reference.end_byte
+                })
+            })
+        else {
+            return Vec::new();
+        };
+        let mut symbols = self
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.name == reference.name)
+            .cloned()
+            .collect::<Vec<_>>();
+        symbols.sort_by_key(|symbol| {
+            (
+                symbol.path != reference.path,
+                symbol.start_byte.abs_diff(reference.start_byte),
+                symbol.path.clone(),
+                symbol.start_byte,
+            )
+        });
+        symbols
+    }
+
+    fn references_of(&self, symbol: &SemanticSymbol) -> Vec<IndexedReference> {
+        if !self.is_complete() {
+            return Vec::new();
+        }
+        self.references
+            .iter()
+            .filter(|reference| reference.symbol == symbol.id || reference.name == symbol.name)
+            .cloned()
+            .collect()
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Vec<IndexedSymbol> {
+        if !self.is_complete() {
+            return Vec::new();
+        }
+        let needle = query.to_ascii_lowercase();
+        let mut symbols = self
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.name.to_ascii_lowercase().contains(&needle))
+            .cloned()
+            .collect::<Vec<_>>();
+        symbols.sort_by_key(|symbol| {
+            (
+                !symbol.name.eq_ignore_ascii_case(query),
+                !symbol.name.to_ascii_lowercase().starts_with(&needle),
+                symbol.name.clone(),
+                symbol.path.clone(),
+                symbol.start_byte,
+            )
+        });
+        symbols.truncate(limit);
+        symbols
+    }
+}
+
+fn indexed_symbol_from_json(value: &JsonValue) -> Result<IndexedSymbol, String> {
+    Ok(IndexedSymbol {
+        symbol: json_string(value, "symbol")?,
+        name: json_string(value, "name")?,
+        kind: json_string(value, "kind")?,
+        path: json_string(value, "path")?,
+        start_line: json_usize(value, "start_line")?,
+        end_line: json_usize(value, "end_line")?,
+        start_byte: json_usize(value, "start_byte")?,
+        end_byte: json_usize(value, "end_byte")?,
+    })
+}
+
+fn indexed_reference_from_json(value: &JsonValue) -> Result<IndexedReference, String> {
+    Ok(IndexedReference {
+        symbol: json_string(value, "symbol")?,
+        name: json_string(value, "name")?,
+        path: json_string(value, "path")?,
+        start_line: json_usize(value, "start_line")?,
+        end_line: json_usize(value, "end_line")?,
+        start_byte: json_usize(value, "start_byte")?,
+        end_byte: json_usize(value, "end_byte")?,
+    })
+}
+
+fn json_string(value: &JsonValue, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("semantic index field {field} must be a string"))
+}
+
+fn json_usize(value: &JsonValue, field: &str) -> Result<usize, String> {
+    value
+        .get(field)
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| format!("semantic index field {field} must be a non-negative integer"))
+}
+
+pub fn build_source_index_file(root: &Path, output: &Path) -> Result<(), String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("invalid source index root {}: {error}", root.display()))?;
+    let index = build_source_index_json(&root)?;
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(&index)
+        .map_err(|error| format!("failed to encode source index: {error}"))?;
+    fs::write(output, bytes)
+        .map_err(|error| format!("failed to write source index {}: {error}", output.display()))
+}
+
+pub fn write_failed_source_index_file(
+    root: &Path,
+    output: &Path,
+    error: &str,
+) -> Result<(), String> {
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    let root = root
+        .canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf())
+        .display()
+        .to_string();
+    let index = json!({
+        "schema": SOURCE_INDEX_SCHEMA,
+        "id": SOURCE_INDEX_ID,
+        "provider": SOURCE_INDEX_PROVIDER,
+        "version": SOURCE_INDEX_VERSION,
+        "status": "failed",
+        "root": root,
+        "error": error,
+        "symbols": [],
+        "references": [],
+    });
+    let bytes = serde_json::to_vec_pretty(&index)
+        .map_err(|error| format!("failed to encode failed source index: {error}"))?;
+    fs::write(output, bytes).map_err(|error| {
+        format!(
+            "failed to write failed source index {}: {error}",
+            output.display()
+        )
+    })
+}
+
+fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
+    let mut files = rust_source_files(root)?;
+    files.sort();
+    let mut symbols = Vec::new();
+    let mut references = Vec::new();
+    for file in files {
+        let relative = file
+            .strip_prefix(root)
+            .map_err(|_| format!("indexed file escaped root: {}", file.display()))?;
+        let path = relative_path_string(relative)?;
+        let text = fs::read_to_string(&file)
+            .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+        let syntax = SyntaxDocument::parse(&path, &text);
+        for item in &syntax.outline {
+            if !is_index_identifier(&item.name) {
+                continue;
+            }
+            let symbol = indexed_symbol_id(&path, item.start_byte, item.end_byte, &item.name);
+            symbols.push(json!({
+                "symbol": symbol,
+                "name": item.name,
+                "kind": item.kind,
+                "path": path,
+                "start_line": item.start_line,
+                "end_line": item.end_line,
+                "start_byte": item.start_byte,
+                "end_byte": item.end_byte,
+            }));
+        }
+        for span in &syntax.highlights {
+            if !matches!(span.kind, "function" | "type" | "property" | "identifier") {
+                continue;
+            }
+            let Some(name) = text.get(span.start..span.end) else {
+                continue;
+            };
+            if !is_index_identifier(name) {
+                continue;
+            }
+            let start_line = byte_line(&syntax.line_starts, span.start);
+            let end_line = byte_line(&syntax.line_starts, span.end);
+            references.push(json!({
+                "symbol": "",
+                "name": name,
+                "path": path,
+                "start_line": start_line,
+                "end_line": end_line,
+                "start_byte": span.start,
+                "end_byte": span.end,
+            }));
+        }
+    }
+    symbols.sort_by_key(|value| {
+        (
+            value
+                .get("name")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            value
+                .get("path")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            value
+                .get("start_byte")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0),
+        )
+    });
+    references.sort_by_key(|value| {
+        (
+            value
+                .get("name")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            value
+                .get("path")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            value
+                .get("start_byte")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0),
+        )
+    });
+    symbols.dedup();
+    references.dedup();
+    let symbol_by_name = symbols
+        .iter()
+        .filter_map(|symbol| {
+            Some((
+                symbol.get("name")?.as_str()?.to_owned(),
+                symbol.get("symbol")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for reference in &mut references {
+        if let Some(name) = reference.get("name").and_then(JsonValue::as_str)
+            && let Some(symbol) = symbol_by_name.get(name)
+            && let Some(object) = reference.as_object_mut()
+        {
+            object.insert("symbol".to_owned(), JsonValue::String(symbol.clone()));
+        }
+    }
+    Ok(json!({
+        "schema": SOURCE_INDEX_SCHEMA,
+        "id": SOURCE_INDEX_ID,
+        "provider": SOURCE_INDEX_PROVIDER,
+        "version": SOURCE_INDEX_VERSION,
+        "status": "complete",
+        "root": root.display().to_string(),
+        "error": "",
+        "symbols": symbols,
+        "references": references,
+    }))
+}
+
+fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    collect_rust_source_files(root, &mut files)?;
+    Ok(files)
+}
+
+fn collect_rust_source_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = fs::read_dir(directory)
+        .map_err(|error| format!("failed to list {}: {error}", directory.display()))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| format!("failed to read entry in {}: {error}", directory.display()))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if matches!(
+                name.as_ref(),
+                ".git" | ".cache" | "target" | "node_modules" | ".playwright-mcp"
+            ) {
+                continue;
+            }
+            collect_rust_source_files(&path, files)?;
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn relative_path_string(path: &Path) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            return Err(format!(
+                "path contains unsupported component: {}",
+                path.display()
+            ));
+        };
+        parts.push(part.to_string_lossy().into_owned());
+    }
+    Ok(parts.join("/"))
+}
+
+fn indexed_symbol_id(path: &str, start_byte: usize, end_byte: usize, name: &str) -> String {
+    format!("idx:{path}:{start_byte}:{end_byte}:{name}")
+}
+
+fn byte_line(line_starts: &[usize], byte_offset: usize) -> usize {
+    line_starts.partition_point(|start| *start <= byte_offset)
+}
+
+fn is_index_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn parse_tree(language: SourceLanguage, text: &str) -> Option<(Language, tree_sitter::Tree)> {
@@ -1704,6 +2542,7 @@ mod tests {
     use super::*;
     use crate::{SourceRunner, TaskOutcome};
     use mica_var::Symbol;
+    use std::sync::{Mutex, OnceLock};
 
     fn load_source_relations(runner: &mut SourceRunner) {
         let root = env::current_dir().unwrap().display().to_string();
@@ -1726,10 +2565,67 @@ mod tests {
                  make_relation(:source/SyntaxNodeAt, 11)\n\
                  make_relation(:source/DefinitionAt, 13)\n\
                  make_relation(:source/ReferencesOf, 10)\n\
+                 make_relation(:source/SymbolSearch, 11)\n\
+                 make_relation(:source/SourceIndex, 1)\n\
+                 make_relation(:source/IndexRepository, 2)\n\
+                 make_relation(:source/IndexRevision, 2)\n\
+                 make_relation(:source/IndexProvider, 2)\n\
+                 make_relation(:source/IndexStatus, 2)\n\
+                 make_relation(:source/IndexVersion, 2)\n\
+                 make_relation(:source/IndexBuildError, 2)\n\
+                 make_relation(:source/Repository, 1)\n\
+                 make_relation(:source/Revision, 1)\n\
+                 assert source/Repository(#repo)\n\
+                 assert source/Revision(#rev)\n\
                  assert source/RepositoryRoot(#repo, {root:?})\n\
                  assert source/RevisionOf(#rev, #repo)"
             ))
             .unwrap();
+    }
+
+    fn with_source_provider_env<T>(f: impl FnOnce() -> T) -> T {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        f()
+    }
+
+    fn with_source_index_env<T>(
+        index_path: &Path,
+        rust_analyzer: Option<&Path>,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        with_source_provider_env(|| {
+            let old_index = env::var_os("MICA_SOURCE_INDEX");
+            let old_rust_analyzer = env::var_os("MICA_RUST_ANALYZER");
+            unsafe {
+                env::set_var("MICA_SOURCE_INDEX", index_path);
+                if let Some(rust_analyzer) = rust_analyzer {
+                    env::set_var("MICA_RUST_ANALYZER", rust_analyzer);
+                }
+            }
+            let result = f();
+            unsafe {
+                if let Some(old_index) = old_index {
+                    env::set_var("MICA_SOURCE_INDEX", old_index);
+                } else {
+                    env::remove_var("MICA_SOURCE_INDEX");
+                }
+                if let Some(old_rust_analyzer) = old_rust_analyzer {
+                    env::set_var("MICA_RUST_ANALYZER", old_rust_analyzer);
+                } else {
+                    env::remove_var("MICA_RUST_ANALYZER");
+                }
+            }
+            result
+        })
+    }
+
+    fn temp_index_path(name: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "mica-source-index-{name}-{}-{}.json",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ))
     }
 
     #[test]
@@ -1976,12 +2872,13 @@ mod tests {
             return;
         }
 
-        let mut runner = SourceRunner::new_empty();
-        load_source_relations(&mut runner);
-        let source = fs::read_to_string("src/source_provider.rs").unwrap();
-        let offset = source.find("read_utf8_file(metadata").unwrap() + 5;
+        with_source_provider_env(|| {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations(&mut runner);
+            let source = fs::read_to_string("src/source_provider.rs").unwrap();
+            let offset = source.find("read_utf8_file(metadata").unwrap() + 5;
 
-        let report = runner
+            let report = runner
             .run_source(&format!(
                 "for def in source/DefinitionAt(#repo, #rev, \"src/source_provider.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
                    if def[:target_path] == \"src/source_provider.rs\"\n\
@@ -1991,21 +2888,21 @@ mod tests {
                  return nothing"
             ))
             .unwrap();
-        let TaskOutcome::Complete { value, .. } = report.outcome else {
-            panic!("expected complete outcome, got {:?}", report.outcome);
-        };
-        let symbol = value
-            .with_map(|entries| {
-                entries
-                    .iter()
-                    .find(|(key, _)| key == &Value::symbol(Symbol::intern("symbol")))
-                    .map(|(_, value)| value.clone())
-            })
-            .flatten()
-            .and_then(|value| value.with_str(str::to_owned))
-            .expect("expected definition symbol");
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            let symbol = value
+                .with_map(|entries| {
+                    entries
+                        .iter()
+                        .find(|(key, _)| key == &Value::symbol(Symbol::intern("symbol")))
+                        .map(|(_, value)| value.clone())
+                })
+                .flatten()
+                .and_then(|value| value.with_str(str::to_owned))
+                .expect("expected definition symbol");
 
-        let report = runner
+            let report = runner
             .run_source(&format!(
                 "for reference in source/ReferencesOf(#repo, #rev, {symbol:?}, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)\n\
                    if reference[:path] == \"src/source_provider.rs\"\n\
@@ -2015,10 +2912,116 @@ mod tests {
                  return nothing"
             ))
             .unwrap();
-        assert!(matches!(
-            report.outcome,
-            TaskOutcome::Complete { value, .. } if value.with_str(|provider| provider.contains("rust-analyzer")).unwrap_or(false)
-        ));
+            assert!(matches!(
+                report.outcome,
+                TaskOutcome::Complete { value, .. } if value.with_str(|provider| provider.contains("rust-analyzer")).unwrap_or(false)
+            ));
+        });
+    }
+
+    #[test]
+    fn persistent_source_index_answers_navigation_without_rust_analyzer() {
+        let index_path = temp_index_path("navigation");
+        build_source_index_file(Path::new("."), &index_path).unwrap();
+        with_source_index_env(&index_path, Some(Path::new("/bin/false")), || {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations(&mut runner);
+            let source = fs::read_to_string("src/source_provider.rs").unwrap();
+            let offset = source.find("LocalSourceProvider::from_env").unwrap();
+
+            let report = runner
+                .run_source(&format!(
+                    "for def in source/DefinitionAt(#repo, #rev, \"src/source_provider.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
+                       if def[:name] == \"LocalSourceProvider\"\n\
+                         return [def[:symbol], def[:target_path], def[:start_line], def[:provider]]\n\
+                       end\n\
+                     end\n\
+                     return nothing"
+                ))
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            let symbol =
+                value
+                    .with_list(|values| {
+                        assert!(values[0]
+                        .with_str(|symbol| symbol.starts_with("idx:src/source_provider.rs:"))
+                        .unwrap_or(false));
+                        assert_eq!(values[1], Value::string("src/source_provider.rs"));
+                        assert!(values[2].as_int().is_some_and(|line| line > 0));
+                        assert!(
+                            values[3]
+                                .with_str(|provider| provider.contains("mica-source-index"))
+                                .unwrap_or(false)
+                        );
+                        values[0].clone()
+                    })
+                    .expect("expected indexed definition tuple");
+
+            let report = runner
+                .run_source(&format!(
+                    "let symbol = {symbol:?}\n\
+                     let count = 0\n\
+                     for reference in source/ReferencesOf(#repo, #rev, symbol, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)\n\
+                       if reference[:name] == \"LocalSourceProvider\" && reference[:provider] == \"mica-source-index/tree-sitter-rust 1\"\n\
+                         count = count + 1\n\
+                       end\n\
+                     end\n\
+                     return count"
+                ))
+                .unwrap();
+            assert!(matches!(
+                report.outcome,
+                TaskOutcome::Complete { value, .. } if value.as_int().is_some_and(|count| count > 1)
+            ));
+
+            let report = runner
+                .run_source(
+                    "for result in source/SymbolSearch(#repo, #rev, \"LocalSource\", 5, ?symbol, ?name, ?kind, ?path, ?start_line, ?end_line, ?provider)\n\
+                       if result[:name] == \"LocalSourceProvider\"\n\
+                         return result[:provider]\n\
+                       end\n\
+                     end\n\
+                     return nothing",
+                )
+                .unwrap();
+            assert!(matches!(
+                report.outcome,
+                TaskOutcome::Complete { value, .. } if value.with_str(|provider| provider.contains("mica-source-index")).unwrap_or(false)
+            ));
+        });
+        let _ = fs::remove_file(index_path);
+    }
+
+    #[test]
+    fn persistent_source_index_status_reports_build_failures() {
+        let index_path = temp_index_path("failed");
+        write_failed_source_index_file(Path::new("."), &index_path, "synthetic failure").unwrap();
+        with_source_index_env(&index_path, None, || {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations(&mut runner);
+            let report = runner
+                .run_source(
+                    "for index in source/SourceIndex(?index)\n\
+                       let status = one source/IndexStatus(index[:index], ?status)\n\
+                       let error = one source/IndexBuildError(index[:index], ?error)\n\
+                       return [status, error]\n\
+                     end\n\
+                     return nothing",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::string("failed"));
+                    assert_eq!(values[1], Value::string("synthetic failure"));
+                })
+                .expect("expected index status tuple");
+        });
+        let _ = fs::remove_file(index_path);
     }
 
     #[test]
@@ -2031,12 +3034,13 @@ mod tests {
             return;
         }
 
-        let mut runner = SourceRunner::new_empty();
-        load_source_relations(&mut runner);
-        let source = fs::read_to_string("src/source_provider.rs").unwrap();
-        let offset = source.find("fn read_utf8_file").unwrap() + "fn ".len();
+        with_source_provider_env(|| {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations(&mut runner);
+            let source = fs::read_to_string("src/source_provider.rs").unwrap();
+            let offset = source.find("fn read_utf8_file").unwrap() + "fn ".len();
 
-        let report = runner
+            let report = runner
             .run_source(&format!(
                 "for def in source/DefinitionAt(#repo, #rev, \"src/source_provider.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
                    if def[:target_path] == \"src/source_provider.rs\"\n\
@@ -2046,10 +3050,11 @@ mod tests {
                  return nothing"
             ))
             .unwrap();
-        assert!(matches!(
-            report.outcome,
-            TaskOutcome::Complete { value, .. } if value.with_str(|provider| provider.contains("rust-analyzer")).unwrap_or(false)
-        ));
+            assert!(matches!(
+                report.outcome,
+                TaskOutcome::Complete { value, .. } if value.with_str(|provider| provider.contains("rust-analyzer")).unwrap_or(false)
+            ));
+        });
     }
 
     #[test]
@@ -2062,12 +3067,13 @@ mod tests {
             return;
         }
 
-        let mut runner = SourceRunner::new_empty();
-        load_source_relations(&mut runner);
-        let source = fs::read_to_string("src/lib.rs").unwrap();
-        let offset = source.find("mod source_provider").unwrap() + "mod ".len();
+        with_source_provider_env(|| {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations(&mut runner);
+            let source = fs::read_to_string("src/lib.rs").unwrap();
+            let offset = source.find("mod source_provider").unwrap() + "mod ".len();
 
-        let report = runner
+            let report = runner
             .run_source(&format!(
                 "for def in source/DefinitionAt(#repo, #rev, \"src/lib.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
                    if def[:target_path] == \"src/source_provider.rs\"\n\
@@ -2077,10 +3083,11 @@ mod tests {
                  return nothing"
             ))
             .unwrap();
-        assert!(matches!(
-            report.outcome,
-            TaskOutcome::Complete { value, .. } if value.as_int() == Some(1)
-        ));
+            assert!(matches!(
+                report.outcome,
+                TaskOutcome::Complete { value, .. } if value.as_int() == Some(1)
+            ));
+        });
     }
 
     #[test]
@@ -2094,19 +3101,20 @@ mod tests {
             return;
         }
 
-        let workspace = env::current_dir()
-            .unwrap()
-            .parent()
-            .and_then(Path::parent)
-            .unwrap()
-            .display()
-            .to_string();
-        let mut runner = SourceRunner::new_empty();
-        load_source_relations_at(&mut runner, &workspace);
-        let source = fs::read_to_string("../runtime/src/lib.rs").unwrap();
-        let offset = source.find("mod source_provider").unwrap() + "mod ".len();
+        with_source_provider_env(|| {
+            let workspace = env::current_dir()
+                .unwrap()
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .display()
+                .to_string();
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations_at(&mut runner, &workspace);
+            let source = fs::read_to_string("../runtime/src/lib.rs").unwrap();
+            let offset = source.find("mod source_provider").unwrap() + "mod ".len();
 
-        let report = runner
+            let report = runner
             .run_source(&format!(
                 "for def in source/DefinitionAt(#repo, #rev, \"crates/runtime/src/lib.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
                    if def[:target_path] == \"crates/runtime/src/source_provider.rs\"\n\
@@ -2116,87 +3124,80 @@ mod tests {
                  return nothing"
             ))
             .unwrap();
-        assert!(matches!(
-            report.outcome,
-            TaskOutcome::Complete { value, .. } if value.as_int() == Some(1)
-        ));
+            assert!(matches!(
+                report.outcome,
+                TaskOutcome::Complete { value, .. } if value.as_int() == Some(1)
+            ));
+        });
     }
 
     #[test]
     fn source_app_select_symbol_sync_event_updates_session_state() {
-        if std::process::Command::new("rust-analyzer")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
+        let root_path = env::current_dir().unwrap().join(".cache").join(format!(
+            "source-app-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let src_dir = root_path.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(
+            src_dir.join("lib.rs"),
+            "mod source_provider;\nfn call_provider() { source_provider::boot(); }\n",
+        )
+        .unwrap();
+        fs::write(src_dir.join("source_provider.rs"), "pub fn boot() {}\n").unwrap();
+        let root = root_path.display().to_string();
+        let source_path = "src/lib.rs";
+        let source_text_path = root_path.join(source_path);
+        let index_path = temp_index_path("source-app");
+        build_source_index_file(Path::new(&root), &index_path).unwrap();
+        with_source_index_env(&index_path, Some(Path::new("/bin/false")), || {
+            let mut runner = SourceRunner::new_empty();
+            for filein in [
+                include_str!("../../../apps/shared/sync-host.mica"),
+                include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/ui-session.mica"),
+                include_str!("../../../apps/source/ui-compose.mica"),
+                include_str!("../../../apps/source/http.mica"),
+            ] {
+                runner.run_filein(filein).unwrap();
+            }
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
 
-        let current = env::current_dir().unwrap();
-        let (root, source_path, expected_path, source_text_path) =
-            if env::var_os("MICA_SOURCE_ROOT").is_some() {
-                (
-                    current
-                        .parent()
-                        .and_then(Path::parent)
-                        .unwrap()
-                        .display()
-                        .to_string(),
-                    "crates/runtime/src/lib.rs",
-                    "crates/runtime/src/source_provider.rs",
-                    "../runtime/src/lib.rs",
-                )
-            } else {
-                (
-                    current.display().to_string(),
-                    "src/lib.rs",
-                    "src/source_provider.rs",
-                    "src/lib.rs",
-                )
+            let source = fs::read_to_string(&source_text_path).unwrap();
+            let offset = source.find("boot").unwrap();
+            let report = runner
+                .run_source(&format!(
+                    "let fields = {{:path -> {source_path:?}, :byte -> {byte:?}}}\n\
+                     let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_select_symbol\", fields)\n\
+                     let path = one source/SelectedPath(endpoint(), ?path)\n\
+                     let symbol = one source/SelectedSymbol(endpoint(), ?symbol)\n\
+                     let revision = sync_view_revision(31)\n\
+                     let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
+                     return [handled, path, symbol != nothing, string_contains(payload, \"mica-source-index/tree-sitter-rust\")]",
+                    source_path = source_path,
+                    byte = offset.to_string()
+                ))
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
             };
-        let mut runner = SourceRunner::new_empty();
-        for filein in [
-            include_str!("../../../apps/shared/sync-host.mica"),
-            include_str!("../../../apps/shared/sync-dom.mica"),
-            include_str!("../../../apps/source/core.mica"),
-            include_str!("../../../apps/source/ui-session.mica"),
-            include_str!("../../../apps/source/ui-compose.mica"),
-            include_str!("../../../apps/source/http.mica"),
-        ] {
-            runner.run_filein(filein).unwrap();
-        }
-        runner
-            .run_source(&format!(
-                "retract source/RepositoryRoot(#source/repo_mica, _)\n\
-                 assert source/RepositoryRoot(#source/repo_mica, {root:?})"
-            ))
-            .unwrap();
-
-        let source = fs::read_to_string(source_text_path).unwrap();
-        let offset = source.find("mod source_provider").unwrap() + "mod ".len();
-        let report = runner
-            .run_source(&format!(
-                "let fields = {{:path -> {source_path:?}, :byte -> {byte:?}}}\n\
-                 let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_select_symbol\", fields)\n\
-                 let path = one source/SelectedPath(endpoint(), ?path)\n\
-                 let symbol = one source/SelectedSymbol(endpoint(), ?symbol)\n\
-                 let revision = sync_view_revision(31)\n\
-                 let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
-                 return [handled, path, symbol != nothing, payload != \"\"]",
-                source_path = source_path,
-                byte = offset.to_string()
-            ))
-            .unwrap();
-        let TaskOutcome::Complete { value, .. } = report.outcome else {
-            panic!("expected complete outcome, got {:?}", report.outcome);
-        };
-        value
-            .with_list(|values| {
-                assert_eq!(values[0], Value::bool(true));
-                assert_eq!(values[1], Value::string(expected_path));
-                assert_eq!(values[2], Value::bool(true));
-                assert_eq!(values[3], Value::bool(true));
-            })
-            .expect("expected select-symbol state tuple");
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::string("src/source_provider.rs"));
+                    assert_eq!(values[2], Value::bool(true));
+                    assert_eq!(values[3], Value::bool(true));
+                })
+                .expect("expected select-symbol state tuple");
+        });
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
     }
 }

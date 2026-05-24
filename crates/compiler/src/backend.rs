@@ -13,13 +13,13 @@
 
 use crate::{
     BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCatch, HirCollectionItem, HirExpr,
-    HirFunctionBody, HirItem, HirPlace, HirProgram, HirRecovery, HirRelationAtom,
-    HirScatterBinding, Literal, LocalKind, NodeId, ParamMode, SemanticProgram, Span, UnaryOp,
-    parse_semantic,
+    HirFunctionBody, HirItem, HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem,
+    HirRuleGuard, HirScatterBinding, Literal, LocalKind, NodeId, ParamMode, SemanticProgram, Span,
+    UnaryOp, parse_semantic,
 };
 use mica_relation_kernel::{
     Atom, ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Rule,
-    RuleDefinition, Term, Transaction, Tuple,
+    RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleGuard, Term, Transaction, Tuple,
 };
 use mica_var::{Identity, Symbol, Value, ValueError};
 use mica_vm::{
@@ -423,23 +423,13 @@ fn compile_rule_item(
     let head_terms = compile_rule_terms(semantic, context, &head.args)?;
     let body = body
         .iter()
-        .map(|atom| {
-            let relation =
-                context
-                    .relation(&atom.name)
-                    .ok_or_else(|| CompileError::UnknownRelation {
-                        node: atom.id,
-                        span: semantic.span(atom.id).cloned(),
-                        name: atom.name.clone(),
-                    })?;
-            let terms = compile_rule_terms(semantic, context, &atom.args)?;
-            Ok(if atom.negated {
-                Atom::negated(relation, terms)
-            } else {
-                Atom::positive(relation, terms)
+        .map(|item| {
+            Ok::<_, CompileError>(match item {
+                HirRuleBodyItem::Atom(atom) => compile_rule_atom(semantic, context, atom)?.into(),
+                HirRuleBodyItem::Guard(guard) => compile_rule_guard(semantic, context, guard)?,
             })
         })
-        .collect::<Result<Vec<_>, CompileError>>()?;
+        .collect::<Result<Vec<RuleBodyItem>, CompileError>>()?;
     if body.is_empty() {
         return Err(CompileError::Unsupported {
             node: *id,
@@ -448,6 +438,54 @@ fn compile_rule_item(
         });
     }
     Ok(Rule::new(head_relation, head_terms, body))
+}
+
+fn compile_rule_atom(
+    semantic: &SemanticProgram,
+    context: &CompileContext,
+    atom: &HirRelationAtom,
+) -> Result<Atom, CompileError> {
+    let relation = context
+        .relation(&atom.name)
+        .ok_or_else(|| CompileError::UnknownRelation {
+            node: atom.id,
+            span: semantic.span(atom.id).cloned(),
+            name: atom.name.clone(),
+        })?;
+    let terms = compile_rule_terms(semantic, context, &atom.args)?;
+    Ok(if atom.negated {
+        Atom::negated(relation, terms)
+    } else {
+        Atom::positive(relation, terms)
+    })
+}
+
+fn compile_rule_guard(
+    semantic: &SemanticProgram,
+    context: &CompileContext,
+    guard: &HirRuleGuard,
+) -> Result<RuleBodyItem, CompileError> {
+    let op = match guard.op {
+        BinaryOp::Eq => RuleComparisonOp::Eq,
+        BinaryOp::Ne => RuleComparisonOp::Ne,
+        BinaryOp::Lt => RuleComparisonOp::Lt,
+        BinaryOp::Le => RuleComparisonOp::Le,
+        BinaryOp::Gt => RuleComparisonOp::Gt,
+        BinaryOp::Ge => RuleComparisonOp::Ge,
+        _ => {
+            return Err(CompileError::Unsupported {
+                node: guard.id,
+                span: semantic.span(guard.id).cloned(),
+                message: "relation rule guards only support comparisons".to_owned(),
+            });
+        }
+    };
+    Ok(RuleGuard::new(
+        op,
+        compile_rule_term(semantic, context, &guard.left)?,
+        compile_rule_term(semantic, context, &guard.right)?,
+    )
+    .into())
 }
 
 fn compile_rule_terms(

@@ -40,11 +40,10 @@ mod tests {
     use crate::sync::*;
     use bytes::Bytes;
     use mica_driver::{CompioTaskDriver, DriverEvent};
-    use mica_host_protocol::SUPPORTED_DOM_TAGS;
     use mica_host_protocol::dom_event_payload_json;
     use mica_host_protocol::{
-        DomEventPayload, SyncEnvelope, SyncMessageKind, decode_sync_envelope,
-        encoded_sync_envelope, sync_payload_signature,
+        DomEventPayload, SUPPORTED_DOM_ATTRIBUTES, SUPPORTED_DOM_TAGS, SyncEnvelope,
+        SyncMessageKind, decode_sync_envelope, encoded_sync_envelope, sync_payload_signature,
     };
     use mica_runtime::SourceRunner;
     use mica_var::{Identity, Symbol, Value};
@@ -80,6 +79,18 @@ mod tests {
             assert!(
                 client.contains(&format!("\"{tag}\"")),
                 "sync-client.js is missing supported DOM tag {tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_client_accepts_protocol_attributes() {
+        let client = include_str!("../sync-client.js");
+
+        for attr in SUPPORTED_DOM_ATTRIBUTES {
+            assert!(
+                client.contains(&format!("\"{attr}\"")),
+                "sync-client.js is missing supported DOM attribute {attr}"
             );
         }
     }

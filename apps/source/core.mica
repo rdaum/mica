@@ -31,6 +31,8 @@ make_functional_relation(:source/FilePath, 2, [0])
 make_functional_relation(:source/FileTitle, 2, [0])
 make_functional_relation(:source/FileLanguage, 2, [0])
 make_functional_relation(:source/FileOrder, 2, [0])
+make_functional_relation(:source/FileIndex, 2, [0])
+make_functional_relation(:source/FileIndexVersion, 2, [0])
 make_relation(:source/RepositoryEntry, 6)
 make_relation(:source/FileText, 5)
 make_relation(:source/FileLines, 7)
@@ -40,6 +42,29 @@ make_relation(:source/SyntaxOutline, 10)
 make_relation(:source/SyntaxNodeAt, 11)
 make_relation(:source/DefinitionAt, 13)
 make_relation(:source/ReferencesOf, 10)
+make_relation(:source/SymbolSearch, 11)
+
+make_relation(:source/SourceIndex, 1)
+make_functional_relation(:source/IndexRepository, 2, [0])
+make_functional_relation(:source/IndexRevision, 2, [0])
+make_functional_relation(:source/IndexProvider, 2, [0])
+make_functional_relation(:source/IndexStatus, 2, [0])
+make_functional_relation(:source/IndexVersion, 2, [0])
+make_functional_relation(:source/IndexBuildError, 2, [0])
+
+make_relation(:source/Symbol, 1)
+make_functional_relation(:source/SymbolIndex, 2, [0])
+make_functional_relation(:source/SymbolRevision, 2, [0])
+make_functional_relation(:source/SymbolIndexVersion, 2, [0])
+
+make_relation(:source/RetrievalArtifact, 1)
+make_functional_relation(:source/RetrievalArtifactIndex, 2, [0])
+make_functional_relation(:source/RetrievalArtifactRevision, 2, [0])
+make_functional_relation(:source/RetrievalArtifactIndexVersion, 2, [0])
+
+make_relation(:source/StaleSourceFile, 2)
+make_relation(:source/StaleSymbol, 2)
+make_relation(:source/StaleRetrievalArtifact, 2)
 
 make_relation(:source/SourceSpan, 1)
 make_functional_relation(:source/SpanFile, 2, [0])
@@ -145,3 +170,38 @@ source/CanReadSourceFile(actor, file) :-
 source/CanReadSourceSpan(actor, span) :-
   source/SpanFile(span, file),
   source/CanReadSourceFile(actor, file)
+
+source/StaleSourceFile(index, file) :-
+  source/IndexRevision(index, index_revision),
+  source/FileRevision(file, file_revision),
+  index_revision != file_revision
+
+source/StaleSourceFile(index, file) :-
+  source/FileIndex(file, index),
+  source/FileIndexVersion(file, file_version),
+  source/IndexVersion(index, index_version),
+  file_version != index_version
+
+source/StaleSymbol(index, symbol) :-
+  source/SymbolIndex(symbol, index),
+  source/SymbolRevision(symbol, symbol_revision),
+  source/IndexRevision(index, index_revision),
+  symbol_revision != index_revision
+
+source/StaleSymbol(index, symbol) :-
+  source/SymbolIndex(symbol, index),
+  source/SymbolIndexVersion(symbol, symbol_version),
+  source/IndexVersion(index, index_version),
+  symbol_version != index_version
+
+source/StaleRetrievalArtifact(index, artifact) :-
+  source/RetrievalArtifactIndex(artifact, index),
+  source/RetrievalArtifactRevision(artifact, artifact_revision),
+  source/IndexRevision(index, index_revision),
+  artifact_revision != index_revision
+
+source/StaleRetrievalArtifact(index, artifact) :-
+  source/RetrievalArtifactIndex(artifact, index),
+  source/RetrievalArtifactIndexVersion(artifact, artifact_version),
+  source/IndexVersion(index, index_version),
+  artifact_version != index_version

@@ -77,6 +77,13 @@ input {
   font-size: 0.85rem;
 }
 
+.source-index-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.85rem;
+}
+
 .source-shell {
   display: grid;
   grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
@@ -402,13 +409,15 @@ input {
 }
 
 .source-reference-name,
-.source-reference-location {
+.source-reference-location,
+.source-reference-provider {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.source-reference-location {
+.source-reference-location,
+.source-reference-provider {
   color: rgba(246, 236, 215, 0.5);
   font-size: 0.75rem;
 }

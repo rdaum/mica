@@ -17,6 +17,25 @@ verb source/header_node(repository, revision)
   return dom_element("header", {:class -> "source-header"}, [title, deck, meta])
 end
 
+verb source/index_status_node(repository, revision)
+  for found in source/SourceIndex(?index)
+    let index = found[:index]
+    if source/IndexRepository(index, repository) && source/IndexRevision(index, revision)
+      let provider = one source/IndexProvider(index, ?provider)
+      let status = one source/IndexStatus(index, ?status)
+      let version = one source/IndexVersion(index, ?version)
+      let error = one source/IndexBuildError(index, ?error)
+      let chips = [source/meta_chip_node("provider", provider), source/meta_chip_node("version", version), source/meta_chip_node("status", status)]
+      if status != "complete" && error != nothing && error != ""
+        chips = [@chips, source/meta_chip_node("error", error)]
+      end
+      return dom_element("div", {:class -> "source-index-status"}, chips)
+    end
+  end
+
+  return dom_element("div", {:class -> "source-index-status"}, [source/meta_chip_node("index", "unavailable")])
+end
+
 verb source/repository_summary_node(repository, revision)
   let root = one source/RepositoryRoot(repository, ?root)
   let file_count = 0
@@ -26,7 +45,7 @@ verb source/repository_summary_node(repository, revision)
     end
   end
 
-  return dom_element("section", {:class -> "source-panel source-summary"}, [dom_element("h2", {}, [dom_text("Repository")]), dom_element("p", {}, [dom_text(root)]), dom_element("p", {:class -> "source-muted"}, [dom_text(string_concat(to_literal(file_count), " curated files"))])])
+  return dom_element("section", {:class -> "source-panel source-summary"}, [dom_element("h2", {}, [dom_text("Repository")]), dom_element("p", {}, [dom_text(root)]), dom_element("p", {:class -> "source-muted"}, [dom_text(string_concat(to_literal(file_count), " curated files"))]), source/index_status_node(repository, revision)])
 end
 
 verb source/file_button_node(path, title, language, selected)
@@ -163,6 +182,7 @@ verb source/symbol_reference_node(reference)
   let path = reference[:path]
   let line = reference[:start_line]
   let name = reference[:name]
+  let provider = reference[:provider]
   if name == nothing
     name = "reference"
   end
@@ -170,7 +190,7 @@ verb source/symbol_reference_node(reference)
   let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
   let hidden_line = dom_element("input", {:type -> "hidden", :name -> "line", :value -> to_literal(line)}, [])
   let line_label = string_concat(path, ":", to_literal(line))
-  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button"}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text(name)]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(line_label)])])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button"}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text(name)]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(line_label)]), dom_element("span", {:class -> "source-reference-provider"}, [dom_text(provider)])])
   return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> string_concat(path, ":", to_literal(reference[:start_byte]))}, [hidden_path, hidden_line, button])
 end
 
@@ -182,7 +202,7 @@ end
 verb source/symbol_panel_node(repository, revision)
   let symbol = source/current_symbol()
   if symbol == nothing
-    return dom_element("aside", {:class -> "source-symbol-panel"}, [dom_element("h3", {}, [dom_text("Symbol")]), source/empty_node("Select a highlighted Rust symbol to query rust-analyzer.")])
+    return dom_element("aside", {:class -> "source-symbol-panel"}, [dom_element("h3", {}, [dom_text("Symbol")]), source/empty_node("Select a highlighted Rust symbol to query the semantic provider.")])
   end
 
   let name = one source/SelectedSymbolName(endpoint(), ?name)

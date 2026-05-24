@@ -16,8 +16,8 @@ use crate::{
     ComposedRelationRead, ComposedTransactionRead, ComputedRelation, Conflict, ConflictKind,
     ConflictPolicy, Fact, FactChange, FactChangeKind, InMemoryCommitProvider, KernelError,
     MentionedFact, ProjectedStore, QueryPlan, RelationId, RelationKernel, RelationMetadata,
-    RelationRead, RelationWorkspace, Rule, SubjectFact, Term, TransientStore, Tuple,
-    method_program_id,
+    RelationRead, RelationWorkspace, Rule, RuleBodyItem, RuleComparisonOp, RuleGuard, SubjectFact,
+    Term, TransientStore, Tuple, method_program_id,
 };
 #[cfg(feature = "fjall-provider")]
 use crate::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
@@ -42,6 +42,10 @@ fn cap(value: u64) -> Value {
 
 fn var(name: &str) -> Term {
     Term::Var(Symbol::intern(name))
+}
+
+fn val(value: Value) -> Term {
+    Term::Value(value)
 }
 
 #[cfg(feature = "fjall-provider")]
@@ -1515,15 +1519,23 @@ fn fjall_provider_persists_and_loads_canonical_state() {
                 Rule::new(
                     rel(12),
                     [var("item")],
-                    [Atom::positive(rel(11), [var("item")])],
+                    [
+                        RuleBodyItem::from(Atom::positive(rel(11), [var("item")])),
+                        RuleBodyItem::from(RuleGuard::new(
+                            RuleComparisonOp::Ne,
+                            var("item"),
+                            val(int(88)),
+                        )),
+                    ],
                 ),
-                "Derived(item) :- Base(item)",
+                "Derived(item) :- Base(item), item != 88",
             )
             .unwrap();
 
         let mut tx = kernel.begin();
         tx.assert(rel(10), values_tuple.clone()).unwrap();
         tx.assert(rel(11), Tuple::from([int(77)])).unwrap();
+        tx.assert(rel(11), Tuple::from([int(88)])).unwrap();
         let result = tx.commit().unwrap();
         assert_eq!(provider.queued_version(), result.commit().version());
         assert_eq!(provider.completed_version(), result.commit().version());

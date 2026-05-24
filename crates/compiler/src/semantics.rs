@@ -14,8 +14,8 @@
 use crate::{
     Arg, Ast, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
     FunctionBody, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam,
-    HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirScatterBinding, Item, NodeId, Param,
-    ParamMode, ParseError, RecoveryClause, Span, parse_ast,
+    HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem, HirRuleGuard,
+    HirScatterBinding, Item, NodeId, Param, ParamMode, ParseError, RecoveryClause, Span, parse_ast,
 };
 use std::collections::{BTreeSet, HashMap};
 
@@ -308,8 +308,16 @@ impl<'a> Analyzer<'a> {
                 HirItem::Expr { expr, .. } => self.validate_supported_surface_expr(expr, false),
                 HirItem::RelationRule { head, body, .. } => {
                     self.validate_relation_atom_support(head, true, false, false);
-                    for atom in body {
-                        self.validate_relation_atom_support(atom, true, false, false);
+                    for item in body {
+                        match item {
+                            HirRuleBodyItem::Atom(atom) => {
+                                self.validate_relation_atom_support(atom, true, false, false);
+                            }
+                            HirRuleBodyItem::Guard(guard) => {
+                                self.validate_supported_surface_expr(&guard.left, false);
+                                self.validate_supported_surface_expr(&guard.right, false);
+                            }
+                        }
                     }
                 }
                 HirItem::Method { body, .. } => self.validate_supported_surface_items(body),
@@ -677,16 +685,16 @@ impl<'a> Analyzer<'a> {
                 let body = body
                     .iter()
                     .filter_map(|expr| {
-                        let atom = self.lower_rule_atom(expr, scope);
-                        if atom.is_none() {
+                        let item = self.lower_rule_body_item(expr, scope);
+                        if item.is_none() {
                             self.diagnostic(
                                 DiagnosticCode::InvalidRelationRule,
                                 expr.id(),
                                 expr.span().clone(),
-                                "relation rule body entries must be relation atoms",
+                                "relation rule body entries must be relation atoms or comparison guards",
                             );
                         }
-                        atom
+                        item
                     })
                     .collect();
                 HirItem::RelationRule {
@@ -726,6 +734,14 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn lower_rule_body_item(&mut self, expr: &Expr, scope: ScopeId) -> Option<HirRuleBodyItem> {
+        if let Some(atom) = self.lower_rule_atom(expr, scope) {
+            return Some(HirRuleBodyItem::Atom(atom));
+        }
+        self.lower_rule_guard(expr, scope)
+            .map(HirRuleBodyItem::Guard)
+    }
+
     fn lower_rule_atom(&mut self, expr: &Expr, scope: ScopeId) -> Option<HirRelationAtom> {
         match expr {
             Expr::Unary {
@@ -738,6 +754,36 @@ impl<'a> Analyzer<'a> {
             }),
             _ => self.lower_relation_atom(expr, scope),
         }
+    }
+
+    fn lower_rule_guard(&mut self, expr: &Expr, scope: ScopeId) -> Option<HirRuleGuard> {
+        let Expr::Binary {
+            id,
+            op,
+            left,
+            right,
+            ..
+        } = expr
+        else {
+            return None;
+        };
+        if !matches!(
+            op,
+            crate::BinaryOp::Eq
+                | crate::BinaryOp::Ne
+                | crate::BinaryOp::Lt
+                | crate::BinaryOp::Le
+                | crate::BinaryOp::Gt
+                | crate::BinaryOp::Ge
+        ) {
+            return None;
+        }
+        Some(HirRuleGuard {
+            id: *id,
+            op: *op,
+            left: self.lower_expr(left, scope),
+            right: self.lower_expr(right, scope),
+        })
     }
 
     fn lower_expr(&mut self, expr: &Expr, scope: ScopeId) -> HirExpr {

@@ -30,7 +30,7 @@ pub enum HirItem {
     RelationRule {
         id: NodeId,
         head: HirRelationAtom,
-        body: Vec<HirRelationAtom>,
+        body: Vec<HirRuleBodyItem>,
     },
     Method {
         id: NodeId,
@@ -231,6 +231,20 @@ pub struct HirRelationAtom {
     pub name: String,
     pub args: Vec<HirArg>,
     pub negated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HirRuleBodyItem {
+    Atom(HirRelationAtom),
+    Guard(HirRuleGuard),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirRuleGuard {
+    pub id: NodeId,
+    pub op: BinaryOp,
+    pub left: HirExpr,
+    pub right: HirExpr,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

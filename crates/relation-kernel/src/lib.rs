@@ -74,7 +74,10 @@ pub use provider::{CommitProvider, InMemoryCommitProvider, PersistedKernelState}
 #[cfg(feature = "fjall-provider")]
 pub use provider::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
 pub use query::{QueryPlan, RelationRead, ScanControl};
-pub use rules::{Atom, Rule, RuleDefinition, RuleError, RuleEvalError, RuleSet, Term};
+pub use rules::{
+    Atom, Rule, RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleError, RuleEvalError,
+    RuleGuard, RuleSet, Term,
+};
 pub use snapshot::{CatalogChange, Commit, CommitResult, FactChange, FactChangeKind, Snapshot};
 pub use transaction::Transaction;
 pub use transient::{ComposedRelationRead, ComposedTransactionRead, TransientStore};

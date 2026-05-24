@@ -15,7 +15,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use mica_compiler::parse;
 use mica_driver::{CompioTaskDriver, DriverError, DriverEvent};
 use mica_relation_kernel::FjallDurabilityMode;
-use mica_runtime::{EmbeddingProviderKind, FileinMode, SourceRunner, SuspendKind, TaskOutcome};
+use mica_runtime::{
+    EmbeddingProviderKind, FileinMode, SourceRunner, SuspendKind, TaskOutcome,
+    build_source_index_file, write_failed_source_index_file,
+};
 use mica_var::{Identity, Symbol};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -101,6 +104,16 @@ enum Command {
     Eval {
         #[arg(required = true, trailing_var_arg = true)]
         source: Vec<String>,
+    },
+    SourceIndex {
+        #[arg(long, default_value = ".", value_name = "DIR")]
+        root: PathBuf,
+        #[arg(
+            long,
+            default_value = ".cache/source-index/mica-worktree.json",
+            value_name = "FILE"
+        )]
+        output: PathBuf,
     },
     Repl,
 }
@@ -189,6 +202,19 @@ async fn run() -> Result<(), String> {
             print_report_and_follow(&session.driver, report).await;
             let _ = session.driver.close_endpoint(session.endpoint);
             Ok(())
+        }
+        Command::SourceIndex { root, output } => {
+            reject_actor(&cli)?;
+            match build_source_index_file(root, output) {
+                Ok(()) => {
+                    println!("wrote source index {}", output.display());
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = write_failed_source_index_file(root, output, &error);
+                    Err(error)
+                }
+            }
         }
         Command::Repl => repl(&cli).await,
     }

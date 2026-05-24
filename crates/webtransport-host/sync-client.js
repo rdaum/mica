@@ -17,47 +17,176 @@ const KIND_NAMES = new Map([
   [SyncKind.ViewDelta, "ViewDelta"],
 ]);
 const SUPPORTED_TAGS = new Set([
+  "a",
+  "abbr",
+  "address",
+  "area",
+  "article",
   "aside",
+  "audio",
+  "b",
+  "bdi",
+  "bdo",
+  "blockquote",
+  "br",
   "button",
+  "canvas",
+  "caption",
+  "cite",
   "code",
+  "col",
+  "colgroup",
+  "data",
+  "datalist",
+  "dd",
+  "del",
   "details",
+  "dfn",
+  "dialog",
   "div",
+  "dl",
+  "dt",
+  "em",
+  "fieldset",
+  "figcaption",
+  "figure",
+  "footer",
   "form",
   "h1",
   "h2",
   "h3",
+  "h4",
+  "h5",
+  "h6",
   "header",
+  "hr",
+  "i",
+  "img",
   "input",
+  "ins",
+  "kbd",
+  "label",
+  "legend",
   "li",
   "main",
+  "map",
+  "mark",
+  "menu",
+  "meter",
   "nav",
+  "ol",
+  "optgroup",
+  "option",
+  "output",
   "p",
+  "picture",
   "pre",
+  "progress",
+  "q",
+  "rp",
+  "rt",
+  "ruby",
+  "s",
+  "samp",
   "section",
+  "select",
+  "small",
+  "source",
   "span",
   "strong",
+  "sub",
   "summary",
+  "sup",
+  "table",
+  "tbody",
+  "td",
+  "template",
+  "textarea",
+  "tfoot",
+  "th",
+  "thead",
+  "time",
+  "tr",
+  "track",
+  "u",
   "ul",
+  "var",
+  "video",
+  "wbr",
 ]);
 const SUPPORTED_ATTRIBUTES = new Set([
+  "accept",
+  "accept-charset",
+  "action",
+  "alt",
+  "aria-busy",
+  "aria-checked",
+  "aria-controls",
+  "aria-current",
+  "aria-describedby",
+  "aria-disabled",
+  "aria-expanded",
+  "aria-hidden",
   "aria-label",
+  "aria-labelledby",
   "aria-live",
+  "aria-pressed",
+  "aria-selected",
   "autocomplete",
+  "autofocus",
+  "checked",
+  "class",
+  "cols",
+  "colspan",
   "data-command",
   "data-entity",
-  "data-sync-follow",
   "data-sync-action",
   "data-sync-event",
+  "data-sync-follow",
   "data-sync-key",
   "data-sync-on-viewport-top",
   "data-sync-stable-top",
   "data-sync-viewport-threshold",
-  "class",
+  "datetime",
+  "disabled",
+  "download",
+  "draggable",
+  "for",
+  "height",
+  "hidden",
+  "href",
   "id",
+  "lang",
+  "list",
+  "loading",
+  "max",
+  "maxlength",
+  "method",
+  "min",
+  "minlength",
+  "multiple",
   "name",
+  "open",
+  "pattern",
   "placeholder",
+  "readonly",
+  "rel",
+  "required",
+  "role",
+  "rows",
+  "rowspan",
+  "selected",
+  "size",
+  "span",
+  "src",
+  "step",
+  "tabindex",
+  "target",
+  "title",
   "type",
   "value",
+  "width",
+  "wrap",
 ]);
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
@@ -557,9 +686,32 @@ function removeSingleAttribute(element, name) {
 }
 
 function validateAttributeName(name) {
-  if (!SUPPORTED_ATTRIBUTES.has(name)) {
+  if (!isSupportedAttribute(name)) {
     throw new Error(`unsupported snapshot attribute: ${name}`);
   }
+}
+
+function isSupportedAttribute(name) {
+  return (
+    SUPPORTED_ATTRIBUTES.has(name) ||
+    hasCustomAttributePrefix(name, "aria-") ||
+    hasCustomAttributePrefix(name, "data-")
+  );
+}
+
+function hasCustomAttributePrefix(name, prefix) {
+  if (!name.startsWith(prefix) || name.length === prefix.length) {
+    return false;
+  }
+  for (let index = prefix.length; index < name.length; index += 1) {
+    const code = name.charCodeAt(index);
+    const isLowercase = code >= 0x61 && code <= 0x7a;
+    const isDigit = code >= 0x30 && code <= 0x39;
+    if (!isLowercase && !isDigit && code !== 0x2d) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function reconcileChildren(parent, nodes) {

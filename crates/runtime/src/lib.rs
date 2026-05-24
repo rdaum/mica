@@ -30,6 +30,7 @@ pub use mica_vm::{
     RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget, SuspendKind, VmHostContext,
     VmHostResponse, VmState,
 };
+pub use source_provider::{build_source_index_file, write_failed_source_index_file};
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{
     Effect, EffectLog, SharedTaskManager, SuspendedTask, TaskManager, TaskManagerError,
@@ -41,8 +42,8 @@ use mica_compiler::{
     compile_semantic, install_methods, install_rules_from_source, parse, parse_ast, parse_semantic,
 };
 use mica_host_protocol::{
-    DomNode, SUPPORTED_DOM_ATTRIBUTES, SUPPORTED_DOM_TAGS, diff_dom_nodes, snapshot_payload_json,
-    sync_payload_signature,
+    DomNode, diff_dom_nodes, is_supported_dom_attribute, is_supported_dom_tag,
+    snapshot_payload_json, sync_payload_signature,
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
@@ -3532,15 +3533,13 @@ fn dom_attr_value(value: &Value) -> Result<String, RuntimeError> {
 }
 
 fn validate_dom_tag(tag: &str) -> Result<(), RuntimeError> {
-    SUPPORTED_DOM_TAGS
-        .contains(&tag)
+    is_supported_dom_tag(tag)
         .then_some(())
         .ok_or_else(|| invalid_builtin_call("dom_html", format!("unsupported DOM tag: {tag}")))
 }
 
 fn validate_dom_attr(name: &str) -> Result<(), RuntimeError> {
-    SUPPORTED_DOM_ATTRIBUTES
-        .contains(&name)
+    is_supported_dom_attribute(name)
         .then_some(())
         .ok_or_else(|| {
             invalid_builtin_call("dom_html", format!("unsupported DOM attribute: {name}"))
@@ -5856,6 +5855,22 @@ mod tests {
             TaskOutcome::Complete { value, .. }
                 if value == Value::string("<h4>References</h4>")
         ));
+        let expanded_dom = runner
+            .run_source(
+                "return dom_html(dom_element(\"img\", {:alt -> \"Logo\", \"aria-describedby\" -> \"caption\", \"data-route\" -> \"home\", :loading -> \"lazy\", :src -> \"/logo.png\"}, []))",
+            )
+            .unwrap()
+            .outcome;
+        let TaskOutcome::Complete { value, .. } = expanded_dom else {
+            panic!("expanded DOM primitive did not complete");
+        };
+        let html = value.with_str(str::to_owned).unwrap();
+        assert!(html.starts_with("<img "));
+        assert!(html.contains("alt=\"Logo\""));
+        assert!(html.contains("aria-describedby=\"caption\""));
+        assert!(html.contains("data-route=\"home\""));
+        assert!(html.contains("loading=\"lazy\""));
+        assert!(html.contains("src=\"/logo.png\""));
         assert!(matches!(
             runner
                 .run_source(
@@ -8085,6 +8100,36 @@ mod tests {
         assert_eq!(
             query.render(),
             "task 9 complete: [[:obj: #alice], [:obj: #lamp]] (retries: 0)"
+        );
+    }
+
+    #[test]
+    fn runner_installs_relation_rules_with_comparison_guards() {
+        let mut runner = SourceRunner::new_empty();
+        let report = runner
+            .run_source(
+                "make_identity(:current)\n\
+                 make_identity(:rev1)\n\
+                 make_identity(:rev2)\n\
+                 make_identity(:file_a)\n\
+                 make_identity(:file_b)\n\
+                 make_relation(:IndexRevision, 2)\n\
+                 make_relation(:FileRevision, 2)\n\
+                 make_relation(:StaleFile, 2)\n\
+                 assert IndexRevision(#current, #rev1)\n\
+                 assert FileRevision(#file_a, #rev1)\n\
+                 assert FileRevision(#file_b, #rev2)\n\
+                 StaleFile(index, file) :-\n\
+                   IndexRevision(index, index_revision),\n\
+                   FileRevision(file, file_revision),\n\
+                   index_revision != file_revision\n\
+                 return StaleFile(#current, ?file)",
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.render(),
+            "task 13 complete: [[:file: #file_b]] (retries: 0)"
         );
     }
 
