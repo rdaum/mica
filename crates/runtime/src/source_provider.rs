@@ -590,12 +590,33 @@ impl ComputedRelation for DefinitionAtRelation {
                 "byte offset is beyond source file length",
             ));
         }
-        let position = byte_offset_to_lsp_position(metadata.id(), &text, byte_offset)?;
-        let locations = self
+        let mut locations = self
             .provider
             .rust_analyzer
-            .definition(&rust_workspace_root(&root), &file, &text, position)
+            .definition(
+                &rust_workspace_root(&root),
+                &file,
+                &text,
+                byte_offset_to_lsp_position(metadata.id(), &text, byte_offset)?,
+            )
             .map_err(|error| invalid_relation(metadata.id(), error))?;
+        if locations.is_empty()
+            && let Some(ch) = text.get(byte_offset..).and_then(|text| text.chars().next())
+        {
+            let inner_offset = byte_offset + ch.len_utf8();
+            if inner_offset <= text.len() {
+                locations = self
+                    .provider
+                    .rust_analyzer
+                    .definition(
+                        &rust_workspace_root(&root),
+                        &file,
+                        &text,
+                        byte_offset_to_lsp_position(metadata.id(), &text, inner_offset)?,
+                    )
+                    .map_err(|error| invalid_relation(metadata.id(), error))?;
+            }
+        }
         let mut rows = Vec::new();
         for location in locations {
             let Some(location) = semantic_location(metadata.id(), &root, location)? else {
@@ -956,6 +977,9 @@ fn tree_highlight_kind(kind: &str, parent_kind: Option<&str>) -> Option<&'static
     {
         return Some("function");
     }
+    if kind == "identifier" {
+        return Some("identifier");
+    }
     if kind == "field_identifier" || kind == "property_identifier" {
         return Some("property");
     }
@@ -1305,6 +1329,14 @@ fn syntax_segment(
             Value::symbol(Symbol::intern("end_col")),
             int_value(relation, byte_column(line_start, end) as i64)?,
         ),
+        (
+            Value::symbol(Symbol::intern("start_byte")),
+            int_value(relation, start as i64)?,
+        ),
+        (
+            Value::symbol(Symbol::intern("end_byte")),
+            int_value(relation, end as i64)?,
+        ),
         (Value::symbol(Symbol::intern("kind")), Value::string(kind)),
         (Value::symbol(Symbol::intern("text")), Value::string(text)),
     ]))
@@ -1382,20 +1414,31 @@ fn semantic_location(
     })?;
     let path = path_to_mica_string(relation, relative)?;
     let text = read_utf8_file(relation, &file)?;
-    let start_byte = lsp_position_to_byte_offset(
+    let start = lsp_position_to_byte_offset(
         relation,
         &text,
         location.start_line,
         location.start_character,
-    )?;
-    let end_byte =
-        lsp_position_to_byte_offset(relation, &text, location.end_line, location.end_character)?;
+    );
+    let end =
+        lsp_position_to_byte_offset(relation, &text, location.end_line, location.end_character);
+    let (start_byte, end_byte, start_line, end_line) = match (start, end) {
+        (Ok(start_byte), Ok(end_byte)) => (
+            start_byte,
+            end_byte,
+            location.start_line + 1,
+            location.end_line + 1,
+        ),
+        _ => (0, 0, 1, 1),
+    };
     let syntax = SyntaxDocument::parse(&path, &text);
     let node = syntax.node_at(start_byte);
     let name = node
         .as_ref()
         .map(|node| node.name.clone())
         .or_else(|| text.get(start_byte..end_byte).map(str::to_owned))
+        .filter(|name| !name.is_empty())
+        .or_else(|| file.file_stem()?.to_str().map(str::to_owned))
         .unwrap_or_else(|| "symbol".to_owned());
     let kind = node
         .as_ref()
@@ -1405,8 +1448,8 @@ fn semantic_location(
         path,
         name,
         kind,
-        start_line: location.start_line + 1,
-        end_line: location.end_line + 1,
+        start_line,
+        end_line,
         start_byte,
         end_byte,
         provider: location.provider,
@@ -1664,6 +1707,10 @@ mod tests {
 
     fn load_source_relations(runner: &mut SourceRunner) {
         let root = env::current_dir().unwrap().display().to_string();
+        load_source_relations_at(runner, &root);
+    }
+
+    fn load_source_relations_at(runner: &mut SourceRunner, root: &str) {
         runner
             .run_source(&format!(
                 "make_identity(:repo)\n\
@@ -1972,5 +2019,181 @@ mod tests {
             report.outcome,
             TaskOutcome::Complete { value, .. } if value.with_str(|provider| provider.contains("rust-analyzer")).unwrap_or(false)
         ));
+    }
+
+    #[test]
+    fn rust_analyzer_definition_accepts_identifier_start_offset() {
+        if std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+
+        let mut runner = SourceRunner::new_empty();
+        load_source_relations(&mut runner);
+        let source = fs::read_to_string("src/source_provider.rs").unwrap();
+        let offset = source.find("fn read_utf8_file").unwrap() + "fn ".len();
+
+        let report = runner
+            .run_source(&format!(
+                "for def in source/DefinitionAt(#repo, #rev, \"src/source_provider.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
+                   if def[:target_path] == \"src/source_provider.rs\"\n\
+                     return def[:provider]\n\
+                   end\n\
+                 end\n\
+                 return nothing"
+            ))
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value.with_str(|provider| provider.contains("rust-analyzer")).unwrap_or(false)
+        ));
+    }
+
+    #[test]
+    fn rust_analyzer_module_definition_can_link_to_target_file() {
+        if std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+
+        let mut runner = SourceRunner::new_empty();
+        load_source_relations(&mut runner);
+        let source = fs::read_to_string("src/lib.rs").unwrap();
+        let offset = source.find("mod source_provider").unwrap() + "mod ".len();
+
+        let report = runner
+            .run_source(&format!(
+                "for def in source/DefinitionAt(#repo, #rev, \"src/lib.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
+                   if def[:target_path] == \"src/source_provider.rs\"\n\
+                     return def[:start_line]\n\
+                   end\n\
+                 end\n\
+                 return nothing"
+            ))
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value.as_int() == Some(1)
+        ));
+    }
+
+    #[test]
+    fn rust_analyzer_module_definition_uses_workspace_relative_path() {
+        if std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .is_err()
+            || env::var_os("MICA_SOURCE_ROOT").is_none()
+        {
+            return;
+        }
+
+        let workspace = env::current_dir()
+            .unwrap()
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .display()
+            .to_string();
+        let mut runner = SourceRunner::new_empty();
+        load_source_relations_at(&mut runner, &workspace);
+        let source = fs::read_to_string("../runtime/src/lib.rs").unwrap();
+        let offset = source.find("mod source_provider").unwrap() + "mod ".len();
+
+        let report = runner
+            .run_source(&format!(
+                "for def in source/DefinitionAt(#repo, #rev, \"crates/runtime/src/lib.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
+                   if def[:target_path] == \"crates/runtime/src/source_provider.rs\"\n\
+                     return def[:start_line]\n\
+                   end\n\
+                 end\n\
+                 return nothing"
+            ))
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value.as_int() == Some(1)
+        ));
+    }
+
+    #[test]
+    fn source_app_select_symbol_sync_event_updates_session_state() {
+        if std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+
+        let current = env::current_dir().unwrap();
+        let (root, source_path, expected_path, source_text_path) =
+            if env::var_os("MICA_SOURCE_ROOT").is_some() {
+                (
+                    current
+                        .parent()
+                        .and_then(Path::parent)
+                        .unwrap()
+                        .display()
+                        .to_string(),
+                    "crates/runtime/src/lib.rs",
+                    "crates/runtime/src/source_provider.rs",
+                    "../runtime/src/lib.rs",
+                )
+            } else {
+                (
+                    current.display().to_string(),
+                    "src/lib.rs",
+                    "src/source_provider.rs",
+                    "src/lib.rs",
+                )
+            };
+        let mut runner = SourceRunner::new_empty();
+        for filein in [
+            include_str!("../../../apps/shared/sync-host.mica"),
+            include_str!("../../../apps/shared/sync-dom.mica"),
+            include_str!("../../../apps/source/core.mica"),
+            include_str!("../../../apps/source/ui-session.mica"),
+            include_str!("../../../apps/source/ui-compose.mica"),
+            include_str!("../../../apps/source/http.mica"),
+        ] {
+            runner.run_filein(filein).unwrap();
+        }
+        runner
+            .run_source(&format!(
+                "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                 assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+            ))
+            .unwrap();
+
+        let source = fs::read_to_string(source_text_path).unwrap();
+        let offset = source.find("mod source_provider").unwrap() + "mod ".len();
+        let report = runner
+            .run_source(&format!(
+                "let fields = {{:path -> {source_path:?}, :byte -> {byte:?}}}\n\
+                 let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_select_symbol\", fields)\n\
+                 let path = one source/SelectedPath(endpoint(), ?path)\n\
+                 let symbol = one source/SelectedSymbol(endpoint(), ?symbol)\n\
+                 return [handled, path, symbol != nothing]",
+                source_path = source_path,
+                byte = offset.to_string()
+            ))
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected complete outcome, got {:?}", report.outcome);
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::bool(true));
+                assert_eq!(values[1], Value::string(expected_path));
+                assert_eq!(values[2], Value::bool(true));
+            })
+            .expect("expected select-symbol state tuple");
     }
 }

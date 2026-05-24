@@ -92,7 +92,7 @@ verb source/span_list_node(path)
   return dom_element("ul", {:class -> "source-span-list"}, spans)
 end
 
-verb source/code_segment_node(segment)
+verb source/code_segment_node(path, segment)
   let kind = segment[:kind]
   let text = segment[:text]
   if kind == nothing
@@ -102,7 +102,16 @@ verb source/code_segment_node(segment)
     text = ""
   end
 
-  return dom_element("span", {:class -> string_concat("source-token source-token-", kind)}, [dom_text(text)])
+  let class = string_concat("source-token source-token-", kind)
+  let byte = segment[:start_byte]
+  if byte != nothing && (kind == "function" || kind == "type" || kind == "property" || kind == "identifier")
+    let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+    let hidden_byte = dom_element("input", {:type -> "hidden", :name -> "byte", :value -> to_literal(byte)}, [])
+    let button = dom_element("button", {:type -> "submit", :class -> string_concat(class, " source-token-link")}, [dom_text(text)])
+    return dom_element("form", {:class -> "source-token-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_select_symbol", "data-sync-key" -> string_concat(path, ":", to_literal(byte))}, [hidden_path, hidden_byte, button])
+  end
+
+  return dom_element("span", {:class -> class}, [dom_text(text)])
 end
 
 verb source/code_line_node(path, line, selected_line, segments)
@@ -113,11 +122,11 @@ verb source/code_line_node(path, line, selected_line, segments)
 
   let children = []
   for segment in segments
-    children = [@children, source/code_segment_node(segment)]
+    children = [@children, source/code_segment_node(path, segment)]
   end
 
   let number = dom_element("span", {:class -> "source-line-number", :id -> string_concat("L", to_literal(line))}, [dom_text(to_literal(line))])
-  let code = dom_element("code", {:class -> "source-line-text"}, children)
+  let code = dom_element("span", {:class -> "source-line-text"}, children)
   return dom_element("div", {:class -> class, "data-sync-key" -> string_concat(path, ":", to_literal(line))}, [number, code])
 end
 
@@ -150,6 +159,62 @@ verb source/outline_panel_node(repository, revision, path)
   return dom_element("aside", {:class -> "source-outline"}, [dom_element("h3", {}, [dom_text("Outline")]), dom_element("div", {:class -> "source-outline-list"}, items)])
 end
 
+verb source/symbol_reference_node(reference)
+  let path = reference[:path]
+  let line = reference[:start_line]
+  let name = reference[:name]
+  if name == nothing
+    name = "reference"
+  end
+
+  let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let hidden_line = dom_element("input", {:type -> "hidden", :name -> "line", :value -> to_literal(line)}, [])
+  let line_label = string_concat(path, ":", to_literal(line))
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button"}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text(name)]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(line_label)])])
+  return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> string_concat(path, ":", to_literal(reference[:start_byte]))}, [hidden_path, hidden_line, button])
+end
+
+verb source/find_references_button_node(symbol)
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button"}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text("Find references")]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(symbol)])])
+  return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_find_references", "data-sync-key" -> string_concat("references:", symbol)}, [button])
+end
+
+verb source/symbol_panel_node(repository, revision)
+  let symbol = source/current_symbol()
+  if symbol == nothing
+    return dom_element("aside", {:class -> "source-symbol-panel"}, [dom_element("h3", {}, [dom_text("Symbol")]), source/empty_node("Select a highlighted Rust symbol to query rust-analyzer.")])
+  end
+
+  let name = one source/SelectedSymbolName(endpoint(), ?name)
+  let kind = one source/SelectedSymbolKind(endpoint(), ?kind)
+  let path = one source/SelectedDefinitionPath(endpoint(), ?path)
+  let start_line = one source/SelectedDefinitionStartLine(endpoint(), ?line)
+  let end_line = one source/SelectedDefinitionEndLine(endpoint(), ?line)
+  let provider = one source/SelectedSymbolProvider(endpoint(), ?provider)
+  let span = string_concat(path, ":", to_literal(start_line), "-", to_literal(end_line))
+  let references_open = one source/SelectedReferencesOpen(endpoint(), ?open)
+  let refs = []
+  let ref_count = 0
+  if references_open == true
+    for reference in source/ReferencesOf(repository, revision, symbol, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)
+      ref_count = ref_count + 1
+      if ref_count <= 30
+        refs = [@refs, source/symbol_reference_node(reference)]
+      end
+    end
+  end
+
+  let summary = dom_element("div", {:class -> "source-symbol-summary"}, [dom_element("strong", {:class -> "source-symbol-name"}, [dom_text(name)]), source/meta_chip_node("kind", kind), source/meta_chip_node("definition", span), source/meta_chip_node("references", to_literal(ref_count)), source/meta_chip_node("provider", provider)])
+  let reference_list = source/find_references_button_node(symbol)
+  if references_open == true && refs != []
+    reference_list = dom_element("div", {:class -> "source-reference-list"}, refs)
+  elseif references_open == true
+    reference_list = source/empty_node("No references returned for this symbol.")
+  end
+
+  return dom_element("aside", {:class -> "source-symbol-panel"}, [dom_element("h3", {}, [dom_text("Symbol")]), summary, dom_element("h4", {}, [dom_text("References")]), reference_list])
+end
+
 verb source/code_panel_node(path)
   let repository = source/current_repository()
   let selected_revision = source/current_revision()
@@ -159,16 +224,17 @@ verb source/code_panel_node(path)
   let language = source/file_language(path)
   let rows = []
   let hash = ""
-  for row in source/SyntaxLine(repository, selected_revision, path, start_line, 180, ?line, ?segments, ?hash)
+  for row in source/SyntaxLine(repository, selected_revision, path, start_line, 60, ?line, ?segments, ?hash)
     hash = row[:hash]
     rows = [@rows, source/code_line_node(path, row[:line], selected_line, row[:segments])]
   end
   let title_group = dom_element("div", {}, [dom_element("h2", {}, [dom_text(title)]), dom_element("p", {:class -> "source-path"}, [dom_text(path)])])
   let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language), source/meta_chip_node("hash", hash)])
-  let code = dom_element("pre", {:class -> "source-code"}, rows)
+  let code = dom_element("div", {:class -> "source-code"}, rows)
   let outline = source/outline_panel_node(repository, selected_revision, path)
+  let symbol = source/symbol_panel_node(repository, selected_revision)
   let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Seeded spans")]), source/span_list_node(path)])
-  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, dom_element("div", {:class -> "source-code-grid"}, [code, outline]), spans])
+  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, dom_element("div", {:class -> "source-code-grid"}, [code, dom_element("div", {:class -> "source-side-panels"}, [outline, symbol])]), spans])
 end
 
 verb source/app_node(view, revision)

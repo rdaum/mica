@@ -197,7 +197,7 @@ input {
 
 .source-code-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(14rem, 20rem);
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 24rem);
   align-items: start;
   margin: 1rem;
   overflow: hidden;
@@ -232,6 +232,25 @@ input {
 
 .source-line-text {
   white-space: pre;
+}
+
+.source-token-form {
+  display: inline;
+  margin: 0;
+}
+
+.source-token-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.source-token-link:hover {
+  color: #ffe39b;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
 }
 
 .source-token-comment {
@@ -271,8 +290,14 @@ input {
   text-decoration: underline wavy;
 }
 
-.source-outline {
+.source-side-panels {
+  display: grid;
+  gap: 0;
+  min-width: 0;
   border-left: 1px solid rgba(246, 236, 215, 0.16);
+}
+
+.source-outline {
   padding: 1rem 1rem 1rem 1rem;
   color: var(--source-code-ink);
   font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
@@ -316,6 +341,69 @@ input {
 }
 
 .source-outline-meta {
+  color: rgba(246, 236, 215, 0.5);
+  font-size: 0.75rem;
+}
+
+.source-symbol-panel {
+  border-top: 1px solid rgba(246, 236, 215, 0.16);
+  padding: 1rem;
+  color: var(--source-code-ink);
+  font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+}
+
+.source-symbol-panel h3,
+.source-symbol-panel h4 {
+  color: rgba(246, 236, 215, 0.74);
+}
+
+.source-symbol-summary {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.source-symbol-name {
+  overflow: hidden;
+  color: #f4d06f;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-reference-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.source-reference-form {
+  margin: 0;
+}
+
+.source-reference-button {
+  display: grid;
+  width: 100%;
+  gap: 0.15rem;
+  border: 1px solid transparent;
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--source-code-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-reference-button:hover {
+  border-color: rgba(127, 211, 207, 0.55);
+  background: rgba(127, 211, 207, 0.12);
+}
+
+.source-reference-name,
+.source-reference-location {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-reference-location {
   color: rgba(246, 236, 215, 0.5);
   font-size: 0.75rem;
 }
@@ -377,9 +465,8 @@ input {
     grid-template-columns: 1fr;
   }
 
-  .source-outline {
+  .source-side-panels {
     border-top: 1px solid rgba(246, 236, 215, 0.16);
     border-left: 0;
-    padding: 1rem;
   }
 }

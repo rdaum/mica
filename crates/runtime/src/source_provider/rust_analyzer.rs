@@ -5,6 +5,7 @@ use std::fmt;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -119,7 +120,7 @@ impl RustAnalyzerProvider {
 struct RustAnalyzerSession {
     child: Child,
     stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    stdout: Receiver<Result<JsonValue, String>>,
     next_id: u64,
     open_versions: BTreeMap<PathBuf, i32>,
     root_uri: String,
@@ -143,11 +144,12 @@ impl RustAnalyzerSession {
             .stdout
             .take()
             .ok_or_else(|| "failed to open rust-analyzer stdout".to_owned())?;
+        let stdout = spawn_stdout_reader(stdout);
         let root_uri = file_uri(&root);
         let mut session = Self {
             child,
             stdin: BufWriter::new(stdin),
-            stdout: BufReader::new(stdout),
+            stdout,
             next_id: 1,
             open_versions: BTreeMap::new(),
             root_uri: root_uri.clone(),
@@ -219,7 +221,6 @@ impl RustAnalyzerSession {
             )?;
             self.open_versions.insert(file, 1);
         }
-        self.wait_until_workspace_loaded()?;
         Ok(())
     }
 
@@ -246,26 +247,10 @@ impl RustAnalyzerSession {
         }
     }
 
-    fn wait_until_workspace_loaded(&mut self) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let status = self.request("rust-analyzer/analyzerStatus", json!({}))?;
-            let loaded = status
-                .as_str()
-                .is_some_and(|status| status.contains("Workspaces:") && status.contains("Loaded "));
-            if loaded {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err("rust-analyzer did not load a workspace".to_owned());
-            }
-            thread::sleep(Duration::from_millis(250));
-        }
-    }
-
     fn request(&mut self, method: &str, params: JsonValue) -> Result<JsonValue, String> {
         let id = self.next_id;
         self.next_id += 1;
+        let deadline = Instant::now() + Duration::from_secs(30);
         self.write_message(&json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -273,6 +258,9 @@ impl RustAnalyzerSession {
             "params": params,
         }))?;
         loop {
+            if Instant::now() >= deadline {
+                return Err(format!("rust-analyzer {method} timed out"));
+            }
             let message = self.read_message()?;
             if message.get("method").is_some() && message.get("id").is_some() {
                 self.respond_to_server_request(&message)?;
@@ -334,36 +322,58 @@ impl RustAnalyzerSession {
     }
 
     fn read_message(&mut self) -> Result<JsonValue, String> {
-        let mut content_length = None;
+        self.stdout
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|_| "timed out waiting for rust-analyzer response".to_owned())?
+    }
+}
+
+fn spawn_stdout_reader(stdout: ChildStdout) -> Receiver<Result<JsonValue, String>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
         loop {
-            let mut line = String::new();
-            let read = self
-                .stdout
-                .read_line(&mut line)
-                .map_err(|error| format!("failed to read rust-analyzer header: {error}"))?;
-            if read == 0 {
-                return Err("rust-analyzer closed stdout".to_owned());
-            }
-            let trimmed = line.trim_end_matches(['\r', '\n']);
-            if trimmed.is_empty() {
+            let message = read_message_from(&mut stdout);
+            let done = message.is_err();
+            if tx.send(message).is_err() || done {
                 break;
             }
-            if let Some(value) = trimmed.strip_prefix("Content-Length:") {
-                content_length =
-                    Some(value.trim().parse::<usize>().map_err(|error| {
-                        format!("invalid rust-analyzer content length: {error}")
-                    })?);
-            }
         }
-        let length = content_length
-            .ok_or_else(|| "rust-analyzer response omitted Content-Length".to_owned())?;
-        let mut payload = vec![0; length];
-        self.stdout
-            .read_exact(&mut payload)
-            .map_err(|error| format!("failed to read rust-analyzer payload: {error}"))?;
-        serde_json::from_slice(&payload)
-            .map_err(|error| format!("failed to decode rust-analyzer response: {error}"))
+    });
+    rx
+}
+
+fn read_message_from(stdout: &mut BufReader<ChildStdout>) -> Result<JsonValue, String> {
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        let read = stdout
+            .read_line(&mut line)
+            .map_err(|error| format!("failed to read rust-analyzer header: {error}"))?;
+        if read == 0 {
+            return Err("rust-analyzer closed stdout".to_owned());
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some(value) = trimmed.strip_prefix("Content-Length:") {
+            content_length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|error| format!("invalid rust-analyzer content length: {error}"))?,
+            );
+        }
     }
+    let length =
+        content_length.ok_or_else(|| "rust-analyzer response omitted Content-Length".to_owned())?;
+    let mut payload = vec![0; length];
+    stdout
+        .read_exact(&mut payload)
+        .map_err(|error| format!("failed to read rust-analyzer payload: {error}"))?;
+    serde_json::from_slice(&payload)
+        .map_err(|error| format!("failed to decode rust-analyzer response: {error}"))
 }
 
 impl Drop for RustAnalyzerSession {
@@ -392,7 +402,9 @@ fn parse_location(value: &JsonValue, provider: &str) -> Option<LspLocation> {
         return Some(location_from_parts(uri, range, provider));
     }
     if let Some(uri) = value.get("targetUri").and_then(JsonValue::as_str) {
-        let range = value.get("targetRange")?;
+        let range = value
+            .get("targetSelectionRange")
+            .or_else(|| value.get("targetRange"))?;
         return Some(location_from_parts(uri, range, provider));
     }
     None

@@ -6,12 +6,18 @@ make_functional_relation(:source/SyncAction, 2, [0])
 make_identity(:source/sync_action)
 make_identity(:source/open_file_action)
 make_identity(:source/jump_to_line_action)
+make_identity(:source/select_symbol_action)
+make_identity(:source/find_references_action)
 
 assert source/View(31)
 assert Delegates(#source/open_file_action, #source/sync_action, 0)
 assert Delegates(#source/jump_to_line_action, #source/sync_action, 0)
+assert Delegates(#source/select_symbol_action, #source/sync_action, 0)
+assert Delegates(#source/find_references_action, #source/sync_action, 0)
 assert source/SyncAction("source_open_file", #source/open_file_action)
 assert source/SyncAction("source_jump_to_line", #source/jump_to_line_action)
+assert source/SyncAction("source_select_symbol", #source/select_symbol_action)
+assert source/SyncAction("source_find_references", #source/find_references_action)
 
 assert CanRead(#web, :source/Repository)
 assert CanRead(#web, :source/RepositoryName)
@@ -49,6 +55,16 @@ assert CanRead(#web, :source/SelectedRepository)
 assert CanRead(#web, :source/SelectedRevision)
 assert CanRead(#web, :source/SelectedPath)
 assert CanRead(#web, :source/SelectedLine)
+assert CanRead(#web, :source/SelectedSymbol)
+assert CanRead(#web, :source/SelectedSymbolName)
+assert CanRead(#web, :source/SelectedSymbolKind)
+assert CanRead(#web, :source/SelectedDefinitionPath)
+assert CanRead(#web, :source/SelectedDefinitionStartLine)
+assert CanRead(#web, :source/SelectedDefinitionEndLine)
+assert CanRead(#web, :source/SelectedDefinitionStartByte)
+assert CanRead(#web, :source/SelectedDefinitionEndByte)
+assert CanRead(#web, :source/SelectedSymbolProvider)
+assert CanRead(#web, :source/SelectedReferencesOpen)
 assert CanRead(#web, :source/ViewRevision)
 assert CanRead(#web, :Delegates)
 
@@ -56,6 +72,16 @@ assert CanWrite(#web, :source/SelectedRepository)
 assert CanWrite(#web, :source/SelectedRevision)
 assert CanWrite(#web, :source/SelectedPath)
 assert CanWrite(#web, :source/SelectedLine)
+assert CanWrite(#web, :source/SelectedSymbol)
+assert CanWrite(#web, :source/SelectedSymbolName)
+assert CanWrite(#web, :source/SelectedSymbolKind)
+assert CanWrite(#web, :source/SelectedDefinitionPath)
+assert CanWrite(#web, :source/SelectedDefinitionStartLine)
+assert CanWrite(#web, :source/SelectedDefinitionEndLine)
+assert CanWrite(#web, :source/SelectedDefinitionStartByte)
+assert CanWrite(#web, :source/SelectedDefinitionEndByte)
+assert CanWrite(#web, :source/SelectedSymbolProvider)
+assert CanWrite(#web, :source/SelectedReferencesOpen)
 assert CanWrite(#web, :source/ViewRevision)
 
 assert CanInvoke(#web, :sync_event)
@@ -71,6 +97,8 @@ assert CanInvoke(#web, :source/current_window_start)
 assert CanInvoke(#web, :source/file_for_path)
 assert CanInvoke(#web, :source/file_title)
 assert CanInvoke(#web, :source/file_language)
+assert CanInvoke(#web, :source/current_symbol)
+assert CanInvoke(#web, :source/clear_selected_symbol)
 assert CanInvoke(#web, :source/view_revision)
 assert CanInvoke(#web, :source/bump_revision)
 assert CanInvoke(#web, :source/app_node)
@@ -81,6 +109,9 @@ assert CanInvoke(#web, :source/file_button_node)
 assert CanInvoke(#web, :source/code_panel_node)
 assert CanInvoke(#web, :source/code_line_node)
 assert CanInvoke(#web, :source/code_segment_node)
+assert CanInvoke(#web, :source/symbol_panel_node)
+assert CanInvoke(#web, :source/find_references_button_node)
+assert CanInvoke(#web, :source/symbol_reference_node)
 assert CanInvoke(#web, :source/outline_panel_node)
 assert CanInvoke(#web, :source/outline_item_node)
 assert CanInvoke(#web, :source/span_list_node)
@@ -179,6 +210,24 @@ verb source/file_language(path)
   return "file"
 end
 
+verb source/current_symbol()
+  return one source/SelectedSymbol(endpoint(), ?symbol)
+end
+
+verb source/clear_selected_symbol(endpoint)
+  retract source/SelectedSymbol(endpoint, _)
+  retract source/SelectedSymbolName(endpoint, _)
+  retract source/SelectedSymbolKind(endpoint, _)
+  retract source/SelectedDefinitionPath(endpoint, _)
+  retract source/SelectedDefinitionStartLine(endpoint, _)
+  retract source/SelectedDefinitionEndLine(endpoint, _)
+  retract source/SelectedDefinitionStartByte(endpoint, _)
+  retract source/SelectedDefinitionEndByte(endpoint, _)
+  retract source/SelectedSymbolProvider(endpoint, _)
+  retract source/SelectedReferencesOpen(endpoint, _)
+  return true
+end
+
 verb source/view_revision()
   let revision = one source/ViewRevision(endpoint(), ?revision)
   if revision == nothing
@@ -232,6 +281,7 @@ verb source/handle_sync_action(source @ #source/open_file_action<_>, endpoint, s
   retract source/SelectedRevision(endpoint, _)
   retract source/SelectedPath(endpoint, _)
   retract source/SelectedLine(endpoint, _)
+  source/clear_selected_symbol(endpoint)
   assert source/SelectedRepository(endpoint, #source/repo_mica)
   assert source/SelectedRevision(endpoint, #source/rev_worktree)
   assert source/SelectedPath(endpoint, path)
@@ -269,6 +319,81 @@ verb source/handle_sync_action(source @ #source/jump_to_line_action<_>, endpoint
   assert source/SelectedRevision(endpoint, #source/rev_worktree)
   assert source/SelectedPath(endpoint, path)
   assert source/SelectedLine(endpoint, line)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/select_symbol_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  let raw_byte = fields[:byte]
+  if path == nothing || raw_byte == nothing
+    return false
+  end
+
+  let byte = from_literal(raw_byte)
+  if byte == nothing || byte < 0
+    return false
+  end
+
+  let readable_path = source/file_for_path(path)
+  if readable_path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  let selected = nothing
+  for def in source/DefinitionAt(#source/repo_mica, #source/rev_worktree, path, byte, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)
+    selected = def
+    break
+  end
+
+  if selected == nothing
+    return false
+  end
+
+  let target_path = selected[:target_path]
+  let target_line = selected[:start_line]
+  if source/file_for_path(target_path) == nothing || target_line == nothing
+    return false
+  end
+
+  retract source/SelectedRepository(endpoint, _)
+  retract source/SelectedRevision(endpoint, _)
+  retract source/SelectedPath(endpoint, _)
+  retract source/SelectedLine(endpoint, _)
+  source/clear_selected_symbol(endpoint)
+  assert source/SelectedRepository(endpoint, #source/repo_mica)
+  assert source/SelectedRevision(endpoint, #source/rev_worktree)
+  assert source/SelectedPath(endpoint, target_path)
+  assert source/SelectedLine(endpoint, target_line)
+  assert source/SelectedSymbol(endpoint, selected[:symbol])
+  assert source/SelectedSymbolName(endpoint, selected[:name])
+  assert source/SelectedSymbolKind(endpoint, selected[:kind])
+  assert source/SelectedDefinitionPath(endpoint, target_path)
+  assert source/SelectedDefinitionStartLine(endpoint, selected[:start_line])
+  assert source/SelectedDefinitionEndLine(endpoint, selected[:end_line])
+  assert source/SelectedDefinitionStartByte(endpoint, selected[:start_byte])
+  assert source/SelectedDefinitionEndByte(endpoint, selected[:end_byte])
+  assert source/SelectedSymbolProvider(endpoint, selected[:provider])
+  assert source/SelectedReferencesOpen(endpoint, false)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/find_references_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  if one source/SelectedSymbol(endpoint, ?symbol) == nothing
+    return false
+  end
+
+  retract source/SelectedReferencesOpen(endpoint, _)
+  assert source/SelectedReferencesOpen(endpoint, true)
   source/bump_revision(endpoint)
   return true
 end
