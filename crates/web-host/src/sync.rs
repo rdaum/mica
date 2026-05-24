@@ -415,7 +415,7 @@ async fn route_dom_event(
             return Err(format!("sync_event aborted: {error}"));
         }
     }
-    let result = refresh_active_sync_view(host, session, event.view_id).await;
+    let result = refresh_active_sync_view(host, session, event.view_id, true).await;
     trace.mark("refresh");
     result
 }
@@ -450,6 +450,7 @@ async fn refresh_active_sync_view(
     host: &InProcessWebHost,
     session: &Arc<SyncSession>,
     view_id: u64,
+    force_ack: bool,
 ) -> Result<(), String> {
     let Some(view_state) = active_rendered_sync_view(session, view_id) else {
         return Ok(());
@@ -464,7 +465,7 @@ async fn refresh_active_sync_view(
         server_signature: view_state.server_signature,
         last_tree: view_state.last_tree,
     };
-    refresh_active_sync_view_for(&host.driver, &host.sync.sessions, active).await
+    refresh_active_sync_view_for(&host.driver, &host.sync.sessions, active, force_ack).await
 }
 
 async fn refresh_active_sync_views_for(
@@ -472,7 +473,7 @@ async fn refresh_active_sync_views_for(
     sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
 ) -> Result<(), String> {
     for active in active_sync_views(sessions) {
-        refresh_active_sync_view_for(driver, sessions, active).await?;
+        refresh_active_sync_view_for(driver, sessions, active, false).await?;
     }
     Ok(())
 }
@@ -481,9 +482,26 @@ async fn refresh_active_sync_view_for(
     driver: &CompioTaskDriver,
     sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
     active: ActiveSyncView,
+    force_ack: bool,
 ) -> Result<(), String> {
     let revision = render_sync_revision(driver, active.endpoint, active.view_id).await?;
     if revision == active.server_revision && active.last_tree.is_some() {
+        if force_ack {
+            send_sync_envelope_to(
+                sessions,
+                active.session_id,
+                SyncEnvelope {
+                    kind: SyncMessageKind::ViewDelta,
+                    session_id: active.session_id,
+                    view_id: active.view_id,
+                    client_revision: active.server_revision,
+                    client_signature: active.server_signature,
+                    server_revision: active.server_revision,
+                    server_signature: active.server_signature,
+                    payload: dom_patch_payload_json(active.view_id, active.server_revision, &[]),
+                },
+            )?;
+        }
         return Ok(());
     }
 
@@ -997,6 +1015,44 @@ mod tests {
         result.unwrap();
     }
 
+    #[test]
+    fn sse_noop_dom_event_sends_same_revision_ack() {
+        let (addr_tx, addr_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            Runtime::new().unwrap().block_on(async move {
+                let listener = TcpListener::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+                    .await
+                    .unwrap();
+                let addr = listener.local_addr().unwrap();
+                let runner = sync_mud_runner();
+                let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+                let driver = CompioTaskDriver::spawn(runner).unwrap();
+                let host = InProcessWebHost::new(driver);
+                let binding = RequestBinding {
+                    principal,
+                    actor: None,
+                };
+                addr_tx.send(addr).unwrap();
+                compio::runtime::spawn(async move {
+                    if let Err(error) = serve_in_process(listener, host, binding, None).await {
+                        eprintln!("test web host failed: {error}");
+                    }
+                })
+                .detach();
+                while stop_rx.try_recv().is_err() {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+            });
+        });
+
+        let addr = addr_rx.recv().unwrap();
+        let result = run_noop_sse_client(addr);
+        stop_tx.send(()).unwrap();
+        server.join().unwrap();
+        result.unwrap();
+    }
+
     fn run_mud_sse_client(addr: SocketAddr) -> Result<(), String> {
         let session_id = 7u64;
         let mut stream = open_event_stream(addr, session_id)?;
@@ -1104,6 +1160,76 @@ mod tests {
         let command_text = serde_json::to_string(&command_payload).unwrap();
         if !command_text.contains("coin") || !command_text.contains("event-line") {
             return Err("command delta did not include the narrative update".to_owned());
+        }
+        Ok(())
+    }
+
+    fn run_noop_sse_client(addr: SocketAddr) -> Result<(), String> {
+        let session_id = 7u64;
+        let mut stream = open_event_stream(addr, session_id)?;
+
+        post_sync_input(
+            addr,
+            encoded_sync_envelope(
+                SyncEnvelope {
+                    kind: SyncMessageKind::NeedView,
+                    session_id,
+                    view_id: 21,
+                    client_revision: 0,
+                    client_signature: 0,
+                    server_revision: 0,
+                    server_signature: 0,
+                    payload: b"need".to_vec(),
+                }
+                .as_ref(),
+            ),
+        )?;
+        let snapshot = read_next_sync_envelope(&mut stream)?;
+        if snapshot.kind != SyncMessageKind::ViewSnapshot {
+            return Err(format!("expected snapshot, got {:?}", snapshot.kind));
+        }
+
+        post_sync_input(
+            addr,
+            encoded_sync_envelope(
+                SyncEnvelope {
+                    kind: SyncMessageKind::HaveView,
+                    session_id,
+                    view_id: 21,
+                    client_revision: snapshot.server_revision,
+                    client_signature: snapshot.server_signature,
+                    server_revision: snapshot.server_revision,
+                    server_signature: snapshot.server_signature,
+                    payload: dom_event_payload_json(&DomEventPayload {
+                        session_id,
+                        view_id: 21,
+                        revision: snapshot.server_revision,
+                        signature: snapshot.server_signature,
+                        event: "submit".to_owned(),
+                        target: "noop".to_owned(),
+                        action: "does_not_exist".to_owned(),
+                        fields: BTreeMap::new(),
+                    }),
+                }
+                .as_ref(),
+            ),
+        )?;
+        let ack = read_next_sync_envelope(&mut stream)?;
+        if ack.kind != SyncMessageKind::ViewDelta {
+            return Err(format!("expected no-op delta ack, got {:?}", ack.kind));
+        }
+        if ack.server_revision != snapshot.server_revision
+            || ack.server_signature != snapshot.server_signature
+        {
+            return Err("no-op delta ack did not preserve rendered revision".to_owned());
+        }
+        let payload: serde_json::Value = serde_json::from_slice(&ack.payload)
+            .map_err(|error| format!("failed to parse no-op delta payload: {error}"))?;
+        if payload["patches"] != serde_json::json!([]) {
+            return Err(format!(
+                "expected empty patches, got {}",
+                payload["patches"]
+            ));
         }
         Ok(())
     }
