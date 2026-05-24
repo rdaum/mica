@@ -229,7 +229,7 @@ impl RustAnalyzerSession {
         method: &str,
         params: JsonValue,
     ) -> Result<Vec<LspLocation>, String> {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let result = match self.request(method, params.clone()) {
                 Ok(result) => result,
@@ -239,18 +239,14 @@ impl RustAnalyzerSession {
                 }
                 Err(error) => return Err(error),
             };
-            let locations = parse_locations(&result, &self.provider);
-            if !locations.is_empty() || Instant::now() >= deadline {
-                return Ok(locations);
-            }
-            thread::sleep(Duration::from_millis(250));
+            return Ok(parse_locations(&result, &self.provider));
         }
     }
 
     fn request(&mut self, method: &str, params: JsonValue) -> Result<JsonValue, String> {
         let id = self.next_id;
         self.next_id += 1;
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(5);
         self.write_message(&json!({
             "jsonrpc": "2.0",
             "id": id,

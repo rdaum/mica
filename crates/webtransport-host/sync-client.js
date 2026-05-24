@@ -1364,6 +1364,7 @@ export function bootstrapServerRenderedSync(mount, status) {
     if (event === null) {
       return;
     }
+    clearTimeout(event.timeout);
     event.end(event.loading);
     inFlightDomEvent = null;
     dispatchSyncLoading("stop", {
@@ -1371,6 +1372,16 @@ export function bootstrapServerRenderedSync(mount, status) {
       target: event.target,
       action: event.action,
     });
+  }
+
+  function startInFlightDomEvent(event) {
+    event.timeout = setTimeout(() => {
+      if (inFlightDomEvent === event) {
+        setStatus("Event timed out");
+        finishInFlightDomEvent();
+      }
+    }, 15000);
+    inFlightDomEvent = event;
   }
 
   function sendViewportEvent(data) {
@@ -1419,13 +1430,13 @@ export function bootstrapServerRenderedSync(mount, status) {
 
     const action = element.dataset.syncAction ?? "";
     const loading = beginEventLoading(element);
-    inFlightDomEvent = {
+    startInFlightDomEvent({
       kind: eventName,
       target: element,
       action,
       loading,
       end: endEventLoading,
-    };
+    });
     dispatchSyncLoading("start", {
       kind: eventName,
       target: element,
@@ -1639,13 +1650,13 @@ export function bootstrapServerRenderedSync(mount, status) {
     }
     const loading = beginSubmitLoading(form, submit);
     const action = form.dataset.syncAction ?? "";
-    inFlightDomEvent = {
+    startInFlightDomEvent({
       kind: "submit",
       target: form,
       action,
       loading,
       end: endSubmitLoading,
-    };
+    });
     dispatchSyncLoading("start", {
       kind: "submit",
       target: form,

@@ -714,7 +714,7 @@ impl ComputedRelation for DefinitionAtRelation {
                 &text,
                 byte_offset_to_lsp_position(metadata.id(), &text, byte_offset)?,
             )
-            .map_err(|error| invalid_relation(metadata.id(), error))?;
+            .unwrap_or_default();
         if locations.is_empty()
             && let Some(ch) = text.get(byte_offset..).and_then(|text| text.chars().next())
         {
@@ -729,7 +729,7 @@ impl ComputedRelation for DefinitionAtRelation {
                         &text,
                         byte_offset_to_lsp_position(metadata.id(), &text, inner_offset)?,
                     )
-                    .map_err(|error| invalid_relation(metadata.id(), error))?;
+                    .unwrap_or_default();
             }
         }
         let mut rows = Vec::new();
@@ -831,7 +831,7 @@ impl ComputedRelation for ReferencesOfRelation {
             .provider
             .rust_analyzer
             .references(&rust_workspace_root(&root), &file, &text, position)
-            .map_err(|error| invalid_relation(metadata.id(), error))?;
+            .unwrap_or_default();
         let mut rows = Vec::new();
         for location in locations {
             let Some(location) = semantic_location(metadata.id(), &root, location)? else {
@@ -3196,6 +3196,72 @@ mod tests {
                     assert_eq!(values[3], Value::bool(true));
                 })
                 .expect("expected select-symbol state tuple");
+        });
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
+    }
+
+    #[test]
+    fn source_app_unknown_rust_symbol_is_noop() {
+        let root_path = env::current_dir().unwrap().join(".cache").join(format!(
+            "source-app-unknown-symbol-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let src_dir = root_path.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(
+            src_dir.join("lib.rs"),
+            "pub fn call_provider() -> Result<String, String> { Ok(String::new()) }\n",
+        )
+        .unwrap();
+        let root = root_path.display().to_string();
+        let source_path = "src/lib.rs";
+        let source_text_path = root_path.join(source_path);
+        let index_path = temp_index_path("source-app-unknown-symbol");
+        build_source_index_file(Path::new(&root), &index_path).unwrap();
+        with_source_index_env(&index_path, Some(Path::new("/bin/false")), || {
+            let mut runner = SourceRunner::new_empty();
+            for filein in [
+                include_str!("../../../apps/shared/sync-host.mica"),
+                include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/ui-session.mica"),
+                include_str!("../../../apps/source/ui-compose.mica"),
+                include_str!("../../../apps/source/http.mica"),
+            ] {
+                runner.run_filein(filein).unwrap();
+            }
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+
+            let source = fs::read_to_string(&source_text_path).unwrap();
+            let offset = source.find("String").unwrap();
+            let report = runner
+                .run_source(&format!(
+                    "let fields = {{:path -> {source_path:?}, :byte -> {byte:?}}}\n\
+                     let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_select_symbol\", fields)\n\
+                     let symbol = one source/SelectedSymbol(endpoint(), ?symbol)\n\
+                     let revision = sync_view_revision(31)\n\
+                     return [handled, symbol == nothing, revision]",
+                    source_path = source_path,
+                    byte = offset.to_string()
+                ))
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(false));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2].as_int(), Some(1));
+                })
+                .expect("expected unknown-symbol noop tuple");
         });
         let _ = fs::remove_file(index_path);
         let _ = fs::remove_dir_all(root_path);
