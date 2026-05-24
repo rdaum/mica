@@ -357,6 +357,11 @@ input {
   color: rgba(246, 236, 215, 0.74);
 }
 
+.source-symbol-panel h4 {
+  margin: 1rem 0 0.5rem;
+  font-weight: 700;
+}
+
 .source-symbol-summary {
   display: grid;
   gap: 0.45rem;

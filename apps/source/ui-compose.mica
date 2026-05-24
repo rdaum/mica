@@ -195,6 +195,7 @@ verb source/symbol_panel_node(repository, revision)
   let references_open = one source/SelectedReferencesOpen(endpoint(), ?open)
   let refs = []
   let ref_count = 0
+  let ref_count_label = "not loaded"
   if references_open == true
     for reference in source/ReferencesOf(repository, revision, symbol, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)
       ref_count = ref_count + 1
@@ -202,9 +203,10 @@ verb source/symbol_panel_node(repository, revision)
         refs = [@refs, source/symbol_reference_node(reference)]
       end
     end
+    ref_count_label = to_literal(ref_count)
   end
 
-  let summary = dom_element("div", {:class -> "source-symbol-summary"}, [dom_element("strong", {:class -> "source-symbol-name"}, [dom_text(name)]), source/meta_chip_node("kind", kind), source/meta_chip_node("definition", span), source/meta_chip_node("references", to_literal(ref_count)), source/meta_chip_node("provider", provider)])
+  let summary = dom_element("div", {:class -> "source-symbol-summary"}, [dom_element("strong", {:class -> "source-symbol-name"}, [dom_text(name)]), source/meta_chip_node("kind", kind), source/meta_chip_node("definition", span), source/meta_chip_node("references", ref_count_label), source/meta_chip_node("provider", provider)])
   let reference_list = source/find_references_button_node(symbol)
   if references_open == true && refs != []
     reference_list = dom_element("div", {:class -> "source-reference-list"}, refs)

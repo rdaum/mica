@@ -2180,7 +2180,9 @@ mod tests {
                  let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_select_symbol\", fields)\n\
                  let path = one source/SelectedPath(endpoint(), ?path)\n\
                  let symbol = one source/SelectedSymbol(endpoint(), ?symbol)\n\
-                 return [handled, path, symbol != nothing]",
+                 let revision = sync_view_revision(31)\n\
+                 let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
+                 return [handled, path, symbol != nothing, payload != \"\"]",
                 source_path = source_path,
                 byte = offset.to_string()
             ))
@@ -2193,6 +2195,7 @@ mod tests {
                 assert_eq!(values[0], Value::bool(true));
                 assert_eq!(values[1], Value::string(expected_path));
                 assert_eq!(values[2], Value::bool(true));
+                assert_eq!(values[3], Value::bool(true));
             })
             .expect("expected select-symbol state tuple");
     }

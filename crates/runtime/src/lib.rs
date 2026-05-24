@@ -40,7 +40,10 @@ use mica_compiler::{
     HirItem, Item, Literal, MethodInstallation, MethodKind, MethodRelations, NodeId, UnaryOp,
     compile_semantic, install_methods, install_rules_from_source, parse, parse_ast, parse_semantic,
 };
-use mica_host_protocol::{DomNode, diff_dom_nodes, snapshot_payload_json, sync_payload_signature};
+use mica_host_protocol::{
+    DomNode, SUPPORTED_DOM_ATTRIBUTES, SUPPORTED_DOM_TAGS, diff_dom_nodes, snapshot_payload_json,
+    sync_payload_signature,
+};
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
     RelationKernel, RelationMetadata, RelationRead,
@@ -3529,26 +3532,19 @@ fn dom_attr_value(value: &Value) -> Result<String, RuntimeError> {
 }
 
 fn validate_dom_tag(tag: &str) -> Result<(), RuntimeError> {
-    match tag {
-        "aside" | "button" | "div" | "form" | "h1" | "h2" | "header" | "input" | "li" | "main"
-        | "nav" | "p" | "section" | "span" | "strong" | "ul" => Ok(()),
-        _ => Err(invalid_builtin_call(
-            "dom_html",
-            format!("unsupported DOM tag: {tag}"),
-        )),
-    }
+    SUPPORTED_DOM_TAGS
+        .contains(&tag)
+        .then_some(())
+        .ok_or_else(|| invalid_builtin_call("dom_html", format!("unsupported DOM tag: {tag}")))
 }
 
 fn validate_dom_attr(name: &str) -> Result<(), RuntimeError> {
-    match name {
-        "aria-label" | "aria-live" | "autocomplete" | "class" | "data-command" | "data-entity"
-        | "data-sync-action" | "data-sync-event" | "id" | "data-sync-key" | "name"
-        | "placeholder" | "type" | "value" => Ok(()),
-        _ => Err(invalid_builtin_call(
-            "dom_html",
-            format!("unsupported DOM attribute: {name}"),
-        )),
-    }
+    SUPPORTED_DOM_ATTRIBUTES
+        .contains(&name)
+        .then_some(())
+        .ok_or_else(|| {
+            invalid_builtin_call("dom_html", format!("unsupported DOM attribute: {name}"))
+        })
 }
 
 fn validate_xml_name(builtin: &'static str, kind: &str, name: &str) -> Result<(), RuntimeError> {
@@ -5851,6 +5847,14 @@ mod tests {
                 .outcome,
             TaskOutcome::Complete { value, .. }
                 if value == Value::string("<button id=\"send\" type=\"submit\">Send &amp; go</button>")
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return dom_html(dom_element(\"h4\", {}, [dom_text(\"References\")]))")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("<h4>References</h4>")
         ));
         assert!(matches!(
             runner
