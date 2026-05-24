@@ -141,10 +141,12 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "data-command",
   "data-entity",
   "data-sync-action",
+  "data-sync-debounce",
   "data-sync-disable-with",
   "data-sync-event",
   "data-sync-follow",
   "data-sync-key",
+  "data-sync-throttle",
   "data-sync-on-viewport-top",
   "data-sync-stable-top",
   "data-sync-viewport-threshold",
@@ -853,6 +855,126 @@ export function endSubmitLoading(token) {
   removeCssClass(token.submit, SYNC_SUBMIT_LOADING_CLASS);
 }
 
+export function beginEventLoading(element) {
+  const token = {
+    element,
+    disabled: false,
+    readonly: false,
+    disableWith: null,
+  };
+  addCssClass(element, SYNC_LOADING_CLASS);
+  setBooleanAttribute(element, "aria-busy", true);
+  if (isButtonControl(element) && !element.disabled) {
+    token.disabled = true;
+    element.disabled = true;
+  } else if (
+    isReadonlyControl(element) &&
+    element.type !== "hidden" &&
+    !element.readOnly
+  ) {
+    token.readonly = true;
+    element.readOnly = true;
+  }
+
+  const disableWith = element?.getAttribute?.("data-sync-disable-with");
+  if (disableWith !== null && disableWith !== undefined) {
+    token.disableWith = { text: element.textContent, value: disableWith };
+    if (disableWith !== "") {
+      element.textContent = disableWith;
+    }
+  }
+  return token;
+}
+
+export function endEventLoading(token) {
+  if (!token) {
+    return;
+  }
+  if (token.disabled) {
+    token.element.disabled = false;
+  }
+  if (token.readonly) {
+    token.element.readOnly = false;
+  }
+  if (token.disableWith) {
+    token.element.textContent = token.disableWith.text;
+  }
+  setBooleanAttribute(token.element, "aria-busy", false);
+  removeCssClass(token.element, SYNC_LOADING_CLASS);
+}
+
+function controlValue(control) {
+  if (control?.type === "checkbox") {
+    return control.checked ? (control.value ?? "true") : "false";
+  }
+  if (control?.type === "radio") {
+    return control.checked ? (control.value ?? "on") : undefined;
+  }
+  return control?.value;
+}
+
+function syncValueAttributes(element) {
+  if (element?.getAttributeNames) {
+    return element
+      .getAttributeNames()
+      .filter((name) => name.startsWith("data-sync-value-"))
+      .map((name) => [name, element.getAttribute(name)]);
+  }
+  if (element?.attributes instanceof Map) {
+    return Array.from(element.attributes.entries()).filter(([name]) =>
+      name.startsWith("data-sync-value-"),
+    );
+  }
+  return [];
+}
+
+export function boundEventFields(element) {
+  const form =
+    typeof HTMLFormElement !== "undefined" && element instanceof HTMLFormElement
+      ? element
+      : (element?.form ?? element?.closest?.("form"));
+  const fields = form ? Object.fromEntries(new FormData(form).entries()) : {};
+  const name = element?.getAttribute?.("name") ?? element?.name;
+  const value = controlValue(element);
+  if (name && value !== undefined) {
+    fields[name] = String(value);
+  }
+  for (const [attribute, attributeValue] of syncValueAttributes(element)) {
+    const name = attribute.slice("data-sync-value-".length).replace(/-/g, "_");
+    fields[name] = String(attributeValue ?? "");
+  }
+  return fields;
+}
+
+function parseDurationMs(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const duration = Number.parseInt(String(value), 10);
+  return Number.isFinite(duration) && duration >= 0 ? duration : null;
+}
+
+function scheduleBoundEvent(element, callback) {
+  const throttleMs = parseDurationMs(element?.getAttribute?.("data-sync-throttle"));
+  const now = Date.now();
+  if (throttleMs !== null) {
+    const next = element._syncThrottleUntil ?? 0;
+    if (now < next) {
+      return;
+    }
+    element._syncThrottleUntil = now + throttleMs;
+  }
+
+  const debounceMs = parseDurationMs(element?.getAttribute?.("data-sync-debounce"));
+  if (debounceMs !== null) {
+    clearTimeout(element._syncDebounceTimer);
+    element._syncDebounceTimer = setTimeout(callback, debounceMs);
+    return;
+  }
+
+  callback();
+}
+
 export function dispatchSyncLoading(kind, detail) {
   if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
     return;
@@ -1257,6 +1379,72 @@ export function bootstrapServerRenderedSync(mount, status) {
       .catch((error) => setStatus(`Viewport event failed: ${String(error)}`));
   }
 
+  async function sendBoundEvent(element, eventName) {
+    if (!connected || !initialSynced) {
+      if (connectError) {
+        setStatus(connectionFailureText(connectError));
+        return;
+      }
+      setStatus("Connecting");
+      try {
+        if (!(await connectPromise)) {
+          setStatus(connectionFailureText(connectError));
+          return;
+        }
+      } catch (error) {
+        connectError = error;
+        setStatus(connectionFailureText(error));
+        return;
+      }
+    }
+
+    const action = element.dataset.syncAction ?? "";
+    const loading = beginEventLoading(element);
+    dispatchSyncLoading("start", {
+      kind: eventName,
+      target: element,
+      action,
+    });
+    try {
+      await client.sendDomEvent({
+        session: state.session,
+        view: state.view,
+        revision: state.revision,
+        signature: state.signature,
+        event: eventName,
+        target: element.id ?? "",
+        action,
+        fields: boundEventFields(element),
+      });
+    } catch (error) {
+      setStatus(`Event failed: ${String(error)}`);
+    } finally {
+      endEventLoading(loading);
+      dispatchSyncLoading("stop", {
+        kind: eventName,
+        target: element,
+        action,
+      });
+    }
+  }
+
+  function handleBoundEvent(event) {
+    const element = event.target?.closest?.("[data-sync-event][data-sync-action]");
+    if (!element || !mount.contains(element)) {
+      return;
+    }
+    const eventName = element.dataset.syncEvent;
+    if (eventName === "submit" || event.type !== eventName) {
+      return;
+    }
+    event.preventDefault?.();
+    scheduleBoundEvent(element, () => {
+      sendBoundEvent(element, eventName).catch((error) =>
+        setStatus(`Event failed: ${String(error)}`),
+      );
+    });
+  }
+
   function accept(envelope) {
     state.revision = BigInt(envelope.serverRevision);
     state.signature = BigInt(envelope.serverSignature);
@@ -1452,6 +1640,9 @@ export function bootstrapServerRenderedSync(mount, status) {
     event.preventDefault();
     await sendForm(event.target, event.submitter);
   });
+  mount.addEventListener("click", handleBoundEvent);
+  mount.addEventListener("change", handleBoundEvent);
+  mount.addEventListener("input", handleBoundEvent);
 
   connectPromise = connect().then(
     () => true,

@@ -7,7 +7,10 @@ import {
   decodeSyncEnvelope,
   encodeSyncEnvelope,
   applyDelta,
+  beginEventLoading,
   beginSubmitLoading,
+  boundEventFields,
+  endEventLoading,
   endSubmitLoading,
   focusAfterSubmit,
 } from "./sync-client.js";
@@ -241,6 +244,48 @@ assert.equal(loadingButton.attributes.has("aria-busy"), false);
 assert.equal(loadingInput.readOnly, false);
 assert.equal(loadingButton.disabled, false);
 assert.equal(loadingButton.textContent, "Find references");
+
+const clickButton = {
+  localName: "button",
+  type: "button",
+  name: "mode",
+  value: "references",
+  disabled: false,
+  className: "",
+  textContent: "References",
+  attributes: new Map([
+    ["data-sync-disable-with", "Loading..."],
+    ["data-sync-value-symbol", "RuleDefinition"],
+    ["data-sync-value-source-path", "crates/relation-kernel/src/rules.rs"],
+  ]),
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  },
+  getAttributeNames() {
+    return Array.from(this.attributes.keys());
+  },
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  },
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  },
+};
+assert.deepEqual(boundEventFields(clickButton), {
+  mode: "references",
+  symbol: "RuleDefinition",
+  source_path: "crates/relation-kernel/src/rules.rs",
+});
+const clickToken = beginEventLoading(clickButton);
+assert.match(clickButton.className, /sync-loading/);
+assert.equal(clickButton.attributes.get("aria-busy"), "true");
+assert.equal(clickButton.disabled, true);
+assert.equal(clickButton.textContent, "Loading...");
+endEventLoading(clickToken);
+assert.equal(clickButton.className, "");
+assert.equal(clickButton.attributes.has("aria-busy"), false);
+assert.equal(clickButton.disabled, false);
+assert.equal(clickButton.textContent, "References");
 
 class FakeText {
   nodeType = Node.TEXT_NODE;
