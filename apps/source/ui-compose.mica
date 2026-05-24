@@ -8,6 +8,14 @@ verb source/meta_chip_node(label, value)
   return dom_element("span", {:class -> "source-chip"}, [dom_text(label), dom_text(": "), dom_text(value)])
 end
 
+verb source/provider_label(provider)
+  if provider == "mica-source-index/static-analysis" || provider == "mica-source-index/static-analysis 2" || provider == "mica-source-index/tree-sitter-rust" || provider == "mica-source-index/tree-sitter-rust 1"
+    return "source index"
+  end
+
+  return provider
+end
+
 verb source/header_node(repository, revision)
   let name = one source/RepositoryName(repository, ?name)
   let label = one source/RevisionLabel(revision, ?label)
@@ -25,7 +33,7 @@ verb source/index_status_node(repository, revision)
       let status = one source/IndexStatus(index, ?status)
       let version = one source/IndexVersion(index, ?version)
       let error = one source/IndexBuildError(index, ?error)
-      let chips = [source/meta_chip_node("provider", provider), source/meta_chip_node("version", version), source/meta_chip_node("status", status)]
+      let chips = [source/meta_chip_node("provider", source/provider_label(provider)), source/meta_chip_node("version", version), source/meta_chip_node("status", status)]
       if status != "complete" && error != nothing && error != ""
         chips = [@chips, source/meta_chip_node("error", error)]
       end
@@ -324,19 +332,34 @@ verb source/outline_panel_node(repository, revision, path)
   return dom_element("aside", {:class -> "source-outline source-inspector-section"}, [header, dom_element("div", {:class -> "source-outline-list"}, items)])
 end
 
-verb source/symbol_reference_node(reference)
+verb source/reference_line_text(repository, revision, path, line)
+  for row in source/FileLines(repository, revision, path, line, 1, ?lines, ?hash)
+    let lines = row[:lines]
+    if lines != nothing && lines != []
+      return lines[0]
+    end
+  end
+
+  return ""
+end
+
+verb source/symbol_reference_node(repository, revision, reference)
   let path = reference[:path]
   let line = reference[:start_line]
   let name = reference[:name]
   let provider = reference[:provider]
+  let snippet = source/reference_line_text(repository, revision, path, line)
   if name == nothing
     name = "reference"
+  end
+  if snippet == ""
+    snippet = name
   end
 
   let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
   let hidden_line = dom_element("input", {:type -> "hidden", :name -> "line", :value -> to_literal(line)}, [])
   let line_label = string_concat(path, ":", to_literal(line))
-  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button"}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text(name)]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(line_label)]), dom_element("span", {:class -> "source-reference-provider"}, [dom_text(provider)])])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button"}, [dom_element("span", {:class -> "source-reference-snippet"}, [dom_text(snippet)]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(line_label)]), dom_element("span", {:class -> "source-reference-provider"}, [dom_text(source/provider_label(provider))])])
   return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> string_concat(path, ":", to_literal(reference[:start_byte]))}, [hidden_path, hidden_line, button])
 end
 
@@ -366,13 +389,13 @@ verb source/symbol_panel_node(repository, revision)
     for reference in source/ReferencesOf(repository, revision, symbol, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)
       ref_count = ref_count + 1
       if ref_count <= 30
-        refs = [@refs, source/symbol_reference_node(reference)]
+        refs = [@refs, source/symbol_reference_node(repository, revision, reference)]
       end
     end
     ref_count_label = to_literal(ref_count)
   end
 
-  let summary = dom_element("div", {:class -> "source-symbol-summary"}, [dom_element("strong", {:class -> "source-symbol-name"}, [dom_text(name)]), source/meta_chip_node("kind", kind), source/meta_chip_node("definition", span), source/meta_chip_node("references", ref_count_label), source/meta_chip_node("provider", provider)])
+  let summary = dom_element("div", {:class -> "source-symbol-summary"}, [dom_element("strong", {:class -> "source-symbol-name"}, [dom_text(name)]), source/meta_chip_node("kind", kind), source/meta_chip_node("definition", span), source/meta_chip_node("references", ref_count_label), source/meta_chip_node("provider", source/provider_label(provider))])
   let reference_list = source/find_references_button_node(symbol)
   if references_open == true && refs != []
     reference_list = dom_element("div", {:class -> "source-reference-list"}, refs)

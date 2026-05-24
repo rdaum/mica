@@ -828,11 +828,17 @@ body.source-splitter-dragging-horizontal {
 }
 
 .source-reference-name,
+.source-reference-snippet,
 .source-reference-location,
 .source-reference-provider {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.source-reference-snippet {
+  font-family: var(--source-mono);
+  font-size: 0.78rem;
 }
 
 .source-reference-location,

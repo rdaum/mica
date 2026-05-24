@@ -3273,11 +3273,12 @@ mod tests {
                 .run_source(&format!(
                     "let fields = {{:path -> {source_path:?}, :byte -> {byte:?}}}\n\
                      let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_select_symbol\", fields)\n\
+                     let references_handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_find_references\", {{}})\n\
                      let path = one source/SelectedPath(endpoint(), ?path)\n\
                      let symbol = one source/SelectedSymbol(endpoint(), ?symbol)\n\
                      let revision = sync_view_revision(31)\n\
                      let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
-                     return [handled, path, symbol != nothing, string_contains(payload, \"mica-source-index/static-analysis\")]",
+                     return [handled, references_handled, path, symbol != nothing, string_contains(payload, \"source index\"), string_contains(payload, \"static-analysis\"), string_contains(payload, \"source_provider::boot\")]",
                     source_path = source_path,
                     byte = offset.to_string()
                 ))
@@ -3288,9 +3289,12 @@ mod tests {
             value
                 .with_list(|values| {
                     assert_eq!(values[0], Value::bool(true));
-                    assert_eq!(values[1], Value::string("src/source_provider.rs"));
-                    assert_eq!(values[2], Value::bool(true));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2], Value::string("src/source_provider.rs"));
                     assert_eq!(values[3], Value::bool(true));
+                    assert_eq!(values[4], Value::bool(true));
+                    assert_eq!(values[5], Value::bool(false));
+                    assert_eq!(values[6], Value::bool(true));
                 })
                 .expect("expected select-symbol state tuple");
         });
