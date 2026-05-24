@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod codec;
 
+pub mod metrics;
 mod request;
 mod response;
 mod server;

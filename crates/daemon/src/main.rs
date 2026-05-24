@@ -14,6 +14,7 @@
 use clap::Parser;
 use compio::net::TcpListener;
 use compio::runtime::Runtime;
+use fast_telemetry_export::dogstatsd::DogStatsDConfig;
 use mica_driver::CompioTaskDriver;
 use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
 use mica_runtime::{EmbeddingProviderKind, SourceRunner};
@@ -32,7 +33,9 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
+mod metrics;
 #[allow(dead_code)]
 mod rpc;
 
@@ -66,6 +69,10 @@ struct Cli {
     webtransport_cert: Option<PathBuf>,
     #[arg(long, value_name = "FILE")]
     webtransport_key: Option<PathBuf>,
+    #[arg(long, value_name = "ADDR")]
+    dogstatsd_endpoint: Option<String>,
+    #[arg(long, default_value_t = 10, value_name = "SECONDS")]
+    dogstatsd_interval_secs: u64,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,9 +129,11 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         } else {
             None
         };
+    let dogstatsd_endpoint = cli.dogstatsd_endpoint.clone();
+    let dogstatsd_interval = Duration::from_secs(cli.dogstatsd_interval_secs.max(1));
     let mut runner = SourceRunner::new_empty_with_embedding_provider(cli.embedding_provider.into());
     for filein in &cli.fileins {
-        let source = fs::read_to_string(&filein)
+        let source = fs::read_to_string(filein)
             .map_err(|error| format!("failed to read {}: {error}", filein.display()))?;
         let include_base = filein.parent().unwrap_or_else(|| Path::new("."));
         runner
@@ -169,6 +178,9 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     };
     let driver = CompioTaskDriver::spawn_with_workers(runner, cli.driver_threads)
         .map_err(format_driver_error)?;
+    if let Some(endpoint) = dogstatsd_endpoint {
+        start_dogstatsd_export(endpoint, dogstatsd_interval);
+    }
     if let Some(rpc_bind) = cli.rpc_bind {
         start_rpc_server(driver.clone(), rpc_bind)?;
     }
@@ -181,6 +193,9 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             "mica-daemon web listening on {}",
             listener.local_addr().unwrap()
         );
+        metrics::metrics()
+            .endpoints_started
+            .inc(metrics::DaemonEndpoint::Web);
         let host = InProcessWebHost::new(driver.clone());
         compio::runtime::spawn(async move {
             if let Err(error) = serve_web(listener, host, binding, None).await {
@@ -198,6 +213,9 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             "mica-daemon WebTransport listening on {}",
             endpoint.local_addr().unwrap()
         );
+        metrics::metrics()
+            .endpoints_started
+            .inc(metrics::DaemonEndpoint::WebTransport);
         let host = InProcessWebTransportHost::new(driver.clone());
         if cli.telnet_bind.is_some() {
             compio::runtime::spawn(async move {
@@ -219,6 +237,9 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             "mica-daemon telnet listening on {}",
             listener.local_addr().unwrap()
         );
+        metrics::metrics()
+            .endpoints_started
+            .inc(metrics::DaemonEndpoint::Telnet);
         return serve_telnet(listener, InProcessTelnetHost::new(driver), actor, None).await;
     }
     future::pending::<()>().await;
@@ -235,6 +256,9 @@ fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), St
     )
     .map_err(|error| format!("failed to bind RPC socket {endpoint}: {error}"))?;
     println!("mica-daemon RPC listening on {endpoint}");
+    metrics::metrics()
+        .endpoints_started
+        .inc(metrics::DaemonEndpoint::Rpc);
     compio::runtime::spawn(async move {
         let _context = context;
         let mut handler = rpc::RpcHandler::new(driver);
@@ -244,6 +268,50 @@ fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), St
     })
     .detach();
     Ok(())
+}
+
+fn start_dogstatsd_export(endpoint: String, interval: Duration) {
+    metrics::metrics().dogstatsd_configured.set(1);
+    metrics::metrics().dogstatsd_exporters_started.inc();
+    let config = DogStatsDConfig::new(endpoint).with_interval(interval);
+    compio::runtime::spawn(async move {
+        let mut daemon_state = metrics::DaemonMetricsDogStatsDState::new();
+        let mut relation_kernel_state =
+            mica_relation_kernel::metrics::RelationKernelMetricsDogStatsDState::new();
+        let mut runtime_state = mica_runtime::metrics::RuntimeMetricsDogStatsDState::new();
+        let mut web_host_state = mica_web_host::metrics::WebHostMetricsDogStatsDState::new();
+        let mut webtransport_host_state =
+            mica_webtransport_host::metrics::WebTransportMetricsDogStatsDState::new();
+        fast_telemetry_export::dogstatsd::run_compio(
+            config,
+            future::pending::<()>(),
+            move |output| {
+                metrics::metrics().export_dogstatsd_delta(output, &[], &mut daemon_state);
+                mica_relation_kernel::metrics::metrics().export_dogstatsd_delta(
+                    output,
+                    &[],
+                    &mut relation_kernel_state,
+                );
+                mica_runtime::metrics::metrics().export_dogstatsd_delta(
+                    output,
+                    &[],
+                    &mut runtime_state,
+                );
+                mica_web_host::metrics::metrics().export_dogstatsd_delta(
+                    output,
+                    &[],
+                    &mut web_host_state,
+                );
+                mica_webtransport_host::metrics::metrics().export_dogstatsd_delta(
+                    output,
+                    &[],
+                    &mut webtransport_host_state,
+                );
+            },
+        )
+        .await;
+    })
+    .detach();
 }
 
 fn read_filein_include(base: &Path, path: &str) -> Result<String, String> {

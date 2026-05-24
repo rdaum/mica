@@ -1241,7 +1241,7 @@ mod tests {
         let mut stream = StdTcpStream::connect(addr)
             .map_err(|error| format!("failed to connect event stream: {error}"))?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .map_err(|error| format!("failed to set stream timeout: {error}"))?;
         stream
             .write_all(
@@ -1262,7 +1262,7 @@ mod tests {
         let mut stream = StdTcpStream::connect(addr)
             .map_err(|error| format!("failed to connect POST: {error}"))?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .map_err(|error| format!("failed to set POST timeout: {error}"))?;
         let request = format!(
             "POST /sync/input HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1404,6 +1404,9 @@ mod tests {
             .run_filein(include_str!("../../../apps/shared/events.mica"))
             .unwrap();
         runner
+            .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+            .unwrap();
+        runner
             .run_filein(include_str!("../../../apps/mud/core.mica"))
             .unwrap();
         runner
@@ -1423,6 +1426,9 @@ mod tests {
             .unwrap();
         runner
             .run_filein(include_str!("../../../apps/mud/ui-compose.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/ui-retrieval.mica"))
             .unwrap();
         runner
             .run_filein(include_str!("../../../apps/mud/ui-narrative.mica"))

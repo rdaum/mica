@@ -12,6 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::codec::{HttpCodec, HttpResponse, encode_response};
+use crate::metrics::{HttpRequestKind, connection_ended, connection_started};
 use crate::request::handle_in_process_request;
 use crate::response::{error_response, route_request};
 use crate::sync::{self, SyncRequestKind};
@@ -28,10 +29,12 @@ pub async fn serve(listener: TcpListener, max_connections: Option<usize>) -> Res
             .accept()
             .await
             .map_err(|error| format!("failed to accept connection: {error}"))?;
+        connection_started();
         compio::runtime::spawn(async move {
             if let Err(error) = handle_connection(stream).await {
                 eprintln!("HTTP connection failed: {error}");
             }
+            connection_ended();
         })
         .detach();
         accepted += 1;
@@ -55,12 +58,14 @@ pub async fn serve_in_process(
             .accept()
             .await
             .map_err(|error| format!("failed to accept connection: {error}"))?;
+        connection_started();
         let host = host.clone();
         let binding = binding.clone();
         compio::runtime::spawn(async move {
             if let Err(error) = handle_in_process_connection(stream, host, binding).await {
                 eprintln!("HTTP connection failed: {error}");
             }
+            connection_ended();
         })
         .detach();
         accepted += 1;
@@ -82,15 +87,28 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
         match codec.decode(&buffer[..bytes]) {
             Ok(requests) => {
                 for request in requests {
+                    let start = std::time::Instant::now();
                     let close = request.connection_should_close();
-                    write_response(&mut stream, route_request(&request, close)).await?;
+                    let response = route_request(&request, close);
+                    record_http_response(HttpRequestKind::Static, &request, &response, start);
+                    write_response(&mut stream, response).await?;
                     if close {
                         return Ok(());
                     }
                 }
             }
             Err(error) => {
-                write_response(&mut stream, error_response(error, true)).await?;
+                let response = error_response(error, true);
+                crate::metrics::metrics()
+                    .requests
+                    .inc(HttpRequestKind::DecodeError);
+                crate::metrics::metrics()
+                    .responses
+                    .inc(crate::metrics::status_class(response.status));
+                crate::metrics::metrics()
+                    .response_body_bytes
+                    .add(response.body.len() as isize);
+                write_response(&mut stream, response).await?;
                 return Ok(());
             }
         }
@@ -125,13 +143,23 @@ async fn handle_in_process_connection(
                 for request in requests {
                     match sync::request_kind(&request) {
                         Some(SyncRequestKind::EventStream) => {
+                            crate::metrics::metrics()
+                                .requests
+                                .inc(HttpRequestKind::SyncEvents);
                             return sync::serve_event_stream(stream, host, binding, &request).await;
                         }
                         Some(SyncRequestKind::Input) => {
+                            let start = std::time::Instant::now();
                             let close = request.connection_should_close();
                             let response =
                                 sync::handle_sync_input_request(&host, &binding, &request, close)
                                     .await;
+                            record_http_response(
+                                HttpRequestKind::SyncInput,
+                                &request,
+                                &response,
+                                start,
+                            );
                             write_response(&mut stream, response).await?;
                             if close {
                                 return Ok(());
@@ -140,9 +168,19 @@ async fn handle_in_process_connection(
                         }
                         None => {}
                     }
+                    let start = std::time::Instant::now();
                     let close = request.connection_should_close();
                     let response =
                         handle_in_process_request(&host, &binding, &request, close).await;
+                    let kind = if request.method == "GET"
+                        && (request.path == "/healthz"
+                            || crate::response::is_sync_client_path(&request.path))
+                    {
+                        HttpRequestKind::Static
+                    } else {
+                        HttpRequestKind::InProcess
+                    };
+                    record_http_response(kind, &request, &response, start);
                     write_response(&mut stream, response).await?;
                     if close {
                         return Ok(());
@@ -150,7 +188,17 @@ async fn handle_in_process_connection(
                 }
             }
             Err(error) => {
-                write_response(&mut stream, error_response(error, true)).await?;
+                let response = error_response(error, true);
+                crate::metrics::metrics()
+                    .requests
+                    .inc(HttpRequestKind::DecodeError);
+                crate::metrics::metrics()
+                    .responses
+                    .inc(crate::metrics::status_class(response.status));
+                crate::metrics::metrics()
+                    .response_body_bytes
+                    .add(response.body.len() as isize);
+                write_response(&mut stream, response).await?;
                 return Ok(());
             }
         }
@@ -180,4 +228,25 @@ async fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Resul
         .map_err(|error| format!("failed to encode HTTP response: {error}"))?;
     let (result, _) = stream.write_all(out).await.into();
     result.map_err(|error| format!("failed to write to connection: {error}"))
+}
+
+fn record_http_response(
+    kind: HttpRequestKind,
+    request: &crate::codec::HttpRequest,
+    response: &HttpResponse,
+    start: std::time::Instant,
+) {
+    crate::metrics::metrics().requests.inc(kind);
+    crate::metrics::metrics()
+        .request_duration_us
+        .record(kind, crate::metrics::elapsed_us(start));
+    crate::metrics::metrics()
+        .responses
+        .inc(crate::metrics::status_class(response.status));
+    crate::metrics::metrics()
+        .request_body_bytes
+        .add(request.body.len() as isize);
+    crate::metrics::metrics()
+        .response_body_bytes
+        .add(response.body.len() as isize);
 }

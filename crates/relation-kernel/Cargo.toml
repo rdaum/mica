@@ -12,6 +12,7 @@ fjall-provider = ["dep:fjall"]
 
 [dependencies]
 arc-swap.workspace = true
+fast-telemetry.workspace = true
 fjall = { workspace = true, optional = true }
 mica-var.workspace = true
 rart.workspace = true

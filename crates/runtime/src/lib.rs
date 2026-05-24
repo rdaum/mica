@@ -12,6 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 mod embedding;
+pub mod metrics;
 mod retrieval;
 mod task;
 mod task_manager;

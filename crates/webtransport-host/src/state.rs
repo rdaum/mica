@@ -311,6 +311,9 @@ impl SessionOutput {
                 return Err("session writer is closed".to_owned());
             }
             state.messages.push_back(message);
+            crate::metrics::metrics()
+                .queued_outgoing_datagrams
+                .set(state.messages.len() as i64);
             state.waker.take()
         };
         if let Some(waker) = waker {
@@ -344,6 +347,9 @@ impl SessionOutput {
             };
             messages.push(message);
         }
+        crate::metrics::metrics()
+            .queued_outgoing_datagrams
+            .set(state.messages.len() as i64);
         messages
     }
 

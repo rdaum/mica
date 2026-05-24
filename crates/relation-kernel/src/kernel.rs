@@ -47,17 +47,19 @@ impl RelationKernel {
         computed_relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>,
     ) -> Self {
         let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
+        let snapshot = Arc::new(Snapshot {
+            version: 0,
+            relations: HashMap::new(),
+            rules: Vec::new(),
+            computed_relations: computed_relations.clone(),
+            derived_cache: empty_derived_cache(),
+            dispatch_cache: empty_dispatch_cache(),
+            method_program_cache: empty_method_program_cache(),
+            commits: CommitHistory::empty(),
+        });
+        crate::metrics::metrics().record_snapshot(&snapshot);
         Self {
-            root: ArcSwap::new(Arc::new(Snapshot {
-                version: 0,
-                relations: HashMap::new(),
-                rules: Vec::new(),
-                computed_relations: computed_relations.clone(),
-                derived_cache: empty_derived_cache(),
-                dispatch_cache: empty_dispatch_cache(),
-                method_program_cache: empty_method_program_cache(),
-                commits: CommitHistory::empty(),
-            })),
+            root: ArcSwap::new(snapshot),
             provider,
             commit_lock: Mutex::new(()),
         }
@@ -118,17 +120,19 @@ impl RelationKernel {
         }
 
         let version = commits.last().map_or(0, Commit::version);
+        let snapshot = Arc::new(Snapshot {
+            version,
+            relations: states,
+            rules,
+            computed_relations: computed_relations.clone(),
+            derived_cache: empty_derived_cache(),
+            dispatch_cache: empty_dispatch_cache(),
+            method_program_cache: empty_method_program_cache(),
+            commits: CommitHistory::from_commits(commits),
+        });
+        crate::metrics::metrics().record_snapshot(&snapshot);
         Ok(Self {
-            root: ArcSwap::new(Arc::new(Snapshot {
-                version,
-                relations: states,
-                rules,
-                computed_relations: computed_relations.clone(),
-                derived_cache: empty_derived_cache(),
-                dispatch_cache: empty_dispatch_cache(),
-                method_program_cache: empty_method_program_cache(),
-                commits: CommitHistory::from_commits(commits),
-            })),
+            root: ArcSwap::new(snapshot),
             provider,
             commit_lock: Mutex::new(()),
         })
@@ -190,17 +194,19 @@ impl RelationKernel {
         }
 
         let version = commits.last().map_or(0, Commit::version);
+        let snapshot = Arc::new(Snapshot {
+            version,
+            relations: states,
+            rules,
+            computed_relations: computed_relations.clone(),
+            derived_cache: empty_derived_cache(),
+            dispatch_cache: empty_dispatch_cache(),
+            method_program_cache: empty_method_program_cache(),
+            commits: CommitHistory::from_commits(commits),
+        });
+        crate::metrics::metrics().record_snapshot(&snapshot);
         Ok(Self {
-            root: ArcSwap::new(Arc::new(Snapshot {
-                version,
-                relations: states,
-                rules,
-                computed_relations: computed_relations.clone(),
-                derived_cache: empty_derived_cache(),
-                dispatch_cache: empty_dispatch_cache(),
-                method_program_cache: empty_method_program_cache(),
-                commits: CommitHistory::from_commits(commits),
-            })),
+            root: ArcSwap::new(snapshot),
             provider,
             commit_lock: Mutex::new(()),
         })
@@ -245,17 +251,19 @@ impl RelationKernel {
             relation.insert(tuple);
         }
 
+        let snapshot = Arc::new(Snapshot {
+            version: state.version,
+            relations: states,
+            rules: state.rules,
+            computed_relations: computed_relations.clone(),
+            derived_cache: empty_derived_cache(),
+            dispatch_cache: empty_dispatch_cache(),
+            method_program_cache: empty_method_program_cache(),
+            commits: CommitHistory::empty(),
+        });
+        crate::metrics::metrics().record_snapshot(&snapshot);
         Ok(Self {
-            root: ArcSwap::new(Arc::new(Snapshot {
-                version: state.version,
-                relations: states,
-                rules: state.rules,
-                computed_relations: computed_relations.clone(),
-                derived_cache: empty_derived_cache(),
-                dispatch_cache: empty_dispatch_cache(),
-                method_program_cache: empty_method_program_cache(),
-                commits: CommitHistory::empty(),
-            })),
+            root: ArcSwap::new(snapshot),
             provider,
             commit_lock: Mutex::new(()),
         })
@@ -375,6 +383,7 @@ impl RelationKernel {
     }
 
     pub fn begin(&self) -> Transaction<'_> {
+        crate::metrics::metrics().transactions_started.inc();
         Transaction::new(self, self.snapshot())
     }
 
@@ -389,6 +398,9 @@ impl RelationKernel {
                 Arc::clone(current)
             }
         });
+        if success {
+            crate::metrics::metrics().record_snapshot(&next);
+        }
         success
     }
 

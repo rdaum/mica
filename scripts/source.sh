@@ -25,6 +25,8 @@ cert_path="${MICA_SOURCE_WT_CERT:-/tmp/mica-source-wt-cert.pem}"
 key_path="${MICA_SOURCE_WT_KEY:-/tmp/mica-source-wt-key.pem}"
 poll_ms="${MICA_SOURCE_POLL_MS:-5000}"
 embedding_provider="${MICA_SOURCE_EMBEDDING_PROVIDER:-disabled}"
+dogstatsd_endpoint="${MICA_SOURCE_DOGSTATSD_ENDPOINT:-127.0.0.1:8125}"
+dogstatsd_interval_secs="${MICA_SOURCE_DOGSTATSD_INTERVAL_SECS:-1}"
 export MICA_SOURCE_ROOT="${MICA_SOURCE_ROOT:-${repo_root}}"
 export MICA_SOURCE_INDEX="${MICA_SOURCE_INDEX:-${repo_root}/.cache/source-index/mica-worktree.json}"
 
@@ -75,18 +77,28 @@ cert_hash="$(
 
 cd "${repo_root}"
 
-cargo run ${MICA_SOURCE_BUILD_FLAGS:---release} --bin mica-daemon -- \
-  --filein apps/shared/sync-host.mica \
-  --filein apps/shared/sync-dom.mica \
-  --filein apps/source/core.mica \
-  --filein apps/source/ui-session.mica \
-  --filein apps/source/ui-compose.mica \
-  --filein apps/source/http.mica \
-  --embedding-provider "${embedding_provider}" \
-  --web-bind "${http_host}:${http_port}" \
-  --webtransport-bind "${wt_bind}" \
-  --webtransport-cert "${cert_path}" \
-  --webtransport-key "${key_path}" &
+daemon_args=(
+  --filein apps/shared/sync-host.mica
+  --filein apps/shared/sync-dom.mica
+  --filein apps/source/core.mica
+  --filein apps/source/ui-session.mica
+  --filein apps/source/ui-compose.mica
+  --filein apps/source/http.mica
+  --embedding-provider "${embedding_provider}"
+  --web-bind "${http_host}:${http_port}"
+  --webtransport-bind "${wt_bind}"
+  --webtransport-cert "${cert_path}"
+  --webtransport-key "${key_path}"
+)
+
+if [[ -n "${dogstatsd_endpoint}" ]]; then
+  daemon_args+=(
+    --dogstatsd-endpoint "${dogstatsd_endpoint}"
+    --dogstatsd-interval-secs "${dogstatsd_interval_secs}"
+  )
+fi
+
+cargo run ${MICA_SOURCE_BUILD_FLAGS:---release} --bin mica-daemon -- "${daemon_args[@]}" &
 daemon_pid=$!
 
 encoded_url="${wt_url//:/%3A}"
@@ -109,6 +121,8 @@ Manual values:
   SSE sync base: http://${public_host}:${http_port}/sync
   URL: ${wt_url}
   Certificate SHA-256: ${cert_hash}
+  DogStatsD endpoint: ${dogstatsd_endpoint:-disabled}
+  DogStatsD interval: ${dogstatsd_interval_secs}s
 
 Press Ctrl-C to stop the daemon.
 EOF

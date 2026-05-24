@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+pub mod metrics;
 mod serve;
 mod state;
 mod sync;
@@ -901,6 +902,9 @@ mod tests {
             .run_filein(include_str!("../../../apps/shared/events.mica"))
             .unwrap();
         runner
+            .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+            .unwrap();
+        runner
             .run_filein(include_str!("../../../apps/mud/core.mica"))
             .unwrap();
         runner
@@ -920,6 +924,9 @@ mod tests {
             .unwrap();
         runner
             .run_filein(include_str!("../../../apps/mud/ui-compose.mica"))
+            .unwrap();
+        runner
+            .run_filein(include_str!("../../../apps/mud/ui-retrieval.mica"))
             .unwrap();
         runner
             .run_filein(include_str!("../../../apps/mud/ui-narrative.mica"))

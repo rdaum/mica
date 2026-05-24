@@ -59,6 +59,7 @@ pub async fn serve_in_process(
         compio::runtime::spawn(async move {
             match incoming.await {
                 Ok(connection) => {
+                    crate::metrics::metrics().connections_accepted.inc();
                     if let Err(error) = handle_quic_connection(connection, host, binding).await {
                         eprintln!("WebTransport connection failed: {error}");
                     }
@@ -141,7 +142,14 @@ async fn handle_session(
     let endpoint = host.allocate_endpoint()?;
     let state = SessionState::new();
     let output = state.output.clone();
-    host.sessions.lock().unwrap().insert(endpoint, state);
+    {
+        let mut sessions = host.sessions.lock().unwrap();
+        sessions.insert(endpoint, state);
+        crate::metrics::metrics()
+            .active_sessions
+            .set(sessions.len() as i64);
+    }
+    crate::metrics::metrics().sessions_accepted.inc();
     if let Err(error) = host.driver.open_endpoint_with_context(
         endpoint,
         Some(binding.principal),
@@ -241,6 +249,10 @@ async fn write_datagram_loop(
         for message in output.drain_batch(ENDPOINT_OUTPUT_DRAIN_DATAGRAMS) {
             match message {
                 SessionOutputMessage::Datagram(datagram) => {
+                    crate::metrics::metrics().outgoing_datagrams.inc();
+                    crate::metrics::metrics()
+                        .outgoing_bytes
+                        .add(datagram.len() as isize);
                     sender.send_datagram(datagram).map_err(|error| {
                         format!("failed to send WebTransport datagram: {error}")
                     })?;
@@ -256,4 +268,7 @@ pub(crate) fn drop_session_writer(host: &InProcessWebTransportHost, endpoint: Id
     if let Some(state) = host.sessions.lock().unwrap().remove(&endpoint) {
         state.output.close();
     }
+    crate::metrics::metrics()
+        .active_sessions
+        .set(host.sessions.lock().unwrap().len() as i64);
 }

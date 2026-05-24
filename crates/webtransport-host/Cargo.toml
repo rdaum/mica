@@ -10,6 +10,7 @@ description = "Mica WebTransport host over compio QUIC"
 bytes.workspace = true
 compio.workspace = true
 compio-quic.workspace = true
+fast-telemetry.workspace = true
 h3-webtransport.workspace = true
 http.workspace = true
 mica-driver.workspace = true

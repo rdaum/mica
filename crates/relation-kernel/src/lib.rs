@@ -32,6 +32,7 @@ mod kernel;
 mod materialized;
 mod metadata;
 mod method_program_cache;
+pub mod metrics;
 mod neighborhood;
 mod projected;
 mod provider;

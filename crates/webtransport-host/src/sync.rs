@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::metrics::{IncomingDatagramKind, RenderOperation, SyncEnvelopeKind};
 use crate::state::{
     ActiveSyncView, InProcessWebTransportHost, RenderedSyncView, SessionState, format_driver_error,
 };
@@ -37,8 +38,19 @@ pub(crate) async fn route_incoming_datagram(
     endpoint: Identity,
     datagram: Bytes,
 ) -> Result<(), String> {
+    crate::metrics::metrics()
+        .incoming_bytes
+        .add(datagram.len() as isize);
     match decode_sync_envelope(&datagram) {
-        Ok(envelope) => route_sync_envelope(host, endpoint, envelope).await,
+        Ok(envelope) => {
+            crate::metrics::metrics()
+                .incoming_datagrams
+                .inc(IncomingDatagramKind::SyncEnvelope);
+            crate::metrics::metrics()
+                .sync_envelopes
+                .inc(sync_envelope_kind(envelope.kind));
+            route_sync_envelope(host, endpoint, envelope).await
+        }
         Err(_) => route_plain_datagram(host, endpoint, datagram).await,
     }
 }
@@ -49,9 +61,15 @@ async fn route_plain_datagram(
     datagram: Bytes,
 ) -> Result<(), String> {
     if let Some(event) = decode_dom_event_payload(&datagram)? {
+        crate::metrics::metrics()
+            .incoming_datagrams
+            .inc(IncomingDatagramKind::DomEvent);
         return route_dom_event(host, endpoint, event).await;
     }
 
+    crate::metrics::metrics()
+        .incoming_datagrams
+        .inc(IncomingDatagramKind::Plain);
     host.driver
         .input(endpoint, Value::bytes(datagram))
         .await
@@ -179,7 +197,11 @@ async fn refresh_active_sync_view_for(
     active: ActiveSyncView,
     force_ack: bool,
 ) -> Result<(), String> {
+    let start = Instant::now();
     let revision = render_sync_revision_for(driver, active.endpoint, active.view_id).await?;
+    crate::metrics::metrics()
+        .sync_render_duration_us
+        .record(RenderOperation::Refresh, crate::metrics::elapsed_us(start));
     if revision == active.server_revision && active.last_tree.is_some() {
         if force_ack {
             send_sync_envelope_to(
@@ -265,6 +287,7 @@ async fn render_sync_revision_for(
     endpoint: Identity,
     view_id: u64,
 ) -> Result<u64, String> {
+    let start = Instant::now();
     sync_u64_from_task_value(
         "sync_view_revision",
         submit_sync_invocation_for(
@@ -275,6 +298,11 @@ async fn render_sync_revision_for(
         )
         .await?,
     )
+    .inspect(|_| {
+        crate::metrics::metrics()
+            .sync_render_duration_us
+            .record(RenderOperation::Revision, crate::metrics::elapsed_us(start));
+    })
 }
 
 async fn render_sync_view_for(
@@ -282,6 +310,7 @@ async fn render_sync_view_for(
     endpoint: Identity,
     view_id: u64,
 ) -> Result<RenderedSyncView, String> {
+    let render_start = Instant::now();
     let trace = SyncTrace::new("render");
     let revision = render_sync_revision_for(driver, endpoint, view_id).await?;
     trace.mark("revision");
@@ -303,12 +332,17 @@ async fn render_sync_view_for(
     let signature = sync_payload_signature(revision, &payload);
     trace.mark("payload");
 
-    Ok(RenderedSyncView {
+    let rendered = RenderedSyncView {
         revision,
         signature,
         tree,
         payload,
-    })
+    };
+    crate::metrics::metrics().sync_render_duration_us.record(
+        RenderOperation::View,
+        crate::metrics::elapsed_us(render_start),
+    );
+    Ok(rendered)
 }
 
 pub(crate) struct SyncTrace {
@@ -394,6 +428,9 @@ pub(crate) fn send_sync_envelope_to(
         return Ok(());
     };
     let datagrams = sync_envelope_datagrams(envelope.as_ref());
+    crate::metrics::metrics()
+        .sync_envelopes
+        .inc(sync_envelope_kind(envelope.kind));
     for _ in 0..SYNC_ENVELOPE_SEND_ATTEMPTS {
         for datagram in &datagrams {
             state.output.send_datagram(datagram.clone())?;
@@ -604,9 +641,21 @@ pub(crate) fn route_driver_event(
 
 fn effect_datagrams(target: Identity, value: &Value) -> Vec<Bytes> {
     if let Some(envelope) = sync_envelope_from_value(target.raw(), value) {
+        crate::metrics::metrics()
+            .sync_envelopes
+            .inc(sync_envelope_kind(envelope.kind));
         return sync_envelope_datagrams(envelope.as_ref());
     }
     vec![effect_datagram(target, value)]
+}
+
+fn sync_envelope_kind(kind: SyncMessageKind) -> SyncEnvelopeKind {
+    match kind {
+        SyncMessageKind::NeedView => SyncEnvelopeKind::NeedView,
+        SyncMessageKind::HaveView => SyncEnvelopeKind::HaveView,
+        SyncMessageKind::ViewSnapshot => SyncEnvelopeKind::ViewSnapshot,
+        SyncMessageKind::ViewDelta => SyncEnvelopeKind::ViewDelta,
+    }
 }
 
 pub(crate) fn effect_datagram(target: Identity, value: &Value) -> Bytes {

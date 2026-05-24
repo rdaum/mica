@@ -16,6 +16,7 @@ mod overlay;
 use crate::commit_bloom::CommitBloom;
 use crate::computed::ComputedRelationRead;
 use crate::index::{RelationMutationKind, RelationState};
+use crate::metrics::{CommitOutcome, TransactionReadOperation, TransactionWriteOperation};
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
     active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
@@ -33,6 +34,7 @@ use mica_var::Value;
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
+use std::time::Instant;
 
 pub struct Transaction<'a> {
     kernel: &'a RelationKernel,
@@ -157,7 +159,13 @@ impl<'a> Transaction<'a> {
         if let Some(old_tuple) = self.visible_tuple_for_key(relation, &key_positions, &tuple)? {
             self.retract(relation, old_tuple)?;
         }
-        self.assert(relation, tuple)
+        let result = self.assert(relation, tuple);
+        if result.is_ok() {
+            crate::metrics::metrics()
+                .transaction_functional_replacements
+                .inc();
+        }
+        result
     }
 
     pub fn scan(
@@ -165,12 +173,23 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
+        crate::metrics::metrics()
+            .transaction_read_operations
+            .inc(TransactionReadOperation::Scan);
         let metadata = self.base.relation(relation)?.metadata();
         if self.base.rules().is_empty() && !self.writes.contains_key(&relation) {
             if self.base.computed_relations.is_computed_relation(metadata) {
-                return self.scan_extensional_rows(relation, bindings);
+                let rows = self.scan_extensional_rows(relation, bindings)?;
+                crate::metrics::metrics()
+                    .transaction_read_rows
+                    .record(TransactionReadOperation::Scan, rows.len() as u64);
+                return Ok(rows);
             }
-            return self.base.scan_extensional(relation, bindings);
+            let rows = self.base.scan_extensional(relation, bindings)?;
+            crate::metrics::metrics()
+                .transaction_read_rows
+                .record(TransactionReadOperation::Scan, rows.len() as u64);
+            return Ok(rows);
         }
 
         let mut visible = self.scan_extensional_rows(relation, bindings)?;
@@ -184,6 +203,9 @@ impl<'a> Transaction<'a> {
             }
         }
 
+        crate::metrics::metrics()
+            .transaction_read_rows
+            .record(TransactionReadOperation::Scan, visible.len() as u64);
         Ok(visible)
     }
 
@@ -192,16 +214,25 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
+        crate::metrics::metrics()
+            .transaction_read_operations
+            .inc(TransactionReadOperation::EstimateScan);
         let metadata = self.base.relation(relation)?.metadata();
-        if !relation_has_active_rule_head(self.base.rules(), relation)
+        let rows = if !relation_has_active_rule_head(self.base.rules(), relation)
             && !self.writes.contains_key(&relation)
         {
             if self.base.computed_relations.is_computed_relation(metadata) {
-                return self.estimate_extensional_scan(relation, bindings);
+                self.estimate_extensional_scan(relation, bindings)?
+            } else {
+                self.base.estimate_extensional_scan(relation, bindings)?
             }
-            return self.base.estimate_extensional_scan(relation, bindings);
-        }
-        Ok(self.scan(relation, bindings)?.len())
+        } else {
+            self.scan(relation, bindings)?.len()
+        };
+        crate::metrics::metrics()
+            .transaction_read_rows
+            .record(TransactionReadOperation::EstimateScan, rows as u64);
+        Ok(rows)
     }
 
     pub(crate) fn estimate_extensional_scan(
@@ -229,26 +260,49 @@ impl<'a> Transaction<'a> {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
+        crate::metrics::metrics()
+            .transaction_read_operations
+            .inc(TransactionReadOperation::Visit);
+        let mut rows = 0usize;
         let metadata = self.base.relation(relation)?.metadata();
         if !relation_has_active_rule_head(self.base.rules(), relation)
             && !self.writes.contains_key(&relation)
         {
             if self.base.computed_relations.is_computed_relation(metadata) {
                 for tuple in self.scan_extensional_rows(relation, bindings)? {
+                    rows += 1;
                     if visitor(&tuple)? == ScanControl::Stop {
                         break;
                     }
                 }
+                crate::metrics::metrics()
+                    .transaction_read_rows
+                    .record(TransactionReadOperation::Visit, rows as u64);
                 return Ok(());
             }
-            return self.base.visit_extensional(relation, bindings, visitor);
+            let result = self
+                .base
+                .visit_extensional(relation, bindings, &mut |tuple| {
+                    rows += 1;
+                    visitor(tuple)
+                });
+            if result.is_ok() {
+                crate::metrics::metrics()
+                    .transaction_read_rows
+                    .record(TransactionReadOperation::Visit, rows as u64);
+            }
+            return result;
         }
 
         for tuple in self.scan(relation, bindings)? {
+            rows += 1;
             if visitor(&tuple)? == ScanControl::Stop {
                 break;
             }
         }
+        crate::metrics::metrics()
+            .transaction_read_rows
+            .record(TransactionReadOperation::Visit, rows as u64);
         Ok(())
     }
 
@@ -268,13 +322,20 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
+        crate::metrics::metrics()
+            .transaction_read_operations
+            .inc(TransactionReadOperation::ScanExtensional);
         let metadata = self.base.relation(relation)?.metadata();
         if self.base.computed_relations.is_computed_relation(metadata) {
-            return self
+            let rows = self
                 .base
                 .computed_relations
                 .scan(self, metadata, bindings)
-                .expect("computed relation should have a registered handler");
+                .expect("computed relation should have a registered handler")?;
+            crate::metrics::metrics()
+                .transaction_read_rows
+                .record(TransactionReadOperation::ScanExtensional, rows.len() as u64);
+            return Ok(rows);
         }
         let mut visible = self.base.scan_extensional(relation, bindings)?;
 
@@ -296,6 +357,10 @@ impl<'a> Transaction<'a> {
                 }
             });
             if visible.is_empty() && local_retracts.is_empty() {
+                crate::metrics::metrics().transaction_read_rows.record(
+                    TransactionReadOperation::ScanExtensional,
+                    local_asserts.len() as u64,
+                );
                 return Ok(local_asserts);
             }
             if !local_asserts.is_empty() {
@@ -306,6 +371,10 @@ impl<'a> Transaction<'a> {
             }
         }
 
+        crate::metrics::metrics().transaction_read_rows.record(
+            TransactionReadOperation::ScanExtensional,
+            visible.len() as u64,
+        );
         Ok(visible)
     }
 
@@ -358,6 +427,35 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn commit(self) -> Result<CommitResult, KernelError> {
+        let start = Instant::now();
+        let result = self.commit_inner();
+        let elapsed_us = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        crate::metrics::metrics()
+            .transaction_commit_duration_us
+            .record(elapsed_us);
+        match &result {
+            Ok(result) => {
+                crate::metrics::metrics()
+                    .transaction_commits
+                    .inc(CommitOutcome::Committed);
+                crate::metrics::metrics()
+                    .transaction_commit_changes
+                    .record(result.commit().changes().len() as u64);
+            }
+            Err(KernelError::Conflict(_)) => crate::metrics::metrics()
+                .transaction_commits
+                .inc(CommitOutcome::Conflict),
+            Err(KernelError::Persistence(_)) => crate::metrics::metrics()
+                .transaction_commits
+                .inc(CommitOutcome::PersistenceError),
+            Err(_) => crate::metrics::metrics()
+                .transaction_commits
+                .inc(CommitOutcome::Error),
+        }
+        result
+    }
+
+    fn commit_inner(self) -> Result<CommitResult, KernelError> {
         let _guard = self.kernel.commit_guard();
         let current = self.kernel.snapshot();
         if current.version() != self.base.version() {
@@ -428,6 +526,14 @@ impl<'a> Transaction<'a> {
             .entry(relation)
             .or_default()
             .insert(tuple.clone(), change);
+        match change {
+            LocalChange::Assert => crate::metrics::metrics()
+                .transaction_write_operations
+                .inc(TransactionWriteOperation::Assert),
+            LocalChange::Retract => crate::metrics::metrics()
+                .transaction_write_operations
+                .inc(TransactionWriteOperation::Retract),
+        }
         self.record_functional_change(relation, &tuple, change)
     }
 

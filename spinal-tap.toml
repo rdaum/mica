@@ -1,0 +1,335 @@
+# Mica DogStatsD dashboard for ../spinal-tap.
+# Run Mica with:
+#   --dogstatsd-endpoint 127.0.0.1:8125 --dogstatsd-interval-secs 1
+
+listen = "127.0.0.1:8125"
+history_points = 240
+redraw_millis = 250
+
+[[metrics]]
+name = "mica_daemon.endpoints_started"
+view = "numeric"
+kind = "counter"
+display = "total"
+unit = "endpoints"
+
+[[metrics]]
+name = "mica_daemon.dogstatsd_exporters_started"
+view = "numeric"
+kind = "counter"
+display = "total"
+unit = "exporters"
+
+[[metrics]]
+name = "mica_daemon.dogstatsd_configured"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+
+[[metrics]]
+name = "mica_relation_kernel.transactions_started"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "txn/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_commits"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "commit/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_commit_duration_us.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "commit/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_commit_duration_us.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "us/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_commit_changes.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "commit/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_commit_changes.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "tuple/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_write_operations"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "op/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_functional_replacements"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "op/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_read_operations"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "op/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_read_rows.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "read/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_read_rows.sum"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "row/s"
+
+[[metrics]]
+name = "mica_relation_kernel.snapshot_relations"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "relations"
+
+[[metrics]]
+name = "mica_relation_kernel.snapshot_rules"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "rules"
+
+[[metrics]]
+name = "mica_runtime.task_operations"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "task/s"
+
+[[metrics]]
+name = "mica_runtime.task_outcomes"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "task/s"
+
+[[metrics]]
+name = "mica_runtime.task_run_duration_us.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "run/s"
+
+[[metrics]]
+name = "mica_runtime.task_run_duration_us.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "us/s"
+
+[[metrics]]
+name = "mica_runtime.suspended_tasks"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "tasks"
+
+[[metrics]]
+name = "mica_runtime.completed_tasks"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "tasks"
+
+[[metrics]]
+name = "mica_runtime.endpoint_operations"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "op/s"
+
+[[metrics]]
+name = "mica_runtime.transient_operations"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "op/s"
+
+[[metrics]]
+name = "mica_runtime.transient_tuples_asserted"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "tuple/s"
+
+[[metrics]]
+name = "mica_runtime.transient_tuples_retracted"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "tuple/s"
+
+[[metrics]]
+name = "mica_runtime.task_effects"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "effect/s"
+
+[[metrics]]
+name = "mica_runtime.mailbox_sends"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "send/s"
+
+[[metrics]]
+name = "mica_web_host.connections_accepted"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "conn/s"
+
+[[metrics]]
+name = "mica_web_host.active_connections"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "conn"
+
+[[metrics]]
+name = "mica_web_host.requests"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "req/s"
+
+[[metrics]]
+name = "mica_web_host.responses"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "resp/s"
+
+[[metrics]]
+name = "mica_web_host.request_duration_us.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "req/s"
+
+[[metrics]]
+name = "mica_web_host.request_duration_us.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "us/s"
+
+[[metrics]]
+name = "mica_web_host.request_body_bytes"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "B/s"
+
+[[metrics]]
+name = "mica_web_host.response_body_bytes"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "B/s"
+
+[[metrics]]
+name = "mica_webtransport_host.connections_accepted"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "conn/s"
+
+[[metrics]]
+name = "mica_webtransport_host.sessions_accepted"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "session/s"
+
+[[metrics]]
+name = "mica_webtransport_host.active_sessions"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "sessions"
+
+[[metrics]]
+name = "mica_webtransport_host.incoming_datagrams"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "dgram/s"
+
+[[metrics]]
+name = "mica_webtransport_host.incoming_bytes"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "B/s"
+
+[[metrics]]
+name = "mica_webtransport_host.outgoing_datagrams"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "dgram/s"
+
+[[metrics]]
+name = "mica_webtransport_host.outgoing_bytes"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "B/s"
+
+[[metrics]]
+name = "mica_webtransport_host.sync_envelopes"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "msg/s"
+
+[[metrics]]
+name = "mica_webtransport_host.sync_render_duration_us.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "render/s"
+
+[[metrics]]
+name = "mica_webtransport_host.sync_render_duration_us.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "us/s"
+
+[[metrics]]
+name = "mica_webtransport_host.queued_outgoing_datagrams"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "dgrams"
