@@ -12,6 +12,7 @@ make_identity(:source/select_symbol_action)
 make_identity(:source/find_references_action)
 make_identity(:source/toggle_hidden_action)
 make_identity(:source/toggle_inspector_section_action)
+make_identity(:source/set_window_action)
 
 assert source/View(31)
 assert Delegates(#source/open_file_action, #source/sync_action, 0)
@@ -21,6 +22,7 @@ assert Delegates(#source/select_symbol_action, #source/sync_action, 0)
 assert Delegates(#source/find_references_action, #source/sync_action, 0)
 assert Delegates(#source/toggle_hidden_action, #source/sync_action, 0)
 assert Delegates(#source/toggle_inspector_section_action, #source/sync_action, 0)
+assert Delegates(#source/set_window_action, #source/sync_action, 0)
 assert source/SyncAction("source_open_file", #source/open_file_action)
 assert source/SyncAction("source_open_directory", #source/open_directory_action)
 assert source/SyncAction("source_jump_to_line", #source/jump_to_line_action)
@@ -28,6 +30,7 @@ assert source/SyncAction("source_select_symbol", #source/select_symbol_action)
 assert source/SyncAction("source_find_references", #source/find_references_action)
 assert source/SyncAction("source_toggle_hidden", #source/toggle_hidden_action)
 assert source/SyncAction("source_toggle_inspector_section", #source/toggle_inspector_section_action)
+assert source/SyncAction("source_set_window", #source/set_window_action)
 
 assert CanRead(#web, :source/Repository)
 assert CanRead(#web, :source/RepositoryName)
@@ -47,6 +50,7 @@ assert CanRead(#web, :source/FileIndex)
 assert CanRead(#web, :source/FileIndexVersion)
 assert CanRead(#web, :source/RepositoryEntry)
 assert CanRead(#web, :source/FileLines)
+assert CanRead(#web, :source/FileLineCount)
 assert CanRead(#web, :source/FileContentHash)
 assert CanRead(#web, :source/SyntaxLine)
 assert CanRead(#web, :source/SyntaxOutline)
@@ -87,6 +91,7 @@ assert CanRead(#web, :source/SelectedRevision)
 assert CanRead(#web, :source/SelectedPath)
 assert CanRead(#web, :source/SelectedDirectory)
 assert CanRead(#web, :source/SelectedLine)
+assert CanRead(#web, :source/SelectedWindowStart)
 assert CanRead(#web, :source/SelectedSymbol)
 assert CanRead(#web, :source/SelectedSymbolName)
 assert CanRead(#web, :source/SelectedSymbolKind)
@@ -108,6 +113,7 @@ assert CanWrite(#web, :source/SelectedRevision)
 assert CanWrite(#web, :source/SelectedPath)
 assert CanWrite(#web, :source/SelectedDirectory)
 assert CanWrite(#web, :source/SelectedLine)
+assert CanWrite(#web, :source/SelectedWindowStart)
 assert CanWrite(#web, :source/SelectedSymbol)
 assert CanWrite(#web, :source/SelectedSymbolName)
 assert CanWrite(#web, :source/SelectedSymbolKind)
@@ -134,6 +140,9 @@ assert CanInvoke(#web, :source/current_file)
 assert CanInvoke(#web, :source/current_directory)
 assert CanInvoke(#web, :source/directory_expanded)
 assert CanInvoke(#web, :source/current_line)
+assert CanInvoke(#web, :source/window_size)
+assert CanInvoke(#web, :source/clamp_window_start)
+assert CanInvoke(#web, :source/window_start_for_line)
 assert CanInvoke(#web, :source/current_window_start)
 assert CanInvoke(#web, :source/file_for_path)
 assert CanInvoke(#web, :source/file_title)
@@ -162,6 +171,9 @@ assert CanInvoke(#web, :source/hidden_toggle_node)
 assert CanInvoke(#web, :source/show_repository_entry)
 assert CanInvoke(#web, :source/code_panel_node)
 assert CanInvoke(#web, :source/code_line_node)
+assert CanInvoke(#web, :source/code_spacer_node)
+assert CanInvoke(#web, :source/code_window_form_node)
+assert CanInvoke(#web, :source/code_loading_node)
 assert CanInvoke(#web, :source/code_segment_node)
 assert CanInvoke(#web, :source/symbol_panel_node)
 assert CanInvoke(#web, :source/find_references_button_node)
@@ -251,13 +263,42 @@ verb source/current_line()
   return 1
 end
 
-verb source/current_window_start()
-  let line = source/current_line()
-  if line > 12
-    return line - 8
+verb source/window_size()
+  return 240
+end
+
+verb source/clamp_window_start(start, line_count)
+  if start == nothing || start < 1
+    return 1
   end
 
-  return 1
+  let max_start = line_count - source/window_size() + 1
+  if max_start < 1
+    max_start = 1
+  end
+  if start > max_start
+    return max_start
+  end
+
+  return start
+end
+
+verb source/window_start_for_line(line, line_count)
+  let start = 1
+  if line > 24
+    start = line - 20
+  end
+
+  return source/clamp_window_start(start, line_count)
+end
+
+verb source/current_window_start(line_count)
+  let selected = one source/SelectedWindowStart(endpoint(), ?start)
+  if selected != nothing
+    return source/clamp_window_start(selected, line_count)
+  end
+
+  return source/window_start_for_line(source/current_line(), line_count)
 end
 
 verb source/file_title(path)
@@ -373,11 +414,13 @@ verb source/handle_sync_action(source @ #source/open_file_action<_>, endpoint, s
   retract source/SelectedRevision(endpoint, _)
   retract source/SelectedPath(endpoint, _)
   retract source/SelectedLine(endpoint, _)
+  retract source/SelectedWindowStart(endpoint, _)
   source/clear_selected_symbol(endpoint)
   assert source/SelectedRepository(endpoint, #source/repo_mica)
   assert source/SelectedRevision(endpoint, #source/rev_worktree)
   assert source/SelectedPath(endpoint, path)
   assert source/SelectedLine(endpoint, 1)
+  assert source/SelectedWindowStart(endpoint, 1)
   source/bump_revision(endpoint)
   return true
 end
@@ -435,10 +478,16 @@ verb source/handle_sync_action(source @ #source/jump_to_line_action<_>, endpoint
   retract source/SelectedRevision(endpoint, _)
   retract source/SelectedPath(endpoint, _)
   retract source/SelectedLine(endpoint, _)
+  retract source/SelectedWindowStart(endpoint, _)
   assert source/SelectedRepository(endpoint, #source/repo_mica)
   assert source/SelectedRevision(endpoint, #source/rev_worktree)
   assert source/SelectedPath(endpoint, path)
   assert source/SelectedLine(endpoint, line)
+  let line_count = one source/FileLineCount(#source/repo_mica, #source/rev_worktree, path, ?line_count)
+  if line_count == nothing
+    line_count = line
+  end
+  assert source/SelectedWindowStart(endpoint, source/window_start_for_line(line, line_count))
   source/bump_revision(endpoint)
   return true
 end
@@ -484,11 +533,17 @@ verb source/handle_sync_action(source @ #source/select_symbol_action<_>, endpoin
   retract source/SelectedRevision(endpoint, _)
   retract source/SelectedPath(endpoint, _)
   retract source/SelectedLine(endpoint, _)
+  retract source/SelectedWindowStart(endpoint, _)
   source/clear_selected_symbol(endpoint)
   assert source/SelectedRepository(endpoint, #source/repo_mica)
   assert source/SelectedRevision(endpoint, #source/rev_worktree)
   assert source/SelectedPath(endpoint, target_path)
   assert source/SelectedLine(endpoint, target_line)
+  let line_count = one source/FileLineCount(#source/repo_mica, #source/rev_worktree, target_path, ?line_count)
+  if line_count == nothing
+    line_count = target_line
+  end
+  assert source/SelectedWindowStart(endpoint, source/window_start_for_line(target_line, line_count))
   assert source/SelectedSymbol(endpoint, selected[:symbol])
   assert source/SelectedSymbolName(endpoint, selected[:name])
   assert source/SelectedSymbolKind(endpoint, selected[:kind])
@@ -499,6 +554,48 @@ verb source/handle_sync_action(source @ #source/select_symbol_action<_>, endpoin
   assert source/SelectedDefinitionEndByte(endpoint, selected[:end_byte])
   assert source/SelectedSymbolProvider(endpoint, selected[:provider])
   assert source/SelectedReferencesOpen(endpoint, false)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/set_window_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  let raw_start = fields[:window_start]
+  if path == nothing || raw_start == nothing
+    return false
+  end
+
+  let start = from_literal(raw_start)
+  if start == nothing || start < 1
+    return false
+  end
+
+  let readable_path = source/file_for_path(path)
+  if readable_path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  let selected_path = source/current_file()
+  if selected_path != path
+    return false
+  end
+
+  let line_count = one source/FileLineCount(#source/repo_mica, #source/rev_worktree, path, ?line_count)
+  if line_count == nothing
+    line_count = start
+  end
+  let clamped = source/clamp_window_start(start, line_count)
+  let current = one source/SelectedWindowStart(endpoint, ?window_start)
+  if current == clamped
+    return false
+  end
+
+  retract source/SelectedWindowStart(endpoint, _)
+  assert source/SelectedWindowStart(endpoint, clamped)
   source/bump_revision(endpoint)
   return true
 end

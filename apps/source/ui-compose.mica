@@ -307,6 +307,24 @@ verb source/code_line_node(path, line, selected_line, segments)
   return dom_element("div", {:class -> class, "data-sync-key" -> string_concat(path, ":", to_literal(line))}, [number, code])
 end
 
+verb source/code_spacer_node(class, line_count)
+  if line_count < 1
+    return dom_element("div", {:class -> string_concat("source-code-spacer ", class), "data-source-spacer-lines" -> "0"}, [])
+  end
+
+  return dom_element("div", {:class -> string_concat("source-code-spacer ", class), "data-source-spacer-lines" -> to_literal(line_count)}, [])
+end
+
+verb source/code_window_form_node(path, window_start)
+  let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let hidden_start = dom_element("input", {:type -> "hidden", :name -> "window_start", :value -> to_literal(window_start)}, [])
+  return dom_element("form", {:id -> "source-window-form", :class -> "source-window-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_set_window", "data-sync-key" -> string_concat("window:", path)}, [hidden_path, hidden_start])
+end
+
+verb source/code_loading_node()
+  return dom_element("div", {:class -> "source-code-loading", "aria-live" -> "polite"}, [dom_element("span", {:class -> "source-code-loading-dot"}, []), dom_element("span", {:class -> "source-code-loading-text"}, [dom_text("Loading source window...")]), dom_element("button", {:type -> "button", :class -> "source-code-loading-retry"}, [dom_text("Retry")])])
+end
+
 verb source/outline_item_node(path, item)
   let line = item[:start_line]
   let label = item[:name]
@@ -441,18 +459,34 @@ verb source/code_panel_node(path)
   let repository = source/current_repository()
   let selected_revision = source/current_revision()
   let selected_line = source/current_line()
-  let start_line = source/current_window_start()
+  let line_count = one source/FileLineCount(repository, selected_revision, path, ?line_count)
+  if line_count == nothing
+    line_count = 1
+  end
+  let window_size = source/window_size()
+  let start_line = source/current_window_start(line_count)
   let title = source/file_title(path)
   let language = source/file_language(path)
   let rows = []
   let hash = ""
-  for row in source/SyntaxLine(repository, selected_revision, path, start_line, 60, ?line, ?segments, ?hash)
+  for row in source/SyntaxLine(repository, selected_revision, path, start_line, window_size, ?line, ?segments, ?hash)
     hash = row[:hash]
     rows = [@rows, source/code_line_node(path, row[:line], selected_line, row[:segments])]
   end
+  let top_spacer_lines = start_line - 1
+  let bottom_spacer_lines = line_count - start_line - window_size + 1
+  if bottom_spacer_lines < 0
+    bottom_spacer_lines = 0
+  end
   let title_group = dom_element("div", {}, [dom_element("h2", {}, [dom_text(title)]), dom_element("p", {:class -> "source-path"}, [dom_text(path)])])
-  let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language), source/meta_chip_node("hash", hash)])
-  let code = dom_element("div", {:class -> "source-code"}, rows)
+  let end_line = start_line + window_size - 1
+  if end_line > line_count
+    end_line = line_count
+  end
+  let line_label = string_concat("lines ", to_literal(start_line), "-", to_literal(end_line), " / ", to_literal(line_count))
+  let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language), source/meta_chip_node("window", line_label), source/meta_chip_node("hash", hash)])
+  let code_children = [source/code_spacer_node("source-code-spacer-top", top_spacer_lines), @rows, source/code_spacer_node("source-code-spacer-bottom", bottom_spacer_lines)]
+  let code = dom_element("div", {:class -> "source-code"}, code_children)
   let outline = source/outline_panel_node(repository, selected_revision, path)
   let span_header = source/inspector_section_header_node("annotations", "Annotations")
   let spans = dom_element("aside", {:class -> "source-spans source-inspector-section"}, [span_header, source/span_list_node(path)])
@@ -467,7 +501,7 @@ verb source/code_panel_node(path)
   elseif source/inspector_section_collapsed("annotations")
     inspector_class = "source-inspector-rail annotations-collapsed"
   end
-  let code_frame = dom_element("div", {:class -> "source-code-frame"}, [code])
+  let code_frame = dom_element("div", {:id -> "source-code-frame", :class -> "source-code-frame", "data-source-path" -> path, "data-source-window-start" -> to_literal(start_line), "data-source-window-size" -> to_literal(window_size), "data-source-line-count" -> to_literal(line_count)}, [source/code_window_form_node(path, start_line), code, source/code_loading_node()])
   let code_stack = dom_element("div", {:class -> "source-code-stack symbol-collapsed"}, [code_frame])
   if source/current_symbol() != nothing
     let symbol = source/symbol_panel_node(repository, selected_revision)

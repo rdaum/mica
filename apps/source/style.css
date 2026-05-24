@@ -9,6 +9,7 @@
   --source-accent-ink: #fff7ea;
   --source-code-bg: #171814;
   --source-code-ink: #f6ecd7;
+  --source-code-row-height: 1.395rem;
   --source-sidebar-width: 18rem;
   --source-inspector-width: 22rem;
   --source-symbol-height: 20%;
@@ -475,6 +476,7 @@ input {
 }
 
 .source-code-frame {
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -482,10 +484,95 @@ input {
   background: var(--source-code-bg);
 }
 
+.source-code-loading {
+  position: sticky;
+  z-index: 3;
+  bottom: 1rem;
+  left: max(1rem, 50% - 9rem);
+  display: none;
+  width: fit-content;
+  max-width: calc(100% - 2rem);
+  gap: 0.55rem;
+  align-items: center;
+  border: 1px solid rgba(237, 172, 73, 0.34);
+  border-radius: 999px;
+  margin: -3rem auto 1rem;
+  padding: 0.45rem 0.75rem;
+  background: rgba(23, 24, 20, 0.92);
+  color: var(--source-code-ink);
+  box-shadow: 0 0.8rem 2rem rgba(0, 0, 0, 0.32);
+  font: 0.75rem "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+  pointer-events: auto;
+}
+
+.source-code-frame.source-window-loading .source-code-loading {
+  display: inline-flex;
+}
+
+.source-code-frame.source-window-stalled .source-code-loading {
+  border-color: rgba(255, 143, 143, 0.48);
+}
+
+.source-code-loading-text {
+  min-width: 0;
+}
+
+.source-code-loading-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: #edac49;
+  box-shadow: 0 0 0 0 rgba(237, 172, 73, 0.5);
+  animation: source-loading-pulse 900ms ease-in-out infinite;
+}
+
+.source-code-loading-retry {
+  display: none;
+  border: 1px solid rgba(246, 236, 215, 0.24);
+  border-radius: 999px;
+  padding: 0.18rem 0.45rem;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--source-code-ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.source-code-frame.source-window-stalled .source-code-loading-retry {
+  display: inline-block;
+}
+
+.source-code-loading-retry:hover {
+  border-color: rgba(237, 172, 73, 0.6);
+  background: rgba(237, 172, 73, 0.14);
+}
+
+@keyframes source-loading-pulse {
+  0%,
+  100% {
+    transform: scale(0.76);
+    box-shadow: 0 0 0 0 rgba(237, 172, 73, 0.5);
+  }
+
+  50% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0.35rem rgba(237, 172, 73, 0);
+  }
+}
+
 .source-code-line {
   display: grid;
   grid-template-columns: 5.5ch minmax(0, 1fr);
   min-width: max-content;
+  min-height: var(--source-code-row-height);
+}
+
+.source-code-spacer {
+  height: 0;
+  min-width: 1px;
+}
+
+.source-window-form {
+  display: none;
 }
 
 .source-code-line.selected {

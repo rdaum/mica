@@ -18,6 +18,7 @@ use rust_analyzer::{LspLocation, RustAnalyzerProvider};
 const REPOSITORY_ENTRY_BOUND: &[u16] = &[0, 1, 2];
 const FILE_TEXT_BOUND: &[u16] = &[0, 1, 2];
 const FILE_LINES_BOUND: &[u16] = &[0, 1, 2, 3, 4];
+const FILE_LINE_COUNT_BOUND: &[u16] = &[0, 1, 2];
 const FILE_CONTENT_HASH_BOUND: &[u16] = &[0, 1, 2];
 const SYNTAX_LINE_BOUND: &[u16] = &[0, 1, 2, 3, 4];
 const SYNTAX_OUTLINE_BOUND: &[u16] = &[0, 1, 2];
@@ -41,6 +42,9 @@ pub(crate) fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
             provider: provider.clone(),
         }),
         Arc::new(FileLinesRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(FileLineCountRelation {
             provider: provider.clone(),
         }),
         Arc::new(FileContentHashRelation {
@@ -417,6 +421,49 @@ impl ComputedRelation for FileLinesRelation {
                 int_value(metadata.id(), line_count as i64)?,
                 Value::list(lines),
                 Value::string(hash),
+            ])],
+            bindings,
+        ))
+    }
+}
+
+struct FileLineCountRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for FileLineCountRelation {
+    fn name(&self) -> &'static str {
+        "local-source-file-line-count"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/FileLineCount") && metadata.arity() == 4
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        FILE_LINE_COUNT_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let revision = bound_value(metadata.id(), bindings, 1, "revision")?;
+        let path = bound_string(metadata.id(), bindings, 2, "path")?;
+        let (_root, file) =
+            self.provider
+                .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
+        let text = read_utf8_file(metadata.id(), &file)?;
+        let count = text.lines().count().max(1);
+        Ok(filter_bound_rows(
+            vec![Tuple::from([
+                repository,
+                revision,
+                Value::string(path),
+                int_value(metadata.id(), count as i64)?,
             ])],
             bindings,
         ))
@@ -2599,6 +2646,7 @@ mod tests {
                  make_relation(:source/RepositoryEntry, 6)\n\
                  make_relation(:source/FileText, 5)\n\
                  make_relation(:source/FileLines, 7)\n\
+                 make_relation(:source/FileLineCount, 4)\n\
                  make_relation(:source/FileContentHash, 4)\n\
                  make_relation(:source/SyntaxLine, 8)\n\
                  make_relation(:source/SyntaxOutline, 10)\n\
@@ -2705,6 +2753,23 @@ mod tests {
                 assert_eq!(values[0], Value::string("[package]"));
             })
             .expect("expected line list");
+    }
+
+    #[test]
+    fn source_provider_counts_file_lines() {
+        let mut runner = SourceRunner::new_empty();
+        load_source_relations(&mut runner);
+
+        let report = runner
+            .run_source(
+                "let line_count = one source/FileLineCount(#repo, #rev, \"Cargo.toml\", ?line_count)\n\
+                 return line_count",
+            )
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value.as_int().is_some_and(|count| count > 1)
+        ));
     }
 
     #[test]
@@ -3367,6 +3432,75 @@ mod tests {
                     env::remove_var("MICA_SOURCE_ROOT");
                 }
             }
+        });
+    }
+
+    #[test]
+    fn source_app_scroll_window_keeps_syntax_rows_for_long_files() {
+        with_source_provider_env(|| {
+            let root_path = env::current_dir().unwrap().join("target").join(format!(
+                "source-app-long-file-fixture-{}-{}",
+                std::process::id(),
+                std::thread::current().name().unwrap_or("test")
+            ));
+            fs::create_dir_all(&root_path).unwrap();
+            let mut body = String::new();
+            for line in 1..=800 {
+                body.push_str(&format!(
+                    "pub fn generated_{line}(value: Result<String, String>) -> Option<String> {{ value.ok() }}\n"
+                ));
+            }
+            fs::write(root_path.join("long.rs"), body).unwrap();
+            let root = root_path.display().to_string();
+
+            let mut runner = SourceRunner::new_empty();
+            for filein in [
+                include_str!("../../../apps/shared/sync-host.mica"),
+                include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/ui-session.mica"),
+                include_str!("../../../apps/source/ui-compose.mica"),
+                include_str!("../../../apps/source/http.mica"),
+            ] {
+                runner.run_filein(filein).unwrap();
+            }
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+
+            let report = runner
+                .run_source(
+                    "let open_fields = {:path -> \"long.rs\"}\n\
+                     let opened = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_file\", open_fields)\n\
+                     let initial_revision = sync_view_revision(31)\n\
+                     let initial_payload = dom_snapshot_payload(31, initial_revision, sync_view_tree(31, initial_revision))\n\
+                     let window_fields = {:path -> \"long.rs\", :window_start -> \"561\"}\n\
+                     let moved = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_set_window\", window_fields)\n\
+                     let next_revision = sync_view_revision(31)\n\
+                     let next_payload = dom_snapshot_payload(31, next_revision, sync_view_tree(31, next_revision))\n\
+                     return [opened, string_contains(initial_payload, \"source-code-line\"), string_contains(initial_payload, \"generated_240\"), string_contains(initial_payload, \"generated_800\"), moved, string_contains(next_payload, \"generated_800\"), string_contains(next_payload, \"source-line-number\"), string_contains(next_payload, \"source-code-spacer-top\")]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2], Value::bool(true));
+                    assert_eq!(values[3], Value::bool(false));
+                    assert_eq!(values[4], Value::bool(true));
+                    assert_eq!(values[5], Value::bool(true));
+                    assert_eq!(values[6], Value::bool(true));
+                    assert_eq!(values[7], Value::bool(true));
+                })
+                .expect("expected long-file source window tuple");
+
+            let _ = fs::remove_dir_all(root_path);
         });
     }
 
