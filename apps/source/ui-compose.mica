@@ -96,32 +96,56 @@ verb source/tree_file_node(path, name, selected)
   return dom_element("form", {:class -> "source-tree-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_file", "data-sync-key" -> path}, [hidden, button])
 end
 
+verb source/show_repository_entry(show_hidden, name)
+  if show_hidden == true
+    return true
+  end
+
+  if string_starts_with(name, ".")
+    return false
+  end
+
+  return true
+end
+
 verb source/tree_directory_node(repository, revision, selected, path, name, depth)
   let children = []
   let count = 0
-  if depth < 3
+  let show_hidden = source/show_hidden_files()
+  let expanded = source/directory_expanded(path)
+  if expanded == true
     for entry in source/RepositoryEntry(repository, revision, path, ?child_path, ?kind, ?child_name)
-      if entry[:kind] == "directory"
-        children = [@children, source/tree_directory_node(repository, revision, selected, entry[:child_path], entry[:child_name], depth + 1)]
-      elseif entry[:kind] == "file"
-        children = [@children, source/tree_file_node(entry[:child_path], entry[:child_name], selected)]
-      end
-      count = count + 1
-      if count >= 36
-        break
+      if source/show_repository_entry(show_hidden, entry[:child_name])
+        if entry[:kind] == "directory"
+          children = [@children, source/tree_directory_node(repository, revision, selected, entry[:child_path], entry[:child_name], depth + 1)]
+        elseif entry[:kind] == "file"
+          children = [@children, source/tree_file_node(entry[:child_path], entry[:child_name], selected)]
+        end
+        count = count + 1
+        if count >= 36
+          break
+        end
       end
     end
   end
 
-  let attrs = {:class -> "source-tree-directory", :open -> "open"}
+  let attrs = {:class -> "source-tree-directory"}
+  if expanded == true
+    attrs = {:class -> "source-tree-directory", :open -> "open"}
+  end
 
   let label = name
   if label == nothing || label == ""
     label = "."
   end
 
+  let button_label = "Open"
+  if expanded == true
+    button_label = "Collapse"
+  end
+
   let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
-  let open_button = dom_element("button", {:type -> "submit", :class -> "source-tree-open-button", "data-sync-disable-with" -> "..."}, [dom_text("open")])
+  let open_button = dom_element("button", {:type -> "submit", :class -> "source-tree-open-button", "data-sync-disable-with" -> "..."}, [dom_text(button_label)])
   let open_form = dom_element("form", {:class -> "source-tree-open-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_directory", "data-sync-key" -> string_concat("dir:", path)}, [hidden, open_button])
   let summary = dom_element("summary", {:class -> "source-tree-summary"}, [dom_element("span", {:class -> "source-tree-kind"}, [dom_text("dir")]), dom_element("span", {:class -> "source-tree-name"}, [dom_text(label)]), open_form])
   return dom_element("details", attrs, [summary, dom_element("div", {:class -> "source-tree-children"}, children)])
@@ -130,15 +154,18 @@ end
 verb source/directory_entry_list_node(repository, revision, parent, selected)
   let children = []
   let count = 0
+  let show_hidden = source/show_hidden_files()
   for entry in source/RepositoryEntry(repository, revision, parent, ?path, ?kind, ?name)
-    if entry[:kind] == "directory"
-      children = [@children, source/tree_directory_node(repository, revision, selected, entry[:path], entry[:name], 1)]
-    elseif entry[:kind] == "file"
-      children = [@children, source/tree_file_node(entry[:path], entry[:name], selected)]
-    end
-    count = count + 1
-    if count >= 80
-      break
+    if source/show_repository_entry(show_hidden, entry[:name])
+      if entry[:kind] == "directory"
+        children = [@children, source/tree_directory_node(repository, revision, selected, entry[:path], entry[:name], 1)]
+      elseif entry[:kind] == "file"
+        children = [@children, source/tree_file_node(entry[:path], entry[:name], selected)]
+      end
+      count = count + 1
+      if count >= 80
+        break
+      end
     end
   end
 
@@ -150,17 +177,30 @@ verb source/directory_entry_list_node(repository, revision, parent, selected)
 end
 
 verb source/repository_tree_node(repository, revision, selected)
-  let selected_directory = source/current_directory()
   let sections = [dom_element("h4", {:class -> "source-tree-label"}, [dom_text("Repository root")]), source/directory_entry_list_node(repository, revision, "", selected)]
-  if selected_directory != ""
-    sections = [@sections, dom_element("h4", {:class -> "source-tree-label"}, [dom_text(selected_directory)]), source/directory_entry_list_node(repository, revision, selected_directory, selected)]
-  end
 
   return dom_element("div", {:class -> "source-tree"}, sections)
 end
 
+verb source/hidden_toggle_node()
+  let show_hidden = source/show_hidden_files()
+  let next = "true"
+  let label = "Show hidden"
+  let pressed = "false"
+  if show_hidden == true
+    next = "false"
+    label = "Hide hidden"
+    pressed = "true"
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "show_hidden", :value -> next}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-hidden-toggle", "aria-pressed" -> pressed, "data-sync-disable-with" -> "Updating..."}, [dom_text(label)])
+  return dom_element("form", {:class -> "source-hidden-toggle-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_toggle_hidden", "data-sync-key" -> "source-hidden-toggle"}, [hidden, button])
+end
+
 verb source/file_list_node(repository, revision, selected)
-  return dom_element("section", {:class -> "source-panel source-files"}, [dom_element("h2", {}, [dom_text("Navigator")]), dom_element("h3", {:class -> "source-subhead"}, [dom_text("Pinned")]), source/pinned_files_node(revision, selected), dom_element("h3", {:class -> "source-subhead"}, [dom_text("Repository")]), source/repository_tree_node(repository, revision, selected)])
+  let header = dom_element("div", {:class -> "source-navigator-header"}, [dom_element("h2", {}, [dom_text("Navigator")]), source/hidden_toggle_node()])
+  return dom_element("section", {:class -> "source-panel source-files"}, [header, dom_element("h3", {:class -> "source-subhead"}, [dom_text("Pinned")]), source/pinned_files_node(revision, selected), dom_element("h3", {:class -> "source-subhead"}, [dom_text("Repository")]), source/repository_tree_node(repository, revision, selected)])
 end
 
 verb source/span_row_node(span)
@@ -239,7 +279,30 @@ verb source/outline_item_node(path, item)
   return dom_element("form", {:class -> "source-outline-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> item[:node]}, [hidden_path, hidden_line, button])
 end
 
+verb source/inspector_section_header_node(section, title)
+  let collapsed = source/inspector_section_collapsed(section)
+  let next = "true"
+  let button_label = "Collapse"
+  let expanded = "true"
+  if collapsed == true
+    next = "false"
+    button_label = "Expand"
+    expanded = "false"
+  end
+
+  let hidden_section = dom_element("input", {:type -> "hidden", :name -> "section", :value -> section}, [])
+  let hidden_collapsed = dom_element("input", {:type -> "hidden", :name -> "collapsed", :value -> next}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-section-toggle", "aria-expanded" -> expanded, "data-sync-disable-with" -> "..."}, [dom_text(button_label)])
+  let form = dom_element("form", {:class -> "source-section-toggle-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_toggle_inspector_section", "data-sync-key" -> string_concat("inspector:", section)}, [hidden_section, hidden_collapsed, button])
+  return dom_element("div", {:class -> "source-section-header"}, [dom_element("h3", {}, [dom_text(title)]), form])
+end
+
 verb source/outline_panel_node(repository, revision, path)
+  let header = source/inspector_section_header_node("outline", "Outline")
+  if source/inspector_section_collapsed("outline")
+    return dom_element("aside", {:class -> "source-outline source-inspector-section collapsed"}, [header])
+  end
+
   let items = []
   let count = 0
   for item in source/SyntaxOutline(repository, revision, path, ?node, ?kind, ?name, ?start_line, ?end_line, ?start_byte, ?end_byte)
@@ -251,10 +314,10 @@ verb source/outline_panel_node(repository, revision, path)
   end
 
   if items == []
-    return dom_element("aside", {:class -> "source-outline"}, [dom_element("h3", {}, [dom_text("Outline")]), source/empty_node("No outline available for this file.")])
+    return dom_element("aside", {:class -> "source-outline source-inspector-section"}, [header, source/empty_node("No outline available for this file.")])
   end
 
-  return dom_element("aside", {:class -> "source-outline"}, [dom_element("h3", {}, [dom_text("Outline")]), dom_element("div", {:class -> "source-outline-list"}, items)])
+  return dom_element("aside", {:class -> "source-outline source-inspector-section"}, [header, dom_element("div", {:class -> "source-outline-list"}, items)])
 end
 
 verb source/symbol_reference_node(reference)
@@ -334,10 +397,22 @@ verb source/code_panel_node(path)
   let code = dom_element("div", {:class -> "source-code"}, rows)
   let outline = source/outline_panel_node(repository, selected_revision, path)
   let symbol = source/symbol_panel_node(repository, selected_revision)
-  let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Annotations")]), source/span_list_node(path)])
+  let span_header = source/inspector_section_header_node("annotations", "Annotations")
+  let spans = dom_element("aside", {:class -> "source-spans source-inspector-section"}, [span_header, source/span_list_node(path)])
+  if source/inspector_section_collapsed("annotations")
+    spans = dom_element("aside", {:class -> "source-spans source-inspector-section collapsed"}, [span_header])
+  end
+  let inspector_class = "source-inspector-rail"
+  if source/inspector_section_collapsed("outline") && source/inspector_section_collapsed("annotations")
+    inspector_class = "source-inspector-rail both-collapsed"
+  elseif source/inspector_section_collapsed("outline")
+    inspector_class = "source-inspector-rail outline-collapsed"
+  elseif source/inspector_section_collapsed("annotations")
+    inspector_class = "source-inspector-rail annotations-collapsed"
+  end
   let code_frame = dom_element("div", {:class -> "source-code-frame"}, [code])
   let code_stack = dom_element("div", {:class -> "source-code-stack"}, [code_frame, symbol])
-  let inspector = dom_element("aside", {:class -> "source-inspector-rail"}, [outline, spans])
+  let inspector = dom_element("aside", {:class -> inspector_class}, [outline, spans])
   return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, dom_element("div", {:class -> "source-workbench"}, [code_stack, inspector])])
 end
 

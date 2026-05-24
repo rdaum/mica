@@ -795,6 +795,23 @@ function setBooleanAttribute(element, name, value) {
   }
 }
 
+function showDisableWith(element) {
+  const disableWith = element?.getAttribute?.("data-sync-disable-with");
+  if (disableWith === null || disableWith === undefined || disableWith === "") {
+    return null;
+  }
+  const indicator = document.createElement("span");
+  indicator.setAttribute("class", "sync-disable-with-label");
+  indicator.setAttribute("aria-hidden", "true");
+  indicator.textContent = disableWith;
+  element.append(indicator);
+  return indicator;
+}
+
+function hideDisableWith(indicator) {
+  indicator?.remove?.();
+}
+
 export function beginSubmitLoading(form, submit) {
   const token = {
     form,
@@ -824,13 +841,7 @@ export function beginSubmitLoading(form, submit) {
     }
   }
 
-  const disableWith = submit?.getAttribute?.("data-sync-disable-with");
-  if (disableWith !== null && disableWith !== undefined) {
-    token.disableWith = { text: submit.textContent, value: disableWith };
-    if (disableWith !== "") {
-      submit.textContent = disableWith;
-    }
-  }
+  token.disableWith = showDisableWith(submit);
   return token;
 }
 
@@ -844,9 +855,7 @@ export function endSubmitLoading(token) {
   for (const control of token.readonly) {
     control.readOnly = false;
   }
-  if (token.disableWith) {
-    token.submit.textContent = token.disableWith.text;
-  }
+  hideDisableWith(token.disableWith);
   setBooleanAttribute(token.form, "aria-busy", false);
   setBooleanAttribute(token.submit, "aria-busy", false);
   removeCssClass(token.form, SYNC_LOADING_CLASS);
@@ -876,13 +885,7 @@ export function beginEventLoading(element) {
     element.readOnly = true;
   }
 
-  const disableWith = element?.getAttribute?.("data-sync-disable-with");
-  if (disableWith !== null && disableWith !== undefined) {
-    token.disableWith = { text: element.textContent, value: disableWith };
-    if (disableWith !== "") {
-      element.textContent = disableWith;
-    }
-  }
+  token.disableWith = showDisableWith(element);
   return token;
 }
 
@@ -896,9 +899,7 @@ export function endEventLoading(token) {
   if (token.readonly) {
     token.element.readOnly = false;
   }
-  if (token.disableWith) {
-    token.element.textContent = token.disableWith.text;
-  }
+  hideDisableWith(token.disableWith);
   setBooleanAttribute(token.element, "aria-busy", false);
   removeCssClass(token.element, SYNC_LOADING_CLASS);
 }
@@ -1314,6 +1315,7 @@ export function bootstrapServerRenderedSync(mount, status) {
     initialSyncReject = reject;
   });
   let pollTimer = null;
+  let inFlightDomEvent = null;
   const api = { client: null, state };
 
   function setStatus(text) {
@@ -1357,6 +1359,20 @@ export function bootstrapServerRenderedSync(mount, status) {
     }, state.pollMs);
   }
 
+  function finishInFlightDomEvent() {
+    const event = inFlightDomEvent;
+    if (event === null) {
+      return;
+    }
+    event.end(event.loading);
+    inFlightDomEvent = null;
+    dispatchSyncLoading("stop", {
+      kind: event.kind,
+      target: event.target,
+      action: event.action,
+    });
+  }
+
   function sendViewportEvent(data) {
     if (!connected || !initialSynced) {
       return;
@@ -1380,6 +1396,9 @@ export function bootstrapServerRenderedSync(mount, status) {
   }
 
   async function sendBoundEvent(element, eventName) {
+    if (inFlightDomEvent !== null) {
+      return;
+    }
     if (!connected || !initialSynced) {
       if (connectError) {
         setStatus(connectionFailureText(connectError));
@@ -1400,6 +1419,13 @@ export function bootstrapServerRenderedSync(mount, status) {
 
     const action = element.dataset.syncAction ?? "";
     const loading = beginEventLoading(element);
+    inFlightDomEvent = {
+      kind: eventName,
+      target: element,
+      action,
+      loading,
+      end: endEventLoading,
+    };
     dispatchSyncLoading("start", {
       kind: eventName,
       target: element,
@@ -1418,13 +1444,7 @@ export function bootstrapServerRenderedSync(mount, status) {
       });
     } catch (error) {
       setStatus(`Event failed: ${String(error)}`);
-    } finally {
-      endEventLoading(loading);
-      dispatchSyncLoading("stop", {
-        kind: eventName,
-        target: element,
-        action,
-      });
+      finishInFlightDomEvent();
     }
   }
 
@@ -1456,6 +1476,7 @@ export function bootstrapServerRenderedSync(mount, status) {
       initialSyncResolve(true);
     }
     bindViewportObservers(mount, sendViewportEvent);
+    finishInFlightDomEvent();
   }
 
   function handle(envelope) {
@@ -1521,6 +1542,7 @@ export function bootstrapServerRenderedSync(mount, status) {
     const onClose = () => {
       connected = false;
       stopPolling();
+      finishInFlightDomEvent();
       if (!initialSynced) {
         initialSyncReject(
           new Error(
@@ -1535,6 +1557,7 @@ export function bootstrapServerRenderedSync(mount, status) {
     const onError = (error) => {
       connected = false;
       stopPolling();
+      finishInFlightDomEvent();
       if (!initialSynced) {
         initialSyncReject(error);
       }
@@ -1574,6 +1597,9 @@ export function bootstrapServerRenderedSync(mount, status) {
   }
 
   async function sendForm(form, submit) {
+    if (inFlightDomEvent !== null) {
+      return;
+    }
     if (!connected || !initialSynced) {
       if (connectError) {
         setStatus(connectionFailureText(connectError));
@@ -1606,10 +1632,18 @@ export function bootstrapServerRenderedSync(mount, status) {
       return;
     }
     const loading = beginSubmitLoading(form, submit);
+    const action = form.dataset.syncAction ?? "";
+    inFlightDomEvent = {
+      kind: "submit",
+      target: form,
+      action,
+      loading,
+      end: endSubmitLoading,
+    };
     dispatchSyncLoading("start", {
       kind: "submit",
       target: form,
-      action: form.dataset.syncAction ?? "",
+      action,
     });
     try {
       await client.sendDomEvent({
@@ -1619,20 +1653,14 @@ export function bootstrapServerRenderedSync(mount, status) {
         signature: state.signature,
         event: "submit",
         target: form.id,
-        action: form.dataset.syncAction ?? "",
+        action,
         fields,
       });
       form.reset();
       focusAfterSubmit(form);
     } catch (error) {
       setStatus(`Event failed: ${String(error)}`);
-    } finally {
-      endSubmitLoading(loading);
-      dispatchSyncLoading("stop", {
-        kind: "submit",
-        target: form,
-        action: form.dataset.syncAction ?? "",
-      });
+      finishInFlightDomEvent();
     }
   }
 

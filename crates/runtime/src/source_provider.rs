@@ -3238,12 +3238,15 @@ mod tests {
                 .run_source(
                     "let file_fields = {:path -> \"src/lib.rs\"}\n\
                      let opened_file = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_file\", file_fields)\n\
+                     let src_fields = {:path -> \"src\"}\n\
+                     let opened_src = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_directory\", src_fields)\n\
                      let dir_fields = {:path -> \"src/deep\"}\n\
                      let opened_dir = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_directory\", dir_fields)\n\
-                     let directory = one source/SelectedDirectory(endpoint(), ?path)\n\
+                     let src_expanded = source/ExpandedDirectory(endpoint(), \"src\")\n\
+                     let deep_expanded = source/ExpandedDirectory(endpoint(), \"src/deep\")\n\
                      let revision = sync_view_revision(31)\n\
                      let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
-                     return [opened_file, opened_dir, directory, string_contains(payload, \"leaf.rs\")]",
+                     return [opened_file, opened_src, opened_dir, src_expanded, deep_expanded, string_contains(payload, \"leaf.rs\"), string_contains(payload, \"Collapse\")]",
                 )
                 .unwrap();
             let TaskOutcome::Complete { value, .. } = report.outcome else {
@@ -3253,10 +3256,149 @@ mod tests {
                 .with_list(|values| {
                     assert_eq!(values[0], Value::bool(true));
                     assert_eq!(values[1], Value::bool(true));
-                    assert_eq!(values[2], Value::string("src/deep"));
+                    assert_eq!(values[2], Value::bool(true));
                     assert_eq!(values[3], Value::bool(true));
+                    assert_eq!(values[4], Value::bool(true));
+                    assert_eq!(values[5], Value::bool(true));
+                    assert_eq!(values[6], Value::bool(true));
                 })
                 .expect("expected open-directory state tuple");
+        });
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
+    }
+
+    #[test]
+    fn source_app_hides_dot_entries_until_toggled() {
+        let root_path = env::current_dir().unwrap().join("target").join(format!(
+            "source-app-hidden-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(root_path.join(".secret")).unwrap();
+        fs::create_dir_all(root_path.join("src")).unwrap();
+        fs::write(root_path.join(".env"), "TOKEN=secret\n").unwrap();
+        fs::write(root_path.join(".secret").join("index.json"), "{}\n").unwrap();
+        fs::write(
+            root_path.join("src").join("lib.rs"),
+            "pub fn visible() {}\n",
+        )
+        .unwrap();
+        let root = root_path.display().to_string();
+        let index_path = temp_index_path("source-app-hidden");
+        build_source_index_file(Path::new(&root), &index_path).unwrap();
+        with_source_index_env(&index_path, Some(Path::new("/bin/false")), || {
+            let mut runner = SourceRunner::new_empty();
+            for filein in [
+                include_str!("../../../apps/shared/sync-host.mica"),
+                include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/ui-session.mica"),
+                include_str!("../../../apps/source/ui-compose.mica"),
+                include_str!("../../../apps/source/http.mica"),
+            ] {
+                runner.run_filein(filein).unwrap();
+            }
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+
+            let report = runner
+                .run_source(
+                    "let open_fields = {:path -> \"src/lib.rs\"}\n\
+                     let opened = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_file\", open_fields)\n\
+                     let initial_revision = sync_view_revision(31)\n\
+                     let initial_payload = dom_snapshot_payload(31, initial_revision, sync_view_tree(31, initial_revision))\n\
+                     let fields = {:show_hidden -> \"true\"}\n\
+                     let toggled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_toggle_hidden\", fields)\n\
+                     let next_revision = sync_view_revision(31)\n\
+                     let next_payload = dom_snapshot_payload(31, next_revision, sync_view_tree(31, next_revision))\n\
+                     return [opened, string_contains(initial_payload, \"src\"), string_contains(initial_payload, \".env\"), string_contains(initial_payload, \".secret\"), toggled, string_contains(next_payload, \".env\"), string_contains(next_payload, \".secret\")]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2], Value::bool(false));
+                    assert_eq!(values[3], Value::bool(false));
+                    assert_eq!(values[4], Value::bool(true));
+                    assert_eq!(values[5], Value::bool(true));
+                    assert_eq!(values[6], Value::bool(true));
+                })
+                .expect("expected hidden-toggle state tuple");
+        });
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
+    }
+
+    #[test]
+    fn source_app_toggles_inspector_sections() {
+        let root_path = env::current_dir().unwrap().join("target").join(format!(
+            "source-app-inspector-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(root_path.join("src")).unwrap();
+        fs::write(
+            root_path.join("src").join("lib.rs"),
+            "pub fn inspector_fixture() {}\n",
+        )
+        .unwrap();
+        let root = root_path.display().to_string();
+        let index_path = temp_index_path("source-app-inspector");
+        build_source_index_file(Path::new(&root), &index_path).unwrap();
+        with_source_index_env(&index_path, Some(Path::new("/bin/false")), || {
+            let mut runner = SourceRunner::new_empty();
+            for filein in [
+                include_str!("../../../apps/shared/sync-host.mica"),
+                include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/ui-session.mica"),
+                include_str!("../../../apps/source/ui-compose.mica"),
+                include_str!("../../../apps/source/http.mica"),
+            ] {
+                runner.run_filein(filein).unwrap();
+            }
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+
+            let report = runner
+                .run_source(
+                    "let open_fields = {:path -> \"src/lib.rs\"}\n\
+                     let opened = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_file\", open_fields)\n\
+                     let outline_fields = {:section -> \"outline\", :collapsed -> \"true\"}\n\
+                     let outline_toggled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_toggle_inspector_section\", outline_fields)\n\
+                     let annotation_fields = {:section -> \"annotations\", :collapsed -> \"true\"}\n\
+                     let annotations_toggled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_toggle_inspector_section\", annotation_fields)\n\
+                     let revision = sync_view_revision(31)\n\
+                     let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
+                     return [opened, outline_toggled, annotations_toggled, string_contains(payload, \"source-outline source-inspector-section collapsed\"), string_contains(payload, \"source-spans source-inspector-section collapsed\"), string_contains(payload, \"source-inspector-rail both-collapsed\")]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2], Value::bool(true));
+                    assert_eq!(values[3], Value::bool(true));
+                    assert_eq!(values[4], Value::bool(true));
+                    assert_eq!(values[5], Value::bool(true));
+                })
+                .expect("expected inspector toggle state tuple");
         });
         let _ = fs::remove_file(index_path);
         let _ = fs::remove_dir_all(root_path);

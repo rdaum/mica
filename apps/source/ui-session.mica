@@ -10,6 +10,8 @@ make_identity(:source/open_directory_action)
 make_identity(:source/jump_to_line_action)
 make_identity(:source/select_symbol_action)
 make_identity(:source/find_references_action)
+make_identity(:source/toggle_hidden_action)
+make_identity(:source/toggle_inspector_section_action)
 
 assert source/View(31)
 assert Delegates(#source/open_file_action, #source/sync_action, 0)
@@ -17,11 +19,15 @@ assert Delegates(#source/open_directory_action, #source/sync_action, 0)
 assert Delegates(#source/jump_to_line_action, #source/sync_action, 0)
 assert Delegates(#source/select_symbol_action, #source/sync_action, 0)
 assert Delegates(#source/find_references_action, #source/sync_action, 0)
+assert Delegates(#source/toggle_hidden_action, #source/sync_action, 0)
+assert Delegates(#source/toggle_inspector_section_action, #source/sync_action, 0)
 assert source/SyncAction("source_open_file", #source/open_file_action)
 assert source/SyncAction("source_open_directory", #source/open_directory_action)
 assert source/SyncAction("source_jump_to_line", #source/jump_to_line_action)
 assert source/SyncAction("source_select_symbol", #source/select_symbol_action)
 assert source/SyncAction("source_find_references", #source/find_references_action)
+assert source/SyncAction("source_toggle_hidden", #source/toggle_hidden_action)
+assert source/SyncAction("source_toggle_inspector_section", #source/toggle_inspector_section_action)
 
 assert CanRead(#web, :source/Repository)
 assert CanRead(#web, :source/RepositoryName)
@@ -91,6 +97,9 @@ assert CanRead(#web, :source/SelectedDefinitionStartByte)
 assert CanRead(#web, :source/SelectedDefinitionEndByte)
 assert CanRead(#web, :source/SelectedSymbolProvider)
 assert CanRead(#web, :source/SelectedReferencesOpen)
+assert CanRead(#web, :source/ShowHiddenFiles)
+assert CanRead(#web, :source/InspectorSectionCollapsed)
+assert CanRead(#web, :source/ExpandedDirectory)
 assert CanRead(#web, :source/ViewRevision)
 assert CanRead(#web, :Delegates)
 
@@ -109,6 +118,9 @@ assert CanWrite(#web, :source/SelectedDefinitionStartByte)
 assert CanWrite(#web, :source/SelectedDefinitionEndByte)
 assert CanWrite(#web, :source/SelectedSymbolProvider)
 assert CanWrite(#web, :source/SelectedReferencesOpen)
+assert CanWrite(#web, :source/ShowHiddenFiles)
+assert CanWrite(#web, :source/InspectorSectionCollapsed)
+assert CanWrite(#web, :source/ExpandedDirectory)
 assert CanWrite(#web, :source/ViewRevision)
 
 assert CanInvoke(#web, :sync_event)
@@ -120,12 +132,15 @@ assert CanInvoke(#web, :source/current_repository)
 assert CanInvoke(#web, :source/current_revision)
 assert CanInvoke(#web, :source/current_file)
 assert CanInvoke(#web, :source/current_directory)
+assert CanInvoke(#web, :source/directory_expanded)
 assert CanInvoke(#web, :source/current_line)
 assert CanInvoke(#web, :source/current_window_start)
 assert CanInvoke(#web, :source/file_for_path)
 assert CanInvoke(#web, :source/file_title)
 assert CanInvoke(#web, :source/file_language)
 assert CanInvoke(#web, :source/current_symbol)
+assert CanInvoke(#web, :source/show_hidden_files)
+assert CanInvoke(#web, :source/inspector_section_collapsed)
 assert CanInvoke(#web, :source/clear_selected_symbol)
 assert CanInvoke(#web, :source/view_revision)
 assert CanInvoke(#web, :source/bump_revision)
@@ -140,6 +155,8 @@ assert CanInvoke(#web, :source/repository_tree_node)
 assert CanInvoke(#web, :source/directory_entry_list_node)
 assert CanInvoke(#web, :source/tree_directory_node)
 assert CanInvoke(#web, :source/tree_file_node)
+assert CanInvoke(#web, :source/hidden_toggle_node)
+assert CanInvoke(#web, :source/show_repository_entry)
 assert CanInvoke(#web, :source/code_panel_node)
 assert CanInvoke(#web, :source/code_line_node)
 assert CanInvoke(#web, :source/code_segment_node)
@@ -148,6 +165,7 @@ assert CanInvoke(#web, :source/find_references_button_node)
 assert CanInvoke(#web, :source/symbol_reference_node)
 assert CanInvoke(#web, :source/outline_panel_node)
 assert CanInvoke(#web, :source/outline_item_node)
+assert CanInvoke(#web, :source/inspector_section_header_node)
 assert CanInvoke(#web, :source/span_list_node)
 assert CanInvoke(#web, :source/span_row_node)
 assert CanInvoke(#web, :source/meta_chip_node)
@@ -211,6 +229,14 @@ verb source/current_directory()
   return ""
 end
 
+verb source/directory_expanded(path)
+  if source/ExpandedDirectory(endpoint(), path)
+    return true
+  end
+
+  return false
+end
+
 verb source/current_line()
   let selected = one source/SelectedLine(endpoint(), ?line)
   if selected != nothing && selected > 0
@@ -255,6 +281,24 @@ end
 
 verb source/current_symbol()
   return one source/SelectedSymbol(endpoint(), ?symbol)
+end
+
+verb source/show_hidden_files()
+  let show_hidden = one source/ShowHiddenFiles(endpoint(), ?show_hidden)
+  if show_hidden == true
+    return true
+  end
+
+  return false
+end
+
+verb source/inspector_section_collapsed(section)
+  let collapsed = one source/InspectorSectionCollapsed(endpoint(), section, ?collapsed)
+  if collapsed == true
+    return true
+  end
+
+  return false
 end
 
 verb source/clear_selected_symbol(endpoint)
@@ -352,8 +396,11 @@ verb source/handle_sync_action(source @ #source/open_directory_action<_>, endpoi
     return false
   end
 
-  retract source/SelectedDirectory(endpoint, _)
-  assert source/SelectedDirectory(endpoint, path)
+  if source/ExpandedDirectory(endpoint, path)
+    retract source/ExpandedDirectory(endpoint, path)
+  else
+    assert source/ExpandedDirectory(endpoint, path)
+  end
   source/bump_revision(endpoint)
   return true
 end
@@ -462,6 +509,43 @@ verb source/handle_sync_action(source @ #source/find_references_action<_>, endpo
 
   retract source/SelectedReferencesOpen(endpoint, _)
   assert source/SelectedReferencesOpen(endpoint, true)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/toggle_hidden_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let show_hidden = false
+  if fields[:show_hidden] == "true"
+    show_hidden = true
+  end
+
+  retract source/ShowHiddenFiles(endpoint, _)
+  assert source/ShowHiddenFiles(endpoint, show_hidden)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/toggle_inspector_section_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let section = fields[:section]
+  if section != "outline" && section != "annotations"
+    return false
+  end
+
+  let collapsed = false
+  if fields[:collapsed] == "true"
+    collapsed = true
+  end
+
+  retract source/InspectorSectionCollapsed(endpoint, section, _)
+  assert source/InspectorSectionCollapsed(endpoint, section, collapsed)
   source/bump_revision(endpoint)
   return true
 end

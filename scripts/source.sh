@@ -75,7 +75,7 @@ cert_hash="$(
 
 cd "${repo_root}"
 
-cargo run ${MICA_SOURCE_BUILD_FLAGS:-} --bin mica-daemon -- \
+cargo run ${MICA_SOURCE_BUILD_FLAGS:---release} --bin mica-daemon -- \
   --filein apps/shared/sync-host.mica \
   --filein apps/shared/sync-dom.mica \
   --filein apps/source/core.mica \

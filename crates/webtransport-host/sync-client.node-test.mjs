@@ -178,6 +178,23 @@ globalThis.document = {
   querySelector() {
     return { focus: () => (fallbackFocused = true) };
   },
+  createElement(tag) {
+    return {
+      localName: tag,
+      attributes: new Map(),
+      textContent: "",
+      setAttribute(name, value) {
+        this.attributes.set(name, String(value));
+      },
+      remove() {
+        const parent = this.parentNode;
+        const index = parent?.children?.indexOf(this) ?? -1;
+        if (index >= 0) {
+          parent.children.splice(index, 1);
+        }
+      },
+    };
+  },
 };
 focusAfterSubmit({ querySelector: () => ({ focus: () => (localFocused = true) }) });
 assert.equal(commandFocused, true);
@@ -216,7 +233,12 @@ const loadingButton = {
   disabled: false,
   className: "",
   textContent: "Find references",
+  children: [],
   attributes: new Map([["data-sync-disable-with", "Finding..."]]),
+  append(child) {
+    child.parentNode = this;
+    this.children.push(child);
+  },
   getAttribute(name) {
     return this.attributes.get(name) ?? null;
   },
@@ -235,7 +257,9 @@ assert.equal(loadingForm.attributes.get("aria-busy"), "true");
 assert.equal(loadingButton.attributes.get("aria-busy"), "true");
 assert.equal(loadingInput.readOnly, true);
 assert.equal(loadingButton.disabled, true);
-assert.equal(loadingButton.textContent, "Finding...");
+assert.equal(loadingButton.textContent, "Find references");
+assert.equal(loadingButton.children.length, 1);
+assert.equal(loadingButton.children[0].textContent, "Finding...");
 endSubmitLoading(loadingToken);
 assert.equal(loadingForm.className, "");
 assert.equal(loadingButton.className, "");
@@ -244,6 +268,7 @@ assert.equal(loadingButton.attributes.has("aria-busy"), false);
 assert.equal(loadingInput.readOnly, false);
 assert.equal(loadingButton.disabled, false);
 assert.equal(loadingButton.textContent, "Find references");
+assert.equal(loadingButton.children.length, 0);
 
 const clickButton = {
   localName: "button",
@@ -253,6 +278,7 @@ const clickButton = {
   disabled: false,
   className: "",
   textContent: "References",
+  children: [],
   attributes: new Map([
     ["data-sync-disable-with", "Loading..."],
     ["data-sync-value-symbol", "RuleDefinition"],
@@ -260,6 +286,10 @@ const clickButton = {
   ]),
   getAttribute(name) {
     return this.attributes.get(name) ?? null;
+  },
+  append(child) {
+    child.parentNode = this;
+    this.children.push(child);
   },
   getAttributeNames() {
     return Array.from(this.attributes.keys());
@@ -280,12 +310,15 @@ const clickToken = beginEventLoading(clickButton);
 assert.match(clickButton.className, /sync-loading/);
 assert.equal(clickButton.attributes.get("aria-busy"), "true");
 assert.equal(clickButton.disabled, true);
-assert.equal(clickButton.textContent, "Loading...");
+assert.equal(clickButton.textContent, "References");
+assert.equal(clickButton.children.length, 1);
+assert.equal(clickButton.children[0].textContent, "Loading...");
 endEventLoading(clickToken);
 assert.equal(clickButton.className, "");
 assert.equal(clickButton.attributes.has("aria-busy"), false);
 assert.equal(clickButton.disabled, false);
 assert.equal(clickButton.textContent, "References");
+assert.equal(clickButton.children.length, 0);
 
 class FakeText {
   nodeType = Node.TEXT_NODE;
