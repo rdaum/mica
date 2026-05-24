@@ -1568,6 +1568,7 @@ dependencies = [
  "mica-driver",
  "mica-relation-kernel",
  "mica-runtime",
+ "mica-source-provider",
  "mica-var",
  "rustyline",
 ]
@@ -1579,14 +1580,25 @@ dependencies = [
  "mica-compiler",
  "mica-host-protocol",
  "mica-relation-kernel",
+ "mica-source-provider",
  "mica-var",
  "mica-vm",
+ "serde_json",
+ "xml",
+]
+
+[[package]]
+name = "mica-source-provider"
+version = "0.1.0"
+dependencies = [
+ "mica-compiler",
+ "mica-relation-kernel",
+ "mica-var",
  "serde_json",
  "tree-sitter",
  "tree-sitter-javascript",
  "tree-sitter-md",
  "tree-sitter-rust",
- "xml",
 ]
 
 [[package]]

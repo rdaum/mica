@@ -1,0 +1,17 @@
+[package]
+name = "mica-source-provider"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Source browsing computed relations and index providers for Mica"
+
+[dependencies]
+mica-compiler.workspace = true
+mica-relation-kernel.workspace = true
+mica-var.workspace = true
+serde_json.workspace = true
+tree-sitter.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-md.workspace = true
+tree-sitter-rust.workspace = true

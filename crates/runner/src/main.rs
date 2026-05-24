@@ -15,10 +15,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use mica_compiler::parse;
 use mica_driver::{CompioTaskDriver, DriverError, DriverEvent};
 use mica_relation_kernel::FjallDurabilityMode;
-use mica_runtime::{
-    EmbeddingProviderKind, FileinMode, SourceRunner, SuspendKind, TaskOutcome,
-    build_source_index_file, write_failed_source_index_file,
-};
+use mica_runtime::{EmbeddingProviderKind, FileinMode, SourceRunner, SuspendKind, TaskOutcome};
+use mica_source_provider::{build_source_index_file, write_failed_source_index_file};
 use mica_var::{Identity, Symbol};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;

@@ -10,11 +10,8 @@ description = "Live Mica runtime environment"
 mica-compiler.workspace = true
 mica-host-protocol.workspace = true
 mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
+mica-source-provider.workspace = true
 mica-var.workspace = true
 mica-vm.workspace = true
 serde_json.workspace = true
-tree-sitter.workspace = true
-tree-sitter-javascript.workspace = true
-tree-sitter-md.workspace = true
-tree-sitter-rust.workspace = true
 xml.workspace = true

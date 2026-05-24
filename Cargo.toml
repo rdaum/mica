@@ -14,6 +14,7 @@ members = [
     "crates/runner",
     "crates/relation-kernel",
     "crates/runtime",
+    "crates/source-provider",
     "crates/testing/load-tools",
     "crates/var",
     "crates/vm",
@@ -36,6 +37,7 @@ mica-telnet-host = { path = "crates/telnet-host" }
 mica-host-zmq = { path = "crates/host-zmq" }
 mica-relation-kernel = { path = "crates/relation-kernel", default-features = false }
 mica-runtime = { path = "crates/runtime" }
+mica-source-provider = { path = "crates/source-provider" }
 mica-var = { path = "crates/var" }
 mica-vm = { path = "crates/vm" }
 rart = { version = "0.10", default-features = false }

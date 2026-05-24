@@ -13,7 +13,6 @@
 
 mod embedding;
 mod retrieval;
-mod source_provider;
 mod task;
 mod task_manager;
 
@@ -30,7 +29,6 @@ pub use mica_vm::{
     RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget, SuspendKind, VmHostContext,
     VmHostResponse, VmState,
 };
-pub use source_provider::{build_source_index_file, write_failed_source_index_file};
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{
     Effect, EffectLog, SharedTaskManager, SuspendedTask, TaskManager, TaskManagerError,
