@@ -15,6 +15,7 @@ use fast_telemetry::{
     Counter, DeriveLabel, ExportMetrics, Gauge, LabeledCounter, LabeledHistogram,
 };
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::TaskOutcome;
 
@@ -25,6 +26,7 @@ const LATENCY_BUCKETS_US: &[u64] = &[
 ];
 
 static METRICS: LazyLock<RuntimeMetrics> = LazyLock::new(|| RuntimeMetrics::new(DEFAULT_SHARDS));
+static ACTIVE_ENDPOINTS: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Copy, Clone, Debug, DeriveLabel)]
 #[label_name = "operation"]
@@ -80,8 +82,17 @@ pub struct RuntimeMetrics {
     #[help = "Endpoint operations by operation"]
     pub endpoint_operations: LabeledCounter<EndpointOperation>,
 
+    #[help = "Currently open runtime endpoints"]
+    pub active_endpoints: Gauge,
+
     #[help = "Transient relation mutations by operation"]
     pub transient_operations: LabeledCounter<TransientOperation>,
+
+    #[help = "Transient scopes currently retained by the runtime"]
+    pub transient_scopes: Gauge,
+
+    #[help = "Transient tuples currently retained by the runtime"]
+    pub transient_tuples: Gauge,
 
     #[help = "Transient tuples asserted"]
     pub transient_tuples_asserted: Counter,
@@ -94,6 +105,27 @@ pub struct RuntimeMetrics {
 
     #[help = "Mailbox sends emitted by tasks"]
     pub mailbox_sends: Counter,
+
+    #[help = "Mailboxes created"]
+    pub mailboxes_created: Counter,
+
+    #[help = "Messages delivered to mailboxes"]
+    pub mailbox_messages_delivered: Counter,
+
+    #[help = "Mailbox drain operations"]
+    pub mailbox_drains: Counter,
+
+    #[help = "Messages drained from mailboxes"]
+    pub mailbox_messages_drained: Counter,
+
+    #[help = "Mailbox queues currently retained by the runtime"]
+    pub mailboxes: Gauge,
+
+    #[help = "Messages currently queued in mailboxes"]
+    pub queued_mailbox_messages: Gauge,
+
+    #[help = "Effects currently queued for host delivery"]
+    pub queued_effects: Gauge,
 }
 
 impl RuntimeMetrics {
@@ -105,11 +137,21 @@ impl RuntimeMetrics {
             suspended_tasks: Gauge::new(),
             completed_tasks: Gauge::new(),
             endpoint_operations: LabeledCounter::new(shard_count),
+            active_endpoints: Gauge::new(),
             transient_operations: LabeledCounter::new(shard_count),
+            transient_scopes: Gauge::new(),
+            transient_tuples: Gauge::new(),
             transient_tuples_asserted: Counter::new(shard_count),
             transient_tuples_retracted: Counter::new(shard_count),
             task_effects: Counter::new(shard_count),
             mailbox_sends: Counter::new(shard_count),
+            mailboxes_created: Counter::new(shard_count),
+            mailbox_messages_delivered: Counter::new(shard_count),
+            mailbox_drains: Counter::new(shard_count),
+            mailbox_messages_drained: Counter::new(shard_count),
+            mailboxes: Gauge::new(),
+            queued_mailbox_messages: Gauge::new(),
+            queued_effects: Gauge::new(),
         }
     }
 }
@@ -160,4 +202,26 @@ pub(crate) fn outcome_label(outcome: &TaskOutcome) -> RuntimeTaskOutcome {
         TaskOutcome::Suspended { .. } => RuntimeTaskOutcome::Suspended,
         TaskOutcome::Aborted { .. } => RuntimeTaskOutcome::Aborted,
     }
+}
+
+pub(crate) fn endpoint_opened() {
+    let active = ACTIVE_ENDPOINTS
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.max(0) + 1)
+        })
+        .unwrap_or(0)
+        .max(0)
+        + 1;
+    metrics().active_endpoints.set(active);
+}
+
+pub(crate) fn endpoint_closed() {
+    let active = ACTIVE_ENDPOINTS
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some((current - 1).max(0))
+        })
+        .unwrap_or(0)
+        .saturating_sub(1)
+        .max(0);
+    metrics().active_endpoints.set(active);
 }

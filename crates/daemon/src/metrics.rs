@@ -36,6 +36,18 @@ pub struct DaemonMetrics {
     #[help = "Whether DogStatsD export is configured"]
     pub dogstatsd_configured: Gauge,
 
+    #[help = "DogStatsD export ticks completed"]
+    pub dogstatsd_export_ticks: Counter,
+
+    #[help = "Fileins loaded successfully at daemon startup"]
+    pub fileins_loaded: Counter,
+
+    #[help = "Daemon driver instances started"]
+    pub drivers_started: Counter,
+
+    #[help = "Daemon endpoints configured at startup"]
+    pub endpoints_configured: Gauge,
+
     #[help = "Daemon endpoints started by endpoint type"]
     pub endpoints_started: LabeledCounter<DaemonEndpoint>,
 }
@@ -45,6 +57,10 @@ impl DaemonMetrics {
         Self {
             dogstatsd_exporters_started: Counter::new(shard_count),
             dogstatsd_configured: Gauge::new(),
+            dogstatsd_export_ticks: Counter::new(shard_count),
+            fileins_loaded: Counter::new(shard_count),
+            drivers_started: Counter::new(shard_count),
+            endpoints_configured: Gauge::new(),
             endpoints_started: LabeledCounter::new(shard_count),
         }
     }

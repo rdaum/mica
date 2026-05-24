@@ -308,6 +308,7 @@ impl SessionOutput {
         let waker = {
             let mut state = self.state.lock().unwrap();
             if state.closed {
+                crate::metrics::metrics().output_send_after_close.inc();
                 return Err("session writer is closed".to_owned());
             }
             state.messages.push_back(message);
@@ -367,6 +368,7 @@ impl Future for SessionOutputRecv<'_> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut state = self.output.state.lock().unwrap();
         if state.messages.len() >= ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS {
+            crate::metrics::metrics().output_high_water_events.inc();
             return Poll::Ready(SessionOutputReady::HighWater {
                 buffered: state.messages.len(),
             });

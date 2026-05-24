@@ -27,6 +27,34 @@ kind = "gauge"
 display = "latest"
 
 [[metrics]]
+name = "mica_daemon.dogstatsd_export_ticks"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "tick/s"
+
+[[metrics]]
+name = "mica_daemon.fileins_loaded"
+view = "numeric"
+kind = "counter"
+display = "total"
+unit = "fileins"
+
+[[metrics]]
+name = "mica_daemon.drivers_started"
+view = "numeric"
+kind = "counter"
+display = "total"
+unit = "drivers"
+
+[[metrics]]
+name = "mica_daemon.endpoints_configured"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "endpoints"
+
+[[metrics]]
 name = "mica_relation_kernel.transactions_started"
 view = "chart"
 kind = "counter"
@@ -39,6 +67,13 @@ view = "sparkline"
 kind = "counter"
 display = "rate"
 unit = "commit/s"
+
+[[metrics]]
+name = "mica_relation_kernel.catalog_operations"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "op/s"
 
 [[metrics]]
 name = "mica_relation_kernel.transaction_commit_duration_us.count"
@@ -118,6 +153,20 @@ display = "latest"
 unit = "rules"
 
 [[metrics]]
+name = "mica_relation_kernel.snapshot_version"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "version"
+
+[[metrics]]
+name = "mica_relation_kernel.snapshot_commits"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "commits"
+
+[[metrics]]
 name = "mica_runtime.task_operations"
 view = "chart"
 kind = "counter"
@@ -167,11 +216,32 @@ display = "rate"
 unit = "op/s"
 
 [[metrics]]
+name = "mica_runtime.active_endpoints"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "endpoints"
+
+[[metrics]]
 name = "mica_runtime.transient_operations"
 view = "sparkline"
 kind = "counter"
 display = "rate"
 unit = "op/s"
+
+[[metrics]]
+name = "mica_runtime.transient_scopes"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "scopes"
+
+[[metrics]]
+name = "mica_runtime.transient_tuples"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "tuples"
 
 [[metrics]]
 name = "mica_runtime.transient_tuples_asserted"
@@ -200,6 +270,55 @@ view = "sparkline"
 kind = "counter"
 display = "rate"
 unit = "send/s"
+
+[[metrics]]
+name = "mica_runtime.mailboxes_created"
+view = "numeric"
+kind = "counter"
+display = "total"
+unit = "mailboxes"
+
+[[metrics]]
+name = "mica_runtime.mailbox_messages_delivered"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "msg/s"
+
+[[metrics]]
+name = "mica_runtime.mailbox_drains"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "drain/s"
+
+[[metrics]]
+name = "mica_runtime.mailbox_messages_drained"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "msg/s"
+
+[[metrics]]
+name = "mica_runtime.mailboxes"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "mailboxes"
+
+[[metrics]]
+name = "mica_runtime.queued_mailbox_messages"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "messages"
+
+[[metrics]]
+name = "mica_runtime.queued_effects"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "effects"
 
 [[metrics]]
 name = "mica_web_host.connections_accepted"
@@ -258,6 +377,20 @@ display = "rate"
 unit = "B/s"
 
 [[metrics]]
+name = "mica_web_host.connection_read_errors"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "err/s"
+
+[[metrics]]
+name = "mica_web_host.response_write_errors"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "err/s"
+
+[[metrics]]
 name = "mica_webtransport_host.connections_accepted"
 view = "chart"
 kind = "counter"
@@ -272,11 +405,25 @@ display = "rate"
 unit = "session/s"
 
 [[metrics]]
+name = "mica_webtransport_host.connection_errors"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "err/s"
+
+[[metrics]]
 name = "mica_webtransport_host.active_sessions"
 view = "numeric"
 kind = "gauge"
 display = "latest"
 unit = "sessions"
+
+[[metrics]]
+name = "mica_webtransport_host.active_sync_views"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "views"
 
 [[metrics]]
 name = "mica_webtransport_host.incoming_datagrams"
@@ -287,6 +434,20 @@ unit = "dgram/s"
 
 [[metrics]]
 name = "mica_webtransport_host.incoming_bytes"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "B/s"
+
+[[metrics]]
+name = "mica_webtransport_host.incoming_uni_streams"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "stream/s"
+
+[[metrics]]
+name = "mica_webtransport_host.incoming_uni_stream_bytes"
 view = "sparkline"
 kind = "counter"
 display = "rate"
@@ -307,11 +468,53 @@ display = "rate"
 unit = "B/s"
 
 [[metrics]]
+name = "mica_webtransport_host.sync_envelope_datagrams"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "dgram/s"
+
+[[metrics]]
+name = "mica_webtransport_host.sync_envelope_chunks"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "chunk/s"
+
+[[metrics]]
 name = "mica_webtransport_host.sync_envelopes"
 view = "sparkline"
 kind = "counter"
 display = "rate"
 unit = "msg/s"
+
+[[metrics]]
+name = "mica_webtransport_host.recovery_snapshots"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "snapshot/s"
+
+[[metrics]]
+name = "mica_webtransport_host.output_high_water_events"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "event/s"
+
+[[metrics]]
+name = "mica_webtransport_host.output_send_after_close"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "err/s"
+
+[[metrics]]
+name = "mica_webtransport_host.routed_driver_events"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "event/s"
 
 [[metrics]]
 name = "mica_webtransport_host.sync_render_duration_us.count"

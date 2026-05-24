@@ -68,6 +68,12 @@ pub struct WebHostMetrics {
 
     #[help = "HTTP response body bytes"]
     pub response_body_bytes: Counter,
+
+    #[help = "HTTP connection read errors"]
+    pub connection_read_errors: Counter,
+
+    #[help = "HTTP response write errors"]
+    pub response_write_errors: Counter,
 }
 
 impl WebHostMetrics {
@@ -80,6 +86,8 @@ impl WebHostMetrics {
             request_duration_us: LabeledHistogram::new(LATENCY_BUCKETS_US, shard_count),
             request_body_bytes: Counter::new(shard_count),
             response_body_bytes: Counter::new(shard_count),
+            connection_read_errors: Counter::new(shard_count),
+            response_write_errors: Counter::new(shard_count),
         }
     }
 }

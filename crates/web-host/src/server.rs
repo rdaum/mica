@@ -80,7 +80,10 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), String> {
     let mut codec = HttpCodec::new();
     loop {
         let (result, buffer) = stream.read([0u8; 8192]).await.into();
-        let bytes = result.map_err(|error| format!("failed to read from connection: {error}"))?;
+        let bytes = result.map_err(|error| {
+            crate::metrics::metrics().connection_read_errors.inc();
+            format!("failed to read from connection: {error}")
+        })?;
         if bytes == 0 {
             return Ok(());
         }
@@ -134,7 +137,10 @@ async fn handle_in_process_connection(
     let mut codec = HttpCodec::new();
     loop {
         let (result, buffer) = stream.read([0u8; 8192]).await.into();
-        let bytes = result.map_err(|error| format!("failed to read from connection: {error}"))?;
+        let bytes = result.map_err(|error| {
+            crate::metrics::metrics().connection_read_errors.inc();
+            format!("failed to read from connection: {error}")
+        })?;
         if bytes == 0 {
             return Ok(());
         }
@@ -227,7 +233,10 @@ async fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Resul
     encode_response(&response, &mut out)
         .map_err(|error| format!("failed to encode HTTP response: {error}"))?;
     let (result, _) = stream.write_all(out).await.into();
-    result.map_err(|error| format!("failed to write to connection: {error}"))
+    result.map_err(|error| {
+        crate::metrics::metrics().response_write_errors.inc();
+        format!("failed to write to connection: {error}")
+    })
 }
 
 fn record_http_response(

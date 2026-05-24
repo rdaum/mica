@@ -42,6 +42,14 @@ impl TransientStore {
             .unwrap_or(0)
     }
 
+    pub fn len(&self) -> usize {
+        self.scopes.values().map(TransientScopeState::len).sum()
+    }
+
+    pub fn scope_count(&self) -> usize {
+        self.scopes.len()
+    }
+
     pub fn scopes(&self) -> impl Iterator<Item = Identity> + '_ {
         let mut scopes = self.scopes.keys().copied().collect::<Vec<_>>();
         scopes.sort();

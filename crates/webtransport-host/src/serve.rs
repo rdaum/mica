@@ -12,6 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::ENDPOINT_OUTPUT_DRAIN_DATAGRAMS;
+use crate::metrics::ConnectionErrorKind;
 use crate::state::{
     InProcessWebTransportHost, SessionBinding, SessionOutput, SessionOutputMessage,
     SessionOutputReady, SessionState, WebTransportTlsConfig, format_driver_error,
@@ -64,7 +65,12 @@ pub async fn serve_in_process(
                         eprintln!("WebTransport connection failed: {error}");
                     }
                 }
-                Err(error) => eprintln!("WebTransport handshake failed: {error}"),
+                Err(error) => {
+                    crate::metrics::metrics()
+                        .connection_errors
+                        .inc(ConnectionErrorKind::Handshake);
+                    eprintln!("WebTransport handshake failed: {error}");
+                }
             }
         })
         .detach();
@@ -90,24 +96,38 @@ async fn handle_quic_connection(
     let mut connection = builder
         .build::<_, Bytes>(connection)
         .await
-        .map_err(|error| format!("failed to start HTTP/3 connection: {error}"))?;
+        .map_err(|error| {
+            crate::metrics::metrics()
+                .connection_errors
+                .inc(ConnectionErrorKind::Http3);
+            format!("failed to start HTTP/3 connection: {error}")
+        })?;
 
     loop {
-        let Some(resolver) = connection
-            .accept()
-            .await
-            .map_err(|error| format!("failed to accept HTTP/3 request: {error}"))?
+        let Some(resolver) = connection.accept().await.map_err(|error| {
+            crate::metrics::metrics()
+                .connection_errors
+                .inc(ConnectionErrorKind::Request);
+            format!("failed to accept HTTP/3 request: {error}")
+        })?
         else {
             return Ok(());
         };
-        let (request, stream) = resolver
-            .resolve_request()
-            .await
-            .map_err(|error| format!("failed to resolve HTTP/3 request: {error}"))?;
+        let (request, stream) = resolver.resolve_request().await.map_err(|error| {
+            crate::metrics::metrics()
+                .connection_errors
+                .inc(ConnectionErrorKind::Request);
+            format!("failed to resolve HTTP/3 request: {error}")
+        })?;
         if is_webtransport_connect(&request) {
             let session = WebTransportSession::accept(request, stream, connection)
                 .await
-                .map_err(|error| format!("failed to accept WebTransport session: {error}"))?;
+                .map_err(|error| {
+                    crate::metrics::metrics()
+                        .connection_errors
+                        .inc(ConnectionErrorKind::Session);
+                    format!("failed to accept WebTransport session: {error}")
+                })?;
             return handle_session(Rc::new(session), host, binding).await;
         }
         reject_non_webtransport_request(stream).await?;
@@ -188,6 +208,9 @@ async fn read_datagram_loop(
                 if message.contains("closed") {
                     return Ok(());
                 }
+                crate::metrics::metrics()
+                    .connection_errors
+                    .inc(ConnectionErrorKind::DatagramRead);
                 return Err(format!("failed to read WebTransport datagram: {message}"));
             }
         };
@@ -209,10 +232,17 @@ async fn read_uni_stream_loop(
                 if message.contains("closed") {
                     return Ok(());
                 }
+                crate::metrics::metrics()
+                    .connection_errors
+                    .inc(ConnectionErrorKind::UniStreamRead);
                 return Err(format!("failed to accept WebTransport stream: {message}"));
             }
         };
         let payload = read_uni_stream_payload(stream).await?;
+        crate::metrics::metrics().incoming_uni_streams.inc();
+        crate::metrics::metrics()
+            .incoming_uni_stream_bytes
+            .add(payload.len() as isize);
         if let Err(error) = route_incoming_datagram(&host, endpoint, payload).await {
             eprintln!("failed to route WebTransport stream payload: {error}");
         }
@@ -225,9 +255,12 @@ where
 {
     let mut payload = Vec::new();
     loop {
-        let chunk = poll_fn(|cx| stream.poll_data(cx))
-            .await
-            .map_err(|error| format!("failed to read WebTransport stream: {error}"))?;
+        let chunk = poll_fn(|cx| stream.poll_data(cx)).await.map_err(|error| {
+            crate::metrics::metrics()
+                .connection_errors
+                .inc(ConnectionErrorKind::UniStreamRead);
+            format!("failed to read WebTransport stream: {error}")
+        })?;
         let Some(mut chunk) = chunk else {
             return Ok(Bytes::from(payload));
         };
@@ -254,6 +287,9 @@ async fn write_datagram_loop(
                         .outgoing_bytes
                         .add(datagram.len() as isize);
                     sender.send_datagram(datagram).map_err(|error| {
+                        crate::metrics::metrics()
+                            .connection_errors
+                            .inc(ConnectionErrorKind::DatagramWrite);
                         format!("failed to send WebTransport datagram: {error}")
                     })?;
                     compio::time::sleep(Duration::from_millis(2)).await;

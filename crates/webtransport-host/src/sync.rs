@@ -153,6 +153,7 @@ async fn send_recovery_snapshot_from_rendered(
         event.signature,
         &rendered,
     );
+    crate::metrics::metrics().recovery_snapshots.inc();
     host.send_sync_envelope(endpoint, envelope)?;
     host.store_rendered_sync_view(endpoint, event.session_id, event.view_id, &rendered);
     Ok(())
@@ -620,6 +621,9 @@ pub(crate) fn active_sync_views(
             }
         }
     }
+    crate::metrics::metrics()
+        .active_sync_views
+        .set(active.len() as i64);
     active
 }
 
@@ -631,6 +635,7 @@ pub(crate) fn route_driver_event(
         return false;
     };
     if let Some(state) = sessions.lock().unwrap().get(&effect.target).cloned() {
+        crate::metrics::metrics().routed_driver_events.inc();
         for datagram in effect_datagrams(effect.target, &effect.value) {
             let _ = state.output.send_datagram(datagram);
         }
@@ -676,10 +681,17 @@ pub(crate) fn sync_envelope_datagrams(
 ) -> Vec<Bytes> {
     let encoded = encoded_sync_envelope(envelope);
     if encoded.len() <= SYNC_DATAGRAM_MAX_LEN {
+        crate::metrics::metrics().sync_envelope_datagrams.inc();
         return vec![Bytes::from(encoded)];
     }
 
     let count = encoded.len().div_ceil(SYNC_CHUNK_PAYLOAD_LEN);
+    crate::metrics::metrics()
+        .sync_envelope_datagrams
+        .add(count as isize);
+    crate::metrics::metrics()
+        .sync_envelope_chunks
+        .add(count as isize);
     let message_id = NEXT_SYNC_CHUNK_ID.fetch_add(1, Ordering::Relaxed);
     encoded
         .chunks(SYNC_CHUNK_PAYLOAD_LEN)

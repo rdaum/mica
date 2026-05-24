@@ -305,6 +305,9 @@ impl RelationKernel {
                 "commit publish failed after serialized persistence".to_owned(),
             ));
         }
+        crate::metrics::metrics()
+            .catalog_operations
+            .inc(crate::metrics::CatalogOperation::RelationCreated);
         Ok(next)
     }
 
@@ -346,6 +349,9 @@ impl RelationKernel {
                 "commit publish failed after serialized persistence".to_owned(),
             ));
         }
+        crate::metrics::metrics()
+            .catalog_operations
+            .inc(crate::metrics::CatalogOperation::RuleInstalled);
         Ok(definition)
     }
 
@@ -379,6 +385,9 @@ impl RelationKernel {
                 "commit publish failed after serialized persistence".to_owned(),
             ));
         }
+        crate::metrics::metrics()
+            .catalog_operations
+            .inc(crate::metrics::CatalogOperation::RuleDisabled);
         Ok(next)
     }
 

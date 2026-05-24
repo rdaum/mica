@@ -117,6 +117,18 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     {
         return Err("daemon needs at least one endpoint: use --rpc-bind, --telnet-bind, --web-bind, or --webtransport-bind".to_owned());
     }
+    let configured_endpoints = [
+        cli.rpc_bind.is_some(),
+        cli.telnet_bind.is_some(),
+        cli.web_bind.is_some(),
+        cli.webtransport_bind.is_some(),
+    ]
+    .into_iter()
+    .filter(|configured| *configured)
+    .count();
+    metrics::metrics()
+        .endpoints_configured
+        .set(configured_endpoints as i64);
     let webtransport_tls =
         if cli.webtransport_bind.is_some() {
             let cert = cli.webtransport_cert.as_ref().ok_or_else(|| {
@@ -139,6 +151,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         runner
             .run_filein_with_include_loader(&source, |path| read_filein_include(include_base, path))
             .map_err(format_source_error)?;
+        metrics::metrics().fileins_loaded.inc();
     }
     let telnet_actor = if cli.telnet_bind.is_some() {
         let actor_name = actor_name(&cli.actor)?;
@@ -178,6 +191,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     };
     let driver = CompioTaskDriver::spawn_with_workers(runner, cli.driver_threads)
         .map_err(format_driver_error)?;
+    metrics::metrics().drivers_started.inc();
     if let Some(endpoint) = dogstatsd_endpoint {
         start_dogstatsd_export(endpoint, dogstatsd_interval);
     }
@@ -307,6 +321,7 @@ fn start_dogstatsd_export(endpoint: String, interval: Duration) {
                     &[],
                     &mut webtransport_host_state,
                 );
+                metrics::metrics().dogstatsd_export_ticks.inc();
             },
         )
         .await;

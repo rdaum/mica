@@ -53,6 +53,7 @@ impl Commit {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommitHistory {
     head: Option<Arc<CommitHistoryNode>>,
+    len: usize,
 }
 
 #[derive(Debug)]
@@ -80,6 +81,7 @@ impl CommitHistory {
                 commit,
                 previous: self.head.clone(),
             })),
+            len: self.len + 1,
         }
     }
 
@@ -95,6 +97,10 @@ impl CommitHistory {
         }
         commits.reverse();
         commits
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
     }
 }
 
