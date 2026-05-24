@@ -433,12 +433,12 @@ mod tests {
         with_source_index_and_root_env(&index_path, &root, Some(Path::new("/bin/false")), || {
             let mut runner = SourceRunner::new_empty();
             load_source_relations_at(&mut runner, &root.display().to_string());
-            let source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+            let source = fs::read_to_string(root.join("src/relations.rs")).unwrap();
             let offset = source.find("LocalSourceProvider::from_env").unwrap();
 
             let report = runner
                 .run_source(&format!(
-                    "for def in source/DefinitionAt(#repo, #rev, \"src/lib.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
+                    "for def in source/DefinitionAt(#repo, #rev, \"src/relations.rs\", {offset}, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)\n\
                        if def[:name] == \"LocalSourceProvider\"\n\
                          return [def[:symbol], def[:target_path], def[:start_line], def[:provider]]\n\
                        end\n\
@@ -453,10 +453,10 @@ mod tests {
                 .with_list(|values| {
                     assert!(
                         values[0]
-                            .with_str(|symbol| symbol.starts_with("idx:src/lib.rs:"))
+                            .with_str(|symbol| symbol.starts_with("idx:src/relations.rs:"))
                             .unwrap_or(false)
                     );
-                    assert_eq!(values[1], Value::string("src/lib.rs"));
+                    assert_eq!(values[1], Value::string("src/relations.rs"));
                     assert!(values[2].as_int().is_some_and(|line| line > 0));
                     assert!(
                         values[3]
