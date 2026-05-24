@@ -45,7 +45,7 @@ verb source/repository_summary_node(repository, revision)
     end
   end
 
-  return dom_element("section", {:class -> "source-panel source-summary"}, [dom_element("h2", {}, [dom_text("Repository")]), dom_element("p", {}, [dom_text(root)]), dom_element("p", {:class -> "source-muted"}, [dom_text(string_concat(to_literal(file_count), " curated files"))]), source/index_status_node(repository, revision)])
+  return dom_element("section", {:class -> "source-panel source-summary"}, [dom_element("h2", {}, [dom_text("Workspace")]), dom_element("p", {:class -> "source-root"}, [dom_text(root)]), dom_element("p", {:class -> "source-muted"}, [dom_text(string_concat(to_literal(file_count), " pinned files"))]), source/index_status_node(repository, revision)])
 end
 
 verb source/file_button_node(path, title, language, selected)
@@ -62,7 +62,7 @@ verb source/file_button_node(path, title, language, selected)
   return dom_element("form", {:class -> "source-file-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_file", "data-sync-key" -> path}, [hidden, button])
 end
 
-verb source/file_list_node(repository, revision, selected)
+verb source/pinned_files_node(revision, selected)
   let items = []
   for found in source/SourceFile(?file)
     let file = found[:file]
@@ -74,14 +74,93 @@ verb source/file_list_node(repository, revision, selected)
     end
   end
 
-  let entries = []
-  for entry in source/RepositoryEntry(repository, revision, "", ?path, ?kind, ?name)
-    if entry[:kind] == "file"
-      entries = [@entries, source/file_button_node(entry[:path], entry[:path], "file", selected)]
+  if items == []
+    return source/empty_node("No pinned files.")
+  end
+
+  return dom_element("div", {:class -> "source-file-list source-pinned-list"}, items)
+end
+
+verb source/tree_file_node(path, name, selected)
+  let class = "source-tree-row"
+  if path == selected
+    class = "source-tree-row active"
+  end
+  let label = name
+  if label == nothing || label == ""
+    label = path
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> class}, [dom_element("span", {:class -> "source-tree-kind"}, [dom_text("file")]), dom_element("span", {:class -> "source-tree-name"}, [dom_text(label)])])
+  return dom_element("form", {:class -> "source-tree-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_file", "data-sync-key" -> path}, [hidden, button])
+end
+
+verb source/tree_directory_node(repository, revision, selected, path, name, depth)
+  let children = []
+  let count = 0
+  if depth < 3
+    for entry in source/RepositoryEntry(repository, revision, path, ?child_path, ?kind, ?child_name)
+      if entry[:kind] == "directory"
+        children = [@children, source/tree_directory_node(repository, revision, selected, entry[:child_path], entry[:child_name], depth + 1)]
+      elseif entry[:kind] == "file"
+        children = [@children, source/tree_file_node(entry[:child_path], entry[:child_name], selected)]
+      end
+      count = count + 1
+      if count >= 36
+        break
+      end
     end
   end
 
-  return dom_element("section", {:class -> "source-panel source-files"}, [dom_element("h2", {}, [dom_text("Curated files")]), dom_element("div", {:class -> "source-file-list"}, items), dom_element("h2", {:class -> "source-subhead"}, [dom_text("Repository root")]), dom_element("div", {:class -> "source-file-list"}, entries)])
+  let attrs = {:class -> "source-tree-directory", :open -> "open"}
+
+  let label = name
+  if label == nothing || label == ""
+    label = "."
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let open_button = dom_element("button", {:type -> "submit", :class -> "source-tree-open-button"}, [dom_text("open")])
+  let open_form = dom_element("form", {:class -> "source-tree-open-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_directory", "data-sync-key" -> string_concat("dir:", path)}, [hidden, open_button])
+  let summary = dom_element("summary", {:class -> "source-tree-summary"}, [dom_element("span", {:class -> "source-tree-kind"}, [dom_text("dir")]), dom_element("span", {:class -> "source-tree-name"}, [dom_text(label)]), open_form])
+  return dom_element("details", attrs, [summary, dom_element("div", {:class -> "source-tree-children"}, children)])
+end
+
+verb source/directory_entry_list_node(repository, revision, parent, selected)
+  let children = []
+  let count = 0
+  for entry in source/RepositoryEntry(repository, revision, parent, ?path, ?kind, ?name)
+    if entry[:kind] == "directory"
+      children = [@children, source/tree_directory_node(repository, revision, selected, entry[:path], entry[:name], 1)]
+    elseif entry[:kind] == "file"
+      children = [@children, source/tree_file_node(entry[:path], entry[:name], selected)]
+    end
+    count = count + 1
+    if count >= 80
+      break
+    end
+  end
+
+  if children == []
+    return source/empty_node("No repository entries available.")
+  end
+
+  return dom_element("div", {:class -> "source-tree-entries"}, children)
+end
+
+verb source/repository_tree_node(repository, revision, selected)
+  let selected_directory = source/current_directory()
+  let sections = [dom_element("h4", {:class -> "source-tree-label"}, [dom_text("Repository root")]), source/directory_entry_list_node(repository, revision, "", selected)]
+  if selected_directory != ""
+    sections = [@sections, dom_element("h4", {:class -> "source-tree-label"}, [dom_text(selected_directory)]), source/directory_entry_list_node(repository, revision, selected_directory, selected)]
+  end
+
+  return dom_element("div", {:class -> "source-tree"}, sections)
+end
+
+verb source/file_list_node(repository, revision, selected)
+  return dom_element("section", {:class -> "source-panel source-files"}, [dom_element("h2", {}, [dom_text("Navigator")]), dom_element("h3", {:class -> "source-subhead"}, [dom_text("Pinned")]), source/pinned_files_node(revision, selected), dom_element("h3", {:class -> "source-subhead"}, [dom_text("Repository")]), source/repository_tree_node(repository, revision, selected)])
 end
 
 verb source/span_row_node(span)
@@ -256,7 +335,10 @@ verb source/code_panel_node(path)
   let outline = source/outline_panel_node(repository, selected_revision, path)
   let symbol = source/symbol_panel_node(repository, selected_revision)
   let spans = dom_element("aside", {:class -> "source-spans"}, [dom_element("h3", {}, [dom_text("Seeded spans")]), source/span_list_node(path)])
-  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, dom_element("div", {:class -> "source-code-grid"}, [code, dom_element("div", {:class -> "source-side-panels"}, [outline, symbol])]), spans])
+  let code_frame = dom_element("div", {:class -> "source-code-frame"}, [code])
+  let code_stack = dom_element("div", {:class -> "source-code-stack"}, [code_frame, symbol])
+  let inspector = dom_element("aside", {:class -> "source-inspector-rail"}, [outline, spans])
+  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, dom_element("div", {:class -> "source-workbench"}, [code_stack, inspector])])
 end
 
 verb source/app_node(view, revision)

@@ -34,7 +34,7 @@ pub struct TaskLimits {
 impl Default for TaskLimits {
     fn default() -> Self {
         Self {
-            instruction_budget: 60_000,
+            instruction_budget: 1_000_000,
             max_retries: 10,
             max_call_depth: 50,
         }

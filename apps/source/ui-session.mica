@@ -2,19 +2,23 @@
 
 make_relation(:source/View, 1)
 make_functional_relation(:source/SyncAction, 2, [0])
+make_functional_relation(:source/SelectedDirectory, 2, [0])
 
 make_identity(:source/sync_action)
 make_identity(:source/open_file_action)
+make_identity(:source/open_directory_action)
 make_identity(:source/jump_to_line_action)
 make_identity(:source/select_symbol_action)
 make_identity(:source/find_references_action)
 
 assert source/View(31)
 assert Delegates(#source/open_file_action, #source/sync_action, 0)
+assert Delegates(#source/open_directory_action, #source/sync_action, 0)
 assert Delegates(#source/jump_to_line_action, #source/sync_action, 0)
 assert Delegates(#source/select_symbol_action, #source/sync_action, 0)
 assert Delegates(#source/find_references_action, #source/sync_action, 0)
 assert source/SyncAction("source_open_file", #source/open_file_action)
+assert source/SyncAction("source_open_directory", #source/open_directory_action)
 assert source/SyncAction("source_jump_to_line", #source/jump_to_line_action)
 assert source/SyncAction("source_select_symbol", #source/select_symbol_action)
 assert source/SyncAction("source_find_references", #source/find_references_action)
@@ -75,6 +79,7 @@ assert CanRead(#web, :source/SyncAction)
 assert CanRead(#web, :source/SelectedRepository)
 assert CanRead(#web, :source/SelectedRevision)
 assert CanRead(#web, :source/SelectedPath)
+assert CanRead(#web, :source/SelectedDirectory)
 assert CanRead(#web, :source/SelectedLine)
 assert CanRead(#web, :source/SelectedSymbol)
 assert CanRead(#web, :source/SelectedSymbolName)
@@ -92,6 +97,7 @@ assert CanRead(#web, :Delegates)
 assert CanWrite(#web, :source/SelectedRepository)
 assert CanWrite(#web, :source/SelectedRevision)
 assert CanWrite(#web, :source/SelectedPath)
+assert CanWrite(#web, :source/SelectedDirectory)
 assert CanWrite(#web, :source/SelectedLine)
 assert CanWrite(#web, :source/SelectedSymbol)
 assert CanWrite(#web, :source/SelectedSymbolName)
@@ -113,6 +119,7 @@ assert CanInvoke(#web, :source/handle_sync_action)
 assert CanInvoke(#web, :source/current_repository)
 assert CanInvoke(#web, :source/current_revision)
 assert CanInvoke(#web, :source/current_file)
+assert CanInvoke(#web, :source/current_directory)
 assert CanInvoke(#web, :source/current_line)
 assert CanInvoke(#web, :source/current_window_start)
 assert CanInvoke(#web, :source/file_for_path)
@@ -128,6 +135,11 @@ assert CanInvoke(#web, :source/index_status_node)
 assert CanInvoke(#web, :source/repository_summary_node)
 assert CanInvoke(#web, :source/file_list_node)
 assert CanInvoke(#web, :source/file_button_node)
+assert CanInvoke(#web, :source/pinned_files_node)
+assert CanInvoke(#web, :source/repository_tree_node)
+assert CanInvoke(#web, :source/directory_entry_list_node)
+assert CanInvoke(#web, :source/tree_directory_node)
+assert CanInvoke(#web, :source/tree_file_node)
 assert CanInvoke(#web, :source/code_panel_node)
 assert CanInvoke(#web, :source/code_line_node)
 assert CanInvoke(#web, :source/code_segment_node)
@@ -188,6 +200,15 @@ verb source/current_file()
   end
 
   return "crates/runtime/src/lib.rs"
+end
+
+verb source/current_directory()
+  let selected = one source/SelectedDirectory(endpoint(), ?path)
+  if selected != nothing
+    return selected
+  end
+
+  return ""
 end
 
 verb source/current_line()
@@ -308,6 +329,31 @@ verb source/handle_sync_action(source @ #source/open_file_action<_>, endpoint, s
   assert source/SelectedRevision(endpoint, #source/rev_worktree)
   assert source/SelectedPath(endpoint, path)
   assert source/SelectedLine(endpoint, 1)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/open_directory_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  if path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  let has_entries = false
+  for entry in source/RepositoryEntry(#source/repo_mica, #source/rev_worktree, path, ?child_path, ?kind, ?name)
+    has_entries = true
+    break
+  end
+  if has_entries == false
+    return false
+  end
+
+  retract source/SelectedDirectory(endpoint, _)
+  assert source/SelectedDirectory(endpoint, path)
   source/bump_revision(endpoint)
   return true
 end

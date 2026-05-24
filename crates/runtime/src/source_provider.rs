@@ -3200,4 +3200,65 @@ mod tests {
         let _ = fs::remove_file(index_path);
         let _ = fs::remove_dir_all(root_path);
     }
+
+    #[test]
+    fn source_app_open_directory_sync_event_updates_session_state() {
+        let root_path = env::current_dir().unwrap().join(".cache").join(format!(
+            "source-app-dir-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let src_dir = root_path.join("src").join("deep");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(root_path.join("src").join("lib.rs"), "mod deep;\n").unwrap();
+        fs::write(src_dir.join("leaf.rs"), "pub fn leaf() {}\n").unwrap();
+        let root = root_path.display().to_string();
+        let index_path = temp_index_path("source-app-dir");
+        build_source_index_file(Path::new(&root), &index_path).unwrap();
+        with_source_index_env(&index_path, Some(Path::new("/bin/false")), || {
+            let mut runner = SourceRunner::new_empty();
+            for filein in [
+                include_str!("../../../apps/shared/sync-host.mica"),
+                include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/ui-session.mica"),
+                include_str!("../../../apps/source/ui-compose.mica"),
+                include_str!("../../../apps/source/http.mica"),
+            ] {
+                runner.run_filein(filein).unwrap();
+            }
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+
+            let report = runner
+                .run_source(
+                    "let file_fields = {:path -> \"src/lib.rs\"}\n\
+                     let opened_file = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_file\", file_fields)\n\
+                     let dir_fields = {:path -> \"src/deep\"}\n\
+                     let opened_dir = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_directory\", dir_fields)\n\
+                     let directory = one source/SelectedDirectory(endpoint(), ?path)\n\
+                     let revision = sync_view_revision(31)\n\
+                     let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
+                     return [opened_file, opened_dir, directory, string_contains(payload, \"leaf.rs\")]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2], Value::string("src/deep"));
+                    assert_eq!(values[3], Value::bool(true));
+                })
+                .expect("expected open-directory state tuple");
+        });
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
+    }
 }
