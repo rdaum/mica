@@ -128,6 +128,7 @@ mod tests {
             include_str!("../../../apps/shared/sync-host.mica"),
             include_str!("../../../apps/shared/sync-dom.mica"),
             include_str!("../../../apps/shared/retrieval.mica"),
+            include_str!("../../../apps/shared/openai.mica"),
             include_str!("../../../apps/source/core.mica"),
             include_str!("../../../apps/source/retrieval.mica"),
             include_str!("../../../apps/source/ui-session.mica"),
@@ -934,6 +935,7 @@ mod tests {
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
                 include_str!("../../../apps/shared/retrieval.mica"),
+                include_str!("../../../apps/shared/openai.mica"),
                 include_str!("../../../apps/source/core.mica"),
                 include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
@@ -1003,6 +1005,7 @@ mod tests {
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
                 include_str!("../../../apps/shared/retrieval.mica"),
+                include_str!("../../../apps/shared/openai.mica"),
                 include_str!("../../../apps/source/core.mica"),
                 include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
@@ -1099,7 +1102,8 @@ mod tests {
 
                 let report = runner
                 .run_source(
-                    "let fields = {:question -> \"sync_view_tree\", :scope -> \"code\"}\n\
+                    "source/prewarm_retrieval_index(#web)\n\
+                     let fields = {:question -> \"sync_view_tree\", :scope -> \"code\"}\n\
                      let searched = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve\", fields)\n\
                      let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
                      let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)\n\
@@ -1126,7 +1130,7 @@ mod tests {
                      let opened = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_retrieval_citation\", {:subject -> to_literal(subject)})\n\
                      let path = one source/SelectedPath(endpoint(), ?path)\n\
                      let line = one source/SelectedLine(endpoint(), ?line)\n\
-                     return [searched, plan != nothing, question, status, scope, kind, has_context, citation, string_contains(citation_text, \"sync_view_tree\"), allowed, embedded == false, string_contains(payload, \"source-retrieval-panel\"), string_contains(payload, \"sync_view_tree\"), opened, path, line]",
+                     return [searched, plan != nothing, question, status, scope, kind, has_context, citation, string_contains(citation_text, \"sync_view_tree\"), allowed, embedded, string_contains(payload, \"source-retrieval-panel\"), string_contains(payload, \"sync_view_tree\"), opened, path, line]",
                 )
                 .unwrap();
                 let TaskOutcome::Complete { value, .. } = report.outcome else {
@@ -1195,7 +1199,8 @@ mod tests {
 
                 let report = runner
                     .run_source(
-                        "source/run_retrieval_query(endpoint(), #web, \"actual corpus retrieval phrase\")\n\
+                        "source/prewarm_retrieval_index(#web)\n\
+                         source/run_retrieval_query(endpoint(), #web, \"actual corpus retrieval phrase\")\n\
                          let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
                          let selected = nothing\n\
                          let text_matches = false\n\
@@ -1363,14 +1368,10 @@ mod tests {
                     .with_list(|values| {
                         assert_eq!(values[0], Value::bool(true));
                         assert_eq!(values[1], Value::string("computed relation boundary"));
-                        assert!(
-                            values[2]
-                                .with_str(|status| status.ends_with(" search results"))
-                                .unwrap_or(false)
-                        );
-                        assert_eq!(values[3], Value::string("vector_not_ready"));
+                        assert_eq!(values[2], Value::string("indexing source"));
+                        assert_eq!(values[3], Value::string("indexing"));
                         assert_eq!(values[4], Value::bool(true));
-                        assert_eq!(values[5], Value::bool(true));
+                        assert_eq!(values[5], Value::bool(false));
                     })
                     .expect("expected no-inline-indexing tuple");
             },
@@ -1514,7 +1515,8 @@ mod tests {
 
                 let report = runner
                 .run_source(
-                    "source/run_retrieval_query(endpoint(), #web, \"sync_view_tree\")\n\
+                    "source/prewarm_retrieval_index(#web)\n\
+                     source/run_retrieval_query(endpoint(), #web, \"sync_view_tree\")\n\
                      let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
                      let artifact_index = one source/RetrievalArtifactIndex(plan, ?index)\n\
                      let current_version = one source/IndexVersion(artifact_index, ?version)\n\
@@ -1590,6 +1592,7 @@ mod tests {
                      assert source/SelectedDefinitionStartLine(endpoint(), 8)\n\
                      assert source/SelectedDefinitionEndLine(endpoint(), 17)\n\
                      assert source/SelectedSymbolProvider(endpoint(), \"test\")\n\
+                     source/prewarm_retrieval_index(#web)\n\
                      let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve_symbol\", {})\n\
                      let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
                      let kind = one PlanKind(plan, ?kind)\n\
@@ -1645,6 +1648,7 @@ mod tests {
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
                 include_str!("../../../apps/shared/retrieval.mica"),
+                include_str!("../../../apps/shared/openai.mica"),
                 include_str!("../../../apps/source/core.mica"),
                 include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
@@ -1718,6 +1722,7 @@ mod tests {
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
                 include_str!("../../../apps/shared/retrieval.mica"),
+                include_str!("../../../apps/shared/openai.mica"),
                 include_str!("../../../apps/source/core.mica"),
                 include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
@@ -1781,6 +1786,7 @@ mod tests {
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
                 include_str!("../../../apps/shared/retrieval.mica"),
+                include_str!("../../../apps/shared/openai.mica"),
                 include_str!("../../../apps/source/core.mica"),
                 include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
@@ -1855,6 +1861,7 @@ mod tests {
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
                 include_str!("../../../apps/shared/retrieval.mica"),
+                include_str!("../../../apps/shared/openai.mica"),
                 include_str!("../../../apps/source/core.mica"),
                 include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
@@ -1924,6 +1931,7 @@ mod tests {
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
                 include_str!("../../../apps/shared/retrieval.mica"),
+                include_str!("../../../apps/shared/openai.mica"),
                 include_str!("../../../apps/source/core.mica"),
                 include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),

@@ -95,6 +95,7 @@ const EXTENSIONAL_MENTIONED_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe1;
 
 const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "emit",
+    "log",
     "commit",
     "suspend",
     "read",
@@ -2877,6 +2878,7 @@ fn endpoint_metadata(relation: Identity) -> Option<RelationMetadata> {
 fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -> BuiltinRegistry {
     BuiltinRegistry::new()
         .with_builtin("emit", emit_builtin)
+        .with_builtin("log", log_builtin)
         .with_builtin("mailbox", mailbox_builtin)
         .with_builtin("mailbox_send", mailbox_send_builtin)
         .with_builtin("make_relation", MakeRelationBuiltin::new())
@@ -2951,6 +2953,85 @@ fn emit_builtin(
     let value = args[1].clone();
     context.emit(target, value.clone())?;
     Ok(value)
+}
+
+fn log_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 && args.len() != 2 {
+        return Err(invalid_builtin_call(
+            "log",
+            "expected log(message) or log(:level, message)",
+        ));
+    }
+    if !context.authority().can_effect() {
+        return Err(RuntimeError::PermissionDenied {
+            operation: "log",
+            target: Value::symbol(Symbol::intern("log")),
+        });
+    }
+
+    let (level, message) = if args.len() == 1 {
+        ("info", builtin_string_arg("log", args, 0)?)
+    } else {
+        let level = builtin_symbol_arg("log", args, 0)?;
+        let Some(level) = level.name() else {
+            return Err(invalid_builtin_call("log", "log level must be named"));
+        };
+        (level, builtin_string_arg("log", args, 1)?)
+    };
+    let runtime_context = context.runtime_context();
+    match level {
+        "trace" => tracing::trace!(
+            target: "mica_runtime::log",
+            principal = ?runtime_context.principal(),
+            actor = ?runtime_context.actor(),
+            endpoint = ?runtime_context.endpoint(),
+            message = %message,
+            "mica log"
+        ),
+        "debug" => tracing::debug!(
+            target: "mica_runtime::log",
+            principal = ?runtime_context.principal(),
+            actor = ?runtime_context.actor(),
+            endpoint = ?runtime_context.endpoint(),
+            message = %message,
+            "mica log"
+        ),
+        "info" => tracing::info!(
+            target: "mica_runtime::log",
+            principal = ?runtime_context.principal(),
+            actor = ?runtime_context.actor(),
+            endpoint = ?runtime_context.endpoint(),
+            message = %message,
+            "mica log"
+        ),
+        "warn" => tracing::warn!(
+            target: "mica_runtime::log",
+            principal = ?runtime_context.principal(),
+            actor = ?runtime_context.actor(),
+            endpoint = ?runtime_context.endpoint(),
+            message = %message,
+            "mica log"
+        ),
+        "error" => tracing::error!(
+            target: "mica_runtime::log",
+            principal = ?runtime_context.principal(),
+            actor = ?runtime_context.actor(),
+            endpoint = ?runtime_context.endpoint(),
+            message = %message,
+            "mica log"
+        ),
+        _ => {
+            return Err(invalid_builtin_call(
+                "log",
+                "log level must be one of :trace, :debug, :info, :warn, or :error",
+            ));
+        }
+    }
+
+    Ok(Value::nothing())
 }
 
 fn mailbox_builtin(
@@ -6099,6 +6180,49 @@ mod tests {
         assert!(matches!(
             report.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("coin")
+        ));
+    }
+
+    #[test]
+    fn runner_empty_relation_results_are_falsey() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_source("make_relation(:Seen, 1)\nmake_identity(:missing)\nmake_identity(:present)")
+            .unwrap();
+
+        let report = runner
+            .run_source(
+                "let empty_list_branch = false\n\
+                 if []\n\
+                   empty_list_branch = true\n\
+                 end\n\
+                 let non_empty_list_branch = false\n\
+                 if [nothing]\n\
+                   non_empty_list_branch = true\n\
+                 end\n\
+                 let empty_relation_branch = false\n\
+                 if Seen(#missing)\n\
+                   empty_relation_branch = true\n\
+                 end\n\
+                 assert Seen(#present)\n\
+                 let non_empty_relation_branch = false\n\
+                 if Seen(#present)\n\
+                   non_empty_relation_branch = true\n\
+                 end\n\
+                 return [empty_list_branch, non_empty_list_branch, empty_relation_branch, non_empty_relation_branch, not []]",
+            )
+            .unwrap();
+
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([
+                    Value::bool(false),
+                    Value::bool(true),
+                    Value::bool(false),
+                    Value::bool(true),
+                    Value::bool(true),
+                ])
         ));
     }
 

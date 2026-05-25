@@ -26,7 +26,7 @@ use mica_host_protocol::{
     decode_sync_envelope, diff_dom_nodes, dom_patch_payload_json, encoded_sync_envelope,
     snapshot_payload_json, sync_envelope_from_value, sync_payload_signature, sync_u64_value,
 };
-use mica_runtime::TaskOutcome;
+use mica_runtime::{TaskId, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -122,7 +122,16 @@ async fn route_dom_event(
                 "sync event completed"
             );
         }
-        TaskOutcome::Suspended { .. } => {}
+        TaskOutcome::Suspended { .. } => {
+            if let Some(state) = host.sessions.lock().unwrap().get(&endpoint).cloned() {
+                state
+                    .sync
+                    .lock()
+                    .unwrap()
+                    .pending_tasks
+                    .insert(submitted.task_id);
+            }
+        }
         TaskOutcome::Aborted { error, .. } => {
             return Err(format!("sync_event aborted: {error}"));
         }
@@ -653,15 +662,54 @@ pub(crate) fn route_driver_event(
     sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
     event: DriverEvent,
 ) -> bool {
-    let DriverEvent::Effect(effect) = event else {
-        return false;
-    };
-    if let Some(state) = sessions.lock().unwrap().get(&effect.target).cloned() {
-        crate::metrics::metrics().routed_driver_events.inc();
-        for datagram in effect_datagrams(effect.target, &effect.value) {
-            let _ = state.output.send_datagram(datagram);
+    match event {
+        DriverEvent::Effect(effect) => {
+            if let Some(state) = sessions.lock().unwrap().get(&effect.target).cloned() {
+                crate::metrics::metrics().routed_driver_events.inc();
+                for datagram in effect_datagrams(effect.target, &effect.value) {
+                    let _ = state.output.send_datagram(datagram);
+                }
+                return true;
+            }
+            false
         }
-        return true;
+        DriverEvent::TaskCompleted { task_id, value } => {
+            complete_pending_sync_task(sessions, task_id, spawned_child_task_id(&value))
+        }
+        DriverEvent::TaskAborted { task_id, .. } | DriverEvent::TaskFailed { task_id, .. } => {
+            complete_pending_sync_task(sessions, task_id, None)
+        }
+        DriverEvent::TaskSuspended { .. } => false,
+    }
+}
+
+fn spawned_child_task_id(value: &Value) -> Option<TaskId> {
+    let task_id = value.as_int()?;
+    if task_id <= 0 {
+        return None;
+    }
+    Some(task_id as TaskId)
+}
+
+fn complete_pending_sync_task(
+    sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
+    task_id: TaskId,
+    child_task_id: Option<TaskId>,
+) -> bool {
+    let sessions = sessions
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for state in sessions {
+        let mut sync = state.sync.lock().unwrap();
+        if sync.pending_tasks.remove(&task_id) {
+            if let Some(child_task_id) = child_task_id {
+                sync.pending_tasks.insert(child_task_id);
+            }
+            return true;
+        }
     }
     false
 }

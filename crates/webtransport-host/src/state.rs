@@ -16,9 +16,10 @@ use crate::{DAEMON_ENDPOINT_ID_START, ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS};
 use bytes::Bytes;
 use mica_driver::CompioTaskDriver;
 use mica_host_protocol::{DomNode, SyncEnvelope, SyncMessageKind};
+use mica_runtime::TaskId;
 use mica_var::Identity;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::future::Future;
 use std::io::BufReader;
@@ -55,6 +56,7 @@ pub(crate) struct SessionState {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SessionSyncState {
     pub(crate) sessions: HashMap<u64, HashMap<u64, ActiveViewState>>,
+    pub(crate) pending_tasks: HashSet<TaskId>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

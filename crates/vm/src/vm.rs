@@ -2271,6 +2271,7 @@ fn truthy(value: &Value) -> bool {
     match value.kind() {
         ValueKind::Nothing => false,
         ValueKind::Bool => value.as_bool().unwrap_or(false),
+        ValueKind::List => value.list_len().is_some_and(|len| len > 0),
         _ => true,
     }
 }

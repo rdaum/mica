@@ -22,9 +22,9 @@ use mica_host_protocol::{
     decode_sync_envelope, diff_dom_nodes, dom_patch_payload_json, sync_envelope_from_value,
     sync_payload_signature, sync_u64_from_value, sync_u64_value,
 };
-use mica_runtime::TaskOutcome;
+use mica_runtime::{TaskId, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
@@ -51,6 +51,7 @@ struct SyncSession {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct SessionSyncState {
     views: HashMap<u64, ActiveViewState>,
+    pending_tasks: HashSet<TaskId>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -284,20 +285,68 @@ pub(crate) async fn handle_sync_input_request(
 ) -> HttpResponse {
     match sync_envelope_from_request(&request.body) {
         Ok(SyncRequestEnvelope::Sync(envelope)) => {
+            let session_id = envelope.session_id;
+            let view_id = envelope.view_id;
+            let kind = envelope.kind;
             let session = match ensure_session(host, binding, envelope.session_id) {
                 Ok(session) => session,
-                Err(error) => return internal_error_response(error, close),
+                Err(error) => {
+                    tracing::error!(
+                        target: "mica_web_host::sync",
+                        session_id,
+                        view_id,
+                        kind = ?kind,
+                        error = %error,
+                        "sync input failed"
+                    );
+                    return internal_error_response(error, close);
+                }
             };
             if let Err(error) = route_sync_envelope(host, &session, envelope).await {
+                tracing::error!(
+                    target: "mica_web_host::sync",
+                    session_id,
+                    view_id,
+                    kind = ?kind,
+                    error = %error,
+                    "sync input failed"
+                );
                 return internal_error_response(error, close);
             }
         }
         Ok(SyncRequestEnvelope::DomEvent(event)) => {
+            let session_id = event.session_id;
+            let view_id = event.view_id;
+            let event_name = event.event.clone();
+            let action = event.action.clone();
+            let target = event.target.clone();
             let session = match ensure_session(host, binding, event.session_id) {
                 Ok(session) => session,
-                Err(error) => return internal_error_response(error, close),
+                Err(error) => {
+                    tracing::error!(
+                        target: "mica_web_host::sync",
+                        session_id,
+                        view_id,
+                        event = %event_name,
+                        action = %action,
+                        target = %target,
+                        error = %error,
+                        "sync DOM input failed"
+                    );
+                    return internal_error_response(error, close);
+                }
             };
             if let Err(error) = route_dom_event(host, &session, event).await {
+                tracing::error!(
+                    target: "mica_web_host::sync",
+                    session_id,
+                    view_id,
+                    event = %event_name,
+                    action = %action,
+                    target = %target,
+                    error = %error,
+                    "sync DOM input failed"
+                );
                 return internal_error_response(error, close);
             }
         }
@@ -392,6 +441,9 @@ async fn route_dom_event(
         store_rendered_sync_view(session, event.view_id, &rendered);
     }
 
+    let event_name = event.event.clone();
+    let action = event.action.clone();
+    let target = event.target.clone();
     let submitted = host
         .driver
         .submit_invocation_for_endpoint(
@@ -410,9 +462,29 @@ async fn route_dom_event(
         .map_err(format_driver_error)?;
     trace.mark("sync_event");
     match submitted.outcome {
-        TaskOutcome::Complete { .. } | TaskOutcome::Suspended { .. } => {}
+        TaskOutcome::Complete { .. } => {}
+        TaskOutcome::Suspended { .. } => {
+            session
+                .sync
+                .lock()
+                .unwrap()
+                .pending_tasks
+                .insert(submitted.task_id);
+        }
         TaskOutcome::Aborted { error, .. } => {
-            return Err(format!("sync_event aborted: {error}"));
+            let message = format!("sync_event aborted: {error}");
+            tracing::error!(
+                target: "mica_web_host::sync",
+                task_id = submitted.task_id,
+                session_id = event.session_id,
+                view_id = event.view_id,
+                event = %event_name,
+                action = %action,
+                target = %target,
+                error = %message,
+                "sync event task aborted"
+            );
+            return Err(message);
         }
     }
     let result = refresh_active_sync_view(host, session, event.view_id, true).await;
@@ -886,22 +958,61 @@ fn route_driver_event(
     sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
     event: DriverEvent,
 ) -> bool {
-    let DriverEvent::Effect(effect) = event else {
-        return false;
-    };
-    let session = sessions
+    match event {
+        DriverEvent::Effect(effect) => {
+            let session = sessions
+                .lock()
+                .unwrap()
+                .values()
+                .find(|session| session.endpoint == effect.target)
+                .cloned();
+            let Some(session) = session else {
+                return false;
+            };
+            if let Some(envelope) = sync_envelope_from_value(session.session_id, &effect.value) {
+                let _ = session.output.send_sync_envelope(envelope);
+            }
+            true
+        }
+        DriverEvent::TaskCompleted { task_id, value } => {
+            complete_pending_sync_task(sessions, task_id, spawned_child_task_id(&value))
+        }
+        DriverEvent::TaskAborted { task_id, .. } | DriverEvent::TaskFailed { task_id, .. } => {
+            complete_pending_sync_task(sessions, task_id, None)
+        }
+        DriverEvent::TaskSuspended { .. } => false,
+    }
+}
+
+fn spawned_child_task_id(value: &Value) -> Option<TaskId> {
+    let task_id = value.as_int()?;
+    if task_id <= 0 {
+        return None;
+    }
+    Some(task_id as TaskId)
+}
+
+fn complete_pending_sync_task(
+    sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
+    task_id: TaskId,
+    child_task_id: Option<TaskId>,
+) -> bool {
+    let sessions = sessions
         .lock()
         .unwrap()
         .values()
-        .find(|session| session.endpoint == effect.target)
-        .cloned();
-    let Some(session) = session else {
-        return false;
-    };
-    if let Some(envelope) = sync_envelope_from_value(session.session_id, &effect.value) {
-        let _ = session.output.send_sync_envelope(envelope);
+        .cloned()
+        .collect::<Vec<_>>();
+    for session in sessions {
+        let mut sync = session.sync.lock().unwrap();
+        if sync.pending_tasks.remove(&task_id) {
+            if let Some(child_task_id) = child_task_id {
+                sync.pending_tasks.insert(child_task_id);
+            }
+            return true;
+        }
     }
-    true
+    false
 }
 
 fn request_path_without_query(path: &str) -> &str {

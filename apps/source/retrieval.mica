@@ -13,6 +13,7 @@ make_identity(:source/text_markdown_phase6)
 make_identity(:source/text_review_note_dom_sync)
 make_identity(:source/text_design_doc_graphrag)
 make_identity(:source/symbol_sync_view_tree)
+make_identity(:source/agent_turn)
 
 make_relation(:source/IndexedTextUnit, 9)
 make_relation(:source/TextSearch, 11)
@@ -34,10 +35,45 @@ make_functional_relation(:source/SelectedRetrievalLimit, 2, [0])
 make_functional_relation(:source/SelectedRetrievalScope, 2, [0])
 make_functional_relation(:source/SelectedRetrievalSemanticStatus, 2, [0])
 make_functional_relation(:source/SelectedRetrievalStatus, 2, [0])
+make_functional_relation(:source/SelectedGeneratedAnswer, 2, [0])
 make_functional_relation(:source/RetrievalCorpusIndexVersion, 3, [0, 1])
+make_functional_relation(:source/RetrievalPrewarmStatus, 2, [0])
+make_functional_relation(:source/RetrievalPrewarmCount, 2, [0])
+make_functional_relation(:source/RetrievalPrewarmRevision, 2, [0])
 
 assert VectorIndex(#source/retrieval_index)
 assert VectorIndexMetric(#source/retrieval_index, "cosine")
+
+make_identity(:source/agent_finding)
+make_functional_relation(:source/AnswerPlan, 2, [0])
+make_functional_relation(:source/AnswerProvider, 2, [0])
+make_functional_relation(:source/AnswerModel, 2, [0])
+make_functional_relation(:source/AnswerResolvedModel, 2, [0])
+make_functional_relation(:source/AnswerReviewStatus, 2, [0])
+make_relation(:source/AgentFinding, 1)
+make_functional_relation(:source/FindingAnswer, 2, [0])
+make_functional_relation(:source/FindingSubject, 2, [0])
+make_functional_relation(:source/FindingText, 2, [0])
+make_functional_relation(:source/FindingStatus, 2, [0])
+make_functional_relation(:source/FindingProvider, 2, [0])
+make_functional_relation(:source/FindingModel, 2, [0])
+make_relation(:source/AcceptedAgentFinding, 1)
+
+make_relation(:source/AgentTurn, 1)
+make_functional_relation(:source/AgentTurnEndpoint, 2, [0])
+make_functional_relation(:source/AgentTurnOrdinal, 2, [0])
+make_functional_relation(:source/AgentTurnRole, 2, [0])
+make_functional_relation(:source/AgentTurnText, 2, [0])
+make_functional_relation(:source/AgentTurnStatus, 2, [0])
+make_functional_relation(:source/AgentTurnPlan, 2, [0])
+make_functional_relation(:source/AgentTurnPromptText, 2, [0])
+make_functional_relation(:source/AgentTurnContextText, 2, [0])
+make_functional_relation(:source/AgentTurnProvider, 2, [0])
+make_functional_relation(:source/AgentTurnModel, 2, [0])
+make_functional_relation(:source/AgentTurnResolvedModel, 2, [0])
+make_relation(:source/AgentTurnCitation, 2)
+make_functional_relation(:source/AgentTurnCitationText, 3, [0, 1])
+make_functional_relation(:source/SelectedAgentStatus, 2, [0])
 
 assert TextUnit(#source/text_file_runtime)
 assert TextUnitOf(#source/text_file_runtime, #source/file_runtime_lib)
@@ -132,6 +168,14 @@ verb source/retrieval_model()
   return "source-workspace"
 end
 
+verb source/generation_model()
+  return "openrouter/auto"
+end
+
+verb source/generation_provider()
+  return "openrouter"
+end
+
 verb source/retrieval_limit()
   return 8
 end
@@ -218,11 +262,11 @@ verb source/can_retrieve_subject(actor, subject)
     return true
   end
 
-  if source/RetrievalTextUnitFile(subject, ?file)
+  if one source/RetrievalTextUnitFile(subject, ?file) != nothing
     return true
   end
 
-  if source/RetrievalTextUnitSpan(subject, ?span)
+  if one source/RetrievalTextUnitSpan(subject, ?span) != nothing
     return true
   end
 
@@ -268,6 +312,38 @@ verb source/retrieval_index_ready(model @ #string)
   return false
 end
 
+verb source/retrieval_prewarm_complete()
+  let model = source/retrieval_model()
+  let corpus_version = source/retrieval_corpus_version()
+  let indexed_version = one source/RetrievalCorpusIndexVersion(#source/retrieval_index, model, ?version)
+  return indexed_version == corpus_version
+end
+
+verb source/retrieval_prewarm_status()
+  if source/retrieval_prewarm_complete()
+    return "complete"
+  end
+
+  let status = one source/RetrievalPrewarmStatus(source/retrieval_model(), ?status)
+  if status == nothing
+    return "pending"
+  end
+
+  return status
+end
+
+verb source/bump_retrieval_prewarm_revision(model @ #string)
+  let revision = one source/RetrievalPrewarmRevision(model, ?revision)
+  if revision == nothing
+    revision = 0
+  end
+
+  revision = revision + 1
+  retract source/RetrievalPrewarmRevision(model, _)
+  assert source/RetrievalPrewarmRevision(model, revision)
+  return revision
+end
+
 verb source/index_retrieval_subjects(actor, model @ #string)
   let indexed = 0
   for found in TextUnit(?subject)
@@ -300,6 +376,22 @@ end
 
 verb source/prewarm_retrieval_index(actor)
   return source/index_retrieval_subjects(actor, source/retrieval_model())
+end
+
+verb source/run_retrieval_prewarm(actor)
+  let model = source/retrieval_model()
+  retract source/RetrievalPrewarmStatus(model, _)
+  assert source/RetrievalPrewarmStatus(model, "running")
+  source/bump_retrieval_prewarm_revision(model)
+
+  let indexed = source/prewarm_retrieval_index(actor)
+
+  retract source/RetrievalPrewarmCount(model, _)
+  assert source/RetrievalPrewarmCount(model, indexed)
+  retract source/RetrievalPrewarmStatus(model, _)
+  assert source/RetrievalPrewarmStatus(model, "complete")
+  source/bump_retrieval_prewarm_revision(model)
+  return indexed
 end
 
 verb source/retrieve_context(actor, index, question_text @ #string, limit, model @ #string)
@@ -392,6 +484,410 @@ verb source/clear_retrieval_session(endpoint)
   retract source/SelectedRetrievalScope(endpoint, _)
   retract source/SelectedRetrievalSemanticStatus(endpoint, _)
   retract source/SelectedRetrievalStatus(endpoint, _)
+  retract source/SelectedGeneratedAnswer(endpoint, _)
+  return true
+end
+
+verb source/answer_context_line(plan, actor, subject)
+  if source/can_retrieve_subject(actor, subject) == false
+    return nothing
+  end
+
+  let path = source/retrieval_text_unit_path(subject)
+  if path == nothing
+    path = "unknown"
+  end
+  let line = one source/RetrievalCitationLine(plan, subject, ?line)
+  if line == nothing
+    line = source/retrieval_text_unit_line(subject)
+  end
+  let title = source/retrieval_text_unit_title(subject)
+  if title == nothing
+    title = path
+  end
+  let text = one source/RetrievalCitationText(plan, subject, ?text)
+  if text == nothing
+    text = source/retrieval_text_unit_text(subject)
+  end
+  if text == nothing
+    text = ""
+  end
+
+  return string_concat("- ", path, ":", to_literal(line), " ", title, "\n", text)
+end
+
+verb source/answer_context_text(plan, actor)
+  let lines = []
+  for found in ContextForPlan(?context, plan)
+    let subject = one ContextSubject(found[:context], ?subject)
+    let line = source/answer_context_line(plan, actor, subject)
+    if line != nothing
+      lines = [@lines, line]
+    end
+  end
+
+  return string_join(lines, "\n\n")
+end
+
+verb source/answer_prompt_text(question_text @ #string, context_text @ #string)
+  return string_concat("You are answering a question about the Mica source workspace. Use only the cited context below. Cite source paths and line numbers. Do not include internal citation IDs in the answer. If the context is insufficient, say what is missing.\n\nQuestion:\n", question_text, "\n\nCited context:\n", context_text)
+end
+
+verb source/current_file_context_text(endpoint)
+  let repository = source/current_repository()
+  let revision = source/current_revision()
+  let path = one source/SelectedPath(endpoint, ?path)
+  if path == nothing
+    path = source/current_file()
+  end
+  let line_count = one source/FileLineCount(repository, revision, path, ?line_count)
+  if line_count == nothing
+    return string_concat("Current file: ", path, "\nNo file text is available.")
+  end
+  let start_line = source/current_window_start(line_count)
+  let limit = 120
+  let lines = []
+  for row in source/FileLines(repository, revision, path, start_line, limit, ?file_lines, ?hash)
+    let line_number = start_line
+    for text in row[:file_lines]
+      lines = [@lines, string_concat(to_literal(line_number), ": ", text)]
+      line_number = line_number + 1
+    end
+    break
+  end
+  return string_concat("Current file: ", path, "\nVisible lines from ", to_literal(start_line), ":\n", string_join(lines, "\n"))
+end
+
+verb source/agent_history_text(endpoint)
+  let lines = []
+  for found in source/AgentTurnEndpoint(?turn, endpoint)
+    let turn = found[:turn]
+    let role = one source/AgentTurnRole(turn, ?role)
+    let text = one source/AgentTurnText(turn, ?text)
+    if role == nothing
+      role = "assistant"
+    end
+    if text == nothing
+      text = ""
+    end
+    lines = [@lines, string_concat(role, ": ", text)]
+  end
+  if lines == []
+    return "No previous turns."
+  end
+  return string_join(lines, "\n\n")
+end
+
+verb source/next_agent_turn_ordinal(endpoint)
+  let ordinal = 1
+  for found in source/AgentTurnEndpoint(?turn, endpoint)
+    ordinal = ordinal + 1
+  end
+  return ordinal
+end
+
+verb source/agent_focus_text(endpoint)
+  let path = one source/SelectedPath(endpoint, ?path)
+  if path == nothing
+    path = source/current_file()
+  end
+  let line = one source/SelectedLine(endpoint, ?line)
+  if path == nothing
+    return "No source file is currently selected."
+  end
+  if line == nothing
+    line = 1
+  end
+  return string_concat("Current source focus: ", path, ":", to_literal(line))
+end
+
+verb source/agent_prompt_text(user_text @ #string, focus_text @ #string, context_text @ #string)
+  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. Use retrieved context only as supporting evidence. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. If you need more evidence, say what to inspect next.\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
+end
+
+verb source/source_index_available()
+  for found in source/SourceIndex(?index)
+    return true
+  end
+  return false
+end
+
+verb source/record_agent_turn_citations(turn, plan, actor)
+  let count = 0
+  for found in ContextForPlan(?context, plan)
+    let subject = one ContextSubject(found[:context], ?subject)
+    if source/can_retrieve_subject(actor, subject)
+      assert source/AgentTurnCitation(turn, subject)
+      let text = one source/RetrievalCitationText(plan, subject, ?text)
+      if text == nothing
+        text = source/retrieval_text_unit_text(subject)
+      end
+      if text != nothing
+        assert source/AgentTurnCitationText(turn, subject, text)
+      end
+      count = count + 1
+    end
+  end
+  return count
+end
+
+verb source/record_agent_user_turn(endpoint, user_text @ #string)
+  if user_text == ""
+    return nothing
+  end
+
+  let user_ordinal = source/next_agent_turn_ordinal(endpoint)
+  let user_turn = frob(#source/agent_turn, {:endpoint -> endpoint, :ordinal -> user_ordinal, :role -> "user", :text -> user_text})
+  assert source/AgentTurn(user_turn)
+  assert source/AgentTurnEndpoint(user_turn, endpoint)
+  assert source/AgentTurnOrdinal(user_turn, user_ordinal)
+  assert source/AgentTurnRole(user_turn, "user")
+  assert source/AgentTurnText(user_turn, user_text)
+  assert source/AgentTurnStatus(user_turn, "complete")
+  return user_turn
+end
+
+verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
+  log(:info, "source agent prompt completion started")
+  let history_text = source/agent_history_text(endpoint)
+
+  let current_context = source/current_file_context_text(endpoint)
+  let plan = nothing
+  let retrieved_context = ""
+  if source/source_index_available()
+    let retrieval = source/search_context(actor, user_text, source/retrieval_limit(), "all", source/retrieval_model())
+    plan = retrieval[:plan]
+    retrieved_context = source/answer_context_text(plan, actor)
+  end
+  let context_text = string_concat("Previous turns:\n", history_text, "\n\nCurrent file context:\n", current_context, "\n\nRetrieved context:\n", retrieved_context)
+  let focus_text = source/agent_focus_text(endpoint)
+  let requested_model = source/generation_model()
+  let provider = source/generation_provider()
+  let prompt = source/agent_prompt_text(user_text, focus_text, context_text)
+  let response = openai/chat_with_options(requested_model, [openai/system_message("Talk about the Mica source workspace using cited source evidence."), openai/user_message(prompt)], {:temperature -> 0.2})
+  let assistant_text = openai/assistant_text(response)
+  if assistant_text == nothing
+    assistant_text = json_encode(response)
+  end
+  let resolved_model = response[:model]
+  if resolved_model == nothing
+    resolved_model = requested_model
+  end
+
+  let assistant_ordinal = source/next_agent_turn_ordinal(endpoint)
+  let assistant_turn = frob(#source/agent_turn, {:endpoint -> endpoint, :ordinal -> assistant_ordinal, :role -> "assistant", :text -> assistant_text})
+  assert source/AgentTurn(assistant_turn)
+  assert source/AgentTurnEndpoint(assistant_turn, endpoint)
+  assert source/AgentTurnOrdinal(assistant_turn, assistant_ordinal)
+  assert source/AgentTurnRole(assistant_turn, "assistant")
+  assert source/AgentTurnText(assistant_turn, assistant_text)
+  assert source/AgentTurnStatus(assistant_turn, "complete")
+  if plan != nothing
+    assert source/AgentTurnPlan(assistant_turn, plan)
+  end
+  assert source/AgentTurnPromptText(assistant_turn, prompt)
+  assert source/AgentTurnContextText(assistant_turn, context_text)
+  assert source/AgentTurnProvider(assistant_turn, provider)
+  assert source/AgentTurnModel(assistant_turn, requested_model)
+  assert source/AgentTurnResolvedModel(assistant_turn, resolved_model)
+  source/record_agent_turn_citations(assistant_turn, plan, actor)
+
+  retract source/SelectedAgentStatus(endpoint, _)
+  assert source/SelectedAgentStatus(endpoint, "complete")
+  source/bump_revision(endpoint)
+  log(:info, "source agent prompt completion finished")
+  return {:turn -> assistant_turn, :text -> assistant_text, :model -> resolved_model, :plan -> plan}
+end
+
+verb source/run_agent_prompt(endpoint, actor, user_text @ #string)
+  if user_text == ""
+    return nothing
+  end
+
+  retract source/SelectedAgentStatus(endpoint, _)
+  assert source/SelectedAgentStatus(endpoint, "working")
+  source/record_agent_user_turn(endpoint, user_text)
+  return source/complete_agent_prompt(endpoint, actor, user_text)
+end
+
+verb source/start_agent_prompt(endpoint, actor, user_text @ #string)
+  if user_text == ""
+    return nothing
+  end
+
+  log(:info, "source agent prompt queued")
+  retract source/SelectedAgentStatus(endpoint, _)
+  assert source/SelectedAgentStatus(endpoint, "working")
+  let user_turn = source/record_agent_user_turn(endpoint, user_text)
+  if user_turn == nothing
+    return nothing
+  end
+
+  let child = spawn :source/complete_agent_prompt(endpoint: endpoint, actor: actor, user_text: user_text) after 0
+  return child
+end
+
+verb source/record_answer_findings(answer, provider @ #string, model @ #string)
+  let count = 0
+  for found in AnswerCitation(answer, ?subject)
+    let subject = found[:subject]
+    let finding = frob(#source/agent_finding, {:answer -> answer, :subject -> subject})
+    let text = one AnswerText(answer, ?text)
+    if text == nothing
+      text = ""
+    end
+    assert source/AgentFinding(finding)
+    assert source/FindingAnswer(finding, answer)
+    assert source/FindingSubject(finding, subject)
+    assert source/FindingText(finding, text)
+    assert source/FindingStatus(finding, "pending")
+    assert source/FindingProvider(finding, provider)
+    assert source/FindingModel(finding, model)
+    count = count + 1
+  end
+  return count
+end
+
+verb source/generate_answer_for_plan(endpoint, actor, plan)
+  let question = one PlanForQuestion(plan, ?question)
+  let question_text = one QuestionText(question, ?text)
+  if question == nothing || question_text == nothing
+    return nothing
+  end
+
+  let context_text = source/answer_context_text(plan, actor)
+  if context_text == ""
+    return nothing
+  end
+
+  let requested_model = source/generation_model()
+  let provider = source/generation_provider()
+  let prompt = source/answer_prompt_text(question_text, context_text)
+  let response = openai/chat_with_options(requested_model, [openai/system_message("Answer from cited Mica source context only."), openai/user_message(prompt)], {:temperature -> 0.2})
+  let answer_text = openai/assistant_text(response)
+  if answer_text == nothing
+    answer_text = json_encode(response)
+  end
+  let resolved_model = response[:model]
+  if resolved_model == nothing
+    resolved_model = requested_model
+  end
+
+  let answer = retrieval/answer_value(question, #source/retrieval_index, source/retrieval_limit(), requested_model)
+  assert Answer(answer)
+  assert AnswerForQuestion(answer, question)
+  assert AnswerPromptText(answer, prompt)
+  assert AnswerContextText(answer, context_text)
+  assert AnswerText(answer, answer_text)
+  assert AnswerStatus(answer, "generated")
+  assert AnswerNeedsReview(answer)
+  assert source/AnswerPlan(answer, plan)
+  assert source/AnswerProvider(answer, provider)
+  assert source/AnswerModel(answer, requested_model)
+  assert source/AnswerResolvedModel(answer, resolved_model)
+  assert source/AnswerReviewStatus(answer, "pending")
+  assert source/RetrievalArtifact(answer)
+  assert source/RetrievalArtifactIndex(answer, #source/retrieval_index)
+  assert source/RetrievalArtifactRevision(answer, #source/rev_worktree)
+  assert source/RetrievalArtifactIndexVersion(answer, source/retrieval_corpus_version())
+
+  for found in ContextForPlan(?context, plan)
+    let subject = one ContextSubject(found[:context], ?subject)
+    if source/can_retrieve_subject(actor, subject)
+      assert AnswerCitation(answer, subject)
+      let text = one source/RetrievalCitationText(plan, subject, ?text)
+      if text == nothing
+        text = source/retrieval_text_unit_text(subject)
+      end
+      if text != nothing
+        assert AnswerCitationText(answer, subject, text)
+      end
+    end
+  end
+
+  source/record_answer_findings(answer, provider, resolved_model)
+  retract source/SelectedGeneratedAnswer(endpoint, _)
+  assert source/SelectedGeneratedAnswer(endpoint, answer)
+  assert source/SelectedRetrievalStatus(endpoint, "generated answer pending review")
+  return {:answer -> answer, :text -> answer_text, :model -> resolved_model}
+end
+
+verb source/generate_answer_for_selected_plan(endpoint, actor)
+  let plan = one source/SelectedRetrievalPlan(endpoint, ?plan)
+  if plan == nothing
+    return nothing
+  end
+
+  return source/generate_answer_for_plan(endpoint, actor, plan)
+end
+
+verb source/accept_answer(answer)
+  if Answer(answer) == false
+    return false
+  end
+  retract source/AnswerReviewStatus(answer, _)
+  assert source/AnswerReviewStatus(answer, "accepted")
+  retract AnswerStatus(answer, _)
+  assert AnswerStatus(answer, "reviewed")
+  retract AnswerNeedsReview(answer)
+  return true
+end
+
+verb source/reject_answer(answer)
+  if Answer(answer) == false
+    return false
+  end
+  retract source/AnswerReviewStatus(answer, _)
+  assert source/AnswerReviewStatus(answer, "rejected")
+  retract AnswerStatus(answer, _)
+  assert AnswerStatus(answer, "rejected")
+  retract AnswerNeedsReview(answer)
+  return true
+end
+
+verb source/correct_answer(answer, text @ #string)
+  if Answer(answer) == false
+    return false
+  end
+  retract AnswerText(answer, _)
+  assert AnswerText(answer, text)
+  retract source/AnswerReviewStatus(answer, _)
+  assert source/AnswerReviewStatus(answer, "corrected")
+  retract AnswerStatus(answer, _)
+  assert AnswerStatus(answer, "corrected")
+  retract AnswerNeedsReview(answer)
+  return true
+end
+
+verb source/accept_finding(finding)
+  if source/AgentFinding(finding) == false
+    return false
+  end
+  retract source/FindingStatus(finding, _)
+  assert source/FindingStatus(finding, "accepted")
+  assert source/AcceptedAgentFinding(finding)
+  return true
+end
+
+verb source/reject_finding(finding)
+  if source/AgentFinding(finding) == false
+    return false
+  end
+  retract source/FindingStatus(finding, _)
+  assert source/FindingStatus(finding, "rejected")
+  retract source/AcceptedAgentFinding(finding)
+  return true
+end
+
+verb source/correct_finding(finding, text @ #string)
+  if source/AgentFinding(finding) == false
+    return false
+  end
+  retract source/FindingText(finding, _)
+  assert source/FindingText(finding, text)
+  retract source/FindingStatus(finding, _)
+  assert source/FindingStatus(finding, "corrected")
+  retract source/AcceptedAgentFinding(finding)
   return true
 end
 
@@ -403,6 +899,17 @@ verb source/run_retrieval_query_with_scope(endpoint, actor, question_text @ #str
   let model = source/retrieval_model()
   let limit = source/retrieval_limit()
   let normalised_scope = source/normalise_retrieval_scope(scope)
+  if source/retrieval_prewarm_complete() == false
+    source/clear_retrieval_session(endpoint)
+    assert source/SelectedRetrievalQuestion(endpoint, question_text)
+    assert source/SelectedRetrievalModel(endpoint, model)
+    assert source/SelectedRetrievalLimit(endpoint, limit)
+    assert source/SelectedRetrievalScope(endpoint, normalised_scope)
+    assert source/SelectedRetrievalSemanticStatus(endpoint, "indexing")
+    assert source/SelectedRetrievalStatus(endpoint, "indexing source")
+    return {:contexts -> [], :count -> 0, :plan -> nothing, :question -> nothing}
+  end
+
   let retrieval = source/search_context(actor, question_text, limit, normalised_scope, model)
   let plan = retrieval[:plan]
   let contexts = retrieval[:contexts]

@@ -502,6 +502,8 @@ fn startup_suspend_can_resume(kind: &mica_runtime::SuspendKind) -> bool {
 fn startup_source_description(source: &str) -> &'static str {
     if is_source_retrieval_indexing_source(source) {
         "prewarming source retrieval index"
+    } else if source.contains("source/run_retrieval_prewarm") {
+        "spawning source retrieval index prewarm"
     } else {
         "running startup source"
     }

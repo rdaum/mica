@@ -500,6 +500,14 @@ impl CompioTaskDriver {
         context: TaskContext,
         submitted: SubmittedTask,
     ) -> Result<(), DriverError> {
+        tracing::debug!(
+            target: "mica_driver::pool",
+            task_id = submitted.task_id,
+            principal = ?context.principal,
+            actor = ?context.actor,
+            endpoint = ?context.endpoint,
+            "driver task submitted"
+        );
         let mut queue = VecDeque::new();
         queue.push_back((submitted.task_id, context, submitted.outcome));
         self.process_outcome_queue(&mut queue).await
@@ -521,16 +529,43 @@ impl CompioTaskDriver {
                 state.drain_effects_into_events(&self.inner.runner);
                 match outcome {
                     TaskOutcome::Complete { value, .. } => {
+                        tracing::debug!(
+                            target: "mica_driver::pool",
+                            task_id,
+                            principal = ?context.principal,
+                            actor = ?context.actor,
+                            endpoint = ?context.endpoint,
+                            value = ?value,
+                            "driver task completed"
+                        );
                         state
                             .events
                             .push(DriverEvent::TaskCompleted { task_id, value });
                     }
                     TaskOutcome::Aborted { error, .. } => {
+                        tracing::error!(
+                            target: "mica_driver::pool",
+                            task_id,
+                            principal = ?context.principal,
+                            actor = ?context.actor,
+                            endpoint = ?context.endpoint,
+                            error = ?error,
+                            "driver task aborted"
+                        );
                         state
                             .events
                             .push(DriverEvent::TaskAborted { task_id, error });
                     }
                     TaskOutcome::Suspended { kind, .. } => {
+                        tracing::debug!(
+                            target: "mica_driver::pool",
+                            task_id,
+                            principal = ?context.principal,
+                            actor = ?context.actor,
+                            endpoint = ?context.endpoint,
+                            kind = ?kind,
+                            "driver task suspended"
+                        );
                         metrics::record_suspend(&kind);
                         state.contexts.insert(task_id, context.clone());
                         state.events.push(DriverEvent::TaskSuspended {
@@ -792,11 +827,23 @@ impl CompioTaskDriver {
         let start = Instant::now();
         let result = async {
             let (child_ctx, child_submitted) = self.submit_spawn_raw(context, request).await?;
+            tracing::debug!(
+                target: "mica_driver::pool",
+                parent_task_id,
+                child_task_id = child_submitted.task_id,
+                "driver child task spawned"
+            );
             queue.push_back((child_submitted.task_id, child_ctx, child_submitted.outcome));
 
             let child_id = Value::int(child_submitted.task_id as i64)
                 .expect("allocated task id fits in Value");
             let (parent_ctx, parent_submitted) = self.resume_raw(parent_task_id, child_id).await?;
+            tracing::debug!(
+                target: "mica_driver::pool",
+                parent_task_id,
+                child_task_id = child_submitted.task_id,
+                "driver parent task resumed after spawn"
+            );
             queue.push_back((
                 parent_submitted.task_id,
                 parent_ctx,
@@ -825,6 +872,16 @@ impl CompioTaskDriver {
         let runner = Arc::clone(&self.inner.runner);
         let context_authority = context.authority.clone();
         let submit_context = context.clone();
+        tracing::debug!(
+            target: "mica_driver::pool",
+            selector = request.selector.name().unwrap_or("<unnamed>"),
+            target = ?request.target,
+            delay_millis = ?request.delay_millis,
+            principal = ?context.principal,
+            actor = ?context.actor,
+            endpoint = ?context.endpoint,
+            "driver spawn requested"
+        );
         let submitted = self
             .dispatch(DispatchOperation::Spawn, move || async move {
                 runner.submit_spawn(
@@ -853,6 +910,15 @@ impl CompioTaskDriver {
             state.record_metrics();
             context
         };
+        tracing::debug!(
+            target: "mica_driver::pool",
+            task_id,
+            principal = ?context.principal,
+            actor = ?context.actor,
+            endpoint = ?context.endpoint,
+            value = ?value,
+            "driver task resume requested"
+        );
         let request = TaskRequest {
             principal: context.principal,
             actor: context.actor,
@@ -867,6 +933,14 @@ impl CompioTaskDriver {
             })
             .await
             .map(|outcome| SubmittedTask { task_id, outcome })?;
+        tracing::debug!(
+            target: "mica_driver::pool",
+            task_id,
+            principal = ?context.principal,
+            actor = ?context.actor,
+            endpoint = ?context.endpoint,
+            "driver task resume returned"
+        );
         Ok((context, submitted))
     }
 
@@ -894,10 +968,19 @@ impl CompioTaskDriver {
         let driver = self.clone();
         let handler = self.inner.external_request_handler.clone();
         let timeout = request.timeout_millis.map(Duration::from_millis);
+        let service = request.service;
+        tracing::debug!(
+            target: "mica_driver::pool",
+            task_id,
+            service = service.name().unwrap_or("<unnamed>"),
+            timeout_millis = ?request.timeout_millis,
+            "driver external request scheduled"
+        );
         let completed = Arc::new(AtomicBool::new(false));
         if let Some(timeout) = timeout {
             let timeout_driver = self.clone();
             let timeout_completed = Arc::clone(&completed);
+            let timeout_service = service;
             compio::runtime::spawn(async move {
                 metrics::async_worker_started(AsyncWorkerKind::ExternalRequestTimeout);
                 let start = Instant::now();
@@ -918,7 +1001,12 @@ impl CompioTaskDriver {
                     Some("external request timed out"),
                     None,
                 );
-                tracing::warn!(task_id, "external request timed out");
+                tracing::warn!(
+                    target: "mica_driver::pool",
+                    task_id,
+                    service = timeout_service.name().unwrap_or("<unnamed>"),
+                    "external request timed out"
+                );
                 let mut outcome = WorkerOutcome::Timeout;
                 if let Err(error) = timeout_driver.resume(task_id, value).await {
                     timeout_driver.record_task_failure(task_id, error);
@@ -935,10 +1023,21 @@ impl CompioTaskDriver {
         compio::runtime::spawn(async move {
             metrics::async_worker_started(AsyncWorkerKind::ExternalRequest);
             let start = Instant::now();
+            tracing::debug!(
+                target: "mica_driver::pool",
+                task_id,
+                service = service.name().unwrap_or("<unnamed>"),
+                "driver external request started"
+            );
             let value = match handler {
                 Some(handler) => handler(request).await,
                 None => {
-                    tracing::warn!(task_id, "external request has no configured handler");
+                    tracing::warn!(
+                        target: "mica_driver::pool",
+                        task_id,
+                        service = service.name().unwrap_or("<unnamed>"),
+                        "external request has no configured handler"
+                    );
                     Value::error(
                         Symbol::intern("ExternalUnavailable"),
                         Some("no external request handler is configured"),
@@ -961,6 +1060,14 @@ impl CompioTaskDriver {
             if let Err(error) = driver.resume(task_id, value).await {
                 driver.record_task_failure(task_id, error);
                 outcome = WorkerOutcome::Error;
+            } else {
+                tracing::debug!(
+                    target: "mica_driver::pool",
+                    task_id,
+                    service = service.name().unwrap_or("<unnamed>"),
+                    elapsed_us = start.elapsed().as_micros(),
+                    "driver external request resumed task"
+                );
             }
             metrics::async_worker_finished(
                 AsyncWorkerKind::ExternalRequest,

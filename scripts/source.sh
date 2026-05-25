@@ -90,6 +90,7 @@ daemon_args=(
   --filein apps/shared/sync-host.mica
   --filein apps/shared/sync-dom.mica
   --filein apps/shared/retrieval.mica
+  --filein apps/shared/openai.mica
   --filein apps/source/core.mica
   --filein apps/source/retrieval.mica
   --filein apps/source/ui-session.mica
@@ -109,7 +110,7 @@ fi
 
 if [[ "${prewarm_retrieval_index}" != "0" ]]; then
   daemon_args+=(
-    --startup-source "source/prewarm_retrieval_index(#web)"
+    --startup-source $'let prewarm = spawn :source/run_retrieval_prewarm(#web) after 0\nreturn prewarm'
   )
 fi
 

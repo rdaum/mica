@@ -29,6 +29,22 @@ fn root_source(source: &str) -> TaskRequest {
     SourceRunner::root_source_request(source)
 }
 
+fn load_source_app(runner: &mut SourceRunner) {
+    for filein in [
+        include_str!("../../../apps/shared/sync-host.mica"),
+        include_str!("../../../apps/shared/sync-dom.mica"),
+        include_str!("../../../apps/shared/retrieval.mica"),
+        include_str!("../../../apps/shared/openai.mica"),
+        include_str!("../../../apps/source/core.mica"),
+        include_str!("../../../apps/source/retrieval.mica"),
+        include_str!("../../../apps/source/ui-session.mica"),
+        include_str!("../../../apps/source/ui-compose.mica"),
+        include_str!("../../../apps/source/http.mica"),
+    ] {
+        runner.run_filein(filein).unwrap();
+    }
+}
+
 #[test]
 fn driver_runs_source_on_compio_task() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
@@ -256,6 +272,357 @@ fn openai_chat_completion_suspends_as_openai_external_request() {
 }
 
 #[test]
+fn source_generated_answer_records_reviewable_facts() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("openai"));
+                assert_eq!(
+                    request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("model"))),
+                    Some(Value::string("openrouter/auto"))
+                );
+                let messages = request
+                    .payload
+                    .map_get(&Value::symbol(Symbol::intern("messages")))
+                    .expect("host request should include messages");
+                let prompt = messages
+                    .with_list(|messages| {
+                        messages.iter().find_map(|message| {
+                            let role = message.map_get(&Value::symbol(Symbol::intern("role")))?;
+                            if role != Value::string("user") {
+                                return None;
+                            }
+                            message.map_get(&Value::symbol(Symbol::intern("content")))
+                        })
+                    })
+                    .flatten()
+                    .expect("messages should include user content");
+                assert!(prompt
+                    .with_str(|prompt| prompt.contains("sync_view_tree"))
+                    .unwrap_or(false));
+                assert!(!prompt
+                    .with_str(|prompt| prompt.contains("SECRET_UNAUTHORIZED_CONTEXT"))
+                    .unwrap_or(false));
+                Value::map([
+                    (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("openrouter/test-model"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("choices")),
+                        Value::list([Value::map([(
+                            Value::symbol(Symbol::intern("message")),
+                            Value::map([(
+                                Value::symbol(Symbol::intern("content")),
+                                Value::string("sync_view_tree is rendered by the source UI."),
+                            )]),
+                        )])]),
+                    ),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let mut runner = SourceRunner::new_empty();
+        load_source_app(&mut runner);
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(33),
+                root_source(
+                    "make_identity(:source/secret_subject)\n\
+                     let question = retrieval/question_value(#web, \"where is DOM sync rendered?\", #source/retrieval_index, 2, \"source-workspace\")\n\
+                     assert Question(question)\n\
+                     assert QuestionText(question, \"where is DOM sync rendered?\")\n\
+                     assert AskedBy(question, #web)\n\
+                     let plan = retrieval/plan_value(question, #source/retrieval_index, 2, \"source-workspace\")\n\
+                     assert RetrievalPlan(plan)\n\
+                     assert PlanForQuestion(plan, question)\n\
+                     assert PlanKind(plan, \"text_search\")\n\
+                     assert PlanModel(plan, \"source-workspace\")\n\
+                     let allowed_context = retrieval/context_value(plan, #source/text_symbol_sync_view_tree)\n\
+                     assert RetrievedContext(allowed_context)\n\
+                     assert ContextForPlan(allowed_context, plan)\n\
+                     assert ContextSubject(allowed_context, #source/text_symbol_sync_view_tree)\n\
+                     assert ContextScore(allowed_context, 1.0)\n\
+                     assert ContextReason(allowed_context, \"test\")\n\
+                     assert ContextSnapshotVersion(allowed_context, \"test\")\n\
+                     assert source/RetrievalCitation(plan, #source/text_symbol_sync_view_tree)\n\
+                     assert source/RetrievalCitationText(plan, #source/text_symbol_sync_view_tree, \"sync_view_tree renders DOM sync\")\n\
+                     assert source/RetrievalCitationLine(plan, #source/text_symbol_sync_view_tree, 8)\n\
+                     let secret_context = retrieval/context_value(plan, #source/secret_subject)\n\
+                     assert RetrievedContext(secret_context)\n\
+                     assert ContextForPlan(secret_context, plan)\n\
+                     assert ContextSubject(secret_context, #source/secret_subject)\n\
+                     assert ContextScore(secret_context, 0.9)\n\
+                     assert ContextReason(secret_context, \"test\")\n\
+                     assert ContextSnapshotVersion(secret_context, \"test\")\n\
+                     assert TextUnit(#source/secret_subject)\n\
+                     assert TextUnitText(#source/secret_subject, \"SECRET_UNAUTHORIZED_CONTEXT\")\n\
+                     assert source/SelectedRetrievalPlan(endpoint(), plan)\n\
+                     return source/generate_answer_for_selected_plan(endpoint(), #web)",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        let mut completed = false;
+        for _ in 0..50 {
+            if driver.drain_events().iter().any(|event| {
+                matches!(
+                    event,
+                    DriverEvent::TaskCompleted { task_id, value }
+                        if *task_id == submitted.task_id
+                            && value
+                                .map_get(&Value::symbol(Symbol::intern("text")))
+                                == Some(Value::string("sync_view_tree is rendered by the source UI."))
+                )
+            }) {
+                completed = true;
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(completed, "generated answer task did not complete");
+
+        let report = driver
+            .submit_root_source_report(
+                "let selected = one source/SelectedGeneratedAnswer(?endpoint, ?answer)\n\
+                 let selected_answer = selected[:answer]\n\
+                 let answer = one Answer(?answer)\n\
+                 if answer == nothing\n\
+                   answer = selected_answer\n\
+                 end\n\
+                 let review = one source/AnswerReviewStatus(answer, ?status)\n\
+                 let answer_status = one AnswerStatus(answer, ?status)\n\
+                 let provider = one source/AnswerProvider(answer, ?provider)\n\
+                 let model = one source/AnswerResolvedModel(answer, ?model)\n\
+                 let answer_text = one AnswerText(answer, ?text)\n\
+                 let context_text = one AnswerContextText(answer, ?text)\n\
+                 let allowed_citation = AnswerCitation(answer, #source/text_symbol_sync_view_tree)\n\
+                 let secret_citation = AnswerCitation(answer, #source/secret_subject)\n\
+                 let finding = one source/FindingAnswer(?finding, answer)\n\
+                 let finding_status = one source/FindingStatus(finding, ?status)\n\
+                 let finding_subject = one source/FindingSubject(finding, ?subject)\n\
+                 let context_has_sync = false\n\
+                 let context_has_no_secret = false\n\
+                 if context_text != nothing\n\
+                   context_has_sync = string_contains(context_text, \"sync_view_tree\")\n\
+                   context_has_no_secret = string_contains(context_text, \"SECRET_UNAUTHORIZED_CONTEXT\") == false\n\
+                 end\n\
+                 let corrected_finding = source/correct_finding(finding, \"corrected finding\")\n\
+                 let corrected_finding_status = one source/FindingStatus(finding, ?status)\n\
+                 let corrected_finding_text = one source/FindingText(finding, ?text)\n\
+                 let accepted = source/accept_finding(finding)\n\
+                 let accepted_status = one source/FindingStatus(finding, ?status)\n\
+                 let accepted_fact = source/AcceptedAgentFinding(finding)\n\
+                 let corrected_answer = source/correct_answer(answer, \"corrected answer\")\n\
+                 let corrected_answer_status = one source/AnswerReviewStatus(answer, ?status)\n\
+                 let corrected_answer_text = one AnswerText(answer, ?text)\n\
+                 let rejected = source/reject_answer(answer)\n\
+                 let rejected_review = one source/AnswerReviewStatus(answer, ?status)\n\
+                 return [selected_answer == answer, review, answer_status, provider, model, answer_text, context_has_sync, context_has_no_secret, allowed_citation, secret_citation == false, finding_status, finding_subject == #source/text_symbol_sync_view_tree, corrected_finding, corrected_finding_status, corrected_finding_text, accepted, accepted_status, accepted_fact, corrected_answer, corrected_answer_status, corrected_answer_text, rejected, rejected_review]".to_owned(),
+            )
+            .await
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected fact inspection to complete, got {:?}", report.outcome);
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::bool(true));
+                assert_eq!(values[1], Value::string("pending"));
+                assert_eq!(values[2], Value::string("generated"));
+                assert_eq!(values[3], Value::string("openrouter"));
+                assert_eq!(
+                    values[4],
+                    Value::string("openrouter/test-model")
+                );
+                assert_eq!(
+                    values[5],
+                    Value::string("sync_view_tree is rendered by the source UI.")
+                );
+                assert_eq!(values[6], Value::bool(true));
+                assert_eq!(values[7], Value::bool(true));
+                assert_eq!(values[8], Value::bool(true));
+                assert_eq!(values[9], Value::bool(true));
+                assert_eq!(values[10], Value::string("pending"));
+                assert_eq!(values[11], Value::bool(true));
+                assert_eq!(values[12], Value::bool(true));
+                assert_eq!(values[13], Value::string("corrected"));
+                assert_eq!(values[14], Value::string("corrected finding"));
+                assert_eq!(values[15], Value::bool(true));
+                assert_eq!(values[16], Value::string("accepted"));
+                assert_eq!(values[17], Value::bool(true));
+                assert_eq!(values[18], Value::bool(true));
+                assert_eq!(values[19], Value::string("corrected"));
+                assert_eq!(values[20], Value::string("corrected answer"));
+                assert_eq!(values[21], Value::bool(true));
+                assert_eq!(values[22], Value::string("rejected"));
+            })
+            .expect("expected generated answer fact tuple");
+    });
+}
+
+#[test]
+fn source_agent_prompt_records_turns_and_grounded_prompt() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("openai"));
+                assert_eq!(
+                    request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("model"))),
+                    Some(Value::string("openrouter/auto"))
+                );
+                let messages = request
+                    .payload
+                    .map_get(&Value::symbol(Symbol::intern("messages")))
+                    .expect("host request should include messages");
+                let prompt = messages
+                    .with_list(|messages| {
+                        messages.iter().find_map(|message| {
+                            let role = message.map_get(&Value::symbol(Symbol::intern("role")))?;
+                            if role != Value::string("user") {
+                                return None;
+                            }
+                            message.map_get(&Value::symbol(Symbol::intern("content")))
+                        })
+                    })
+                    .flatten()
+                    .expect("messages should include user content");
+                assert!(
+                    prompt
+                        .with_str(|prompt| prompt.contains("User request:"))
+                        .unwrap_or(false)
+                );
+                assert!(
+                    prompt
+                        .with_str(|prompt| prompt.contains("Current source focus:"))
+                        .unwrap_or(false)
+                );
+                assert!(
+                    prompt
+                        .with_str(|prompt| prompt.contains("sync_view_tree"))
+                        .unwrap_or(false)
+                );
+                Value::map([
+                    (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("openrouter/test-model"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("choices")),
+                        Value::list([Value::map([(
+                            Value::symbol(Symbol::intern("message")),
+                            Value::map([(
+                                Value::symbol(Symbol::intern("content")),
+                                Value::string("sync_view_tree is the source sync render hook."),
+                            )]),
+                        )])]),
+                    ),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let mut runner = SourceRunner::new_empty();
+        load_source_app(&mut runner);
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let workspace_root = env!("CARGO_MANIFEST_DIR").to_owned();
+        let submitted = driver
+            .submit_source(
+                endpoint(34),
+                root_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {workspace_root:?})\n\
+                     assert source/SelectedPath(endpoint(), \"src/tests.rs\")\n\
+                     return source/run_agent_prompt(endpoint(), #web, \"where is sync_view_tree rendered?\")"
+                )),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        let mut completed = false;
+        for _ in 0..50 {
+            if driver.drain_events().iter().any(|event| {
+                matches!(
+                    event,
+                    DriverEvent::TaskCompleted { task_id, value }
+                        if *task_id == submitted.task_id
+                            && value
+                                .map_get(&Value::symbol(Symbol::intern("text")))
+                                == Some(Value::string("sync_view_tree is the source sync render hook."))
+                )
+            }) {
+                completed = true;
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(completed, "source agent prompt task did not complete");
+
+        let report = driver
+            .submit_root_source_report(
+                "let user = one source/AgentTurnRole(?turn, \"user\")\n\
+                 let assistant = one source/AgentTurnRole(?turn, \"assistant\")\n\
+                 let assistant_text = one source/AgentTurnText(assistant, ?text)\n\
+                 let model = one source/AgentTurnResolvedModel(assistant, ?model)\n\
+                 let plan = one source/AgentTurnPlan(assistant, ?plan)\n\
+                 let context_text = one source/AgentTurnContextText(assistant, ?text)\n\
+                 let prompt = one source/AgentTurnPromptText(assistant, ?text)\n\
+                 return [user != nothing, assistant != nothing, assistant_text, model, plan != nothing, string_contains(context_text, \"Current file:\"), string_contains(prompt, \"Current source focus:\")]".to_owned(),
+            )
+            .await
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!(
+                "expected source agent fact inspection to complete, got {:?}",
+                report.outcome
+            );
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::bool(true));
+                assert_eq!(values[1], Value::bool(true));
+                assert_eq!(
+                    values[2],
+                    Value::string("sync_view_tree is the source sync render hook.")
+                );
+                assert_eq!(values[3], Value::string("openrouter/test-model"));
+                assert_eq!(values[4], Value::bool(true));
+                assert_eq!(values[5], Value::bool(true));
+                assert_eq!(values[6], Value::bool(true));
+            })
+            .expect("expected source agent facts tuple");
+
+        let revision = driver
+            .submit_source(endpoint(34), root_source("return source/view_revision()"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            revision.outcome,
+            TaskOutcome::Complete { value, .. } if value.as_int().is_some_and(|revision| revision > 1)
+        ));
+    });
+}
+
+#[test]
 fn root_startup_source_can_resume_vllm_embed_text() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
@@ -302,6 +669,42 @@ fn external_request_requires_effect_authority() {
             .await
             .unwrap_err();
         assert!(driver.format_error(&denied).contains("permission denied"));
+    });
+}
+
+#[test]
+fn log_requires_effect_authority() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let driver = CompioTaskDriver::spawn_empty().unwrap();
+        let request = TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: endpoint(33),
+            authority: AuthorityContext::empty(),
+            input: TaskInput::Source("return log(:info, \"hello\")".to_owned()),
+        };
+
+        let denied = driver
+            .submit_source(endpoint(33), request)
+            .await
+            .unwrap_err();
+        assert!(driver.format_error(&denied).contains("permission denied"));
+    });
+}
+
+#[test]
+fn log_returns_nothing_with_effect_authority() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let driver = CompioTaskDriver::spawn_empty().unwrap();
+        let submitted = driver
+            .submit_source(endpoint(34), root_source("return log(:debug, \"hello\")"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::nothing()
+        ));
     });
 }
 

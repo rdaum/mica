@@ -5,6 +5,7 @@ const SPLITTER_STORAGE = {
   "--source-inspector-width": "mica.source.inspectorWidth",
   "--source-symbol-height": "mica.source.symbolHeight",
   "--source-outline-height": "mica.source.outlineHeight",
+  "--source-agent-height": "mica.source.agentHeight",
 };
 
 function clamp(value, min, max) {
@@ -14,6 +15,11 @@ function clamp(value, min, max) {
 function setStoredLayoutValue(name, value) {
   document.documentElement.style.setProperty(name, value);
   localStorage.setItem(SPLITTER_STORAGE[name], value);
+}
+
+function expandAgentPanel() {
+  const height = clamp(window.innerHeight * 0.48, 340, 680);
+  setStoredLayoutValue("--source-agent-height", `${Math.round(height)}px`);
 }
 
 function restoreStoredLayout() {
@@ -37,6 +43,9 @@ function splitterKind(splitter) {
   }
   if (splitter.classList.contains("source-splitter-outline-annotations")) {
     return "outline-annotations";
+  }
+  if (splitter.classList.contains("source-splitter-agent")) {
+    return "agent";
   }
   return null;
 }
@@ -77,6 +86,15 @@ function dragValue(kind, splitter, event) {
     }
     const height = clamp(event.clientY - rect.top, 90, Math.min(560, rect.height - 120));
     return ["--source-outline-height", `${Math.round(height)}px`];
+  }
+  if (kind === "agent") {
+    const panel = splitter.closest(".source-code-panel-body");
+    const rect = panel?.getBoundingClientRect();
+    if (!rect) {
+      return null;
+    }
+    const height = clamp(rect.bottom - event.clientY, 170, Math.min(680, rect.height - 260));
+    return ["--source-agent-height", `${Math.round(height)}px`];
   }
   return null;
 }
@@ -366,6 +384,9 @@ function installSourceViewport() {
     if (action === "source_set_window") {
       sourceWindowInFlight = true;
       setSourceWindowLoading(mount.querySelector(".source-code-frame"), true);
+    } else if (action === "source_agent_prompt") {
+      expandAgentPanel();
+      document.body.classList.add("source-agent-working");
     } else if (
       action === "source_open_file" ||
       action === "source_jump_to_line" ||
@@ -379,6 +400,9 @@ function installSourceViewport() {
     syncBusy = false;
     if (event.detail?.action === "source_set_window") {
       sourceWindowInFlight = false;
+    } else if (event.detail?.action === "source_agent_prompt") {
+      expandAgentPanel();
+      document.body.classList.remove("source-agent-working");
     }
     window.setTimeout(() => {
       flushQueuedWindow();
