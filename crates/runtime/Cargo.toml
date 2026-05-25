@@ -15,4 +15,5 @@ mica-source-provider.workspace = true
 mica-var.workspace = true
 mica-vm.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 xml.workspace = true

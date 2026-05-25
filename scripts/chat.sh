@@ -38,6 +38,7 @@ key_path="${MICA_WT_KEY:-/tmp/mica-wt-key.pem}"
 page="${MICA_WT_PAGE:-chat}"
 poll_ms="${MICA_WT_POLL_MS:-1000}"
 embedding_provider="${MICA_WT_EMBEDDING_PROVIDER:-deterministic}"
+log_filter="${MICA_WT_LOG_FILTER:-info}"
 
 daemon_pid=""
 
@@ -90,7 +91,8 @@ cargo run ${MICA_WT_BUILD_FLAGS:-} --bin mica-daemon -- \
   --web-bind "${http_host}:${http_port}" \
   --webtransport-bind "${wt_bind}" \
   --webtransport-cert "${cert_path}" \
-  --webtransport-key "${key_path}" &
+  --webtransport-key "${key_path}" \
+  --log-filter "${log_filter}" &
 daemon_pid=$!
 
 encoded_url="${wt_url//:/%3A}"
@@ -113,6 +115,7 @@ Manual values:
   SSE sync base: http://${public_host}:${http_port}/sync
   URL: ${wt_url}
   Certificate SHA-256: ${cert_hash}
+  Log filter: ${log_filter}
 
 Press Ctrl-C to stop the daemon.
 EOF

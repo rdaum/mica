@@ -62,14 +62,14 @@ pub async fn serve_in_process(
                 Ok(connection) => {
                     crate::metrics::metrics().connections_accepted.inc();
                     if let Err(error) = handle_quic_connection(connection, host, binding).await {
-                        eprintln!("WebTransport connection failed: {error}");
+                        tracing::warn!(error = %error, "WebTransport connection failed");
                     }
                 }
                 Err(error) => {
                     crate::metrics::metrics()
                         .connection_errors
                         .inc(ConnectionErrorKind::Handshake);
-                    eprintln!("WebTransport handshake failed: {error}");
+                    tracing::warn!(error = %error, "WebTransport handshake failed");
                 }
             }
         })
@@ -244,7 +244,10 @@ async fn read_uni_stream_loop(
             .incoming_uni_stream_bytes
             .add(payload.len() as isize);
         if let Err(error) = route_incoming_datagram(&host, endpoint, payload).await {
-            eprintln!("failed to route WebTransport stream payload: {error}");
+            tracing::warn!(
+                error = %error,
+                "failed to route WebTransport stream payload"
+            );
         }
     }
 }

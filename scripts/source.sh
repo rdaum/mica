@@ -32,6 +32,12 @@ prewarm_retrieval_index="${MICA_SOURCE_PREWARM_RETRIEVAL_INDEX:-1}"
 export MICA_SOURCE_ROOT="${MICA_SOURCE_ROOT:-${repo_root}}"
 export MICA_SOURCE_INDEX="${MICA_SOURCE_INDEX:-${repo_root}/.cache/source-index/mica-worktree.json}"
 
+if [[ "${MICA_SOURCE_TRACE:-}" == "1" ]]; then
+  log_filter="${MICA_SOURCE_LOG_FILTER:-info,mica_driver=debug,mica_runtime::task=trace,mica_vm::host=trace,mica_web_host::sync=trace,mica_webtransport_host::sync=trace}"
+else
+  log_filter="${MICA_SOURCE_LOG_FILTER:-info}"
+fi
+
 daemon_pid=""
 
 cleanup() {
@@ -53,13 +59,6 @@ require_command() {
 require_command cargo
 require_command openssl
 require_command xxd
-
-if [[ "${MICA_SOURCE_TRACE:-}" == "1" ]]; then
-  export MICA_WT_TRACE_SYNC=1
-  export MICA_DRIVER_TRACE=1
-  export MICA_TASK_TRACE=1
-  export MICA_VM_HOST_TRACE=1
-fi
 
 if [[ ! -f "${cert_path}" || ! -f "${key_path}" ]]; then
   openssl ecparam -name prime256v1 -genkey -noout -out "${key_path}"
@@ -101,7 +100,12 @@ daemon_args=(
   --webtransport-bind "${wt_bind}"
   --webtransport-cert "${cert_path}"
   --webtransport-key "${key_path}"
+  --log-filter "${log_filter}"
 )
+
+if [[ "${MICA_SOURCE_NO_LOG_ANSI:-}" == "1" ]]; then
+  daemon_args+=(--no-log-ansi)
+fi
 
 if [[ "${prewarm_retrieval_index}" != "0" ]]; then
   daemon_args+=(
@@ -144,6 +148,7 @@ Manual values:
   Retrieval prewarm: ${prewarm_retrieval_index}
   DogStatsD endpoint: ${dogstatsd_endpoint:-disabled}
   DogStatsD interval: ${dogstatsd_interval_secs}s
+  Log filter: ${log_filter}
 
 Press Ctrl-C to stop the daemon.
 EOF

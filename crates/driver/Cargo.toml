@@ -12,3 +12,4 @@ fast-telemetry.workspace = true
 mica-compiler.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true
+tracing.workspace = true

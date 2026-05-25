@@ -60,6 +60,9 @@ rustls-pemfile = "2.2"
 rustls-pki-types = "1.13"
 serde_json = "1.0"
 tokio = "1.49"
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-javascript = "0.25"
 tree-sitter-md = { version = "0.5", features = ["parser"] }

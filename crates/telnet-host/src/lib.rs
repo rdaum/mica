@@ -193,7 +193,7 @@ pub async fn serve_in_process(
         let actor = actor.clone();
         compio::runtime::spawn(async move {
             if let Err(error) = handle_connection(stream, host, actor).await {
-                eprintln!("connection failed: {error}");
+                tracing::warn!(error = %error, "telnet connection failed");
             }
         })
         .detach();
@@ -222,7 +222,7 @@ pub async fn serve_zmq_telnet(
         let actor_name = actor_name.clone();
         compio::runtime::spawn(async move {
             if let Err(error) = handle_zmq_connection(stream, host, actor_name).await {
-                eprintln!("connection failed: {error}");
+                tracing::warn!(error = %error, "ZMQ telnet connection failed");
             }
         })
         .detach();

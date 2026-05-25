@@ -526,13 +526,14 @@ impl VmHostTrace {
         if elapsed < self.detail_threshold {
             return;
         }
-        eprintln!(
-            "vm-host-trace-detail op={} relation={:?} bound={} rows={} +{:?}",
+        tracing::trace!(
+            target: "mica_vm::host",
             op,
-            relation,
-            bindings.iter().filter(|binding| binding.is_some()).count(),
+            relation = ?relation,
+            bound = bindings.iter().filter(|binding| binding.is_some()).count(),
             rows,
-            elapsed
+            elapsed_us = elapsed.as_micros(),
+            "VM host relation operation"
         );
     }
 
@@ -557,9 +558,14 @@ impl VmHostTrace {
         if elapsed < self.detail_threshold {
             return;
         }
-        eprintln!(
-            "vm-host-trace-detail op={} selector={} roles={} calls={} +{:?}",
-            op, selector, roles, calls, elapsed
+        tracing::trace!(
+            target: "mica_vm::host",
+            op,
+            selector = %selector,
+            roles,
+            calls,
+            elapsed_us = elapsed.as_micros(),
+            "VM host dispatch operation"
         );
     }
 
@@ -583,9 +589,14 @@ impl VmHostTrace {
         if elapsed < self.detail_threshold {
             return;
         }
-        eprintln!(
-            "vm-host-trace-detail op=method_program relation={:?} method={} found={} +{:?}",
-            relation, method, found, elapsed
+        tracing::trace!(
+            target: "mica_vm::host",
+            op = "method_program",
+            relation = ?relation,
+            method = %method,
+            found,
+            elapsed_us = elapsed.as_micros(),
+            "VM host method program lookup"
         );
     }
 
@@ -601,28 +612,28 @@ impl VmHostTrace {
         {
             return;
         }
-        eprintln!(
-            "vm-host-trace task={} scans={} rows={} time={:?} visits={} rows={} time={:?} dispatches={} calls={} time={:?} method_programs={} hits={} time={:?}",
+        tracing::trace!(
+            target: "mica_vm::host",
             task_id,
-            stats.scan_count,
-            stats.scan_rows,
-            stats.scan_time,
-            stats.visit_count,
-            stats.visit_rows,
-            stats.visit_time,
-            stats.dispatch_count,
-            stats.dispatch_calls,
-            stats.dispatch_time,
-            stats.method_program_count,
-            stats.method_program_hits,
-            stats.method_program_time
+            scans = stats.scan_count,
+            scan_rows = stats.scan_rows,
+            scan_time_us = stats.scan_time.as_micros(),
+            visits = stats.visit_count,
+            visit_rows = stats.visit_rows,
+            visit_time_us = stats.visit_time.as_micros(),
+            dispatches = stats.dispatch_count,
+            dispatch_calls = stats.dispatch_calls,
+            dispatch_time_us = stats.dispatch_time.as_micros(),
+            method_programs = stats.method_program_count,
+            method_program_hits = stats.method_program_hits,
+            method_program_time_us = stats.method_program_time.as_micros(),
+            "VM host trace summary"
         );
     }
 }
 
 fn vm_host_trace_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("MICA_VM_HOST_TRACE").is_some())
+    tracing::enabled!(target: "mica_vm::host", tracing::Level::TRACE)
 }
 
 fn vm_host_trace_detail_threshold() -> Duration {

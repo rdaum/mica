@@ -57,16 +57,29 @@ async fn handle_external_request(request: ExternalRequest, config: &ExternalHttp
         .external_request_duration
         .record_elapsed(service, elapsed);
     match result {
-        Ok(value) => value,
+        Ok(value) => {
+            tracing::debug!(
+                service = ?service,
+                elapsed_us = elapsed.as_micros(),
+                "external request completed"
+            );
+            value
+        }
         Err(message) => {
             metrics::metrics().external_request_errors.inc(service);
+            tracing::warn!(
+                service = ?service,
+                elapsed_us = elapsed.as_micros(),
+                error = %message,
+                "external request failed"
+            );
             external_error(message)
         }
     }
 }
 
 fn external_service_label(service: Symbol) -> ExternalService {
-    match service.name().as_deref() {
+    match service.name() {
         Some("http") => ExternalService::Http,
         Some("openai") => ExternalService::Openai,
         Some("embedding") => ExternalService::Embedding,
@@ -78,7 +91,7 @@ async fn perform_external_request(
     request: ExternalRequest,
     config: &ExternalHttpConfig,
 ) -> Result<Value, String> {
-    match request.service.name().as_deref() {
+    match request.service.name() {
         Some("http") => {
             let spec = HttpRequestSpec::from_http_payload(&request.payload)?;
             perform_http_request(spec).await

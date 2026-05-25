@@ -23,6 +23,9 @@ mica-var.workspace = true
 mica-web-host.workspace = true
 mica-webtransport-host.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
+tracing-log.workspace = true
+tracing-subscriber.workspace = true
 zmq.workspace = true
 
 [[bin]]

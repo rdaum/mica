@@ -19,7 +19,7 @@ use mica_vm::{
     ProgramResolver, RegisterVm, RuntimeContext, RuntimeError, RuntimePorts, SuspendKind,
     VmHostContext, VmHostResponse, VmState,
 };
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 pub type TaskId = u64;
@@ -257,7 +257,6 @@ impl<'a> Task<'a> {
         mut transient: Option<&mut TransientStore>,
         transient_scopes: &[Identity],
     ) -> Result<TaskOutcome, TaskError> {
-        let trace = task_trace_enabled();
         loop {
             let vm_start = Instant::now();
             let response = {
@@ -289,24 +288,20 @@ impl<'a> Task<'a> {
                 host.emit_trace_summary(self.task_id);
                 response
             };
-            if trace {
-                eprintln!(
-                    "task-trace task={} vm response={} +{:?}",
-                    self.task_id,
-                    host_response_label(&response),
-                    vm_start.elapsed()
-                );
-            }
+            tracing::trace!(
+                task_id = self.task_id,
+                response = host_response_label(&response),
+                elapsed_us = vm_start.elapsed().as_micros(),
+                "task VM step completed"
+            );
 
             let response_start = Instant::now();
             let outcome = self.outcome_from_host_response(response)?;
-            if trace {
-                eprintln!(
-                    "task-trace task={} host_response +{:?}",
-                    self.task_id,
-                    response_start.elapsed()
-                );
-            }
+            tracing::trace!(
+                task_id = self.task_id,
+                elapsed_us = response_start.elapsed().as_micros(),
+                "task host response processed"
+            );
             if let Some(outcome) = outcome {
                 return Ok(outcome);
             }
@@ -413,7 +408,6 @@ impl<'a> Task<'a> {
     }
 
     fn commit_boundary(&mut self) -> Result<BoundaryResult, TaskError> {
-        let trace = task_trace_enabled();
         let start = Instant::now();
         let tx = self.tx.take().ok_or(TaskError::MissingTransaction)?;
         if tx.is_read_only() {
@@ -422,13 +416,13 @@ impl<'a> Task<'a> {
                 .append(&mut self.pending_mailbox_sends);
             self.retry_state = self.vm.snapshot_state();
             self.tx = Some(self.kernel.begin());
-            if trace {
-                eprintln!(
-                    "task-trace task={} commit read_only=true result=Committed +{:?}",
-                    self.task_id,
-                    start.elapsed()
-                );
-            }
+            tracing::trace!(
+                task_id = self.task_id,
+                read_only = true,
+                result = "committed",
+                elapsed_us = start.elapsed().as_micros(),
+                "task commit boundary"
+            );
             return Ok(BoundaryResult::Committed);
         }
         match tx.commit() {
@@ -438,25 +432,25 @@ impl<'a> Task<'a> {
                     .append(&mut self.pending_mailbox_sends);
                 self.retry_state = self.vm.snapshot_state();
                 self.tx = Some(self.kernel.begin());
-                if trace {
-                    eprintln!(
-                        "task-trace task={} commit read_only=false result=Committed +{:?}",
-                        self.task_id,
-                        start.elapsed()
-                    );
-                }
+                tracing::trace!(
+                    task_id = self.task_id,
+                    read_only = false,
+                    result = "committed",
+                    elapsed_us = start.elapsed().as_micros(),
+                    "task commit boundary"
+                );
                 Ok(BoundaryResult::Committed)
             }
             Err(error) if is_retryable_conflict(&error) => {
                 self.tx = Some(self.kernel.begin());
                 self.retry_from_boundary()?;
-                if trace {
-                    eprintln!(
-                        "task-trace task={} commit read_only=false result=Retried +{:?}",
-                        self.task_id,
-                        start.elapsed()
-                    );
-                }
+                tracing::debug!(
+                    task_id = self.task_id,
+                    read_only = false,
+                    result = "retried",
+                    elapsed_us = start.elapsed().as_micros(),
+                    "task commit conflict retried"
+                );
                 Ok(BoundaryResult::Retried)
             }
             Err(error) => {
@@ -507,11 +501,6 @@ impl TaskState {
 enum BoundaryResult {
     Committed,
     Retried,
-}
-
-fn task_trace_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("MICA_TASK_TRACE").is_some())
 }
 
 fn host_response_label(response: &VmHostResponse) -> &'static str {

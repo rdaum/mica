@@ -116,9 +116,11 @@ async fn route_dom_event(
     trace.mark("sync_event");
     match submitted.outcome {
         TaskOutcome::Complete { value, .. } => {
-            if std::env::var_os("MICA_WT_TRACE_SYNC").is_some() {
-                eprintln!("sync-trace dom_event sync_event_value {value}");
-            }
+            tracing::trace!(
+                target: "mica_webtransport_host::sync",
+                value = %value,
+                "sync event completed"
+            );
         }
         TaskOutcome::Suspended { .. } => {}
         TaskOutcome::Aborted { error, .. } => {
@@ -370,7 +372,10 @@ impl SyncTrace {
     pub(crate) fn new(label: &'static str) -> Self {
         let now = Instant::now();
         Self {
-            enabled: std::env::var_os("MICA_WT_TRACE_SYNC").is_some(),
+            enabled: tracing::enabled!(
+                target: "mica_webtransport_host::sync",
+                tracing::Level::TRACE
+            ),
             label,
             start: now,
             last: Mutex::new(now),
@@ -383,12 +388,13 @@ impl SyncTrace {
         }
         let now = Instant::now();
         let mut last = self.last.lock().unwrap();
-        eprintln!(
-            "sync-trace {} {} +{:?} total {:?}",
-            self.label,
+        tracing::trace!(
+            target: "mica_webtransport_host::sync",
+            label = self.label,
             phase,
-            now.duration_since(*last),
-            now.duration_since(self.start)
+            elapsed_us = now.duration_since(*last).as_micros(),
+            total_us = now.duration_since(self.start).as_micros(),
+            "WebTransport sync phase completed"
         );
         *last = now;
     }
@@ -600,7 +606,10 @@ pub(crate) fn start_event_pump(
             if refresh_views
                 && let Err(error) = refresh_active_sync_views_for(&driver, &sessions).await
             {
-                eprintln!("failed to refresh active WebTransport sync views: {error}");
+                tracing::warn!(
+                    error = %error,
+                    "failed to refresh active WebTransport sync views"
+                );
             }
         }
     })

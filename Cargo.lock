@@ -1829,6 +1829,9 @@ dependencies = [
  "mica-web-host",
  "mica-webtransport-host",
  "serde_json",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "zmq",
 ]
 
@@ -1841,6 +1844,7 @@ dependencies = [
  "mica-compiler",
  "mica-runtime",
  "mica-var",
+ "tracing",
 ]
 
 [[package]]
@@ -1924,6 +1928,7 @@ dependencies = [
  "mica-var",
  "mica-vm",
  "serde_json",
+ "tracing",
  "xml",
 ]
 
@@ -1952,6 +1957,9 @@ dependencies = [
  "mica-host-zmq",
  "mica-runtime",
  "mica-var",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "zmq",
 ]
 
@@ -1970,6 +1978,7 @@ dependencies = [
  "arc-swap",
  "mica-relation-kernel",
  "mica-var",
+ "tracing",
 ]
 
 [[package]]
@@ -1985,6 +1994,9 @@ dependencies = [
  "mica-runtime",
  "mica-var",
  "serde_json",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2006,6 +2018,7 @@ dependencies = [
  "rustls-pki-types",
  "serde_json",
  "tokio",
+ "tracing",
  "wtransport",
 ]
 

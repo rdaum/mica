@@ -28,7 +28,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
@@ -273,7 +273,6 @@ impl CompioTaskDriver {
         selector: Symbol,
         roles: Vec<(Symbol, Value)>,
     ) -> Result<SubmittedTask, DriverError> {
-        let trace = driver_trace_enabled();
         let trace_selector = selector;
         let dispatch_start = Instant::now();
         let runner = Arc::clone(&self.inner.runner);
@@ -285,24 +284,20 @@ impl CompioTaskDriver {
                 Ok((context, submitted))
             })
             .await?;
-        if trace {
-            eprintln!(
-                "driver-trace invocation selector={} task={} dispatch +{:?}",
-                trace_selector.name().unwrap_or("<unnamed>"),
-                submitted.task_id,
-                dispatch_start.elapsed()
-            );
-        }
+        tracing::debug!(
+            selector = trace_selector.name().unwrap_or("<unnamed>"),
+            task_id = submitted.task_id,
+            elapsed_us = dispatch_start.elapsed().as_micros(),
+            "driver invocation dispatched"
+        );
         let handle_start = Instant::now();
         self.handle_submitted(context, submitted.clone()).await?;
-        if trace {
-            eprintln!(
-                "driver-trace invocation selector={} task={} handle_submitted +{:?}",
-                trace_selector.name().unwrap_or("<unnamed>"),
-                submitted.task_id,
-                handle_start.elapsed()
-            );
-        }
+        tracing::debug!(
+            selector = trace_selector.name().unwrap_or("<unnamed>"),
+            task_id = submitted.task_id,
+            elapsed_us = handle_start.elapsed().as_micros(),
+            "driver invocation outcome processed"
+        );
         Ok(submitted)
     }
 
@@ -923,6 +918,7 @@ impl CompioTaskDriver {
                     Some("external request timed out"),
                     None,
                 );
+                tracing::warn!(task_id, "external request timed out");
                 let mut outcome = WorkerOutcome::Timeout;
                 if let Err(error) = timeout_driver.resume(task_id, value).await {
                     timeout_driver.record_task_failure(task_id, error);
@@ -941,11 +937,14 @@ impl CompioTaskDriver {
             let start = Instant::now();
             let value = match handler {
                 Some(handler) => handler(request).await,
-                None => Value::error(
-                    Symbol::intern("ExternalUnavailable"),
-                    Some("no external request handler is configured"),
-                    None,
-                ),
+                None => {
+                    tracing::warn!(task_id, "external request has no configured handler");
+                    Value::error(
+                        Symbol::intern("ExternalUnavailable"),
+                        Some("no external request handler is configured"),
+                        None,
+                    )
+                }
             };
             if completed
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -973,6 +972,7 @@ impl CompioTaskDriver {
     }
 
     fn record_task_failure(&self, task_id: TaskId, error: DriverError) {
+        tracing::error!(task_id, error = %error, "driver task failed");
         let event_waker = {
             let mut state = self.inner.state.lock().unwrap();
             state.events.push(DriverEvent::TaskFailed {
@@ -1038,11 +1038,6 @@ impl PoolState {
             .sum::<usize>();
         metrics::record_waiting_state(input_waiters, mailbox_waiters, self.events.len());
     }
-}
-
-fn driver_trace_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("MICA_DRIVER_TRACE").is_some())
 }
 
 fn runtime_driver_error(error: RuntimeError) -> DriverError {

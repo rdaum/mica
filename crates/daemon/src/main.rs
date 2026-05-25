@@ -27,14 +27,15 @@ use mica_webtransport_host::{
     InProcessWebTransportHost, SessionBinding, WebTransportTlsConfig,
     bind_server_endpoint as bind_webtransport, serve_in_process as serve_webtransport,
 };
+use std::env;
 use std::fs;
 use std::future;
-use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+use tracing_subscriber::EnvFilter;
 
 mod external_http;
 mod metrics;
@@ -77,6 +78,10 @@ struct Cli {
     dogstatsd_endpoint: Option<String>,
     #[arg(long, default_value_t = 10, value_name = "SECONDS")]
     dogstatsd_interval_secs: u64,
+    #[arg(long, value_name = "FILTER")]
+    log_filter: Option<String>,
+    #[arg(long)]
+    no_log_ansi: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,7 +105,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{error}");
+            tracing::error!(error = %error, "mica-daemon stopped");
             ExitCode::FAILURE
         }
     }
@@ -108,9 +113,24 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
+    init_tracing(&cli);
     Runtime::new()
         .map_err(|error| format!("failed to start compio runtime: {error}"))?
         .block_on(run_async(cli))
+}
+
+fn init_tracing(cli: &Cli) {
+    let filter = cli
+        .log_filter
+        .clone()
+        .or_else(|| env::var("MICA_LOG_FILTER").ok())
+        .unwrap_or_else(|| "info".to_owned());
+    let filter = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_log::LogTracer::init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(!cli.no_log_ansi)
+        .try_init();
 }
 
 async fn run_async(cli: Cli) -> Result<(), String> {
@@ -214,17 +234,15 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         let listener = TcpListener::bind(web_bind)
             .await
             .map_err(|error| format!("failed to bind web listener {web_bind}: {error}"))?;
-        println!(
-            "mica-daemon web listening on {}",
-            listener.local_addr().unwrap()
-        );
+        let local_addr = listener.local_addr().unwrap();
+        tracing::info!(bind = %web_bind, local_addr = %local_addr, "web listener started");
         metrics::metrics()
             .endpoints_started
             .inc(metrics::DaemonEndpoint::Web);
         let host = InProcessWebHost::new(driver.clone());
         compio::runtime::spawn(async move {
             if let Err(error) = serve_web(listener, host, binding, None).await {
-                eprintln!("web host failed: {error}");
+                tracing::error!(error = %error, "web host stopped");
             }
         })
         .detach();
@@ -234,9 +252,11 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             .expect("WebTransport principal should be resolved before driver spawn");
         let tls = webtransport_tls.expect("WebTransport TLS should be loaded before driver spawn");
         let endpoint = bind_webtransport(webtransport_bind, tls).await?;
-        println!(
-            "mica-daemon WebTransport listening on {}",
-            endpoint.local_addr().unwrap()
+        let local_addr = endpoint.local_addr().unwrap();
+        tracing::info!(
+            bind = %webtransport_bind,
+            local_addr = %local_addr,
+            "WebTransport listener started"
         );
         metrics::metrics()
             .endpoints_started
@@ -245,7 +265,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         if cli.telnet_bind.is_some() {
             compio::runtime::spawn(async move {
                 if let Err(error) = serve_webtransport(endpoint, host, binding, None).await {
-                    eprintln!("WebTransport host failed: {error}");
+                    tracing::error!(error = %error, "WebTransport host stopped");
                 }
             })
             .detach();
@@ -258,9 +278,11 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         let listener = TcpListener::bind(telnet_bind)
             .await
             .map_err(|error| format!("failed to bind telnet listener {telnet_bind}: {error}"))?;
-        println!(
-            "mica-daemon telnet listening on {}",
-            listener.local_addr().unwrap()
+        let local_addr = listener.local_addr().unwrap();
+        tracing::info!(
+            bind = %telnet_bind,
+            local_addr = %local_addr,
+            "telnet listener started"
         );
         metrics::metrics()
             .endpoints_started
@@ -280,7 +302,7 @@ fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), St
         ZmqSocketOptions::default(),
     )
     .map_err(|error| format!("failed to bind RPC socket {endpoint}: {error}"))?;
-    println!("mica-daemon RPC listening on {endpoint}");
+    tracing::info!(endpoint = %endpoint, "RPC listener started");
     metrics::metrics()
         .endpoints_started
         .inc(metrics::DaemonEndpoint::Rpc);
@@ -288,7 +310,7 @@ fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), St
         let _context = context;
         let mut handler = rpc::RpcHandler::new(driver);
         if let Err(error) = rpc::serve_zmq_rpc_forever(&socket, &mut handler).await {
-            eprintln!("RPC server failed: {error}");
+            tracing::error!(error = %error, "RPC server stopped");
         }
     })
     .detach();
@@ -366,18 +388,19 @@ fn actor_name(actor: &str) -> Result<String, String> {
 }
 
 fn log_startup_source_begin(source: &str) {
-    println!(
-        "mica-daemon startup: {}...",
-        startup_source_description(source)
+    tracing::info!(
+        source = %source,
+        description = startup_source_description(source),
+        "startup source started"
     );
-    let _ = io::stdout().flush();
 }
 
 fn log_startup_source_end(source: &str, rendered_report: &str) {
-    println!(
-        "mica-daemon startup: {} complete: {}",
-        startup_source_description(source),
-        rendered_report
+    tracing::info!(
+        source = %source,
+        description = startup_source_description(source),
+        report = %rendered_report,
+        "startup source completed"
     );
 }
 

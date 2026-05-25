@@ -4,15 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ "${MICA_MUD_SMOKE_TRACE:-}" == "1" ]]; then
-  export MICA_WT_TRACE_SYNC=1
-  export MICA_DRIVER_TRACE=1
-  export MICA_TASK_TRACE=1
-  export MICA_VM_HOST_TRACE=1
-else
-  unset MICA_WT_TRACE_SYNC
-  unset MICA_DRIVER_TRACE
-  unset MICA_TASK_TRACE
-  unset MICA_VM_HOST_TRACE
+  export MICA_WT_LOG_FILTER="${MICA_WT_LOG_FILTER:-info,mica_driver=debug,mica_runtime::task=trace,mica_vm::host=trace,mica_web_host::sync=trace,mica_webtransport_host::sync=trace}"
 fi
 export MICA_WT_BUILD_FLAGS="--release"
 export MICA_WT_PAGE="${MICA_WT_PAGE:-mud}"

@@ -142,6 +142,6 @@ mod tests {
         let functions = host_request_functions(EmbeddingProviderKind::Vllm);
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].0, "embed_text");
-        assert_eq!(functions[0].1.service.name().as_deref(), Some("embedding"));
+        assert_eq!(functions[0].1.service.name(), Some("embedding"));
     }
 }

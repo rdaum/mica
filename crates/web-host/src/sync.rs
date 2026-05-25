@@ -849,7 +849,7 @@ fn start_event_pump(
             if refresh_views
                 && let Err(error) = refresh_active_sync_views_for(&driver, &sessions).await
             {
-                eprintln!("failed to refresh active HTTP sync views: {error}");
+                tracing::warn!(error = %error, "failed to refresh active HTTP sync views");
             }
         }
     })
@@ -938,7 +938,7 @@ impl SyncTrace {
     fn new(label: &'static str) -> Self {
         let now = Instant::now();
         Self {
-            enabled: std::env::var_os("MICA_WT_TRACE_SYNC").is_some(),
+            enabled: tracing::enabled!(target: "mica_web_host::sync", tracing::Level::TRACE),
             label,
             start: now,
             last: Mutex::new(now),
@@ -951,12 +951,13 @@ impl SyncTrace {
         }
         let now = Instant::now();
         let mut last = self.last.lock().unwrap();
-        eprintln!(
-            "sync-trace {} {} +{:?} total {:?}",
-            self.label,
+        tracing::trace!(
+            target: "mica_web_host::sync",
+            label = self.label,
             phase,
-            now.duration_since(*last),
-            now.duration_since(self.start)
+            elapsed_us = now.duration_since(*last).as_micros(),
+            total_us = now.duration_since(self.start).as_micros(),
+            "HTTP sync phase completed"
         );
         *last = now;
     }
@@ -998,7 +999,7 @@ mod tests {
                 addr_tx.send(addr).unwrap();
                 compio::runtime::spawn(async move {
                     if let Err(error) = serve_in_process(listener, host, binding, None).await {
-                        eprintln!("test web host failed: {error}");
+                        tracing::warn!(error = %error, "test web host stopped");
                     }
                 })
                 .detach();
@@ -1036,7 +1037,7 @@ mod tests {
                 addr_tx.send(addr).unwrap();
                 compio::runtime::spawn(async move {
                     if let Err(error) = serve_in_process(listener, host, binding, None).await {
-                        eprintln!("test web host failed: {error}");
+                        tracing::warn!(error = %error, "test web host stopped");
                     }
                 })
                 .detach();

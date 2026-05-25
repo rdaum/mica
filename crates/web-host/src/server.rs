@@ -32,7 +32,7 @@ pub async fn serve(listener: TcpListener, max_connections: Option<usize>) -> Res
         connection_started();
         compio::runtime::spawn(async move {
             if let Err(error) = handle_connection(stream).await {
-                eprintln!("HTTP connection failed: {error}");
+                tracing::warn!(error = %error, "HTTP connection failed");
             }
             connection_ended();
         })
@@ -63,7 +63,7 @@ pub async fn serve_in_process(
         let binding = binding.clone();
         compio::runtime::spawn(async move {
             if let Err(error) = handle_in_process_connection(stream, host, binding).await {
-                eprintln!("HTTP connection failed: {error}");
+                tracing::warn!(error = %error, "HTTP connection failed");
             }
             connection_ended();
         })
