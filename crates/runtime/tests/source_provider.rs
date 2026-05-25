@@ -31,6 +31,7 @@ mod tests {
                  make_relation(:source/DefinitionAt, 13)\n\
                  make_relation(:source/ReferencesOf, 10)\n\
                  make_relation(:source/SymbolSearch, 11)\n\
+                 make_relation(:source/IndexedTextUnit, 9)\n\
                  make_relation(:source/SourceIndex, 1)\n\
                  make_relation(:source/IndexRepository, 2)\n\
                  make_relation(:source/IndexRevision, 2)\n\
@@ -487,7 +488,7 @@ mod tests {
                     "let symbol = {symbol:?}\n\
                      let count = 0\n\
                      for reference in source/ReferencesOf(#repo, #rev, symbol, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)\n\
-                       if reference[:name] == \"LocalSourceProvider\" && reference[:provider] == \"mica-source-index/static-analysis 2\"\n\
+                       if reference[:name] == \"LocalSourceProvider\" && reference[:provider] == \"mica-source-index/static-analysis 4\"\n\
                          count = count + 1\n\
                        end\n\
                      end\n\
@@ -515,6 +516,117 @@ mod tests {
             ));
         });
         let _ = fs::remove_file(index_path);
+    }
+
+    #[test]
+    fn persistent_source_index_exposes_chunked_text_units() {
+        let root_path = env::current_dir().unwrap().join("target").join(format!(
+            "source-index-text-unit-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(root_path.join("src")).unwrap();
+        fs::write(
+            root_path.join("src/lib.rs"),
+            "pub fn actual_corpus_search_target() {\n    let phrase = \"actual corpus retrieval phrase\";\n}\n",
+        )
+        .unwrap();
+
+        let index_path = temp_index_path("text-unit");
+        build_source_index_file(&root_path, &index_path).unwrap();
+        with_source_index_and_root_env(
+            &index_path,
+            &root_path,
+            Some(Path::new("/bin/false")),
+            || {
+                let mut runner = SourceRunner::new_empty();
+                load_source_relations_at(&mut runner, &root_path.display().to_string());
+                let report = runner
+                    .run_source(
+                        "for unit in source/IndexedTextUnit(?unit, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)\n\
+                           if unit[:path] == \"src/lib.rs\"\n\
+                             return [unit[:kind], unit[:title], unit[:start_line], unit[:end_line], unit[:model], string_contains(unit[:text], \"actual corpus retrieval phrase\")]\n\
+                           end\n\
+                         end\n\
+                         return nothing",
+                    )
+                    .unwrap();
+                let TaskOutcome::Complete { value, .. } = report.outcome else {
+                    panic!("expected complete outcome, got {:?}", report.outcome);
+                };
+                value
+                    .with_list(|values| {
+                        assert_eq!(values[0], Value::string("rust"));
+                        assert_eq!(values[1], Value::string("src/lib.rs:1-3"));
+                        assert_eq!(values[2].as_int(), Some(1));
+                        assert_eq!(values[3].as_int(), Some(3));
+                        assert_eq!(values[4], Value::string("source-workspace"));
+                        assert_eq!(values[5], Value::bool(true));
+                    })
+                    .expect("expected indexed text unit tuple");
+            },
+        );
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
+    }
+
+    #[test]
+    fn persistent_source_index_skips_generated_book_output() {
+        let root_path = env::current_dir().unwrap().join("target").join(format!(
+            "source-index-generated-book-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(root_path.join("mdbook/src")).unwrap();
+        fs::create_dir_all(root_path.join("mdbook/book")).unwrap();
+        fs::write(
+            root_path.join("mdbook/src/language.md"),
+            "# Language\n\nAuthored btree retrieval notes.\n",
+        )
+        .unwrap();
+        fs::write(
+            root_path.join("mdbook/book/searchindex.js"),
+            "window.search = { docs: ['generated btree search index'] };\n",
+        )
+        .unwrap();
+
+        let index_path = temp_index_path("generated-book");
+        build_source_index_file(&root_path, &index_path).unwrap();
+        with_source_index_and_root_env(
+            &index_path,
+            &root_path,
+            Some(Path::new("/bin/false")),
+            || {
+                let mut runner = SourceRunner::new_empty();
+                load_source_relations_at(&mut runner, &root_path.display().to_string());
+                let report = runner
+                    .run_source(
+                        "let has_authored_doc = false\n\
+                         let has_generated_book = false\n\
+                         for unit in source/IndexedTextUnit(?unit, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)\n\
+                           if unit[:path] == \"mdbook/src/language.md\"\n\
+                             has_authored_doc = true\n\
+                           end\n\
+                           if unit[:path] == \"mdbook/book/searchindex.js\"\n\
+                             has_generated_book = true\n\
+                           end\n\
+                         end\n\
+                         return [has_authored_doc, has_generated_book]",
+                    )
+                    .unwrap();
+                let TaskOutcome::Complete { value, .. } = report.outcome else {
+                    panic!("expected complete outcome, got {:?}", report.outcome);
+                };
+                value
+                    .with_list(|values| {
+                        assert_eq!(values[0], Value::bool(true));
+                        assert_eq!(values[1], Value::bool(false));
+                    })
+                    .expect("expected generated book exclusion tuple");
+            },
+        );
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
     }
 
     #[test]
@@ -558,7 +670,7 @@ mod tests {
                     assert_eq!(values[3].as_int(), Some(1));
                     assert_eq!(
                         values[4],
-                        Value::string("mica-source-index/static-analysis 2")
+                        Value::string("mica-source-index/static-analysis 4")
                     );
                 })
                 .expect("expected Mica definition tuple");
@@ -772,7 +884,7 @@ mod tests {
                     assert_eq!(values[2], Value::string("src/source_provider.rs"));
                     assert_eq!(values[3], Value::bool(true));
                     assert_eq!(values[4], Value::bool(true));
-                    assert_eq!(values[5], Value::bool(false));
+                    assert_eq!(values[5], Value::bool(true));
                     assert_eq!(values[6], Value::bool(true));
                 })
                 .expect("expected select-symbol state tuple");
@@ -876,7 +988,8 @@ mod tests {
 
             let report = runner
                 .run_source(
-                    "let fields = {:question -> \"where is DOM sync rendered?\"}\n\
+                    "source/prewarm_retrieval_index(#web)\n\
+                     let fields = {:question -> \"where is DOM sync rendered?\"}\n\
                      let searched = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve\", fields)\n\
                      let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
                      let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)\n\
@@ -905,7 +1018,11 @@ mod tests {
                     assert_eq!(values[0], Value::bool(true));
                     assert_eq!(values[1], Value::bool(true));
                     assert_eq!(values[2], Value::string("where is DOM sync rendered?"));
-                    assert_eq!(values[3], Value::string("7 context items"));
+                    assert!(
+                        values[3]
+                            .with_str(|status| status.ends_with(" context items"))
+                            .unwrap_or(false)
+                    );
                     assert_eq!(values[4], Value::bool(true));
                     assert_eq!(values[5], Value::bool(true));
                     assert_eq!(values[6], Value::bool(true));
@@ -925,6 +1042,112 @@ mod tests {
                     env::remove_var("MICA_SOURCE_ROOT");
                 }
             }
+        });
+    }
+
+    #[test]
+    fn source_app_retrieval_uses_indexed_corpus_text_units() {
+        let root_path = env::current_dir().unwrap().join("target").join(format!(
+            "source-app-corpus-retrieval-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(root_path.join("src")).unwrap();
+        fs::write(
+            root_path.join("src/lib.rs"),
+            "pub fn actual_corpus_search_target() {\n    let phrase = \"actual corpus retrieval phrase\";\n}\n",
+        )
+        .unwrap();
+
+        let index_path = temp_index_path("source-app-corpus-retrieval");
+        build_source_index_file(&root_path, &index_path).unwrap();
+        with_source_index_and_root_env(
+            &index_path,
+            &root_path,
+            Some(Path::new("/bin/false")),
+            || {
+                let mut runner = SourceRunner::new_empty();
+                load_source_app(&mut runner);
+                let root = root_path.display().to_string();
+                runner
+                    .run_source(&format!(
+                        "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                         assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                    ))
+                    .unwrap();
+
+                let report = runner
+                    .run_source(
+                        "source/prewarm_retrieval_index(#web)\n\
+                         source/run_retrieval_query(endpoint(), #web, \"actual corpus retrieval phrase\")\n\
+                         let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
+                         let selected = nothing\n\
+                         let text_matches = false\n\
+                         for found in ContextForPlan(?context, plan)\n\
+                           let subject = one ContextSubject(found[:context], ?subject)\n\
+                           let path = source/retrieval_text_unit_path(subject)\n\
+                           if path == \"src/lib.rs\"\n\
+                             selected = subject\n\
+                             let text = source/retrieval_text_unit_text(subject)\n\
+                             text_matches = string_contains(text, \"actual corpus retrieval phrase\")\n\
+                             break\n\
+                           end\n\
+                         end\n\
+                         let opened = false\n\
+                         if selected != nothing\n\
+                           opened = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_retrieval_citation\", {:subject -> to_literal(selected)})\n\
+                         end\n\
+                         let selected_path = one source/SelectedPath(endpoint(), ?path)\n\
+                         let selected_line = one source/SelectedLine(endpoint(), ?line)\n\
+                         return [selected != nothing, text_matches, opened, selected_path, selected_line]",
+                    )
+                    .unwrap();
+                let TaskOutcome::Complete { value, .. } = report.outcome else {
+                    panic!("expected complete outcome, got {:?}", report.outcome);
+                };
+                value
+                    .with_list(|values| {
+                        assert_eq!(values[0], Value::bool(true));
+                        assert_eq!(values[1], Value::bool(true));
+                        assert_eq!(values[2], Value::bool(true));
+                        assert_eq!(values[3], Value::string("src/lib.rs"));
+                        assert_eq!(values[4].as_int(), Some(1));
+                    })
+                    .expect("expected indexed corpus retrieval tuple");
+            },
+        );
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
+    }
+
+    #[test]
+    fn source_app_retrieval_search_does_not_index_inline() {
+        with_source_provider_env(|| {
+            let mut runner = SourceRunner::new_empty();
+            load_source_app(&mut runner);
+            let report = runner
+                .run_source(
+                    "let fields = {:question -> \"computed relation boundary\"}\n\
+                     let searched = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve\", fields)\n\
+                     let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)\n\
+                     let status = one source/SelectedRetrievalStatus(endpoint(), ?status)\n\
+                     let embedded = one IndexEntryEmbedding(#source/retrieval_index, #source/text_symbol_sync_view_tree, \"source-workspace\", ?embedding)\n\
+                     let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
+                     return [searched, question, status, embedded == nothing, plan == nothing]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::string("computed relation boundary"));
+                    assert_eq!(values[2], Value::string("retrieval index is not ready"));
+                    assert_eq!(values[3], Value::bool(true));
+                    assert_eq!(values[4], Value::bool(true));
+                })
+                .expect("expected no-inline-indexing tuple");
         });
     }
 
@@ -952,7 +1175,8 @@ mod tests {
                 .unwrap();
             let report = runner
                 .run_source(
-                    "let fields = {:question -> \"computed relation boundary\"}\n\
+                    "source/prewarm_retrieval_index(#web)\n\
+                     let fields = {:question -> \"computed relation boundary\"}\n\
                      let searched = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve\", fields)\n\
                      let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)\n\
                      let revision = sync_view_revision(31)\n\
@@ -988,7 +1212,8 @@ mod tests {
             load_source_app(&mut runner);
             let report = runner
                 .run_source(
-                    "source/run_retrieval_query(endpoint(), #web, \"where is DOM sync rendered?\")\n\
+                    "source/prewarm_retrieval_index(#web)\n\
+                     source/run_retrieval_query(endpoint(), #web, \"where is DOM sync rendered?\")\n\
                      retract TextUnitText(#source/text_symbol_sync_view_tree, _)\n\
                      assert TextUnitText(#source/text_symbol_sync_view_tree, \"changed DOM sync retrieval text\")\n\
                      let status = source/retrieval_subject_status(#source/text_symbol_sync_view_tree, \"source-workspace\")\n\
@@ -1043,7 +1268,8 @@ mod tests {
 
                 let report = runner
                 .run_source(
-                    "source/run_retrieval_query(endpoint(), #web, \"where is DOM sync rendered?\")\n\
+                    "source/prewarm_retrieval_index(#web)\n\
+                     source/run_retrieval_query(endpoint(), #web, \"where is DOM sync rendered?\")\n\
                      let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
                      let artifact_index = one source/RetrievalArtifactIndex(plan, ?index)\n\
                      let current_version = one source/IndexVersion(artifact_index, ?version)\n\
@@ -1105,6 +1331,7 @@ mod tests {
                      assert source/SelectedDefinitionStartLine(endpoint(), 8)\n\
                      assert source/SelectedDefinitionEndLine(endpoint(), 17)\n\
                      assert source/SelectedSymbolProvider(endpoint(), \"test\")\n\
+                     source/prewarm_retrieval_index(#web)\n\
                      let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve_symbol\", {})\n\
                      let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
                      let kind = one PlanKind(plan, ?kind)\n\

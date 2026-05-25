@@ -236,12 +236,7 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
     }
 
     fn relation_metadata(&self, relation: RelationId) -> Option<RelationMetadata> {
-        self.tx
-            .kernel()
-            .snapshot()
-            .relation_metadata()
-            .find(|metadata| metadata.id() == relation)
-            .cloned()
+        self.tx.relation_metadata(relation)
     }
 
     fn system_row_allowed(&self, metadata: Option<&RelationMetadata>, tuple: &Tuple) -> bool {

@@ -47,6 +47,8 @@ mod rpc;
 struct Cli {
     #[arg(long = "filein", value_name = "FILE")]
     fileins: Vec<PathBuf>,
+    #[arg(long = "startup-source", value_name = "SOURCE")]
+    startup_sources: Vec<String>,
     #[arg(long, value_enum, default_value_t = EmbeddingProviderMode::Deterministic)]
     embedding_provider: EmbeddingProviderMode,
     #[arg(long, default_value = "alice", value_name = "IDENTITY")]
@@ -152,6 +154,10 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             .run_filein_with_include_loader(&source, |path| read_filein_include(include_base, path))
             .map_err(format_source_error)?;
         metrics::metrics().fileins_loaded.inc();
+    }
+    for source in &cli.startup_sources {
+        let report = runner.run_source(source).map_err(format_source_error)?;
+        println!("startup source {}", report.render());
     }
     let telnet_actor = if cli.telnet_bind.is_some() {
         let actor_name = actor_name(&cli.actor)?;

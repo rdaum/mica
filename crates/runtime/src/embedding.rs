@@ -58,6 +58,7 @@ impl EmbeddingProvider for DisabledEmbeddingProvider {
 pub struct VllmEmbeddingProvider {
     embeddings_url: String,
     api_key: Option<String>,
+    truncate_prompt_tokens: Option<usize>,
 }
 
 impl VllmEmbeddingProvider {
@@ -65,7 +66,15 @@ impl VllmEmbeddingProvider {
         let base_url = env::var("MICA_VLLM_BASE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8000/v1".to_owned());
         let api_key = env::var("MICA_VLLM_API_KEY").ok();
-        Self::new(base_url, api_key)
+        let mut provider = Self::new(base_url, api_key)?;
+        provider.truncate_prompt_tokens = match env::var("MICA_VLLM_TRUNCATE_PROMPT_TOKENS") {
+            Ok(value) if value == "0" => None,
+            Ok(value) => Some(value.parse::<usize>().map_err(|error| {
+                format!("invalid MICA_VLLM_TRUNCATE_PROMPT_TOKENS value {value:?}: {error}")
+            })?),
+            Err(_) => Some(512),
+        };
+        Ok(provider)
     }
 
     pub fn new(base_url: impl Into<String>, api_key: Option<String>) -> Result<Self, String> {
@@ -83,17 +92,21 @@ impl VllmEmbeddingProvider {
         Ok(Self {
             embeddings_url,
             api_key,
+            truncate_prompt_tokens: Some(512),
         })
     }
 }
 
 impl EmbeddingProvider for VllmEmbeddingProvider {
     fn embed_text(&self, model: &str, text: &str) -> Result<Vec<f64>, String> {
-        let request = json!({
+        let mut request = json!({
             "input": text,
             "model": model,
-        })
-        .to_string();
+        });
+        if let Some(truncate_prompt_tokens) = self.truncate_prompt_tokens {
+            request["truncate_prompt_tokens"] = json!(truncate_prompt_tokens);
+        }
+        let request = request.to_string();
         let response = http_post_json(&self.embeddings_url, &request, self.api_key.as_deref())?;
         let value: serde_json::Value = serde_json::from_slice(&response)
             .map_err(|error| format!("invalid vllm embeddings response: {error}"))?;

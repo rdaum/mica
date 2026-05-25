@@ -27,8 +27,8 @@ use crate::tuple::{
 };
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRead, DispatchRelations,
-    KernelError, RelationId, RelationKernel, RelationRead, RelationWorkspace, RuleSet, ScanControl,
-    Snapshot, Tuple, Version,
+    KernelError, RelationId, RelationKernel, RelationMetadata, RelationRead, RelationWorkspace,
+    RuleSet, ScanControl, Snapshot, Tuple, Version,
 };
 use mica_var::{Symbol, Value};
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
@@ -376,6 +376,13 @@ impl<'a> Transaction<'a> {
             visible.len() as u64,
         );
         Ok(visible)
+    }
+
+    pub fn relation_metadata(&self, relation: RelationId) -> Option<RelationMetadata> {
+        self.base
+            .relations
+            .get(&relation)
+            .map(|relation| relation.metadata().clone())
     }
 
     fn extensional_facts_with_local_writes(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {

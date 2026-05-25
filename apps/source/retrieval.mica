@@ -14,10 +14,12 @@ make_identity(:source/text_review_note_dom_sync)
 make_identity(:source/text_design_doc_graphrag)
 make_identity(:source/symbol_sync_view_tree)
 
+make_relation(:source/IndexedTextUnit, 9)
 make_functional_relation(:source/RetrievalTextUnitKind, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitTitle, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitFile, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitSpan, 2, [0])
+make_functional_relation(:source/RetrievalTextUnitPath, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitStartLine, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitEndLine, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitModel, 2, [0])
@@ -28,6 +30,7 @@ make_functional_relation(:source/SelectedRetrievalPlan, 2, [0])
 make_functional_relation(:source/SelectedRetrievalModel, 2, [0])
 make_functional_relation(:source/SelectedRetrievalLimit, 2, [0])
 make_functional_relation(:source/SelectedRetrievalStatus, 2, [0])
+make_functional_relation(:source/RetrievalCorpusIndexVersion, 3, [0, 1])
 
 assert VectorIndex(#source/retrieval_index)
 assert VectorIndexMetric(#source/retrieval_index, "cosine")
@@ -129,7 +132,22 @@ verb source/retrieval_limit()
   return 8
 end
 
+verb source/retrieval_corpus_version()
+  for index_row in source/SourceIndex(?index)
+    let candidate = one source/IndexVersion(index_row[:index], ?version)
+    if candidate != nothing
+      return candidate
+    end
+  end
+
+  return "worktree"
+end
+
 verb source/retrieval_text_unit_path(unit)
+  for indexed in source/IndexedTextUnit(unit, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)
+    return indexed[:path]
+  end
+
   let file = one source/RetrievalTextUnitFile(unit, ?file)
   if file == nothing
     return nothing
@@ -139,6 +157,10 @@ verb source/retrieval_text_unit_path(unit)
 end
 
 verb source/retrieval_text_unit_line(unit)
+  for indexed in source/IndexedTextUnit(unit, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)
+    return indexed[:start_line]
+  end
+
   let line = one source/RetrievalTextUnitStartLine(unit, ?line)
   if line == nothing
     return 1
@@ -147,8 +169,52 @@ verb source/retrieval_text_unit_line(unit)
   return line
 end
 
+verb source/retrieval_text_unit_title(unit)
+  for indexed in source/IndexedTextUnit(unit, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)
+    return indexed[:title]
+  end
+
+  return one source/RetrievalTextUnitTitle(unit, ?title)
+end
+
+verb source/retrieval_text_unit_kind(unit)
+  for indexed in source/IndexedTextUnit(unit, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)
+    return indexed[:kind]
+  end
+
+  return one source/RetrievalTextUnitKind(unit, ?kind)
+end
+
+verb source/retrieval_text_unit_text(unit)
+  for indexed in source/IndexedTextUnit(unit, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)
+    return indexed[:text]
+  end
+
+  return one TextUnitText(unit, ?text)
+end
+
+verb source/can_retrieve_subject(actor, subject)
+  if source/CanBrowseRepository(actor, #source/repo_mica) == false
+    return false
+  end
+
+  for indexed in source/IndexedTextUnit(subject, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)
+    return true
+  end
+
+  if source/RetrievalTextUnitFile(subject, ?file)
+    return true
+  end
+
+  if source/RetrievalTextUnitSpan(subject, ?span)
+    return true
+  end
+
+  return false
+end
+
 verb source/retrieval_subject_status(subject, model @ #string)
-  let text = one TextUnitText(subject, ?text)
+  let text = source/retrieval_text_unit_text(subject)
   if text == nothing
     return "missing"
   end
@@ -156,18 +222,99 @@ verb source/retrieval_subject_status(subject, model @ #string)
   return retrieval/index_entry_status(#source/retrieval_index, subject, model, text)
 end
 
+verb source/retrieval_corpus_ready(model @ #string)
+  let has_complete_corpus = false
+  for index_row in source/SourceIndex(?index)
+    let status = one source/IndexStatus(index_row[:index], ?status)
+    if status == "complete"
+      has_complete_corpus = true
+      break
+    end
+  end
+  if has_complete_corpus == false
+    return true
+  end
+
+  let corpus_version = source/retrieval_corpus_version()
+  let indexed_version = one source/RetrievalCorpusIndexVersion(#source/retrieval_index, model, ?version)
+  return indexed_version == corpus_version
+end
+
+verb source/retrieval_index_ready(model @ #string)
+  if source/retrieval_corpus_ready(model) == false
+    return false
+  end
+
+  for found in VectorIndexContains(#source/retrieval_index, ?embedding)
+    return true
+  end
+
+  return false
+end
+
 verb source/index_retrieval_subjects(actor, model @ #string)
   let indexed = 0
   for found in TextUnit(?subject)
     let subject = found[:subject]
     if source/RetrievalTextUnitModel(subject, model) && CanRetrieveSubject(actor, subject)
-      let text = one TextUnitText(subject, ?text)
+      let text = source/retrieval_text_unit_text(subject)
       ensure_subject_embedding(actor, #source/retrieval_index, subject, text, model)
       indexed = indexed + 1
     end
   end
 
+  let corpus_version = source/retrieval_corpus_version()
+  let indexed_version = one source/RetrievalCorpusIndexVersion(#source/retrieval_index, model, ?version)
+  if indexed_version == corpus_version
+    return indexed
+  end
+
+  for found in source/IndexedTextUnit(?subject, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?unit_model, ?text)
+    if found[:unit_model] == model && source/CanBrowseRepository(actor, #source/repo_mica)
+      ensure_subject_embedding(actor, #source/retrieval_index, found[:subject], found[:text], model)
+      indexed = indexed + 1
+    end
+  end
+
+  retract source/RetrievalCorpusIndexVersion(#source/retrieval_index, model, _)
+  assert source/RetrievalCorpusIndexVersion(#source/retrieval_index, model, corpus_version)
+
   return indexed
+end
+
+verb source/prewarm_retrieval_index(actor)
+  return source/index_retrieval_subjects(actor, source/retrieval_model())
+end
+
+verb source/retrieve_context(actor, index, question_text @ #string, limit, model @ #string)
+  let question = retrieval/question_value(actor, question_text, index, limit, model)
+  assert Question(question)
+  assert QuestionText(question, question_text)
+  assert AskedBy(question, actor)
+
+  let plan = retrieval/plan_value(question, index, limit, model)
+  assert RetrievalPlan(plan)
+  assert PlanForQuestion(plan, question)
+  assert PlanKind(plan, "nearest_embedding")
+  assert PlanModel(plan, model)
+
+  let query_embedding = embed_text(model, question_text)
+  let contexts = []
+  for found in NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?snapshot_version)
+    let subject = found[:subject]
+    if source/can_retrieve_subject(actor, subject)
+      let context = retrieval/context_value(plan, subject)
+      assert RetrievedContext(context)
+      assert ContextForPlan(context, plan)
+      assert ContextSubject(context, subject)
+      assert ContextScore(context, found[:score])
+      assert ContextReason(context, "nearest_embedding")
+      assert ContextSnapshotVersion(context, found[:snapshot_version])
+      contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :snapshot_version -> found[:snapshot_version]}]
+    end
+  end
+
+  return {:contexts -> contexts, :plan -> plan, :question -> question}
 end
 
 verb source/clear_retrieval_session(endpoint)
@@ -182,8 +329,16 @@ end
 verb source/run_retrieval_query(endpoint, actor, question_text @ #string)
   let model = source/retrieval_model()
   let limit = source/retrieval_limit()
-  source/index_retrieval_subjects(actor, model)
-  let retrieval = retrieve_context(actor, #source/retrieval_index, question_text, limit, model)
+  if source/retrieval_index_ready(model) == false
+    source/clear_retrieval_session(endpoint)
+    assert source/SelectedRetrievalQuestion(endpoint, question_text)
+    assert source/SelectedRetrievalModel(endpoint, model)
+    assert source/SelectedRetrievalLimit(endpoint, limit)
+    assert source/SelectedRetrievalStatus(endpoint, "retrieval index is not ready")
+    return {:contexts -> [], :count -> 0, :plan -> nothing, :question -> nothing}
+  end
+
+  let retrieval = source/retrieve_context(actor, #source/retrieval_index, question_text, limit, model)
   let plan = retrieval[:plan]
   let contexts = retrieval[:contexts]
   let count = 0
@@ -212,7 +367,7 @@ verb source/run_retrieval_query(endpoint, actor, question_text @ #string)
 
   for item in contexts
     let subject = item[:subject]
-    let text = one TextUnitText(subject, ?text)
+    let text = source/retrieval_text_unit_text(subject)
     assert source/RetrievalCitation(plan, subject)
     assert source/RetrievalCitationText(plan, subject, text)
     count = count + 1

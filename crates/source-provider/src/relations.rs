@@ -27,6 +27,7 @@ const SYNTAX_NODE_AT_BOUND: &[u16] = &[0, 1, 2, 3];
 const DEFINITION_AT_BOUND: &[u16] = &[0, 1, 2, 3];
 const REFERENCES_OF_BOUND: &[u16] = &[0, 1, 2];
 const SYMBOL_SEARCH_BOUND: &[u16] = &[0, 1, 2, 3];
+const INDEXED_TEXT_UNIT_BOUND: &[u16] = &[];
 const INDEX_VALUE_BOUND: &[u16] = &[];
 const SEMANTIC_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -64,6 +65,9 @@ pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
             provider: provider.clone(),
         }),
         Arc::new(SymbolSearchRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(IndexedTextUnitRelation {
             provider: provider.clone(),
         }),
         Arc::new(SourceIndexRelation {
@@ -957,6 +961,60 @@ impl ComputedRelation for SymbolSearchRelation {
                     int_value(metadata.id(), symbol.start_line as i64)?,
                     int_value(metadata.id(), symbol.end_line as i64)?,
                     Value::string(format!("{} {}", index.provider, index.version)),
+                ]))
+            })
+            .collect::<Result<Vec<_>, KernelError>>()?;
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
+struct IndexedTextUnitRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for IndexedTextUnitRelation {
+    fn name(&self) -> &'static str {
+        "persistent-source-indexed-text-unit"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/IndexedTextUnit") && metadata.arity() == 9
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        INDEXED_TEXT_UNIT_BOUND
+    }
+
+    fn scan(
+        &self,
+        _reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let index = self.provider.semantic_index(metadata.id())?;
+        if !index.is_complete() {
+            return Ok(Vec::new());
+        }
+        let unit_filter = bindings.first().and_then(Option::as_ref);
+        let rows = index
+            .text_units
+            .iter()
+            .filter(|unit| {
+                unit_filter.is_none_or(|filter| {
+                    filter.with_str(|value| value == unit.unit).unwrap_or(false)
+                })
+            })
+            .map(|unit| {
+                Ok(Tuple::from([
+                    Value::string(&unit.unit),
+                    int_value(metadata.id(), unit.ordinal as i64)?,
+                    Value::string(&unit.kind),
+                    Value::string(&unit.title),
+                    Value::string(&unit.path),
+                    int_value(metadata.id(), unit.start_line as i64)?,
+                    int_value(metadata.id(), unit.end_line as i64)?,
+                    Value::string(&unit.model),
+                    Value::string(&unit.text),
                 ]))
             })
             .collect::<Result<Vec<_>, KernelError>>()?;

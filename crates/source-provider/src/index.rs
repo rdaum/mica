@@ -1,5 +1,5 @@
 use crate::navigation::SemanticSymbol;
-use crate::syntax::SyntaxDocument;
+use crate::syntax::{SourceLanguage, SyntaxDocument};
 use crate::util::invalid_relation;
 use mica_relation_kernel::{KernelError, RelationId};
 use serde_json::{Value as JsonValue, json};
@@ -9,7 +9,10 @@ use std::path::{Component, Path, PathBuf};
 const SOURCE_INDEX_ID: &str = "source-index:mica-worktree";
 const SOURCE_INDEX_SCHEMA: &str = "mica-source-index-v1";
 const SOURCE_INDEX_PROVIDER: &str = "mica-source-index/static-analysis";
-const SOURCE_INDEX_VERSION: &str = "2";
+const SOURCE_INDEX_VERSION: &str = "4";
+const SOURCE_TEXT_UNIT_MODEL: &str = "source-workspace";
+const SOURCE_TEXT_CHUNK_LINES: usize = 40;
+const SOURCE_TEXT_CHUNK_BYTES: usize = 1_200;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PersistentSemanticIndex {
@@ -20,6 +23,7 @@ pub(crate) struct PersistentSemanticIndex {
     pub(crate) error: String,
     pub(crate) symbols: Vec<IndexedSymbol>,
     pub(crate) references: Vec<IndexedReference>,
+    pub(crate) text_units: Vec<IndexedTextUnit>,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +49,19 @@ pub(crate) struct IndexedReference {
     pub(crate) end_byte: usize,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct IndexedTextUnit {
+    pub(crate) unit: String,
+    pub(crate) ordinal: usize,
+    pub(crate) kind: String,
+    pub(crate) title: String,
+    pub(crate) path: String,
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
+    pub(crate) model: String,
+    pub(crate) text: String,
+}
+
 impl PersistentSemanticIndex {
     fn missing(path: &Path) -> Self {
         Self {
@@ -55,6 +72,7 @@ impl PersistentSemanticIndex {
             error: format!("semantic index not found at {}", path.display()),
             symbols: Vec::new(),
             references: Vec::new(),
+            text_units: Vec::new(),
         }
     }
 
@@ -132,6 +150,18 @@ impl PersistentSemanticIndex {
             .transpose()
             .map_err(|error| invalid_relation(relation, error))?
             .unwrap_or_default();
+        let text_units = json
+            .get("text_units")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(indexed_text_unit_from_json)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(|error| invalid_relation(relation, error))?
+            .unwrap_or_default();
         Ok(Self {
             id,
             provider,
@@ -140,6 +170,7 @@ impl PersistentSemanticIndex {
             error,
             symbols,
             references,
+            text_units,
         })
     }
 
@@ -247,6 +278,20 @@ fn indexed_reference_from_json(value: &JsonValue) -> Result<IndexedReference, St
     })
 }
 
+fn indexed_text_unit_from_json(value: &JsonValue) -> Result<IndexedTextUnit, String> {
+    Ok(IndexedTextUnit {
+        unit: json_string(value, "unit")?,
+        ordinal: json_usize(value, "ordinal")?,
+        kind: json_string(value, "kind")?,
+        title: json_string(value, "title")?,
+        path: json_string(value, "path")?,
+        start_line: json_usize(value, "start_line")?,
+        end_line: json_usize(value, "end_line")?,
+        model: json_string(value, "model")?,
+        text: json_string(value, "text")?,
+    })
+}
+
 fn json_string(value: &JsonValue, field: &str) -> Result<String, String> {
     value
         .get(field)
@@ -306,6 +351,7 @@ pub fn write_failed_source_index_file(
         "error": error,
         "symbols": [],
         "references": [],
+        "text_units": [],
     });
     let bytes = serde_json::to_vec_pretty(&index)
         .map_err(|error| format!("failed to encode failed source index: {error}"))?;
@@ -322,6 +368,8 @@ fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
     files.sort();
     let mut symbols = Vec::new();
     let mut references = Vec::new();
+    let mut text_units = Vec::new();
+    let mut text_unit_ordinal = 0usize;
     for file in files {
         let relative = file
             .strip_prefix(root)
@@ -329,6 +377,11 @@ fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
         let path = relative_path_string(relative)?;
         let text = fs::read_to_string(&file)
             .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+        text_units.extend(indexed_text_units_for_file(
+            &path,
+            &text,
+            &mut text_unit_ordinal,
+        ));
         let syntax = SyntaxDocument::parse(&path, &text);
         for item in &syntax.outline {
             if !is_index_identifier(&item.name) {
@@ -434,7 +487,123 @@ fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
         "error": "",
         "symbols": symbols,
         "references": references,
+        "text_units": text_units,
     }))
+}
+
+fn indexed_text_units_for_file(path: &str, text: &str, next_ordinal: &mut usize) -> Vec<JsonValue> {
+    let mut units = Vec::new();
+    let mut chunk = Vec::new();
+    let mut chunk_start_line = 1usize;
+    let mut chunk_bytes = 0usize;
+
+    for (line_index, line) in text.lines().enumerate() {
+        let line_number = line_index + 1;
+        let next_bytes = if chunk.is_empty() {
+            line.len()
+        } else {
+            chunk_bytes + 1 + line.len()
+        };
+        if !chunk.is_empty()
+            && (chunk.len() >= SOURCE_TEXT_CHUNK_LINES || next_bytes > SOURCE_TEXT_CHUNK_BYTES)
+        {
+            push_indexed_text_unit(
+                &mut units,
+                path,
+                chunk_start_line,
+                line_number - 1,
+                &chunk.join("\n"),
+                next_ordinal,
+            );
+            chunk.clear();
+            chunk_bytes = 0;
+            chunk_start_line = line_number;
+        }
+
+        if line.len() > SOURCE_TEXT_CHUNK_BYTES {
+            for part in split_text_by_bytes(line, SOURCE_TEXT_CHUNK_BYTES) {
+                push_indexed_text_unit(
+                    &mut units,
+                    path,
+                    line_number,
+                    line_number,
+                    part,
+                    next_ordinal,
+                );
+            }
+            chunk_start_line = line_number + 1;
+            continue;
+        }
+
+        if chunk.is_empty() {
+            chunk_start_line = line_number;
+            chunk_bytes = line.len();
+        } else {
+            chunk_bytes += 1 + line.len();
+        }
+        chunk.push(line);
+    }
+
+    if !chunk.is_empty() {
+        push_indexed_text_unit(
+            &mut units,
+            path,
+            chunk_start_line,
+            chunk_start_line + chunk.len() - 1,
+            &chunk.join("\n"),
+            next_ordinal,
+        );
+    }
+
+    units
+}
+
+fn push_indexed_text_unit(
+    units: &mut Vec<JsonValue>,
+    path: &str,
+    start_line: usize,
+    end_line: usize,
+    chunk_text: &str,
+    next_ordinal: &mut usize,
+) {
+    if chunk_text.trim().is_empty() {
+        return;
+    }
+
+    *next_ordinal += 1;
+    let title = if start_line == end_line {
+        format!("{path}:{start_line}")
+    } else {
+        format!("{path}:{start_line}-{end_line}")
+    };
+    units.push(json!({
+        "unit": indexed_text_unit_id(path, start_line, end_line, *next_ordinal),
+        "ordinal": *next_ordinal,
+        "kind": source_language_kind(SourceLanguage::from_path(path)),
+        "title": title,
+        "path": path,
+        "start_line": start_line,
+        "end_line": end_line,
+        "model": SOURCE_TEXT_UNIT_MODEL,
+        "text": format!("{path}:{start_line}-{end_line}\n{chunk_text}"),
+    }));
+}
+
+fn split_text_by_bytes(text: &str, max_bytes: usize) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut last_boundary = 0usize;
+    for (index, _) in text.char_indices() {
+        if index - start > max_bytes {
+            parts.push(&text[start..last_boundary]);
+            start = last_boundary;
+        }
+        last_boundary = index;
+    }
+    if start < text.len() {
+        parts.push(&text[start..]);
+    }
+    parts
 }
 
 fn indexed_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -455,7 +624,7 @@ fn collect_indexed_source_files(directory: &Path, files: &mut Vec<PathBuf>) -> R
         if path.is_dir() {
             if matches!(
                 name.as_ref(),
-                ".git" | ".cache" | "target" | "node_modules" | ".playwright-mcp"
+                ".git" | ".cache" | "target" | "node_modules" | ".playwright-mcp" | "book"
             ) {
                 continue;
             }
@@ -470,7 +639,7 @@ fn collect_indexed_source_files(directory: &Path, files: &mut Vec<PathBuf>) -> R
 fn is_indexed_source_path(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|extension| extension.to_str()),
-        Some("rs" | "mica")
+        Some("rs" | "mica" | "md" | "markdown" | "js" | "mjs" | "cjs" | "toml")
     )
 }
 
@@ -490,6 +659,20 @@ fn relative_path_string(path: &Path) -> Result<String, String> {
 
 fn indexed_symbol_id(path: &str, start_byte: usize, end_byte: usize, name: &str) -> String {
     format!("idx:{path}:{start_byte}:{end_byte}:{name}")
+}
+
+fn indexed_text_unit_id(path: &str, start_line: usize, end_line: usize, ordinal: usize) -> String {
+    format!("idx:text:{path}:{start_line}:{end_line}:{ordinal}")
+}
+
+fn source_language_kind(language: SourceLanguage) -> &'static str {
+    match language {
+        SourceLanguage::Rust => "rust",
+        SourceLanguage::Mica => "mica",
+        SourceLanguage::Markdown => "markdown",
+        SourceLanguage::JavaScript => "javascript",
+        SourceLanguage::Plain => "text",
+    }
 }
 
 fn byte_line(line_starts: &[usize], byte_offset: usize) -> usize {

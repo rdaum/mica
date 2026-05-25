@@ -237,12 +237,24 @@ verb source/retrieval_status_node()
 
   let indexed = 0
   let stale = 0
+  let corpus_version = source/retrieval_corpus_version()
+  let indexed_corpus_version = one source/RetrievalCorpusIndexVersion(#source/retrieval_index, model, ?version)
+  let corpus_ready = indexed_corpus_version == corpus_version
   for found in TextUnit(?subject)
     let subject = found[:subject]
     if source/RetrievalTextUnitModel(subject, model) && CanRetrieveSubject(#web, subject)
       indexed = indexed + 1
       let subject_status = one IndexEntryStatus(#source/retrieval_index, subject, model, ?status)
       if subject_status != "ready"
+        stale = stale + 1
+      end
+    end
+  end
+
+  for found in source/IndexedTextUnit(?subject, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?unit_model, ?text)
+    if found[:unit_model] == model && source/CanBrowseRepository(#web, #source/repo_mica)
+      indexed = indexed + 1
+      if corpus_ready == false
         stale = stale + 1
       end
     end
@@ -266,9 +278,9 @@ verb source/retrieval_context_node(context)
   let reason = one ContextReason(context, ?reason)
   let path = source/retrieval_text_unit_path(subject)
   let line = source/retrieval_text_unit_line(subject)
-  let title = one source/RetrievalTextUnitTitle(subject, ?title)
-  let kind = one source/RetrievalTextUnitKind(subject, ?kind)
-  let text = one TextUnitText(subject, ?text)
+  let title = source/retrieval_text_unit_title(subject)
+  let kind = source/retrieval_text_unit_kind(subject)
+  let text = source/retrieval_text_unit_text(subject)
   if title == nothing
     title = path
   end

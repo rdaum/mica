@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 model="${MICA_VLLM_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
-served_model_name="${MICA_VLLM_SERVED_MODEL_NAME:-mud-world}"
+served_model_name="${MICA_VLLM_SERVED_MODEL_NAME:-source-workspace}"
 port="${MICA_VLLM_PORT:-8000}"
 gpu_mem="${MICA_VLLM_GPU_MEM:-0.08}"
 max_model_len="${MICA_VLLM_MAX_MODEL_LEN:-512}"
@@ -74,7 +74,7 @@ echo "  port: $port"
 echo "  base URL: http://127.0.0.1:${port}/v1"
 echo
 echo "To point Mica at this server:"
-echo "  export MICA_WT_EMBEDDING_PROVIDER=vllm"
+echo "  export MICA_SOURCE_EMBEDDING_PROVIDER=vllm"
 echo "  export MICA_VLLM_BASE_URL=http://127.0.0.1:${port}/v1"
 echo
 

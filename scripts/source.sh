@@ -27,6 +27,8 @@ poll_ms="${MICA_SOURCE_POLL_MS:-5000}"
 embedding_provider="${MICA_SOURCE_EMBEDDING_PROVIDER:-deterministic}"
 dogstatsd_endpoint="${MICA_SOURCE_DOGSTATSD_ENDPOINT-127.0.0.1:8125}"
 dogstatsd_interval_secs="${MICA_SOURCE_DOGSTATSD_INTERVAL_SECS:-10}"
+build_source_index="${MICA_SOURCE_BUILD_INDEX:-1}"
+prewarm_retrieval_index="${MICA_SOURCE_PREWARM_RETRIEVAL_INDEX:-1}"
 export MICA_SOURCE_ROOT="${MICA_SOURCE_ROOT:-${repo_root}}"
 export MICA_SOURCE_INDEX="${MICA_SOURCE_INDEX:-${repo_root}/.cache/source-index/mica-worktree.json}"
 
@@ -77,6 +79,14 @@ cert_hash="$(
 
 cd "${repo_root}"
 
+if [[ "${build_source_index}" != "0" ]]; then
+  echo "Building source index: ${MICA_SOURCE_INDEX}"
+  cargo run ${MICA_SOURCE_BUILD_FLAGS:---release} --bin mica -- \
+    source-index \
+    --root "${MICA_SOURCE_ROOT}" \
+    --output "${MICA_SOURCE_INDEX}"
+fi
+
 daemon_args=(
   --filein apps/shared/sync-host.mica
   --filein apps/shared/sync-dom.mica
@@ -92,6 +102,12 @@ daemon_args=(
   --webtransport-cert "${cert_path}"
   --webtransport-key "${key_path}"
 )
+
+if [[ "${prewarm_retrieval_index}" != "0" ]]; then
+  daemon_args+=(
+    --startup-source "source/prewarm_retrieval_index(#web)"
+  )
+fi
 
 if [[ -n "${dogstatsd_endpoint}" ]]; then
   daemon_args+=(
@@ -124,6 +140,8 @@ Manual values:
   URL: ${wt_url}
   Certificate SHA-256: ${cert_hash}
   Embedding provider: ${embedding_provider}
+  Source index: ${MICA_SOURCE_INDEX}
+  Retrieval prewarm: ${prewarm_retrieval_index}
   DogStatsD endpoint: ${dogstatsd_endpoint:-disabled}
   DogStatsD interval: ${dogstatsd_interval_secs}s
 
