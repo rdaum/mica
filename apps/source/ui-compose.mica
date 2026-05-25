@@ -498,7 +498,7 @@ verb source/agent_turn_node(turn)
     meta = [@meta, source/meta_chip_node("model", model)]
   end
 
-  let children = [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text(role)]), dom_element("p", {:class -> "source-agent-turn-text"}, [dom_text(text)]), dom_element("div", {:class -> "source-search-status"}, meta)]
+  let children = [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text(role)]), dom_element("div", {:class -> "source-agent-turn-text"}, [dom_text(text)]), dom_element("div", {:class -> "source-search-status"}, meta)]
   if role == "assistant"
     children = [@children, source/agent_turn_citations_node(turn)]
   end
@@ -507,7 +507,7 @@ verb source/agent_turn_node(turn)
 end
 
 verb source/agent_pending_turn_node()
-  return dom_element("article", {:class -> "source-agent-turn source-agent-turn-assistant source-agent-turn-pending", "data-sync-key" -> "agent-processing"}, [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text("assistant")]), dom_element("p", {:class -> "source-agent-turn-text"}, [dom_text("Processing...")]), dom_element("div", {:class -> "source-search-status"}, [source/meta_chip_node("status", "working")])])
+  return dom_element("article", {:class -> "source-agent-turn source-agent-turn-assistant source-agent-turn-pending", "data-sync-key" -> "agent-processing"}, [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text("assistant")]), dom_element("div", {:class -> "source-agent-turn-text"}, [dom_text("Processing...")]), dom_element("div", {:class -> "source-search-status"}, [source/meta_chip_node("status", "working")])])
 end
 
 verb source/agent_turn_list_node()

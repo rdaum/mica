@@ -1,4 +1,33 @@
 import { bootstrapServerRenderedSync } from "/sync-client.js?surface=source";
+import markdownit from "https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/+esm";
+
+const markdown = markdownit({
+  breaks: false,
+  html: false,
+  linkify: true,
+  typographer: false,
+});
+
+const defaultLinkOpen =
+  markdown.renderer.rules.link_open ??
+  ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
+
+markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
+  const token = tokens[index];
+  const targetIndex = token.attrIndex("target");
+  if (targetIndex < 0) {
+    token.attrPush(["target", "_blank"]);
+  } else {
+    token.attrs[targetIndex][1] = "_blank";
+  }
+  const relIndex = token.attrIndex("rel");
+  if (relIndex < 0) {
+    token.attrPush(["rel", "noopener noreferrer"]);
+  } else {
+    token.attrs[relIndex][1] = "noopener noreferrer";
+  }
+  return defaultLinkOpen(tokens, index, options, env, self);
+};
 
 const SPLITTER_STORAGE = {
   "--source-sidebar-width": "mica.source.sidebarWidth",
@@ -183,6 +212,7 @@ function installSourceViewport() {
   let sourceWindowStallTimer = null;
   let sourceWindowTimeoutTimer = null;
   let selectedFocusKey = "";
+  let lastAgentTailKey = "";
 
   const resetManualWindowState = () => {
     window.clearTimeout(timer);
@@ -348,6 +378,47 @@ function installSourceViewport() {
     }
   };
 
+  const renderAgentMarkdown = () => {
+    for (const text of mount.querySelectorAll(
+      ".source-agent-turn-assistant:not(.source-agent-turn-pending) .source-agent-turn-text",
+    )) {
+      if (text.dataset.sourceMarkdownRendered === "true") {
+        continue;
+      }
+      const source = text.textContent ?? "";
+      text.innerHTML = markdown.render(source);
+      text.dataset.sourceMarkdownRendered = "true";
+      text.classList.add("source-agent-turn-markdown");
+    }
+  };
+
+  const scrollAgentToBottom = (list) => {
+    window.requestAnimationFrame(() => {
+      list.scrollTop = list.scrollHeight;
+      window.setTimeout(() => {
+        list.scrollTop = list.scrollHeight;
+      }, 0);
+    });
+  };
+
+  const refreshAgentTranscript = (forceScroll = false) => {
+    renderAgentMarkdown();
+    const list = mount.querySelector(".source-agent-turn-list");
+    if (!list) {
+      lastAgentTailKey = "";
+      return;
+    }
+    const turns = [...list.querySelectorAll(".source-agent-turn")];
+    const tail = turns.at(-1);
+    const tailKey = tail
+      ? `${tail.getAttribute("data-sync-key") ?? ""}:${tail.textContent?.length ?? 0}`
+      : "";
+    if (forceScroll || (tailKey && tailKey !== lastAgentTailKey)) {
+      scrollAgentToBottom(list);
+    }
+    lastAgentTailKey = tailKey;
+  };
+
   mount.addEventListener("click", (event) => {
     const retry = event.target?.closest?.(".source-code-loading-retry");
     if (!retry || !mount.contains(retry) || !lastWindowRequest) {
@@ -387,6 +458,7 @@ function installSourceViewport() {
     } else if (action === "source_agent_prompt") {
       expandAgentPanel();
       document.body.classList.add("source-agent-working");
+      refreshAgentTranscript(true);
     } else if (
       action === "source_open_file" ||
       action === "source_jump_to_line" ||
@@ -403,6 +475,7 @@ function installSourceViewport() {
     } else if (event.detail?.action === "source_agent_prompt") {
       expandAgentPanel();
       document.body.classList.remove("source-agent-working");
+      refreshAgentTranscript(true);
     }
     window.setTimeout(() => {
       flushQueuedWindow();
@@ -410,11 +483,16 @@ function installSourceViewport() {
         setSourceWindowLoading(mount.querySelector(".source-code-frame"), false);
       }
       refreshFrame();
+      refreshAgentTranscript();
     }, 0);
   });
 
   refreshFrame();
-  new MutationObserver(refreshFrame).observe(mount, {
+  refreshAgentTranscript();
+  new MutationObserver(() => {
+    refreshFrame();
+    refreshAgentTranscript();
+  }).observe(mount, {
     childList: true,
     subtree: true,
   });

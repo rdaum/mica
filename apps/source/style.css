@@ -342,6 +342,67 @@ body.source-agent-working .source-agent-turn-list::after {
   white-space: pre-wrap;
 }
 
+.source-agent-turn-markdown {
+  display: grid;
+  gap: 0.45rem;
+  white-space: normal;
+}
+
+.source-agent-turn-markdown > :first-child {
+  margin-top: 0;
+}
+
+.source-agent-turn-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.source-agent-turn-markdown p,
+.source-agent-turn-markdown ul,
+.source-agent-turn-markdown ol,
+.source-agent-turn-markdown pre,
+.source-agent-turn-markdown blockquote {
+  margin: 0;
+}
+
+.source-agent-turn-markdown ul,
+.source-agent-turn-markdown ol {
+  padding-left: 1.25rem;
+}
+
+.source-agent-turn-markdown code {
+  border: 1px solid rgba(108, 86, 55, 0.2);
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.25rem;
+  background: rgba(33, 35, 30, 0.06);
+  font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+  font-size: 0.9em;
+}
+
+.source-agent-turn-markdown pre {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid rgba(108, 86, 55, 0.22);
+  border-radius: 0.45rem;
+  padding: 0.55rem;
+  background: rgba(33, 35, 30, 0.06);
+}
+
+.source-agent-turn-markdown pre code {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.source-agent-turn-markdown blockquote {
+  border-left: 0.2rem solid rgba(165, 88, 25, 0.35);
+  padding-left: 0.65rem;
+  color: var(--source-muted);
+}
+
+.source-agent-turn-markdown a {
+  color: var(--source-accent);
+}
+
 @keyframes source-agent-pending-pulse {
   0%,
   100% {
