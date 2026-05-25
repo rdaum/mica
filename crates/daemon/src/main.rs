@@ -21,7 +21,7 @@ use mica_runtime::{EmbeddingProviderKind, SourceRunner, TaskOutcome};
 use mica_telnet_host::{
     ActorBinding as TelnetActorBinding, InProcessTelnetHost, serve_in_process as serve_telnet,
 };
-use mica_var::Symbol;
+use mica_var::{Symbol, Value};
 use mica_web_host::{InProcessWebHost, RequestBinding, serve_in_process as serve_web};
 use mica_webtransport_host::{
     InProcessWebTransportHost, SessionBinding, WebTransportTlsConfig,
@@ -407,31 +407,51 @@ fn log_startup_source_end(source: &str, rendered_report: &str) {
 async fn run_startup_source(driver: &CompioTaskDriver, source: &str) -> Result<(), String> {
     log_startup_source_begin(source);
     let is_source_retrieval_indexing = is_source_retrieval_indexing_source(source);
+    let should_follow_spawned_child = startup_source_should_follow_spawned_child(source);
+    let track_source_retrieval_indexing =
+        is_source_retrieval_indexing && !should_follow_spawned_child;
     let start = Instant::now();
-    if is_source_retrieval_indexing {
+    if track_source_retrieval_indexing {
         metrics::source_retrieval_indexing_started();
     }
     let report = driver
         .submit_root_source_report(source.to_owned())
         .await
         .map_err(|error| {
-            if is_source_retrieval_indexing {
+            if track_source_retrieval_indexing {
                 metrics::source_retrieval_indexing_failed(start.elapsed());
             }
             format_driver_error(error)
         })?;
     if !matches!(report.outcome, TaskOutcome::Suspended { .. }) {
-        if is_source_retrieval_indexing {
+        if track_source_retrieval_indexing {
             record_source_retrieval_indexing_report_outcome(start, &report.outcome);
         }
         log_startup_source_end(source, &report.render());
         return Ok(());
     }
+    let tracked_task_id = report.task_id;
     loop {
         for event in driver.wait_events().await {
             match event {
-                DriverEvent::TaskCompleted { task_id, value } if task_id == report.task_id => {
-                    if is_source_retrieval_indexing {
+                DriverEvent::TaskCompleted { task_id, value } if task_id == tracked_task_id => {
+                    if should_follow_spawned_child
+                        && let Some(child_task_id) = spawned_child_task_id(&value)
+                    {
+                        tracing::info!(
+                            source = %source,
+                            description = startup_source_description(source),
+                            parent_task_id = task_id,
+                            child_task_id,
+                            "startup source spawned background task"
+                        );
+                        log_startup_source_end(
+                            source,
+                            &format!("spawned background task {child_task_id}"),
+                        );
+                        return Ok(());
+                    }
+                    if track_source_retrieval_indexing {
                         metrics::source_retrieval_indexing_completed(
                             start.elapsed(),
                             value.as_int(),
@@ -440,8 +460,8 @@ async fn run_startup_source(driver: &CompioTaskDriver, source: &str) -> Result<(
                     log_startup_source_end(source, &format!("completed with {}", value));
                     return Ok(());
                 }
-                DriverEvent::TaskAborted { task_id, error } if task_id == report.task_id => {
-                    if is_source_retrieval_indexing {
+                DriverEvent::TaskAborted { task_id, error } if task_id == tracked_task_id => {
+                    if track_source_retrieval_indexing {
                         metrics::source_retrieval_indexing_failed(start.elapsed());
                     }
                     return Err(format!(
@@ -450,8 +470,8 @@ async fn run_startup_source(driver: &CompioTaskDriver, source: &str) -> Result<(
                         error
                     ));
                 }
-                DriverEvent::TaskFailed { task_id, error } if task_id == report.task_id => {
-                    if is_source_retrieval_indexing {
+                DriverEvent::TaskFailed { task_id, error } if task_id == tracked_task_id => {
+                    if track_source_retrieval_indexing {
                         metrics::source_retrieval_indexing_failed(start.elapsed());
                     }
                     return Err(format!(
@@ -460,9 +480,9 @@ async fn run_startup_source(driver: &CompioTaskDriver, source: &str) -> Result<(
                     ));
                 }
                 DriverEvent::TaskSuspended { task_id, kind }
-                    if task_id == report.task_id && !startup_suspend_can_resume(&kind) =>
+                    if task_id == tracked_task_id && !startup_suspend_can_resume(&kind) =>
                 {
-                    if is_source_retrieval_indexing {
+                    if track_source_retrieval_indexing {
                         metrics::source_retrieval_indexing_failed(start.elapsed());
                     }
                     return Err(format!(
@@ -475,6 +495,14 @@ async fn run_startup_source(driver: &CompioTaskDriver, source: &str) -> Result<(
             }
         }
     }
+}
+
+fn spawned_child_task_id(value: &Value) -> Option<u64> {
+    let task_id = value.as_int()?;
+    if task_id <= 0 {
+        return None;
+    }
+    Some(task_id as u64)
 }
 
 fn record_source_retrieval_indexing_report_outcome(start: Instant, outcome: &TaskOutcome) {
@@ -500,17 +528,22 @@ fn startup_suspend_can_resume(kind: &mica_runtime::SuspendKind) -> bool {
 }
 
 fn startup_source_description(source: &str) -> &'static str {
-    if is_source_retrieval_indexing_source(source) {
-        "prewarming source retrieval index"
-    } else if source.contains("source/run_retrieval_prewarm") {
+    if startup_source_should_follow_spawned_child(source) {
         "spawning source retrieval index prewarm"
+    } else if is_source_retrieval_indexing_source(source) {
+        "prewarming source retrieval index"
     } else {
         "running startup source"
     }
 }
 
+fn startup_source_should_follow_spawned_child(source: &str) -> bool {
+    source.contains("spawn") && source.contains("source/run_retrieval_prewarm")
+}
+
 fn is_source_retrieval_indexing_source(source: &str) -> bool {
     source.contains("source/prewarm_retrieval_index")
+        || source.contains("source/run_retrieval_prewarm")
 }
 
 fn format_source_error(error: mica_runtime::SourceTaskError) -> String {

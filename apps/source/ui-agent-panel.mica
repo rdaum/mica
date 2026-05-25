@@ -9,7 +9,7 @@ end
 verb source/agent_turn_citations_node(turn)
   let plan = one source/AgentTurnPlan(turn, ?plan)
   if plan == nothing
-    return source/empty_node("No source evidence recorded.")
+    return source/empty_node("")
   end
 
   let items = []
@@ -23,10 +23,10 @@ verb source/agent_turn_citations_node(turn)
   end
 
   if items == []
-    return source/empty_node("No source evidence recorded.")
+    return source/empty_node("")
   end
 
-  return dom_element("div", {:class -> "source-agent-citations"}, items)
+  return dom_element("details", {:class -> "source-agent-citations"}, [dom_element("summary", {}, [dom_text("Retrieved context")]), dom_element("div", {:class -> "source-agent-citations-list"}, items)])
 end
 
 verb source/agent_turn_node(turn)
@@ -155,4 +155,3 @@ verb source/code_tray_node(repository, revision)
 
   return dom_element("section", {:class -> class}, [tabs, dom_element("div", {:class -> "source-code-tray-body"}, [content])])
 end
-

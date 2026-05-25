@@ -38,7 +38,7 @@ input {
 
 .source-app {
   min-height: 100vh;
-  padding: 0.75rem clamp(0.75rem, 1.4vw, 1.5rem) 4.5rem;
+  padding: 0.45rem clamp(0.75rem, 1.4vw, 1.5rem) 4.5rem;
 }
 
 .source-header {
@@ -46,28 +46,24 @@ input {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.35rem 1rem;
   align-items: end;
-  margin: 0 auto 0.75rem;
+  margin: 0 auto 0.35rem;
   max-width: 1720px;
 }
 
 .source-header h1 {
   margin: 0;
-  font-size: clamp(2.2rem, 5vw, 4.5rem);
-  line-height: 0.9;
-  letter-spacing: -0.08em;
+  font-size: clamp(1.9rem, 3.5vw, 3.25rem);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: 0;
 }
 
-.source-deck {
-  grid-column: 1;
-  max-width: 42rem;
-  margin: 0;
-  color: var(--source-muted);
-  font-size: 1rem;
+.source-header h1 em {
+  font-style: italic;
 }
 
 .source-header .source-meta {
   grid-column: 2;
-  grid-row: 1 / span 2;
   justify-content: end;
 }
 
@@ -417,6 +413,22 @@ body.source-agent-working .source-agent-turn-list::after {
 .source-agent-citations {
   display: grid;
   gap: 0.35rem;
+  margin-top: 0.45rem;
+  border-top: 1px solid rgba(216, 203, 181, 0.72);
+  padding-top: 0.45rem;
+}
+
+.source-agent-citations > summary {
+  width: fit-content;
+  color: var(--source-muted);
+  cursor: pointer;
+  font-size: 0.86rem;
+}
+
+.source-agent-citations-list {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
 }
 
 .source-search-status {

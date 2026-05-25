@@ -457,17 +457,38 @@ verb source/search_context(actor, question_text @ #string, limit, scope @ #strin
     end
   end
 
-  if contexts != [] && source/retrieval_index_ready(model)
+  if source/retrieval_index_ready(model)
     semantic_status = "vector_ready"
     let query_embedding = embed_text(model, question_text)
     for found in NearestEmbedding(#source/retrieval_index, query_embedding, limit, ?subject, ?score, ?snapshot_version)
       let subject = found[:subject]
-      let context = retrieval/context_value(plan, subject)
-      if ContextForPlan(context, plan)
-        retract ContextReason(context, _)
-        assert ContextReason(context, "text_search+nearest_embedding")
-        retract ContextSnapshotVersion(context, _)
-        assert ContextSnapshotVersion(context, found[:snapshot_version])
+      if source/can_retrieve_subject(actor, subject)
+        let context = retrieval/context_value(plan, subject)
+        if ContextForPlan(context, plan)
+          retract ContextReason(context, _)
+          assert ContextReason(context, "text_search+nearest_embedding")
+          retract ContextSnapshotVersion(context, _)
+          assert ContextSnapshotVersion(context, found[:snapshot_version])
+        else
+          let snippet = source/retrieval_text_unit_text(subject)
+          let line = source/retrieval_text_unit_line(subject)
+          if snippet == nothing
+            snippet = ""
+          end
+          if line == nothing
+            line = 1
+          end
+          assert RetrievedContext(context)
+          assert ContextForPlan(context, plan)
+          assert ContextSubject(context, subject)
+          assert ContextScore(context, found[:score])
+          assert ContextReason(context, "nearest_embedding")
+          assert ContextSnapshotVersion(context, found[:snapshot_version])
+          assert source/RetrievalCitation(plan, subject)
+          assert source/RetrievalCitationText(plan, subject, snippet)
+          assert source/RetrievalCitationLine(plan, subject, line)
+          contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :snapshot_version -> found[:snapshot_version], :snippet -> snippet, :line -> line}]
+        end
         semantic_status = "vector_boosted"
       end
     end
@@ -613,6 +634,10 @@ verb source/source_index_available()
 end
 
 verb source/record_agent_turn_citations(turn, plan, actor)
+  if plan == nothing
+    return 0
+  end
+
   let count = 0
   for found in ContextForPlan(?context, plan)
     let subject = one ContextSubject(found[:context], ?subject)

@@ -1340,6 +1340,72 @@ mod tests {
     }
 
     #[test]
+    fn source_app_search_uses_vector_results_without_lexical_hits() {
+        let root_path = env::current_dir().unwrap().join("target").join(format!(
+            "source-app-vector-only-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(root_path.join("src")).unwrap();
+        fs::write(
+            root_path.join("src/lib.rs"),
+            "pub fn vector_only_corpus_entry() {\n    let phrase = \"needle semantic corpus entry\";\n}\n",
+        )
+        .unwrap();
+
+        let index_path = temp_index_path("source-app-vector-only");
+        build_source_index_file(&root_path, &index_path).unwrap();
+        with_source_index_and_root_env(
+            &index_path,
+            &root_path,
+            Some(Path::new("/bin/false")),
+            || {
+                let mut runner = SourceRunner::new_empty();
+                load_source_app(&mut runner);
+                let root = root_path.display().to_string();
+                runner
+                    .run_source(&format!(
+                        "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                         assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                    ))
+                    .unwrap();
+
+                let report = runner
+                    .run_source(
+                        "source/prewarm_retrieval_index(#web)\n\
+                         let retrieval = source/search_context(#web, \"query without lexical overlap\", 64, \"all\", \"source-workspace\")\n\
+                         let plan = retrieval[:plan]\n\
+                         let semantic_status = retrieval[:semantic_status]\n\
+                         let reason = nothing\n\
+                         let score = nothing\n\
+                         for found in ContextForPlan(?context, plan)\n\
+                           let subject = one ContextSubject(found[:context], ?subject)\n\
+                           if source/retrieval_text_unit_path(subject) == \"src/lib.rs\"\n\
+                             reason = one ContextReason(found[:context], ?reason)\n\
+                             score = one ContextScore(found[:context], ?score)\n\
+                             break\n\
+                           end\n\
+                         end\n\
+                         return [semantic_status, reason, score != nothing]",
+                    )
+                    .unwrap();
+                let TaskOutcome::Complete { value, .. } = report.outcome else {
+                    panic!("expected complete outcome, got {:?}", report.outcome);
+                };
+                value
+                    .with_list(|values| {
+                        assert_eq!(values[0], Value::string("vector_boosted"));
+                        assert_eq!(values[1], Value::string("nearest_embedding"));
+                        assert_eq!(values[2], Value::bool(true));
+                    })
+                    .expect("expected vector-only retrieval tuple");
+            },
+        );
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
+    }
+
+    #[test]
     fn source_app_retrieval_search_does_not_index_inline() {
         let root_path = env::current_dir().unwrap().join("target").join(format!(
             "source-app-no-inline-indexing-{}-{}",

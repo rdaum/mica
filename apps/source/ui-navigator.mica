@@ -1,12 +1,10 @@
 // Source viewer repository navigator and workspace summary.
 
 verb source/header_node(repository, revision)
-  let name = one source/RepositoryName(repository, ?name)
   let label = one source/RevisionLabel(revision, ?label)
-  let title = dom_element("h1", {}, [dom_text(name)])
-  let deck = dom_element("p", {:class -> "source-deck"}, [dom_text("A Mica-authored source viewer over provider-backed local worktree reads.")])
+  let title = dom_element("h1", {}, [dom_element("em", {}, [dom_text("conatus")])])
   let meta = dom_element("div", {:class -> "source-meta"}, [source/meta_chip_node("revision", label), source/meta_chip_node("mode", "local file provider")])
-  return dom_element("header", {:class -> "source-header"}, [title, deck, meta])
+  return dom_element("header", {:class -> "source-header"}, [title, meta])
 end
 
 verb source/index_status_node(repository, revision)
