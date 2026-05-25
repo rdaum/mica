@@ -14,10 +14,12 @@
 use crate::Snapshot;
 use fast_telemetry::{
     Counter, DeriveLabel, ExportMetrics, Gauge, Histogram, LabeledCounter, LabeledHistogram,
+    SampledTimer,
 };
 use std::sync::LazyLock;
 
 const DEFAULT_SHARDS: usize = 64;
+const TIMER_SAMPLE_STRIDE: u64 = 64;
 const COUNT_BUCKETS: &[u64] = &[
     0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 50_000,
 ];
@@ -82,6 +84,9 @@ pub struct RelationKernelMetrics {
     #[help = "Transaction commit duration in microseconds"]
     pub transaction_commit_duration_us: Histogram,
 
+    #[help = "Transaction commit duration"]
+    pub transaction_commit_duration: SampledTimer,
+
     #[help = "Tuples changed per committed transaction"]
     pub transaction_commit_changes: Histogram,
 
@@ -111,6 +116,10 @@ impl RelationKernelMetrics {
             transaction_commits: LabeledCounter::new(shard_count),
             catalog_operations: LabeledCounter::new(shard_count),
             transaction_commit_duration_us: Histogram::with_latency_buckets(shard_count),
+            transaction_commit_duration: SampledTimer::with_latency_buckets(
+                shard_count,
+                TIMER_SAMPLE_STRIDE,
+            ),
             transaction_commit_changes: Histogram::new(COUNT_BUCKETS, shard_count),
             transaction_read_rows: LabeledHistogram::new(COUNT_BUCKETS, shard_count),
             snapshot_relations: Gauge::new(),

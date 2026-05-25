@@ -1,5 +1,5 @@
 use mica_relation_kernel::{ComputedRelationRead, KernelError, RelationId, RelationRead, Tuple};
-use mica_var::Value;
+use mica_var::{Symbol, Value};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -8,11 +8,7 @@ pub(crate) fn relation_id(
     name: &str,
     arity: u16,
 ) -> Option<RelationId> {
-    reader
-        .relation_metadata_vec()
-        .into_iter()
-        .find(|metadata| metadata.name().name() == Some(name) && metadata.arity() == arity)
-        .map(|metadata| metadata.id())
+    reader.relation_id(Symbol::intern(name), arity)
 }
 
 pub(crate) fn one_value(

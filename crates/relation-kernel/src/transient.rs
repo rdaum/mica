@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::RelationState;
-use crate::snapshot::active_rules;
+use crate::snapshot::{active_rules, relation_has_active_rule_head};
 use crate::tuple::extend_matching_tuple_rows;
 use crate::{
     ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationId,
@@ -305,7 +305,7 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
             bindings,
         )?;
 
-        if !self.tx.base.rules().is_empty() {
+        if relation_has_active_rule_head(self.tx.base.rules(), relation) {
             let reader = ComposedExtensionalTransactionRead {
                 tx: self.tx,
                 transient: self.transient,

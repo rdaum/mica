@@ -611,7 +611,7 @@ impl TaskManager {
         let result = task.run_with_transient(Some(&mut self.transient), &transient_scopes);
         crate::metrics::record_task_result(
             crate::metrics::TaskOperation::Submit,
-            elapsed_us(start),
+            start.elapsed(),
             &result,
         );
         let outcome = result?;
@@ -688,7 +688,7 @@ impl TaskManager {
         let result = task.run_with_transient(Some(&mut self.transient), &transient_scopes);
         crate::metrics::record_task_result(
             crate::metrics::TaskOperation::Resume,
-            elapsed_us(start),
+            start.elapsed(),
             &result,
         );
         let outcome = result?;
@@ -853,7 +853,7 @@ impl SharedTaskManager {
         };
         crate::metrics::record_task_result(
             crate::metrics::TaskOperation::Submit,
-            elapsed_us(start),
+            start.elapsed(),
             &result,
         );
         let outcome = result?;
@@ -911,7 +911,7 @@ impl SharedTaskManager {
         };
         crate::metrics::record_task_result(
             crate::metrics::TaskOperation::Resume,
-            elapsed_us(start),
+            start.elapsed(),
             &result,
         );
         let outcome = result?;
@@ -1225,10 +1225,6 @@ fn suspended_state(outcome: &TaskOutcome, task: &Task<'_>) -> Option<crate::task
     } else {
         None
     }
-}
-
-fn elapsed_us(start: Instant) -> u64 {
-    start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 fn record_transient_metrics(transient: &TransientStore) {

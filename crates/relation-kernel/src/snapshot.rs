@@ -22,7 +22,7 @@ use crate::{
     RelationMetadata, RelationRead, RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple,
     Version,
 };
-use mica_var::{Identity, Value};
+use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock};
 
@@ -595,6 +595,14 @@ impl ComputedRelationRead for Snapshot {
 
     fn relation_metadata_vec(&self) -> Vec<RelationMetadata> {
         self.relation_metadata().cloned().collect()
+    }
+
+    fn relation_id(&self, name: Symbol, arity: u16) -> Option<RelationId> {
+        self.relations
+            .values()
+            .map(|relation| relation.metadata())
+            .find(|metadata| metadata.name() == name && metadata.arity() == arity)
+            .map(|metadata| metadata.id())
     }
 
     fn rules_vec(&self) -> Vec<RuleDefinition> {

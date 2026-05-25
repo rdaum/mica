@@ -13,13 +13,16 @@
 
 use fast_telemetry::{
     Counter, DeriveLabel, ExportMetrics, Gauge, LabeledCounter, LabeledHistogram,
+    LabeledSampledTimer,
 };
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
 use crate::TaskOutcome;
 
 const DEFAULT_SHARDS: usize = 64;
+const TIMER_SAMPLE_STRIDE: u64 = 64;
 const LATENCY_BUCKETS_US: &[u64] = &[
     10, 50, 100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000,
     10_000_000,
@@ -72,6 +75,9 @@ pub struct RuntimeMetrics {
 
     #[help = "Task run duration in microseconds by operation"]
     pub task_run_duration_us: LabeledHistogram<TaskOperation>,
+
+    #[help = "Task run duration by operation"]
+    pub task_run_duration: LabeledSampledTimer<TaskOperation>,
 
     #[help = "Currently suspended tasks"]
     pub suspended_tasks: Gauge,
@@ -134,6 +140,10 @@ impl RuntimeMetrics {
             task_operations: LabeledCounter::new(shard_count),
             task_outcomes: LabeledCounter::new(shard_count),
             task_run_duration_us: LabeledHistogram::new(LATENCY_BUCKETS_US, shard_count),
+            task_run_duration: LabeledSampledTimer::with_latency_buckets(
+                shard_count,
+                TIMER_SAMPLE_STRIDE,
+            ),
             suspended_tasks: Gauge::new(),
             completed_tasks: Gauge::new(),
             endpoint_operations: LabeledCounter::new(shard_count),
@@ -162,16 +172,23 @@ pub fn metrics() -> &'static RuntimeMetrics {
 
 pub(crate) fn record_task_result(
     operation: TaskOperation,
-    elapsed_us: u64,
+    elapsed: Duration,
     result: &Result<TaskOutcome, impl Sized>,
 ) {
     let metrics = metrics();
     metrics.task_operations.inc(operation);
-    metrics.task_run_duration_us.record(operation, elapsed_us);
+    metrics
+        .task_run_duration_us
+        .record(operation, duration_us(elapsed));
+    metrics.task_run_duration.record_elapsed(operation, elapsed);
     metrics.task_outcomes.inc(match result {
         Ok(outcome) => outcome_label(outcome),
         Err(_) => RuntimeTaskOutcome::Error,
     });
+}
+
+fn duration_us(elapsed: Duration) -> u64 {
+    elapsed.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 pub(crate) fn record_outcome_side_effects(outcome: &TaskOutcome) {

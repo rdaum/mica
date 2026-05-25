@@ -13,11 +13,14 @@
 
 use fast_telemetry::{
     Counter, DeriveLabel, ExportMetrics, Gauge, LabeledCounter, LabeledHistogram,
+    LabeledSampledTimer,
 };
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
 const DEFAULT_SHARDS: usize = 64;
+const TIMER_SAMPLE_STRIDE: u64 = 64;
 const LATENCY_BUCKETS_US: &[u64] = &[
     10, 50, 100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000,
 ];
@@ -63,6 +66,9 @@ pub struct WebHostMetrics {
     #[help = "HTTP request handling duration in microseconds by kind"]
     pub request_duration_us: LabeledHistogram<HttpRequestKind>,
 
+    #[help = "HTTP request handling duration by kind"]
+    pub request_duration: LabeledSampledTimer<HttpRequestKind>,
+
     #[help = "HTTP request body bytes"]
     pub request_body_bytes: Counter,
 
@@ -84,6 +90,10 @@ impl WebHostMetrics {
             requests: LabeledCounter::new(shard_count),
             responses: LabeledCounter::new(shard_count),
             request_duration_us: LabeledHistogram::new(LATENCY_BUCKETS_US, shard_count),
+            request_duration: LabeledSampledTimer::with_latency_buckets(
+                shard_count,
+                TIMER_SAMPLE_STRIDE,
+            ),
             request_body_bytes: Counter::new(shard_count),
             response_body_bytes: Counter::new(shard_count),
             connection_read_errors: Counter::new(shard_count),
@@ -106,8 +116,8 @@ pub(crate) fn status_class(status: u16) -> HttpStatusClass {
     }
 }
 
-pub(crate) fn elapsed_us(start: std::time::Instant) -> u64 {
-    start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+pub(crate) fn duration_us(elapsed: Duration) -> u64 {
+    elapsed.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 pub(crate) fn connection_started() {

@@ -941,6 +941,59 @@ fn composed_transaction_reader_derives_rules_from_transient_inputs() {
 }
 
 #[test]
+fn composed_transaction_reader_skips_rules_for_non_derived_relation() {
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        vec![Arc::new(EchoComputedRelation) as Arc<dyn ComputedRelation>],
+    );
+    kernel
+        .create_relation(RelationMetadata::new(rel(73), Symbol::intern("Visible"), 1))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(200),
+            Symbol::intern("ComputedEcho"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(201),
+            Symbol::intern("Derived"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(201),
+                [var("item"), var("value")],
+                [Atom::positive(rel(200), [var("item"), var("value")])],
+            ),
+            "Derived(item, value) :- ComputedEcho(item, value)",
+        )
+        .unwrap();
+
+    let scope = rel(74);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(
+            scope,
+            RelationMetadata::new(rel(73), Symbol::intern("Visible"), 1),
+            Tuple::from([int(9)]),
+        )
+        .unwrap();
+    let tx = kernel.begin();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        reader.scan_relation(rel(73), &[None]).unwrap(),
+        vec![Tuple::from([int(9)])]
+    );
+}
+
+#[test]
 fn method_program_cache_is_scoped_to_snapshot_version() {
     let kernel = RelationKernel::new();
     kernel

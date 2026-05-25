@@ -15,7 +15,7 @@ use mica_relation_kernel::{
     ComputedRelation, ComputedRelationRead, KernelError, RelationId, RelationMetadata,
     RelationRead, Tuple, system_computed_relations,
 };
-use mica_var::Value;
+use mica_var::{Symbol, Value};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -155,11 +155,7 @@ fn invalid_relation(relation: RelationId, message: impl Into<String>) -> KernelE
 }
 
 fn relation_id(reader: &dyn ComputedRelationRead, name: &str, arity: u16) -> Option<RelationId> {
-    reader
-        .relation_metadata_vec()
-        .into_iter()
-        .find(|metadata| metadata.name().name() == Some(name) && metadata.arity() == arity)
-        .map(|metadata| metadata.id())
+    reader.relation_id(Symbol::intern(name), arity)
 }
 
 fn parse_limit(relation: RelationId, value: &Value) -> Result<usize, KernelError> {

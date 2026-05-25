@@ -14,7 +14,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 const REPOSITORY_ENTRY_BOUND: &[u16] = &[0, 1, 2];
 const FILE_TEXT_BOUND: &[u16] = &[0, 1, 2];
@@ -28,6 +28,7 @@ const DEFINITION_AT_BOUND: &[u16] = &[0, 1, 2, 3];
 const REFERENCES_OF_BOUND: &[u16] = &[0, 1, 2];
 const SYMBOL_SEARCH_BOUND: &[u16] = &[0, 1, 2, 3];
 const INDEX_VALUE_BOUND: &[u16] = &[];
+const SEMANTIC_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
     let provider = Arc::new(LocalSourceProvider::from_env());
@@ -197,12 +198,24 @@ impl LocalSourceProvider {
         &self,
         relation: RelationId,
     ) -> Result<Arc<PersistentSemanticIndex>, KernelError> {
-        let key = semantic_index_key(relation, &self.semantic_index_path)?;
         let mut cache = self.semantic_index_cache.lock().unwrap();
+        if let Some(cached) = cache.as_ref()
+            && cached.last_checked.elapsed() < SEMANTIC_INDEX_REFRESH_INTERVAL
+        {
+            return Ok(cached.index.clone());
+        }
+
+        let key = semantic_index_key(relation, &self.semantic_index_path)?;
         if let Some(cached) = cache.as_ref()
             && cached.key == key
         {
-            return Ok(cached.index.clone());
+            let index = cached.index.clone();
+            *cache = Some(CachedSemanticIndex {
+                key,
+                last_checked: Instant::now(),
+                index: index.clone(),
+            });
+            return Ok(index);
         }
         let index = Arc::new(PersistentSemanticIndex::load(
             relation,
@@ -210,6 +223,7 @@ impl LocalSourceProvider {
         )?);
         *cache = Some(CachedSemanticIndex {
             key,
+            last_checked: Instant::now(),
             index: index.clone(),
         });
         Ok(index)
@@ -225,6 +239,7 @@ struct SemanticIndexKey {
 #[derive(Clone, Debug)]
 struct CachedSemanticIndex {
     key: Option<SemanticIndexKey>,
+    last_checked: Instant,
     index: Arc<PersistentSemanticIndex>,
 }
 

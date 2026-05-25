@@ -13,7 +13,7 @@
 
 use crate::query::RelationRead;
 use crate::{KernelError, RelationId, RelationMetadata, RuleDefinition, Tuple, Version};
-use mica_var::Value;
+use mica_var::{Symbol, Value};
 use std::fmt;
 use std::sync::Arc;
 
@@ -21,6 +21,13 @@ pub trait ComputedRelationRead: RelationRead {
     fn version(&self) -> Version;
 
     fn relation_metadata_vec(&self) -> Vec<RelationMetadata>;
+
+    fn relation_id(&self, name: Symbol, arity: u16) -> Option<RelationId> {
+        self.relation_metadata_vec()
+            .into_iter()
+            .find(|metadata| metadata.name() == name && metadata.arity() == arity)
+            .map(|metadata| metadata.id())
+    }
 
     fn rules_vec(&self) -> Vec<RuleDefinition>;
 

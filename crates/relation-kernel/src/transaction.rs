@@ -30,7 +30,7 @@ use crate::{
     KernelError, RelationId, RelationKernel, RelationRead, RelationWorkspace, RuleSet, ScanControl,
     Snapshot, Tuple, Version,
 };
-use mica_var::Value;
+use mica_var::{Symbol, Value};
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -429,10 +429,14 @@ impl<'a> Transaction<'a> {
     pub fn commit(self) -> Result<CommitResult, KernelError> {
         let start = Instant::now();
         let result = self.commit_inner();
-        let elapsed_us = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        let elapsed = start.elapsed();
+        let elapsed_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
         crate::metrics::metrics()
             .transaction_commit_duration_us
             .record(elapsed_us);
+        crate::metrics::metrics()
+            .transaction_commit_duration
+            .record_elapsed(elapsed);
         match &result {
             Ok(result) => {
                 crate::metrics::metrics()
@@ -833,6 +837,15 @@ impl ComputedRelationRead for Transaction<'_> {
 
     fn relation_metadata_vec(&self) -> Vec<crate::RelationMetadata> {
         self.base.relation_metadata().cloned().collect()
+    }
+
+    fn relation_id(&self, name: Symbol, arity: u16) -> Option<RelationId> {
+        self.base
+            .relations
+            .values()
+            .map(|relation| relation.metadata())
+            .find(|metadata| metadata.name() == name && metadata.arity() == arity)
+            .map(|metadata| metadata.id())
     }
 
     fn rules_vec(&self) -> Vec<crate::RuleDefinition> {

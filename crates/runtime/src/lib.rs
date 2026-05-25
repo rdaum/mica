@@ -4628,6 +4628,14 @@ fn relation_named(kernel: &RelationKernel, name: Symbol) -> Option<(Identity, u1
         .map(|metadata| (metadata.id(), metadata.arity()))
 }
 
+fn relation_name_index(kernel: &RelationKernel) -> BTreeMap<Symbol, (Identity, u16)> {
+    let snapshot = kernel.snapshot();
+    snapshot
+        .relation_metadata()
+        .map(|metadata| (metadata.name(), (metadata.id(), metadata.arity())))
+        .collect()
+}
+
 fn relation_metadata_named(kernel: &RelationKernel, name: Symbol) -> Option<RelationMetadata> {
     let snapshot = kernel.snapshot();
     snapshot
@@ -4699,12 +4707,14 @@ fn authority_for_actor(
     actor: Identity,
 ) -> Result<AuthorityContext, SourceTaskError> {
     let mut authority = AuthorityContext::empty();
+    let relation_names = relation_name_index(kernel);
     for policy_name in ["CanRead", "GrantRead"] {
         mint_relation_grants(
             kernel,
             actor,
             policy_name,
             CapabilityOp::Read,
+            &relation_names,
             &mut authority,
         )?;
     }
@@ -4713,6 +4723,7 @@ fn authority_for_actor(
         actor,
         "RoleCanRead",
         CapabilityOp::Read,
+        &relation_names,
         &mut authority,
     )?;
     for policy_name in ["CanWrite", "GrantWrite"] {
@@ -4721,6 +4732,7 @@ fn authority_for_actor(
             actor,
             policy_name,
             CapabilityOp::Write,
+            &relation_names,
             &mut authority,
         )?;
     }
@@ -4729,16 +4741,29 @@ fn authority_for_actor(
         actor,
         "RoleCanWrite",
         CapabilityOp::Write,
+        &relation_names,
         &mut authority,
     )?;
     for policy_name in ["CanInvoke", "GrantInvoke"] {
-        mint_invoke_grants(kernel, actor, policy_name, &mut authority)?;
+        mint_invoke_grants(kernel, actor, policy_name, &relation_names, &mut authority)?;
     }
-    mint_role_invoke_grants(kernel, actor, "RoleCanInvoke", &mut authority)?;
+    mint_role_invoke_grants(
+        kernel,
+        actor,
+        "RoleCanInvoke",
+        &relation_names,
+        &mut authority,
+    )?;
     for policy_name in ["CanEffect", "GrantEffect"] {
-        mint_effect_grants(kernel, actor, policy_name, &mut authority)?;
+        mint_effect_grants(kernel, actor, policy_name, &relation_names, &mut authority)?;
     }
-    mint_role_effect_grants(kernel, actor, "RoleCanEffect", &mut authority)?;
+    mint_role_effect_grants(
+        kernel,
+        actor,
+        "RoleCanEffect",
+        &relation_names,
+        &mut authority,
+    )?;
     Ok(authority)
 }
 
@@ -4758,9 +4783,10 @@ fn mint_relation_grants(
     actor: Identity,
     policy_name: &str,
     op: CapabilityOp,
+    relation_names: &BTreeMap<Symbol, (Identity, u16)>,
     authority: &mut AuthorityContext,
 ) -> Result<(), SourceTaskError> {
-    let Some(policy_relation) = policy_relation(kernel, policy_name, 2)? else {
+    let Some(policy_relation) = policy_relation_from_index(relation_names, policy_name, 2)? else {
         return Ok(());
     };
     let snapshot = kernel.snapshot();
@@ -4774,7 +4800,7 @@ fn mint_relation_grants(
                 "expected relation name symbol",
             ));
         };
-        if let Some((relation, _)) = relation_named(kernel, relation_name) {
+        if let Some((relation, _)) = relation_names.get(&relation_name).copied() {
             authority.mint(CapabilityGrant::relation(op, relation));
         }
     }
@@ -4784,9 +4810,10 @@ fn mint_relation_grants(
 fn role_identities(
     kernel: &RelationKernel,
     actor: Identity,
+    relation_names: &BTreeMap<Symbol, (Identity, u16)>,
 ) -> Result<Vec<Identity>, SourceTaskError> {
     let mut roles = BTreeSet::from([actor]);
-    let Some(delegates) = policy_relation(kernel, "Delegates", 3)? else {
+    let Some(delegates) = policy_relation_from_index(relation_names, "Delegates", 3)? else {
         return Ok(roles.into_iter().collect());
     };
     let snapshot = kernel.snapshot();
@@ -4806,12 +4833,13 @@ fn mint_role_relation_grants(
     actor: Identity,
     policy_name: &str,
     op: CapabilityOp,
+    relation_names: &BTreeMap<Symbol, (Identity, u16)>,
     authority: &mut AuthorityContext,
 ) -> Result<(), SourceTaskError> {
-    let Some(policy_relation) = policy_relation(kernel, policy_name, 2)? else {
+    let Some(policy_relation) = policy_relation_from_index(relation_names, policy_name, 2)? else {
         return Ok(());
     };
-    let roles = role_identities(kernel, actor)?;
+    let roles = role_identities(kernel, actor, relation_names)?;
     let snapshot = kernel.snapshot();
     for role in roles {
         let tuples = snapshot
@@ -4824,7 +4852,7 @@ fn mint_role_relation_grants(
                     "expected relation name symbol",
                 ));
             };
-            if let Some((relation, _)) = relation_named(kernel, relation_name) {
+            if let Some((relation, _)) = relation_names.get(&relation_name).copied() {
                 authority.mint(CapabilityGrant::relation(op, relation));
             }
         }
@@ -4836,9 +4864,10 @@ fn mint_invoke_grants(
     kernel: &RelationKernel,
     actor: Identity,
     policy_name: &str,
+    relation_names: &BTreeMap<Symbol, (Identity, u16)>,
     authority: &mut AuthorityContext,
 ) -> Result<(), SourceTaskError> {
-    let Some(policy_relation) = policy_relation(kernel, policy_name, 2)? else {
+    let Some(policy_relation) = policy_relation_from_index(relation_names, policy_name, 2)? else {
         return Ok(());
     };
     let snapshot = kernel.snapshot();
@@ -4871,12 +4900,13 @@ fn mint_role_invoke_grants(
     kernel: &RelationKernel,
     actor: Identity,
     policy_name: &str,
+    relation_names: &BTreeMap<Symbol, (Identity, u16)>,
     authority: &mut AuthorityContext,
 ) -> Result<(), SourceTaskError> {
-    let Some(policy_relation) = policy_relation(kernel, policy_name, 2)? else {
+    let Some(policy_relation) = policy_relation_from_index(relation_names, policy_name, 2)? else {
         return Ok(());
     };
-    let roles = role_identities(kernel, actor)?;
+    let roles = role_identities(kernel, actor, relation_names)?;
     let snapshot = kernel.snapshot();
     for role in roles {
         let tuples = snapshot
@@ -4909,9 +4939,10 @@ fn mint_effect_grants(
     kernel: &RelationKernel,
     actor: Identity,
     policy_name: &str,
+    relation_names: &BTreeMap<Symbol, (Identity, u16)>,
     authority: &mut AuthorityContext,
 ) -> Result<(), SourceTaskError> {
-    let Some(policy_relation) = policy_relation(kernel, policy_name, 1)? else {
+    let Some(policy_relation) = policy_relation_from_index(relation_names, policy_name, 1)? else {
         return Ok(());
     };
     let snapshot = kernel.snapshot();
@@ -4932,12 +4963,13 @@ fn mint_role_effect_grants(
     kernel: &RelationKernel,
     actor: Identity,
     policy_name: &str,
+    relation_names: &BTreeMap<Symbol, (Identity, u16)>,
     authority: &mut AuthorityContext,
 ) -> Result<(), SourceTaskError> {
-    let Some(policy_relation) = policy_relation(kernel, policy_name, 1)? else {
+    let Some(policy_relation) = policy_relation_from_index(relation_names, policy_name, 1)? else {
         return Ok(());
     };
-    let roles = role_identities(kernel, actor)?;
+    let roles = role_identities(kernel, actor, relation_names)?;
     let snapshot = kernel.snapshot();
     for role in roles {
         if !snapshot
@@ -4954,12 +4986,12 @@ fn mint_role_effect_grants(
     Ok(())
 }
 
-fn policy_relation(
-    kernel: &RelationKernel,
+fn policy_relation_from_index(
+    relation_names: &BTreeMap<Symbol, (Identity, u16)>,
     name: &str,
     expected_arity: u16,
 ) -> Result<Option<Identity>, SourceTaskError> {
-    let Some((relation, arity)) = relation_named(kernel, Symbol::intern(name)) else {
+    let Some((relation, arity)) = relation_names.get(&Symbol::intern(name)).copied() else {
         return Ok(None);
     };
     if arity != expected_arity {

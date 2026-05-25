@@ -200,9 +200,14 @@ async fn refresh_active_sync_view_for(
 ) -> Result<(), String> {
     let start = Instant::now();
     let revision = render_sync_revision_for(driver, active.endpoint, active.view_id).await?;
+    let elapsed = start.elapsed();
+    crate::metrics::metrics().sync_render_duration_us.record(
+        RenderOperation::Refresh,
+        crate::metrics::duration_us(elapsed),
+    );
     crate::metrics::metrics()
-        .sync_render_duration_us
-        .record(RenderOperation::Refresh, crate::metrics::elapsed_us(start));
+        .sync_render_duration
+        .record_elapsed(RenderOperation::Refresh, elapsed);
     if revision == active.server_revision && active.last_tree.is_some() {
         if force_ack {
             send_sync_envelope_to(
@@ -300,9 +305,14 @@ async fn render_sync_revision_for(
         .await?,
     )
     .inspect(|_| {
+        let elapsed = start.elapsed();
+        crate::metrics::metrics().sync_render_duration_us.record(
+            RenderOperation::Revision,
+            crate::metrics::duration_us(elapsed),
+        );
         crate::metrics::metrics()
-            .sync_render_duration_us
-            .record(RenderOperation::Revision, crate::metrics::elapsed_us(start));
+            .sync_render_duration
+            .record_elapsed(RenderOperation::Revision, elapsed);
     })
 }
 
@@ -339,10 +349,13 @@ async fn render_sync_view_for(
         tree,
         payload,
     };
-    crate::metrics::metrics().sync_render_duration_us.record(
-        RenderOperation::View,
-        crate::metrics::elapsed_us(render_start),
-    );
+    let elapsed = render_start.elapsed();
+    crate::metrics::metrics()
+        .sync_render_duration_us
+        .record(RenderOperation::View, crate::metrics::duration_us(elapsed));
+    crate::metrics::metrics()
+        .sync_render_duration
+        .record_elapsed(RenderOperation::View, elapsed);
     Ok(rendered)
 }
 

@@ -90,6 +90,27 @@ display = "rate"
 unit = "us/s"
 
 [[metrics]]
+name = "mica_relation_kernel.transaction_commit_duration.calls"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "commit/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_commit_duration.samples.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "sample/s"
+
+[[metrics]]
+name = "mica_relation_kernel.transaction_commit_duration.samples.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "ns/s"
+
+[[metrics]]
 name = "mica_relation_kernel.transaction_commit_changes.count"
 view = "sparkline"
 kind = "counter"
@@ -193,6 +214,27 @@ view = "sparkline"
 kind = "counter"
 display = "rate"
 unit = "us/s"
+
+[[metrics]]
+name = "mica_runtime.task_run_duration.calls"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "run/s"
+
+[[metrics]]
+name = "mica_runtime.task_run_duration.samples.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "sample/s"
+
+[[metrics]]
+name = "mica_runtime.task_run_duration.samples.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "ns/s"
 
 [[metrics]]
 name = "mica_runtime.suspended_tasks"
@@ -363,6 +405,27 @@ display = "rate"
 unit = "us/s"
 
 [[metrics]]
+name = "mica_web_host.request_duration.calls"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "req/s"
+
+[[metrics]]
+name = "mica_web_host.request_duration.samples.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "sample/s"
+
+[[metrics]]
+name = "mica_web_host.request_duration.samples.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "ns/s"
+
+[[metrics]]
 name = "mica_web_host.request_body_bytes"
 view = "sparkline"
 kind = "counter"
@@ -529,6 +592,27 @@ view = "sparkline"
 kind = "counter"
 display = "rate"
 unit = "us/s"
+
+[[metrics]]
+name = "mica_webtransport_host.sync_render_duration.calls"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "render/s"
+
+[[metrics]]
+name = "mica_webtransport_host.sync_render_duration.samples.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "sample/s"
+
+[[metrics]]
+name = "mica_webtransport_host.sync_render_duration.samples.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "ns/s"
 
 [[metrics]]
 name = "mica_webtransport_host.queued_outgoing_datagrams"

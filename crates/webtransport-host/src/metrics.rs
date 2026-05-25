@@ -13,10 +13,13 @@
 
 use fast_telemetry::{
     Counter, DeriveLabel, ExportMetrics, Gauge, LabeledCounter, LabeledHistogram,
+    LabeledSampledTimer,
 };
 use std::sync::LazyLock;
+use std::time::Duration;
 
 const DEFAULT_SHARDS: usize = 64;
+const TIMER_SAMPLE_STRIDE: u64 = 64;
 const LATENCY_BUCKETS_US: &[u64] = &[
     10, 50, 100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000,
 ];
@@ -121,6 +124,9 @@ pub struct WebTransportMetrics {
     #[help = "Sync render duration in microseconds by operation"]
     pub sync_render_duration_us: LabeledHistogram<RenderOperation>,
 
+    #[help = "Sync render duration by operation"]
+    pub sync_render_duration: LabeledSampledTimer<RenderOperation>,
+
     #[help = "Queued outgoing datagrams waiting for a session writer"]
     pub queued_outgoing_datagrams: Gauge,
 }
@@ -147,6 +153,10 @@ impl WebTransportMetrics {
             output_send_after_close: Counter::new(shard_count),
             routed_driver_events: Counter::new(shard_count),
             sync_render_duration_us: LabeledHistogram::new(LATENCY_BUCKETS_US, shard_count),
+            sync_render_duration: LabeledSampledTimer::with_latency_buckets(
+                shard_count,
+                TIMER_SAMPLE_STRIDE,
+            ),
             queued_outgoing_datagrams: Gauge::new(),
         }
     }
@@ -156,6 +166,6 @@ pub fn metrics() -> &'static WebTransportMetrics {
     &METRICS
 }
 
-pub(crate) fn elapsed_us(start: std::time::Instant) -> u64 {
-    start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+pub(crate) fn duration_us(elapsed: Duration) -> u64 {
+    elapsed.as_micros().min(u128::from(u64::MAX)) as u64
 }

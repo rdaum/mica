@@ -245,10 +245,14 @@ fn record_http_response(
     response: &HttpResponse,
     start: std::time::Instant,
 ) {
+    let elapsed = start.elapsed();
     crate::metrics::metrics().requests.inc(kind);
     crate::metrics::metrics()
         .request_duration_us
-        .record(kind, crate::metrics::elapsed_us(start));
+        .record(kind, crate::metrics::duration_us(elapsed));
+    crate::metrics::metrics()
+        .request_duration
+        .record_elapsed(kind, elapsed);
     crate::metrics::metrics()
         .responses
         .inc(crate::metrics::status_class(response.status));
