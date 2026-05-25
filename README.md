@@ -9,15 +9,17 @@
 > **NOTE**: If you're looking at this on GitHub be aware this is just a mirror
 > from the canonical Codeberg repository at https://codeberg.org/timbran/mica
 
-Mica is a programming language and runtime for building long-lived
-shared systems.
+Mica is a programming language and runtime for building long-lived shared
+systems around facts, rules, objects, and inference.
 
-It is for software that stays live, keeps durable state, and can be
-extended while it is running: collaborative worlds, simulations,
-knowledge bases, agent workspaces, games, and operational tools.
+It is for software whose state is not only stored but reasoned over: live
+worlds where facts can imply other facts, rules define derived relations, and
+authors can extend the logic while the system is running. Collaborative worlds,
+simulations, knowledge bases, agent workspaces, games, and operational tools
+are all natural fits.
 
-Under the hood, Mica brings together application logic, durable data,
-and server-side execution in one system.
+Under the hood, Mica brings together deductive world logic, durable data, and
+server-side execution in one system.
 
 If you think in terms of today's typical stack, it sits across some of
 the space you might otherwise fill with Node, Postgres, background
