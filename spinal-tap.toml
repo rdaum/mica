@@ -48,6 +48,104 @@ display = "total"
 unit = "drivers"
 
 [[metrics]]
+name = "mica_daemon.source_retrieval_indexing_active"
+view = "numeric"
+kind = "gauge"
+display = "latest"
+unit = "runs"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_started"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "run/s"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_completed"
+view = "numeric"
+kind = "counter"
+display = "total"
+unit = "runs"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_errors"
+view = "numeric"
+kind = "counter"
+display = "total"
+unit = "errors"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_subjects"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "subject/s"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_duration_us.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "run/s"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_duration_us.sum"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "us/s"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_duration.calls"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "run/s"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_duration.samples.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "sample/s"
+
+[[metrics]]
+name = "mica_daemon.source_retrieval_indexing_duration.samples.sum"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "ns/s"
+
+[[metrics]]
+name = "mica_daemon.external_requests"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "req/s"
+
+[[metrics]]
+name = "mica_daemon.external_request_errors"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "err/s"
+
+[[metrics]]
+name = "mica_daemon.external_request_duration_us.count"
+view = "sparkline"
+kind = "counter"
+display = "rate"
+unit = "req/s"
+
+[[metrics]]
+name = "mica_daemon.external_request_duration_us.sum"
+view = "chart"
+kind = "counter"
+display = "rate"
+unit = "us/s"
+
+[[metrics]]
 name = "mica_daemon.endpoints_configured"
 view = "numeric"
 kind = "gauge"

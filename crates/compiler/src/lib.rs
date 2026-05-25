@@ -33,9 +33,10 @@ pub use ast::{
     Span, UnaryOp,
 };
 pub use backend::{
-    CompileContext, CompileError, CompiledProgram, InstalledMethod, InstalledParam,
-    MethodInstallation, MethodRelations, RuleInstallation, compile_semantic, compile_source,
-    install_methods, install_methods_from_source, install_rules, install_rules_from_source,
+    CompileContext, CompileError, CompiledProgram, HostRequestFunction, InstalledMethod,
+    InstalledParam, MethodInstallation, MethodRelations, RuleInstallation, compile_semantic,
+    compile_source, install_methods, install_methods_from_source, install_rules,
+    install_rules_from_source,
 };
 pub use hir::{
     HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,

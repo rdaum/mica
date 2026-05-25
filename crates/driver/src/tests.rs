@@ -13,11 +13,12 @@
 
 use crate::{CompioTaskDriver, DriverEvent};
 use mica_runtime::{
-    AuthorityContext, RuntimeError, SourceTaskError, TaskError, TaskInput, TaskManagerError,
-    TaskRequest,
+    AuthorityContext, EmbeddingProviderKind, RuntimeError, SourceTaskError, TaskError, TaskInput,
+    TaskManagerError, TaskRequest,
 };
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn endpoint(offset: u64) -> Identity {
@@ -84,6 +85,188 @@ fn timed_suspend_wakes_and_resumes_task() {
             event,
             DriverEvent::TaskCompleted { task_id, value }
                 if *task_id == submitted.task_id && *value == Value::string("awake")
+        )));
+    });
+}
+
+#[test]
+fn external_request_suspends_and_resumes_from_handler() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                Value::list([
+                    Value::symbol(request.service),
+                    request.payload,
+                    Value::int(request.timeout_millis.unwrap_or_default() as i64).unwrap(),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let driver =
+            CompioTaskDriver::spawn_with_external_handler(SourceRunner::new_empty(), handler)
+                .unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(30),
+                root_source("return external_request(:echo, \"hello\", 0.005)"),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == submitted.task_id
+                    && *value == Value::list([
+                        Value::symbol(Symbol::intern("echo")),
+                        Value::string("hello"),
+                        Value::int(5).unwrap(),
+                    ])
+        )));
+    });
+}
+
+#[test]
+fn vllm_embed_text_suspends_as_embedding_external_request() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("embedding"));
+                assert_eq!(
+                    request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("model"))),
+                    Some(Value::string("source-workspace"))
+                );
+                assert_eq!(
+                    request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("text"))),
+                    Some(Value::string("red brass lamp"))
+                );
+                Value::list([Value::float(0.25), Value::float(0.5), Value::float(0.75)])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let runner = SourceRunner::new_empty_with_embedding_provider(EmbeddingProviderKind::Vllm);
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(33),
+                root_source("return embed_text(\"source-workspace\", \"red brass lamp\")"),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == submitted.task_id
+                    && *value == Value::list([
+                        Value::float(0.25),
+                        Value::float(0.5),
+                        Value::float(0.75),
+                    ])
+        )));
+    });
+}
+
+#[test]
+fn root_startup_source_can_resume_vllm_embed_text() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("embedding"));
+                Value::list([Value::float(1.0), Value::float(0.0)])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let runner = SourceRunner::new_empty_with_embedding_provider(EmbeddingProviderKind::Vllm);
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let report = driver
+            .submit_root_source_report(
+                "return embed_text(\"source-workspace\", \"lamp\")".to_owned(),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(report.outcome, TaskOutcome::Suspended { .. }));
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == report.task_id
+                    && *value == Value::list([Value::float(1.0), Value::float(0.0)])
+        )));
+    });
+}
+
+#[test]
+fn external_request_requires_effect_authority() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let driver = CompioTaskDriver::spawn_empty().unwrap();
+        let request = TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: endpoint(31),
+            authority: AuthorityContext::empty(),
+            input: TaskInput::Source("return external_request(:echo, \"hello\")".to_owned()),
+        };
+
+        let denied = driver
+            .submit_source(endpoint(31), request)
+            .await
+            .unwrap_err();
+        assert!(driver.format_error(&denied).contains("permission denied"));
+    });
+}
+
+#[test]
+fn external_request_timeout_resumes_with_error_value() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|_request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                compio::time::sleep(Duration::from_millis(50)).await;
+                Value::string("late")
+            }) as crate::types::ExternalRequestFuture
+        });
+        let driver =
+            CompioTaskDriver::spawn_with_external_handler(SourceRunner::new_empty(), handler)
+                .unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(32),
+                root_source("return external_request(:slow, \"hello\", 0.001)"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == submitted.task_id
+                    && value.error_code_symbol() == Some(Symbol::intern("ExternalTimeout"))
         )));
     });
 }

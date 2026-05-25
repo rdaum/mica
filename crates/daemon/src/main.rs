@@ -15,9 +15,9 @@ use clap::Parser;
 use compio::net::TcpListener;
 use compio::runtime::Runtime;
 use fast_telemetry_export::dogstatsd::DogStatsDConfig;
-use mica_driver::CompioTaskDriver;
+use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
-use mica_runtime::{EmbeddingProviderKind, SourceRunner};
+use mica_runtime::{EmbeddingProviderKind, SourceRunner, TaskOutcome};
 use mica_telnet_host::{
     ActorBinding as TelnetActorBinding, InProcessTelnetHost, serve_in_process as serve_telnet,
 };
@@ -34,8 +34,9 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+mod external_http;
 mod metrics;
 #[allow(dead_code)]
 mod rpc;
@@ -156,11 +157,6 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             .map_err(format_source_error)?;
         metrics::metrics().fileins_loaded.inc();
     }
-    for source in &cli.startup_sources {
-        log_startup_source_begin(source);
-        let report = runner.run_source(source).map_err(format_source_error)?;
-        log_startup_source_end(source, &report.render());
-    }
     let telnet_actor = if cli.telnet_bind.is_some() {
         let actor_name = actor_name(&cli.actor)?;
         let actor = runner
@@ -197,11 +193,18 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     } else {
         None
     };
-    let driver = CompioTaskDriver::spawn_with_workers(runner, cli.driver_threads)
-        .map_err(format_driver_error)?;
+    let driver = CompioTaskDriver::spawn_with_workers_and_external_handler(
+        runner,
+        cli.driver_threads,
+        Some(external_http::handler()),
+    )
+    .map_err(format_driver_error)?;
     metrics::metrics().drivers_started.inc();
     if let Some(endpoint) = dogstatsd_endpoint {
         start_dogstatsd_export(endpoint, dogstatsd_interval);
+    }
+    for source in &cli.startup_sources {
+        run_startup_source(&driver, source).await?;
     }
     if let Some(rpc_bind) = cli.rpc_bind {
         start_rpc_server(driver.clone(), rpc_bind)?;
@@ -298,6 +301,7 @@ fn start_dogstatsd_export(endpoint: String, interval: Duration) {
     let config = DogStatsDConfig::new(endpoint).with_interval(interval);
     compio::runtime::spawn(async move {
         let mut daemon_state = metrics::DaemonMetricsDogStatsDState::new();
+        let mut driver_state = mica_driver::metrics::DriverMetricsDogStatsDState::new();
         let mut relation_kernel_state =
             mica_relation_kernel::metrics::RelationKernelMetricsDogStatsDState::new();
         let mut runtime_state = mica_runtime::metrics::RuntimeMetricsDogStatsDState::new();
@@ -309,6 +313,11 @@ fn start_dogstatsd_export(endpoint: String, interval: Duration) {
             future::pending::<()>(),
             move |output| {
                 metrics::metrics().export_dogstatsd_delta(output, &[], &mut daemon_state);
+                mica_driver::metrics::metrics().export_dogstatsd_delta(
+                    output,
+                    &[],
+                    &mut driver_state,
+                );
                 mica_relation_kernel::metrics::metrics().export_dogstatsd_delta(
                     output,
                     &[],
@@ -372,12 +381,111 @@ fn log_startup_source_end(source: &str, rendered_report: &str) {
     );
 }
 
+async fn run_startup_source(driver: &CompioTaskDriver, source: &str) -> Result<(), String> {
+    log_startup_source_begin(source);
+    let is_source_retrieval_indexing = is_source_retrieval_indexing_source(source);
+    let start = Instant::now();
+    if is_source_retrieval_indexing {
+        metrics::source_retrieval_indexing_started();
+    }
+    let report = driver
+        .submit_root_source_report(source.to_owned())
+        .await
+        .map_err(|error| {
+            if is_source_retrieval_indexing {
+                metrics::source_retrieval_indexing_failed(start.elapsed());
+            }
+            format_driver_error(error)
+        })?;
+    if !matches!(report.outcome, TaskOutcome::Suspended { .. }) {
+        if is_source_retrieval_indexing {
+            record_source_retrieval_indexing_report_outcome(start, &report.outcome);
+        }
+        log_startup_source_end(source, &report.render());
+        return Ok(());
+    }
+    loop {
+        for event in driver.wait_events().await {
+            match event {
+                DriverEvent::TaskCompleted { task_id, value } if task_id == report.task_id => {
+                    if is_source_retrieval_indexing {
+                        metrics::source_retrieval_indexing_completed(
+                            start.elapsed(),
+                            value.as_int(),
+                        );
+                    }
+                    log_startup_source_end(source, &format!("completed with {}", value));
+                    return Ok(());
+                }
+                DriverEvent::TaskAborted { task_id, error } if task_id == report.task_id => {
+                    if is_source_retrieval_indexing {
+                        metrics::source_retrieval_indexing_failed(start.elapsed());
+                    }
+                    return Err(format!(
+                        "startup source {} aborted with {}",
+                        startup_source_description(source),
+                        error
+                    ));
+                }
+                DriverEvent::TaskFailed { task_id, error } if task_id == report.task_id => {
+                    if is_source_retrieval_indexing {
+                        metrics::source_retrieval_indexing_failed(start.elapsed());
+                    }
+                    return Err(format!(
+                        "startup source {} failed: {error}",
+                        startup_source_description(source)
+                    ));
+                }
+                DriverEvent::TaskSuspended { task_id, kind }
+                    if task_id == report.task_id && !startup_suspend_can_resume(&kind) =>
+                {
+                    if is_source_retrieval_indexing {
+                        metrics::source_retrieval_indexing_failed(start.elapsed());
+                    }
+                    return Err(format!(
+                        "startup source {} suspended without an automatic resume: {:?}",
+                        startup_source_description(source),
+                        kind
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn record_source_retrieval_indexing_report_outcome(start: Instant, outcome: &TaskOutcome) {
+    match outcome {
+        TaskOutcome::Complete { value, .. } => {
+            metrics::source_retrieval_indexing_completed(start.elapsed(), value.as_int());
+        }
+        TaskOutcome::Aborted { .. } | TaskOutcome::Suspended { .. } => {
+            metrics::source_retrieval_indexing_failed(start.elapsed());
+        }
+    }
+}
+
+fn startup_suspend_can_resume(kind: &mica_runtime::SuspendKind) -> bool {
+    match kind {
+        mica_runtime::SuspendKind::Commit
+        | mica_runtime::SuspendKind::TimedMillis(_)
+        | mica_runtime::SuspendKind::Spawn(_)
+        | mica_runtime::SuspendKind::ExternalRequest(_) => true,
+        mica_runtime::SuspendKind::MailboxRecv(request) => request.timeout_millis.is_some(),
+        mica_runtime::SuspendKind::Never | mica_runtime::SuspendKind::WaitingForInput(_) => false,
+    }
+}
+
 fn startup_source_description(source: &str) -> &'static str {
-    if source.contains("source/prewarm_retrieval_index") {
+    if is_source_retrieval_indexing_source(source) {
         "prewarming source retrieval index"
     } else {
         "running startup source"
     }
+}
+
+fn is_source_retrieval_indexing_source(source: &str) -> bool {
+    source.contains("source/prewarm_retrieval_index")
 }
 
 fn format_source_error(error: mica_runtime::SourceTaskError) -> String {

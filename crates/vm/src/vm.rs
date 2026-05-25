@@ -15,9 +15,9 @@ use crate::builtin::{RuntimePorts, TransientAccess};
 use crate::program::{CompactListItem, CompactMapItem, CompactRelationArg, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
-    Emission, ErrorField, MailboxRecvRequest, Program, ProgramResolver, QueryBinding, Register,
-    RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp, SpawnRequest, SpawnTarget,
-    SuspendKind,
+    Emission, ErrorField, ExternalRequest, MailboxRecvRequest, Program, ProgramResolver,
+    QueryBinding, Register, RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp,
+    SpawnRequest, SpawnTarget, SuspendKind,
 };
 use mica_relation_kernel::{
     ApplicableMethodCall, ComposedTransactionRead, DispatchRead, DispatchRelations, RelationId,
@@ -1708,6 +1708,45 @@ impl RegisterVm {
                 Ok(VmHostResponse::Suspend(SuspendKind::MailboxRecv(
                     MailboxRecvRequest {
                         receivers,
+                        timeout_millis,
+                    },
+                )))
+            }
+            Opcode::ExternalRequest {
+                dst,
+                service,
+                payload,
+                timeout,
+            } => {
+                let service_value = self.resolve_operand_ref(program, *service);
+                let Some(service) = service_value.as_symbol() else {
+                    return Err(RuntimeError::InvalidBuiltinCall {
+                        name: Symbol::intern("external_request"),
+                        message: "external_request expects a symbol service".to_owned(),
+                    });
+                };
+                if !host.authority().can_effect() {
+                    return Err(RuntimeError::PermissionDenied {
+                        operation: "external_request",
+                        target: service_value,
+                    });
+                }
+                let payload = self.resolve_operand_ref(program, *payload);
+                let timeout_millis = timeout
+                    .map(|timeout| {
+                        self.suspend_duration(self.resolve_operand_ref(program, timeout))
+                            .and_then(|kind| match kind {
+                                SuspendKind::TimedMillis(millis) => Ok(millis),
+                                _ => unreachable!(),
+                            })
+                    })
+                    .transpose()?;
+                self.advance_ip_unchecked();
+                self.state.pending_resume = Some(*dst);
+                Ok(VmHostResponse::Suspend(SuspendKind::ExternalRequest(
+                    ExternalRequest {
+                        service,
+                        payload,
                         timeout_millis,
                     },
                 )))

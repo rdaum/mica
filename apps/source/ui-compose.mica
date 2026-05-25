@@ -321,6 +321,10 @@ verb source/retrieval_context_node(context)
 
   let hidden_subject = dom_element("input", {:type -> "hidden", :name -> "subject", :value -> to_literal(subject)}, [])
   let location = string_concat(path, ":", to_literal(line))
+  for indexed in source/IndexedTextUnit(subject, ?ordinal, ?kind, ?title, ?path, ?start_line, ?end_line, ?model, ?text)
+    title = location
+    break
+  end
   let button = dom_element("button", {:type -> "submit", :class -> "source-retrieval-result-button"}, [dom_element("span", {:class -> "source-retrieval-title"}, [dom_text(title)]), dom_element("span", {:class -> "source-retrieval-snippet"}, [dom_text(text)]), dom_element("span", {:class -> "source-retrieval-meta"}, [dom_text(location), dom_text(" / "), dom_text(kind), dom_text(" / "), dom_text(reason), dom_text(" / "), dom_text(to_literal(score))])])
   return dom_element("form", {:class -> "source-retrieval-result-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_retrieval_citation", "data-sync-key" -> string_concat("retrieval:", to_literal(subject))}, [hidden_subject, button])
 end

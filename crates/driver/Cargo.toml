@@ -8,6 +8,7 @@ description = "Compio-driven task driver for Mica"
 
 [dependencies]
 compio.workspace = true
+fast-telemetry.workspace = true
 mica-compiler.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true

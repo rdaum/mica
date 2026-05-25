@@ -18,6 +18,7 @@
 //! suspensions and endpoint input.
 
 mod affinity;
+pub mod metrics;
 mod pool;
 mod types;
 
@@ -28,4 +29,4 @@ pub use affinity::{
     DispatcherAffinity, DispatcherConfig, DispatcherPlacement, configure_dispatcher,
 };
 pub use pool::CompioTaskDriver;
-pub use types::{DriverError, DriverEvent, TaskContext};
+pub use types::{DriverError, DriverEvent, ExternalRequestHandler, TaskContext};

@@ -243,6 +243,13 @@ pub struct DotRelation {
     pub relation: RelationId,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostRequestFunction {
+    pub service: Symbol,
+    pub payload_fields: Vec<Symbol>,
+    pub timeout: Option<Value>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompileContext {
     relations: HashMap<String, RelationId>,
@@ -251,6 +258,7 @@ pub struct CompileContext {
     identities: HashMap<String, Identity>,
     program_identities: HashMap<String, Identity>,
     runtime_functions: HashSet<String>,
+    host_request_functions: HashMap<String, HostRequestFunction>,
     method_relations: Option<MethodRelations>,
 }
 
@@ -289,6 +297,15 @@ impl CompileContext {
         self
     }
 
+    pub fn with_host_request_function(
+        mut self,
+        name: impl Into<String>,
+        function: HostRequestFunction,
+    ) -> Self {
+        self.define_host_request_function(name, function);
+        self
+    }
+
     pub fn with_method_relations(mut self, method_relations: MethodRelations) -> Self {
         self.method_relations = Some(method_relations);
         self
@@ -322,6 +339,16 @@ impl CompileContext {
         self.runtime_functions.insert(name.into());
     }
 
+    pub fn define_host_request_function(
+        &mut self,
+        name: impl Into<String>,
+        function: HostRequestFunction,
+    ) {
+        let name = name.into();
+        self.runtime_functions.insert(name.clone());
+        self.host_request_functions.insert(name, function);
+    }
+
     pub fn relation(&self, name: &str) -> Option<RelationId> {
         self.relations.get(name).copied()
     }
@@ -344,6 +371,10 @@ impl CompileContext {
 
     pub fn is_runtime_function(&self, name: &str) -> bool {
         self.runtime_functions.contains(name)
+    }
+
+    pub fn host_request_function(&self, name: &str) -> Option<&HostRequestFunction> {
+        self.host_request_functions.get(name)
     }
 
     pub fn method_relations(&self) -> Option<MethodRelations> {
@@ -1950,7 +1981,7 @@ impl<'a> ProgramCompiler<'a> {
     fn is_compiler_builtin(&self, name: &str) -> bool {
         matches!(
             name,
-            "commit" | "suspend" | "read" | "mailbox_recv" | "invoke"
+            "commit" | "suspend" | "read" | "mailbox_recv" | "external_request" | "invoke"
         )
     }
 
@@ -1997,11 +2028,15 @@ impl<'a> ProgramCompiler<'a> {
         name: &str,
         args: &[HirArg],
     ) -> Result<Register, CompileError> {
+        if let Some(function) = self.context.host_request_function(name).cloned() {
+            return self.compile_host_request_function_call(id, name, &function, args);
+        }
         match name {
             "commit" => return self.compile_commit_call(id, args),
             "suspend" => return self.compile_suspend_call(id, args),
             "read" => return self.compile_read_call(id, args),
             "mailbox_recv" => return self.compile_mailbox_recv_call(id, args),
+            "external_request" => return self.compile_external_request_call(id, args),
             "invoke" => return self.compile_dynamic_invoke_call(id, args),
             _ => {}
         }
@@ -2232,6 +2267,86 @@ impl<'a> ProgramCompiler<'a> {
             .transpose()?;
         let dst = self.alloc_register();
         self.emit(Instruction::Read { dst, metadata });
+        Ok(dst)
+    }
+
+    fn compile_host_request_function_call(
+        &mut self,
+        id: NodeId,
+        name: &str,
+        function: &HostRequestFunction,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(id, format!("{name} only supports positional arguments")));
+        }
+        if args.iter().any(|arg| arg.splice) {
+            return Err(self.unsupported(id, format!("{name} does not support argument splices")));
+        }
+        if args.len() != function.payload_fields.len() {
+            return Err(self.unsupported(
+                id,
+                format!(
+                    "{name} expects {} arguments for host request payload",
+                    function.payload_fields.len()
+                ),
+            ));
+        }
+        let entries = args
+            .iter()
+            .zip(function.payload_fields.iter())
+            .map(|(arg, field)| {
+                Ok((
+                    Operand::Value(Value::symbol(*field)),
+                    self.compile_arg_operand(arg)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, CompileError>>()?;
+        let payload = self.alloc_register();
+        self.emit(Instruction::BuildMap {
+            dst: payload,
+            entries,
+        });
+        let dst = self.alloc_register();
+        self.emit(Instruction::ExternalRequest {
+            dst,
+            service: Operand::Value(Value::symbol(function.service)),
+            payload: Operand::Register(payload),
+            timeout: function.timeout.clone().map(Operand::Value),
+        });
+        Ok(dst)
+    }
+
+    fn compile_external_request_call(
+        &mut self,
+        id: NodeId,
+        args: &[HirArg],
+    ) -> Result<Register, CompileError> {
+        if args.iter().any(|arg| arg.role.is_some()) {
+            return Err(self.unsupported(id, "external_request only supports positional arguments"));
+        }
+        if args.iter().any(|arg| arg.splice) {
+            return Err(self.unsupported(id, "external_request does not support argument splices"));
+        }
+        if !(2..=3).contains(&args.len()) {
+            return Err(self.unsupported(
+                id,
+                "external_request expects service, payload, and optional timeout",
+            ));
+        }
+        let service = self.compile_arg_operand(&args[0])?;
+        let payload = self.compile_arg_operand(&args[1])?;
+        let timeout = args
+            .get(2)
+            .map(|arg| self.compile_arg_operand(arg))
+            .transpose()?;
+        let dst = self.alloc_register();
+        self.emit(Instruction::ExternalRequest {
+            dst,
+            service,
+            payload,
+            timeout,
+        });
         Ok(dst)
     }
 

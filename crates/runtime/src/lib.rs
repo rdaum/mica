@@ -24,9 +24,9 @@ pub use embedding::{EmbeddingProvider, EmbeddingProviderKind};
 pub use mica_relation_kernel::Tuple;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
-    CapabilityScope, CatchHandler, Emission, ErrorField, Frame, Instruction, ListItem,
-    MailboxRecvRequest, MailboxSend, MapItem, Operand, Program, ProgramResolver, QueryBinding,
-    Register, RegisterVm, RelationArg, RuntimeBinaryOp, RuntimeContext, RuntimeError,
+    CapabilityScope, CatchHandler, Emission, ErrorField, ExternalRequest, Frame, Instruction,
+    ListItem, MailboxRecvRequest, MailboxSend, MapItem, Operand, Program, ProgramResolver,
+    QueryBinding, Register, RegisterVm, RelationArg, RuntimeBinaryOp, RuntimeContext, RuntimeError,
     RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget, SuspendKind, VmHostContext,
     VmHostResponse, VmState,
 };
@@ -37,8 +37,9 @@ pub use task_manager::{
 
 use mica_compiler::{
     BinaryOp, CollectionItem, CompileContext, CompileError, Expr, HirCollectionItem, HirExpr,
-    HirItem, Item, Literal, MethodInstallation, MethodKind, MethodRelations, NodeId, UnaryOp,
-    compile_semantic, install_methods, install_rules_from_source, parse, parse_ast, parse_semantic,
+    HirItem, HostRequestFunction, Item, Literal, MethodInstallation, MethodKind, MethodRelations,
+    NodeId, UnaryOp, compile_semantic, install_methods, install_rules_from_source, parse,
+    parse_ast, parse_semantic,
 };
 use mica_host_protocol::{
     DomNode, diff_dom_nodes, is_supported_dom_attribute, is_supported_dom_tag,
@@ -96,6 +97,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "commit",
     "suspend",
     "read",
+    "external_request",
     "invoke",
     "mailbox",
     "mailbox_send",
@@ -186,11 +188,13 @@ struct SourceRelationDeclaration {
 pub struct SourceRunner {
     context: CompileContext,
     task_manager: TaskManager,
+    host_request_functions: Arc<[(String, HostRequestFunction)]>,
     next_method_identity_id: u64,
 }
 
 pub struct SharedSourceRunner {
     task_manager: SharedTaskManager,
+    host_request_functions: Arc<[(String, HostRequestFunction)]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -245,9 +249,10 @@ impl SourceRunner {
     }
 
     pub fn new_empty_with_embedding_provider(kind: EmbeddingProviderKind) -> Self {
-        Self::with_kernel_and_embedding_provider(
+        Self::with_kernel_embedding_provider_and_host_requests(
             bootstrap_kernel(),
             embedding::embedding_provider(kind),
+            embedding::host_request_functions(kind),
         )
     }
 
@@ -279,9 +284,10 @@ impl SourceRunner {
             )
             .map_err(|error| format!("failed to load relation kernel state: {error:?}"))?
         };
-        Ok(Self::with_kernel_and_embedding_provider(
+        Ok(Self::with_kernel_embedding_provider_and_host_requests(
             kernel,
             embedding::embedding_provider(embedding_provider),
+            embedding::host_request_functions(embedding_provider),
         ))
     }
 
@@ -293,11 +299,26 @@ impl SourceRunner {
         kernel: RelationKernel,
         embedding_provider: Arc<dyn embedding::EmbeddingProvider>,
     ) -> Self {
+        Self::with_kernel_embedding_provider_and_host_requests(
+            kernel,
+            embedding_provider,
+            Vec::new(),
+        )
+    }
+
+    fn with_kernel_embedding_provider_and_host_requests(
+        kernel: RelationKernel,
+        embedding_provider: Arc<dyn embedding::EmbeddingProvider>,
+        host_request_functions: Vec<(String, HostRequestFunction)>,
+    ) -> Self {
         let next_method_identity_id = next_generated_method_identity_id(&kernel);
+        let host_request_functions =
+            Arc::<[(String, HostRequestFunction)]>::from(host_request_functions);
         let mut runner = Self {
             context: CompileContext::new().with_method_relations(method_relations()),
             task_manager: TaskManager::new(kernel)
                 .with_builtins(Arc::new(default_builtins(embedding_provider))),
+            host_request_functions,
             next_method_identity_id,
         };
         runner.refresh_context_from_catalog();
@@ -312,6 +333,7 @@ impl SourceRunner {
     pub fn into_shared(self) -> SharedSourceRunner {
         SharedSourceRunner {
             task_manager: self.task_manager.into_shared(),
+            host_request_functions: self.host_request_functions,
         }
     }
 
@@ -770,6 +792,7 @@ impl SourceRunner {
         endpoint: Identity,
     ) -> CompileContext {
         let mut context = self.context.clone();
+        apply_host_request_functions(&mut context, &self.host_request_functions);
         if let Some(principal) = principal {
             context.define_identity("principal", principal);
         }
@@ -1066,6 +1089,7 @@ impl SourceRunner {
 
     fn refresh_context_from_catalog(&mut self) {
         self.context = compile_context_from_catalog(self.task_manager.kernel());
+        apply_host_request_functions(&mut self.context, &self.host_request_functions);
     }
 
     fn retract_source_unit(&mut self, unit: Symbol) -> Result<(), SourceTaskError> {
@@ -1290,6 +1314,28 @@ impl SharedSourceRunner {
             Arc::new(compiled.program),
             authority,
             runtime_context,
+        )?;
+        Ok(SubmittedTask { task_id, outcome })
+    }
+
+    pub fn submit_root_source(
+        &self,
+        source: impl Into<String>,
+    ) -> Result<SubmittedTask, SourceTaskError> {
+        let source = source.into();
+        let semantic = parse_semantic(&source);
+        if AuthorityContext::root().can_grant()
+            && semantic.parse_errors.is_empty()
+            && semantic.diagnostics.is_empty()
+        {
+            predeclare_source_names_in_kernel(self.task_manager.kernel(), &semantic)?;
+        }
+        let context = self.context_for_execution(None, None, SYSTEM_ENDPOINT);
+        let compiled = compile_semantic(semantic, &context)?;
+        let (task_id, outcome) = self.task_manager.submit_with_context(
+            Arc::new(compiled.program),
+            AuthorityContext::root(),
+            runtime_context(None, None, SYSTEM_ENDPOINT),
         )?;
         Ok(SubmittedTask { task_id, outcome })
     }
@@ -1564,6 +1610,7 @@ impl SharedSourceRunner {
         endpoint: Identity,
     ) -> CompileContext {
         let mut context = compile_context_from_catalog(self.task_manager.kernel());
+        apply_host_request_functions(&mut context, &self.host_request_functions);
         if let Some(principal) = principal {
             context.define_identity("principal", principal);
         }
@@ -1829,6 +1876,15 @@ fn compile_context_from_catalog(kernel: &RelationKernel) -> CompileContext {
         context.define_identity(format!("rule{}", index + 1), rule.id());
     }
     context
+}
+
+fn apply_host_request_functions(
+    context: &mut CompileContext,
+    functions: &[(String, HostRequestFunction)],
+) {
+    for (name, function) in functions {
+        context.define_host_request_function(name.clone(), function.clone());
+    }
 }
 
 fn predeclare_source_names_in_kernel(

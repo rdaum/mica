@@ -11,11 +11,19 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use mica_runtime::ExternalRequest;
 use mica_runtime::SourceTaskError;
 use mica_runtime::TaskRequest;
 use mica_runtime::{AuthorityContext, Effect, SuspendKind, TaskId};
 use mica_var::{Identity, Value};
 use std::fmt::{Display, Formatter};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+pub type ExternalRequestFuture = Pin<Box<dyn Future<Output = Value> + 'static>>;
+pub type ExternalRequestHandler =
+    Arc<dyn Fn(ExternalRequest) -> ExternalRequestFuture + Send + Sync>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskContext {

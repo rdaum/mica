@@ -476,6 +476,9 @@ fn follow_delay(kind: &SuspendKind) -> Option<Duration> {
             .timeout_millis
             .map(|millis| Duration::from_millis(millis).max(Duration::from_millis(1))),
         SuspendKind::Spawn(_) => Some(Duration::from_millis(1)),
+        SuspendKind::ExternalRequest(request) => request
+            .timeout_millis
+            .map(|millis| Duration::from_millis(millis).max(Duration::from_millis(1))),
         SuspendKind::Never | SuspendKind::WaitingForInput(_) => None,
     }
 }

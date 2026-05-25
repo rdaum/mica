@@ -46,8 +46,9 @@ rart = { version = "0.10", default-features = false }
 arc-swap = "1.9"
 bytes = "1.11"
 clap = { version = "4.6", features = ["derive"] }
-compio = { version = "=0.19.0-rc.1", features = ["async-fd", "dispatcher", "net", "time"] }
-compio-quic = { version = "=0.8.0-rc.1", features = ["h3"] }
+compio = { version = "=0.19.0-rc.2", features = ["async-fd", "dispatcher", "net", "time"] }
+compio-quic = { version = "=0.8.0-rc.2", features = ["h3"] }
+cyper = { version = "0.9.0-rc.3", default-features = false, features = ["native-tls"] }
 fjall = "3.1"
 fast-telemetry = { git = "https://github.com/eden-dev-inc/fast-telemetry.git", branch = "rd/compio-exporter" }
 fast-telemetry-export = { git = "https://github.com/eden-dev-inc/fast-telemetry.git", branch = "rd/compio-exporter", default-features = false, features = ["compio"] }
