@@ -1,4 +1,4 @@
-use crate::index::PersistentSemanticIndex;
+use crate::index::{IndexedTextUnit, PersistentSemanticIndex};
 use crate::navigation::{
     SemanticSymbol, SemanticSymbolProvider, byte_offset_to_lsp_position, semantic_location,
     semantic_symbol,
@@ -28,6 +28,7 @@ const DEFINITION_AT_BOUND: &[u16] = &[0, 1, 2, 3];
 const REFERENCES_OF_BOUND: &[u16] = &[0, 1, 2];
 const SYMBOL_SEARCH_BOUND: &[u16] = &[0, 1, 2, 3];
 const INDEXED_TEXT_UNIT_BOUND: &[u16] = &[];
+const TEXT_SEARCH_BOUND: &[u16] = &[0, 1, 2];
 const INDEX_VALUE_BOUND: &[u16] = &[];
 const SEMANTIC_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -68,6 +69,9 @@ pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
             provider: provider.clone(),
         }),
         Arc::new(IndexedTextUnitRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(TextSearchRelation {
             provider: provider.clone(),
         }),
         Arc::new(SourceIndexRelation {
@@ -1020,6 +1024,289 @@ impl ComputedRelation for IndexedTextUnitRelation {
             .collect::<Result<Vec<_>, KernelError>>()?;
         Ok(filter_bound_rows(rows, bindings))
     }
+}
+
+struct TextSearchRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for TextSearchRelation {
+    fn name(&self) -> &'static str {
+        "persistent-source-text-search"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/TextSearch") && metadata.arity() == 11
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        TEXT_SEARCH_BOUND
+    }
+
+    fn scan(
+        &self,
+        _reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let query = bound_string(metadata.id(), bindings, 0, "query")?;
+        let limit = bound_non_negative_int(metadata.id(), bindings, 1, "limit")?;
+        let scope = bound_string(metadata.id(), bindings, 2, "scope")?;
+        let index = self.provider.semantic_index(metadata.id())?;
+        if !index.is_complete() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let rows = text_search(&index, &query, limit, &scope)
+            .into_iter()
+            .map(|hit| {
+                Ok(Tuple::from([
+                    Value::string(&query),
+                    int_value(metadata.id(), limit as i64)?,
+                    Value::string(&scope),
+                    Value::string(&hit.unit.unit),
+                    int_value(metadata.id(), hit.score)?,
+                    Value::string(&hit.unit.path),
+                    int_value(metadata.id(), hit.match_line as i64)?,
+                    int_value(metadata.id(), hit.match_line as i64)?,
+                    Value::string(&hit.unit.kind),
+                    Value::string(&hit.unit.title),
+                    Value::string(hit.snippet),
+                ]))
+            })
+            .collect::<Result<Vec<_>, KernelError>>()?;
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
+#[derive(Debug)]
+struct TextSearchHit<'a> {
+    unit: &'a IndexedTextUnit,
+    score: i64,
+    match_line: usize,
+    snippet: String,
+}
+
+fn text_search<'a>(
+    index: &'a PersistentSemanticIndex,
+    query: &str,
+    limit: usize,
+    scope: &str,
+) -> Vec<TextSearchHit<'a>> {
+    let terms = search_terms(query);
+    if terms.is_empty() {
+        return Vec::new();
+    }
+    let query_lower = query.to_ascii_lowercase();
+    let symbol_matches = index
+        .symbols
+        .iter()
+        .filter(|symbol| {
+            let name = symbol.name.to_ascii_lowercase();
+            name.contains(&query_lower) || terms.iter().any(|term| name.contains(term))
+        })
+        .collect::<Vec<_>>();
+
+    let mut hits = index
+        .text_units
+        .iter()
+        .filter(|unit| source_text_scope_matches(&unit.path, scope))
+        .filter_map(|unit| {
+            let mut score = score_text_unit(unit, &query_lower, &terms);
+            let mut match_line = text_match_line(unit, &query_lower, &terms);
+            for symbol in &symbol_matches {
+                if symbol.path == unit.path
+                    && symbol.start_line <= unit.end_line
+                    && unit.start_line <= symbol.end_line
+                {
+                    if symbol.name.eq_ignore_ascii_case(query) {
+                        score += 320;
+                    } else {
+                        score += 190;
+                    }
+                    if match_line.is_none() {
+                        match_line = Some(symbol.start_line);
+                    }
+                }
+            }
+            if score == 0 {
+                return None;
+            }
+            Some(TextSearchHit {
+                unit,
+                score,
+                match_line: match_line.unwrap_or(unit.start_line),
+                snippet: search_snippet(unit, &query_lower, &terms),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.unit.path.cmp(&right.unit.path))
+            .then_with(|| left.unit.start_line.cmp(&right.unit.start_line))
+            .then_with(|| left.unit.unit.cmp(&right.unit.unit))
+    });
+    hits.truncate(limit);
+    hits
+}
+
+fn search_terms(query: &str) -> Vec<String> {
+    let mut terms = query
+        .split(|character: char| {
+            !(character.is_ascii_alphanumeric() || character == '_' || character == '-')
+        })
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn score_text_unit(unit: &IndexedTextUnit, query_lower: &str, terms: &[String]) -> i64 {
+    let path = unit.path.to_ascii_lowercase();
+    let title = unit.title.to_ascii_lowercase();
+    let kind = unit.kind.to_ascii_lowercase();
+    let text = unit.text.to_ascii_lowercase();
+    let file_name = Path::new(&unit.path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&unit.path)
+        .to_ascii_lowercase();
+
+    let mut score = 0;
+    if path.contains(query_lower) {
+        score += 260;
+    }
+    if title.contains(query_lower) {
+        score += 210;
+    }
+    if text.contains(query_lower) {
+        score += 120;
+    }
+
+    for term in terms {
+        if file_name == *term {
+            score += 240;
+        } else if file_name.contains(term) {
+            score += 180;
+        }
+        if path.contains(term) {
+            score += 110;
+        }
+        if title.contains(term) {
+            score += 95;
+        }
+        if text.contains(term) {
+            score += 55;
+        }
+        if kind.contains(term) {
+            score += 20;
+        }
+    }
+    score
+}
+
+fn text_match_line(unit: &IndexedTextUnit, query_lower: &str, terms: &[String]) -> Option<usize> {
+    let lower = unit.text.to_ascii_lowercase();
+    let mut position = if query_lower.is_empty() {
+        None
+    } else {
+        lower.find(query_lower)
+    };
+    if position.is_none() {
+        position = terms.iter().filter_map(|term| lower.find(term)).min();
+    }
+    let position = position?;
+    let mut relative_line = unit.text[..position]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    if unit
+        .text
+        .find('\n')
+        .is_some_and(|header_end| position > header_end)
+    {
+        relative_line = relative_line.saturating_sub(1);
+    }
+    Some(unit.start_line + relative_line)
+}
+
+fn source_text_scope_matches(path: &str, scope: &str) -> bool {
+    match scope {
+        "all" => true,
+        "docs" => source_text_scope(path) == "docs",
+        "code" => source_text_scope(path) == "code",
+        "tests" => source_text_scope(path) == "tests",
+        "benches" => source_text_scope(path) == "benches",
+        "sketches" => source_text_scope(path) == "sketches",
+        _ => true,
+    }
+}
+
+fn source_text_scope(path: &str) -> &'static str {
+    if path.starts_with("sketches/") {
+        return "sketches";
+    }
+    if path.contains("/benches/") || path.starts_with("benches/") {
+        return "benches";
+    }
+    if path.contains("/tests/") || path.starts_with("tests/") || path.ends_with("_test.rs") {
+        return "tests";
+    }
+    if path.ends_with(".md") || path.ends_with(".markdown") || path.starts_with("docs/") {
+        return "docs";
+    }
+    "code"
+}
+
+fn search_snippet(unit: &IndexedTextUnit, query_lower: &str, terms: &[String]) -> String {
+    let body = normalize_search_text(&unit.text);
+    if let Some(snippet) = snippet_from_match(&body, query_lower, terms) {
+        return snippet;
+    }
+    let combined = normalize_search_text(&format!("{} {} {}", unit.path, unit.title, unit.text));
+    snippet_from_match(&combined, query_lower, terms)
+        .unwrap_or_else(|| clip_chars(&combined, 0, 260))
+}
+
+fn normalize_search_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn snippet_from_match(text: &str, query_lower: &str, terms: &[String]) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut position = if query_lower.is_empty() {
+        None
+    } else {
+        lower.find(query_lower)
+    };
+    if position.is_none() {
+        position = terms.iter().filter_map(|term| lower.find(term)).min();
+    }
+    let position = position?;
+    let prefix_chars = text[..position].chars().count();
+    let start = prefix_chars.saturating_sub(70);
+    let end = prefix_chars + 190;
+    let mut snippet = clip_chars(text, start, end);
+    if start > 0 {
+        snippet = format!("...{snippet}");
+    }
+    if text.chars().count() > end {
+        snippet.push_str("...");
+    }
+    Some(snippet)
+}
+
+fn clip_chars(text: &str, start: usize, end: usize) -> String {
+    text.chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
 }
 
 macro_rules! index_value_relation {

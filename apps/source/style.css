@@ -173,18 +173,23 @@ input {
 
 .source-search-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(5.8rem, auto) auto;
   gap: 0.35rem;
   margin: 0 0 0.55rem;
 }
 
-.source-search-input {
+.source-search-input,
+.source-search-scope {
   min-width: 0;
   border: 1px solid var(--source-line);
   border-radius: 0.55rem;
   padding: 0.45rem 0.55rem;
   background: #fffdf7;
   color: var(--source-ink);
+}
+
+.source-search-scope {
+  cursor: pointer;
 }
 
 .source-search-button {
@@ -209,6 +214,16 @@ input {
   flex-wrap: wrap;
   gap: 0.35rem;
   margin-bottom: 0.55rem;
+}
+
+@media (max-width: 720px) {
+  .source-search-form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .source-search-scope {
+    grid-column: 1 / -1;
+  }
 }
 
 .source-retrieval-results {

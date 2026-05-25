@@ -15,6 +15,7 @@ make_identity(:source/text_design_doc_graphrag)
 make_identity(:source/symbol_sync_view_tree)
 
 make_relation(:source/IndexedTextUnit, 9)
+make_relation(:source/TextSearch, 11)
 make_functional_relation(:source/RetrievalTextUnitKind, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitTitle, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitFile, 2, [0])
@@ -25,10 +26,13 @@ make_functional_relation(:source/RetrievalTextUnitEndLine, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitModel, 2, [0])
 make_relation(:source/RetrievalCitation, 2)
 make_functional_relation(:source/RetrievalCitationText, 3, [0, 1])
+make_functional_relation(:source/RetrievalCitationLine, 3, [0, 1])
 make_functional_relation(:source/SelectedRetrievalQuestion, 2, [0])
 make_functional_relation(:source/SelectedRetrievalPlan, 2, [0])
 make_functional_relation(:source/SelectedRetrievalModel, 2, [0])
 make_functional_relation(:source/SelectedRetrievalLimit, 2, [0])
+make_functional_relation(:source/SelectedRetrievalScope, 2, [0])
+make_functional_relation(:source/SelectedRetrievalSemanticStatus, 2, [0])
 make_functional_relation(:source/SelectedRetrievalStatus, 2, [0])
 make_functional_relation(:source/RetrievalCorpusIndexVersion, 3, [0, 1])
 
@@ -130,6 +134,18 @@ end
 
 verb source/retrieval_limit()
   return 8
+end
+
+verb source/default_retrieval_scope()
+  return "all"
+end
+
+verb source/normalise_retrieval_scope(scope)
+  if scope == "docs" || scope == "code" || scope == "tests" || scope == "benches" || scope == "sketches"
+    return scope
+  end
+
+  return "all"
 end
 
 verb source/retrieval_corpus_version()
@@ -317,28 +333,77 @@ verb source/retrieve_context(actor, index, question_text @ #string, limit, model
   return {:contexts -> contexts, :plan -> plan, :question -> question}
 end
 
+verb source/search_context(actor, question_text @ #string, limit, scope @ #string, model @ #string)
+  let normalised_scope = source/normalise_retrieval_scope(scope)
+  let question = frob(#retrieval/question, {:actor -> actor, :index -> #source/retrieval_index, :limit -> limit, :model -> model, :scope -> normalised_scope, :text -> question_text})
+  assert Question(question)
+  assert QuestionText(question, question_text)
+  assert AskedBy(question, actor)
+
+  let plan = frob(#retrieval/plan, {:index -> #source/retrieval_index, :limit -> limit, :model -> model, :question -> question, :scope -> normalised_scope})
+  assert RetrievalPlan(plan)
+  assert PlanForQuestion(plan, question)
+  assert PlanKind(plan, "text_search")
+  assert PlanModel(plan, model)
+
+  let contexts = []
+  let semantic_status = "vector_not_ready"
+  for found in source/TextSearch(question_text, limit, normalised_scope, ?subject, ?score, ?path, ?start_line, ?end_line, ?kind, ?title, ?snippet)
+    let subject = found[:subject]
+    if source/can_retrieve_subject(actor, subject)
+      let context = retrieval/context_value(plan, subject)
+      assert RetrievedContext(context)
+      assert ContextForPlan(context, plan)
+      assert ContextSubject(context, subject)
+      assert ContextScore(context, found[:score])
+      assert ContextReason(context, "text_search")
+      assert ContextSnapshotVersion(context, source/retrieval_corpus_version())
+      assert source/RetrievalCitation(plan, subject)
+      assert source/RetrievalCitationText(plan, subject, found[:snippet])
+      assert source/RetrievalCitationLine(plan, subject, found[:start_line])
+      contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :snapshot_version -> source/retrieval_corpus_version(), :snippet -> found[:snippet], :line -> found[:start_line]}]
+    end
+  end
+
+  if contexts != [] && source/retrieval_index_ready(model)
+    semantic_status = "vector_ready"
+    let query_embedding = embed_text(model, question_text)
+    for found in NearestEmbedding(#source/retrieval_index, query_embedding, limit, ?subject, ?score, ?snapshot_version)
+      let subject = found[:subject]
+      let context = retrieval/context_value(plan, subject)
+      if ContextForPlan(context, plan)
+        retract ContextReason(context, _)
+        assert ContextReason(context, "text_search+nearest_embedding")
+        retract ContextSnapshotVersion(context, _)
+        assert ContextSnapshotVersion(context, found[:snapshot_version])
+        semantic_status = "vector_boosted"
+      end
+    end
+  end
+
+  return {:contexts -> contexts, :plan -> plan, :question -> question, :scope -> normalised_scope, :semantic_status -> semantic_status}
+end
+
 verb source/clear_retrieval_session(endpoint)
   retract source/SelectedRetrievalQuestion(endpoint, _)
   retract source/SelectedRetrievalPlan(endpoint, _)
   retract source/SelectedRetrievalModel(endpoint, _)
   retract source/SelectedRetrievalLimit(endpoint, _)
+  retract source/SelectedRetrievalScope(endpoint, _)
+  retract source/SelectedRetrievalSemanticStatus(endpoint, _)
   retract source/SelectedRetrievalStatus(endpoint, _)
   return true
 end
 
 verb source/run_retrieval_query(endpoint, actor, question_text @ #string)
+  return source/run_retrieval_query_with_scope(endpoint, actor, question_text, source/default_retrieval_scope())
+end
+
+verb source/run_retrieval_query_with_scope(endpoint, actor, question_text @ #string, scope)
   let model = source/retrieval_model()
   let limit = source/retrieval_limit()
-  if source/retrieval_index_ready(model) == false
-    source/clear_retrieval_session(endpoint)
-    assert source/SelectedRetrievalQuestion(endpoint, question_text)
-    assert source/SelectedRetrievalModel(endpoint, model)
-    assert source/SelectedRetrievalLimit(endpoint, limit)
-    assert source/SelectedRetrievalStatus(endpoint, "retrieval index is not ready")
-    return {:contexts -> [], :count -> 0, :plan -> nothing, :question -> nothing}
-  end
-
-  let retrieval = source/retrieve_context(actor, #source/retrieval_index, question_text, limit, model)
+  let normalised_scope = source/normalise_retrieval_scope(scope)
+  let retrieval = source/search_context(actor, question_text, limit, normalised_scope, model)
   let plan = retrieval[:plan]
   let contexts = retrieval[:contexts]
   let count = 0
@@ -348,6 +413,8 @@ verb source/run_retrieval_query(endpoint, actor, question_text @ #string)
   assert source/SelectedRetrievalPlan(endpoint, plan)
   assert source/SelectedRetrievalModel(endpoint, model)
   assert source/SelectedRetrievalLimit(endpoint, limit)
+  assert source/SelectedRetrievalScope(endpoint, normalised_scope)
+  assert source/SelectedRetrievalSemanticStatus(endpoint, retrieval[:semantic_status])
 
   let artifact_index = #source/retrieval_index
   let index_version = "worktree"
@@ -367,13 +434,11 @@ verb source/run_retrieval_query(endpoint, actor, question_text @ #string)
 
   for item in contexts
     let subject = item[:subject]
-    let text = source/retrieval_text_unit_text(subject)
     assert source/RetrievalCitation(plan, subject)
-    assert source/RetrievalCitationText(plan, subject, text)
     count = count + 1
   end
 
-  assert source/SelectedRetrievalStatus(endpoint, string_concat(to_literal(count), " context items"))
+  assert source/SelectedRetrievalStatus(endpoint, string_concat(to_literal(count), " search results"))
   return {:contexts -> contexts, :count -> count, :plan -> plan, :question -> retrieval[:question]}
 end
 

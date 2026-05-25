@@ -44,6 +44,7 @@ make_relation(:source/SyntaxNodeAt, 11)
 make_relation(:source/DefinitionAt, 13)
 make_relation(:source/ReferencesOf, 10)
 make_relation(:source/SymbolSearch, 11)
+make_relation(:source/TextSearch, 11)
 
 make_relation(:source/SourceIndex, 1)
 make_functional_relation(:source/IndexRepository, 2, [0])

@@ -211,15 +211,28 @@ verb source/file_list_node(repository, revision, selected)
   return dom_element("section", {:class -> "source-panel source-files"}, [header, dom_element("h3", {:class -> "source-subhead"}, [dom_text("Pinned")]), source/pinned_files_node(revision, selected), dom_element("h3", {:class -> "source-subhead"}, [dom_text("Repository")]), source/repository_tree_node(repository, revision, selected)])
 end
 
+verb source/search_scope_option_node(value, label, selected_scope)
+  let attributes = {:value -> value}
+  if value == selected_scope
+    attributes = {:value -> value, :selected -> "selected"}
+  end
+  return dom_element("option", attributes, [dom_text(label)])
+end
+
 verb source/retrieval_search_form_node()
   let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)
   if question == nothing
     question = ""
   end
+  let scope = one source/SelectedRetrievalScope(endpoint(), ?scope)
+  if scope == nothing
+    scope = source/default_retrieval_scope()
+  end
 
   let input = dom_element("input", {:type -> "search", :name -> "question", :class -> "source-search-input", :value -> question, :placeholder -> "where is DOM sync rendered?"}, [])
+  let scope_select = dom_element("select", {:name -> "scope", :class -> "source-search-scope"}, [source/search_scope_option_node("all", "All", scope), source/search_scope_option_node("code", "Code", scope), source/search_scope_option_node("docs", "Docs", scope), source/search_scope_option_node("tests", "Tests", scope), source/search_scope_option_node("benches", "Benches", scope), source/search_scope_option_node("sketches", "Sketches", scope)])
   let button = dom_element("button", {:type -> "submit", :class -> "source-search-button", "data-sync-disable-with" -> "Searching"}, [dom_text("Search")])
-  return dom_element("form", {:class -> "source-search-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_retrieve", "data-sync-key" -> "source-retrieval-search", "data-sync-reset" -> "false"}, [input, button])
+  return dom_element("form", {:class -> "source-search-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_retrieve", "data-sync-key" -> "source-retrieval-search", "data-sync-reset" -> "false"}, [input, scope_select, button])
 end
 
 verb source/retrieval_status_node()
@@ -228,11 +241,19 @@ verb source/retrieval_status_node()
   let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)
   let kind = one PlanKind(plan, ?kind)
   let model = one source/SelectedRetrievalModel(endpoint(), ?model)
+  let scope = one source/SelectedRetrievalScope(endpoint(), ?scope)
+  let semantic_status = one source/SelectedRetrievalSemanticStatus(endpoint(), ?status)
   if model == nothing
     model = source/retrieval_model()
   end
+  if scope == nothing
+    scope = source/default_retrieval_scope()
+  end
   if kind == nothing
     kind = "none"
+  end
+  if semantic_status == nothing
+    semantic_status = "vector_not_ready"
   end
 
   let indexed = 0
@@ -264,7 +285,7 @@ verb source/retrieval_status_node()
     status = "ready"
   end
 
-  let chips = [source/meta_chip_node("retrieval", status), source/meta_chip_node("plan", kind), source/meta_chip_node("model", model), source/meta_chip_node("subjects", to_literal(indexed)), source/meta_chip_node("stale", to_literal(stale))]
+  let chips = [source/meta_chip_node("search", status), source/meta_chip_node("plan", kind), source/meta_chip_node("scope", scope), source/meta_chip_node("semantic", semantic_status), source/meta_chip_node("model", model), source/meta_chip_node("subjects", to_literal(indexed)), source/meta_chip_node("stale", to_literal(stale))]
   if question != nothing
     chips = [@chips, source/meta_chip_node("query", question)]
   end
@@ -274,13 +295,20 @@ end
 
 verb source/retrieval_context_node(context)
   let subject = one ContextSubject(context, ?subject)
+  let plan = one ContextForPlan(context, ?plan)
   let score = one ContextScore(context, ?score)
   let reason = one ContextReason(context, ?reason)
   let path = source/retrieval_text_unit_path(subject)
-  let line = source/retrieval_text_unit_line(subject)
+  let line = one source/RetrievalCitationLine(plan, subject, ?line)
+  if line == nothing
+    line = source/retrieval_text_unit_line(subject)
+  end
   let title = source/retrieval_text_unit_title(subject)
   let kind = source/retrieval_text_unit_kind(subject)
-  let text = source/retrieval_text_unit_text(subject)
+  let text = one source/RetrievalCitationText(plan, subject, ?text)
+  if text == nothing
+    text = source/retrieval_text_unit_text(subject)
+  end
   if title == nothing
     title = path
   end

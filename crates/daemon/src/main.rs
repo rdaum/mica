@@ -29,6 +29,7 @@ use mica_webtransport_host::{
 };
 use std::fs;
 use std::future;
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -156,8 +157,9 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         metrics::metrics().fileins_loaded.inc();
     }
     for source in &cli.startup_sources {
+        log_startup_source_begin(source);
         let report = runner.run_source(source).map_err(format_source_error)?;
-        println!("startup source {}", report.render());
+        log_startup_source_end(source, &report.render());
     }
     let telnet_actor = if cli.telnet_bind.is_some() {
         let actor_name = actor_name(&cli.actor)?;
@@ -352,6 +354,30 @@ fn actor_name(actor: &str) -> Result<String, String> {
         return Err("actor must be a named identity such as alice or #alice".to_owned());
     }
     Ok(actor.to_owned())
+}
+
+fn log_startup_source_begin(source: &str) {
+    println!(
+        "mica-daemon startup: {}...",
+        startup_source_description(source)
+    );
+    let _ = io::stdout().flush();
+}
+
+fn log_startup_source_end(source: &str, rendered_report: &str) {
+    println!(
+        "mica-daemon startup: {} complete: {}",
+        startup_source_description(source),
+        rendered_report
+    );
+}
+
+fn startup_source_description(source: &str) -> &'static str {
+    if source.contains("source/prewarm_retrieval_index") {
+        "prewarming source retrieval index"
+    } else {
+        "running startup source"
+    }
 }
 
 fn format_source_error(error: mica_runtime::SourceTaskError) -> String {
