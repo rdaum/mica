@@ -1,0 +1,207 @@
+// Source viewer session state helpers.
+
+verb source/current_repository()
+  let selected = one source/SelectedRepository(endpoint(), ?repository)
+  if selected != nothing
+    return selected
+  end
+
+  return #source/repo_mica
+end
+
+verb source/current_revision()
+  let selected = one source/SelectedRevision(endpoint(), ?revision)
+  if selected != nothing
+    return selected
+  end
+
+  return #source/rev_worktree
+end
+
+verb source/file_for_path(path)
+  let repository = source/current_repository()
+  let revision = source/current_revision()
+  let hash = one source/FileContentHash(repository, revision, path, ?hash)
+  if hash != nothing
+    return path
+  end
+
+  return nothing
+end
+
+verb source/current_file()
+  let selected_path = one source/SelectedPath(endpoint(), ?path)
+  if selected_path != nothing
+    let selected_file = source/file_for_path(selected_path)
+    if selected_file != nothing
+      return selected_path
+    end
+  end
+
+  return "crates/runtime/src/lib.rs"
+end
+
+verb source/current_directory()
+  let selected = one source/SelectedDirectory(endpoint(), ?path)
+  if selected != nothing
+    return selected
+  end
+
+  return ""
+end
+
+verb source/directory_expanded(path)
+  if source/ExpandedDirectory(endpoint(), path)
+    return true
+  end
+
+  return false
+end
+
+verb source/current_line()
+  let selected = one source/SelectedLine(endpoint(), ?line)
+  if selected != nothing && selected > 0
+    return selected
+  end
+
+  return 1
+end
+
+verb source/window_size()
+  return 240
+end
+
+verb source/clamp_window_start(start, line_count)
+  if start == nothing || start < 1
+    return 1
+  end
+
+  let max_start = line_count - source/window_size() + 1
+  if max_start < 1
+    max_start = 1
+  end
+  if start > max_start
+    return max_start
+  end
+
+  return start
+end
+
+verb source/window_start_for_line(line, line_count)
+  let start = 1
+  if line > 24
+    start = line - 20
+  end
+
+  return source/clamp_window_start(start, line_count)
+end
+
+verb source/current_window_start(line_count)
+  let selected = one source/SelectedWindowStart(endpoint(), ?start)
+  if selected != nothing
+    return source/clamp_window_start(selected, line_count)
+  end
+
+  return source/window_start_for_line(source/current_line(), line_count)
+end
+
+verb source/file_title(path)
+  let file_id = one source/FilePath(?file, path)
+  if file_id != nothing
+    let title = one source/FileTitle(file_id, ?title)
+    if title != nothing
+      return title
+    end
+  end
+
+  return path
+end
+
+verb source/file_language(path)
+  let file_id = one source/FilePath(?file, path)
+  if file_id != nothing
+    let language = one source/FileLanguage(file_id, ?language)
+    if language != nothing
+      return language
+    end
+  end
+
+  return "file"
+end
+
+verb source/current_symbol()
+  return one source/SelectedSymbol(endpoint(), ?symbol)
+end
+
+verb source/normalise_code_tray_tab(tab)
+  if tab == "symbol" || tab == "talk"
+    return tab
+  end
+
+  return "talk"
+end
+
+verb source/set_code_tray_tab(endpoint, tab)
+  let normalised = source/normalise_code_tray_tab(tab)
+  retract source/SelectedCodeTrayTab(endpoint, _)
+  assert source/SelectedCodeTrayTab(endpoint, normalised)
+  return normalised
+end
+
+verb source/show_hidden_files()
+  let show_hidden = one source/ShowHiddenFiles(endpoint(), ?show_hidden)
+  if show_hidden == true
+    return true
+  end
+
+  return false
+end
+
+verb source/inspector_section_collapsed(section)
+  let collapsed = one source/InspectorSectionCollapsed(endpoint(), section, ?collapsed)
+  if collapsed == true
+    return true
+  end
+
+  return false
+end
+
+verb source/clear_selected_symbol(endpoint)
+  retract source/SelectedSymbol(endpoint, _)
+  retract source/SelectedSymbolName(endpoint, _)
+  retract source/SelectedSymbolKind(endpoint, _)
+  retract source/SelectedDefinitionPath(endpoint, _)
+  retract source/SelectedDefinitionStartLine(endpoint, _)
+  retract source/SelectedDefinitionEndLine(endpoint, _)
+  retract source/SelectedDefinitionStartByte(endpoint, _)
+  retract source/SelectedDefinitionEndByte(endpoint, _)
+  retract source/SelectedSymbolProvider(endpoint, _)
+  retract source/SelectedReferencesOpen(endpoint, _)
+  return true
+end
+
+verb source/view_revision()
+  let revision = one source/ViewRevision(endpoint(), ?revision)
+  if revision == nothing
+    revision = 1
+  end
+
+  let prewarm_revision = one source/RetrievalPrewarmRevision(source/retrieval_model(), ?revision)
+  if prewarm_revision != nothing
+    revision = revision + prewarm_revision
+  end
+
+  return revision
+end
+
+verb source/bump_revision(endpoint)
+  let revision = one source/ViewRevision(endpoint, ?revision)
+  if revision == nothing
+    revision = 1
+  end
+
+  revision = revision + 1
+  retract source/ViewRevision(endpoint, _)
+  assert source/ViewRevision(endpoint, revision)
+  return revision
+end

@@ -94,7 +94,15 @@ daemon_args=(
   --filein apps/source/core.mica
   --filein apps/source/retrieval.mica
   --filein apps/source/ui-session.mica
+  --filein apps/source/ui-policy.mica
+  --filein apps/source/ui-state.mica
+  --filein apps/source/ui-actions.mica
+  --filein apps/source/ui-sync.mica
   --filein apps/source/ui-compose.mica
+  --filein apps/source/ui-navigator.mica
+  --filein apps/source/ui-retrieval-panel.mica
+  --filein apps/source/ui-agent-panel.mica
+  --filein apps/source/ui-code-panel.mica
   --filein apps/source/http.mica
   --embedding-provider "${embedding_provider}"
   --web-bind "${http_host}:${http_port}"

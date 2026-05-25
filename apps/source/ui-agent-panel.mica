@@ -1,0 +1,158 @@
+// Source viewer Talk panel and lower tray.
+
+verb source/agent_prompt_form_node()
+  let input = dom_element("textarea", {:name -> "prompt", :class -> "source-agent-input", :placeholder -> "Ask about the current file, a symbol, or the workspace"}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-search-button", "data-sync-disable-with" -> "Thinking"}, [dom_text("Send")])
+  return dom_element("form", {:class -> "source-agent-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_agent_prompt", "data-sync-key" -> "source-agent-prompt", "data-sync-reset" -> "true"}, [input, button])
+end
+
+verb source/agent_turn_citations_node(turn)
+  let plan = one source/AgentTurnPlan(turn, ?plan)
+  if plan == nothing
+    return source/empty_node("No source evidence recorded.")
+  end
+
+  let items = []
+  let count = 0
+  for found in ContextForPlan(?context, plan)
+    items = [@items, source/retrieval_context_node(found[:context])]
+    count = count + 1
+    if count >= 4
+      break
+    end
+  end
+
+  if items == []
+    return source/empty_node("No source evidence recorded.")
+  end
+
+  return dom_element("div", {:class -> "source-agent-citations"}, items)
+end
+
+verb source/agent_turn_node(turn)
+  let role = one source/AgentTurnRole(turn, ?role)
+  let text = one source/AgentTurnText(turn, ?text)
+  let status = one source/AgentTurnStatus(turn, ?status)
+  let model = one source/AgentTurnResolvedModel(turn, ?model)
+  if role == nothing
+    role = "assistant"
+  end
+  if text == nothing
+    text = ""
+  end
+  if status == nothing
+    status = "complete"
+  end
+
+  let meta = [source/meta_chip_node("status", status)]
+  if model != nothing
+    meta = [@meta, source/meta_chip_node("model", model)]
+  end
+
+  let children = [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text(role)]), dom_element("div", {:class -> "source-agent-turn-text"}, [dom_text(text)]), dom_element("div", {:class -> "source-search-status"}, meta)]
+  if role == "assistant"
+    children = [@children, source/agent_turn_citations_node(turn)]
+  end
+
+  return dom_element("article", {:class -> string_concat("source-agent-turn source-agent-turn-", role), "data-sync-key" -> to_literal(turn)}, children)
+end
+
+verb source/agent_pending_turn_node()
+  return dom_element("article", {:class -> "source-agent-turn source-agent-turn-assistant source-agent-turn-pending", "data-sync-key" -> "agent-processing"}, [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text("assistant")]), dom_element("div", {:class -> "source-agent-turn-text"}, [dom_text("Processing...")]), dom_element("div", {:class -> "source-search-status"}, [source/meta_chip_node("status", "working")])])
+end
+
+verb source/agent_turn_list_node()
+  let turns = []
+  let count = 0
+  let ordinal = 1
+  while ordinal <= 64 && count < 8
+    for found in source/AgentTurnEndpoint(?turn, endpoint())
+      let turn = found[:turn]
+      let turn_ordinal = one source/AgentTurnOrdinal(turn, ?ordinal)
+      if turn_ordinal == ordinal
+        turns = [@turns, source/agent_turn_node(turn)]
+        count = count + 1
+        if count >= 8
+          break
+        end
+      end
+    end
+    ordinal = ordinal + 1
+  end
+
+  let status = one source/SelectedAgentStatus(endpoint(), ?status)
+  if status == "working"
+    turns = [@turns, source/agent_pending_turn_node()]
+  end
+
+  if turns == []
+    return source/empty_node("Ask about the current source context.")
+  end
+
+  return dom_element("div", {:class -> "source-agent-turn-list"}, turns)
+end
+
+verb source/agent_turn_count(endpoint)
+  let count = 0
+  for found in source/AgentTurnEndpoint(?turn, endpoint)
+    count = count + 1
+  end
+  return count
+end
+
+verb source/agent_panel_node()
+  let status = one source/SelectedAgentStatus(endpoint(), ?status)
+  let class = "source-agent-panel"
+  if status == "working"
+    class = "source-agent-panel working"
+  end
+  let children = [dom_element("h2", {}, [dom_text("Talk")]), source/agent_turn_list_node()]
+  if status != nothing
+    children = [@children, dom_element("div", {:class -> "source-search-status"}, [source/meta_chip_node("agent", status)])]
+  end
+  children = [@children, source/agent_prompt_form_node()]
+  return dom_element("section", {:class -> class}, children)
+end
+
+verb source/code_tray_tab()
+  let selected = one source/SelectedCodeTrayTab(endpoint(), ?tab)
+  if selected != nothing
+    return source/normalise_code_tray_tab(selected)
+  end
+
+  if source/current_symbol() != nothing
+    return "symbol"
+  end
+
+  return "talk"
+end
+
+verb source/code_tray_tab_button_node(value, label, active)
+  let class = "source-code-tray-tab"
+  let selected = "false"
+  if value == active
+    class = "source-code-tray-tab active"
+    selected = "true"
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "tab", :value -> value}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> class, :role -> "tab", "aria-selected" -> selected, "data-sync-disable-with" -> label}, [dom_text(label)])
+  return dom_element("form", {:class -> "source-code-tray-tab-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_set_code_tray_tab", "data-sync-key" -> string_concat("code-tray:", value), "data-sync-reset" -> "false"}, [hidden, button])
+end
+
+verb source/code_tray_node(repository, revision)
+  let active = source/code_tray_tab()
+  let class = string_concat("source-code-tray active-", active)
+  if source/agent_turn_count(endpoint()) > 0
+    class = string_concat(class, " has-agent-turns")
+  end
+
+  let tabs = dom_element("div", {:class -> "source-code-tray-tabs", :role -> "tablist"}, [source/code_tray_tab_button_node("symbol", "Symbol", active), source/code_tray_tab_button_node("talk", "Talk", active)])
+  let content = source/agent_panel_node()
+  if active == "symbol"
+    content = source/symbol_panel_node(repository, revision)
+  end
+
+  return dom_element("section", {:class -> class}, [tabs, dom_element("div", {:class -> "source-code-tray-body"}, [content])])
+end
+

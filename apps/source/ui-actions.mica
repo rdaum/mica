@@ -1,0 +1,504 @@
+// Source viewer sync action handlers.
+
+verb source/sync_action_source(action)
+  let delegate = one source/SyncAction(action, ?delegate)
+  if delegate == nothing
+    return nothing
+  end
+
+  return frob(delegate, action)
+end
+
+verb source/handle_sync_action(source @ #source/sync_action<_>, endpoint, session, view, event, target, fields)
+  return false
+end
+
+verb source/handle_sync_action(source @ #source/open_file_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  if path == nothing
+    return false
+  end
+
+  let readable_path = source/file_for_path(path)
+  if readable_path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  retract source/SelectedRepository(endpoint, _)
+  retract source/SelectedRevision(endpoint, _)
+  retract source/SelectedPath(endpoint, _)
+  retract source/SelectedLine(endpoint, _)
+  retract source/SelectedWindowStart(endpoint, _)
+  source/clear_selected_symbol(endpoint)
+  assert source/SelectedRepository(endpoint, #source/repo_mica)
+  assert source/SelectedRevision(endpoint, #source/rev_worktree)
+  assert source/SelectedPath(endpoint, path)
+  assert source/SelectedLine(endpoint, 1)
+  assert source/SelectedWindowStart(endpoint, 1)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/open_directory_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  if path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  let has_entries = false
+  for entry in source/RepositoryEntry(#source/repo_mica, #source/rev_worktree, path, ?child_path, ?kind, ?name)
+    has_entries = true
+    break
+  end
+  if has_entries == false
+    return false
+  end
+
+  if source/ExpandedDirectory(endpoint, path)
+    retract source/ExpandedDirectory(endpoint, path)
+  else
+    assert source/ExpandedDirectory(endpoint, path)
+  end
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/jump_to_line_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  let raw_line = fields[:line]
+  if path == nothing || raw_line == nothing
+    return false
+  end
+
+  let line = from_literal(raw_line)
+  if line == nothing || line < 1
+    return false
+  end
+
+  let readable_path = source/file_for_path(path)
+  if readable_path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  retract source/SelectedRepository(endpoint, _)
+  retract source/SelectedRevision(endpoint, _)
+  retract source/SelectedPath(endpoint, _)
+  retract source/SelectedLine(endpoint, _)
+  retract source/SelectedWindowStart(endpoint, _)
+  assert source/SelectedRepository(endpoint, #source/repo_mica)
+  assert source/SelectedRevision(endpoint, #source/rev_worktree)
+  assert source/SelectedPath(endpoint, path)
+  assert source/SelectedLine(endpoint, line)
+  let line_count = one source/FileLineCount(#source/repo_mica, #source/rev_worktree, path, ?line_count)
+  if line_count == nothing
+    line_count = line
+  end
+  assert source/SelectedWindowStart(endpoint, source/window_start_for_line(line, line_count))
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/select_symbol_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  let raw_byte = fields[:byte]
+  if path == nothing || raw_byte == nothing
+    return false
+  end
+
+  let byte = from_literal(raw_byte)
+  if byte == nothing || byte < 0
+    return false
+  end
+
+  let readable_path = source/file_for_path(path)
+  if readable_path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  let selected = nothing
+  for def in source/DefinitionAt(#source/repo_mica, #source/rev_worktree, path, byte, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)
+    selected = def
+    break
+  end
+
+  if selected == nothing
+    return false
+  end
+
+  let target_path = selected[:target_path]
+  let target_line = selected[:start_line]
+  if source/file_for_path(target_path) == nothing || target_line == nothing
+    return false
+  end
+
+  retract source/SelectedRepository(endpoint, _)
+  retract source/SelectedRevision(endpoint, _)
+  retract source/SelectedPath(endpoint, _)
+  retract source/SelectedLine(endpoint, _)
+  retract source/SelectedWindowStart(endpoint, _)
+  source/clear_selected_symbol(endpoint)
+  assert source/SelectedRepository(endpoint, #source/repo_mica)
+  assert source/SelectedRevision(endpoint, #source/rev_worktree)
+  assert source/SelectedPath(endpoint, target_path)
+  assert source/SelectedLine(endpoint, target_line)
+  let line_count = one source/FileLineCount(#source/repo_mica, #source/rev_worktree, target_path, ?line_count)
+  if line_count == nothing
+    line_count = target_line
+  end
+  assert source/SelectedWindowStart(endpoint, source/window_start_for_line(target_line, line_count))
+  assert source/SelectedSymbol(endpoint, selected[:symbol])
+  assert source/SelectedSymbolName(endpoint, selected[:name])
+  assert source/SelectedSymbolKind(endpoint, selected[:kind])
+  assert source/SelectedDefinitionPath(endpoint, target_path)
+  assert source/SelectedDefinitionStartLine(endpoint, selected[:start_line])
+  assert source/SelectedDefinitionEndLine(endpoint, selected[:end_line])
+  assert source/SelectedDefinitionStartByte(endpoint, selected[:start_byte])
+  assert source/SelectedDefinitionEndByte(endpoint, selected[:end_byte])
+  assert source/SelectedSymbolProvider(endpoint, selected[:provider])
+  assert source/SelectedReferencesOpen(endpoint, false)
+  source/set_code_tray_tab(endpoint, "symbol")
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/set_code_tray_tab_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let tab = fields[:tab]
+  if tab == nothing
+    return false
+  end
+
+  source/set_code_tray_tab(endpoint, tab)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/set_window_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let path = fields[:path]
+  let raw_start = fields[:window_start]
+  if path == nothing || raw_start == nothing
+    return false
+  end
+
+  let start = from_literal(raw_start)
+  if start == nothing || start < 1
+    return false
+  end
+
+  let readable_path = source/file_for_path(path)
+  if readable_path == nothing || source/CanBrowseRepository(#web, #source/repo_mica) == false
+    return false
+  end
+
+  let selected_path = source/current_file()
+  if selected_path != path
+    return false
+  end
+
+  let line_count = one source/FileLineCount(#source/repo_mica, #source/rev_worktree, path, ?line_count)
+  if line_count == nothing
+    line_count = start
+  end
+  let clamped = source/clamp_window_start(start, line_count)
+  let current = one source/SelectedWindowStart(endpoint, ?window_start)
+  if current == clamped
+    return false
+  end
+
+  retract source/SelectedWindowStart(endpoint, _)
+  assert source/SelectedWindowStart(endpoint, clamped)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/find_references_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  if one source/SelectedSymbol(endpoint, ?symbol) == nothing
+    return false
+  end
+
+  retract source/SelectedReferencesOpen(endpoint, _)
+  assert source/SelectedReferencesOpen(endpoint, true)
+  source/set_code_tray_tab(endpoint, "symbol")
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/retrieve_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let question = fields[:question]
+  if question == nothing || question == ""
+    return false
+  end
+
+  let scope = fields[:scope]
+  if scope == nothing
+    scope = source/default_retrieval_scope()
+  end
+  source/run_retrieval_query_with_scope(endpoint, #web, question, scope)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/retrieve_symbol_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let symbol = one source/SelectedSymbol(endpoint, ?symbol)
+  if symbol == nothing
+    return false
+  end
+
+  source/run_symbol_neighbourhood_query(endpoint, #web, symbol)
+  source/set_code_tray_tab(endpoint, "symbol")
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/agent_prompt_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let prompt = fields[:prompt]
+  if prompt == nothing || prompt == ""
+    return false
+  end
+
+  let result = source/start_agent_prompt(endpoint, #web, prompt)
+  if result == nothing
+    return false
+  end
+
+  source/set_code_tray_tab(endpoint, "talk")
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/generate_answer_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let answer = source/generate_answer_for_selected_plan(endpoint, #web)
+  if answer == nothing
+    return false
+  end
+
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/accept_answer_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_answer = fields[:answer]
+  if raw_answer == nothing
+    return false
+  end
+  let answer = from_literal(raw_answer)
+  let accepted = source/accept_answer(answer)
+  if accepted
+    source/bump_revision(endpoint)
+  end
+  return accepted
+end
+
+verb source/handle_sync_action(source @ #source/reject_answer_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_answer = fields[:answer]
+  if raw_answer == nothing
+    return false
+  end
+  let answer = from_literal(raw_answer)
+  let rejected = source/reject_answer(answer)
+  if rejected
+    source/bump_revision(endpoint)
+  end
+  return rejected
+end
+
+verb source/handle_sync_action(source @ #source/correct_answer_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_answer = fields[:answer]
+  let text = fields[:text]
+  if raw_answer == nothing || text == nothing || text == ""
+    return false
+  end
+  let answer = from_literal(raw_answer)
+  let corrected = source/correct_answer(answer, text)
+  if corrected
+    source/bump_revision(endpoint)
+  end
+  return corrected
+end
+
+verb source/handle_sync_action(source @ #source/accept_finding_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_finding = fields[:finding]
+  if raw_finding == nothing
+    return false
+  end
+  let finding = from_literal(raw_finding)
+  let accepted = source/accept_finding(finding)
+  if accepted
+    source/bump_revision(endpoint)
+  end
+  return accepted
+end
+
+verb source/handle_sync_action(source @ #source/reject_finding_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_finding = fields[:finding]
+  if raw_finding == nothing
+    return false
+  end
+  let finding = from_literal(raw_finding)
+  let rejected = source/reject_finding(finding)
+  if rejected
+    source/bump_revision(endpoint)
+  end
+  return rejected
+end
+
+verb source/handle_sync_action(source @ #source/correct_finding_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_finding = fields[:finding]
+  let text = fields[:text]
+  if raw_finding == nothing || text == nothing || text == ""
+    return false
+  end
+  let finding = from_literal(raw_finding)
+  let corrected = source/correct_finding(finding, text)
+  if corrected
+    source/bump_revision(endpoint)
+  end
+  return corrected
+end
+
+verb source/handle_sync_action(source @ #source/open_retrieval_citation_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_subject = fields[:subject]
+  if raw_subject == nothing
+    return false
+  end
+
+  let subject = from_literal(raw_subject)
+  if subject == nothing || source/can_retrieve_subject(#web, subject) == false
+    return false
+  end
+
+  let path = source/retrieval_text_unit_path(subject)
+  let plan = one source/SelectedRetrievalPlan(endpoint, ?plan)
+  let line = one source/RetrievalCitationLine(plan, subject, ?line)
+  if line == nothing
+    line = source/retrieval_text_unit_line(subject)
+  end
+  if path == nothing || source/file_for_path(path) == nothing
+    return false
+  end
+
+  retract source/SelectedRepository(endpoint, _)
+  retract source/SelectedRevision(endpoint, _)
+  retract source/SelectedPath(endpoint, _)
+  retract source/SelectedLine(endpoint, _)
+  retract source/SelectedWindowStart(endpoint, _)
+  assert source/SelectedRepository(endpoint, #source/repo_mica)
+  assert source/SelectedRevision(endpoint, #source/rev_worktree)
+  assert source/SelectedPath(endpoint, path)
+  assert source/SelectedLine(endpoint, line)
+  let line_count = one source/FileLineCount(#source/repo_mica, #source/rev_worktree, path, ?line_count)
+  if line_count == nothing
+    line_count = line
+  end
+  assert source/SelectedWindowStart(endpoint, source/window_start_for_line(line, line_count))
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/toggle_hidden_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let show_hidden = false
+  if fields[:show_hidden] == "true"
+    show_hidden = true
+  end
+
+  retract source/ShowHiddenFiles(endpoint, _)
+  assert source/ShowHiddenFiles(endpoint, show_hidden)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/toggle_inspector_section_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let section = fields[:section]
+  if section != "outline" && section != "annotations"
+    return false
+  end
+
+  let collapsed = false
+  if fields[:collapsed] == "true"
+    collapsed = true
+  end
+
+  retract source/InspectorSectionCollapsed(endpoint, section, _)
+  assert source/InspectorSectionCollapsed(endpoint, section, collapsed)
+  source/bump_revision(endpoint)
+  return true
+end

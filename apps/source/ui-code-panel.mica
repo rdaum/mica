@@ -1,0 +1,316 @@
+// Source viewer code, symbol, outline, and annotation panels.
+
+verb source/line_has_annotation(path, line)
+  let file_id = one source/FilePath(?file, path)
+  if file_id == nothing
+    return false
+  end
+
+  for found in source/SpanFile(?span, file_id)
+    let span = found[:span]
+    if source/CanReadSourceSpan(#web, span)
+      let start = one source/SpanStartLine(span, ?start)
+      let finish = one source/SpanEndLine(span, ?finish)
+      if start != nothing && finish != nothing && line >= start && line <= finish
+        return true
+      end
+    end
+  end
+
+  return false
+end
+
+verb source/annotation_marker_node(path, line)
+  if source/line_has_annotation(path, line)
+    return dom_element("span", {:class -> "source-line-annotation-marker", :title -> "Annotated line"}, [dom_text("*")])
+  end
+
+  return dom_element("span", {:class -> "source-line-annotation-space"}, [])
+end
+
+verb source/span_row_node(path, span)
+  let label = one source/SpanLabel(span, ?label)
+  let start = one source/SpanStartLine(span, ?start)
+  let finish = one source/SpanEndLine(span, ?finish)
+  let line_range = string_concat("lines ", to_literal(start), "-", to_literal(finish))
+  let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let hidden_line = dom_element("input", {:type -> "hidden", :name -> "line", :value -> to_literal(start)}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-span-button"}, [dom_element("span", {:class -> "source-span-label"}, [dom_text(label)]), dom_element("span", {:class -> "source-span-lines"}, [dom_text(line_range)])])
+  return dom_element("li", {"data-sync-key" -> to_literal(span)}, [dom_element("form", {:class -> "source-span-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> string_concat("span:", to_literal(span))}, [hidden_path, hidden_line, button])])
+end
+
+verb source/span_list_node(path)
+  let spans = []
+  let file_id = one source/FilePath(?file, path)
+  if file_id != nothing
+    for found in source/SpanFile(?span, file_id)
+      let span = found[:span]
+      if source/CanReadSourceSpan(#web, span)
+        spans = [@spans, source/span_row_node(path, span)]
+      end
+    end
+  end
+
+  if spans == []
+    return source/empty_node("No annotations for this file.")
+  end
+
+  return dom_element("ul", {:class -> "source-span-list"}, spans)
+end
+
+verb source/code_segment_node(path, segment)
+  let kind = segment[:kind]
+  let text = segment[:text]
+  if kind == nothing
+    kind = "plain"
+  end
+  if text == nothing
+    text = ""
+  end
+
+  let class = string_concat("source-token source-token-", kind)
+  let byte = segment[:start_byte]
+  if byte != nothing && (kind == "function" || kind == "type" || kind == "property" || kind == "identifier")
+    let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+    let hidden_byte = dom_element("input", {:type -> "hidden", :name -> "byte", :value -> to_literal(byte)}, [])
+    let button = dom_element("button", {:type -> "submit", :class -> string_concat(class, " source-token-link")}, [dom_text(text)])
+    return dom_element("form", {:class -> "source-token-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_select_symbol", "data-sync-key" -> string_concat(path, ":", to_literal(byte))}, [hidden_path, hidden_byte, button])
+  end
+
+  return dom_element("span", {:class -> class}, [dom_text(text)])
+end
+
+verb source/code_line_node(path, line, selected_line, segments)
+  let class = "source-code-line"
+  if line == selected_line
+    class = "source-code-line selected"
+  end
+
+  let children = []
+  for segment in segments
+    children = [@children, source/code_segment_node(path, segment)]
+  end
+
+  let number = dom_element("span", {:class -> "source-line-number", :id -> string_concat("L", to_literal(line))}, [dom_text(to_literal(line)), source/annotation_marker_node(path, line)])
+  let code = dom_element("span", {:class -> "source-line-text"}, children)
+  return dom_element("div", {:class -> class, "data-sync-key" -> string_concat(path, ":", to_literal(line))}, [number, code])
+end
+
+verb source/code_spacer_node(class, line_count)
+  if line_count < 1
+    return dom_element("div", {:class -> string_concat("source-code-spacer ", class), "data-source-spacer-lines" -> "0"}, [])
+  end
+
+  return dom_element("div", {:class -> string_concat("source-code-spacer ", class), "data-source-spacer-lines" -> to_literal(line_count)}, [])
+end
+
+verb source/code_window_form_node(path, window_start)
+  let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let hidden_start = dom_element("input", {:type -> "hidden", :name -> "window_start", :value -> to_literal(window_start)}, [])
+  return dom_element("form", {:id -> "source-window-form", :class -> "source-window-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_set_window", "data-sync-key" -> string_concat("window:", path)}, [hidden_path, hidden_start])
+end
+
+verb source/code_loading_node()
+  return dom_element("div", {:class -> "source-code-loading", "aria-live" -> "polite"}, [dom_element("span", {:class -> "source-code-loading-dot"}, []), dom_element("span", {:class -> "source-code-loading-text"}, [dom_text("Loading source window...")]), dom_element("button", {:type -> "button", :class -> "source-code-loading-retry"}, [dom_text("Retry")])])
+end
+
+verb source/outline_item_node(path, item)
+  let line = item[:start_line]
+  let label = item[:name]
+  let kind = item[:kind]
+  let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let hidden_line = dom_element("input", {:type -> "hidden", :name -> "line", :value -> to_literal(line)}, [])
+  let line_label = string_concat("line ", to_literal(line))
+  let button = dom_element("button", {:type -> "submit", :class -> "source-outline-button"}, [dom_element("span", {:class -> "source-outline-name"}, [dom_text(label)]), dom_element("span", {:class -> "source-outline-meta"}, [dom_text(kind), dom_text(" / "), dom_text(line_label)])])
+  return dom_element("form", {:class -> "source-outline-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> item[:node]}, [hidden_path, hidden_line, button])
+end
+
+verb source/splitter_node(kind, label)
+  return dom_element("button", {:type -> "button", :class -> string_concat("source-splitter source-splitter-", kind), :role -> "separator", "aria-label" -> label}, [])
+end
+
+verb source/inspector_section_header_node(section, title)
+  let collapsed = source/inspector_section_collapsed(section)
+  let next = "true"
+  let button_label = "Collapse"
+  let expanded = "true"
+  if collapsed == true
+    next = "false"
+    button_label = "Expand"
+    expanded = "false"
+  end
+
+  let hidden_section = dom_element("input", {:type -> "hidden", :name -> "section", :value -> section}, [])
+  let hidden_collapsed = dom_element("input", {:type -> "hidden", :name -> "collapsed", :value -> next}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-section-toggle", "aria-expanded" -> expanded, "data-sync-disable-with" -> "..."}, [dom_text(button_label)])
+  let form = dom_element("form", {:class -> "source-section-toggle-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_toggle_inspector_section", "data-sync-key" -> string_concat("inspector:", section)}, [hidden_section, hidden_collapsed, button])
+  return dom_element("div", {:class -> "source-section-header"}, [dom_element("h3", {}, [dom_text(title)]), form])
+end
+
+verb source/outline_panel_node(repository, revision, path)
+  let header = source/inspector_section_header_node("outline", "Outline")
+  if source/inspector_section_collapsed("outline")
+    return dom_element("aside", {:class -> "source-outline source-inspector-section collapsed"}, [header])
+  end
+
+  let items = []
+  let count = 0
+  for item in source/SyntaxOutline(repository, revision, path, ?node, ?kind, ?name, ?start_line, ?end_line, ?start_byte, ?end_byte)
+    items = [@items, source/outline_item_node(path, item)]
+    count = count + 1
+    if count > 40
+      break
+    end
+  end
+
+  if items == []
+    return dom_element("aside", {:class -> "source-outline source-inspector-section"}, [header, source/empty_node("No outline available for this file.")])
+  end
+
+  return dom_element("aside", {:class -> "source-outline source-inspector-section"}, [header, dom_element("div", {:class -> "source-outline-list"}, items)])
+end
+
+verb source/reference_line_text(repository, revision, path, line)
+  for row in source/FileLines(repository, revision, path, line, 1, ?lines, ?hash)
+    let lines = row[:lines]
+    if lines != nothing && lines != []
+      return lines[0]
+    end
+  end
+
+  return ""
+end
+
+verb source/symbol_reference_node(repository, revision, reference)
+  let path = reference[:path]
+  let line = reference[:start_line]
+  let name = reference[:name]
+  let provider = reference[:provider]
+  let snippet = source/reference_line_text(repository, revision, path, line)
+  if name == nothing
+    name = "reference"
+  end
+  if snippet == ""
+    snippet = name
+  end
+
+  let hidden_path = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let hidden_line = dom_element("input", {:type -> "hidden", :name -> "line", :value -> to_literal(line)}, [])
+  let line_label = string_concat(path, ":", to_literal(line))
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button"}, [dom_element("span", {:class -> "source-reference-snippet"}, [dom_text(snippet)]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(line_label)]), dom_element("span", {:class -> "source-reference-provider"}, [dom_text(source/provider_label(provider))])])
+  return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_jump_to_line", "data-sync-key" -> string_concat(path, ":", to_literal(reference[:start_byte]))}, [hidden_path, hidden_line, button])
+end
+
+verb source/find_references_button_node(symbol)
+  let symbol_label = to_literal(symbol)
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button", "data-sync-disable-with" -> "Finding references..."}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text("Find references")]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(symbol_label)])])
+  return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_find_references", "data-sync-key" -> string_concat("references:", symbol_label)}, [button])
+end
+
+verb source/symbol_retrieval_button_node(symbol)
+  let symbol_label = to_literal(symbol)
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button", "data-sync-disable-with" -> "Searching..."}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text("Search neighbourhood")]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(symbol_label)])])
+  return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_retrieve_symbol", "data-sync-key" -> string_concat("symbol-retrieval:", symbol_label)}, [button])
+end
+
+verb source/symbol_panel_node(repository, revision)
+  let symbol = source/current_symbol()
+  if symbol == nothing
+    return dom_element("aside", {:class -> "source-symbol-panel"}, [dom_element("h3", {}, [dom_text("Symbol")]), source/empty_node("Select a highlighted Rust symbol to query the semantic provider.")])
+  end
+
+  let name = one source/SelectedSymbolName(endpoint(), ?name)
+  let kind = one source/SelectedSymbolKind(endpoint(), ?kind)
+  let path = one source/SelectedDefinitionPath(endpoint(), ?path)
+  let start_line = one source/SelectedDefinitionStartLine(endpoint(), ?line)
+  let end_line = one source/SelectedDefinitionEndLine(endpoint(), ?line)
+  let provider = one source/SelectedSymbolProvider(endpoint(), ?provider)
+  let span = string_concat(path, ":", to_literal(start_line), "-", to_literal(end_line))
+  let references_open = one source/SelectedReferencesOpen(endpoint(), ?open)
+  let refs = []
+  let ref_count = 0
+  let ref_count_label = "not loaded"
+  if references_open == true
+    for reference in source/ReferencesOf(repository, revision, symbol, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)
+      ref_count = ref_count + 1
+      if ref_count <= 30
+        refs = [@refs, source/symbol_reference_node(repository, revision, reference)]
+      end
+    end
+    ref_count_label = to_literal(ref_count)
+  end
+
+  let summary = dom_element("div", {:class -> "source-symbol-summary"}, [dom_element("strong", {:class -> "source-symbol-name"}, [dom_text(name)]), source/meta_chip_node("kind", kind), source/meta_chip_node("definition", span), source/meta_chip_node("references", ref_count_label), source/meta_chip_node("provider", source/provider_label(provider))])
+  let reference_list = source/find_references_button_node(symbol)
+  if references_open == true && refs != []
+    reference_list = dom_element("div", {:class -> "source-reference-list"}, refs)
+  elseif references_open == true
+    reference_list = source/empty_node("No references returned for this symbol.")
+  end
+
+  return dom_element("aside", {:class -> "source-symbol-panel"}, [dom_element("h3", {}, [dom_text("Symbol")]), summary, dom_element("h4", {}, [dom_text("Retrieval")]), source/symbol_retrieval_button_node(symbol), dom_element("h4", {}, [dom_text("References")]), reference_list])
+end
+
+verb source/code_panel_node(path)
+  let repository = source/current_repository()
+  let selected_revision = source/current_revision()
+  let selected_line = source/current_line()
+  let line_count = one source/FileLineCount(repository, selected_revision, path, ?line_count)
+  if line_count == nothing
+    line_count = 1
+  end
+  let window_size = source/window_size()
+  let start_line = source/current_window_start(line_count)
+  let title = source/file_title(path)
+  let language = source/file_language(path)
+  let rows = []
+  let hash = ""
+  for row in source/SyntaxLine(repository, selected_revision, path, start_line, window_size, ?line, ?segments, ?hash)
+    hash = row[:hash]
+    rows = [@rows, source/code_line_node(path, row[:line], selected_line, row[:segments])]
+  end
+  let top_spacer_lines = start_line - 1
+  let bottom_spacer_lines = line_count - start_line - window_size + 1
+  if bottom_spacer_lines < 0
+    bottom_spacer_lines = 0
+  end
+  let title_group = dom_element("div", {}, [dom_element("h2", {}, [dom_text(title)]), dom_element("p", {:class -> "source-path"}, [dom_text(path)])])
+  let end_line = start_line + window_size - 1
+  if end_line > line_count
+    end_line = line_count
+  end
+  let line_label = string_concat("lines ", to_literal(start_line), "-", to_literal(end_line), " / ", to_literal(line_count))
+  let heading = dom_element("div", {:class -> "source-code-heading"}, [title_group, source/meta_chip_node("language", language), source/meta_chip_node("window", line_label), source/meta_chip_node("hash", hash)])
+  let code_children = [source/code_spacer_node("source-code-spacer-top", top_spacer_lines), @rows, source/code_spacer_node("source-code-spacer-bottom", bottom_spacer_lines)]
+  let code = dom_element("div", {:class -> "source-code"}, code_children)
+  let outline = source/outline_panel_node(repository, selected_revision, path)
+  let span_header = source/inspector_section_header_node("annotations", "Annotations")
+  let spans = dom_element("aside", {:class -> "source-spans source-inspector-section"}, [span_header, source/span_list_node(path)])
+  if source/inspector_section_collapsed("annotations")
+    spans = dom_element("aside", {:class -> "source-spans source-inspector-section collapsed"}, [span_header])
+  end
+  let inspector_class = "source-inspector-rail"
+  if source/inspector_section_collapsed("outline") && source/inspector_section_collapsed("annotations")
+    inspector_class = "source-inspector-rail both-collapsed"
+  elseif source/inspector_section_collapsed("outline")
+    inspector_class = "source-inspector-rail outline-collapsed"
+  elseif source/inspector_section_collapsed("annotations")
+    inspector_class = "source-inspector-rail annotations-collapsed"
+  end
+  let code_frame = dom_element("div", {:id -> "source-code-frame", :class -> "source-code-frame", "data-source-path" -> path, "data-source-window-start" -> to_literal(start_line), "data-source-window-size" -> to_literal(window_size), "data-source-line-count" -> to_literal(line_count)}, [source/code_window_form_node(path, start_line), code, source/code_loading_node()])
+  let code_stack = dom_element("div", {:class -> "source-code-stack symbol-collapsed"}, [code_frame])
+  let inspector_children = [outline, spans]
+  if source/inspector_section_collapsed("outline") == false && source/inspector_section_collapsed("annotations") == false
+    inspector_children = [outline, source/splitter_node("horizontal source-splitter-outline-annotations", "Resize outline and annotations panes"), spans]
+  end
+  let inspector = dom_element("aside", {:class -> inspector_class}, inspector_children)
+  let workbench_splitter = source/splitter_node("vertical source-splitter-workbench", "Resize code and inspector panes")
+  let workbench = dom_element("div", {:class -> "source-workbench"}, [code_stack, workbench_splitter, inspector])
+  let tray_splitter = source/splitter_node("horizontal source-splitter-agent", "Resize lower panel")
+  let body_class = "source-code-panel-body"
+  if source/code_tray_tab() == "talk" && source/agent_turn_count(endpoint()) > 0
+    body_class = "source-code-panel-body talk-expanded"
+  end
+  let body = dom_element("div", {:class -> body_class}, [workbench, tray_splitter, source/code_tray_node(repository, selected_revision)])
+  return dom_element("section", {:class -> "source-panel source-code-panel"}, [heading, body])
+end

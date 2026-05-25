@@ -21,6 +21,26 @@ use mica_var::{Identity, Symbol, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
+const SOURCE_APP_FILEINS: &[&str] = &[
+    include_str!("../../../apps/shared/sync-host.mica"),
+    include_str!("../../../apps/shared/sync-dom.mica"),
+    include_str!("../../../apps/shared/retrieval.mica"),
+    include_str!("../../../apps/shared/openai.mica"),
+    include_str!("../../../apps/source/core.mica"),
+    include_str!("../../../apps/source/retrieval.mica"),
+    include_str!("../../../apps/source/ui-session.mica"),
+    include_str!("../../../apps/source/ui-policy.mica"),
+    include_str!("../../../apps/source/ui-state.mica"),
+    include_str!("../../../apps/source/ui-actions.mica"),
+    include_str!("../../../apps/source/ui-sync.mica"),
+    include_str!("../../../apps/source/ui-compose.mica"),
+    include_str!("../../../apps/source/ui-navigator.mica"),
+    include_str!("../../../apps/source/ui-retrieval-panel.mica"),
+    include_str!("../../../apps/source/ui-agent-panel.mica"),
+    include_str!("../../../apps/source/ui-code-panel.mica"),
+    include_str!("../../../apps/source/http.mica"),
+];
+
 fn endpoint(offset: u64) -> Identity {
     Identity::new(0x00ee_0000_0000_0000 + offset).unwrap()
 }
@@ -30,17 +50,7 @@ fn root_source(source: &str) -> TaskRequest {
 }
 
 fn load_source_app(runner: &mut SourceRunner) {
-    for filein in [
-        include_str!("../../../apps/shared/sync-host.mica"),
-        include_str!("../../../apps/shared/sync-dom.mica"),
-        include_str!("../../../apps/shared/retrieval.mica"),
-        include_str!("../../../apps/shared/openai.mica"),
-        include_str!("../../../apps/source/core.mica"),
-        include_str!("../../../apps/source/retrieval.mica"),
-        include_str!("../../../apps/source/ui-session.mica"),
-        include_str!("../../../apps/source/ui-compose.mica"),
-        include_str!("../../../apps/source/http.mica"),
-    ] {
+    for filein in SOURCE_APP_FILEINS {
         runner.run_filein(filein).unwrap();
     }
 }

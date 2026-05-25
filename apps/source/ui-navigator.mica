@@ -1,0 +1,196 @@
+// Source viewer repository navigator and workspace summary.
+
+verb source/header_node(repository, revision)
+  let name = one source/RepositoryName(repository, ?name)
+  let label = one source/RevisionLabel(revision, ?label)
+  let title = dom_element("h1", {}, [dom_text(name)])
+  let deck = dom_element("p", {:class -> "source-deck"}, [dom_text("A Mica-authored source viewer over provider-backed local worktree reads.")])
+  let meta = dom_element("div", {:class -> "source-meta"}, [source/meta_chip_node("revision", label), source/meta_chip_node("mode", "local file provider")])
+  return dom_element("header", {:class -> "source-header"}, [title, deck, meta])
+end
+
+verb source/index_status_node(repository, revision)
+  for found in source/SourceIndex(?index)
+    let index = found[:index]
+    if source/IndexRepository(index, repository) && source/IndexRevision(index, revision)
+      let provider = one source/IndexProvider(index, ?provider)
+      let status = one source/IndexStatus(index, ?status)
+      let version = one source/IndexVersion(index, ?version)
+      let error = one source/IndexBuildError(index, ?error)
+      let chips = [source/meta_chip_node("provider", source/provider_label(provider)), source/meta_chip_node("version", version), source/meta_chip_node("status", status)]
+      if status != "complete" && error != nothing && error != ""
+        chips = [@chips, source/meta_chip_node("error", error)]
+      end
+      return dom_element("div", {:class -> "source-index-status"}, chips)
+    end
+  end
+
+  return dom_element("div", {:class -> "source-index-status"}, [source/meta_chip_node("index", "unavailable")])
+end
+
+verb source/repository_summary_node(repository, revision)
+  let root = one source/RepositoryRoot(repository, ?root)
+  let file_count = 0
+  for found in source/SourceFile(?file)
+    if source/FileRevision(found[:file], revision)
+      file_count = file_count + 1
+    end
+  end
+
+  return dom_element("section", {:class -> "source-panel source-summary"}, [dom_element("h2", {}, [dom_text("Workspace")]), dom_element("p", {:class -> "source-root"}, [dom_text(root)]), dom_element("p", {:class -> "source-muted"}, [dom_text(string_concat(to_literal(file_count), " pinned files"))]), source/index_status_node(repository, revision)])
+end
+
+verb source/file_button_node(path, title, language, selected)
+  let class = "source-file-button"
+  if path == selected
+    class = "source-file-button active"
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let title_node = dom_element("span", {:class -> "source-file-title"}, [dom_text(title)])
+  let path_node = dom_element("span", {:class -> "source-file-path"}, [dom_text(path)])
+  let language_node = dom_element("span", {:class -> "source-file-language"}, [dom_text(language)])
+  let button = dom_element("button", {:type -> "submit", :class -> class, "data-sync-disable-with" -> "Opening..."}, [title_node, path_node, language_node])
+  return dom_element("form", {:class -> "source-file-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_file", "data-sync-key" -> path}, [hidden, button])
+end
+
+verb source/pinned_files_node(revision, selected)
+  let items = []
+  for found in source/SourceFile(?file)
+    let file = found[:file]
+    if source/FileRevision(file, revision) && source/CanReadSourceFile(#web, file)
+      let path = one source/FilePath(file, ?path)
+      let title = one source/FileTitle(file, ?title)
+      let language = one source/FileLanguage(file, ?language)
+      items = [@items, source/file_button_node(path, title, language, selected)]
+    end
+  end
+
+  if items == []
+    return source/empty_node("No pinned files.")
+  end
+
+  return dom_element("div", {:class -> "source-file-list source-pinned-list"}, items)
+end
+
+verb source/tree_file_node(path, name, selected)
+  let class = "source-tree-row"
+  if path == selected
+    class = "source-tree-row active"
+  end
+  let label = name
+  if label == nothing || label == ""
+    label = path
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> class, "data-sync-disable-with" -> "Opening..."}, [dom_element("span", {:class -> "source-tree-kind"}, [dom_text("file")]), dom_element("span", {:class -> "source-tree-name"}, [dom_text(label)])])
+  return dom_element("form", {:class -> "source-tree-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_file", "data-sync-key" -> path}, [hidden, button])
+end
+
+verb source/show_repository_entry(show_hidden, name)
+  if show_hidden == true
+    return true
+  end
+
+  if string_starts_with(name, ".")
+    return false
+  end
+
+  return true
+end
+
+verb source/tree_directory_node(repository, revision, selected, path, name, depth)
+  let children = []
+  let count = 0
+  let show_hidden = source/show_hidden_files()
+  let expanded = source/directory_expanded(path)
+  if expanded == true
+    for entry in source/RepositoryEntry(repository, revision, path, ?child_path, ?kind, ?child_name)
+      if source/show_repository_entry(show_hidden, entry[:child_name])
+        if entry[:kind] == "directory"
+          children = [@children, source/tree_directory_node(repository, revision, selected, entry[:child_path], entry[:child_name], depth + 1)]
+        elseif entry[:kind] == "file"
+          children = [@children, source/tree_file_node(entry[:child_path], entry[:child_name], selected)]
+        end
+        count = count + 1
+        if count >= 36
+          break
+        end
+      end
+    end
+  end
+
+  let attrs = {:class -> "source-tree-directory"}
+  if expanded == true
+    attrs = {:class -> "source-tree-directory", :open -> "open"}
+  end
+
+  let label = name
+  if label == nothing || label == ""
+    label = "."
+  end
+
+  let button_label = "Open"
+  if expanded == true
+    button_label = "Collapse"
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "path", :value -> path}, [])
+  let open_button = dom_element("button", {:type -> "submit", :class -> "source-tree-open-button", "data-sync-disable-with" -> "..."}, [dom_text(button_label)])
+  let open_form = dom_element("form", {:class -> "source-tree-open-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_directory", "data-sync-key" -> string_concat("dir:", path)}, [hidden, open_button])
+  let summary = dom_element("summary", {:class -> "source-tree-summary"}, [dom_element("span", {:class -> "source-tree-kind"}, [dom_text("dir")]), dom_element("span", {:class -> "source-tree-name"}, [dom_text(label)]), open_form])
+  return dom_element("details", attrs, [summary, dom_element("div", {:class -> "source-tree-children"}, children)])
+end
+
+verb source/directory_entry_list_node(repository, revision, parent, selected)
+  let children = []
+  let count = 0
+  let show_hidden = source/show_hidden_files()
+  for entry in source/RepositoryEntry(repository, revision, parent, ?path, ?kind, ?name)
+    if source/show_repository_entry(show_hidden, entry[:name])
+      if entry[:kind] == "directory"
+        children = [@children, source/tree_directory_node(repository, revision, selected, entry[:path], entry[:name], 1)]
+      elseif entry[:kind] == "file"
+        children = [@children, source/tree_file_node(entry[:path], entry[:name], selected)]
+      end
+      count = count + 1
+      if count >= 80
+        break
+      end
+    end
+  end
+
+  if children == []
+    return source/empty_node("No repository entries available.")
+  end
+
+  return dom_element("div", {:class -> "source-tree-entries"}, children)
+end
+
+verb source/repository_tree_node(repository, revision, selected)
+  let sections = [dom_element("h4", {:class -> "source-tree-label"}, [dom_text("Repository root")]), source/directory_entry_list_node(repository, revision, "", selected)]
+
+  return dom_element("div", {:class -> "source-tree"}, sections)
+end
+
+verb source/hidden_toggle_node()
+  let show_hidden = source/show_hidden_files()
+  let next = "true"
+  let label = "Show hidden"
+  let pressed = "false"
+  if show_hidden == true
+    next = "false"
+    label = "Hide hidden"
+    pressed = "true"
+  end
+
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "show_hidden", :value -> next}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-hidden-toggle", "aria-pressed" -> pressed, "data-sync-disable-with" -> "Updating..."}, [dom_text(label)])
+  return dom_element("form", {:class -> "source-hidden-toggle-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_toggle_hidden", "data-sync-key" -> "source-hidden-toggle"}, [hidden, button])
+end
+
+verb source/file_list_node(repository, revision, selected)
+  let header = dom_element("div", {:class -> "source-navigator-header"}, [dom_element("h2", {}, [dom_text("Navigator")]), source/hidden_toggle_node()])
+  return dom_element("section", {:class -> "source-panel source-files"}, [header, dom_element("h3", {:class -> "source-subhead"}, [dom_text("Pinned")]), source/pinned_files_node(revision, selected), dom_element("h3", {:class -> "source-subhead"}, [dom_text("Repository")]), source/repository_tree_node(repository, revision, selected)])
+end
