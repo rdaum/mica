@@ -370,6 +370,14 @@ phases can use local-only providers and generated fileins. The later phases
 should converge on a hosted app that can run from `scripts/source.sh` and open
 `/source`.
 
+Current implementation status: Phases 0 through 6 are substantially present in
+the current prototype. The source app, local file provider, syntax provider,
+rust-analyzer navigation, persistent source-index path, source retrieval
+subjects, retrieval search, symbol-neighbourhood search, citation opening, and
+retrieval freshness checks exist and have runtime tests. The generative answer
+and agent-finding parts remain split into Phase 6.5 below so retrieval does not
+become an opaque agent pipeline.
+
 ### Phase 0: Design Lock And Seed Fixture
 
 Deliverables:
@@ -492,9 +500,10 @@ Acceptance check:
 - index build failures are visible as Mica facts;
 - the UI can show which provider answered a link.
 
-### Phase 6: Retrieval And Agent Workspace
+### Phase 6: Retrieval Workspace
 
-Connect source navigation to retrieval and agent workflows.
+Connect source navigation to retrieval workflows without requiring a generative
+model call.
 
 Deliverables:
 
@@ -502,21 +511,51 @@ Deliverables:
   and design docs;
 - embeddings for source subjects through the existing embedding provider path;
 - retrieval plans for code questions and symbol neighbourhood queries;
-- answer/context/citation artefacts stored as ordinary Mica relations;
-- agent findings anchored to files, spans, symbols, commits, or tickets;
-- review UI for accepting, correcting, or rejecting generated notes.
+- retrieved context and citation artefacts stored as ordinary Mica relations;
+- citation UI that can open files, spans, docs, notes, and design sections;
+- stale retrieval detection when source text, semantic index version, or
+  embedding source text changes;
+- source-specific `CanRetrieveSubject` rules derived from source authority.
 
 Acceptance check:
 
 - asking "where is DOM sync rendered?" returns linked source spans, docs, and
   relevant design notes;
 - retrieved context is filtered through source authority before it is recorded;
+- each retrieved citation opens in the source viewer;
+- retrieval plans, provider results, and selected context are inspectable as
+  Mica facts.
+
+### Phase 6.5: Generated Answers And Agent Findings
+
+Use retrieved source context as grounded input for optional generative and
+agent-assisted workflows.
+
+Deliverables:
+
+- a narrow model-call provider or host effect for generating answers from
+  recorded retrieval context;
+- answer artefacts that store prompt text, context text, model/provider
+  provenance, generated text, citations, freshness, and review state;
+- agent findings anchored to files, spans, symbols, commits, tickets, or design
+  docs;
+- review UI for accepting, correcting, or rejecting generated answers and
+  findings;
+- rules that turn accepted findings into durable workspace facts, not prompt
+  history.
+
+Acceptance check:
+
 - generated answers cite source subjects that the UI can open;
-- accepted agent findings become durable workspace facts, not prompt history.
+- model calls only see source subjects allowed by source authority;
+- generated findings remain pending until accepted, corrected, or rejected;
+- accepted findings become ordinary Mica facts with provenance and review
+  state.
 
 ### Phase 7: Hosted Product Hardening
 
-Turn the prototype into a real hosted source workspace.
+Turn the prototype into a real hosted source workspace after retrieval and
+optional generative workflows have clear fact boundaries.
 
 Deliverables:
 

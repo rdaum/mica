@@ -1673,7 +1673,9 @@ export function bootstrapServerRenderedSync(mount, status) {
         action,
         fields,
       });
-      form.reset();
+      if (form.dataset.syncReset !== "false") {
+        form.reset();
+      }
       focusAfterSubmit(form);
     } catch (error) {
       setStatus(`Event failed: ${String(error)}`);

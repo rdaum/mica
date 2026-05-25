@@ -121,6 +121,21 @@ mod tests {
         })
     }
 
+    fn load_source_app(runner: &mut SourceRunner) {
+        for filein in [
+            include_str!("../../../apps/shared/sync-host.mica"),
+            include_str!("../../../apps/shared/sync-dom.mica"),
+            include_str!("../../../apps/shared/retrieval.mica"),
+            include_str!("../../../apps/source/core.mica"),
+            include_str!("../../../apps/source/retrieval.mica"),
+            include_str!("../../../apps/source/ui-session.mica"),
+            include_str!("../../../apps/source/ui-compose.mica"),
+            include_str!("../../../apps/source/http.mica"),
+        ] {
+            runner.run_filein(filein).unwrap();
+        }
+    }
+
     fn with_source_index_and_root_env<T>(
         index_path: &Path,
         source_root: &Path,
@@ -715,7 +730,9 @@ mod tests {
             for filein in [
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/shared/retrieval.mica"),
                 include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
                 include_str!("../../../apps/source/ui-compose.mica"),
                 include_str!("../../../apps/source/http.mica"),
@@ -782,7 +799,9 @@ mod tests {
             for filein in [
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/shared/retrieval.mica"),
                 include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
                 include_str!("../../../apps/source/ui-compose.mica"),
                 include_str!("../../../apps/source/http.mica"),
@@ -833,6 +852,296 @@ mod tests {
     }
 
     #[test]
+    fn source_app_retrieval_search_records_context_and_opens_citations() {
+        with_source_provider_env(|| {
+            let root = env::current_dir()
+                .unwrap()
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .display()
+                .to_string();
+            let old_source_root = env::var_os("MICA_SOURCE_ROOT");
+            unsafe {
+                env::set_var("MICA_SOURCE_ROOT", &root);
+            }
+            let mut runner = SourceRunner::new_empty();
+            load_source_app(&mut runner);
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+
+            let report = runner
+                .run_source(
+                    "let fields = {:question -> \"where is DOM sync rendered?\"}\n\
+                     let searched = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve\", fields)\n\
+                     let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
+                     let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)\n\
+                     let status = one source/SelectedRetrievalStatus(endpoint(), ?status)\n\
+                     let has_context = false\n\
+                     for found in ContextForPlan(?context, plan)\n\
+                       has_context = true\n\
+                     end\n\
+                     let citation = source/RetrievalCitation(plan, #source/text_symbol_sync_view_tree)\n\
+                     let citation_text = one source/RetrievalCitationText(plan, #source/text_symbol_sync_view_tree, ?text)\n\
+                     let allowed = CanRetrieveSubject(#web, #source/text_symbol_sync_view_tree)\n\
+                     let index_status = one IndexEntryStatus(#source/retrieval_index, #source/text_symbol_sync_view_tree, \"source-workspace\", ?status)\n\
+                     let revision = sync_view_revision(31)\n\
+                     let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
+                     let opened = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_open_retrieval_citation\", {:subject -> to_literal(#source/text_symbol_sync_view_tree)})\n\
+                     let path = one source/SelectedPath(endpoint(), ?path)\n\
+                     let line = one source/SelectedLine(endpoint(), ?line)\n\
+                     return [searched, plan != nothing, question, status, has_context, citation, string_contains(citation_text, \"sync_view_tree\"), allowed, index_status, string_contains(payload, \"source-retrieval-panel\"), string_contains(payload, \"sync_view_tree renders DOM sync\"), opened, path, line]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2], Value::string("where is DOM sync rendered?"));
+                    assert_eq!(values[3], Value::string("7 context items"));
+                    assert_eq!(values[4], Value::bool(true));
+                    assert_eq!(values[5], Value::bool(true));
+                    assert_eq!(values[6], Value::bool(true));
+                    assert_eq!(values[7], Value::bool(true));
+                    assert_eq!(values[8], Value::string("ready"));
+                    assert_eq!(values[9], Value::bool(true));
+                    assert_eq!(values[10], Value::bool(true));
+                    assert_eq!(values[11], Value::bool(true));
+                    assert_eq!(values[12], Value::string("apps/mud/ui-session.mica"));
+                    assert_eq!(values[13].as_int(), Some(8));
+                })
+                .expect("expected source retrieval tuple");
+            unsafe {
+                if let Some(old_source_root) = old_source_root {
+                    env::set_var("MICA_SOURCE_ROOT", old_source_root);
+                } else {
+                    env::remove_var("MICA_SOURCE_ROOT");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn source_app_retrieval_search_records_submitted_query() {
+        with_source_provider_env(|| {
+            let root = env::current_dir()
+                .unwrap()
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .display()
+                .to_string();
+            let old_source_root = env::var_os("MICA_SOURCE_ROOT");
+            unsafe {
+                env::set_var("MICA_SOURCE_ROOT", &root);
+            }
+            let mut runner = SourceRunner::new_empty();
+            load_source_app(&mut runner);
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+            let report = runner
+                .run_source(
+                    "let fields = {:question -> \"computed relation boundary\"}\n\
+                     let searched = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve\", fields)\n\
+                     let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)\n\
+                     let revision = sync_view_revision(31)\n\
+                     let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
+                     return [searched, question, string_contains(payload, \"computed relation boundary\"), string_contains(payload, \"where is DOM sync rendered?\")]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::string("computed relation boundary"));
+                    assert_eq!(values[2], Value::bool(true));
+                    assert_eq!(values[3], Value::bool(true));
+                })
+                .expect("expected submitted query tuple");
+            unsafe {
+                if let Some(old_source_root) = old_source_root {
+                    env::set_var("MICA_SOURCE_ROOT", old_source_root);
+                } else {
+                    env::remove_var("MICA_SOURCE_ROOT");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn source_app_retrieval_marks_changed_text_stale() {
+        with_source_provider_env(|| {
+            let mut runner = SourceRunner::new_empty();
+            load_source_app(&mut runner);
+            let report = runner
+                .run_source(
+                    "source/run_retrieval_query(endpoint(), #web, \"where is DOM sync rendered?\")\n\
+                     retract TextUnitText(#source/text_symbol_sync_view_tree, _)\n\
+                     assert TextUnitText(#source/text_symbol_sync_view_tree, \"changed DOM sync retrieval text\")\n\
+                     let status = source/retrieval_subject_status(#source/text_symbol_sync_view_tree, \"source-workspace\")\n\
+                     let refresh = EmbeddingRefreshNeeded(#source/retrieval_index, #source/text_symbol_sync_view_tree, \"source-workspace\")\n\
+                     let index_status = one IndexEntryStatus(#source/retrieval_index, #source/text_symbol_sync_view_tree, \"source-workspace\", ?status)\n\
+                     return [status, refresh, index_status]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::string("stale"));
+                    assert_eq!(values[1], Value::bool(true));
+                    assert_eq!(values[2], Value::string("stale"));
+                })
+                .expect("expected stale retrieval tuple");
+        });
+    }
+
+    #[test]
+    fn source_app_retrieval_marks_changed_index_version_stale() {
+        let root_path = env::current_dir().unwrap().join("target").join(format!(
+            "source-app-retrieval-index-stale-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(root_path.join("src")).unwrap();
+        fs::write(
+            root_path.join("src/lib.rs"),
+            "pub fn sync_view_tree() {}\npub fn render_dom_snapshot() {}\n",
+        )
+        .unwrap();
+
+        let index_path = temp_index_path("source-app-retrieval-version-stale");
+        build_source_index_file(&root_path, &index_path).unwrap();
+        with_source_index_and_root_env(
+            &index_path,
+            &root_path,
+            Some(Path::new("/bin/false")),
+            || {
+                let mut runner = SourceRunner::new_empty();
+                load_source_app(&mut runner);
+                let root = root_path.display().to_string();
+                runner
+                    .run_source(&format!(
+                        "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                    ))
+                    .unwrap();
+
+                let report = runner
+                .run_source(
+                    "source/run_retrieval_query(endpoint(), #web, \"where is DOM sync rendered?\")\n\
+                     let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
+                     let artifact_index = one source/RetrievalArtifactIndex(plan, ?index)\n\
+                     let current_version = one source/IndexVersion(artifact_index, ?version)\n\
+                     let stale_before = source/StaleRetrievalArtifact(artifact_index, plan)\n\
+                     retract source/RetrievalArtifactIndexVersion(plan, _)\n\
+                     assert source/RetrievalArtifactIndexVersion(plan, \"outdated\")\n\
+                     let stale_after = source/StaleRetrievalArtifact(artifact_index, plan)\n\
+                     return [artifact_index != #source/retrieval_index, current_version != nothing, stale_before, stale_after]",
+                )
+                .unwrap();
+                let TaskOutcome::Complete { value, .. } = report.outcome else {
+                    panic!("expected complete outcome, got {:?}", report.outcome);
+                };
+                value
+                    .with_list(|values| {
+                        assert_eq!(values[0], Value::bool(true));
+                        assert_eq!(values[1], Value::bool(true));
+                        assert_eq!(values[2], Value::bool(false));
+                        assert_eq!(values[3], Value::bool(true));
+                    })
+                    .expect("expected stale retrieval artifact tuple");
+            },
+        );
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(root_path);
+    }
+
+    #[test]
+    fn source_app_symbol_neighbourhood_search_records_retrieval_plan() {
+        with_source_provider_env(|| {
+            let root = env::current_dir()
+                .unwrap()
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .display()
+                .to_string();
+            let old_source_root = env::var_os("MICA_SOURCE_ROOT");
+            unsafe {
+                env::set_var("MICA_SOURCE_ROOT", &root);
+            }
+            let mut runner = SourceRunner::new_empty();
+            load_source_app(&mut runner);
+            runner
+                .run_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {root:?})"
+                ))
+                .unwrap();
+            let report = runner
+                .run_source(
+                    "retract source/SelectedSymbol(endpoint(), _)\n\
+                     retract source/SelectedSymbolName(endpoint(), _)\n\
+                     retract source/SelectedSymbolKind(endpoint(), _)\n\
+                     assert source/SelectedSymbol(endpoint(), #source/symbol_sync_view_tree)\n\
+                     assert source/SelectedSymbolName(endpoint(), \"sync_view_tree\")\n\
+                     assert source/SelectedSymbolKind(endpoint(), \"verb\")\n\
+                     assert source/SelectedDefinitionPath(endpoint(), \"apps/mud/ui-session.mica\")\n\
+                     assert source/SelectedDefinitionStartLine(endpoint(), 8)\n\
+                     assert source/SelectedDefinitionEndLine(endpoint(), 17)\n\
+                     assert source/SelectedSymbolProvider(endpoint(), \"test\")\n\
+                     let handled = sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"source_retrieve_symbol\", {})\n\
+                     let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)\n\
+                     let kind = one PlanKind(plan, ?kind)\n\
+                     let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)\n\
+                     let has_context = false\n\
+                     for found in ContextForPlan(?context, plan)\n\
+                       has_context = true\n\
+                     end\n\
+                     let revision = sync_view_revision(31)\n\
+                     let payload = dom_snapshot_payload(31, revision, sync_view_tree(31, revision))\n\
+                     return [handled, kind, string_contains(question, \"sync_view_tree\"), has_context, string_contains(payload, \"Search neighbourhood\"), string_contains(payload, \"source_symbol_neighbourhood\")]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(values[0], Value::bool(true));
+                    assert_eq!(values[1], Value::string("source_symbol_neighbourhood"));
+                    assert_eq!(values[2], Value::bool(true));
+                    assert_eq!(values[3], Value::bool(true));
+                    assert_eq!(values[4], Value::bool(true));
+                    assert_eq!(values[5], Value::bool(true));
+                })
+                .expect("expected symbol neighbourhood tuple");
+            unsafe {
+                if let Some(old_source_root) = old_source_root {
+                    env::set_var("MICA_SOURCE_ROOT", old_source_root);
+                } else {
+                    env::remove_var("MICA_SOURCE_ROOT");
+                }
+            }
+        });
+    }
+
+    #[test]
     fn source_app_scroll_window_keeps_syntax_rows_for_long_files() {
         with_source_provider_env(|| {
             let root_path = env::current_dir().unwrap().join("target").join(format!(
@@ -854,7 +1163,9 @@ mod tests {
             for filein in [
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/shared/retrieval.mica"),
                 include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
                 include_str!("../../../apps/source/ui-compose.mica"),
                 include_str!("../../../apps/source/http.mica"),
@@ -925,7 +1236,9 @@ mod tests {
             for filein in [
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/shared/retrieval.mica"),
                 include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
                 include_str!("../../../apps/source/ui-compose.mica"),
                 include_str!("../../../apps/source/http.mica"),
@@ -986,7 +1299,9 @@ mod tests {
             for filein in [
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/shared/retrieval.mica"),
                 include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
                 include_str!("../../../apps/source/ui-compose.mica"),
                 include_str!("../../../apps/source/http.mica"),
@@ -1058,7 +1373,9 @@ mod tests {
             for filein in [
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/shared/retrieval.mica"),
                 include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
                 include_str!("../../../apps/source/ui-compose.mica"),
                 include_str!("../../../apps/source/http.mica"),
@@ -1125,7 +1442,9 @@ mod tests {
             for filein in [
                 include_str!("../../../apps/shared/sync-host.mica"),
                 include_str!("../../../apps/shared/sync-dom.mica"),
+                include_str!("../../../apps/shared/retrieval.mica"),
                 include_str!("../../../apps/source/core.mica"),
+                include_str!("../../../apps/source/retrieval.mica"),
                 include_str!("../../../apps/source/ui-session.mica"),
                 include_str!("../../../apps/source/ui-compose.mica"),
                 include_str!("../../../apps/source/http.mica"),

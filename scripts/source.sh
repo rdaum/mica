@@ -24,9 +24,9 @@ http_port="${MICA_SOURCE_HTTP_PORT:-8008}"
 cert_path="${MICA_SOURCE_WT_CERT:-/tmp/mica-source-wt-cert.pem}"
 key_path="${MICA_SOURCE_WT_KEY:-/tmp/mica-source-wt-key.pem}"
 poll_ms="${MICA_SOURCE_POLL_MS:-5000}"
-embedding_provider="${MICA_SOURCE_EMBEDDING_PROVIDER:-disabled}"
-dogstatsd_endpoint="${MICA_SOURCE_DOGSTATSD_ENDPOINT:-127.0.0.1:8125}"
-dogstatsd_interval_secs="${MICA_SOURCE_DOGSTATSD_INTERVAL_SECS:-1}"
+embedding_provider="${MICA_SOURCE_EMBEDDING_PROVIDER:-deterministic}"
+dogstatsd_endpoint="${MICA_SOURCE_DOGSTATSD_ENDPOINT-127.0.0.1:8125}"
+dogstatsd_interval_secs="${MICA_SOURCE_DOGSTATSD_INTERVAL_SECS:-10}"
 export MICA_SOURCE_ROOT="${MICA_SOURCE_ROOT:-${repo_root}}"
 export MICA_SOURCE_INDEX="${MICA_SOURCE_INDEX:-${repo_root}/.cache/source-index/mica-worktree.json}"
 
@@ -80,7 +80,9 @@ cd "${repo_root}"
 daemon_args=(
   --filein apps/shared/sync-host.mica
   --filein apps/shared/sync-dom.mica
+  --filein apps/shared/retrieval.mica
   --filein apps/source/core.mica
+  --filein apps/source/retrieval.mica
   --filein apps/source/ui-session.mica
   --filein apps/source/ui-compose.mica
   --filein apps/source/http.mica
@@ -121,6 +123,7 @@ Manual values:
   SSE sync base: http://${public_host}:${http_port}/sync
   URL: ${wt_url}
   Certificate SHA-256: ${cert_hash}
+  Embedding provider: ${embedding_provider}
   DogStatsD endpoint: ${dogstatsd_endpoint:-disabled}
   DogStatsD interval: ${dogstatsd_interval_secs}s
 

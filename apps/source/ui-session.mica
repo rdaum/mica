@@ -10,6 +10,9 @@ make_identity(:source/open_directory_action)
 make_identity(:source/jump_to_line_action)
 make_identity(:source/select_symbol_action)
 make_identity(:source/find_references_action)
+make_identity(:source/retrieve_action)
+make_identity(:source/retrieve_symbol_action)
+make_identity(:source/open_retrieval_citation_action)
 make_identity(:source/toggle_hidden_action)
 make_identity(:source/toggle_inspector_section_action)
 make_identity(:source/set_window_action)
@@ -20,6 +23,9 @@ assert Delegates(#source/open_directory_action, #source/sync_action, 0)
 assert Delegates(#source/jump_to_line_action, #source/sync_action, 0)
 assert Delegates(#source/select_symbol_action, #source/sync_action, 0)
 assert Delegates(#source/find_references_action, #source/sync_action, 0)
+assert Delegates(#source/retrieve_action, #source/sync_action, 0)
+assert Delegates(#source/retrieve_symbol_action, #source/sync_action, 0)
+assert Delegates(#source/open_retrieval_citation_action, #source/sync_action, 0)
 assert Delegates(#source/toggle_hidden_action, #source/sync_action, 0)
 assert Delegates(#source/toggle_inspector_section_action, #source/sync_action, 0)
 assert Delegates(#source/set_window_action, #source/sync_action, 0)
@@ -28,6 +34,9 @@ assert source/SyncAction("source_open_directory", #source/open_directory_action)
 assert source/SyncAction("source_jump_to_line", #source/jump_to_line_action)
 assert source/SyncAction("source_select_symbol", #source/select_symbol_action)
 assert source/SyncAction("source_find_references", #source/find_references_action)
+assert source/SyncAction("source_retrieve", #source/retrieve_action)
+assert source/SyncAction("source_retrieve_symbol", #source/retrieve_symbol_action)
+assert source/SyncAction("source_open_retrieval_citation", #source/open_retrieval_citation_action)
 assert source/SyncAction("source_toggle_hidden", #source/toggle_hidden_action)
 assert source/SyncAction("source_toggle_inspector_section", #source/toggle_inspector_section_action)
 assert source/SyncAction("source_set_window", #source/set_window_action)
@@ -73,6 +82,20 @@ assert CanRead(#web, :source/RetrievalArtifact)
 assert CanRead(#web, :source/RetrievalArtifactIndex)
 assert CanRead(#web, :source/RetrievalArtifactRevision)
 assert CanRead(#web, :source/RetrievalArtifactIndexVersion)
+assert CanRead(#web, :source/RetrievalTextUnitKind)
+assert CanRead(#web, :source/RetrievalTextUnitTitle)
+assert CanRead(#web, :source/RetrievalTextUnitFile)
+assert CanRead(#web, :source/RetrievalTextUnitSpan)
+assert CanRead(#web, :source/RetrievalTextUnitStartLine)
+assert CanRead(#web, :source/RetrievalTextUnitEndLine)
+assert CanRead(#web, :source/RetrievalTextUnitModel)
+assert CanRead(#web, :source/RetrievalCitation)
+assert CanRead(#web, :source/RetrievalCitationText)
+assert CanRead(#web, :source/SelectedRetrievalQuestion)
+assert CanRead(#web, :source/SelectedRetrievalPlan)
+assert CanRead(#web, :source/SelectedRetrievalModel)
+assert CanRead(#web, :source/SelectedRetrievalLimit)
+assert CanRead(#web, :source/SelectedRetrievalStatus)
 assert CanRead(#web, :source/StaleSourceFile)
 assert CanRead(#web, :source/StaleSymbol)
 assert CanRead(#web, :source/StaleRetrievalArtifact)
@@ -107,6 +130,38 @@ assert CanRead(#web, :source/InspectorSectionCollapsed)
 assert CanRead(#web, :source/ExpandedDirectory)
 assert CanRead(#web, :source/ViewRevision)
 assert CanRead(#web, :Delegates)
+assert CanRead(#web, :TextUnit)
+assert CanRead(#web, :TextUnitOf)
+assert CanRead(#web, :TextUnitOrdinal)
+assert CanRead(#web, :TextUnitText)
+assert CanRead(#web, :CanRetrieveSubject)
+assert CanRead(#web, :Embedding)
+assert CanRead(#web, :EmbeddingOf)
+assert CanRead(#web, :EmbeddingVector)
+assert CanRead(#web, :EmbeddingModel)
+assert CanRead(#web, :EmbeddingSourceText)
+assert CanRead(#web, :EmbeddingStatus)
+assert CanRead(#web, :VectorIndex)
+assert CanRead(#web, :VectorIndexContains)
+assert CanRead(#web, :VectorIndexMetric)
+assert CanRead(#web, :IndexEntryEmbedding)
+assert CanRead(#web, :IndexEntrySourceText)
+assert CanRead(#web, :IndexEntryStatus)
+assert CanRead(#web, :EmbeddingRefreshNeeded)
+assert CanRead(#web, :NearestEmbedding)
+assert CanRead(#web, :Question)
+assert CanRead(#web, :QuestionText)
+assert CanRead(#web, :AskedBy)
+assert CanRead(#web, :RetrievalPlan)
+assert CanRead(#web, :PlanForQuestion)
+assert CanRead(#web, :PlanKind)
+assert CanRead(#web, :PlanModel)
+assert CanRead(#web, :RetrievedContext)
+assert CanRead(#web, :ContextForPlan)
+assert CanRead(#web, :ContextSubject)
+assert CanRead(#web, :ContextScore)
+assert CanRead(#web, :ContextReason)
+assert CanRead(#web, :ContextSnapshotVersion)
 
 assert CanWrite(#web, :source/SelectedRepository)
 assert CanWrite(#web, :source/SelectedRevision)
@@ -124,10 +179,47 @@ assert CanWrite(#web, :source/SelectedDefinitionStartByte)
 assert CanWrite(#web, :source/SelectedDefinitionEndByte)
 assert CanWrite(#web, :source/SelectedSymbolProvider)
 assert CanWrite(#web, :source/SelectedReferencesOpen)
+assert CanWrite(#web, :source/RetrievalArtifact)
+assert CanWrite(#web, :source/RetrievalArtifactIndex)
+assert CanWrite(#web, :source/RetrievalArtifactRevision)
+assert CanWrite(#web, :source/RetrievalArtifactIndexVersion)
+assert CanWrite(#web, :source/RetrievalCitation)
+assert CanWrite(#web, :source/RetrievalCitationText)
+assert CanWrite(#web, :source/SelectedRetrievalQuestion)
+assert CanWrite(#web, :source/SelectedRetrievalPlan)
+assert CanWrite(#web, :source/SelectedRetrievalModel)
+assert CanWrite(#web, :source/SelectedRetrievalLimit)
+assert CanWrite(#web, :source/SelectedRetrievalStatus)
 assert CanWrite(#web, :source/ShowHiddenFiles)
 assert CanWrite(#web, :source/InspectorSectionCollapsed)
 assert CanWrite(#web, :source/ExpandedDirectory)
 assert CanWrite(#web, :source/ViewRevision)
+assert CanWrite(#web, :Embedding)
+assert CanWrite(#web, :EmbeddingOf)
+assert CanWrite(#web, :EmbeddingVector)
+assert CanWrite(#web, :EmbeddingModel)
+assert CanWrite(#web, :EmbeddingSourceText)
+assert CanWrite(#web, :EmbeddingStatus)
+assert CanWrite(#web, :VectorIndex)
+assert CanWrite(#web, :VectorIndexContains)
+assert CanWrite(#web, :VectorIndexMetric)
+assert CanWrite(#web, :IndexEntryEmbedding)
+assert CanWrite(#web, :IndexEntrySourceText)
+assert CanWrite(#web, :IndexEntryStatus)
+assert CanWrite(#web, :EmbeddingRefreshNeeded)
+assert CanWrite(#web, :Question)
+assert CanWrite(#web, :QuestionText)
+assert CanWrite(#web, :AskedBy)
+assert CanWrite(#web, :RetrievalPlan)
+assert CanWrite(#web, :PlanForQuestion)
+assert CanWrite(#web, :PlanKind)
+assert CanWrite(#web, :PlanModel)
+assert CanWrite(#web, :RetrievedContext)
+assert CanWrite(#web, :ContextForPlan)
+assert CanWrite(#web, :ContextSubject)
+assert CanWrite(#web, :ContextScore)
+assert CanWrite(#web, :ContextReason)
+assert CanWrite(#web, :ContextSnapshotVersion)
 
 assert CanInvoke(#web, :sync_event)
 assert CanInvoke(#web, :sync_view_revision)
@@ -150,6 +242,15 @@ assert CanInvoke(#web, :source/file_language)
 assert CanInvoke(#web, :source/line_has_annotation)
 assert CanInvoke(#web, :source/annotation_marker_node)
 assert CanInvoke(#web, :source/current_symbol)
+assert CanInvoke(#web, :source/retrieval_model)
+assert CanInvoke(#web, :source/retrieval_limit)
+assert CanInvoke(#web, :source/retrieval_text_unit_path)
+assert CanInvoke(#web, :source/retrieval_text_unit_line)
+assert CanInvoke(#web, :source/retrieval_subject_status)
+assert CanInvoke(#web, :source/index_retrieval_subjects)
+assert CanInvoke(#web, :source/clear_retrieval_session)
+assert CanInvoke(#web, :source/run_retrieval_query)
+assert CanInvoke(#web, :source/run_symbol_neighbourhood_query)
 assert CanInvoke(#web, :source/show_hidden_files)
 assert CanInvoke(#web, :source/inspector_section_collapsed)
 assert CanInvoke(#web, :source/clear_selected_symbol)
@@ -179,6 +280,12 @@ assert CanInvoke(#web, :source/symbol_panel_node)
 assert CanInvoke(#web, :source/find_references_button_node)
 assert CanInvoke(#web, :source/reference_line_text)
 assert CanInvoke(#web, :source/symbol_reference_node)
+assert CanInvoke(#web, :source/symbol_retrieval_button_node)
+assert CanInvoke(#web, :source/retrieval_panel_node)
+assert CanInvoke(#web, :source/retrieval_search_form_node)
+assert CanInvoke(#web, :source/retrieval_status_node)
+assert CanInvoke(#web, :source/retrieval_context_node)
+assert CanInvoke(#web, :source/retrieval_context_list_node)
 assert CanInvoke(#web, :source/outline_panel_node)
 assert CanInvoke(#web, :source/outline_item_node)
 assert CanInvoke(#web, :source/inspector_section_header_node)
@@ -195,6 +302,14 @@ assert CanInvoke(#web, :from_literal)
 assert CanInvoke(#web, :string_concat)
 assert CanInvoke(#web, :string_join)
 assert CanInvoke(#web, :string_starts_with)
+assert CanInvoke(#web, :string_contains)
+assert CanInvoke(#web, :embed_text)
+assert CanInvoke(#web, :retrieval/question_value)
+assert CanInvoke(#web, :retrieval/plan_value)
+assert CanInvoke(#web, :retrieval/context_value)
+assert CanInvoke(#web, :retrieval/index_entry_status)
+assert CanInvoke(#web, :ensure_subject_embedding)
+assert CanInvoke(#web, :retrieve_context)
 
 verb source/current_repository()
   let selected = one source/SelectedRepository(endpoint(), ?repository)
@@ -611,6 +726,75 @@ verb source/handle_sync_action(source @ #source/find_references_action<_>, endpo
 
   retract source/SelectedReferencesOpen(endpoint, _)
   assert source/SelectedReferencesOpen(endpoint, true)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/retrieve_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let question = fields[:question]
+  if question == nothing || question == ""
+    return false
+  end
+
+  source/run_retrieval_query(endpoint, #web, question)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/retrieve_symbol_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let symbol = one source/SelectedSymbol(endpoint, ?symbol)
+  if symbol == nothing
+    return false
+  end
+
+  source/run_symbol_neighbourhood_query(endpoint, #web, symbol)
+  source/bump_revision(endpoint)
+  return true
+end
+
+verb source/handle_sync_action(source @ #source/open_retrieval_citation_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_subject = fields[:subject]
+  if raw_subject == nothing
+    return false
+  end
+
+  let subject = from_literal(raw_subject)
+  if subject == nothing || CanRetrieveSubject(#web, subject) == false
+    return false
+  end
+
+  let path = source/retrieval_text_unit_path(subject)
+  let line = source/retrieval_text_unit_line(subject)
+  if path == nothing || source/file_for_path(path) == nothing
+    return false
+  end
+
+  retract source/SelectedRepository(endpoint, _)
+  retract source/SelectedRevision(endpoint, _)
+  retract source/SelectedPath(endpoint, _)
+  retract source/SelectedLine(endpoint, _)
+  retract source/SelectedWindowStart(endpoint, _)
+  assert source/SelectedRepository(endpoint, #source/repo_mica)
+  assert source/SelectedRevision(endpoint, #source/rev_worktree)
+  assert source/SelectedPath(endpoint, path)
+  assert source/SelectedLine(endpoint, line)
+  let line_count = one source/FileLineCount(#source/repo_mica, #source/rev_worktree, path, ?line_count)
+  if line_count == nothing
+    line_count = line
+  end
+  assert source/SelectedWindowStart(endpoint, source/window_start_for_line(line, line_count))
   source/bump_revision(endpoint)
   return true
 end

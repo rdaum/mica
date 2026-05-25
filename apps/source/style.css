@@ -125,6 +125,7 @@ input {
 }
 
 .source-summary,
+.source-retrieval-panel,
 .source-files {
   padding: 0.75rem;
 }
@@ -168,6 +169,92 @@ input {
 
 .source-pinned-list {
   margin-bottom: 0.25rem;
+}
+
+.source-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.35rem;
+  margin: 0 0 0.55rem;
+}
+
+.source-search-input {
+  min-width: 0;
+  border: 1px solid var(--source-line);
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.55rem;
+  background: #fffdf7;
+  color: var(--source-ink);
+}
+
+.source-search-button {
+  border: 1px solid var(--source-accent);
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.7rem;
+  background: var(--source-accent);
+  color: var(--source-accent-ink);
+  cursor: pointer;
+}
+
+.source-search-button.sync-submit-loading {
+  font-size: 0;
+}
+
+.source-search-button.sync-submit-loading .sync-disable-with-label {
+  font-size: 0.82rem;
+}
+
+.source-search-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+}
+
+.source-retrieval-results {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.source-retrieval-result-form {
+  margin: 0;
+}
+
+.source-retrieval-result-button {
+  display: grid;
+  width: 100%;
+  gap: 0.18rem;
+  border: 1px solid var(--source-line);
+  border-radius: 0.65rem;
+  padding: 0.55rem 0.6rem;
+  background: #f3ead9;
+  color: var(--source-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-retrieval-result-button:hover {
+  border-color: var(--source-accent);
+  background: #fff4e1;
+}
+
+.source-retrieval-title {
+  font-weight: 700;
+}
+
+.source-retrieval-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--source-muted);
+  font-size: 0.82rem;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.source-retrieval-meta {
+  color: var(--source-muted);
+  font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+  font-size: 0.72rem;
 }
 
 .source-navigator-header {
@@ -231,6 +318,8 @@ input {
 .source-hidden-toggle-form.sync-submit-loading .source-hidden-toggle,
 .source-section-toggle-form.sync-submit-loading .source-section-toggle,
 .source-reference-form.sync-submit-loading .source-reference-button,
+.source-retrieval-result-form.sync-submit-loading .source-retrieval-result-button,
+.source-search-form.sync-submit-loading .source-search-button,
 .source-outline-form.sync-submit-loading .source-outline-button,
 .source-token-form.sync-submit-loading .source-token-link {
   cursor: progress;
@@ -243,6 +332,8 @@ input {
 .source-hidden-toggle-form.sync-submit-loading,
 .source-section-toggle-form.sync-submit-loading,
 .source-reference-form.sync-submit-loading,
+.source-retrieval-result-form.sync-submit-loading,
+.source-search-form.sync-submit-loading,
 .source-outline-form.sync-submit-loading,
 .source-token-form.sync-submit-loading {
   outline: 1px solid rgba(237, 172, 73, 0.32);

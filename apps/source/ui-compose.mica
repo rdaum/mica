@@ -211,6 +211,107 @@ verb source/file_list_node(repository, revision, selected)
   return dom_element("section", {:class -> "source-panel source-files"}, [header, dom_element("h3", {:class -> "source-subhead"}, [dom_text("Pinned")]), source/pinned_files_node(revision, selected), dom_element("h3", {:class -> "source-subhead"}, [dom_text("Repository")]), source/repository_tree_node(repository, revision, selected)])
 end
 
+verb source/retrieval_search_form_node()
+  let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)
+  if question == nothing
+    question = ""
+  end
+
+  let input = dom_element("input", {:type -> "search", :name -> "question", :class -> "source-search-input", :value -> question, :placeholder -> "where is DOM sync rendered?"}, [])
+  let button = dom_element("button", {:type -> "submit", :class -> "source-search-button", "data-sync-disable-with" -> "Searching"}, [dom_text("Search")])
+  return dom_element("form", {:class -> "source-search-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_retrieve", "data-sync-key" -> "source-retrieval-search", "data-sync-reset" -> "false"}, [input, button])
+end
+
+verb source/retrieval_status_node()
+  let status = one source/SelectedRetrievalStatus(endpoint(), ?status)
+  let question = one source/SelectedRetrievalQuestion(endpoint(), ?question)
+  let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)
+  let kind = one PlanKind(plan, ?kind)
+  let model = one source/SelectedRetrievalModel(endpoint(), ?model)
+  if model == nothing
+    model = source/retrieval_model()
+  end
+  if kind == nothing
+    kind = "none"
+  end
+
+  let indexed = 0
+  let stale = 0
+  for found in TextUnit(?subject)
+    let subject = found[:subject]
+    if source/RetrievalTextUnitModel(subject, model) && CanRetrieveSubject(#web, subject)
+      indexed = indexed + 1
+      let subject_status = one IndexEntryStatus(#source/retrieval_index, subject, model, ?status)
+      if subject_status != "ready"
+        stale = stale + 1
+      end
+    end
+  end
+
+  if status == nothing
+    status = "ready"
+  end
+
+  let chips = [source/meta_chip_node("retrieval", status), source/meta_chip_node("plan", kind), source/meta_chip_node("model", model), source/meta_chip_node("subjects", to_literal(indexed)), source/meta_chip_node("stale", to_literal(stale))]
+  if question != nothing
+    chips = [@chips, source/meta_chip_node("query", question)]
+  end
+
+  return dom_element("div", {:class -> "source-search-status"}, chips)
+end
+
+verb source/retrieval_context_node(context)
+  let subject = one ContextSubject(context, ?subject)
+  let score = one ContextScore(context, ?score)
+  let reason = one ContextReason(context, ?reason)
+  let path = source/retrieval_text_unit_path(subject)
+  let line = source/retrieval_text_unit_line(subject)
+  let title = one source/RetrievalTextUnitTitle(subject, ?title)
+  let kind = one source/RetrievalTextUnitKind(subject, ?kind)
+  let text = one TextUnitText(subject, ?text)
+  if title == nothing
+    title = path
+  end
+  if kind == nothing
+    kind = "context"
+  end
+  if reason == nothing
+    reason = "retrieval"
+  end
+
+  let hidden_subject = dom_element("input", {:type -> "hidden", :name -> "subject", :value -> to_literal(subject)}, [])
+  let location = string_concat(path, ":", to_literal(line))
+  let button = dom_element("button", {:type -> "submit", :class -> "source-retrieval-result-button"}, [dom_element("span", {:class -> "source-retrieval-title"}, [dom_text(title)]), dom_element("span", {:class -> "source-retrieval-snippet"}, [dom_text(text)]), dom_element("span", {:class -> "source-retrieval-meta"}, [dom_text(location), dom_text(" / "), dom_text(kind), dom_text(" / "), dom_text(reason), dom_text(" / "), dom_text(to_literal(score))])])
+  return dom_element("form", {:class -> "source-retrieval-result-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_open_retrieval_citation", "data-sync-key" -> string_concat("retrieval:", to_literal(subject))}, [hidden_subject, button])
+end
+
+verb source/retrieval_context_list_node()
+  let plan = one source/SelectedRetrievalPlan(endpoint(), ?plan)
+  if plan == nothing
+    return source/empty_node("Ask a source question to see linked context.")
+  end
+
+  let items = []
+  let count = 0
+  for found in ContextForPlan(?context, plan)
+    items = [@items, source/retrieval_context_node(found[:context])]
+    count = count + 1
+    if count >= 6
+      break
+    end
+  end
+
+  if items == []
+    return source/empty_node("No matching source context.")
+  end
+
+  return dom_element("div", {:class -> "source-retrieval-results"}, items)
+end
+
+verb source/retrieval_panel_node()
+  return dom_element("section", {:class -> "source-panel source-retrieval-panel"}, [dom_element("h2", {}, [dom_text("Search")]), source/retrieval_search_form_node(), source/retrieval_status_node(), source/retrieval_context_list_node()])
+end
+
 verb source/line_has_annotation(path, line)
   let file_id = one source/FilePath(?file, path)
   if file_id == nothing
@@ -413,8 +514,15 @@ verb source/symbol_reference_node(repository, revision, reference)
 end
 
 verb source/find_references_button_node(symbol)
-  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button", "data-sync-disable-with" -> "Finding references..."}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text("Find references")]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(symbol)])])
-  return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_find_references", "data-sync-key" -> string_concat("references:", symbol)}, [button])
+  let symbol_label = to_literal(symbol)
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button", "data-sync-disable-with" -> "Finding references..."}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text("Find references")]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(symbol_label)])])
+  return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_find_references", "data-sync-key" -> string_concat("references:", symbol_label)}, [button])
+end
+
+verb source/symbol_retrieval_button_node(symbol)
+  let symbol_label = to_literal(symbol)
+  let button = dom_element("button", {:type -> "submit", :class -> "source-reference-button", "data-sync-disable-with" -> "Searching..."}, [dom_element("span", {:class -> "source-reference-name"}, [dom_text("Search neighbourhood")]), dom_element("span", {:class -> "source-reference-location"}, [dom_text(symbol_label)])])
+  return dom_element("form", {:class -> "source-reference-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_retrieve_symbol", "data-sync-key" -> string_concat("symbol-retrieval:", symbol_label)}, [button])
 end
 
 verb source/symbol_panel_node(repository, revision)
@@ -452,7 +560,7 @@ verb source/symbol_panel_node(repository, revision)
     reference_list = source/empty_node("No references returned for this symbol.")
   end
 
-  return dom_element("aside", {:class -> "source-symbol-panel"}, [dom_element("h3", {}, [dom_text("Symbol")]), summary, dom_element("h4", {}, [dom_text("References")]), reference_list])
+  return dom_element("aside", {:class -> "source-symbol-panel"}, [dom_element("h3", {}, [dom_text("Symbol")]), summary, dom_element("h4", {}, [dom_text("Retrieval")]), source/symbol_retrieval_button_node(symbol), dom_element("h4", {}, [dom_text("References")]), reference_list])
 end
 
 verb source/code_panel_node(path)
@@ -524,8 +632,9 @@ verb source/app_node(view, revision)
   let header = source/header_node(repository, selected_revision)
   let summary = source/repository_summary_node(repository, selected_revision)
   let files = source/file_list_node(repository, selected_revision, selected_path)
+  let retrieval = source/retrieval_panel_node()
   let code = source/code_panel_node(selected_path)
-  let sidebar = dom_element("aside", {:class -> "source-sidebar"}, [summary, files])
+  let sidebar = dom_element("aside", {:class -> "source-sidebar"}, [summary, retrieval, files])
   let splitter = source/splitter_node("vertical source-splitter-sidebar", "Resize navigator and source panes")
   let main = dom_element("main", {:class -> "source-shell"}, [sidebar, splitter, code])
   return dom_element("div", {:class -> "source-app"}, [header, main])

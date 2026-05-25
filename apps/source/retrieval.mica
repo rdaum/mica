@@ -1,0 +1,241 @@
+// Source-viewer retrieval workspace.
+//
+// Phase 6 keeps this as retrieval and citation state: source text units are
+// embedded through the existing retrieval provider path, queries record plans
+// and retrieved context, and citation rows open source files and spans.
+
+make_identity(:source/retrieval_index)
+make_identity(:source/text_file_runtime)
+make_identity(:source/text_file_ui_session)
+make_identity(:source/text_symbol_sync_view_tree)
+make_identity(:source/text_doc_comment_computed_relation)
+make_identity(:source/text_markdown_phase6)
+make_identity(:source/text_review_note_dom_sync)
+make_identity(:source/text_design_doc_graphrag)
+make_identity(:source/symbol_sync_view_tree)
+
+make_functional_relation(:source/RetrievalTextUnitKind, 2, [0])
+make_functional_relation(:source/RetrievalTextUnitTitle, 2, [0])
+make_functional_relation(:source/RetrievalTextUnitFile, 2, [0])
+make_functional_relation(:source/RetrievalTextUnitSpan, 2, [0])
+make_functional_relation(:source/RetrievalTextUnitStartLine, 2, [0])
+make_functional_relation(:source/RetrievalTextUnitEndLine, 2, [0])
+make_functional_relation(:source/RetrievalTextUnitModel, 2, [0])
+make_relation(:source/RetrievalCitation, 2)
+make_functional_relation(:source/RetrievalCitationText, 3, [0, 1])
+make_functional_relation(:source/SelectedRetrievalQuestion, 2, [0])
+make_functional_relation(:source/SelectedRetrievalPlan, 2, [0])
+make_functional_relation(:source/SelectedRetrievalModel, 2, [0])
+make_functional_relation(:source/SelectedRetrievalLimit, 2, [0])
+make_functional_relation(:source/SelectedRetrievalStatus, 2, [0])
+
+assert VectorIndex(#source/retrieval_index)
+assert VectorIndexMetric(#source/retrieval_index, "cosine")
+
+assert TextUnit(#source/text_file_runtime)
+assert TextUnitOf(#source/text_file_runtime, #source/file_runtime_lib)
+assert TextUnitOrdinal(#source/text_file_runtime, 10)
+assert TextUnitText(#source/text_file_runtime, "Runtime source execution and SourceRunner connect fileins, task submission, embedding providers, and host-visible answers.")
+assert source/RetrievalTextUnitKind(#source/text_file_runtime, "file")
+assert source/RetrievalTextUnitTitle(#source/text_file_runtime, "Runtime source execution")
+assert source/RetrievalTextUnitFile(#source/text_file_runtime, #source/file_runtime_lib)
+assert source/RetrievalTextUnitStartLine(#source/text_file_runtime, 1)
+assert source/RetrievalTextUnitEndLine(#source/text_file_runtime, 80)
+assert source/RetrievalTextUnitModel(#source/text_file_runtime, "source-workspace")
+
+assert TextUnit(#source/text_file_ui_session)
+assert TextUnitOf(#source/text_file_ui_session, #source/file_mud_ui_session)
+assert TextUnitOrdinal(#source/text_file_ui_session, 20)
+assert TextUnitText(#source/text_file_ui_session, "DOM sync rendered in Mica: sync_view_revision and sync_view_tree return the server-owned view tree that the host snapshots and sends to the browser.")
+assert source/RetrievalTextUnitKind(#source/text_file_ui_session, "file")
+assert source/RetrievalTextUnitTitle(#source/text_file_ui_session, "DOM sync view entrypoints")
+assert source/RetrievalTextUnitFile(#source/text_file_ui_session, #source/file_mud_ui_session)
+assert source/RetrievalTextUnitStartLine(#source/text_file_ui_session, 1)
+assert source/RetrievalTextUnitEndLine(#source/text_file_ui_session, 80)
+assert source/RetrievalTextUnitModel(#source/text_file_ui_session, "source-workspace")
+
+assert TextUnit(#source/text_symbol_sync_view_tree)
+assert TextUnitOf(#source/text_symbol_sync_view_tree, #source/span_sync_view_tree)
+assert TextUnitOrdinal(#source/text_symbol_sync_view_tree, 30)
+assert TextUnitText(#source/text_symbol_sync_view_tree, "where is DOM sync rendered? The sync_view_tree verb renders a DOM tree for a view; sync_snapshot_tree calls it and the web host sends the resulting tree to the client.")
+assert source/RetrievalTextUnitKind(#source/text_symbol_sync_view_tree, "symbol")
+assert source/RetrievalTextUnitTitle(#source/text_symbol_sync_view_tree, "sync_view_tree renders DOM sync")
+assert source/RetrievalTextUnitFile(#source/text_symbol_sync_view_tree, #source/file_mud_ui_session)
+assert source/RetrievalTextUnitSpan(#source/text_symbol_sync_view_tree, #source/span_sync_view_tree)
+assert source/RetrievalTextUnitStartLine(#source/text_symbol_sync_view_tree, 8)
+assert source/RetrievalTextUnitEndLine(#source/text_symbol_sync_view_tree, 17)
+assert source/RetrievalTextUnitModel(#source/text_symbol_sync_view_tree, "source-workspace")
+
+assert TextUnit(#source/text_doc_comment_computed_relation)
+assert TextUnitOf(#source/text_doc_comment_computed_relation, #source/span_computed_relation)
+assert TextUnitOrdinal(#source/text_doc_comment_computed_relation, 40)
+assert TextUnitText(#source/text_doc_comment_computed_relation, "Computed relation providers expose read-only rows through constrained relation-shaped scans, which is the same boundary source retrieval uses for search candidates.")
+assert source/RetrievalTextUnitKind(#source/text_doc_comment_computed_relation, "doc_comment")
+assert source/RetrievalTextUnitTitle(#source/text_doc_comment_computed_relation, "Computed provider boundary")
+assert source/RetrievalTextUnitFile(#source/text_doc_comment_computed_relation, #source/file_computed_relations)
+assert source/RetrievalTextUnitSpan(#source/text_doc_comment_computed_relation, #source/span_computed_relation)
+assert source/RetrievalTextUnitStartLine(#source/text_doc_comment_computed_relation, 1)
+assert source/RetrievalTextUnitEndLine(#source/text_doc_comment_computed_relation, 15)
+assert source/RetrievalTextUnitModel(#source/text_doc_comment_computed_relation, "source-workspace")
+
+assert TextUnit(#source/text_markdown_phase6)
+assert TextUnitOf(#source/text_markdown_phase6, #source/file_graph_rag_design)
+assert TextUnitOrdinal(#source/text_markdown_phase6, 50)
+assert TextUnitText(#source/text_markdown_phase6, "Retrieval plans record questions, candidate context, citations, provider scores, authority filtering, and freshness so humans can inspect the workspace memory.")
+assert source/RetrievalTextUnitKind(#source/text_markdown_phase6, "markdown_section")
+assert source/RetrievalTextUnitTitle(#source/text_markdown_phase6, "Retrieval plans and citations")
+assert source/RetrievalTextUnitFile(#source/text_markdown_phase6, #source/file_graph_rag_design)
+assert source/RetrievalTextUnitStartLine(#source/text_markdown_phase6, 1)
+assert source/RetrievalTextUnitEndLine(#source/text_markdown_phase6, 120)
+assert source/RetrievalTextUnitModel(#source/text_markdown_phase6, "source-workspace")
+
+assert TextUnit(#source/text_review_note_dom_sync)
+assert TextUnitOf(#source/text_review_note_dom_sync, #source/span_sync_view_tree)
+assert TextUnitOrdinal(#source/text_review_note_dom_sync, 60)
+assert TextUnitText(#source/text_review_note_dom_sync, "Review note: DOM sync rendering should remain server-owned; browser code consumes snapshots instead of owning application state.")
+assert source/RetrievalTextUnitKind(#source/text_review_note_dom_sync, "review_note")
+assert source/RetrievalTextUnitTitle(#source/text_review_note_dom_sync, "Server-owned DOM sync note")
+assert source/RetrievalTextUnitFile(#source/text_review_note_dom_sync, #source/file_mud_ui_session)
+assert source/RetrievalTextUnitSpan(#source/text_review_note_dom_sync, #source/span_sync_view_tree)
+assert source/RetrievalTextUnitStartLine(#source/text_review_note_dom_sync, 8)
+assert source/RetrievalTextUnitEndLine(#source/text_review_note_dom_sync, 17)
+assert source/RetrievalTextUnitModel(#source/text_review_note_dom_sync, "source-workspace")
+
+assert TextUnit(#source/text_design_doc_graphrag)
+assert TextUnitOf(#source/text_design_doc_graphrag, #source/span_retrieval_boundary)
+assert TextUnitOrdinal(#source/text_design_doc_graphrag, 70)
+assert TextUnitText(#source/text_design_doc_graphrag, "Design note: vectors find candidates; relations explain, constrain, authorize, connect, and update retrieved source context.")
+assert source/RetrievalTextUnitKind(#source/text_design_doc_graphrag, "design_doc")
+assert source/RetrievalTextUnitTitle(#source/text_design_doc_graphrag, "Retrieval boundary design")
+assert source/RetrievalTextUnitFile(#source/text_design_doc_graphrag, #source/file_graph_rag_design)
+assert source/RetrievalTextUnitSpan(#source/text_design_doc_graphrag, #source/span_retrieval_boundary)
+assert source/RetrievalTextUnitStartLine(#source/text_design_doc_graphrag, 1)
+assert source/RetrievalTextUnitEndLine(#source/text_design_doc_graphrag, 9)
+assert source/RetrievalTextUnitModel(#source/text_design_doc_graphrag, "source-workspace")
+
+CanRetrieveSubject(actor, subject) :-
+  source/RetrievalTextUnitFile(subject, file),
+  source/CanReadSourceFile(actor, file)
+
+CanRetrieveSubject(actor, subject) :-
+  source/RetrievalTextUnitSpan(subject, span),
+  source/CanReadSourceSpan(actor, span)
+
+verb source/retrieval_model()
+  return "source-workspace"
+end
+
+verb source/retrieval_limit()
+  return 8
+end
+
+verb source/retrieval_text_unit_path(unit)
+  let file = one source/RetrievalTextUnitFile(unit, ?file)
+  if file == nothing
+    return nothing
+  end
+
+  return one source/FilePath(file, ?path)
+end
+
+verb source/retrieval_text_unit_line(unit)
+  let line = one source/RetrievalTextUnitStartLine(unit, ?line)
+  if line == nothing
+    return 1
+  end
+
+  return line
+end
+
+verb source/retrieval_subject_status(subject, model @ #string)
+  let text = one TextUnitText(subject, ?text)
+  if text == nothing
+    return "missing"
+  end
+
+  return retrieval/index_entry_status(#source/retrieval_index, subject, model, text)
+end
+
+verb source/index_retrieval_subjects(actor, model @ #string)
+  let indexed = 0
+  for found in TextUnit(?subject)
+    let subject = found[:subject]
+    if source/RetrievalTextUnitModel(subject, model) && CanRetrieveSubject(actor, subject)
+      let text = one TextUnitText(subject, ?text)
+      ensure_subject_embedding(actor, #source/retrieval_index, subject, text, model)
+      indexed = indexed + 1
+    end
+  end
+
+  return indexed
+end
+
+verb source/clear_retrieval_session(endpoint)
+  retract source/SelectedRetrievalQuestion(endpoint, _)
+  retract source/SelectedRetrievalPlan(endpoint, _)
+  retract source/SelectedRetrievalModel(endpoint, _)
+  retract source/SelectedRetrievalLimit(endpoint, _)
+  retract source/SelectedRetrievalStatus(endpoint, _)
+  return true
+end
+
+verb source/run_retrieval_query(endpoint, actor, question_text @ #string)
+  let model = source/retrieval_model()
+  let limit = source/retrieval_limit()
+  source/index_retrieval_subjects(actor, model)
+  let retrieval = retrieve_context(actor, #source/retrieval_index, question_text, limit, model)
+  let plan = retrieval[:plan]
+  let contexts = retrieval[:contexts]
+  let count = 0
+
+  source/clear_retrieval_session(endpoint)
+  assert source/SelectedRetrievalQuestion(endpoint, question_text)
+  assert source/SelectedRetrievalPlan(endpoint, plan)
+  assert source/SelectedRetrievalModel(endpoint, model)
+  assert source/SelectedRetrievalLimit(endpoint, limit)
+
+  let artifact_index = #source/retrieval_index
+  let index_version = "worktree"
+  for index_row in source/SourceIndex(?index)
+    let candidate = one source/IndexVersion(index_row[:index], ?version)
+    if candidate != nothing
+      artifact_index = index_row[:index]
+      index_version = candidate
+      break
+    end
+  end
+
+  assert source/RetrievalArtifact(plan)
+  assert source/RetrievalArtifactIndex(plan, artifact_index)
+  assert source/RetrievalArtifactRevision(plan, #source/rev_worktree)
+  assert source/RetrievalArtifactIndexVersion(plan, index_version)
+
+  for item in contexts
+    let subject = item[:subject]
+    let text = one TextUnitText(subject, ?text)
+    assert source/RetrievalCitation(plan, subject)
+    assert source/RetrievalCitationText(plan, subject, text)
+    count = count + 1
+  end
+
+  assert source/SelectedRetrievalStatus(endpoint, string_concat(to_literal(count), " context items"))
+  return {:contexts -> contexts, :count -> count, :plan -> plan, :question -> retrieval[:question]}
+end
+
+verb source/run_symbol_neighbourhood_query(endpoint, actor, symbol)
+  let name = one source/SelectedSymbolName(endpoint, ?name)
+  let kind = one source/SelectedSymbolKind(endpoint, ?kind)
+  if name == nothing
+    name = to_literal(symbol)
+  end
+  if kind == nothing
+    kind = "symbol"
+  end
+
+  let query = string_concat("symbol neighbourhood for ", name, " ", kind)
+  let retrieval = source/run_retrieval_query(endpoint, actor, query)
+  let plan = retrieval[:plan]
+  retract PlanKind(plan, _)
+  assert PlanKind(plan, "source_symbol_neighbourhood")
+  return retrieval
+end
