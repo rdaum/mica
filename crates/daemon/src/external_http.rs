@@ -97,8 +97,8 @@ async fn perform_external_request(
             perform_http_request(spec).await
         }
         Some("openai") => {
-            let spec = HttpRequestSpec::from_openai_payload(&request.payload)?;
-            perform_http_request(spec).await
+            let spec = OpenaiRequestSpec::from_payload(&request.payload)?;
+            perform_openai_request(spec).await
         }
         Some("embedding") => {
             let spec = HttpRequestSpec::from_embedding_payload(
@@ -116,6 +116,16 @@ struct HttpRequestSpec {
     url: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+}
+
+struct OpenaiRequestSpec {
+    request: HttpRequestSpec,
+    response_mode: OpenaiResponseMode,
+}
+
+enum OpenaiResponseMode {
+    Http,
+    Json,
 }
 
 struct HttpResponseData {
@@ -137,30 +147,61 @@ impl HttpRequestSpec {
             body,
         })
     }
+}
 
-    fn from_openai_payload(payload: &Value) -> Result<Self, String> {
+impl OpenaiRequestSpec {
+    fn from_payload(payload: &Value) -> Result<Self, String> {
         let base_url = optional_map_string(payload, "base_url")?
             .or_else(|| std::env::var("MICA_OPENAI_BASE_URL").ok())
-            .or_else(|| std::env::var("MICA_VLLM_BASE_URL").ok())
-            .unwrap_or_else(|| "http://127.0.0.1:8000".to_owned());
-        let path = optional_map_string(payload, "path")?
-            .unwrap_or_else(|| "/v1/chat/completions".to_owned());
+            .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
+            .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_owned());
+        let path =
+            optional_map_string(payload, "path")?.unwrap_or_else(|| "/chat/completions".to_owned());
         let url = join_url_path(&base_url, &path);
         let mut headers = optional_map_headers(payload, "headers")?.unwrap_or_default();
         headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
         if let Some(api_key) = optional_map_string(payload, "api_key")?
+            .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
         {
             headers.push(("Authorization".to_owned(), format!("Bearer {api_key}")));
         }
+        if let Some(referer) = optional_map_string(payload, "referer")?
+            .or_else(|| std::env::var("MICA_OPENROUTER_REFERER").ok())
+            .or_else(|| std::env::var("OPENROUTER_HTTP_REFERER").ok())
+        {
+            headers.push(("HTTP-Referer".to_owned(), referer));
+        }
+        if let Some(title) = optional_map_string(payload, "title")?
+            .or_else(|| std::env::var("MICA_OPENROUTER_TITLE").ok())
+            .or_else(|| std::env::var("OPENROUTER_TITLE").ok())
+        {
+            headers.push(("X-OpenRouter-Title".to_owned(), title));
+        }
+        let (body, response_mode) =
+            if map_get(payload, "body").is_some() || map_get(payload, "json").is_some() {
+                (request_body(payload)?, OpenaiResponseMode::Http)
+            } else {
+                (
+                    serde_json::to_vec(&openai_chat_completion_json(payload)?).map_err(
+                        |error| format!("failed to encode OpenAI chat completion request: {error}"),
+                    )?,
+                    OpenaiResponseMode::Json,
+                )
+            };
         Ok(Self {
-            method: "POST".to_owned(),
-            url,
-            headers,
-            body: request_body(payload)?,
+            request: HttpRequestSpec {
+                method: "POST".to_owned(),
+                url,
+                headers,
+                body,
+            },
+            response_mode,
         })
     }
+}
 
+impl HttpRequestSpec {
     fn from_embedding_payload(
         payload: &Value,
         configured_base_url: Option<&str>,
@@ -218,6 +259,25 @@ async fn perform_http_request(spec: HttpRequestSpec) -> Result<Value, String> {
         ),
         (Value::symbol(Symbol::intern("body")), Value::string(body)),
     ]))
+}
+
+async fn perform_openai_request(spec: OpenaiRequestSpec) -> Result<Value, String> {
+    match spec.response_mode {
+        OpenaiResponseMode::Http => perform_http_request(spec.request).await,
+        OpenaiResponseMode::Json => {
+            let response = perform_http_bytes(spec.request).await?;
+            if !(200..300).contains(&response.status) {
+                let message = String::from_utf8_lossy(&response.body);
+                return Err(format!(
+                    "OpenAI chat completion failed with HTTP {}: {message}",
+                    response.status
+                ));
+            }
+            let json: serde_json::Value = serde_json::from_slice(&response.body)
+                .map_err(|error| format!("invalid OpenAI chat completion response: {error}"))?;
+            value_from_json(&json)
+        }
+    }
 }
 
 async fn perform_embedding_request(spec: HttpRequestSpec) -> Result<Value, String> {
@@ -305,6 +365,24 @@ fn request_body(payload: &Value) -> Result<Vec<u8>, String> {
     Ok(Vec::new())
 }
 
+fn openai_chat_completion_json(payload: &Value) -> Result<serde_json::Value, String> {
+    let model = map_string(payload, "model")?;
+    let messages = map_get(payload, "messages").ok_or_else(|| "missing \"messages\"".to_owned())?;
+    let mut object = match map_get(payload, "options") {
+        Some(options) => match json_from_value(&options)? {
+            serde_json::Value::Object(object) => object,
+            _ => return Err("\"options\" must be a map".to_owned()),
+        },
+        None => serde_json::Map::new(),
+    };
+    object.insert("model".to_owned(), serde_json::Value::String(model));
+    object.insert("messages".to_owned(), json_from_value(&messages)?);
+    object
+        .entry("stream")
+        .or_insert(serde_json::Value::Bool(false));
+    Ok(serde_json::Value::Object(object))
+}
+
 fn json_from_value(value: &Value) -> Result<serde_json::Value, String> {
     if *value == Value::nothing() {
         return Ok(serde_json::Value::Null);
@@ -338,6 +416,44 @@ fn json_from_value(value: &Value) -> Result<serde_json::Value, String> {
         return Ok(serde_json::Value::Object(object));
     }
     Err(format!("unsupported JSON value kind {:?}", value.kind()))
+}
+
+fn value_from_json(value: &serde_json::Value) -> Result<Value, String> {
+    match value {
+        serde_json::Value::Null => Ok(Value::nothing()),
+        serde_json::Value::Bool(value) => Ok(Value::bool(*value)),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                return Ok(Value::int(value).unwrap_or_else(|_| Value::float(value as f64)));
+            }
+            if let Some(value) = value.as_u64() {
+                return Ok(i64::try_from(value)
+                    .ok()
+                    .and_then(|value| Value::int(value).ok())
+                    .unwrap_or_else(|| Value::float(value as f64)));
+            }
+            value
+                .as_f64()
+                .map(Value::float)
+                .ok_or_else(|| "unsupported JSON number".to_owned())
+        }
+        serde_json::Value::String(value) => Ok(Value::string(value)),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(value_from_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::list),
+        serde_json::Value::Object(entries) => entries
+            .iter()
+            .map(|(key, value)| {
+                Ok((
+                    Value::symbol(Symbol::intern(key.as_str())),
+                    value_from_json(value)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map(Value::map),
+    }
 }
 
 fn json_key(value: &Value) -> Result<String, String> {
@@ -556,6 +672,119 @@ mod tests {
                 response.map_get(&Value::symbol(Symbol::intern("status"))),
                 Some(Value::int(200).unwrap())
             );
+        });
+    }
+
+    #[test]
+    fn openai_chat_completion_posts_openrouter_request_and_returns_json() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            compio::runtime::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request_bytes = Vec::new();
+                loop {
+                    let (result, buffer) = stream.read([0u8; 4096]).await.into();
+                    let count = result.unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    request_bytes.extend_from_slice(&buffer[..count]);
+                    if complete_http_request(&request_bytes) {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request_bytes);
+                assert!(request.starts_with("POST /api/v1/chat/completions HTTP/1.1\r\n"));
+                assert!(
+                    request
+                        .lines()
+                        .any(|line| line.eq_ignore_ascii_case("Authorization: Bearer test-key"))
+                );
+                assert!(
+                    request
+                        .lines()
+                        .any(|line| line.eq_ignore_ascii_case("HTTP-Referer: https://mica.local"))
+                );
+                assert!(
+                    request
+                        .lines()
+                        .any(|line| line.eq_ignore_ascii_case("X-OpenRouter-Title: Mica"))
+                );
+                assert!(request.contains(r#""model":"~openai/gpt-latest""#));
+                assert!(request.contains(r#""role":"user""#));
+                assert!(request.contains(r#""content":"ping""#));
+                assert!(request.contains(r#""temperature":0.2"#));
+                let response_body = r#"{"id":"chatcmpl-test","choices":[{"finish_reason":"stop","index":0,"message":{"role":"assistant","content":"pong"}}],"model":"openai/test","usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let (result, _) = stream.write_all(response.into_bytes()).await.into();
+                result.unwrap();
+            })
+            .detach();
+
+            let request = ExternalRequest {
+                service: Symbol::intern("openai"),
+                payload: Value::map([
+                    (
+                        Value::symbol(Symbol::intern("base_url")),
+                        Value::string(format!("http://{addr}/api/v1")),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("api_key")),
+                        Value::string("test-key"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("referer")),
+                        Value::string("https://mica.local"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("title")),
+                        Value::string("Mica"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("~openai/gpt-latest"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("messages")),
+                        Value::list([Value::map([
+                            (
+                                Value::symbol(Symbol::intern("role")),
+                                Value::string("user"),
+                            ),
+                            (
+                                Value::symbol(Symbol::intern("content")),
+                                Value::string("ping"),
+                            ),
+                        ])]),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("options")),
+                        Value::map([(
+                            Value::symbol(Symbol::intern("temperature")),
+                            Value::float(0.2),
+                        )]),
+                    ),
+                ]),
+                timeout_millis: None,
+            };
+            let response = handle_external_request(request, &ExternalHttpConfig::default()).await;
+            let content = response
+                .map_get(&Value::symbol(Symbol::intern("choices")))
+                .and_then(|choices| choices.with_list(|choices| choices.first().cloned()).flatten())
+                .and_then(|choice| choice.map_get(&Value::symbol(Symbol::intern("message"))))
+                .and_then(|message| message.map_get(&Value::symbol(Symbol::intern("content"))));
+            assert_eq!(content, Some(Value::string("pong")));
+            let usage = response
+                .map_get(&Value::symbol(Symbol::intern("usage")))
+                .and_then(|usage| {
+                    usage.map_get(&Value::symbol(Symbol::intern("total_tokens")))
+                });
+            assert_eq!(usage, Some(Value::int(6).unwrap()));
         });
     }
 

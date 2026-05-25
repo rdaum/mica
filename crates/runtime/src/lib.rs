@@ -13,6 +13,7 @@
 
 mod embedding;
 pub mod metrics;
+mod openai;
 mod retrieval;
 mod task;
 mod task_manager;
@@ -149,6 +150,8 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "parse_ordinal",
     "lower",
     "embed_text",
+    "openai_chat_completion",
+    "openai_chat_completion_with_options",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,7 +255,7 @@ impl SourceRunner {
         Self::with_kernel_embedding_provider_and_host_requests(
             bootstrap_kernel(),
             embedding::embedding_provider(kind),
-            embedding::host_request_functions(kind),
+            default_host_request_functions(kind),
         )
     }
 
@@ -287,7 +290,7 @@ impl SourceRunner {
         Ok(Self::with_kernel_embedding_provider_and_host_requests(
             kernel,
             embedding::embedding_provider(embedding_provider),
-            embedding::host_request_functions(embedding_provider),
+            default_host_request_functions(embedding_provider),
         ))
     }
 
@@ -1885,6 +1888,14 @@ fn apply_host_request_functions(
     for (name, function) in functions {
         context.define_host_request_function(name.clone(), function.clone());
     }
+}
+
+fn default_host_request_functions(
+    embedding_provider: EmbeddingProviderKind,
+) -> Vec<(String, HostRequestFunction)> {
+    let mut functions = embedding::host_request_functions(embedding_provider);
+    functions.extend(openai::host_request_functions());
+    functions
 }
 
 fn predeclare_source_names_in_kernel(
@@ -6201,6 +6212,37 @@ mod tests {
         assert!(matches!(
             report.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("take")
+        ));
+    }
+
+    #[test]
+    fn runner_openai_filein_installs_chat_helpers() {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/openai.mica"))
+            .unwrap();
+
+        assert!(matches!(
+            runner
+                .run_source("return openai/user_message(\"ping\")")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value
+                    .map_get(&Value::symbol(Symbol::intern("role")))
+                    == Some(Value::string("user"))
+                    && value
+                        .map_get(&Value::symbol(Symbol::intern("content")))
+                        == Some(Value::string("ping"))
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return openai/assistant_text({:choices -> [{:message -> {:content -> \"pong\"}}]})"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("pong")
         ));
     }
 

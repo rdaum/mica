@@ -190,6 +190,72 @@ fn vllm_embed_text_suspends_as_embedding_external_request() {
 }
 
 #[test]
+fn openai_chat_completion_suspends_as_openai_external_request() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("openai"));
+                assert_eq!(
+                    request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("model"))),
+                    Some(Value::string("~openai/gpt-latest"))
+                );
+                let messages = request
+                    .payload
+                    .map_get(&Value::symbol(Symbol::intern("messages")))
+                    .expect("host request should include messages");
+                assert_eq!(messages.list_len(), Some(1));
+                assert_eq!(request.timeout_millis, Some(60_000));
+                Value::map([(
+                    Value::symbol(Symbol::intern("choices")),
+                    Value::list([Value::map([(
+                        Value::symbol(Symbol::intern("message")),
+                        Value::map([(
+                            Value::symbol(Symbol::intern("content")),
+                            Value::string("pong"),
+                        )]),
+                    )])]),
+                )])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let runner = SourceRunner::new_empty();
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(33),
+                root_source(
+                    "return openai_chat_completion(\"~openai/gpt-latest\", [{:role -> \"user\", :content -> \"ping\"}])",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == submitted.task_id
+                    && value
+                        .map_get(&Value::symbol(Symbol::intern("choices")))
+                        .and_then(|choices| choices.with_list(|choices| choices.first().cloned()).flatten())
+                        .and_then(|choice| choice.map_get(&Value::symbol(Symbol::intern("message"))))
+                        .and_then(|message| message.map_get(&Value::symbol(Symbol::intern("content"))))
+                        == Some(Value::string("pong"))
+        )));
+    });
+}
+
+#[test]
 fn root_startup_source_can_resume_vllm_embed_text() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
