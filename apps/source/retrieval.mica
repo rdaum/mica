@@ -731,11 +731,15 @@ verb source/agent_tool_options()
   let query_parameters = {:type -> "object", :properties -> {:query -> {:type -> "string", :description -> "A read-only Mica query to run as the current source viewer endpoint."}}, :required -> ["query"], :additionalProperties -> false}
   let query_function = {:name -> "mica_query", :description -> "Run a read-only Mica query over authorized source workspace facts. The query cannot mutate state, spawn tasks, invoke methods, or call host effects.", :parameters -> query_parameters}
   let query_tool = {:type -> "function", :function -> query_function}
+  let search_properties = {:query -> {:type -> "string", :description -> "Source search query text."}, :scope -> {:type -> "string", :description -> "Optional search scope: all, code, docs, tests, benches, or sketches."}, :limit -> {:type -> "integer", :description -> "Maximum results to return. Defaults to the source retrieval limit and is capped at 12."}}
+  let search_parameters = {:type -> "object", :properties -> search_properties, :required -> ["query"], :additionalProperties -> false}
+  let search_function = {:name -> "source_search", :description -> "Search the indexed source corpus and return bounded path, line, title, kind, score, reason, and snippet leads.", :parameters -> search_parameters}
+  let search_tool = {:type -> "function", :function -> search_function}
   let window_properties = {:path -> {:type -> "string", :description -> "Repository-relative path. Defaults to the current selected file."}, :start_line -> {:type -> "integer", :description -> "One-based starting line. Defaults to 1."}, :line_count -> {:type -> "integer", :description -> "Number of lines to return. Capped at 200."}}
   let window_parameters = {:type -> "object", :properties -> window_properties, :additionalProperties -> false}
   let window_function = {:name -> "source_file_window", :description -> "Read a bounded line window from a source file without writing a Mica query.", :parameters -> window_parameters}
   let window_tool = {:type -> "function", :function -> window_function}
-  return {:temperature -> 0.2, :tools -> [window_tool, query_tool], :tool_choice -> "auto"}
+  return {:temperature -> 0.2, :tools -> [search_tool, window_tool, query_tool], :tool_choice -> "auto"}
 end
 
 verb source/openai_first_message(response @ #map)
@@ -848,6 +852,84 @@ verb source/source_file_window_result(args @ #map)
   return {:status -> "complete", :rendered -> rendered, :rendered_truncated -> false, :value -> value, :error -> nothing, :diagnostics -> []}
 end
 
+verb source/source_search_result(actor, args @ #map)
+  let query = args[:query]
+  if query == nothing || query == ""
+    return source/tool_error_result("rejected", "source_search missing query")
+  end
+  let scope = args[:scope]
+  if scope == nothing || scope == ""
+    scope = source/default_retrieval_scope()
+  end
+  scope = source/normalise_retrieval_scope(scope)
+  let limit = args[:limit]
+  if limit == nothing || limit < 1
+    limit = source/retrieval_limit()
+  end
+  if limit > 12
+    limit = 12
+  end
+
+  let model = source/retrieval_model()
+  let retrieval = source/search_context(actor, query, limit, scope, model)
+  let plan = retrieval[:plan]
+  let semantic_status = retrieval[:semantic_status]
+  let results = []
+  let rendered_lines = []
+  let count = 0
+  for item in retrieval[:contexts]
+    if count >= limit
+      break
+    end
+    let context = item[:context]
+    let subject = item[:subject]
+    let path = source/retrieval_text_unit_path(subject)
+    if path == nothing
+      path = "unknown"
+    end
+    let line = item[:line]
+    if line == nothing
+      line = source/retrieval_text_unit_line(subject)
+    end
+    if line == nothing
+      line = 1
+    end
+    let title = source/retrieval_text_unit_title(subject)
+    if title == nothing
+      title = path
+    end
+    let kind = source/retrieval_text_unit_kind(subject)
+    if kind == nothing
+      kind = "context"
+    end
+    let reason = one ContextReason(context, ?reason)
+    if reason == nothing
+      reason = "retrieval"
+    end
+    let snippet = item[:snippet]
+    if snippet == nothing
+      snippet = source/retrieval_text_unit_text(subject)
+    end
+    if snippet == nothing
+      snippet = ""
+    end
+    let score = item[:score]
+    if score == nothing
+      score = 0
+    end
+    results = [@results, {:path -> path, :line -> line, :title -> title, :kind -> kind, :score -> score, :reason -> reason, :snippet -> snippet}]
+    rendered_lines = [@rendered_lines, string_concat("- ", path, ":", to_literal(line), " ", title, " / ", kind, " / ", reason, " / ", to_literal(score), "\n", snippet)]
+    count = count + 1
+  end
+
+  let rendered = string_join(rendered_lines, "\n\n")
+  if rendered == ""
+    rendered = "source_search returned no results"
+  end
+  let value = {:query -> query, :scope -> scope, :limit -> limit, :model -> model, :semantic_status -> semantic_status, :plan -> to_literal(plan), :results -> results}
+  return {:status -> "complete", :rendered -> rendered, :rendered_truncated -> false, :value -> value, :error -> nothing, :diagnostics -> []}
+end
+
 verb source/record_agent_tool_response(turn, ordinal, tool @ #string, args @ #map, result @ #map, call_id @ #string)
   let request = source/record_agent_tool_request(turn, ordinal, tool, args, "running")
   let status = result[:status]
@@ -872,6 +954,15 @@ verb source/run_agent_source_file_window_tool(turn, ordinal, call @ #map)
   return source/record_agent_tool_response(turn, ordinal, "source_file_window", args, result, call_id)
 end
 
+verb source/run_agent_source_search_tool(turn, ordinal, call @ #map, actor)
+  let call_id = source/openai_tool_call_id(call, ordinal)
+  let args = source/openai_tool_call_args(call)
+  let result = recover source/source_search_result(actor, args)
+  catch err => source/tool_error_result("error", to_literal(err))
+  end
+  return source/record_agent_tool_response(turn, ordinal, "source_search", args, result, call_id)
+end
+
 verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
@@ -884,7 +975,7 @@ verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
   return source/record_agent_tool_response(turn, ordinal, "mica_query", args, result, call_id)
 end
 
-verb source/run_agent_tool(turn, ordinal, call @ #map)
+verb source/run_agent_tool(turn, ordinal, call @ #map, actor)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let name = source/openai_tool_call_name(call)
   if name == "mica_query"
@@ -892,6 +983,9 @@ verb source/run_agent_tool(turn, ordinal, call @ #map)
   end
   if name == "source_file_window"
     return source/run_agent_source_file_window_tool(turn, ordinal, call)
+  end
+  if name == "source_search"
+    return source/run_agent_source_search_tool(turn, ordinal, call, actor)
   end
   let args = source/openai_tool_call_args(call)
   let result = source/tool_error_result("rejected", string_concat("unsupported tool: ", to_literal(name)))
@@ -996,7 +1090,7 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
         break
       end
       tool_count = tool_count + 1
-      let tool_message = source/run_agent_tool(assistant_turn, tool_count, call)
+      let tool_message = source/run_agent_tool(assistant_turn, tool_count, call, actor)
       messages = [@messages, tool_message]
     end
   end
