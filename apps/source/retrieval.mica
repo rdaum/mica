@@ -752,15 +752,26 @@ verb source/agent_tool_options()
   let references_parameters = {:type -> "object", :properties -> references_properties, :additionalProperties -> false}
   let references_function = {:name -> "source_find_references", :description -> "Return bounded reference locations and line snippets for a source symbol without changing UI state.", :parameters -> references_parameters}
   let references_tool = {:type -> "function", :function -> references_function}
-  let proposal_properties = {:kind -> {:type -> "string", :description -> "Proposal kind, for example note, finding, patch, or action. Defaults to note."}, :title -> {:type -> "string", :description -> "Short human-readable proposal title."}, :body -> {:type -> "string", :description -> "Detailed proposal text for review."}, :target_path -> {:type -> "string", :description -> "Optional source path this proposal concerns."}, :start_line -> {:type -> "integer", :description -> "Optional one-based start line for the target."}, :end_line -> {:type -> "integer", :description -> "Optional one-based end line for the target."}}
-  let proposal_parameters = {:type -> "object", :properties -> proposal_properties, :required -> ["title", "body"], :additionalProperties -> false}
-  let proposal_function = {:name -> "source_propose_note", :description -> "Create a pending source-agent proposal for human review. This records reviewable proposal state only; it does not apply code, note, finding, or workspace mutations.", :parameters -> proposal_parameters}
-  let proposal_tool = {:type -> "function", :function -> proposal_function}
+  let note_tool = source/agent_proposal_tool("source_create_pending_note", "Create a pending source-agent note for human review. This records reviewable proposal state only; it does not apply durable note or workspace mutations.", "Detailed note text for review.")
+  let finding_tool = source/agent_proposal_tool("source_create_pending_finding", "Create a pending source-agent finding for human review. This records reviewable proposal state only; it does not apply durable finding or workspace mutations.", "Detailed finding text for review.")
+  let patch_tool = source/agent_proposal_tool("source_propose_patch", "Create a pending source-agent patch proposal for human review. This records reviewable proposal state only; it does not apply code or workspace mutations.", "Detailed patch proposal for review. Include a unified diff if one is available, otherwise describe the exact intended edit.")
+  let action_tool = source/agent_proposal_tool("source_propose_action", "Create a pending source-agent action proposal for human review. This records reviewable proposal state only; it does not execute the action or mutate workspace facts.", "Detailed action proposal for review.")
   let window_properties = {:path -> {:type -> "string", :description -> "Repository-relative path. Defaults to the current selected file."}, :start_line -> {:type -> "integer", :description -> "One-based starting line. Defaults to 1."}, :line_count -> {:type -> "integer", :description -> "Number of lines to return. Capped at 200."}}
   let window_parameters = {:type -> "object", :properties -> window_properties, :additionalProperties -> false}
   let window_function = {:name -> "source_file_window", :description -> "Read a bounded line window from a source file without writing a Mica query. Use this when current file context is truncated or a specific line range is needed.", :parameters -> window_parameters}
   let window_tool = {:type -> "function", :function -> window_function}
-  return {:temperature -> 0.2, :tools -> [search_tool, symbol_tool, references_tool, proposal_tool, window_tool, query_tool], :tool_choice -> "auto"}
+  return {:temperature -> 0.2, :tools -> [search_tool, symbol_tool, references_tool, note_tool, finding_tool, patch_tool, action_tool, window_tool, query_tool], :tool_choice -> "auto"}
+end
+
+verb source/agent_tool_call_limit()
+  return 8
+end
+
+verb source/agent_proposal_tool(name @ #string, description @ #string, body_description @ #string)
+  let properties = {:title -> {:type -> "string", :description -> "Short human-readable proposal title."}, :body -> {:type -> "string", :description -> body_description}, :target_path -> {:type -> "string", :description -> "Optional source path this proposal concerns."}, :start_line -> {:type -> "integer", :description -> "Optional one-based start line for the target."}, :end_line -> {:type -> "integer", :description -> "Optional one-based end line for the target."}}
+  let parameters = {:type -> "object", :properties -> properties, :required -> ["title", "body"], :additionalProperties -> false}
+  let function = {:name -> name, :description -> description, :parameters -> parameters}
+  return {:type -> "function", :function -> function}
 end
 
 verb source/openai_first_message(response @ #map)
@@ -1136,18 +1147,14 @@ verb source/agent_proposal_value(turn, ordinal)
   return frob(#source/agent_proposal, {:turn -> turn, :ordinal -> ordinal})
 end
 
-verb source/create_agent_proposal(turn, ordinal, args @ #map)
+verb source/create_agent_proposal(turn, ordinal, kind @ #string, args @ #map)
   let title = args[:title]
   let body = args[:body]
   if title == nothing || title == ""
-    return source/tool_error_result("rejected", "source_propose_note missing title")
+    return source/tool_error_result("rejected", string_concat("source ", kind, " proposal missing title"))
   end
   if body == nothing || body == ""
-    return source/tool_error_result("rejected", "source_propose_note missing body")
-  end
-  let kind = args[:kind]
-  if kind == nothing || kind == ""
-    kind = "note"
+    return source/tool_error_result("rejected", string_concat("source ", kind, " proposal missing body"))
   end
   let proposal = source/agent_proposal_value(turn, ordinal)
   retract source/AgentProposal(proposal)
@@ -1251,13 +1258,13 @@ verb source/run_agent_source_find_references_tool(turn, ordinal, call @ #map)
   return source/record_agent_tool_response(turn, ordinal, "source_find_references", args, result, call_id)
 end
 
-verb source/run_agent_source_propose_note_tool(turn, ordinal, call @ #map)
+verb source/run_agent_proposal_tool(turn, ordinal, call @ #map, tool @ #string, kind @ #string)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
-  let result = recover source/create_agent_proposal(turn, ordinal, args)
+  let result = recover source/create_agent_proposal(turn, ordinal, kind, args)
   catch err => source/tool_error_result("error", to_literal(err))
   end
-  return source/record_agent_tool_response(turn, ordinal, "source_propose_note", args, result, call_id)
+  return source/record_agent_tool_response(turn, ordinal, tool, args, result, call_id)
 end
 
 verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
@@ -1290,8 +1297,17 @@ verb source/run_agent_tool(turn, ordinal, call @ #map, actor)
   if name == "source_find_references"
     return source/run_agent_source_find_references_tool(turn, ordinal, call)
   end
-  if name == "source_propose_note"
-    return source/run_agent_source_propose_note_tool(turn, ordinal, call)
+  if name == "source_create_pending_note"
+    return source/run_agent_proposal_tool(turn, ordinal, call, "source_create_pending_note", "note")
+  end
+  if name == "source_create_pending_finding"
+    return source/run_agent_proposal_tool(turn, ordinal, call, "source_create_pending_finding", "finding")
+  end
+  if name == "source_propose_patch"
+    return source/run_agent_proposal_tool(turn, ordinal, call, "source_propose_patch", "patch")
+  end
+  if name == "source_propose_action"
+    return source/run_agent_proposal_tool(turn, ordinal, call, "source_propose_action", "action")
   end
   let args = source/openai_tool_call_args(call)
   let result = source/tool_error_result("rejected", string_concat("unsupported tool: ", to_literal(name)))
@@ -1381,7 +1397,8 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
   let options = source/agent_tool_options()
   let response = nothing
   let tool_count = 0
-  while tool_count < 3
+  let tool_limit = source/agent_tool_call_limit()
+  while tool_count < tool_limit
     response = openai/chat_with_options(requested_model, messages, options)
     let tool_calls = source/openai_tool_calls(response)
     if tool_calls == []
@@ -1392,7 +1409,7 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
       messages = [@messages, assistant_message]
     end
     for call in tool_calls
-      if tool_count >= 3
+      if tool_count >= tool_limit
         break
       end
       tool_count = tool_count + 1
@@ -1404,11 +1421,19 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
     response = openai/chat_with_options(requested_model, messages, {:temperature -> 0.2})
   end
   if source/openai_tool_calls(response) != []
-    response = openai/chat_with_options(requested_model, messages, {:temperature -> 0.2})
+    if tool_count >= tool_limit
+      response = {:model -> requested_model, :choices -> [{:message -> {:content -> string_concat("I stopped after ", to_literal(tool_limit), " tool calls before completing the answer. Ask a narrower question or request fewer files.")}}]}
+    else
+      response = openai/chat_with_options(requested_model, messages, {:temperature -> 0.2})
+    end
   end
   let assistant_text = openai/assistant_text(response)
   if assistant_text == nothing
-    assistant_text = json_encode(response)
+    if source/openai_tool_calls(response) != []
+      assistant_text = "The model returned tool calls instead of a final answer after tool use was disabled. Please retry or ask a narrower question."
+    else
+      assistant_text = "The model returned no assistant text."
+    end
   end
   let resolved_model = response[:model]
   if resolved_model == nothing

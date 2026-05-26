@@ -1706,6 +1706,188 @@ fn source_agent_prompt_runs_source_file_window_tool_call() {
 }
 
 #[test]
+fn source_agent_prompt_runs_multiple_file_window_tool_calls() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let handler = Arc::new(move |request: mica_runtime::ExternalRequest| {
+            let call_index = handler_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("openai"));
+                let messages = request
+                    .payload
+                    .map_get(&Value::symbol(Symbol::intern("messages")))
+                    .expect("host request should include messages");
+                if call_index == 0 {
+                    let tool_calls = (0..4)
+                        .map(|index| {
+                            Value::map([
+                                (
+                                    Value::symbol(Symbol::intern("id")),
+                                    Value::string(format!("call_window_{index}")),
+                                ),
+                                (
+                                    Value::symbol(Symbol::intern("type")),
+                                    Value::string("function"),
+                                ),
+                                (
+                                    Value::symbol(Symbol::intern("function")),
+                                    Value::map([
+                                        (
+                                            Value::symbol(Symbol::intern("name")),
+                                            Value::string("source_file_window"),
+                                        ),
+                                        (
+                                            Value::symbol(Symbol::intern("arguments")),
+                                            Value::string(format!(
+                                                "{{\"path\":\"src/tests.rs\",\"start_line\":{},\"line_count\":1}}",
+                                                14 + index
+                                            )),
+                                        ),
+                                    ]),
+                                ),
+                            ])
+                        })
+                        .collect::<Vec<_>>();
+                    return Value::map([
+                        (
+                            Value::symbol(Symbol::intern("model")),
+                            Value::string("openrouter/test-model"),
+                        ),
+                        (
+                            Value::symbol(Symbol::intern("choices")),
+                            Value::list([Value::map([(
+                                Value::symbol(Symbol::intern("message")),
+                                Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("role")),
+                                        Value::string("assistant"),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("content")),
+                                        Value::nothing(),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("tool_calls")),
+                                        Value::list(tool_calls),
+                                    ),
+                                ]),
+                            )])]),
+                        ),
+                    ]);
+                }
+
+                let tool_message_count = messages
+                    .with_list(|messages| {
+                        messages
+                            .iter()
+                            .filter(|message| {
+                                message.map_get(&Value::symbol(Symbol::intern("role")))
+                                    == Some(Value::string("tool"))
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+                assert_eq!(tool_message_count, 4);
+                Value::map([
+                    (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("openrouter/test-model"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("choices")),
+                        Value::list([Value::map([(
+                            Value::symbol(Symbol::intern("message")),
+                            Value::map([(
+                                Value::symbol(Symbol::intern("content")),
+                                Value::string("I inspected four file windows."),
+                            )]),
+                        )])]),
+                    ),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let mut runner = SourceRunner::new_empty();
+        load_source_app(&mut runner);
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let endpoint = endpoint(41);
+        runner
+            .open_endpoint(endpoint, Some(web), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint,
+                root_source(
+                    "assert source/SelectedPath(endpoint(), \"src/tests.rs\")\n\
+                     return source/run_agent_prompt(endpoint(), #web, \"inspect several file windows\")",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        let mut completed = false;
+        for _ in 0..80 {
+            if driver.drain_events().iter().any(|event| {
+                matches!(
+                    event,
+                    DriverEvent::TaskCompleted { task_id, value }
+                        if *task_id == submitted.task_id
+                            && value
+                                .map_get(&Value::symbol(Symbol::intern("text")))
+                                == Some(Value::string("I inspected four file windows."))
+                )
+            }) {
+                completed = true;
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            completed,
+            "source agent multi-window prompt task did not complete"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let report = driver
+            .submit_root_source_report(
+                "let count = 0\n\
+                 let fourth_complete = false\n\
+                 for request_row in source/AgentToolRequest(?tool_request, ?ordinal, \"source_file_window\", ?args, ?status)\n\
+                   count = count + 1\n\
+                   if request_row[:ordinal] == 4 && request_row[:status] == \"complete\"\n\
+                     fourth_complete = true\n\
+                   end\n\
+                 end\n\
+                 return [count, fourth_complete]"
+                    .to_owned(),
+            )
+            .await
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!(
+                "expected source agent multi-window fact inspection to complete, got {:?}",
+                report.outcome
+            );
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::int(4).unwrap());
+                assert_eq!(values[1], Value::bool(true));
+            })
+            .expect("expected source agent multi-window inspection tuple");
+    });
+}
+
+#[test]
 fn source_agent_prompt_runs_source_search_tool_call() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2373,7 +2555,7 @@ fn source_agent_prompt_records_pending_proposal_tool_call() {
                                         .and_then(|function| {
                                             function.map_get(&Value::symbol(Symbol::intern("name")))
                                         })
-                                        == Some(Value::string("source_propose_note"))
+                                        == Some(Value::string("source_create_pending_note"))
                                 })
                             })
                         })
@@ -2413,12 +2595,12 @@ fn source_agent_prompt_records_pending_proposal_tool_call() {
                                                 Value::map([
                                                     (
                                                         Value::symbol(Symbol::intern("name")),
-                                                        Value::string("source_propose_note"),
+                                                        Value::string("source_create_pending_note"),
                                                     ),
                                                     (
                                                         Value::symbol(Symbol::intern("arguments")),
                                                         Value::string(
-                                                            "{\"kind\":\"note\",\"title\":\"Document selected symbol\",\"body\":\"Add a note explaining sync_view_tree.\"}",
+                                                            "{\"title\":\"Document selected symbol\",\"body\":\"Add a note explaining sync_view_tree.\"}",
                                                         ),
                                                     ),
                                                 ]),
@@ -2521,7 +2703,7 @@ fn source_agent_prompt_records_pending_proposal_tool_call() {
         let report = driver
             .submit_root_source_report(
                 "let request = nothing\n\
-                 for request_row in source/AgentToolRequest(?tool_request, 1, \"source_propose_note\", ?args, \"complete\")\n\
+                 for request_row in source/AgentToolRequest(?tool_request, 1, \"source_create_pending_note\", ?args, \"complete\")\n\
                    request = request_row[:tool_request]\n\
                    break\n\
                  end\n\
