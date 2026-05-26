@@ -613,6 +613,16 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                         .with_str(|prompt| prompt.contains("sync_view_tree"))
                         .unwrap_or(false)
                 );
+                assert!(
+                    prompt
+                        .with_str(|prompt| prompt.contains("source/FileLines"))
+                        .unwrap_or(false)
+                );
+                assert!(
+                    prompt
+                        .with_str(|prompt| prompt.contains("current file context is truncated"))
+                        .unwrap_or(false)
+                );
                 Value::map([
                     (
                         Value::symbol(Symbol::intern("model")),
@@ -684,7 +694,7 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                  let plan = one source/AgentTurnPlan(assistant, ?plan)\n\
                  let context_text = one source/AgentTurnContextText(assistant, ?text)\n\
                  let prompt = one source/AgentTurnPromptText(assistant, ?text)\n\
-                 return [user != nothing, assistant != nothing, assistant_text, model, plan != nothing, string_contains(context_text, \"Current file:\"), string_contains(context_text, \"Value::int(5).unwrap()\"), string_contains(prompt, \"Current source focus:\")]".to_owned(),
+                 return [user != nothing, assistant != nothing, assistant_text, model, plan != nothing, string_contains(context_text, \"Current file:\"), string_contains(context_text, \"Value::int(5).unwrap()\"), string_contains(prompt, \"Current source focus:\"), string_contains(prompt, \"source/FileLines\"), string_contains(prompt, \"mica_query tool result\")]".to_owned(),
             )
             .await
             .unwrap();
@@ -707,6 +717,8 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                 assert_eq!(values[5], Value::bool(true));
                 assert_eq!(values[6], Value::bool(true));
                 assert_eq!(values[7], Value::bool(true));
+                assert_eq!(values[8], Value::bool(true));
+                assert_eq!(values[9], Value::bool(true));
             })
             .expect("expected source agent facts tuple");
 

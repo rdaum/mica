@@ -710,8 +710,21 @@ verb source/agent_focus_text(endpoint)
   return string_concat("Current source focus: ", path, ":", to_literal(line))
 end
 
+verb source/agent_workspace_schema_text()
+  let files = "- Files: source/Repository(repository), source/RepositoryRoot(repository, root), source/SourceFile(file), source/FileRevision(file, revision), source/FilePath(file, path), source/FileTitle(file, title), source/FileLanguage(file, language), source/FileLines(repository, revision, path, start, end, lines, hash), source/FileLineCount(repository, revision, path, count).\n"
+  let spans = "- Spans and symbols: source/SourceSpan(span), source/SpanFile(span, path), source/SpanLabel(span, label), source/SpanStartLine(span, line), source/SpanEndLine(span, line), source/DefinitionAt(path, line, symbol), source/ReferencesOf(symbol, reference), source/SyntaxOutline(path, outline).\n"
+  let retrieval = "- Retrieval: source/RetrievalTextUnitFile(subject, path), source/RetrievalTextUnitSpan(subject, start, end), source/RetrievalTextUnitTitle(subject, title), source/RetrievalCitationText(plan, subject, text), ContextForPlan(context, plan), ContextSubject(context, subject), ContextScore(context, score).\n"
+  let session = "- Session focus: source/SelectedPath(endpoint, path), source/SelectedLine(endpoint, line), source/SelectedRevision(endpoint, revision), source/SelectedAgentStatus(endpoint, status).\n"
+  let query_shape = "- Mica query shape: use for row in Relation(?x, value, ?y) to scan relation facts, one Relation(...) for one result, row[:x] for query bindings, lists and maps for structured output, and small bounded result sets.\n"
+  let line_query = "- Example line-window query: for row in source/FileLines(#source/repo_mica, source/current_revision(), path, 1, 120, ?lines, ?hash) return row[:lines].\n"
+  let symbol_query = "- Example symbol lead query: for row in source/ReferencesOf(?symbol, ?reference) return row.\n"
+  let grounding = "Only rely on query recipes when a mica_query tool result is present. Do not claim to have inspected facts, files, or line ranges that are not in the current context, retrieved context, or a recorded tool result."
+  return string_concat("Source workspace schema and query recipes:\n", files, spans, retrieval, session, query_shape, line_query, symbol_query, grounding)
+end
+
 verb source/agent_prompt_text(user_text @ #string, focus_text @ #string, context_text @ #string)
-  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. Use retrieved context only as supporting evidence. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. If you need more evidence, say what to inspect next.\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
+  let schema_text = source/agent_workspace_schema_text()
+  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. Use retrieved context only as supporting evidence. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. If the current file context is truncated or evidence is missing, say what extra file lines or source facts are needed. Do not claim you inspected unavailable context.\n\n", schema_text, "\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
 end
 
 verb source/source_index_available()
