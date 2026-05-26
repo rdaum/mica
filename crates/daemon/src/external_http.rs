@@ -273,11 +273,156 @@ async fn perform_openai_request(spec: OpenaiRequestSpec) -> Result<Value, String
                     response.status
                 ));
             }
-            let json: serde_json::Value = serde_json::from_slice(&response.body)
+            let mut json: serde_json::Value = serde_json::from_slice(&response.body)
                 .map_err(|error| format!("invalid OpenAI chat completion response: {error}"))?;
+            normalize_openai_tool_call_response(&mut json);
             value_from_json(&json)
         }
     }
+}
+
+fn normalize_openai_tool_call_response(response: &mut serde_json::Value) {
+    let Some(choices) = response
+        .get_mut("choices")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+    for choice in choices {
+        let Some(message) = choice
+            .get_mut("message")
+            .and_then(|value| value.as_object_mut())
+        else {
+            continue;
+        };
+        if message.contains_key("tool_calls") {
+            continue;
+        }
+        let Some(content) = message.get("content").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let tool_calls = parse_deepseek_dsml_tool_calls(content);
+        if tool_calls.is_empty() {
+            continue;
+        }
+        tracing::warn!(
+            tool_call_count = tool_calls.len(),
+            "normalized leaked DeepSeek DSML tool calls from OpenAI response content"
+        );
+        message.insert(
+            "tool_calls".to_owned(),
+            serde_json::Value::Array(tool_calls),
+        );
+        message.insert("content".to_owned(), serde_json::Value::Null);
+    }
+}
+
+fn parse_deepseek_dsml_tool_calls(content: &str) -> Vec<serde_json::Value> {
+    if !content.contains("DSML") || !content.contains("invoke name=\"") {
+        return Vec::new();
+    }
+    let mut calls = Vec::new();
+    let mut cursor = 0;
+    let marker = "invoke name=\"";
+    while let Some(relative_start) = content[cursor..].find(marker) {
+        let invoke_start = cursor + relative_start;
+        let name_start = invoke_start + marker.len();
+        let Some(relative_name_end) = content[name_start..].find('"') else {
+            break;
+        };
+        let name_end = name_start + relative_name_end;
+        let name = &content[name_start..name_end];
+        let Some(relative_tag_end) = content[name_end..].find('>') else {
+            break;
+        };
+        let tag_end = name_end + relative_tag_end;
+        let next_invoke = content[tag_end + 1..]
+            .find(marker)
+            .map(|relative| tag_end + 1 + relative)
+            .unwrap_or(content.len());
+        let block = &content[tag_end + 1..next_invoke];
+        let args = parse_deepseek_dsml_parameters(block);
+        let arguments = serde_json::to_string(&serde_json::Value::Object(args))
+            .unwrap_or_else(|_| "{}".to_owned());
+        calls.push(serde_json::json!({
+            "id": format!("dsml_tool_{}", calls.len() + 1),
+            "type": "function",
+            "function": {
+                "name": decode_dsml_text(name),
+                "arguments": arguments,
+            },
+        }));
+        cursor = next_invoke;
+    }
+    calls
+}
+
+fn parse_deepseek_dsml_parameters(block: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut args = serde_json::Map::new();
+    let mut cursor = 0;
+    let marker = "parameter name=\"";
+    while let Some(relative_start) = block[cursor..].find(marker) {
+        let parameter_start = cursor + relative_start;
+        let name_start = parameter_start + marker.len();
+        let Some(relative_name_end) = block[name_start..].find('"') else {
+            break;
+        };
+        let name_end = name_start + relative_name_end;
+        let name = decode_dsml_text(&block[name_start..name_end]);
+        let Some(relative_tag_end) = block[name_end..].find('>') else {
+            break;
+        };
+        let tag_end = name_end + relative_tag_end;
+        let tag = &block[parameter_start..=tag_end];
+        let value_start = tag_end + 1;
+        let Some(relative_value_end) = block[value_start..].find("</") else {
+            break;
+        };
+        let value_end = value_start + relative_value_end;
+        let raw_value = decode_dsml_text(&block[value_start..value_end]);
+        let is_string = quoted_attr_value(tag, "string").as_deref() != Some("false");
+        args.insert(name, dsml_parameter_json_value(&raw_value, is_string));
+        cursor = value_end + 2;
+    }
+    args
+}
+
+fn quoted_attr_value(tag: &str, attr: &str) -> Option<String> {
+    let marker = format!("{attr}=\"");
+    let value_start = tag.find(&marker)? + marker.len();
+    let value_end = tag[value_start..].find('"')? + value_start;
+    Some(tag[value_start..value_end].to_owned())
+}
+
+fn dsml_parameter_json_value(raw_value: &str, is_string: bool) -> serde_json::Value {
+    if is_string {
+        return serde_json::Value::String(raw_value.to_owned());
+    }
+    let trimmed = raw_value.trim();
+    match trimmed {
+        "true" => return serde_json::Value::Bool(true),
+        "false" => return serde_json::Value::Bool(false),
+        "null" => return serde_json::Value::Null,
+        _ => {}
+    }
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return serde_json::Value::Number(value.into());
+    }
+    if let Ok(value) = trimmed.parse::<f64>() {
+        if let Some(number) = serde_json::Number::from_f64(value) {
+            return serde_json::Value::Number(number);
+        }
+    }
+    serde_json::Value::String(raw_value.to_owned())
+}
+
+fn decode_dsml_text(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 async fn perform_embedding_request(spec: HttpRequestSpec) -> Result<Value, String> {
@@ -786,6 +931,63 @@ mod tests {
                 });
             assert_eq!(usage, Some(Value::int(6).unwrap()));
         });
+    }
+
+    #[test]
+    fn normalizes_deepseek_dsml_tool_calls_in_openai_response() {
+        let mut response = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "< | DSML | tool_calls>< | DSML | invoke name=\"source_file_window\">< | DSML | parameter name=\"path\" string=\"true\">crates/relation-kernel/src/computed.rs</ | DSML | parameter>< | DSML | parameter name=\"start_line\" string=\"false\">150</ | DSML | parameter>< | DSML | parameter name=\"line_count\" string=\"false\">100</ | DSML | parameter></ | DSML | invoke></ | DSML | tool_calls>"
+                }
+            }]
+        });
+
+        normalize_openai_tool_call_response(&mut response);
+
+        let message = response["choices"][0]["message"]
+            .as_object()
+            .expect("message should stay an object");
+        assert!(message["content"].is_null());
+        let tool_calls = message["tool_calls"]
+            .as_array()
+            .expect("tool_calls should be normalized");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["type"], "function");
+        assert_eq!(tool_calls[0]["function"]["name"], "source_file_window");
+        let arguments: serde_json::Value =
+            serde_json::from_str(tool_calls[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments["path"], "crates/relation-kernel/src/computed.rs");
+        assert_eq!(arguments["start_line"], 150);
+        assert_eq!(arguments["line_count"], 100);
+    }
+
+    #[test]
+    fn preserves_openai_responses_with_native_tool_calls() {
+        let mut response = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_native",
+                        "type": "function",
+                        "function": {
+                            "name": "source_search",
+                            "arguments": "{\"query\":\"computed\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        normalize_openai_tool_call_response(&mut response);
+
+        assert_eq!(
+            response["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native"
+        );
     }
 
     #[test]
