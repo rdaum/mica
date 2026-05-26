@@ -447,11 +447,15 @@ body.source-agent-working .source-agent-turn-list::after {
   cursor: pointer;
 }
 
+.source-agent-tool:not([open]) .source-agent-tool-heading {
+  margin-bottom: 0;
+}
+
 .source-agent-tool-name {
   overflow-wrap: anywhere;
   font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
   font-size: 0.78rem;
-  color: var(--source-code-ink);
+  color: var(--source-ink);
 }
 
 .source-agent-tool-text {
