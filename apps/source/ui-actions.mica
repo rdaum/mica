@@ -423,6 +423,58 @@ verb source/handle_sync_action(source @ #source/correct_finding_action<_>, endpo
   return corrected
 end
 
+verb source/handle_sync_action(source @ #source/accept_agent_proposal_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_proposal = fields[:proposal]
+  if raw_proposal == nothing
+    return false
+  end
+  let proposal = from_literal(raw_proposal)
+  let accepted = source/accept_agent_proposal(proposal)
+  if accepted
+    source/bump_revision(endpoint)
+  end
+  return accepted
+end
+
+verb source/handle_sync_action(source @ #source/reject_agent_proposal_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_proposal = fields[:proposal]
+  if raw_proposal == nothing
+    return false
+  end
+  let proposal = from_literal(raw_proposal)
+  let rejected = source/reject_agent_proposal(proposal)
+  if rejected
+    source/bump_revision(endpoint)
+  end
+  return rejected
+end
+
+verb source/handle_sync_action(source @ #source/correct_agent_proposal_action<_>, endpoint, session, view, event, target, fields)
+  if source/View(view) == false || event != "submit"
+    return false
+  end
+
+  let raw_proposal = fields[:proposal]
+  let body = fields[:body]
+  if raw_proposal == nothing || body == nothing || body == ""
+    return false
+  end
+  let proposal = from_literal(raw_proposal)
+  let corrected = source/correct_agent_proposal(proposal, body)
+  if corrected
+    source/bump_revision(endpoint)
+  end
+  return corrected
+end
+
 verb source/handle_sync_action(source @ #source/open_retrieval_citation_action<_>, endpoint, session, view, event, target, fields)
   if source/View(view) == false || event != "submit"
     return false

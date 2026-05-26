@@ -2342,6 +2342,221 @@ fn source_agent_prompt_runs_source_find_references_tool_call() {
 }
 
 #[test]
+fn source_agent_prompt_records_pending_proposal_tool_call() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let handler = Arc::new(move |request: mica_runtime::ExternalRequest| {
+            let call_index = handler_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("openai"));
+                let messages = request
+                    .payload
+                    .map_get(&Value::symbol(Symbol::intern("messages")))
+                    .expect("host request should include messages");
+                if call_index == 0 {
+                    let options = request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("options")))
+                        .expect("tool request should include options");
+                    let has_proposal_tool = options
+                        .map_get(&Value::symbol(Symbol::intern("tools")))
+                        .and_then(|tools| {
+                            tools.with_list(|tools| {
+                                tools.iter().any(|tool| {
+                                    tool.map_get(&Value::symbol(Symbol::intern("function")))
+                                        .and_then(|function| {
+                                            function.map_get(&Value::symbol(Symbol::intern("name")))
+                                        })
+                                        == Some(Value::string("source_propose_note"))
+                                })
+                            })
+                        })
+                        .unwrap_or(false);
+                    assert!(has_proposal_tool);
+                    return Value::map([
+                        (
+                            Value::symbol(Symbol::intern("model")),
+                            Value::string("openrouter/test-model"),
+                        ),
+                        (
+                            Value::symbol(Symbol::intern("choices")),
+                            Value::list([Value::map([(
+                                Value::symbol(Symbol::intern("message")),
+                                Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("role")),
+                                        Value::string("assistant"),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("content")),
+                                        Value::nothing(),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("tool_calls")),
+                                        Value::list([Value::map([
+                                            (
+                                                Value::symbol(Symbol::intern("id")),
+                                                Value::string("call_proposal"),
+                                            ),
+                                            (
+                                                Value::symbol(Symbol::intern("type")),
+                                                Value::string("function"),
+                                            ),
+                                            (
+                                                Value::symbol(Symbol::intern("function")),
+                                                Value::map([
+                                                    (
+                                                        Value::symbol(Symbol::intern("name")),
+                                                        Value::string("source_propose_note"),
+                                                    ),
+                                                    (
+                                                        Value::symbol(Symbol::intern("arguments")),
+                                                        Value::string(
+                                                            "{\"kind\":\"note\",\"title\":\"Document selected symbol\",\"body\":\"Add a note explaining sync_view_tree.\"}",
+                                                        ),
+                                                    ),
+                                                ]),
+                                            ),
+                                        ])]),
+                                    ),
+                                ]),
+                            )])]),
+                        ),
+                    ]);
+                }
+
+                assert!(
+                    messages
+                        .with_list(|messages| {
+                            messages.iter().any(|message| {
+                                message.map_get(&Value::symbol(Symbol::intern("role")))
+                                    == Some(Value::string("tool"))
+                                    && message
+                                        .map_get(&Value::symbol(Symbol::intern("content")))
+                                        .and_then(|content| {
+                                            content.with_str(|content| {
+                                                content.contains("pending")
+                                                    && content.contains("Document selected symbol")
+                                            })
+                                        })
+                                        .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false)
+                );
+                Value::map([
+                    (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("openrouter/test-model"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("choices")),
+                        Value::list([Value::map([(
+                            Value::symbol(Symbol::intern("message")),
+                            Value::map([(
+                                Value::symbol(Symbol::intern("content")),
+                                Value::string("I recorded a pending note proposal."),
+                            )]),
+                        )])]),
+                    ),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let mut runner = SourceRunner::new_empty();
+        load_source_app(&mut runner);
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let endpoint = endpoint(40);
+        runner
+            .open_endpoint(endpoint, Some(web), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint,
+                root_source(
+                    "assert source/SelectedPath(endpoint(), \"src/tests.rs\")\n\
+                     return source/run_agent_prompt(endpoint(), #web, \"record a note proposal about this symbol\")",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        let mut completed = false;
+        for _ in 0..80 {
+            if driver.drain_events().iter().any(|event| {
+                matches!(
+                    event,
+                    DriverEvent::TaskCompleted { task_id, value }
+                        if *task_id == submitted.task_id
+                            && value
+                                .map_get(&Value::symbol(Symbol::intern("text")))
+                                == Some(Value::string("I recorded a pending note proposal."))
+                )
+            }) {
+                completed = true;
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            completed,
+            "source agent proposal prompt task did not complete"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let report = driver
+            .submit_root_source_report(
+                "let request = nothing\n\
+                 for request_row in source/AgentToolRequest(?tool_request, 1, \"source_propose_note\", ?args, \"complete\")\n\
+                   request = request_row[:tool_request]\n\
+                   break\n\
+                 end\n\
+                 let result = nothing\n\
+                 for found in source/AgentToolResult(request, ?stored_result, ?stored_status, ?stored_error)\n\
+                   result = found[:stored_result]\n\
+                   break\n\
+                 end\n\
+                 let proposal = from_literal(result[:value][:proposal])\n\
+                 let accepted_before = one source/AgentProposalStatus(proposal, ?status)\n\
+                 let accepted = source/accept_agent_proposal(proposal)\n\
+                 let accepted_after = one source/AgentProposalStatus(proposal, ?status)\n\
+                 return [request != nothing, result[:status], result[:value][:kind], result[:value][:title], accepted_before, accepted, accepted_after, source/AgentProposal(proposal), result[:value][:status]]"
+                    .to_owned(),
+            )
+            .await
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!(
+                "expected source agent proposal fact inspection to complete, got {:?}",
+                report.outcome
+            );
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::bool(true));
+                assert_eq!(values[1], Value::string("complete"));
+                assert_eq!(values[2], Value::string("note"));
+                assert_eq!(values[3], Value::string("Document selected symbol"));
+                assert_eq!(values[4], Value::string("pending"));
+                assert_eq!(values[5], Value::bool(true));
+                assert_eq!(values[6], Value::string("accepted"));
+                assert_eq!(values[7], Value::bool(true));
+                assert_eq!(values[8], Value::string("pending"));
+            })
+            .expect("expected source agent proposal inspection tuple");
+    });
+}
+
+#[test]
 fn driver_runs_bounded_read_only_source_query_as_endpoint_actor() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let mut runner = SourceRunner::new_empty();

@@ -29,6 +29,49 @@ verb source/agent_turn_citations_node(turn)
   return dom_element("details", {:class -> "source-agent-citations"}, [dom_element("summary", {}, [dom_text("Retrieved context")]), dom_element("div", {:class -> "source-agent-citations-list"}, items)])
 end
 
+verb source/agent_proposal_review_controls_node(proposal)
+  let hidden = dom_element("input", {:type -> "hidden", :name -> "proposal", :value -> to_literal(proposal)}, [])
+  let accept = dom_element("form", {:class -> "source-answer-review-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_accept_agent_proposal", "data-sync-key" -> string_concat("accept-proposal:", to_literal(proposal))}, [hidden, dom_element("button", {:type -> "submit", :class -> "source-search-button"}, [dom_text("Accept")])])
+  let reject = dom_element("form", {:class -> "source-answer-review-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_reject_agent_proposal", "data-sync-key" -> string_concat("reject-proposal:", to_literal(proposal))}, [dom_element("input", {:type -> "hidden", :name -> "proposal", :value -> to_literal(proposal)}, []), dom_element("button", {:type -> "submit", :class -> "source-search-button"}, [dom_text("Reject")])])
+  let body = one source/AgentProposalBody(proposal, ?body)
+  if body == nothing
+    body = ""
+  end
+  let correct = dom_element("form", {:class -> "source-answer-correction-form", "data-sync-event" -> "submit", "data-sync-action" -> "source_correct_agent_proposal", "data-sync-key" -> string_concat("correct-proposal:", to_literal(proposal))}, [dom_element("input", {:type -> "hidden", :name -> "proposal", :value -> to_literal(proposal)}, []), dom_element("textarea", {:name -> "body", :class -> "source-search-input"}, [dom_text(body)]), dom_element("button", {:type -> "submit", :class -> "source-search-button"}, [dom_text("Correct")])])
+  return dom_element("div", {:class -> "source-answer-review-controls"}, [accept, reject, correct])
+end
+
+verb source/agent_proposal_node(proposal)
+  let kind = one source/AgentProposalKind(proposal, ?kind)
+  let title = one source/AgentProposalTitle(proposal, ?title)
+  let body = one source/AgentProposalBody(proposal, ?body)
+  let status = one source/AgentProposalStatus(proposal, ?status)
+  if kind == nothing
+    kind = "proposal"
+  end
+  if title == nothing
+    title = "Untitled proposal"
+  end
+  if body == nothing
+    body = ""
+  end
+  if status == nothing
+    status = "pending"
+  end
+  return dom_element("article", {:class -> "source-agent-proposal"}, [dom_element("h3", {}, [dom_text(title)]), dom_element("p", {}, [dom_text(body)]), dom_element("div", {:class -> "source-search-status"}, [source/meta_chip_node("kind", kind), source/meta_chip_node("status", status)]), source/agent_proposal_review_controls_node(proposal)])
+end
+
+verb source/agent_turn_proposals_node(turn)
+  let items = []
+  for found in source/AgentProposalTurn(?proposal, turn)
+    items = [@items, source/agent_proposal_node(found[:proposal])]
+  end
+  if items == []
+    return source/empty_node("")
+  end
+  return dom_element("section", {:class -> "source-agent-proposals"}, items)
+end
+
 verb source/agent_turn_node(turn)
   let role = one source/AgentTurnRole(turn, ?role)
   let text = one source/AgentTurnText(turn, ?text)
@@ -52,6 +95,7 @@ verb source/agent_turn_node(turn)
   let children = [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text(role)]), dom_element("div", {:class -> "source-agent-turn-text"}, [dom_text(text)]), dom_element("div", {:class -> "source-search-status"}, meta)]
   if role == "assistant"
     children = [@children, source/agent_turn_citations_node(turn)]
+    children = [@children, source/agent_turn_proposals_node(turn)]
   end
 
   return dom_element("article", {:class -> string_concat("source-agent-turn source-agent-turn-", role), "data-sync-key" -> to_literal(turn)}, children)

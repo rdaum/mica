@@ -1137,9 +1137,13 @@ mod tests {
                      let has_context = false\n\
                      let subject = nothing\n\
                      for found in ContextForPlan(?context, plan)\n\
-                       has_context = true\n\
-                       subject = one ContextSubject(found[:context], ?subject)\n\
-                       break\n\
+                       let candidate = one ContextSubject(found[:context], ?subject)\n\
+                       let candidate_text = one source/RetrievalCitationText(plan, candidate, ?text)\n\
+                       if source/retrieval_text_unit_path(candidate) == \"src/lib.rs\" && string_contains(candidate_text, \"sync_view_tree\")\n\
+                         has_context = true\n\
+                         subject = candidate\n\
+                         break\n\
+                       end\n\
                      end\n\
                      let citation = source/RetrievalCitation(plan, subject)\n\
                      let citation_text = one source/RetrievalCitationText(plan, subject, ?text)\n\

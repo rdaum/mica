@@ -9,8 +9,12 @@ verb source/meta_chip_node(label, value)
 end
 
 verb source/provider_label(provider)
-  if provider == "mica-source-index/static-analysis" || provider == "mica-source-index/static-analysis 2" || provider == "mica-source-index/tree-sitter-rust" || provider == "mica-source-index/tree-sitter-rust 1"
-    return "source index"
+  if string_starts_with(provider, "mica-source-index/static-analysis")
+    return "source index static-analysis"
+  end
+
+  if string_starts_with(provider, "mica-source-index/tree-sitter-rust")
+    return "source index tree-sitter-rust"
   end
 
   return provider

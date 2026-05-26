@@ -20,6 +20,7 @@ make_identity(:source/config_agent_model)
 make_identity(:source/config_generation_provider)
 make_identity(:source/config_retrieval_limit)
 make_identity(:source/config_retrieval_model)
+make_identity(:source/agent_proposal)
 
 make_relation(:source/IndexedTextUnit, 9)
 make_relation(:source/TextSearch, 11)
@@ -85,6 +86,14 @@ make_functional_relation(:source/AgentToolRequest, 5, [0])
 make_functional_relation(:source/AgentToolCallForTurn, 2, [0])
 make_functional_relation(:source/AgentToolResult, 4, [0])
 make_functional_relation(:source/AgentToolTranscriptText, 2, [0])
+make_relation(:source/AgentProposal, 1)
+make_functional_relation(:source/AgentProposalTurn, 2, [0])
+make_functional_relation(:source/AgentProposalOrdinal, 2, [0])
+make_functional_relation(:source/AgentProposalKind, 2, [0])
+make_functional_relation(:source/AgentProposalTitle, 2, [0])
+make_functional_relation(:source/AgentProposalBody, 2, [0])
+make_functional_relation(:source/AgentProposalPayload, 2, [0])
+make_functional_relation(:source/AgentProposalStatus, 2, [0])
 
 assert TextUnit(#source/text_file_runtime)
 assert TextUnitOf(#source/text_file_runtime, #source/file_runtime_lib)
@@ -743,11 +752,15 @@ verb source/agent_tool_options()
   let references_parameters = {:type -> "object", :properties -> references_properties, :additionalProperties -> false}
   let references_function = {:name -> "source_find_references", :description -> "Return bounded reference locations and line snippets for a source symbol without changing UI state.", :parameters -> references_parameters}
   let references_tool = {:type -> "function", :function -> references_function}
+  let proposal_properties = {:kind -> {:type -> "string", :description -> "Proposal kind, for example note, finding, patch, or action. Defaults to note."}, :title -> {:type -> "string", :description -> "Short human-readable proposal title."}, :body -> {:type -> "string", :description -> "Detailed proposal text for review."}, :target_path -> {:type -> "string", :description -> "Optional source path this proposal concerns."}, :start_line -> {:type -> "integer", :description -> "Optional one-based start line for the target."}, :end_line -> {:type -> "integer", :description -> "Optional one-based end line for the target."}}
+  let proposal_parameters = {:type -> "object", :properties -> proposal_properties, :required -> ["title", "body"], :additionalProperties -> false}
+  let proposal_function = {:name -> "source_propose_note", :description -> "Create a pending source-agent proposal for human review. This records reviewable proposal state only; it does not apply code, note, finding, or workspace mutations.", :parameters -> proposal_parameters}
+  let proposal_tool = {:type -> "function", :function -> proposal_function}
   let window_properties = {:path -> {:type -> "string", :description -> "Repository-relative path. Defaults to the current selected file."}, :start_line -> {:type -> "integer", :description -> "One-based starting line. Defaults to 1."}, :line_count -> {:type -> "integer", :description -> "Number of lines to return. Capped at 200."}}
   let window_parameters = {:type -> "object", :properties -> window_properties, :additionalProperties -> false}
   let window_function = {:name -> "source_file_window", :description -> "Read a bounded line window from a source file without writing a Mica query.", :parameters -> window_parameters}
   let window_tool = {:type -> "function", :function -> window_function}
-  return {:temperature -> 0.2, :tools -> [search_tool, symbol_tool, references_tool, window_tool, query_tool], :tool_choice -> "auto"}
+  return {:temperature -> 0.2, :tools -> [search_tool, symbol_tool, references_tool, proposal_tool, window_tool, query_tool], :tool_choice -> "auto"}
 end
 
 verb source/openai_first_message(response @ #map)
@@ -1119,6 +1132,74 @@ verb source/source_find_references_result(args @ #map)
   return {:status -> "complete", :rendered -> rendered, :rendered_truncated -> false, :value -> value, :error -> nothing, :diagnostics -> []}
 end
 
+verb source/agent_proposal_value(turn, ordinal)
+  return frob(#source/agent_proposal, {:turn -> turn, :ordinal -> ordinal})
+end
+
+verb source/create_agent_proposal(turn, ordinal, args @ #map)
+  let title = args[:title]
+  let body = args[:body]
+  if title == nothing || title == ""
+    return source/tool_error_result("rejected", "source_propose_note missing title")
+  end
+  if body == nothing || body == ""
+    return source/tool_error_result("rejected", "source_propose_note missing body")
+  end
+  let kind = args[:kind]
+  if kind == nothing || kind == ""
+    kind = "note"
+  end
+  let proposal = source/agent_proposal_value(turn, ordinal)
+  retract source/AgentProposal(proposal)
+  retract source/AgentProposalTurn(proposal, _)
+  retract source/AgentProposalOrdinal(proposal, _)
+  retract source/AgentProposalKind(proposal, _)
+  retract source/AgentProposalTitle(proposal, _)
+  retract source/AgentProposalBody(proposal, _)
+  retract source/AgentProposalPayload(proposal, _)
+  retract source/AgentProposalStatus(proposal, _)
+  assert source/AgentProposal(proposal)
+  assert source/AgentProposalTurn(proposal, turn)
+  assert source/AgentProposalOrdinal(proposal, ordinal)
+  assert source/AgentProposalKind(proposal, kind)
+  assert source/AgentProposalTitle(proposal, title)
+  assert source/AgentProposalBody(proposal, body)
+  assert source/AgentProposalPayload(proposal, args)
+  assert source/AgentProposalStatus(proposal, "pending")
+  let rendered = string_concat("pending ", kind, " proposal: ", title, "\n", body)
+  let value = {:proposal -> to_literal(proposal), :kind -> kind, :title -> title, :body -> body, :status -> "pending", :payload -> args}
+  return {:status -> "complete", :rendered -> rendered, :rendered_truncated -> false, :value -> value, :error -> nothing, :diagnostics -> []}
+end
+
+verb source/accept_agent_proposal(proposal)
+  if source/AgentProposal(proposal) == false
+    return false
+  end
+  retract source/AgentProposalStatus(proposal, _)
+  assert source/AgentProposalStatus(proposal, "accepted")
+  return true
+end
+
+verb source/reject_agent_proposal(proposal)
+  if source/AgentProposal(proposal) == false
+    return false
+  end
+  retract source/AgentProposalStatus(proposal, _)
+  assert source/AgentProposalStatus(proposal, "rejected")
+  return true
+end
+
+verb source/correct_agent_proposal(proposal, body @ #string)
+  if source/AgentProposal(proposal) == false
+    return false
+  end
+  retract source/AgentProposalBody(proposal, _)
+  assert source/AgentProposalBody(proposal, body)
+  retract source/AgentProposalStatus(proposal, _)
+  assert source/AgentProposalStatus(proposal, "corrected")
+  return true
+end
+
 verb source/record_agent_tool_response(turn, ordinal, tool @ #string, args @ #map, result @ #map, call_id @ #string)
   let request = source/record_agent_tool_request(turn, ordinal, tool, args, "running")
   let status = result[:status]
@@ -1170,6 +1251,15 @@ verb source/run_agent_source_find_references_tool(turn, ordinal, call @ #map)
   return source/record_agent_tool_response(turn, ordinal, "source_find_references", args, result, call_id)
 end
 
+verb source/run_agent_source_propose_note_tool(turn, ordinal, call @ #map)
+  let call_id = source/openai_tool_call_id(call, ordinal)
+  let args = source/openai_tool_call_args(call)
+  let result = recover source/create_agent_proposal(turn, ordinal, args)
+  catch err => source/tool_error_result("error", to_literal(err))
+  end
+  return source/record_agent_tool_response(turn, ordinal, "source_propose_note", args, result, call_id)
+end
+
 verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
@@ -1199,6 +1289,9 @@ verb source/run_agent_tool(turn, ordinal, call @ #map, actor)
   end
   if name == "source_find_references"
     return source/run_agent_source_find_references_tool(turn, ordinal, call)
+  end
+  if name == "source_propose_note"
+    return source/run_agent_source_propose_note_tool(turn, ordinal, call)
   end
   let args = source/openai_tool_call_args(call)
   let result = source/tool_error_result("rejected", string_concat("unsupported tool: ", to_literal(name)))
