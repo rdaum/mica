@@ -1007,7 +1007,7 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                  let context_text = one source/AgentTurnContextText(assistant, ?text)\n\
                  let prompt = one source/AgentTurnPromptText(assistant, ?text)\n\
                  let payload = dom_snapshot_payload(31, 1, source/agent_panel_node())\n\
-                 return [user != nothing, assistant != nothing, assistant_text, assistant_reasoning, model, plan != nothing, string_contains(context_text, \"Current file:\"), string_contains(context_text, \"Value::int(5).unwrap()\"), string_contains(prompt, \"Current source focus:\"), string_contains(prompt, \"source/FileLines\"), string_contains(prompt, \"mica_query tool result\"), string_contains(payload, \"source-agent-turn-text\"), string_contains(payload, \"source-agent-reasoning\"), string_contains(payload, \"Thinking\")]",
+                 return [user != nothing, assistant != nothing, assistant_text, assistant_reasoning, model, plan == nothing, string_contains(context_text, \"Current file:\"), string_contains(context_text, \"Value::int(5).unwrap()\"), string_contains(prompt, \"No source search results are preloaded.\"), string_contains(prompt, \"Current source focus:\"), string_contains(prompt, \"source/FileLines\"), string_contains(prompt, \"source_search\"), string_contains(prompt, \"mica_query tool result\"), string_contains(payload, \"source-agent-turn-text\"), string_contains(payload, \"source-agent-reasoning\"), string_contains(payload, \"Thinking\")]",
                 ),
             )
             .await
@@ -1040,6 +1040,8 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                 assert_eq!(values[11], Value::bool(true));
                 assert_eq!(values[12], Value::bool(true));
                 assert_eq!(values[13], Value::bool(true));
+                assert_eq!(values[14], Value::bool(true));
+                assert_eq!(values[15], Value::bool(true));
             })
             .expect("expected source agent facts tuple");
 

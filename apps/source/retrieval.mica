@@ -776,13 +776,13 @@ verb source/agent_workspace_schema_text()
   let query_shape = "- Mica query shape: use for row in Relation(?x, value, ?y) to scan relation facts, one Relation(...) for one result, row[:x] for query bindings, lists and maps for structured output, and small bounded result sets.\n"
   let line_query = "- Example line-window query: for row in source/FileLines(#source/repo_mica, source/current_revision(), path, 1, 120, ?lines, ?hash) return row[:lines].\n"
   let symbol_query = "- Example symbol lead query: for row in source/ReferencesOf(?symbol, ?reference) return row.\n"
-  let grounding = "Only rely on query recipes when a mica_query tool result is present. Do not claim to have inspected facts, files, or line ranges that are not in the current context, retrieved context, or a recorded tool result."
+  let grounding = "Only rely on query recipes when a mica_query tool result is present. Do not claim to have inspected facts, files, search results, or line ranges that are not in the current context or a recorded tool result."
   return string_concat("Source workspace schema and query recipes:\n", files, spans, retrieval, session, query_shape, line_query, symbol_query, grounding)
 end
 
 verb source/agent_prompt_text(user_text @ #string, focus_text @ #string, context_text @ #string)
   let schema_text = source/agent_workspace_schema_text()
-  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. Use retrieved context only as supporting evidence. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. Format final answers as concise Markdown with short paragraphs, bullets, or headings when the answer has multiple parts. Do not return one long paragraph. If the current file context is truncated and the answer depends on unavailable lines, call source_file_window for the needed line range before answering. If evidence is still missing, say what extra file lines or source facts are needed. Do not claim you inspected unavailable context.\n\n", schema_text, "\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
+  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. No source search results are preloaded. When a question needs workspace search, symbol references, more file lines, or relation facts, call the available tools before answering. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. Format final answers as concise Markdown with short paragraphs, bullets, or headings when the answer has multiple parts. Do not return one long paragraph. If the current file context is truncated and the answer depends on unavailable lines, call source_file_window for the needed line range before answering. If evidence is still missing, say what extra file lines or source facts are needed. Do not claim you inspected unavailable context.\n\n", schema_text, "\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
 end
 
 verb source/agent_tool_options()
@@ -1459,14 +1459,7 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
   let history_text = source/agent_history_text(endpoint)
 
   let current_context = source/current_file_context_text(endpoint)
-  let plan = nothing
-  let retrieved_context = ""
-  if source/source_index_available()
-    let retrieval = source/search_context(actor, user_text, source/retrieval_limit(), "all", source/retrieval_model())
-    plan = retrieval[:plan]
-    retrieved_context = source/answer_context_text(plan, actor)
-  end
-  let context_text = string_concat("Previous turns:\n", history_text, "\n\nCurrent file context:\n", current_context, "\n\nRetrieved context:\n", retrieved_context)
+  let context_text = string_concat("Previous turns:\n", history_text, "\n\nCurrent file context:\n", current_context)
   let focus_text = source/agent_focus_text(endpoint)
   let requested_model = source/generation_model()
   let provider = source/generation_provider()
@@ -1479,16 +1472,13 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
   assert source/AgentTurnRole(assistant_turn, "assistant")
   assert source/AgentTurnText(assistant_turn, "")
   assert source/AgentTurnStatus(assistant_turn, "working")
-  if plan != nothing
-    assert source/AgentTurnPlan(assistant_turn, plan)
-  end
   assert source/AgentTurnPromptText(assistant_turn, prompt)
   assert source/AgentTurnContextText(assistant_turn, context_text)
   assert source/AgentTurnProvider(assistant_turn, provider)
   assert source/AgentTurnModel(assistant_turn, requested_model)
   source/update_agent_turn_progress(assistant_turn, string_concat("Preparing model request for ", requested_model, "."))
 
-  let messages = [openai/system_message("Talk about the Mica source workspace using cited source evidence."), openai/user_message(prompt)]
+  let messages = [openai/system_message("Talk about the Mica source workspace. Use source tools when the current context is not enough, and cite concrete source evidence."), openai/user_message(prompt)]
   let options = source/agent_tool_options()
   let response = nothing
   let tool_count = 0
@@ -1588,13 +1578,12 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
   end
   assert source/AgentTurnStatus(assistant_turn, "complete")
   assert source/AgentTurnResolvedModel(assistant_turn, resolved_model)
-  source/record_agent_turn_citations(assistant_turn, plan, actor)
 
   retract source/SelectedAgentStatus(endpoint, _)
   assert source/SelectedAgentStatus(endpoint, "complete")
   source/bump_revision(endpoint)
   log(:info, "source agent prompt completion finished")
-  return {:turn -> assistant_turn, :text -> assistant_text, :model -> resolved_model, :plan -> plan}
+  return {:turn -> assistant_turn, :text -> assistant_text, :model -> resolved_model}
 end
 
 verb source/run_agent_prompt(endpoint, actor, user_text @ #string)
