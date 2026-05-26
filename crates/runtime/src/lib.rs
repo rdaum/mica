@@ -152,6 +152,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "parse_ordinal",
     "lower",
     "embed_text",
+    "mica_query",
     "openai_chat_completion",
     "openai_chat_completion_with_options",
 ];
@@ -2216,6 +2217,14 @@ fn default_host_request_functions(
 ) -> Vec<(String, HostRequestFunction)> {
     let mut functions = embedding::host_request_functions(embedding_provider);
     functions.extend(openai::host_request_functions());
+    functions.push((
+        "mica_query".to_owned(),
+        HostRequestFunction {
+            service: Symbol::intern("mica_query"),
+            payload_fields: vec![Symbol::intern("query"), Symbol::intern("options")],
+            timeout: Some(Value::int(5).expect("static timeout should fit in mica int")),
+        },
+    ));
     functions
 }
 

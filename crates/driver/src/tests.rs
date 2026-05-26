@@ -282,6 +282,77 @@ fn openai_chat_completion_suspends_as_openai_external_request() {
 }
 
 #[test]
+fn mica_query_host_request_runs_read_only_query_and_resumes_task() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "make_identity(:web)\n\
+                 make_identity(:lamp)\n\
+                 make_relation(:CanRead, 2)\n\
+                 make_relation(:CanWrite, 2)\n\
+                 make_relation(:ThingName, 2)\n\
+                 assert CanRead(#web, :ThingName)\n\
+                 assert CanWrite(#web, :ThingName)\n\
+                 assert ThingName(#lamp, \"Lamp\")\n",
+            )
+            .unwrap();
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let endpoint = endpoint(64);
+        runner
+            .open_endpoint(endpoint, Some(web), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn(runner).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint,
+                root_source(
+                    "return mica_query(\"return one ThingName(#lamp, ?name)\", {:max_output_chars -> 100})",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        let mut completed = None;
+        for _ in 0..50 {
+            for event in driver.drain_events() {
+                if let DriverEvent::TaskCompleted { task_id, value } = event
+                    && task_id == submitted.task_id
+                {
+                    completed = Some(value);
+                    break;
+                }
+            }
+            if completed.is_some() {
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let value = completed.expect("mica_query task did not complete");
+        assert_eq!(
+            value.map_get(&Value::symbol(Symbol::intern("status"))),
+            Some(Value::string("complete"))
+        );
+        assert_eq!(
+            value.map_get(&Value::symbol(Symbol::intern("value"))),
+            Some(Value::string("Lamp"))
+        );
+        assert_eq!(
+            value.map_get(&Value::symbol(Symbol::intern("rendered"))),
+            Some(Value::string("\"Lamp\""))
+        );
+    });
+}
+
+#[test]
 fn source_generated_answer_records_reviewable_facts() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let handler = Arc::new(|request: mica_runtime::ExternalRequest| {

@@ -19,9 +19,9 @@ use crate::{
 use compio::dispatcher::Dispatcher;
 use mica_runtime::{
     AuthorityContext, MailboxRecvRequest, ReadOnlySourceQueryOptions, ReadOnlySourceQueryReport,
-    RunReport, RuntimeError, SYSTEM_ENDPOINT, SharedSourceRunner, SourceRunner, SourceTaskError,
-    SpawnRequest, SubmittedTask, SuspendKind, TaskError, TaskId, TaskInput, TaskManagerError,
-    TaskOutcome, TaskRequest, Tuple,
+    ReadOnlySourceQueryStatus, RunReport, RuntimeError, SYSTEM_ENDPOINT, SharedSourceRunner,
+    SourceRunner, SourceTaskError, SpawnRequest, SubmittedTask, SuspendKind, TaskError, TaskId,
+    TaskInput, TaskManagerError, TaskOutcome, TaskRequest, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -1043,20 +1043,24 @@ impl CompioTaskDriver {
                 service = service.name().unwrap_or("<unnamed>"),
                 "driver external request started"
             );
-            let value = match handler {
-                Some(handler) => handler(request).await,
-                None => {
-                    tracing::warn!(
-                        target: "mica_driver::pool",
-                        task_id,
-                        service = service.name().unwrap_or("<unnamed>"),
-                        "external request has no configured handler"
-                    );
-                    Value::error(
-                        Symbol::intern("ExternalUnavailable"),
-                        Some("no external request handler is configured"),
-                        None,
-                    )
+            let value = if service == Symbol::intern("mica_query") {
+                driver.perform_mica_query_request(task_id, request).await
+            } else {
+                match handler {
+                    Some(handler) => handler(request).await,
+                    None => {
+                        tracing::warn!(
+                            target: "mica_driver::pool",
+                            task_id,
+                            service = service.name().unwrap_or("<unnamed>"),
+                            "external request has no configured handler"
+                        );
+                        Value::error(
+                            Symbol::intern("ExternalUnavailable"),
+                            Some("no external request handler is configured"),
+                            None,
+                        )
+                    }
                 }
             };
             if completed
@@ -1090,6 +1094,45 @@ impl CompioTaskDriver {
             );
         })
         .detach();
+    }
+
+    async fn perform_mica_query_request(
+        &self,
+        task_id: TaskId,
+        request: mica_runtime::ExternalRequest,
+    ) -> Value {
+        let context = {
+            let state = self.inner.state.lock().unwrap();
+            state.contexts.get(&task_id).cloned()
+        };
+        let Some(context) = context else {
+            return mica_query_error_value(format!("missing task context for task {task_id}"));
+        };
+        let query = match request
+            .payload
+            .map_get(&Value::symbol(Symbol::intern("query")))
+            .and_then(|value| value.with_str(str::to_owned))
+        {
+            Some(query) => query,
+            None => return mica_query_error_value("mica_query request missing query string"),
+        };
+        let options = match read_only_query_options_from_payload(&request.payload) {
+            Ok(options) => options,
+            Err(error) => return mica_query_error_value(error),
+        };
+        tracing::debug!(
+            target: "mica_driver::pool",
+            task_id,
+            endpoint = ?context.endpoint,
+            "driver mica_query request started"
+        );
+        match self
+            .run_read_only_source_query(context.endpoint, query, options)
+            .await
+        {
+            Ok(report) => report.as_value(),
+            Err(error) => mica_query_error_value(self.format_error(&error)),
+        }
     }
 
     fn record_task_failure(&self, task_id: TaskId, error: DriverError) {
@@ -1159,6 +1202,67 @@ impl PoolState {
             .sum::<usize>();
         metrics::record_waiting_state(input_waiters, mailbox_waiters, self.events.len());
     }
+}
+
+fn read_only_query_options_from_payload(
+    payload: &Value,
+) -> Result<ReadOnlySourceQueryOptions, String> {
+    let mut options = ReadOnlySourceQueryOptions::default();
+    let Some(value) = payload.map_get(&Value::symbol(Symbol::intern("options"))) else {
+        return Ok(options);
+    };
+    if value == Value::nothing() {
+        return Ok(options);
+    }
+    let Some(entries) = value.with_map(<[(Value, Value)]>::to_vec) else {
+        return Err("mica_query options must be a map".to_owned());
+    };
+    for (key, value) in entries {
+        let Some(name) = key.as_symbol().and_then(Symbol::name) else {
+            return Err("mica_query option keys must be symbols".to_owned());
+        };
+        match name {
+            "max_output_chars" => {
+                options.max_output_chars = usize_option(name, &value)?;
+            }
+            "instruction_budget" => {
+                options.instruction_budget = usize_option(name, &value)?;
+            }
+            "max_call_depth" => {
+                options.max_call_depth = usize_option(name, &value)?;
+            }
+            _ => return Err(format!("unknown mica_query option `{name}`")),
+        }
+    }
+    Ok(options)
+}
+
+fn usize_option(name: &str, value: &Value) -> Result<usize, String> {
+    let Some(value) = value.as_int() else {
+        return Err(format!("mica_query option `{name}` must be an integer"));
+    };
+    usize::try_from(value).map_err(|_| format!("mica_query option `{name}` must be non-negative"))
+}
+
+fn mica_query_error_value(message: impl Into<String>) -> Value {
+    Value::map([
+        (Value::symbol(Symbol::intern("task_id")), Value::nothing()),
+        (
+            Value::symbol(Symbol::intern("status")),
+            Value::string(ReadOnlySourceQueryStatus::Error.as_str()),
+        ),
+        (Value::symbol(Symbol::intern("value")), Value::nothing()),
+        (Value::symbol(Symbol::intern("error")), Value::nothing()),
+        (
+            Value::symbol(Symbol::intern("diagnostics")),
+            Value::list([Value::string(message.into())]),
+        ),
+        (Value::symbol(Symbol::intern("rendered")), Value::string("")),
+        (
+            Value::symbol(Symbol::intern("rendered_truncated")),
+            Value::bool(false),
+        ),
+    ])
 }
 
 fn runtime_driver_error(error: RuntimeError) -> DriverError {
