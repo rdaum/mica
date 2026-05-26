@@ -317,9 +317,9 @@ fn mica_query_host_request_runs_read_only_query_and_resumes_task() {
         assert!(matches!(
             submitted.outcome,
             TaskOutcome::Suspended {
-                kind: SuspendKind::ExternalRequest(_),
+                kind: SuspendKind::ExternalRequest(request),
                 ..
-            }
+            } if request.timeout_millis == Some(5_000)
         ));
 
         let mut completed = None;
@@ -2905,6 +2905,38 @@ fn driver_read_only_source_query_rejects_mutation_and_effects() {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.contains("cannot call `log`"))
+        );
+
+        let spawn = driver
+            .run_read_only_source_query(
+                endpoint,
+                "let child = spawn :inspect(#lamp) after 0\nreturn child".to_owned(),
+                ReadOnlySourceQueryOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spawn.status, ReadOnlySourceQueryStatus::Rejected);
+        assert!(
+            spawn
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("cannot spawn tasks"))
+        );
+
+        let dispatch = driver
+            .run_read_only_source_query(
+                endpoint,
+                "return #lamp:inspect(#web)".to_owned(),
+                ReadOnlySourceQueryOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dispatch.status, ReadOnlySourceQueryStatus::Rejected);
+        assert!(
+            dispatch
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("cannot invoke methods"))
         );
     });
 }
