@@ -14,6 +14,7 @@ make_identity(:source/text_review_note_dom_sync)
 make_identity(:source/text_design_doc_graphrag)
 make_identity(:source/symbol_sync_view_tree)
 make_identity(:source/agent_turn)
+make_identity(:source/agent_tool_request)
 make_identity(:source/config_agent_model)
 make_identity(:source/config_generation_provider)
 make_identity(:source/config_retrieval_limit)
@@ -79,6 +80,10 @@ make_functional_relation(:source/AgentTurnResolvedModel, 2, [0])
 make_relation(:source/AgentTurnCitation, 2)
 make_functional_relation(:source/AgentTurnCitationText, 3, [0, 1])
 make_functional_relation(:source/SelectedAgentStatus, 2, [0])
+make_functional_relation(:source/AgentToolRequest, 5, [0])
+make_functional_relation(:source/AgentToolCallForTurn, 2, [0])
+make_functional_relation(:source/AgentToolResult, 4, [0])
+make_functional_relation(:source/AgentToolTranscriptText, 2, [0])
 
 assert TextUnit(#source/text_file_runtime)
 assert TextUnitOf(#source/text_file_runtime, #source/file_runtime_lib)
@@ -630,6 +635,45 @@ verb source/next_agent_turn_ordinal(endpoint)
     ordinal = ordinal + 1
   end
   return ordinal
+end
+
+verb source/agent_tool_request_value(turn, ordinal)
+  return frob(#source/agent_tool_request, {:turn -> turn, :ordinal -> ordinal})
+end
+
+verb source/record_agent_tool_request(turn, ordinal, tool @ #string, args, status @ #string)
+  let request = source/agent_tool_request_value(turn, ordinal)
+  retract source/AgentToolRequest(request, _, _, _, _)
+  retract source/AgentToolCallForTurn(request, _)
+  assert source/AgentToolRequest(request, ordinal, tool, args, status)
+  assert source/AgentToolCallForTurn(request, turn)
+  return request
+end
+
+verb source/record_agent_tool_result(request, result, status @ #string, error @ #string)
+  let ordinal = nothing
+  let tool = nothing
+  let args = nothing
+  for found in source/AgentToolRequest(request, ?request_ordinal, ?request_tool, ?request_args, ?request_status)
+    ordinal = found[:request_ordinal]
+    tool = found[:request_tool]
+    args = found[:request_args]
+    break
+  end
+
+  retract source/AgentToolResult(request, _, _, _)
+  assert source/AgentToolResult(request, result, status, error)
+  if ordinal != nothing
+    retract source/AgentToolRequest(request, _, _, _, _)
+    assert source/AgentToolRequest(request, ordinal, tool, args, status)
+  end
+  return request
+end
+
+verb source/record_agent_tool_transcript_text(request, text @ #string)
+  retract source/AgentToolTranscriptText(request, _)
+  assert source/AgentToolTranscriptText(request, text)
+  return text
 end
 
 verb source/agent_focus_text(endpoint)

@@ -521,6 +521,47 @@ fn source_runtime_config_can_override_retrieval_and_generation_defaults() {
 }
 
 #[test]
+fn source_agent_tool_facts_record_requests_results_and_transcript() {
+    let mut runner = SourceRunner::new_empty();
+    load_source_app(&mut runner);
+
+    let report = runner
+        .run_source(
+            "let turn = source/record_agent_user_turn(endpoint(), \"inspect workspace\")\n\
+             let args = {:source -> \"return 1\"}\n\
+             let request = source/record_agent_tool_request(turn, 1, \"mica_query\", args, \"requested\")\n\
+             source/record_agent_tool_result(request, {:rows -> [1]}, \"complete\", \"\")\n\
+             source/record_agent_tool_transcript_text(request, \"mica_query complete\")\n\
+             let request_row = one source/AgentToolRequest(request, ?ordinal, ?tool, ?args, ?status)\n\
+             let result_row = one source/AgentToolResult(request, ?result, ?result_status, ?error)\n\
+             let call_turn = one source/AgentToolCallForTurn(request, ?turn)\n\
+             let transcript = one source/AgentToolTranscriptText(request, ?text)\n\
+             return [request != nothing, call_turn == turn, request_row[:ordinal], request_row[:tool], request_row[:args][:source], request_row[:status], result_row[:result][:rows][0], result_row[:result_status], result_row[:error], transcript]",
+        )
+        .unwrap();
+    let TaskOutcome::Complete { value, .. } = report.outcome else {
+        panic!(
+            "expected source agent tool fact inspection to complete, got {:?}",
+            report.outcome
+        );
+    };
+    value
+        .with_list(|values| {
+            assert_eq!(values[0], Value::bool(true));
+            assert_eq!(values[1], Value::bool(true));
+            assert_eq!(values[2], Value::int(1).unwrap());
+            assert_eq!(values[3], Value::string("mica_query"));
+            assert_eq!(values[4], Value::string("return 1"));
+            assert_eq!(values[5], Value::string("complete"));
+            assert_eq!(values[6], Value::int(1).unwrap());
+            assert_eq!(values[7], Value::string("complete"));
+            assert_eq!(values[8], Value::string(""));
+            assert_eq!(values[9], Value::string("mica_query complete"));
+        })
+        .expect("expected source agent tool facts tuple");
+}
+
+#[test]
 fn source_agent_prompt_records_turns_and_grounded_prompt() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
