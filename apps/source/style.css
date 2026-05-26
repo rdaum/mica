@@ -399,6 +399,72 @@ body.source-agent-working .source-agent-turn-list::after {
   color: var(--source-accent);
 }
 
+.source-agent-tools {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+  border-top: 1px solid rgba(216, 203, 181, 0.72);
+  padding-top: 0.45rem;
+}
+
+.source-agent-tools > summary {
+  width: fit-content;
+  color: var(--source-muted);
+  cursor: pointer;
+  font-size: 0.86rem;
+}
+
+.source-agent-tool-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.source-agent-tool {
+  border: 1px solid rgba(216, 203, 181, 0.9);
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.55rem;
+  background: rgba(244, 236, 220, 0.54);
+}
+
+.source-agent-tool-running {
+  border-color: rgba(237, 172, 73, 0.66);
+  background: rgba(237, 172, 73, 0.12);
+  animation: source-agent-pending-pulse 1.1s ease-in-out infinite;
+}
+
+.source-agent-tool-error,
+.source-agent-tool-rejected {
+  border-color: rgba(165, 88, 25, 0.55);
+}
+
+.source-agent-tool-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.35rem;
+}
+
+.source-agent-tool-name {
+  overflow-wrap: anywhere;
+  font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+  font-size: 0.78rem;
+  color: var(--source-code-ink);
+}
+
+.source-agent-tool-text {
+  max-height: 9rem;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--source-muted);
+  font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
 @keyframes source-agent-pending-pulse {
   0%,
   100% {

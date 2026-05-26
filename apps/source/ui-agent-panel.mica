@@ -72,6 +72,51 @@ verb source/agent_turn_proposals_node(turn)
   return dom_element("section", {:class -> "source-agent-proposals"}, items)
 end
 
+verb source/agent_tool_node(request)
+  let ordinal = nothing
+  let tool = "unknown"
+  let status = "running"
+  let args = nothing
+  for found in source/AgentToolRequest(request, ?request_ordinal, ?request_tool, ?request_args, ?request_status)
+    ordinal = found[:request_ordinal]
+    tool = found[:request_tool]
+    args = found[:request_args]
+    status = found[:request_status]
+    break
+  end
+
+  let transcript = one source/AgentToolTranscriptText(request, ?text)
+  if transcript == nothing
+    transcript = string_concat("arguments: ", to_literal(args))
+  end
+  let summary = string_concat(to_literal(ordinal), ". ", tool)
+  let body = dom_element("pre", {:class -> "source-agent-tool-text"}, [dom_text(transcript)])
+  return dom_element("article", {:class -> string_concat("source-agent-tool source-agent-tool-", status), "data-sync-key" -> to_literal(request)}, [dom_element("div", {:class -> "source-agent-tool-heading"}, [dom_element("span", {:class -> "source-agent-tool-name"}, [dom_text(summary)]), source/meta_chip_node("status", status)]), body])
+end
+
+verb source/agent_turn_tools_node(turn)
+  let items = []
+  let count = 0
+  let ordinal = 1
+  while ordinal <= 64 && count < 16
+    for found in source/AgentToolCallForTurn(?request, turn)
+      let request = found[:request]
+      let request_row = one source/AgentToolRequest(request, ?request_ordinal, ?tool, ?args, ?status)
+      if request_row[:request_ordinal] == ordinal
+        items = [@items, source/agent_tool_node(request)]
+        count = count + 1
+        break
+      end
+    end
+    ordinal = ordinal + 1
+  end
+
+  if items == []
+    return source/empty_node("")
+  end
+  return dom_element("details", {:class -> "source-agent-tools", :open -> "open"}, [dom_element("summary", {}, [dom_text("Tool activity")]), dom_element("div", {:class -> "source-agent-tool-list"}, items)])
+end
+
 verb source/agent_turn_node(turn)
   let role = one source/AgentTurnRole(turn, ?role)
   let text = one source/AgentTurnText(turn, ?text)
@@ -94,6 +139,7 @@ verb source/agent_turn_node(turn)
 
   let children = [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text(role)]), dom_element("div", {:class -> "source-agent-turn-text"}, [dom_text(text)]), dom_element("div", {:class -> "source-search-status"}, meta)]
   if role == "assistant"
+    children = [@children, source/agent_turn_tools_node(turn)]
     children = [@children, source/agent_turn_citations_node(turn)]
     children = [@children, source/agent_turn_proposals_node(turn)]
   end

@@ -704,6 +704,30 @@ verb source/record_agent_tool_transcript_text(request, text @ #string)
   return text
 end
 
+verb source/agent_turn_endpoint(turn)
+  return one source/AgentTurnEndpoint(turn, ?endpoint)
+end
+
+verb source/update_agent_turn_progress(turn, text @ #string)
+  retract source/AgentTurnText(turn, _)
+  retract source/AgentTurnStatus(turn, _)
+  assert source/AgentTurnText(turn, text)
+  assert source/AgentTurnStatus(turn, "working")
+  let endpoint = source/agent_turn_endpoint(turn)
+  if endpoint != nothing
+    source/bump_revision(endpoint)
+  end
+  return text
+end
+
+verb source/agent_tool_call_count(tool_calls)
+  let count = 0
+  for call in tool_calls
+    count = count + 1
+  end
+  return count
+end
+
 verb source/agent_focus_text(endpoint)
   let path = one source/SelectedPath(endpoint, ?path)
   if path == nothing
@@ -1207,8 +1231,15 @@ verb source/correct_agent_proposal(proposal, body @ #string)
   return true
 end
 
-verb source/record_agent_tool_response(turn, ordinal, tool @ #string, args @ #map, result @ #map, call_id @ #string)
+verb source/start_agent_tool_request(turn, ordinal, tool @ #string, args)
+  log(:info, string_concat("source agent tool started ordinal=", to_literal(ordinal), " tool=", tool))
+  source/update_agent_turn_progress(turn, string_concat("Running tool ", to_literal(ordinal), "/", to_literal(source/agent_tool_call_limit()), ": ", tool))
   let request = source/record_agent_tool_request(turn, ordinal, tool, args, "running")
+  source/record_agent_tool_transcript_text(request, string_concat(tool, " running\narguments: ", to_literal(args)))
+  return request
+end
+
+verb source/finish_agent_tool_request(request, result @ #map, call_id @ #string)
   let status = result[:status]
   if status == nothing
     status = "error"
@@ -1218,65 +1249,91 @@ verb source/record_agent_tool_response(turn, ordinal, tool @ #string, args @ #ma
     error = result[:rendered]
   end
   source/record_agent_tool_result(request, result, status, error)
-  source/record_agent_tool_transcript_text(request, string_concat(tool, " ", status, "\n", result[:rendered]))
+  source/record_agent_tool_transcript_text(request, string_concat(status, "\n", result[:rendered]))
+  let tool = "unknown"
+  let ordinal = nothing
+  for found in source/AgentToolRequest(request, ?request_ordinal, ?request_tool, ?request_args, ?request_status)
+    ordinal = found[:request_ordinal]
+    tool = found[:request_tool]
+    break
+  end
+  log(:info, string_concat("source agent tool finished ordinal=", to_literal(ordinal), " tool=", tool, " status=", status))
+  let turn = one source/AgentToolCallForTurn(request, ?turn)
+  if turn != nothing
+    let endpoint = source/agent_turn_endpoint(turn)
+    if endpoint != nothing
+      source/bump_revision(endpoint)
+    end
+  end
   return source/openai_tool_message(call_id, result)
+end
+
+verb source/record_agent_tool_response(turn, ordinal, tool @ #string, args @ #map, result @ #map, call_id @ #string)
+  let request = source/start_agent_tool_request(turn, ordinal, tool, args)
+  return source/finish_agent_tool_request(request, result, call_id)
 end
 
 verb source/run_agent_source_file_window_tool(turn, ordinal, call @ #map)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
+  let request = source/start_agent_tool_request(turn, ordinal, "source_file_window", args)
   let result = recover source/source_file_window_result(args)
   catch err => source/tool_error_result("error", to_literal(err))
   end
-  return source/record_agent_tool_response(turn, ordinal, "source_file_window", args, result, call_id)
+  return source/finish_agent_tool_request(request, result, call_id)
 end
 
 verb source/run_agent_source_search_tool(turn, ordinal, call @ #map, actor)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
+  let request = source/start_agent_tool_request(turn, ordinal, "source_search", args)
   let result = recover source/source_search_result(actor, args)
   catch err => source/tool_error_result("error", to_literal(err))
   end
-  return source/record_agent_tool_response(turn, ordinal, "source_search", args, result, call_id)
+  return source/finish_agent_tool_request(request, result, call_id)
 end
 
 verb source/run_agent_source_symbol_context_tool(turn, ordinal, call @ #map)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
+  let request = source/start_agent_tool_request(turn, ordinal, "source_symbol_context", args)
   let result = recover source/source_symbol_context_result(args)
   catch err => source/tool_error_result("error", to_literal(err))
   end
-  return source/record_agent_tool_response(turn, ordinal, "source_symbol_context", args, result, call_id)
+  return source/finish_agent_tool_request(request, result, call_id)
 end
 
 verb source/run_agent_source_find_references_tool(turn, ordinal, call @ #map)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
+  let request = source/start_agent_tool_request(turn, ordinal, "source_find_references", args)
   let result = recover source/source_find_references_result(args)
   catch err => source/tool_error_result("error", to_literal(err))
   end
-  return source/record_agent_tool_response(turn, ordinal, "source_find_references", args, result, call_id)
+  return source/finish_agent_tool_request(request, result, call_id)
 end
 
 verb source/run_agent_proposal_tool(turn, ordinal, call @ #map, tool @ #string, kind @ #string)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
+  let request = source/start_agent_tool_request(turn, ordinal, tool, args)
   let result = recover source/create_agent_proposal(turn, ordinal, kind, args)
   catch err => source/tool_error_result("error", to_literal(err))
   end
-  return source/record_agent_tool_response(turn, ordinal, tool, args, result, call_id)
+  return source/finish_agent_tool_request(request, result, call_id)
 end
 
 verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
+  let request = source/start_agent_tool_request(turn, ordinal, "mica_query", args)
   let query = args[:query]
   if query == nothing
     let result = source/tool_error_result("rejected", "mica_query missing query")
-    return source/record_agent_tool_response(turn, ordinal, "mica_query", args, result, call_id)
+    return source/finish_agent_tool_request(request, result, call_id)
   end
   let result = mica_query(query, {:max_output_chars -> 4000, :instruction_budget -> 50000, :max_call_depth -> 16})
-  return source/record_agent_tool_response(turn, ordinal, "mica_query", args, result, call_id)
+  return source/finish_agent_tool_request(request, result, call_id)
 end
 
 verb source/run_agent_tool(turn, ordinal, call @ #map, actor)
@@ -1310,8 +1367,9 @@ verb source/run_agent_tool(turn, ordinal, call @ #map, actor)
     return source/run_agent_proposal_tool(turn, ordinal, call, "source_propose_action", "action")
   end
   let args = source/openai_tool_call_args(call)
+  let request = source/start_agent_tool_request(turn, ordinal, to_literal(name), args)
   let result = source/tool_error_result("rejected", string_concat("unsupported tool: ", to_literal(name)))
-  return source/record_agent_tool_response(turn, ordinal, to_literal(name), args, result, call_id)
+  return source/finish_agent_tool_request(request, result, call_id)
 end
 
 verb source/source_index_available()
@@ -1392,15 +1450,21 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
   assert source/AgentTurnContextText(assistant_turn, context_text)
   assert source/AgentTurnProvider(assistant_turn, provider)
   assert source/AgentTurnModel(assistant_turn, requested_model)
+  source/update_agent_turn_progress(assistant_turn, string_concat("Preparing model request for ", requested_model, "."))
 
   let messages = [openai/system_message("Talk about the Mica source workspace using cited source evidence."), openai/user_message(prompt)]
   let options = source/agent_tool_options()
   let response = nothing
   let tool_count = 0
   let tool_limit = source/agent_tool_call_limit()
+  let model_round = 1
   while tool_count < tool_limit
+    log(:info, string_concat("source agent model request started round=", to_literal(model_round), " model=", requested_model, " tools_used=", to_literal(tool_count), "/", to_literal(tool_limit), " prompt_chars=", to_literal(string_len(prompt))))
+    source/update_agent_turn_progress(assistant_turn, string_concat("Calling model round ", to_literal(model_round), " with ", to_literal(tool_count), "/", to_literal(tool_limit), " tools used."))
     response = openai/chat_with_options(requested_model, messages, options)
     let tool_calls = source/openai_tool_calls(response)
+    let requested_tool_count = source/agent_tool_call_count(tool_calls)
+    log(:info, string_concat("source agent model response received round=", to_literal(model_round), " requested_tools=", to_literal(requested_tool_count)))
     if tool_calls == []
       break
     end
@@ -1416,14 +1480,20 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
       let tool_message = source/run_agent_tool(assistant_turn, tool_count, call, actor)
       messages = [@messages, tool_message]
     end
+    model_round = model_round + 1
   end
   if response == nothing
+    log(:info, string_concat("source agent fallback model request started model=", requested_model))
+    source/update_agent_turn_progress(assistant_turn, string_concat("Calling model without tools for ", requested_model, "."))
     response = openai/chat_with_options(requested_model, messages, {:temperature -> 0.2})
   end
   if source/openai_tool_calls(response) != []
     if tool_count >= tool_limit
+      log(:warn, string_concat("source agent stopped at tool limit limit=", to_literal(tool_limit), " model=", requested_model))
       response = {:model -> requested_model, :choices -> [{:message -> {:content -> string_concat("I stopped after ", to_literal(tool_limit), " tool calls before completing the answer. Ask a narrower question or request fewer files.")}}]}
     else
+      log(:info, string_concat("source agent final model request started after tool calls model=", requested_model))
+      source/update_agent_turn_progress(assistant_turn, string_concat("Asking model for final answer after ", to_literal(tool_count), " tool calls."))
       response = openai/chat_with_options(requested_model, messages, {:temperature -> 0.2})
     end
   end
