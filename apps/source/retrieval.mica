@@ -14,9 +14,14 @@ make_identity(:source/text_review_note_dom_sync)
 make_identity(:source/text_design_doc_graphrag)
 make_identity(:source/symbol_sync_view_tree)
 make_identity(:source/agent_turn)
+make_identity(:source/config_agent_model)
+make_identity(:source/config_generation_provider)
+make_identity(:source/config_retrieval_limit)
+make_identity(:source/config_retrieval_model)
 
 make_relation(:source/IndexedTextUnit, 9)
 make_relation(:source/TextSearch, 11)
+make_functional_relation(:source/RuntimeConfig, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitKind, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitTitle, 2, [0])
 make_functional_relation(:source/RetrievalTextUnitFile, 2, [0])
@@ -165,18 +170,38 @@ CanRetrieveSubject(actor, subject) :-
   source/CanReadSourceSpan(actor, span)
 
 verb source/retrieval_model()
+  let model = one source/RuntimeConfig(#source/config_retrieval_model, ?model)
+  if model != nothing
+    return model
+  end
+
   return "source-workspace"
 end
 
 verb source/generation_model()
-  return "openrouter/auto"
+  let model = one source/RuntimeConfig(#source/config_agent_model, ?model)
+  if model != nothing
+    return model
+  end
+
+  return "deepseek/deepseek-v4-pro"
 end
 
 verb source/generation_provider()
+  let provider = one source/RuntimeConfig(#source/config_generation_provider, ?provider)
+  if provider != nothing
+    return provider
+  end
+
   return "openrouter"
 end
 
 verb source/retrieval_limit()
+  let limit = one source/RuntimeConfig(#source/config_retrieval_limit, ?limit)
+  if limit != nothing
+    return limit
+  end
+
   return 8
 end
 

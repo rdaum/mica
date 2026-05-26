@@ -291,7 +291,7 @@ fn source_generated_answer_records_reviewable_facts() {
                     request
                         .payload
                         .map_get(&Value::symbol(Symbol::intern("model"))),
-                    Some(Value::string("openrouter/auto"))
+                    Some(Value::string("deepseek/deepseek-v4-pro"))
                 );
                 let messages = request
                     .payload
@@ -483,6 +483,44 @@ fn source_generated_answer_records_reviewable_facts() {
 }
 
 #[test]
+fn source_runtime_config_can_override_retrieval_and_generation_defaults() {
+    let mut runner = SourceRunner::new_empty();
+    load_source_app(&mut runner);
+
+    let report = runner
+        .run_source(
+            "let default_model = source/generation_model()\n\
+             let default_provider = source/generation_provider()\n\
+             let default_retrieval_model = source/retrieval_model()\n\
+             let default_limit = source/retrieval_limit()\n\
+             assert source/RuntimeConfig(#source/config_agent_model, \"openai/gpt-4.1\")\n\
+             assert source/RuntimeConfig(#source/config_generation_provider, \"test-provider\")\n\
+             assert source/RuntimeConfig(#source/config_retrieval_model, \"test-retrieval-model\")\n\
+             assert source/RuntimeConfig(#source/config_retrieval_limit, 13)\n\
+             return [default_model, default_provider, default_retrieval_model, default_limit, source/generation_model(), source/generation_provider(), source/retrieval_model(), source/retrieval_limit()]",
+        )
+        .unwrap();
+    let TaskOutcome::Complete { value, .. } = report.outcome else {
+        panic!(
+            "expected source generation model inspection to complete, got {:?}",
+            report.outcome
+        );
+    };
+    value
+        .with_list(|values| {
+            assert_eq!(values[0], Value::string("deepseek/deepseek-v4-pro"));
+            assert_eq!(values[1], Value::string("openrouter"));
+            assert_eq!(values[2], Value::string("source-workspace"));
+            assert_eq!(values[3], Value::int(8).unwrap());
+            assert_eq!(values[4], Value::string("openai/gpt-4.1"));
+            assert_eq!(values[5], Value::string("test-provider"));
+            assert_eq!(values[6], Value::string("test-retrieval-model"));
+            assert_eq!(values[7], Value::int(13).unwrap());
+        })
+        .expect("expected source runtime config tuple");
+}
+
+#[test]
 fn source_agent_prompt_records_turns_and_grounded_prompt() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
@@ -492,7 +530,7 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                     request
                         .payload
                         .map_get(&Value::symbol(Symbol::intern("model"))),
-                    Some(Value::string("openrouter/auto"))
+                    Some(Value::string("deepseek/deepseek-v4-pro"))
                 );
                 let messages = request
                     .payload

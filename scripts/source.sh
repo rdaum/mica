@@ -29,6 +29,10 @@ dogstatsd_endpoint="${MICA_SOURCE_DOGSTATSD_ENDPOINT-127.0.0.1:8125}"
 dogstatsd_interval_secs="${MICA_SOURCE_DOGSTATSD_INTERVAL_SECS:-10}"
 build_source_index="${MICA_SOURCE_BUILD_INDEX:-1}"
 prewarm_retrieval_index="${MICA_SOURCE_PREWARM_RETRIEVAL_INDEX:-1}"
+source_agent_model="${MICA_SOURCE_AGENT_MODEL:-deepseek/deepseek-v4-pro}"
+source_generation_provider="${MICA_SOURCE_GENERATION_PROVIDER:-openrouter}"
+source_retrieval_limit="${MICA_SOURCE_RETRIEVAL_LIMIT:-8}"
+source_retrieval_model="${MICA_SOURCE_RETRIEVAL_MODEL:-${MICA_VLLM_SERVED_MODEL_NAME:-source-workspace}}"
 export MICA_SOURCE_ROOT="${MICA_SOURCE_ROOT:-${repo_root}}"
 export MICA_SOURCE_INDEX="${MICA_SOURCE_INDEX:-${repo_root}/.cache/source-index/mica-worktree.json}"
 
@@ -59,6 +63,18 @@ require_command() {
 require_command cargo
 require_command openssl
 require_command xxd
+
+mica_string_literal() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "${value}"
+}
+
+if [[ ! "${source_retrieval_limit}" =~ ^[0-9]+$ ]]; then
+  echo "MICA_SOURCE_RETRIEVAL_LIMIT must be a non-negative integer" >&2
+  exit 1
+fi
 
 if [[ ! -f "${cert_path}" || ! -f "${key_path}" ]]; then
   openssl ecparam -name prime256v1 -genkey -noout -out "${key_path}"
@@ -112,6 +128,21 @@ daemon_args=(
   --log-filter "${log_filter}"
 )
 
+source_agent_model_literal="$(mica_string_literal "${source_agent_model}")"
+source_generation_provider_literal="$(mica_string_literal "${source_generation_provider}")"
+source_retrieval_model_literal="$(mica_string_literal "${source_retrieval_model}")"
+daemon_args+=(
+  --startup-source "retract source/RuntimeConfig(#source/config_agent_model, _)
+assert source/RuntimeConfig(#source/config_agent_model, ${source_agent_model_literal})
+retract source/RuntimeConfig(#source/config_generation_provider, _)
+assert source/RuntimeConfig(#source/config_generation_provider, ${source_generation_provider_literal})
+retract source/RuntimeConfig(#source/config_retrieval_limit, _)
+assert source/RuntimeConfig(#source/config_retrieval_limit, ${source_retrieval_limit})
+retract source/RuntimeConfig(#source/config_retrieval_model, _)
+assert source/RuntimeConfig(#source/config_retrieval_model, ${source_retrieval_model_literal})
+return {:agent_model -> ${source_agent_model_literal}, :generation_provider -> ${source_generation_provider_literal}, :retrieval_limit -> ${source_retrieval_limit}, :retrieval_model -> ${source_retrieval_model_literal}}"
+)
+
 if [[ "${MICA_SOURCE_NO_LOG_ANSI:-}" == "1" ]]; then
   daemon_args+=(--no-log-ansi)
 fi
@@ -153,8 +184,12 @@ Manual values:
   URL: ${wt_url}
   Certificate SHA-256: ${cert_hash}
   Embedding provider: ${embedding_provider}
+  Retrieval model: ${source_retrieval_model}
+  Retrieval limit: ${source_retrieval_limit}
   Source index: ${MICA_SOURCE_INDEX}
   Retrieval prewarm: ${prewarm_retrieval_index}
+  Source agent model: ${source_agent_model}
+  Source generation provider: ${source_generation_provider}
   DogStatsD endpoint: ${dogstatsd_endpoint:-disabled}
   DogStatsD interval: ${dogstatsd_interval_secs}s
   Log filter: ${log_filter}

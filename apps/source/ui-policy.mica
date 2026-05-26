@@ -3,6 +3,7 @@
 assert CanRead(#web, :source/Repository)
 assert CanRead(#web, :source/RepositoryName)
 assert CanRead(#web, :source/RepositoryRoot)
+assert CanRead(#web, :source/RuntimeConfig)
 assert CanRead(#web, :source/Revision)
 assert CanRead(#web, :source/RevisionOf)
 assert CanRead(#web, :source/RevisionKind)
