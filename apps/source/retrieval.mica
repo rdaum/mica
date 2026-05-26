@@ -735,11 +735,15 @@ verb source/agent_tool_options()
   let search_parameters = {:type -> "object", :properties -> search_properties, :required -> ["query"], :additionalProperties -> false}
   let search_function = {:name -> "source_search", :description -> "Search the indexed source corpus and return bounded path, line, title, kind, score, reason, and snippet leads.", :parameters -> search_parameters}
   let search_tool = {:type -> "function", :function -> search_function}
+  let symbol_properties = {:path -> {:type -> "string", :description -> "Optional repository-relative file path for definition lookup."}, :byte_offset -> {:type -> "integer", :description -> "Optional byte offset in path for definition lookup."}, :query -> {:type -> "string", :description -> "Optional symbol search query. Used when path and byte_offset are not supplied."}, :reference_limit -> {:type -> "integer", :description -> "Maximum references to return. Defaults to 12 and is capped at 30."}}
+  let symbol_parameters = {:type -> "object", :properties -> symbol_properties, :additionalProperties -> false}
+  let symbol_function = {:name -> "source_symbol_context", :description -> "Return definition metadata and bounded reference leads for a source symbol, using explicit path+byte_offset, symbol search query, or the current selected symbol.", :parameters -> symbol_parameters}
+  let symbol_tool = {:type -> "function", :function -> symbol_function}
   let window_properties = {:path -> {:type -> "string", :description -> "Repository-relative path. Defaults to the current selected file."}, :start_line -> {:type -> "integer", :description -> "One-based starting line. Defaults to 1."}, :line_count -> {:type -> "integer", :description -> "Number of lines to return. Capped at 200."}}
   let window_parameters = {:type -> "object", :properties -> window_properties, :additionalProperties -> false}
   let window_function = {:name -> "source_file_window", :description -> "Read a bounded line window from a source file without writing a Mica query.", :parameters -> window_parameters}
   let window_tool = {:type -> "function", :function -> window_function}
-  return {:temperature -> 0.2, :tools -> [search_tool, window_tool, query_tool], :tool_choice -> "auto"}
+  return {:temperature -> 0.2, :tools -> [search_tool, symbol_tool, window_tool, query_tool], :tool_choice -> "auto"}
 end
 
 verb source/openai_first_message(response @ #map)
@@ -930,6 +934,138 @@ verb source/source_search_result(actor, args @ #map)
   return {:status -> "complete", :rendered -> rendered, :rendered_truncated -> false, :value -> value, :error -> nothing, :diagnostics -> []}
 end
 
+verb source/symbol_line_text(repository, revision, path @ #string, line)
+  if line == nothing || line < 1
+    return ""
+  end
+  for row in source/FileLines(repository, revision, path, line, 1, ?lines, ?hash)
+    if row[:lines] != nothing && row[:lines] != []
+      return row[:lines][0]
+    end
+    break
+  end
+
+  return ""
+end
+
+verb source/symbol_reference_results(repository, revision, symbol, limit)
+  let references = []
+  let count = 0
+  for reference in source/ReferencesOf(repository, revision, symbol, ?path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider, ?name)
+    if count >= limit
+      break
+    end
+    let snippet = source/symbol_line_text(repository, revision, reference[:path], reference[:start_line])
+    references = [@references, {:path -> reference[:path], :start_line -> reference[:start_line], :end_line -> reference[:end_line], :start_byte -> reference[:start_byte], :end_byte -> reference[:end_byte], :provider -> reference[:provider], :name -> reference[:name], :snippet -> snippet}]
+    count = count + 1
+  end
+  return references
+end
+
+verb source/source_symbol_context_result(args @ #map)
+  let repository = source/current_repository()
+  let revision = source/current_revision()
+  let reference_limit = args[:reference_limit]
+  if reference_limit == nothing || reference_limit < 1
+    reference_limit = 12
+  end
+  if reference_limit > 30
+    reference_limit = 30
+  end
+
+  let selected = nothing
+  let path = args[:path]
+  let byte_offset = args[:byte_offset]
+  if path != nothing && path != "" && byte_offset != nothing && byte_offset >= 0
+    for def in source/DefinitionAt(repository, revision, path, byte_offset, ?symbol, ?name, ?kind, ?target_path, ?start_line, ?end_line, ?start_byte, ?end_byte, ?provider)
+      selected = {:symbol -> def[:symbol], :name -> def[:name], :kind -> def[:kind], :path -> def[:target_path], :start_line -> def[:start_line], :end_line -> def[:end_line], :start_byte -> def[:start_byte], :end_byte -> def[:end_byte], :provider -> def[:provider], :source -> "definition_at"}
+      break
+    end
+  end
+
+  let query = args[:query]
+  if selected == nothing && query != nothing && query != ""
+    for found in source/SymbolSearch(repository, revision, query, 1, ?symbol, ?name, ?kind, ?found_path, ?start_line, ?end_line, ?provider)
+      selected = {:symbol -> found[:symbol], :name -> found[:name], :kind -> found[:kind], :path -> found[:found_path], :start_line -> found[:start_line], :end_line -> found[:end_line], :start_byte -> nothing, :end_byte -> nothing, :provider -> found[:provider], :source -> "symbol_search"}
+      break
+    end
+  end
+
+  if selected == nothing
+    let symbol = one source/SelectedSymbol(endpoint(), ?symbol)
+    if symbol != nothing
+      let name = one source/SelectedSymbolName(endpoint(), ?name)
+      let kind = one source/SelectedSymbolKind(endpoint(), ?kind)
+      let selected_path = one source/SelectedDefinitionPath(endpoint(), ?path)
+      let start_line = one source/SelectedDefinitionStartLine(endpoint(), ?line)
+      let end_line = one source/SelectedDefinitionEndLine(endpoint(), ?line)
+      let start_byte = one source/SelectedDefinitionStartByte(endpoint(), ?byte)
+      let end_byte = one source/SelectedDefinitionEndByte(endpoint(), ?byte)
+      let provider = one source/SelectedSymbolProvider(endpoint(), ?provider)
+      selected = {:symbol -> symbol, :name -> name, :kind -> kind, :path -> selected_path, :start_line -> start_line, :end_line -> end_line, :start_byte -> start_byte, :end_byte -> end_byte, :provider -> provider, :source -> "selected_symbol"}
+    end
+  end
+
+  if selected == nothing
+    return source/tool_error_result("error", "source_symbol_context could not resolve a symbol")
+  end
+
+  let definition_path = selected[:path]
+  let definition_line = selected[:start_line]
+  if definition_path == nothing
+    definition_path = "unknown"
+  end
+  if definition_line == nothing
+    definition_line = 1
+  end
+  let definition_end_line = selected[:end_line]
+  if definition_end_line == nothing
+    definition_end_line = definition_line
+  end
+  let snippet = ""
+  if definition_path != "unknown"
+    snippet = recover source/symbol_line_text(repository, revision, definition_path, definition_line)
+    catch err => ""
+    end
+  end
+  let references = recover source/symbol_reference_results(repository, revision, selected[:symbol], reference_limit)
+  catch err => []
+  end
+  let reference_count = 0
+  let rendered_refs = []
+  for reference in references
+    reference_count = reference_count + 1
+    let reference_name = reference[:name]
+    if reference_name == nothing
+      reference_name = "reference"
+    end
+    let reference_provider = reference[:provider]
+    if reference_provider == nothing
+      reference_provider = "unknown"
+    end
+    rendered_refs = [@rendered_refs, string_concat("- ", reference[:path], ":", to_literal(reference[:start_line]), " ", reference_name, " / ", reference_provider, "\n", reference[:snippet])]
+  end
+
+  let name = selected[:name]
+  if name == nothing
+    name = to_literal(selected[:symbol])
+  end
+  let kind = selected[:kind]
+  if kind == nothing
+    kind = "symbol"
+  end
+  let provider = selected[:provider]
+  if provider == nothing
+    provider = "unknown"
+  end
+  let rendered = string_concat(name, " / ", kind, "\ndefinition: ", definition_path, ":", to_literal(definition_line), "-", to_literal(definition_end_line), " / ", provider, "\n", snippet)
+  if rendered_refs != []
+    rendered = string_concat(rendered, "\n\nreferences:\n", string_join(rendered_refs, "\n"))
+  end
+  let value = {:symbol -> to_literal(selected[:symbol]), :name -> name, :kind -> kind, :definition -> {:path -> definition_path, :start_line -> definition_line, :end_line -> definition_end_line, :start_byte -> selected[:start_byte], :end_byte -> selected[:end_byte], :provider -> provider, :snippet -> snippet}, :references -> references, :reference_count -> reference_count, :reference_limit -> reference_limit, :source -> selected[:source]}
+  return {:status -> "complete", :rendered -> rendered, :rendered_truncated -> false, :value -> value, :error -> nothing, :diagnostics -> []}
+end
+
 verb source/record_agent_tool_response(turn, ordinal, tool @ #string, args @ #map, result @ #map, call_id @ #string)
   let request = source/record_agent_tool_request(turn, ordinal, tool, args, "running")
   let status = result[:status]
@@ -963,6 +1099,15 @@ verb source/run_agent_source_search_tool(turn, ordinal, call @ #map, actor)
   return source/record_agent_tool_response(turn, ordinal, "source_search", args, result, call_id)
 end
 
+verb source/run_agent_source_symbol_context_tool(turn, ordinal, call @ #map)
+  let call_id = source/openai_tool_call_id(call, ordinal)
+  let args = source/openai_tool_call_args(call)
+  let result = recover source/source_symbol_context_result(args)
+  catch err => source/tool_error_result("error", to_literal(err))
+  end
+  return source/record_agent_tool_response(turn, ordinal, "source_symbol_context", args, result, call_id)
+end
+
 verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
   let call_id = source/openai_tool_call_id(call, ordinal)
   let args = source/openai_tool_call_args(call)
@@ -986,6 +1131,9 @@ verb source/run_agent_tool(turn, ordinal, call @ #map, actor)
   end
   if name == "source_search"
     return source/run_agent_source_search_tool(turn, ordinal, call, actor)
+  end
+  if name == "source_symbol_context"
+    return source/run_agent_source_symbol_context_tool(turn, ordinal, call)
   end
   let args = source/openai_tool_call_args(call)
   let result = source/tool_error_result("rejected", string_concat("unsupported tool: ", to_literal(name)))
