@@ -301,13 +301,13 @@ fn normalize_openai_tool_call_response(response: &mut serde_json::Value) {
         let Some(content) = message.get("content").and_then(|value| value.as_str()) else {
             continue;
         };
-        let tool_calls = parse_deepseek_dsml_tool_calls(content);
+        let tool_calls = parse_dsml_tool_calls(content);
         if tool_calls.is_empty() {
             continue;
         }
         tracing::warn!(
             tool_call_count = tool_calls.len(),
-            "normalized leaked DeepSeek DSML tool calls from OpenAI response content"
+            "normalized leaked DSML tool calls from OpenAI response content"
         );
         message.insert(
             "tool_calls".to_owned(),
@@ -317,7 +317,7 @@ fn normalize_openai_tool_call_response(response: &mut serde_json::Value) {
     }
 }
 
-fn parse_deepseek_dsml_tool_calls(content: &str) -> Vec<serde_json::Value> {
+fn parse_dsml_tool_calls(content: &str) -> Vec<serde_json::Value> {
     if !content.contains("DSML") || !content.contains("invoke name=\"") {
         return Vec::new();
     }
@@ -341,7 +341,7 @@ fn parse_deepseek_dsml_tool_calls(content: &str) -> Vec<serde_json::Value> {
             .map(|relative| tag_end + 1 + relative)
             .unwrap_or(content.len());
         let block = &content[tag_end + 1..next_invoke];
-        let args = parse_deepseek_dsml_parameters(block);
+        let args = parse_dsml_parameters(block);
         let arguments = serde_json::to_string(&serde_json::Value::Object(args))
             .unwrap_or_else(|_| "{}".to_owned());
         calls.push(serde_json::json!({
@@ -357,7 +357,7 @@ fn parse_deepseek_dsml_tool_calls(content: &str) -> Vec<serde_json::Value> {
     calls
 }
 
-fn parse_deepseek_dsml_parameters(block: &str) -> serde_json::Map<String, serde_json::Value> {
+fn parse_dsml_parameters(block: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut args = serde_json::Map::new();
     let mut cursor = 0;
     let marker = "parameter name=\"";
@@ -934,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_deepseek_dsml_tool_calls_in_openai_response() {
+    fn normalizes_leaked_dsml_tool_calls_in_openai_response() {
         let mut response = serde_json::json!({
             "choices": [{
                 "message": {
