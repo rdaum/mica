@@ -638,6 +638,69 @@ fn source_agent_tool_facts_record_requests_results_and_transcript() {
 }
 
 #[test]
+fn source_agent_proposal_tools_record_explicit_pending_kinds() {
+    let mut runner = SourceRunner::new_empty();
+    load_source_app(&mut runner);
+
+    let report = runner
+        .run_source(
+            "let turn = source/record_agent_user_turn(endpoint(), \"proposal tools\")\n\
+             let note_call = {:id -> \"call_note\", :function -> {:name -> \"source_create_pending_note\", :arguments -> json_encode({:title -> \"Note\", :body -> \"note body\", :target_path -> \"src/lib.rs\"})}}\n\
+             let finding_call = {:id -> \"call_finding\", :function -> {:name -> \"source_create_pending_finding\", :arguments -> json_encode({:title -> \"Finding\", :body -> \"finding body\"})}}\n\
+             let patch_call = {:id -> \"call_patch\", :function -> {:name -> \"source_propose_patch\", :arguments -> json_encode({:title -> \"Patch\", :body -> \"diff --git a/src/lib.rs b/src/lib.rs\"})}}\n\
+             let action_call = {:id -> \"call_action\", :function -> {:name -> \"source_propose_action\", :arguments -> json_encode({:title -> \"Action\", :body -> \"run focused tests\"})}}\n\
+             source/run_agent_tool(turn, 1, note_call, #web)\n\
+             source/run_agent_tool(turn, 2, finding_call, #web)\n\
+             source/run_agent_tool(turn, 3, patch_call, #web)\n\
+             source/run_agent_tool(turn, 4, action_call, #web)\n\
+             let note_request = one source/AgentToolRequest(source/agent_tool_request_value(turn, 1), ?ordinal, ?tool, ?args, ?status)\n\
+             let finding_request = one source/AgentToolRequest(source/agent_tool_request_value(turn, 2), ?ordinal, ?tool, ?args, ?status)\n\
+             let patch_request = one source/AgentToolRequest(source/agent_tool_request_value(turn, 3), ?ordinal, ?tool, ?args, ?status)\n\
+             let action_request = one source/AgentToolRequest(source/agent_tool_request_value(turn, 4), ?ordinal, ?tool, ?args, ?status)\n\
+             let kinds = []\n\
+             for row in source/AgentProposalKind(?proposal, ?kind)\n\
+               kinds = [@kinds, row[:kind]]\n\
+             end\n\
+             let statuses = []\n\
+             for row in source/AgentProposalStatus(?proposal, ?status)\n\
+               statuses = [@statuses, row[:status]]\n\
+             end\n\
+             return [note_request[:tool], finding_request[:tool], patch_request[:tool], action_request[:tool], kinds, statuses]",
+        )
+        .unwrap();
+    let TaskOutcome::Complete { value, .. } = report.outcome else {
+        panic!(
+            "expected source agent explicit proposal tool inspection to complete, got {:?}",
+            report.outcome
+        );
+    };
+    value
+        .with_list(|values| {
+            assert_eq!(values[0], Value::string("source_create_pending_note"));
+            assert_eq!(values[1], Value::string("source_create_pending_finding"));
+            assert_eq!(values[2], Value::string("source_propose_patch"));
+            assert_eq!(values[3], Value::string("source_propose_action"));
+            values[4]
+                .with_list(|kinds| {
+                    assert_eq!(kinds[0], Value::string("note"));
+                    assert_eq!(kinds[1], Value::string("finding"));
+                    assert_eq!(kinds[2], Value::string("patch"));
+                    assert_eq!(kinds[3], Value::string("action"));
+                })
+                .expect("expected proposal kind list");
+            values[5]
+                .with_list(|statuses| {
+                    assert_eq!(statuses[0], Value::string("pending"));
+                    assert_eq!(statuses[1], Value::string("pending"));
+                    assert_eq!(statuses[2], Value::string("pending"));
+                    assert_eq!(statuses[3], Value::string("pending"));
+                })
+                .expect("expected proposal status list");
+        })
+        .expect("expected explicit proposal tool tuple");
+}
+
+#[test]
 fn source_agent_prompt_records_turns_and_grounded_prompt() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
