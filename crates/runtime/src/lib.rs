@@ -129,6 +129,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "to_literal",
     "from_literal",
     "json_encode",
+    "json_decode",
     "dom_text",
     "dom_raw",
     "dom_element",
@@ -3295,6 +3296,7 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
         .with_builtin("to_literal", to_literal_builtin)
         .with_builtin("from_literal", from_literal_builtin)
         .with_builtin("json_encode", json_encode_builtin)
+        .with_builtin("json_decode", json_decode_builtin)
         .with_builtin("dom_text", dom_text_builtin)
         .with_builtin("dom_raw", dom_raw_builtin)
         .with_builtin("dom_element", dom_element_builtin)
@@ -3715,6 +3717,22 @@ fn json_encode_builtin(
         .map_err(|error| invalid_builtin_call("json_encode", error.to_string()))
 }
 
+fn json_decode_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "json_decode",
+            "expected json_decode(text)",
+        ));
+    }
+    let text = builtin_string_arg("json_decode", args, 0)?;
+    let json = serde_json::from_str(&text)
+        .map_err(|error| invalid_builtin_call("json_decode", error.to_string()))?;
+    value_from_json(&json)
+}
+
 fn dom_text_builtin(
     _context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
@@ -3921,6 +3939,44 @@ fn json_value(value: &Value) -> Result<serde_json::Value, RuntimeError> {
             "json_encode",
             format!("cannot encode {:?} value as JSON", value.kind()),
         )),
+    }
+}
+
+fn value_from_json(value: &serde_json::Value) -> Result<Value, RuntimeError> {
+    match value {
+        serde_json::Value::Null => Ok(Value::nothing()),
+        serde_json::Value::Bool(value) => Ok(Value::bool(*value)),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                return Ok(Value::int(value).unwrap_or_else(|_| Value::float(value as f64)));
+            }
+            if let Some(value) = value.as_u64() {
+                return Ok(i64::try_from(value)
+                    .ok()
+                    .and_then(|value| Value::int(value).ok())
+                    .unwrap_or_else(|| Value::float(value as f64)));
+            }
+            value
+                .as_f64()
+                .map(Value::float)
+                .ok_or_else(|| invalid_builtin_call("json_decode", "unsupported JSON number"))
+        }
+        serde_json::Value::String(value) => Ok(Value::string(value)),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(value_from_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::list),
+        serde_json::Value::Object(entries) => entries
+            .iter()
+            .map(|(key, value)| {
+                Ok((
+                    Value::symbol(Symbol::intern(key.as_str())),
+                    value_from_json(value)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, RuntimeError>>()
+            .map(Value::map),
     }
 }
 
@@ -6081,6 +6137,7 @@ fn is_safe_read_only_builtin(name: &str) -> bool {
             | "to_literal"
             | "from_literal"
             | "json_encode"
+            | "json_decode"
             | "dom_text"
             | "dom_raw"
             | "dom_element"
@@ -6769,6 +6826,22 @@ mod tests {
                 .outcome,
             TaskOutcome::Complete { value, .. }
                 if value == Value::string("{\"message\":\"hello\",\"values\":[1,true,null]}")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "return json_decode(\"{\\\"message\\\":\\\"hello\\\",\\\"values\\\":[1,true,null]}\")"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::map([
+                    (Value::symbol(Symbol::intern("message")), Value::string("hello")),
+                    (
+                        Value::symbol(Symbol::intern("values")),
+                        Value::list([Value::int(1).unwrap(), Value::bool(true), Value::nothing()])
+                    ),
+                ])
         ));
         assert!(matches!(
             runner
