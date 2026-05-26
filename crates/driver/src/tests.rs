@@ -566,12 +566,14 @@ fn source_runtime_config_can_override_retrieval_and_generation_defaults() {
              let default_retrieval_model = source/retrieval_model()\n\
              let default_limit = source/retrieval_limit()\n\
              let default_file_context_limit = source/agent_file_context_line_limit()\n\
+             let default_tool_call_limit = source/agent_tool_call_limit()\n\
              assert source/RuntimeConfig(#source/config_agent_model, \"openai/gpt-4.1\")\n\
              assert source/RuntimeConfig(#source/config_agent_file_context_line_limit, 17)\n\
+             assert source/RuntimeConfig(#source/config_agent_tool_call_limit, 19)\n\
              assert source/RuntimeConfig(#source/config_generation_provider, \"test-provider\")\n\
              assert source/RuntimeConfig(#source/config_retrieval_model, \"test-retrieval-model\")\n\
              assert source/RuntimeConfig(#source/config_retrieval_limit, 13)\n\
-             return [default_model, default_provider, default_retrieval_model, default_limit, default_file_context_limit, source/generation_model(), source/agent_file_context_line_limit(), source/generation_provider(), source/retrieval_model(), source/retrieval_limit()]",
+             return [default_model, default_provider, default_retrieval_model, default_limit, default_file_context_limit, default_tool_call_limit, source/generation_model(), source/agent_file_context_line_limit(), source/agent_tool_call_limit(), source/generation_provider(), source/retrieval_model(), source/retrieval_limit()]",
         )
         .unwrap();
     let TaskOutcome::Complete { value, .. } = report.outcome else {
@@ -587,11 +589,13 @@ fn source_runtime_config_can_override_retrieval_and_generation_defaults() {
             assert_eq!(values[2], Value::string("source-workspace"));
             assert_eq!(values[3], Value::int(8).unwrap());
             assert_eq!(values[4], Value::int(20000).unwrap());
-            assert_eq!(values[5], Value::string("openai/gpt-4.1"));
-            assert_eq!(values[6], Value::int(17).unwrap());
-            assert_eq!(values[7], Value::string("test-provider"));
-            assert_eq!(values[8], Value::string("test-retrieval-model"));
-            assert_eq!(values[9], Value::int(13).unwrap());
+            assert_eq!(values[5], Value::int(24).unwrap());
+            assert_eq!(values[6], Value::string("openai/gpt-4.1"));
+            assert_eq!(values[7], Value::int(17).unwrap());
+            assert_eq!(values[8], Value::int(19).unwrap());
+            assert_eq!(values[9], Value::string("test-provider"));
+            assert_eq!(values[10], Value::string("test-retrieval-model"));
+            assert_eq!(values[11], Value::int(13).unwrap());
         })
         .expect("expected source runtime config tuple");
 }
@@ -698,6 +702,57 @@ fn source_agent_proposal_tools_record_explicit_pending_kinds() {
                 .expect("expected proposal status list");
         })
         .expect("expected explicit proposal tool tuple");
+}
+
+#[test]
+fn source_agent_tool_activity_renders_for_web_endpoint() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        load_source_app(&mut runner);
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let endpoint = endpoint(66);
+        runner
+            .open_endpoint(endpoint, Some(web), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn(runner).unwrap();
+        let workspace_root = std::env::current_dir().unwrap().display().to_string();
+
+        let report = driver
+            .submit_source(
+                endpoint,
+                root_source(&format!(
+                    "retract source/RepositoryRoot(#source/repo_mica, _)\n\
+                     assert source/RepositoryRoot(#source/repo_mica, {workspace_root:?})\n\
+                     let turn = frob(#source/agent_turn, {{:endpoint -> endpoint(), :ordinal -> 1, :role -> \"assistant\", :text -> \"Tool test\"}})\n\
+                     assert source/AgentTurn(turn)\n\
+                     assert source/AgentTurnEndpoint(turn, endpoint())\n\
+                     assert source/AgentTurnOrdinal(turn, 1)\n\
+                     assert source/AgentTurnRole(turn, \"assistant\")\n\
+                     assert source/AgentTurnText(turn, \"Tool test\")\n\
+                     assert source/AgentTurnStatus(turn, \"working\")\n\
+                     let request = source/start_agent_tool_request(turn, 1, \"source_search\", {{:query -> \"relation index\"}})\n\
+                     source/finish_agent_tool_request(request, {{:status -> \"complete\", :rendered -> \"source_search returned relation index\", :value -> {{:count -> 1}}}}, \"call_1\")\n\
+                     let payload = dom_snapshot_payload(31, 1, source/agent_panel_node())\n\
+                     return [string_contains(payload, \"Tool activity\"), string_contains(payload, \"source-agent-tools\"), string_contains(payload, \"source_search\"), string_contains(payload, \"source_search returned relation index\")]"
+                )),
+            )
+            .await
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!(
+                "expected source agent tool activity render to complete, got {:?}",
+                report.outcome
+            );
+        };
+        value
+            .with_list(|values| {
+                assert_eq!(values[0], Value::bool(true));
+                assert_eq!(values[1], Value::bool(true));
+                assert_eq!(values[2], Value::bool(true));
+                assert_eq!(values[3], Value::bool(true));
+            })
+            .expect("expected tool activity render tuple");
+    });
 }
 
 #[test]
@@ -1765,6 +1820,210 @@ fn source_agent_prompt_runs_source_file_window_tool_call() {
                 assert_eq!(values[7], Value::bool(true));
             })
             .expect("expected source agent file-window inspection tuple");
+    });
+}
+
+#[test]
+fn source_agent_prompt_synthesizes_after_tool_limit() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = Arc::clone(&calls);
+        let handler = Arc::new(move |request: mica_runtime::ExternalRequest| {
+            let call_index = handler_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("openai"));
+                let messages = request
+                    .payload
+                    .map_get(&Value::symbol(Symbol::intern("messages")))
+                    .expect("host request should include messages");
+                if call_index == 0 {
+                    let options = request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("options")))
+                        .expect("tool request should include options");
+                    assert!(
+                        options
+                            .map_get(&Value::symbol(Symbol::intern("tools")))
+                            .and_then(|tools| tools.with_list(|tools| Some(!tools.is_empty())).flatten())
+                            .unwrap_or(false)
+                    );
+                    return Value::map([
+                        (
+                            Value::symbol(Symbol::intern("model")),
+                            Value::string("openrouter/test-model"),
+                        ),
+                        (
+                            Value::symbol(Symbol::intern("choices")),
+                            Value::list([Value::map([(
+                                Value::symbol(Symbol::intern("message")),
+                                Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("role")),
+                                        Value::string("assistant"),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("content")),
+                                        Value::nothing(),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("tool_calls")),
+                                        Value::list([Value::map([
+                                            (
+                                                Value::symbol(Symbol::intern("id")),
+                                                Value::string("call_window"),
+                                            ),
+                                            (
+                                                Value::symbol(Symbol::intern("type")),
+                                                Value::string("function"),
+                                            ),
+                                            (
+                                                Value::symbol(Symbol::intern("function")),
+                                                Value::map([
+                                                    (
+                                                        Value::symbol(Symbol::intern("name")),
+                                                        Value::string("source_file_window"),
+                                                    ),
+                                                    (
+                                                        Value::symbol(Symbol::intern("arguments")),
+                                                        Value::string(
+                                                            "{\"path\":\"src/tests.rs\",\"start_line\":14,\"line_count\":2}",
+                                                        ),
+                                                    ),
+                                                ]),
+                                            ),
+                                        ])]),
+                                    ),
+                                ]),
+                            )])]),
+                        ),
+                    ]);
+                }
+
+                let options = request
+                    .payload
+                    .map_get(&Value::symbol(Symbol::intern("options")))
+                    .expect("final request should include options");
+                assert!(
+                    options
+                        .map_get(&Value::symbol(Symbol::intern("tools")))
+                        .is_none(),
+                    "final synthesis request should not expose tools"
+                );
+                assert!(
+                    messages
+                        .with_list(|messages| {
+                            messages.iter().any(|message| {
+                                message.map_get(&Value::symbol(Symbol::intern("role")))
+                                    == Some(Value::string("tool"))
+                                    && message
+                                        .map_get(&Value::symbol(Symbol::intern("content")))
+                                        .and_then(|content| {
+                                            content.with_str(|content| {
+                                                content.contains("src/tests.rs")
+                                                    && content.contains("use crate")
+                                            })
+                                        })
+                                        .unwrap_or(false)
+                            }) && messages.iter().any(|message| {
+                                message.map_get(&Value::symbol(Symbol::intern("role")))
+                                    == Some(Value::string("user"))
+                                    && message
+                                        .map_get(&Value::symbol(Symbol::intern("content")))
+                                        .and_then(|content| {
+                                            content.with_str(|content| {
+                                                content.contains("Stop using tools now")
+                                                    && content.contains("Do not dump raw tool output")
+                                            })
+                                        })
+                                        .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false)
+                );
+                Value::map([
+                    (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("openrouter/test-model"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("choices")),
+                        Value::list([Value::map([(
+                            Value::symbol(Symbol::intern("message")),
+                            Value::map([(
+                                Value::symbol(Symbol::intern("content")),
+                                Value::string("The relevant file is src/tests.rs."),
+                            )]),
+                        )])]),
+                    ),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let mut runner = SourceRunner::new_empty();
+        load_source_app(&mut runner);
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let endpoint = endpoint(42);
+        runner
+            .open_endpoint(endpoint, Some(web), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint,
+                root_source(
+                    "assert source/RuntimeConfig(#source/config_agent_tool_call_limit, 1)\n\
+                     assert source/SelectedPath(endpoint(), \"src/tests.rs\")\n\
+                     return source/run_agent_prompt(endpoint(), #web, \"find the file\")",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        let mut completed = false;
+        for _ in 0..80 {
+            if driver.drain_events().iter().any(|event| {
+                matches!(
+                    event,
+                    DriverEvent::TaskCompleted { task_id, value }
+                        if *task_id == submitted.task_id
+                            && value
+                                .map_get(&Value::symbol(Symbol::intern("text")))
+                                == Some(Value::string("The relevant file is src/tests.rs."))
+                )
+            }) {
+                completed = true;
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            completed,
+            "source agent synthesis-after-limit task did not complete"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let report = driver
+            .submit_root_source_report(
+                "let count = 0\n\
+                 for request_row in source/AgentToolRequest(?tool_request, ?ordinal, \"source_file_window\", ?args, ?status)\n\
+                   count = count + 1\n\
+                 end\n\
+                 return count"
+                    .to_owned(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
+        ));
     });
 }
 

@@ -90,8 +90,9 @@ verb source/agent_tool_node(request)
     transcript = string_concat("arguments: ", to_literal(args))
   end
   let summary = string_concat(to_literal(ordinal), ". ", tool)
+  let heading = dom_element("summary", {:class -> "source-agent-tool-heading"}, [dom_element("span", {:class -> "source-agent-tool-name"}, [dom_text(summary)]), source/meta_chip_node("status", status)])
   let body = dom_element("pre", {:class -> "source-agent-tool-text"}, [dom_text(transcript)])
-  return dom_element("article", {:class -> string_concat("source-agent-tool source-agent-tool-", status), "data-sync-key" -> to_literal(request)}, [dom_element("div", {:class -> "source-agent-tool-heading"}, [dom_element("span", {:class -> "source-agent-tool-name"}, [dom_text(summary)]), source/meta_chip_node("status", status)]), body])
+  return dom_element("details", {:class -> string_concat("source-agent-tool source-agent-tool-", status), "data-sync-key" -> to_literal(request)}, [heading, body])
 end
 
 verb source/agent_turn_tools_node(turn)
@@ -114,7 +115,7 @@ verb source/agent_turn_tools_node(turn)
   if items == []
     return source/empty_node("")
   end
-  return dom_element("details", {:class -> "source-agent-tools", :open -> "open"}, [dom_element("summary", {}, [dom_text("Tool activity")]), dom_element("div", {:class -> "source-agent-tool-list"}, items)])
+  return dom_element("details", {:class -> "source-agent-tools"}, [dom_element("summary", {}, [dom_text("Tool activity")]), dom_element("div", {:class -> "source-agent-tool-list"}, items)])
 end
 
 verb source/agent_turn_node(turn)

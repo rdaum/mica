@@ -444,6 +444,7 @@ body.source-agent-working .source-agent-turn-list::after {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 0.35rem;
+  cursor: pointer;
 }
 
 .source-agent-tool-name {

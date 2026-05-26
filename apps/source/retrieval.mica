@@ -17,6 +17,7 @@ make_identity(:source/agent_turn)
 make_identity(:source/agent_tool_request)
 make_identity(:source/config_agent_file_context_line_limit)
 make_identity(:source/config_agent_model)
+make_identity(:source/config_agent_tool_call_limit)
 make_identity(:source/config_generation_provider)
 make_identity(:source/config_retrieval_limit)
 make_identity(:source/config_retrieval_model)
@@ -728,6 +729,12 @@ verb source/agent_tool_call_count(tool_calls)
   return count
 end
 
+verb source/agent_tool_call_signature(call @ #map)
+  let name = source/openai_tool_call_name(call)
+  let args = source/openai_tool_call_args(call)
+  return string_concat(to_literal(name), " ", to_literal(args))
+end
+
 verb source/agent_focus_text(endpoint)
   let path = one source/SelectedPath(endpoint, ?path)
   if path == nothing
@@ -788,7 +795,11 @@ verb source/agent_tool_options()
 end
 
 verb source/agent_tool_call_limit()
-  return 8
+  let limit = one source/RuntimeConfig(#source/config_agent_tool_call_limit, ?limit)
+  if limit == nothing
+    return 24
+  end
+  return limit
 end
 
 verb source/agent_proposal_tool(name @ #string, description @ #string, body_description @ #string)
@@ -1457,8 +1468,12 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
   let response = nothing
   let tool_count = 0
   let tool_limit = source/agent_tool_call_limit()
+  let guard_reason = ""
+  let last_tool_signature = ""
+  let repeated_tool_count = 0
+  let consecutive_tool_failures = 0
   let model_round = 1
-  while tool_count < tool_limit
+  while guard_reason == "" && tool_count < tool_limit
     log(:info, string_concat("source agent model request started round=", to_literal(model_round), " model=", requested_model, " tools_used=", to_literal(tool_count), "/", to_literal(tool_limit), " prompt_chars=", to_literal(string_len(prompt))))
     source/update_agent_turn_progress(assistant_turn, string_concat("Calling model round ", to_literal(model_round), " with ", to_literal(tool_count), "/", to_literal(tool_limit), " tools used."))
     response = openai/chat_with_options(requested_model, messages, options)
@@ -1468,17 +1483,45 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
     if tool_calls == []
       break
     end
+    if requested_tool_count > tool_limit - tool_count
+      guard_reason = string_concat("tool request would exceed the remaining budget (requested ", to_literal(requested_tool_count), ", remaining ", to_literal(tool_limit - tool_count), ")")
+      break
+    end
     let assistant_message = source/openai_first_message(response)
     if assistant_message != nothing
       messages = [@messages, assistant_message]
     end
     for call in tool_calls
       if tool_count >= tool_limit
+        guard_reason = string_concat("tool budget reached at ", to_literal(tool_limit), " calls")
+        break
+      end
+      let signature = source/agent_tool_call_signature(call)
+      if signature == last_tool_signature
+        repeated_tool_count = repeated_tool_count + 1
+      else
+        last_tool_signature = signature
+        repeated_tool_count = 1
+      end
+      if repeated_tool_count > 2
+        guard_reason = string_concat("same tool call repeated ", to_literal(repeated_tool_count), " times")
         break
       end
       tool_count = tool_count + 1
       let tool_message = source/run_agent_tool(assistant_turn, tool_count, call, actor)
       messages = [@messages, tool_message]
+      let request = source/agent_tool_request_value(assistant_turn, tool_count)
+      let request_row = one source/AgentToolRequest(request, ?ordinal, ?tool, ?args, ?status)
+      let tool_status = request_row[:status]
+      if tool_status == "complete"
+        consecutive_tool_failures = 0
+      else
+        consecutive_tool_failures = consecutive_tool_failures + 1
+      end
+      if consecutive_tool_failures >= 3
+        guard_reason = string_concat("tool calls failed or were rejected ", to_literal(consecutive_tool_failures), " times in a row")
+        break
+      end
     end
     model_round = model_round + 1
   end
@@ -1487,15 +1530,14 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
     source/update_agent_turn_progress(assistant_turn, string_concat("Calling model without tools for ", requested_model, "."))
     response = openai/chat_with_options(requested_model, messages, {:temperature -> 0.2})
   end
-  if source/openai_tool_calls(response) != []
-    if tool_count >= tool_limit
-      log(:warn, string_concat("source agent stopped at tool limit limit=", to_literal(tool_limit), " model=", requested_model))
-      response = {:model -> requested_model, :choices -> [{:message -> {:content -> string_concat("I stopped after ", to_literal(tool_limit), " tool calls before completing the answer. Ask a narrower question or request fewer files.")}}]}
-    else
-      log(:info, string_concat("source agent final model request started after tool calls model=", requested_model))
-      source/update_agent_turn_progress(assistant_turn, string_concat("Asking model for final answer after ", to_literal(tool_count), " tool calls."))
-      response = openai/chat_with_options(requested_model, messages, {:temperature -> 0.2})
+  if guard_reason != "" || source/openai_tool_calls(response) != []
+    if guard_reason == ""
+      guard_reason = "model requested more tools after tool use was disabled"
     end
+    log(:warn, string_concat("source agent tool guard triggered reason=", guard_reason, " tools_used=", to_literal(tool_count), "/", to_literal(tool_limit), " model=", requested_model))
+    source/update_agent_turn_progress(assistant_turn, string_concat("Synthesizing answer from ", to_literal(tool_count), " tool results."))
+    let final_instruction = string_concat("Stop using tools now. Reason: ", guard_reason, ". Answer the user's request from the tool results already gathered. Give a concise explanation or file/path pointers first. Do not dump raw tool output as the answer. If the gathered evidence is incomplete, say exactly what remains uncertain and which files or symbols would need follow-up.")
+    response = openai/chat_with_options(requested_model, [@messages, openai/user_message(final_instruction)], {:temperature -> 0.2})
   end
   let assistant_text = openai/assistant_text(response)
   if assistant_text == nothing
