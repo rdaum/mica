@@ -711,7 +711,7 @@ verb source/agent_focus_text(endpoint)
 end
 
 verb source/agent_workspace_schema_text()
-  let files = "- Files: source/Repository(repository), source/RepositoryRoot(repository, root), source/SourceFile(file), source/FileRevision(file, revision), source/FilePath(file, path), source/FileTitle(file, title), source/FileLanguage(file, language), source/FileLines(repository, revision, path, start, end, lines, hash), source/FileLineCount(repository, revision, path, count).\n"
+  let files = "- Files: source/Repository(repository), source/RepositoryRoot(repository, root), source/SourceFile(file), source/FileRevision(file, revision), source/FilePath(file, path), source/FileTitle(file, title), source/FileLanguage(file, language), source/FileLines(repository, revision, path, start, line_count, lines, hash), source/FileLineCount(repository, revision, path, count).\n"
   let spans = "- Spans and symbols: source/SourceSpan(span), source/SpanFile(span, path), source/SpanLabel(span, label), source/SpanStartLine(span, line), source/SpanEndLine(span, line), source/DefinitionAt(path, line, symbol), source/ReferencesOf(symbol, reference), source/SyntaxOutline(path, outline).\n"
   let retrieval = "- Retrieval: source/RetrievalTextUnitFile(subject, path), source/RetrievalTextUnitSpan(subject, start, end), source/RetrievalTextUnitTitle(subject, title), source/RetrievalCitationText(plan, subject, text), ContextForPlan(context, plan), ContextSubject(context, subject), ContextScore(context, score).\n"
   let session = "- Session focus: source/SelectedPath(endpoint, path), source/SelectedLine(endpoint, line), source/SelectedRevision(endpoint, revision), source/SelectedAgentStatus(endpoint, status).\n"
@@ -728,10 +728,14 @@ verb source/agent_prompt_text(user_text @ #string, focus_text @ #string, context
 end
 
 verb source/agent_tool_options()
-  let parameters = {:type -> "object", :properties -> {:query -> {:type -> "string", :description -> "A read-only Mica query to run as the current source viewer endpoint."}}, :required -> ["query"], :additionalProperties -> false}
-  let function = {:name -> "mica_query", :description -> "Run a read-only Mica query over authorized source workspace facts. The query cannot mutate state, spawn tasks, invoke methods, or call host effects.", :parameters -> parameters}
-  let tool = {:type -> "function", :function -> function}
-  return {:temperature -> 0.2, :tools -> [tool], :tool_choice -> "auto"}
+  let query_parameters = {:type -> "object", :properties -> {:query -> {:type -> "string", :description -> "A read-only Mica query to run as the current source viewer endpoint."}}, :required -> ["query"], :additionalProperties -> false}
+  let query_function = {:name -> "mica_query", :description -> "Run a read-only Mica query over authorized source workspace facts. The query cannot mutate state, spawn tasks, invoke methods, or call host effects.", :parameters -> query_parameters}
+  let query_tool = {:type -> "function", :function -> query_function}
+  let window_properties = {:path -> {:type -> "string", :description -> "Repository-relative path. Defaults to the current selected file."}, :start_line -> {:type -> "integer", :description -> "One-based starting line. Defaults to 1."}, :line_count -> {:type -> "integer", :description -> "Number of lines to return. Capped at 200."}}
+  let window_parameters = {:type -> "object", :properties -> window_properties, :additionalProperties -> false}
+  let window_function = {:name -> "source_file_window", :description -> "Read a bounded line window from a source file without writing a Mica query.", :parameters -> window_parameters}
+  let window_tool = {:type -> "function", :function -> window_function}
+  return {:temperature -> 0.2, :tools -> [window_tool, query_tool], :tool_choice -> "auto"}
 end
 
 verb source/openai_first_message(response @ #map)
@@ -792,27 +796,60 @@ verb source/openai_tool_message(call_id @ #string, result @ #map)
   return {:role -> "tool", :tool_call_id -> call_id, :content -> json_encode(result)}
 end
 
-verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
-  let call_id = source/openai_tool_call_id(call, ordinal)
-  let name = source/openai_tool_call_name(call)
-  let args = source/openai_tool_call_args(call)
-  if name != "mica_query"
-    let request = source/record_agent_tool_request(turn, ordinal, to_literal(name), args, "rejected")
-    let result = {:status -> "rejected", :rendered -> string_concat("unsupported tool: ", to_literal(name)), :rendered_truncated -> false, :value -> nothing, :error -> nothing, :diagnostics -> [string_concat("unsupported tool: ", to_literal(name))]}
-    source/record_agent_tool_result(request, result, "rejected", result[:rendered])
-    source/record_agent_tool_transcript_text(request, result[:rendered])
-    return source/openai_tool_message(call_id, result)
+verb source/tool_error_result(status @ #string, message @ #string)
+  return {:status -> status, :rendered -> message, :rendered_truncated -> false, :value -> nothing, :error -> nothing, :diagnostics -> [message]}
+end
+
+verb source/source_file_window_result(args @ #map)
+  let path = args[:path]
+  if path == nothing || path == ""
+    path = source/current_file()
   end
-  let query = args[:query]
-  if query == nothing
-    let request = source/record_agent_tool_request(turn, ordinal, "mica_query", args, "rejected")
-    let result = {:status -> "rejected", :rendered -> "mica_query missing query", :rendered_truncated -> false, :value -> nothing, :error -> nothing, :diagnostics -> ["mica_query missing query"]}
-    source/record_agent_tool_result(request, result, "rejected", result[:rendered])
-    source/record_agent_tool_transcript_text(request, result[:rendered])
-    return source/openai_tool_message(call_id, result)
+  if path == nothing
+    return source/tool_error_result("error", "source_file_window has no current file")
   end
-  let request = source/record_agent_tool_request(turn, ordinal, "mica_query", args, "running")
-  let result = mica_query(query, {:max_output_chars -> 4000, :instruction_budget -> 50000, :max_call_depth -> 16})
+  let start_line = args[:start_line]
+  if start_line == nothing || start_line < 1
+    start_line = 1
+  end
+  let requested_count = args[:line_count]
+  if requested_count == nothing || requested_count < 1
+    requested_count = 120
+  end
+  if requested_count > 200
+    requested_count = 200
+  end
+  let repository = source/current_repository()
+  let revision = source/current_revision()
+  let total_lines = one source/FileLineCount(repository, revision, path, ?line_count)
+  if total_lines == nothing
+    return source/tool_error_result("error", string_concat("source_file_window could not read file: ", path))
+  end
+  if start_line > total_lines
+    start_line = total_lines
+  end
+  let window_start = start_line
+  let lines = []
+  let rendered_lines = []
+  let end_line = start_line - 1
+  for row in source/FileLines(repository, revision, path, start_line, requested_count, ?file_lines, ?hash)
+    let line_offset = 0
+    for text in row[:file_lines]
+      let line_number = window_start + line_offset
+      lines = [@lines, {:line -> line_number, :text -> text}]
+      rendered_lines = [@rendered_lines, string_concat(to_literal(line_number), ": ", text)]
+      end_line = line_number
+      line_offset = line_offset + 1
+    end
+    break
+  end
+  let rendered = string_concat(path, ":", to_literal(window_start), "-", to_literal(end_line), "\n", string_join(rendered_lines, "\n"))
+  let value = {:path -> path, :start_line -> window_start, :end_line -> end_line, :line_count -> total_lines, :lines -> lines}
+  return {:status -> "complete", :rendered -> rendered, :rendered_truncated -> false, :value -> value, :error -> nothing, :diagnostics -> []}
+end
+
+verb source/record_agent_tool_response(turn, ordinal, tool @ #string, args @ #map, result @ #map, call_id @ #string)
+  let request = source/record_agent_tool_request(turn, ordinal, tool, args, "running")
   let status = result[:status]
   if status == nothing
     status = "error"
@@ -822,8 +859,43 @@ verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
     error = result[:rendered]
   end
   source/record_agent_tool_result(request, result, status, error)
-  source/record_agent_tool_transcript_text(request, string_concat("mica_query ", status, "\n", result[:rendered]))
+  source/record_agent_tool_transcript_text(request, string_concat(tool, " ", status, "\n", result[:rendered]))
   return source/openai_tool_message(call_id, result)
+end
+
+verb source/run_agent_source_file_window_tool(turn, ordinal, call @ #map)
+  let call_id = source/openai_tool_call_id(call, ordinal)
+  let args = source/openai_tool_call_args(call)
+  let result = recover source/source_file_window_result(args)
+  catch err => source/tool_error_result("error", to_literal(err))
+  end
+  return source/record_agent_tool_response(turn, ordinal, "source_file_window", args, result, call_id)
+end
+
+verb source/run_agent_mica_query_tool(turn, ordinal, call @ #map)
+  let call_id = source/openai_tool_call_id(call, ordinal)
+  let args = source/openai_tool_call_args(call)
+  let query = args[:query]
+  if query == nothing
+    let result = source/tool_error_result("rejected", "mica_query missing query")
+    return source/record_agent_tool_response(turn, ordinal, "mica_query", args, result, call_id)
+  end
+  let result = mica_query(query, {:max_output_chars -> 4000, :instruction_budget -> 50000, :max_call_depth -> 16})
+  return source/record_agent_tool_response(turn, ordinal, "mica_query", args, result, call_id)
+end
+
+verb source/run_agent_tool(turn, ordinal, call @ #map)
+  let call_id = source/openai_tool_call_id(call, ordinal)
+  let name = source/openai_tool_call_name(call)
+  if name == "mica_query"
+    return source/run_agent_mica_query_tool(turn, ordinal, call)
+  end
+  if name == "source_file_window"
+    return source/run_agent_source_file_window_tool(turn, ordinal, call)
+  end
+  let args = source/openai_tool_call_args(call)
+  let result = source/tool_error_result("rejected", string_concat("unsupported tool: ", to_literal(name)))
+  return source/record_agent_tool_response(turn, ordinal, to_literal(name), args, result, call_id)
 end
 
 verb source/source_index_available()
@@ -924,7 +996,7 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
         break
       end
       tool_count = tool_count + 1
-      let tool_message = source/run_agent_mica_query_tool(assistant_turn, tool_count, call)
+      let tool_message = source/run_agent_tool(assistant_turn, tool_count, call)
       messages = [@messages, tool_message]
     end
   end
