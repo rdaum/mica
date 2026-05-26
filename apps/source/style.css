@@ -199,6 +199,16 @@ input {
   cursor: pointer;
 }
 
+.source-search-button:disabled,
+.source-search-button[aria-disabled="true"] {
+  border-color: #b9ad99;
+  background: #d7c8ae;
+  color: #5c5346;
+  cursor: not-allowed;
+  opacity: 1;
+  box-shadow: inset 0 0 0 1px rgba(255, 253, 247, 0.72);
+}
+
 .source-search-button.sync-submit-loading {
   font-size: 0;
 }
@@ -564,6 +574,35 @@ body.source-agent-working .source-agent-turn-list::after {
 .source-retrieval-results {
   display: grid;
   gap: 0.4rem;
+}
+
+.source-retrieval-loading {
+  display: none;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid rgba(155, 79, 24, 0.32);
+  border-radius: 0.65rem;
+  margin-bottom: 0.55rem;
+  padding: 0.7rem 0.75rem;
+  background: #fff4df;
+  color: var(--source-muted);
+}
+
+.source-retrieval-loading-dot {
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 50%;
+  background: var(--source-accent);
+  animation: source-agent-pending-pulse 1.1s ease-in-out infinite;
+}
+
+.source-retrieval-panel:has(.source-search-form.sync-submit-loading) .source-retrieval-loading {
+  display: flex;
+}
+
+.source-retrieval-panel:has(.source-search-form.sync-submit-loading) .source-retrieval-results,
+.source-retrieval-panel:has(.source-search-form.sync-submit-loading) > .source-empty {
+  display: none;
 }
 
 .source-retrieval-result-form {

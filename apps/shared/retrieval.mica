@@ -66,6 +66,7 @@ make_functional_relation(:ContextSubject, 2, [0])
 make_functional_relation(:ContextScore, 2, [0])
 make_functional_relation(:ContextReason, 2, [0])
 make_functional_relation(:ContextSnapshotVersion, 2, [0])
+make_functional_relation(:ContextOrdinal, 2, [0])
 
 make_relation(:Answer, 1)
 make_functional_relation(:AnswerForQuestion, 2, [0])

@@ -459,17 +459,20 @@ verb source/retrieve_context(actor, index, question_text @ #string, limit, model
 
   let query_embedding = embed_text(model, question_text)
   let contexts = []
+  let ordinal = 1
   for found in NearestEmbedding(index, query_embedding, limit, ?subject, ?score, ?snapshot_version)
     let subject = found[:subject]
     if source/can_retrieve_subject(actor, subject)
       let context = retrieval/context_value(plan, subject)
       assert RetrievedContext(context)
       assert ContextForPlan(context, plan)
+      assert ContextOrdinal(context, ordinal)
       assert ContextSubject(context, subject)
       assert ContextScore(context, found[:score])
       assert ContextReason(context, "nearest_embedding")
       assert ContextSnapshotVersion(context, found[:snapshot_version])
       contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :snapshot_version -> found[:snapshot_version]}]
+      ordinal = ordinal + 1
     end
   end
 
@@ -490,6 +493,7 @@ verb source/search_context(actor, question_text @ #string, limit, scope @ #strin
   assert PlanModel(plan, model)
 
   let contexts = []
+  let ordinal = 1
   let semantic_status = "vector_not_ready"
   for found in source/TextSearch(question_text, limit, normalised_scope, ?subject, ?score, ?path, ?start_line, ?end_line, ?kind, ?title, ?snippet)
     let subject = found[:subject]
@@ -497,6 +501,7 @@ verb source/search_context(actor, question_text @ #string, limit, scope @ #strin
       let context = retrieval/context_value(plan, subject)
       assert RetrievedContext(context)
       assert ContextForPlan(context, plan)
+      assert ContextOrdinal(context, ordinal)
       assert ContextSubject(context, subject)
       assert ContextScore(context, found[:score])
       assert ContextReason(context, "text_search")
@@ -505,6 +510,7 @@ verb source/search_context(actor, question_text @ #string, limit, scope @ #strin
       assert source/RetrievalCitationText(plan, subject, found[:snippet])
       assert source/RetrievalCitationLine(plan, subject, found[:start_line])
       contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :snapshot_version -> source/retrieval_corpus_version(), :snippet -> found[:snippet], :line -> found[:start_line]}]
+      ordinal = ordinal + 1
     end
   end
 
@@ -518,6 +524,8 @@ verb source/search_context(actor, question_text @ #string, limit, scope @ #strin
         if ContextForPlan(context, plan)
           retract ContextReason(context, _)
           assert ContextReason(context, "text_search+nearest_embedding")
+          retract ContextScore(context, _)
+          assert ContextScore(context, found[:score])
           retract ContextSnapshotVersion(context, _)
           assert ContextSnapshotVersion(context, found[:snapshot_version])
         else
@@ -531,6 +539,7 @@ verb source/search_context(actor, question_text @ #string, limit, scope @ #strin
           end
           assert RetrievedContext(context)
           assert ContextForPlan(context, plan)
+          assert ContextOrdinal(context, ordinal)
           assert ContextSubject(context, subject)
           assert ContextScore(context, found[:score])
           assert ContextReason(context, "nearest_embedding")
@@ -539,6 +548,7 @@ verb source/search_context(actor, question_text @ #string, limit, scope @ #strin
           assert source/RetrievalCitationText(plan, subject, snippet)
           assert source/RetrievalCitationLine(plan, subject, line)
           contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :snapshot_version -> found[:snapshot_version], :snippet -> snippet, :line -> line}]
+          ordinal = ordinal + 1
         end
         semantic_status = "vector_boosted"
       end
@@ -590,12 +600,19 @@ end
 
 verb source/answer_context_text(plan, actor)
   let lines = []
-  for found in ContextForPlan(?context, plan)
-    let subject = one ContextSubject(found[:context], ?subject)
-    let line = source/answer_context_line(plan, actor, subject)
-    if line != nothing
-      lines = [@lines, line]
+  let ordinal = 1
+  while ordinal <= 64
+    for found in ContextOrdinal(?context, ordinal)
+      if one ContextForPlan(found[:context], ?plan) == plan
+        let subject = one ContextSubject(found[:context], ?subject)
+        let line = source/answer_context_line(plan, actor, subject)
+        if line != nothing
+          lines = [@lines, line]
+        end
+        break
+      end
     end
+    ordinal = ordinal + 1
   end
 
   return string_join(lines, "\n\n")
@@ -1397,19 +1414,26 @@ verb source/record_agent_turn_citations(turn, plan, actor)
   end
 
   let count = 0
-  for found in ContextForPlan(?context, plan)
-    let subject = one ContextSubject(found[:context], ?subject)
-    if source/can_retrieve_subject(actor, subject)
-      assert source/AgentTurnCitation(turn, subject)
-      let text = one source/RetrievalCitationText(plan, subject, ?text)
-      if text == nothing
-        text = source/retrieval_text_unit_text(subject)
+  let ordinal = 1
+  while ordinal <= 64
+    for found in ContextOrdinal(?context, ordinal)
+      if one ContextForPlan(found[:context], ?plan) == plan
+        let subject = one ContextSubject(found[:context], ?subject)
+        if source/can_retrieve_subject(actor, subject)
+          assert source/AgentTurnCitation(turn, subject)
+          let text = one source/RetrievalCitationText(plan, subject, ?text)
+          if text == nothing
+            text = source/retrieval_text_unit_text(subject)
+          end
+          if text != nothing
+            assert source/AgentTurnCitationText(turn, subject, text)
+          end
+          count = count + 1
+        end
+        break
       end
-      if text != nothing
-        assert source/AgentTurnCitationText(turn, subject, text)
-      end
-      count = count + 1
     end
+    ordinal = ordinal + 1
   end
   return count
 end

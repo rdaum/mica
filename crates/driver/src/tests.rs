@@ -425,6 +425,7 @@ fn source_generated_answer_records_reviewable_facts() {
                      let allowed_context = retrieval/context_value(plan, #source/text_symbol_sync_view_tree)\n\
                      assert RetrievedContext(allowed_context)\n\
                      assert ContextForPlan(allowed_context, plan)\n\
+                     assert ContextOrdinal(allowed_context, 1)\n\
                      assert ContextSubject(allowed_context, #source/text_symbol_sync_view_tree)\n\
                      assert ContextScore(allowed_context, 1.0)\n\
                      assert ContextReason(allowed_context, \"test\")\n\
@@ -435,6 +436,7 @@ fn source_generated_answer_records_reviewable_facts() {
                      let secret_context = retrieval/context_value(plan, #source/secret_subject)\n\
                      assert RetrievedContext(secret_context)\n\
                      assert ContextForPlan(secret_context, plan)\n\
+                     assert ContextOrdinal(secret_context, 2)\n\
                      assert ContextSubject(secret_context, #source/secret_subject)\n\
                      assert ContextScore(secret_context, 0.9)\n\
                      assert ContextReason(secret_context, \"test\")\n\
@@ -754,6 +756,109 @@ fn source_agent_tool_activity_renders_for_web_endpoint() {
             })
             .expect("expected tool activity render tuple");
     });
+}
+
+#[test]
+fn source_retrieval_context_list_uses_context_ordinals() {
+    let mut runner = SourceRunner::new_empty();
+    load_source_app(&mut runner);
+
+    let report = runner
+        .run_source(
+            "make_identity(:source/retrieval_test_unit)\n\
+             make_identity(:source/retrieval_test_file)\n\
+             let plan = frob(#retrieval/plan, {:test -> \"ordinal\"})\n\
+             let first = frob(#source/retrieval_test_unit, {:name -> \"first\"})\n\
+             let second = frob(#source/retrieval_test_unit, {:name -> \"second\"})\n\
+             let first_file = frob(#source/retrieval_test_file, {:name -> \"first\"})\n\
+             let second_file = frob(#source/retrieval_test_file, {:name -> \"second\"})\n\
+             let first_context = retrieval/context_value(plan, first)\n\
+             let second_context = retrieval/context_value(plan, second)\n\
+             assert source/FilePath(first_file, \"first.rs\")\n\
+             assert source/FilePath(second_file, \"second.rs\")\n\
+             assert TextUnit(first)\n\
+             assert TextUnit(second)\n\
+             assert TextUnitText(first, \"first ordered result\")\n\
+             assert TextUnitText(second, \"second ordered result\")\n\
+             assert source/RetrievalTextUnitKind(first, \"rust\")\n\
+             assert source/RetrievalTextUnitKind(second, \"rust\")\n\
+             assert source/RetrievalTextUnitTitle(first, \"first result\")\n\
+             assert source/RetrievalTextUnitTitle(second, \"second result\")\n\
+             assert source/RetrievalTextUnitFile(first, first_file)\n\
+             assert source/RetrievalTextUnitFile(second, second_file)\n\
+             assert source/RetrievalTextUnitStartLine(first, 1)\n\
+             assert source/RetrievalTextUnitStartLine(second, 1)\n\
+             assert source/SelectedRetrievalPlan(endpoint(), plan)\n\
+             assert ContextForPlan(first_context, plan)\n\
+             assert ContextSubject(first_context, first)\n\
+             assert ContextScore(first_context, 1)\n\
+             assert ContextReason(first_context, \"expected-first\")\n\
+             assert ContextOrdinal(first_context, 1)\n\
+             assert ContextForPlan(second_context, plan)\n\
+             assert ContextSubject(second_context, second)\n\
+             assert ContextScore(second_context, 2)\n\
+             assert ContextReason(second_context, \"expected-second\")\n\
+             assert ContextOrdinal(second_context, 2)\n\
+             return dom_snapshot_payload(31, 1, source/retrieval_context_list_node())",
+        )
+        .unwrap();
+    let TaskOutcome::Complete { value, .. } = report.outcome else {
+        panic!(
+            "expected retrieval context list render to complete, got {:?}",
+            report.outcome
+        );
+    };
+    let payload = value
+        .with_str(str::to_owned)
+        .expect("expected rendered payload string");
+    let first_index = payload
+        .find("first ordered result")
+        .expect("expected first context snippet");
+    let second_index = payload
+        .find("second ordered result")
+        .expect("expected second context snippet");
+    assert!(
+        first_index < second_index,
+        "retrieval context UI should render ContextOrdinal order"
+    );
+}
+
+#[test]
+fn source_retrieval_search_button_is_disabled_while_prewarming() {
+    let mut runner = SourceRunner::new_empty();
+    load_source_app(&mut runner);
+
+    let report = runner
+        .run_source(
+            "let model = source/retrieval_model()\n\
+             let corpus_version = source/retrieval_corpus_version()\n\
+             retract source/RetrievalCorpusIndexVersion(#source/retrieval_index, model, _)\n\
+             retract source/RetrievalPrewarmStatus(model, _)\n\
+             assert source/RetrievalPrewarmStatus(model, \"running\")\n\
+             let running = dom_snapshot_payload(31, 1, source/retrieval_search_form_node())\n\
+             assert source/RetrievalCorpusIndexVersion(#source/retrieval_index, model, corpus_version)\n\
+             retract source/RetrievalPrewarmStatus(model, _)\n\
+             assert source/RetrievalPrewarmStatus(model, \"complete\")\n\
+             let complete = dom_snapshot_payload(31, 2, source/retrieval_search_form_node())\n\
+             return [string_contains(running, \"Indexing\"), string_contains(running, \"disabled\"), string_contains(running, \"aria-disabled\"), string_contains(complete, \"Search\"), string_contains(complete, \"disabled\") == false, string_contains(complete, \"aria-disabled\") == false]",
+        )
+        .unwrap();
+    let TaskOutcome::Complete { value, .. } = report.outcome else {
+        panic!(
+            "expected retrieval search form render to complete, got {:?}",
+            report.outcome
+        );
+    };
+    value
+        .with_list(|values| {
+            assert_eq!(values[0], Value::bool(true));
+            assert_eq!(values[1], Value::bool(true));
+            assert_eq!(values[2], Value::bool(true));
+            assert_eq!(values[3], Value::bool(true));
+            assert_eq!(values[4], Value::bool(true));
+            assert_eq!(values[5], Value::bool(true));
+        })
+        .expect("expected search button state tuple");
 }
 
 #[test]

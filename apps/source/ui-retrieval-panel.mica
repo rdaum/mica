@@ -138,12 +138,16 @@ verb source/retrieval_context_list_node()
 
   let items = []
   let count = 0
-  for found in ContextForPlan(?context, plan)
-    items = [@items, source/retrieval_context_node(found[:context])]
-    count = count + 1
-    if count >= 6
-      break
+  let ordinal = 1
+  while ordinal <= 64 && count < 6
+    for found in ContextOrdinal(?context, ordinal)
+      if one ContextForPlan(found[:context], ?plan) == plan
+        items = [@items, source/retrieval_context_node(found[:context])]
+        count = count + 1
+        break
+      end
     end
+    ordinal = ordinal + 1
   end
 
   if items == []
@@ -151,6 +155,10 @@ verb source/retrieval_context_list_node()
   end
 
   return dom_element("div", {:class -> "source-retrieval-results"}, items)
+end
+
+verb source/retrieval_loading_node()
+  return dom_element("div", {:class -> "source-retrieval-loading", "aria-live" -> "polite"}, [dom_element("span", {:class -> "source-retrieval-loading-dot"}, []), dom_text("Searching...")])
 end
 
 verb source/generate_answer_button_node()
@@ -239,5 +247,5 @@ verb source/generated_answer_panel_node()
 end
 
 verb source/retrieval_panel_node()
-  return dom_element("section", {:class -> "source-panel source-retrieval-panel"}, [dom_element("h2", {}, [dom_text("Search")]), source/retrieval_search_form_node(), source/retrieval_status_node(), source/retrieval_context_list_node()])
+  return dom_element("section", {:class -> "source-panel source-retrieval-panel"}, [dom_element("h2", {}, [dom_text("Search")]), source/retrieval_search_form_node(), source/retrieval_status_node(), source/retrieval_loading_node(), source/retrieval_context_list_node()])
 end
