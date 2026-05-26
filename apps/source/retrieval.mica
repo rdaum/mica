@@ -226,7 +226,7 @@ verb source/agent_file_context_line_limit()
     return limit
   end
 
-  return 2000
+  return 20000
 end
 
 verb source/default_retrieval_scope()
@@ -733,7 +733,7 @@ end
 
 verb source/agent_prompt_text(user_text @ #string, focus_text @ #string, context_text @ #string)
   let schema_text = source/agent_workspace_schema_text()
-  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. Use retrieved context only as supporting evidence. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. If the current file context is truncated or evidence is missing, say what extra file lines or source facts are needed. Do not claim you inspected unavailable context.\n\n", schema_text, "\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
+  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. Use retrieved context only as supporting evidence. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. If the current file context is truncated and the answer depends on unavailable lines, call source_file_window for the needed line range before answering. If evidence is still missing, say what extra file lines or source facts are needed. Do not claim you inspected unavailable context.\n\n", schema_text, "\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
 end
 
 verb source/agent_tool_options()
@@ -758,7 +758,7 @@ verb source/agent_tool_options()
   let proposal_tool = {:type -> "function", :function -> proposal_function}
   let window_properties = {:path -> {:type -> "string", :description -> "Repository-relative path. Defaults to the current selected file."}, :start_line -> {:type -> "integer", :description -> "One-based starting line. Defaults to 1."}, :line_count -> {:type -> "integer", :description -> "Number of lines to return. Capped at 200."}}
   let window_parameters = {:type -> "object", :properties -> window_properties, :additionalProperties -> false}
-  let window_function = {:name -> "source_file_window", :description -> "Read a bounded line window from a source file without writing a Mica query.", :parameters -> window_parameters}
+  let window_function = {:name -> "source_file_window", :description -> "Read a bounded line window from a source file without writing a Mica query. Use this when current file context is truncated or a specific line range is needed.", :parameters -> window_parameters}
   let window_tool = {:type -> "function", :function -> window_function}
   return {:temperature -> 0.2, :tools -> [search_tool, symbol_tool, references_tool, proposal_tool, window_tool, query_tool], :tool_choice -> "auto"}
 end

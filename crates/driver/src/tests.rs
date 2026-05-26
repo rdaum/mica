@@ -586,7 +586,7 @@ fn source_runtime_config_can_override_retrieval_and_generation_defaults() {
             assert_eq!(values[1], Value::string("openrouter"));
             assert_eq!(values[2], Value::string("source-workspace"));
             assert_eq!(values[3], Value::int(8).unwrap());
-            assert_eq!(values[4], Value::int(2000).unwrap());
+            assert_eq!(values[4], Value::int(20000).unwrap());
             assert_eq!(values[5], Value::string("openai/gpt-4.1"));
             assert_eq!(values[6], Value::int(17).unwrap());
             assert_eq!(values[7], Value::string("test-provider"));
@@ -693,6 +693,11 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                 assert!(
                     prompt
                         .with_str(|prompt| prompt.contains("current file context is truncated"))
+                        .unwrap_or(false)
+                );
+                assert!(
+                    prompt
+                        .with_str(|prompt| prompt.contains("call source_file_window"))
                         .unwrap_or(false)
                 );
                 Value::map([
