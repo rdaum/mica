@@ -29,6 +29,7 @@ dogstatsd_endpoint="${MICA_SOURCE_DOGSTATSD_ENDPOINT-127.0.0.1:8125}"
 dogstatsd_interval_secs="${MICA_SOURCE_DOGSTATSD_INTERVAL_SECS:-10}"
 build_source_index="${MICA_SOURCE_BUILD_INDEX:-1}"
 prewarm_retrieval_index="${MICA_SOURCE_PREWARM_RETRIEVAL_INDEX:-1}"
+source_agent_file_context_lines="${MICA_SOURCE_AGENT_FILE_CONTEXT_LINES:-2000}"
 source_agent_model="${MICA_SOURCE_AGENT_MODEL:-deepseek/deepseek-v4-pro}"
 source_generation_provider="${MICA_SOURCE_GENERATION_PROVIDER:-openrouter}"
 source_retrieval_limit="${MICA_SOURCE_RETRIEVAL_LIMIT:-8}"
@@ -73,6 +74,11 @@ mica_string_literal() {
 
 if [[ ! "${source_retrieval_limit}" =~ ^[0-9]+$ ]]; then
   echo "MICA_SOURCE_RETRIEVAL_LIMIT must be a non-negative integer" >&2
+  exit 1
+fi
+
+if [[ ! "${source_agent_file_context_lines}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MICA_SOURCE_AGENT_FILE_CONTEXT_LINES must be a positive integer" >&2
   exit 1
 fi
 
@@ -134,13 +140,15 @@ source_retrieval_model_literal="$(mica_string_literal "${source_retrieval_model}
 daemon_args+=(
   --startup-source "retract source/RuntimeConfig(#source/config_agent_model, _)
 assert source/RuntimeConfig(#source/config_agent_model, ${source_agent_model_literal})
+retract source/RuntimeConfig(#source/config_agent_file_context_line_limit, _)
+assert source/RuntimeConfig(#source/config_agent_file_context_line_limit, ${source_agent_file_context_lines})
 retract source/RuntimeConfig(#source/config_generation_provider, _)
 assert source/RuntimeConfig(#source/config_generation_provider, ${source_generation_provider_literal})
 retract source/RuntimeConfig(#source/config_retrieval_limit, _)
 assert source/RuntimeConfig(#source/config_retrieval_limit, ${source_retrieval_limit})
 retract source/RuntimeConfig(#source/config_retrieval_model, _)
 assert source/RuntimeConfig(#source/config_retrieval_model, ${source_retrieval_model_literal})
-return {:agent_model -> ${source_agent_model_literal}, :generation_provider -> ${source_generation_provider_literal}, :retrieval_limit -> ${source_retrieval_limit}, :retrieval_model -> ${source_retrieval_model_literal}}"
+return {:agent_file_context_lines -> ${source_agent_file_context_lines}, :agent_model -> ${source_agent_model_literal}, :generation_provider -> ${source_generation_provider_literal}, :retrieval_limit -> ${source_retrieval_limit}, :retrieval_model -> ${source_retrieval_model_literal}}"
 )
 
 if [[ "${MICA_SOURCE_NO_LOG_ANSI:-}" == "1" ]]; then
@@ -188,6 +196,7 @@ Manual values:
   Retrieval limit: ${source_retrieval_limit}
   Source index: ${MICA_SOURCE_INDEX}
   Retrieval prewarm: ${prewarm_retrieval_index}
+  Source agent file context lines: ${source_agent_file_context_lines}
   Source agent model: ${source_agent_model}
   Source generation provider: ${source_generation_provider}
   DogStatsD endpoint: ${dogstatsd_endpoint:-disabled}

@@ -493,11 +493,13 @@ fn source_runtime_config_can_override_retrieval_and_generation_defaults() {
              let default_provider = source/generation_provider()\n\
              let default_retrieval_model = source/retrieval_model()\n\
              let default_limit = source/retrieval_limit()\n\
+             let default_file_context_limit = source/agent_file_context_line_limit()\n\
              assert source/RuntimeConfig(#source/config_agent_model, \"openai/gpt-4.1\")\n\
+             assert source/RuntimeConfig(#source/config_agent_file_context_line_limit, 17)\n\
              assert source/RuntimeConfig(#source/config_generation_provider, \"test-provider\")\n\
              assert source/RuntimeConfig(#source/config_retrieval_model, \"test-retrieval-model\")\n\
              assert source/RuntimeConfig(#source/config_retrieval_limit, 13)\n\
-             return [default_model, default_provider, default_retrieval_model, default_limit, source/generation_model(), source/generation_provider(), source/retrieval_model(), source/retrieval_limit()]",
+             return [default_model, default_provider, default_retrieval_model, default_limit, default_file_context_limit, source/generation_model(), source/agent_file_context_line_limit(), source/generation_provider(), source/retrieval_model(), source/retrieval_limit()]",
         )
         .unwrap();
     let TaskOutcome::Complete { value, .. } = report.outcome else {
@@ -512,10 +514,12 @@ fn source_runtime_config_can_override_retrieval_and_generation_defaults() {
             assert_eq!(values[1], Value::string("openrouter"));
             assert_eq!(values[2], Value::string("source-workspace"));
             assert_eq!(values[3], Value::int(8).unwrap());
-            assert_eq!(values[4], Value::string("openai/gpt-4.1"));
-            assert_eq!(values[5], Value::string("test-provider"));
-            assert_eq!(values[6], Value::string("test-retrieval-model"));
-            assert_eq!(values[7], Value::int(13).unwrap());
+            assert_eq!(values[4], Value::int(2000).unwrap());
+            assert_eq!(values[5], Value::string("openai/gpt-4.1"));
+            assert_eq!(values[6], Value::int(17).unwrap());
+            assert_eq!(values[7], Value::string("test-provider"));
+            assert_eq!(values[8], Value::string("test-retrieval-model"));
+            assert_eq!(values[9], Value::int(13).unwrap());
         })
         .expect("expected source runtime config tuple");
 }
@@ -601,6 +605,11 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                 );
                 assert!(
                     prompt
+                        .with_str(|prompt| prompt.contains("Value::int(5).unwrap()"))
+                        .unwrap_or(false)
+                );
+                assert!(
+                    prompt
                         .with_str(|prompt| prompt.contains("sync_view_tree"))
                         .unwrap_or(false)
                 );
@@ -675,7 +684,7 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                  let plan = one source/AgentTurnPlan(assistant, ?plan)\n\
                  let context_text = one source/AgentTurnContextText(assistant, ?text)\n\
                  let prompt = one source/AgentTurnPromptText(assistant, ?text)\n\
-                 return [user != nothing, assistant != nothing, assistant_text, model, plan != nothing, string_contains(context_text, \"Current file:\"), string_contains(prompt, \"Current source focus:\")]".to_owned(),
+                 return [user != nothing, assistant != nothing, assistant_text, model, plan != nothing, string_contains(context_text, \"Current file:\"), string_contains(context_text, \"Value::int(5).unwrap()\"), string_contains(prompt, \"Current source focus:\")]".to_owned(),
             )
             .await
             .unwrap();
@@ -697,6 +706,7 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                 assert_eq!(values[4], Value::bool(true));
                 assert_eq!(values[5], Value::bool(true));
                 assert_eq!(values[6], Value::bool(true));
+                assert_eq!(values[7], Value::bool(true));
             })
             .expect("expected source agent facts tuple");
 

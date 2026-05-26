@@ -15,6 +15,7 @@ make_identity(:source/text_design_doc_graphrag)
 make_identity(:source/symbol_sync_view_tree)
 make_identity(:source/agent_turn)
 make_identity(:source/agent_tool_request)
+make_identity(:source/config_agent_file_context_line_limit)
 make_identity(:source/config_agent_model)
 make_identity(:source/config_generation_provider)
 make_identity(:source/config_retrieval_limit)
@@ -208,6 +209,15 @@ verb source/retrieval_limit()
   end
 
   return 8
+end
+
+verb source/agent_file_context_line_limit()
+  let limit = one source/RuntimeConfig(#source/config_agent_file_context_line_limit, ?limit)
+  if limit != nothing && limit > 0
+    return limit
+  end
+
+  return 2000
 end
 
 verb source/default_retrieval_scope()
@@ -591,22 +601,31 @@ verb source/current_file_context_text(endpoint)
   if path == nothing
     path = source/current_file()
   end
+  if path == nothing
+    return "No source file is currently selected."
+  end
   let line_count = one source/FileLineCount(repository, revision, path, ?line_count)
   if line_count == nothing
     return string_concat("Current file: ", path, "\nNo file text is available.")
   end
-  let start_line = source/current_window_start(line_count)
-  let limit = 120
+  let limit = source/agent_file_context_line_limit()
+  if line_count < limit
+    limit = line_count
+  end
   let lines = []
-  for row in source/FileLines(repository, revision, path, start_line, limit, ?file_lines, ?hash)
-    let line_number = start_line
+  for row in source/FileLines(repository, revision, path, 1, limit, ?file_lines, ?hash)
+    let line_number = 1
     for text in row[:file_lines]
       lines = [@lines, string_concat(to_literal(line_number), ": ", text)]
       line_number = line_number + 1
     end
     break
   end
-  return string_concat("Current file: ", path, "\nVisible lines from ", to_literal(start_line), ":\n", string_join(lines, "\n"))
+  let truncation = ""
+  if line_count > limit
+    truncation = string_concat("\n\nFile context truncated at ", to_literal(limit), " of ", to_literal(line_count), " lines.")
+  end
+  return string_concat("Current file: ", path, "\nFile lines 1-", to_literal(limit), " of ", to_literal(line_count), ":\n", string_join(lines, "\n"), truncation)
 end
 
 verb source/agent_history_text(endpoint)
