@@ -37,10 +37,11 @@ pub use task_manager::{
 };
 
 use mica_compiler::{
-    BinaryOp, CollectionItem, CompileContext, CompileError, Expr, HirCollectionItem, HirExpr,
-    HirItem, HostRequestFunction, Item, Literal, MethodInstallation, MethodKind, MethodRelations,
-    NodeId, UnaryOp, compile_semantic, install_methods, install_rules_from_source, parse,
-    parse_ast, parse_semantic,
+    BinaryOp, CollectionItem, CompileContext, CompileError, Expr, HirArg, HirCatch,
+    HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirPlace, HirRecovery, HirRelationAtom,
+    HostRequestFunction, Item, Literal, MethodInstallation, MethodKind, MethodRelations, NodeId,
+    UnaryOp, compile_semantic, install_methods, install_rules_from_source, parse, parse_ast,
+    parse_semantic,
 };
 use mica_host_protocol::{
     DomNode, diff_dom_nodes, is_supported_dom_attribute, is_supported_dom_tag,
@@ -235,6 +236,102 @@ pub enum SourceTaskError {
     TaskManager(TaskManagerError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadOnlySourceQueryOptions {
+    pub max_output_chars: usize,
+    pub instruction_budget: usize,
+    pub max_call_depth: usize,
+}
+
+impl Default for ReadOnlySourceQueryOptions {
+    fn default() -> Self {
+        Self {
+            max_output_chars: 4_000,
+            instruction_budget: 50_000,
+            max_call_depth: 16,
+        }
+    }
+}
+
+impl ReadOnlySourceQueryOptions {
+    fn task_limits(self) -> TaskLimits {
+        TaskLimits {
+            instruction_budget: self.instruction_budget.max(1),
+            max_retries: 0,
+            max_call_depth: self.max_call_depth.max(1),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadOnlySourceQueryStatus {
+    Complete,
+    Aborted,
+    Suspended,
+    Rejected,
+    Error,
+}
+
+impl ReadOnlySourceQueryStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Aborted => "aborted",
+            Self::Suspended => "suspended",
+            Self::Rejected => "rejected",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadOnlySourceQueryReport {
+    pub task_id: Option<TaskId>,
+    pub status: ReadOnlySourceQueryStatus,
+    pub value: Option<Value>,
+    pub error: Option<Value>,
+    pub diagnostics: Vec<String>,
+    pub rendered: String,
+    pub rendered_truncated: bool,
+}
+
+impl ReadOnlySourceQueryReport {
+    pub fn as_value(&self) -> Value {
+        Value::map([
+            (
+                Value::symbol(Symbol::intern("task_id")),
+                self.task_id
+                    .and_then(|task_id| Value::int(task_id as i64).ok())
+                    .unwrap_or_else(Value::nothing),
+            ),
+            (
+                Value::symbol(Symbol::intern("status")),
+                Value::string(self.status.as_str()),
+            ),
+            (
+                Value::symbol(Symbol::intern("value")),
+                self.value.clone().unwrap_or_else(Value::nothing),
+            ),
+            (
+                Value::symbol(Symbol::intern("error")),
+                self.error.clone().unwrap_or_else(Value::nothing),
+            ),
+            (
+                Value::symbol(Symbol::intern("diagnostics")),
+                Value::list(self.diagnostics.iter().cloned().map(Value::string)),
+            ),
+            (
+                Value::symbol(Symbol::intern("rendered")),
+                Value::string(self.rendered.clone()),
+            ),
+            (
+                Value::symbol(Symbol::intern("rendered_truncated")),
+                Value::bool(self.rendered_truncated),
+            ),
+        ])
+    }
+}
+
 impl From<CompileError> for SourceTaskError {
     fn from(value: CompileError) -> Self {
         Self::Compile(value)
@@ -407,6 +504,31 @@ impl SourceRunner {
             authority: authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?,
             input: TaskInput::Source(source.into()),
         })
+    }
+
+    pub fn run_read_only_source_query_for_endpoint(
+        &mut self,
+        endpoint: Identity,
+        source: impl Into<String>,
+        options: ReadOnlySourceQueryOptions,
+    ) -> Result<ReadOnlySourceQueryReport, SourceTaskError> {
+        let runtime_context = self.endpoint_runtime_context(endpoint)?;
+        let authority =
+            read_only_authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?;
+        let context = self.read_only_context_for_execution(
+            runtime_context.principal(),
+            runtime_context.actor(),
+            endpoint,
+        );
+        self.run_read_only_source_query(
+            runtime_context.principal(),
+            runtime_context.actor(),
+            endpoint,
+            authority,
+            &context,
+            source.into(),
+            options,
+        )
     }
 
     pub fn named_identity(&self, name: Symbol) -> Result<Identity, SourceTaskError> {
@@ -805,6 +927,93 @@ impl SourceRunner {
         }
         context.define_identity("endpoint", endpoint);
         context
+    }
+
+    fn read_only_context_for_execution(
+        &self,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        endpoint: Identity,
+    ) -> CompileContext {
+        let mut context = self.context.clone();
+        if let Some(principal) = principal {
+            context.define_identity("principal", principal);
+        }
+        if let Some(actor) = actor {
+            context.define_identity("actor", actor);
+        }
+        context.define_identity("endpoint", endpoint);
+        context
+    }
+
+    fn run_read_only_source_query(
+        &mut self,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        endpoint: Identity,
+        authority: AuthorityContext,
+        context: &CompileContext,
+        source: String,
+        options: ReadOnlySourceQueryOptions,
+    ) -> Result<ReadOnlySourceQueryReport, SourceTaskError> {
+        let semantic = parse_semantic(&source);
+        if let Err(error) = reject_semantic_parse_or_diagnostic(&semantic) {
+            return Ok(self.rejected_read_only_query_report(error, options));
+        }
+        if let Err(error) = validate_read_only_source_query(&semantic) {
+            return Ok(self.rejected_read_only_query_report(error, options));
+        }
+        let compiled = match compile_semantic(semantic, context) {
+            Ok(compiled) => compiled,
+            Err(error) => return Ok(self.rejected_read_only_query_report(error, options)),
+        };
+        let runtime_context = runtime_context(principal, actor, endpoint);
+        let (task_id, outcome) = self.task_manager.submit_with_context_and_limits(
+            Arc::new(compiled.program),
+            authority,
+            runtime_context,
+            options.task_limits(),
+        )?;
+        self.refresh_context_from_catalog();
+        Ok(self.read_only_query_report(Some(task_id), outcome, options))
+    }
+
+    fn rejected_read_only_query_report(
+        &self,
+        error: CompileError,
+        options: ReadOnlySourceQueryOptions,
+    ) -> ReadOnlySourceQueryReport {
+        let diagnostic = render_source_task_error(
+            &SourceTaskError::Compile(error),
+            &self.identity_names(),
+            &self.relation_names(),
+        );
+        let (rendered, rendered_truncated) =
+            truncate_rendered_text(diagnostic.clone(), options.max_output_chars);
+        ReadOnlySourceQueryReport {
+            task_id: None,
+            status: ReadOnlySourceQueryStatus::Rejected,
+            value: None,
+            error: None,
+            diagnostics: vec![diagnostic],
+            rendered,
+            rendered_truncated,
+        }
+    }
+
+    fn read_only_query_report(
+        &self,
+        task_id: Option<TaskId>,
+        outcome: TaskOutcome,
+        options: ReadOnlySourceQueryOptions,
+    ) -> ReadOnlySourceQueryReport {
+        read_only_query_report(
+            task_id,
+            outcome,
+            options,
+            &self.identity_names(),
+            &self.relation_names(),
+        )
     }
 
     pub fn run_source_as(
@@ -1238,6 +1447,31 @@ impl SharedSourceRunner {
         })
     }
 
+    pub fn run_read_only_source_query_for_endpoint(
+        &self,
+        endpoint: Identity,
+        source: impl Into<String>,
+        options: ReadOnlySourceQueryOptions,
+    ) -> Result<ReadOnlySourceQueryReport, SourceTaskError> {
+        let runtime_context = self.endpoint_runtime_context(endpoint)?;
+        let authority =
+            read_only_authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?;
+        let context = self.read_only_context_for_execution(
+            runtime_context.principal(),
+            runtime_context.actor(),
+            endpoint,
+        );
+        self.run_read_only_source_query(
+            runtime_context.principal(),
+            runtime_context.actor(),
+            endpoint,
+            authority,
+            &context,
+            source.into(),
+            options,
+        )
+    }
+
     pub fn source_request_as(
         &self,
         actor: Symbol,
@@ -1623,6 +1857,92 @@ impl SharedSourceRunner {
         }
         context.define_identity("endpoint", endpoint);
         context
+    }
+
+    fn read_only_context_for_execution(
+        &self,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        endpoint: Identity,
+    ) -> CompileContext {
+        let mut context = compile_context_from_catalog(self.task_manager.kernel());
+        if let Some(principal) = principal {
+            context.define_identity("principal", principal);
+        }
+        if let Some(actor) = actor {
+            context.define_identity("actor", actor);
+        }
+        context.define_identity("endpoint", endpoint);
+        context
+    }
+
+    fn run_read_only_source_query(
+        &self,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        endpoint: Identity,
+        authority: AuthorityContext,
+        context: &CompileContext,
+        source: String,
+        options: ReadOnlySourceQueryOptions,
+    ) -> Result<ReadOnlySourceQueryReport, SourceTaskError> {
+        let semantic = parse_semantic(&source);
+        if let Err(error) = reject_semantic_parse_or_diagnostic(&semantic) {
+            return Ok(self.rejected_read_only_query_report(error, options));
+        }
+        if let Err(error) = validate_read_only_source_query(&semantic) {
+            return Ok(self.rejected_read_only_query_report(error, options));
+        }
+        let compiled = match compile_semantic(semantic, context) {
+            Ok(compiled) => compiled,
+            Err(error) => return Ok(self.rejected_read_only_query_report(error, options)),
+        };
+        let runtime_context = runtime_context(principal, actor, endpoint);
+        let (task_id, outcome) = self.task_manager.submit_with_context_and_limits(
+            Arc::new(compiled.program),
+            authority,
+            runtime_context,
+            options.task_limits(),
+        )?;
+        Ok(self.read_only_query_report(Some(task_id), outcome, options))
+    }
+
+    fn rejected_read_only_query_report(
+        &self,
+        error: CompileError,
+        options: ReadOnlySourceQueryOptions,
+    ) -> ReadOnlySourceQueryReport {
+        let diagnostic = render_source_task_error(
+            &SourceTaskError::Compile(error),
+            &self.identity_names(),
+            &self.relation_names(),
+        );
+        let (rendered, rendered_truncated) =
+            truncate_rendered_text(diagnostic.clone(), options.max_output_chars);
+        ReadOnlySourceQueryReport {
+            task_id: None,
+            status: ReadOnlySourceQueryStatus::Rejected,
+            value: None,
+            error: None,
+            diagnostics: vec![diagnostic],
+            rendered,
+            rendered_truncated,
+        }
+    }
+
+    fn read_only_query_report(
+        &self,
+        task_id: Option<TaskId>,
+        outcome: TaskOutcome,
+        options: ReadOnlySourceQueryOptions,
+    ) -> ReadOnlySourceQueryReport {
+        read_only_query_report(
+            task_id,
+            outcome,
+            options,
+            &self.identity_names(),
+            &self.relation_names(),
+        )
     }
 
     fn identity_names(&self) -> BTreeMap<Identity, String> {
@@ -2343,6 +2663,64 @@ fn source_literal(
             })
             .unwrap(),
     }
+}
+
+fn read_only_query_report(
+    task_id: Option<TaskId>,
+    outcome: TaskOutcome,
+    options: ReadOnlySourceQueryOptions,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> ReadOnlySourceQueryReport {
+    let (status, value, error, rendered_value) = match outcome {
+        TaskOutcome::Complete { value, .. } => {
+            let rendered = source_literal(&value, identity_names, relation_names);
+            (
+                ReadOnlySourceQueryStatus::Complete,
+                Some(value),
+                None,
+                rendered,
+            )
+        }
+        TaskOutcome::Aborted { error, .. } => {
+            let rendered = source_literal(&error, identity_names, relation_names);
+            (
+                ReadOnlySourceQueryStatus::Aborted,
+                None,
+                Some(error),
+                rendered,
+            )
+        }
+        TaskOutcome::Suspended { kind, .. } => (
+            ReadOnlySourceQueryStatus::Suspended,
+            None,
+            None,
+            format!("query suspended: {kind:?}"),
+        ),
+    };
+    let (rendered, rendered_truncated) =
+        truncate_rendered_text(rendered_value, options.max_output_chars);
+    ReadOnlySourceQueryReport {
+        task_id,
+        status,
+        value,
+        error,
+        diagnostics: Vec::new(),
+        rendered,
+        rendered_truncated,
+    }
+}
+
+fn truncate_rendered_text(text: String, max_chars: usize) -> (String, bool) {
+    if max_chars == 0 {
+        return (String::new(), !text.is_empty());
+    }
+    if text.chars().count() <= max_chars {
+        return (text, false);
+    }
+    let mut rendered = text.chars().take(max_chars).collect::<String>();
+    rendered.push_str("\n... truncated");
+    (rendered, true)
 }
 
 fn installed_rule_value(rules: &[mica_relation_kernel::RuleDefinition]) -> Value {
@@ -4926,6 +5304,44 @@ fn authority_for_runtime_context(
     }
 }
 
+fn read_only_authority_for_actor(
+    kernel: &RelationKernel,
+    actor: Identity,
+) -> Result<AuthorityContext, SourceTaskError> {
+    let mut authority = AuthorityContext::empty();
+    let relation_names = relation_name_index(kernel);
+    for policy_name in ["CanRead", "GrantRead"] {
+        mint_relation_grants(
+            kernel,
+            actor,
+            policy_name,
+            CapabilityOp::Read,
+            &relation_names,
+            &mut authority,
+        )?;
+    }
+    mint_role_relation_grants(
+        kernel,
+        actor,
+        "RoleCanRead",
+        CapabilityOp::Read,
+        &relation_names,
+        &mut authority,
+    )?;
+    Ok(authority)
+}
+
+fn read_only_authority_for_runtime_context(
+    kernel: &RelationKernel,
+    runtime_context: RuntimeContext,
+) -> Result<AuthorityContext, SourceTaskError> {
+    match (runtime_context.actor(), runtime_context.principal()) {
+        (Some(actor), _) => read_only_authority_for_actor(kernel, actor),
+        (None, Some(principal)) => read_only_authority_for_actor(kernel, principal),
+        (None, None) => Ok(AuthorityContext::empty()),
+    }
+}
+
 fn mint_relation_grants(
     kernel: &RelationKernel,
     actor: Identity,
@@ -5351,6 +5767,345 @@ fn item_id(item: &HirItem) -> mica_compiler::NodeId {
         HirItem::Expr { id, .. }
         | HirItem::RelationRule { id, .. }
         | HirItem::Method { id, .. } => *id,
+    }
+}
+
+fn reject_semantic_parse_or_diagnostic(
+    semantic: &mica_compiler::SemanticProgram,
+) -> Result<(), CompileError> {
+    if !semantic.parse_errors.is_empty() {
+        return Err(CompileError::ParseErrors {
+            count: semantic.parse_errors.len(),
+        });
+    }
+    if let Some(diagnostic) = semantic.diagnostics.first() {
+        return Err(CompileError::SemanticDiagnostic {
+            diagnostic: diagnostic.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_read_only_source_query(
+    semantic: &mica_compiler::SemanticProgram,
+) -> Result<(), CompileError> {
+    for item in &semantic.hir.items {
+        validate_read_only_item(semantic, item)?;
+    }
+    Ok(())
+}
+
+fn validate_read_only_item(
+    semantic: &mica_compiler::SemanticProgram,
+    item: &HirItem,
+) -> Result<(), CompileError> {
+    match item {
+        HirItem::Expr { expr, .. } => validate_read_only_expr(semantic, expr),
+        HirItem::RelationRule { .. } => Err(read_only_query_rejection(
+            semantic,
+            item_id(item),
+            "read-only query cannot install relation rules",
+        )),
+        HirItem::Method { .. } => Err(read_only_query_rejection(
+            semantic,
+            item_id(item),
+            "read-only query cannot install methods",
+        )),
+    }
+}
+
+fn validate_read_only_items(
+    semantic: &mica_compiler::SemanticProgram,
+    items: &[HirItem],
+) -> Result<(), CompileError> {
+    for item in items {
+        validate_read_only_item(semantic, item)?;
+    }
+    Ok(())
+}
+
+fn validate_read_only_expr(
+    semantic: &mica_compiler::SemanticProgram,
+    expr: &HirExpr,
+) -> Result<(), CompileError> {
+    match expr {
+        HirExpr::Literal { .. }
+        | HirExpr::LocalRef { .. }
+        | HirExpr::ExternalRef { .. }
+        | HirExpr::Identity { .. }
+        | HirExpr::Symbol { .. }
+        | HirExpr::QueryVar { .. }
+        | HirExpr::Hole { .. }
+        | HirExpr::Error { .. } => Ok(()),
+        HirExpr::Frob { id: _, value, .. } => validate_read_only_expr(semantic, value),
+        HirExpr::List { items, .. } => {
+            for item in items {
+                match item {
+                    HirCollectionItem::Expr(expr) | HirCollectionItem::Splice(expr) => {
+                        validate_read_only_expr(semantic, expr)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        HirExpr::Map { entries, .. } => {
+            for (key, value) in entries {
+                validate_read_only_expr(semantic, key)?;
+                validate_read_only_expr(semantic, value)?;
+            }
+            Ok(())
+        }
+        HirExpr::Unary { expr, .. } => validate_read_only_expr(semantic, expr),
+        HirExpr::Binary { left, right, .. } => {
+            validate_read_only_expr(semantic, left)?;
+            validate_read_only_expr(semantic, right)
+        }
+        HirExpr::Assign { target, value, .. } => {
+            validate_read_only_place(semantic, target)?;
+            validate_read_only_expr(semantic, value)
+        }
+        HirExpr::Call { id, callee, args } => validate_read_only_call(semantic, *id, callee, args),
+        HirExpr::RoleDispatch { id, .. } | HirExpr::ReceiverDispatch { id, .. } => Err(
+            read_only_query_rejection(semantic, *id, "read-only query cannot invoke methods"),
+        ),
+        HirExpr::Spawn { id, .. } => Err(read_only_query_rejection(
+            semantic,
+            *id,
+            "read-only query cannot spawn tasks",
+        )),
+        HirExpr::RelationAtom(atom) => validate_read_only_relation_atom(semantic, atom),
+        HirExpr::FactChange { id, .. } => Err(read_only_query_rejection(
+            semantic,
+            *id,
+            "read-only query cannot assert or retract facts",
+        )),
+        HirExpr::Require { condition, .. } => validate_read_only_expr(semantic, condition),
+        HirExpr::Index {
+            collection, index, ..
+        } => {
+            validate_read_only_expr(semantic, collection)?;
+            if let Some(index) = index {
+                validate_read_only_expr(semantic, index)?;
+            }
+            Ok(())
+        }
+        HirExpr::Field { base, .. } => validate_read_only_expr(semantic, base),
+        HirExpr::Binding { value, scatter, .. } => {
+            if let Some(value) = value {
+                validate_read_only_expr(semantic, value)?;
+            }
+            for binding in scatter {
+                if let Some(default) = &binding.default {
+                    validate_read_only_expr(semantic, default)?;
+                }
+            }
+            Ok(())
+        }
+        HirExpr::If {
+            condition,
+            then_items,
+            elseif,
+            else_items,
+            ..
+        } => {
+            validate_read_only_expr(semantic, condition)?;
+            validate_read_only_items(semantic, then_items)?;
+            for (condition, items) in elseif {
+                validate_read_only_expr(semantic, condition)?;
+                validate_read_only_items(semantic, items)?;
+            }
+            validate_read_only_items(semantic, else_items)
+        }
+        HirExpr::Block { items, .. } => validate_read_only_items(semantic, items),
+        HirExpr::For { iter, body, .. } => {
+            validate_read_only_expr(semantic, iter)?;
+            validate_read_only_items(semantic, body)
+        }
+        HirExpr::While {
+            condition, body, ..
+        } => {
+            validate_read_only_expr(semantic, condition)?;
+            validate_read_only_items(semantic, body)
+        }
+        HirExpr::Return { value, .. } => {
+            if let Some(value) = value {
+                validate_read_only_expr(semantic, value)?;
+            }
+            Ok(())
+        }
+        HirExpr::Raise {
+            error,
+            message,
+            value,
+            ..
+        } => {
+            validate_read_only_expr(semantic, error)?;
+            if let Some(message) = message {
+                validate_read_only_expr(semantic, message)?;
+            }
+            if let Some(value) = value {
+                validate_read_only_expr(semantic, value)?;
+            }
+            Ok(())
+        }
+        HirExpr::Recover { expr, catches, .. } => {
+            validate_read_only_expr(semantic, expr)?;
+            for catch in catches {
+                validate_read_only_recovery(semantic, catch)?;
+            }
+            Ok(())
+        }
+        HirExpr::One { expr, .. } => validate_read_only_expr(semantic, expr),
+        HirExpr::Break { .. } | HirExpr::Continue { .. } => Ok(()),
+        HirExpr::Try {
+            body,
+            catches,
+            finally,
+            ..
+        } => {
+            validate_read_only_items(semantic, body)?;
+            for catch in catches {
+                validate_read_only_catch(semantic, catch)?;
+            }
+            validate_read_only_items(semantic, finally)
+        }
+        HirExpr::Function { params, body, .. } => {
+            for param in params {
+                if let Some(default) = &param.default {
+                    validate_read_only_expr(semantic, default)?;
+                }
+            }
+            match body {
+                HirFunctionBody::Expr(expr) => validate_read_only_expr(semantic, expr),
+                HirFunctionBody::Block(items) => validate_read_only_items(semantic, items),
+            }
+        }
+    }
+}
+
+fn validate_read_only_call(
+    semantic: &mica_compiler::SemanticProgram,
+    id: NodeId,
+    callee: &HirExpr,
+    args: &[HirArg],
+) -> Result<(), CompileError> {
+    if let HirExpr::ExternalRef { name, .. } = callee
+        && !is_safe_read_only_builtin(name)
+    {
+        return Err(read_only_query_rejection(
+            semantic,
+            id,
+            format!("read-only query cannot call `{name}`"),
+        ));
+    }
+    validate_read_only_expr(semantic, callee)?;
+    for arg in args {
+        validate_read_only_expr(semantic, &arg.value)?;
+    }
+    Ok(())
+}
+
+fn validate_read_only_relation_atom(
+    semantic: &mica_compiler::SemanticProgram,
+    atom: &HirRelationAtom,
+) -> Result<(), CompileError> {
+    for arg in &atom.args {
+        validate_read_only_expr(semantic, &arg.value)?;
+    }
+    Ok(())
+}
+
+fn validate_read_only_place(
+    semantic: &mica_compiler::SemanticProgram,
+    place: &HirPlace,
+) -> Result<(), CompileError> {
+    match place {
+        HirPlace::Local { .. } => Ok(()),
+        HirPlace::Index {
+            collection, index, ..
+        } => {
+            validate_read_only_expr(semantic, collection)?;
+            if let Some(index) = index {
+                validate_read_only_expr(semantic, index)?;
+            }
+            Ok(())
+        }
+        HirPlace::Dot { base, .. } => validate_read_only_expr(semantic, base),
+        HirPlace::Invalid { id, .. } => Err(read_only_query_rejection(
+            semantic,
+            *id,
+            "read-only query contains an invalid assignment target",
+        )),
+    }
+}
+
+fn validate_read_only_catch(
+    semantic: &mica_compiler::SemanticProgram,
+    catch: &HirCatch,
+) -> Result<(), CompileError> {
+    if let Some(condition) = &catch.condition {
+        validate_read_only_expr(semantic, condition)?;
+    }
+    validate_read_only_items(semantic, &catch.body)
+}
+
+fn validate_read_only_recovery(
+    semantic: &mica_compiler::SemanticProgram,
+    recovery: &HirRecovery,
+) -> Result<(), CompileError> {
+    if let Some(condition) = &recovery.condition {
+        validate_read_only_expr(semantic, condition)?;
+    }
+    validate_read_only_expr(semantic, &recovery.value)
+}
+
+fn is_safe_read_only_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "actor"
+            | "principal"
+            | "endpoint"
+            | "frob"
+            | "frob_delegate"
+            | "frob_value"
+            | "is_frob"
+            | "to_literal"
+            | "from_literal"
+            | "json_encode"
+            | "dom_text"
+            | "dom_raw"
+            | "dom_element"
+            | "dom_html"
+            | "to_xml"
+            | "from_xml"
+            | "dom_diff"
+            | "dom_snapshot_payload"
+            | "sync_signature"
+            | "string_len"
+            | "string_chars"
+            | "string_slice"
+            | "string_from_chars"
+            | "string_concat"
+            | "string_join"
+            | "words"
+            | "string_starts_with"
+            | "string_contains"
+            | "string_equal_fold"
+            | "edit_distance"
+            | "parse_ordinal"
+            | "lower"
+    )
+}
+
+fn read_only_query_rejection(
+    semantic: &mica_compiler::SemanticProgram,
+    node: NodeId,
+    message: impl Into<String>,
+) -> CompileError {
+    CompileError::Unsupported {
+        node,
+        span: semantic.span(node).cloned(),
+        message: message.into(),
     }
 }
 

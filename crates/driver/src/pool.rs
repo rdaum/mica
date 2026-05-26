@@ -18,9 +18,10 @@ use crate::{
 };
 use compio::dispatcher::Dispatcher;
 use mica_runtime::{
-    AuthorityContext, MailboxRecvRequest, RunReport, RuntimeError, SYSTEM_ENDPOINT,
-    SharedSourceRunner, SourceRunner, SourceTaskError, SpawnRequest, SubmittedTask, SuspendKind,
-    TaskError, TaskId, TaskInput, TaskManagerError, TaskOutcome, TaskRequest, Tuple,
+    AuthorityContext, MailboxRecvRequest, ReadOnlySourceQueryOptions, ReadOnlySourceQueryReport,
+    RunReport, RuntimeError, SYSTEM_ENDPOINT, SharedSourceRunner, SourceRunner, SourceTaskError,
+    SpawnRequest, SubmittedTask, SuspendKind, TaskError, TaskId, TaskInput, TaskManagerError,
+    TaskOutcome, TaskRequest, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -201,6 +202,19 @@ impl CompioTaskDriver {
             .inner
             .runner
             .report_outcome(submitted.task_id, submitted.outcome))
+    }
+
+    pub async fn run_read_only_source_query(
+        &self,
+        endpoint: Identity,
+        source: String,
+        options: ReadOnlySourceQueryOptions,
+    ) -> Result<ReadOnlySourceQueryReport, DriverError> {
+        let runner = Arc::clone(&self.inner.runner);
+        self.dispatch(DispatchOperation::Submit, move || async move {
+            runner.run_read_only_source_query_for_endpoint(endpoint, source, options)
+        })
+        .await
     }
 
     pub async fn submit_root_source_report(

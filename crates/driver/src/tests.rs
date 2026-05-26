@@ -13,8 +13,8 @@
 
 use crate::{CompioTaskDriver, DriverEvent};
 use mica_runtime::{
-    AuthorityContext, EmbeddingProviderKind, RuntimeError, SourceTaskError, TaskError, TaskInput,
-    TaskManagerError, TaskRequest,
+    AuthorityContext, EmbeddingProviderKind, ReadOnlySourceQueryOptions, ReadOnlySourceQueryStatus,
+    RuntimeError, SourceTaskError, TaskError, TaskInput, TaskManagerError, TaskRequest,
 };
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
@@ -1201,6 +1201,142 @@ fn driver_submit_source_sets_endpoint_context() {
             submitted.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::identity(endpoint)
         ));
+    });
+}
+
+#[test]
+fn driver_runs_bounded_read_only_source_query_as_endpoint_actor() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "make_identity(:web)\n\
+                 make_identity(:lamp)\n\
+                 make_relation(:CanRead, 2)\n\
+                 make_relation(:CanWrite, 2)\n\
+                 make_relation(:ThingName, 2)\n\
+                 assert CanRead(#web, :ThingName)\n\
+                 assert CanWrite(#web, :ThingName)\n\
+                 assert ThingName(#lamp, \"Lamp\")\n",
+            )
+            .unwrap();
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let endpoint = endpoint(61);
+        runner
+            .open_endpoint(endpoint, Some(web), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn(runner).unwrap();
+
+        let report = driver
+            .run_read_only_source_query(
+                endpoint,
+                "let names = []\n\
+                 for found in ThingName(?thing, ?name)\n\
+                   names = [@names, found[:name]]\n\
+                 end\n\
+                 return names"
+                    .to_owned(),
+                ReadOnlySourceQueryOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.status, ReadOnlySourceQueryStatus::Complete);
+        assert_eq!(report.value, Some(Value::list([Value::string("Lamp")])));
+        assert_eq!(report.rendered, "[\"Lamp\"]");
+        assert!(!report.rendered_truncated);
+        assert_eq!(report.diagnostics, Vec::<String>::new());
+    });
+}
+
+#[test]
+fn driver_read_only_source_query_rejects_mutation_and_effects() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(
+                "make_identity(:web)\n\
+                 make_identity(:lamp)\n\
+                 make_relation(:CanRead, 2)\n\
+                 make_relation(:CanWrite, 2)\n\
+                 make_relation(:ThingName, 2)\n\
+                 assert CanRead(#web, :ThingName)\n\
+                 assert CanWrite(#web, :ThingName)\n\
+                 assert ThingName(#lamp, \"Lamp\")\n",
+            )
+            .unwrap();
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let endpoint = endpoint(62);
+        runner
+            .open_endpoint(endpoint, Some(web), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn(runner).unwrap();
+
+        let mutation = driver
+            .run_read_only_source_query(
+                endpoint,
+                "assert ThingName(#lamp, \"Desk\")\nreturn 1".to_owned(),
+                ReadOnlySourceQueryOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mutation.status, ReadOnlySourceQueryStatus::Rejected);
+        assert!(mutation.task_id.is_none());
+        assert!(
+            mutation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("cannot assert or retract facts"))
+        );
+
+        let effect = driver
+            .run_read_only_source_query(
+                endpoint,
+                "return log(:info, \"hello\")".to_owned(),
+                ReadOnlySourceQueryOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(effect.status, ReadOnlySourceQueryStatus::Rejected);
+        assert!(
+            effect
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("cannot call `log`"))
+        );
+    });
+}
+
+#[test]
+fn driver_read_only_source_query_bounds_rendered_output() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein("make_identity(:web)\nmake_relation(:CanRead, 2)\n")
+            .unwrap();
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let endpoint = endpoint(63);
+        runner
+            .open_endpoint(endpoint, Some(web), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn(runner).unwrap();
+
+        let report = driver
+            .run_read_only_source_query(
+                endpoint,
+                "return \"abcdef\"".to_owned(),
+                ReadOnlySourceQueryOptions {
+                    max_output_chars: 3,
+                    ..ReadOnlySourceQueryOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.status, ReadOnlySourceQueryStatus::Complete);
+        assert_eq!(report.value, Some(Value::string("abcdef")));
+        assert!(report.rendered_truncated);
+        assert!(report.rendered.ends_with("... truncated"));
     });
 }
 

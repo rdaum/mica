@@ -592,6 +592,16 @@ impl TaskManager {
         authority: AuthorityContext,
         runtime_context: RuntimeContext,
     ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
+        self.submit_with_context_and_limits(program, authority, runtime_context, self.limits)
+    }
+
+    pub fn submit_with_context_and_limits(
+        &mut self,
+        program: Arc<Program>,
+        authority: AuthorityContext,
+        runtime_context: RuntimeContext,
+        limits: TaskLimits,
+    ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
         let task_id = self.allocate_task_id();
         let task_snapshot = self.task_snapshot_values(Some(task_id));
         let mut task = Task::new_with_authority(
@@ -601,7 +611,7 @@ impl TaskManager {
             self.resolver.clone(),
             self.builtins.clone(),
             authority,
-            self.limits,
+            limits,
         );
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
@@ -829,6 +839,16 @@ impl SharedTaskManager {
         authority: AuthorityContext,
         runtime_context: RuntimeContext,
     ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
+        self.submit_with_context_and_limits(program, authority, runtime_context, self.limits)
+    }
+
+    pub fn submit_with_context_and_limits(
+        &self,
+        program: Arc<Program>,
+        authority: AuthorityContext,
+        runtime_context: RuntimeContext,
+        limits: TaskLimits,
+    ) -> Result<(TaskId, TaskOutcome), TaskManagerError> {
         let task_id = self.allocate_task_id();
         let task_snapshot = self.task_snapshot_values(Some(task_id));
         let mut task = Task::new_with_authority(
@@ -838,7 +858,7 @@ impl SharedTaskManager {
             self.resolver.clone(),
             self.builtins.clone(),
             authority,
-            self.limits,
+            limits,
         );
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
