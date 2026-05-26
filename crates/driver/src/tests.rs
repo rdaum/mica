@@ -363,7 +363,7 @@ fn source_generated_answer_records_reviewable_facts() {
                     request
                         .payload
                         .map_get(&Value::symbol(Symbol::intern("model"))),
-                    Some(Value::string("deepseek/deepseek-v4-pro"))
+                    Some(Value::string("deepseek/deepseek-v4-flash"))
                 );
                 let messages = request
                     .payload
@@ -584,7 +584,7 @@ fn source_runtime_config_can_override_retrieval_and_generation_defaults() {
     };
     value
         .with_list(|values| {
-            assert_eq!(values[0], Value::string("deepseek/deepseek-v4-pro"));
+            assert_eq!(values[0], Value::string("deepseek/deepseek-v4-flash"));
             assert_eq!(values[1], Value::string("openrouter"));
             assert_eq!(values[2], Value::string("source-workspace"));
             assert_eq!(values[3], Value::int(8).unwrap());
@@ -733,7 +733,7 @@ fn source_agent_tool_activity_renders_for_web_endpoint() {
                      let request = source/start_agent_tool_request(turn, 1, \"source_search\", {{:query -> \"relation index\"}})\n\
                      source/finish_agent_tool_request(request, {{:status -> \"complete\", :rendered -> \"source_search returned relation index\", :value -> {{:count -> 1}}}}, \"call_1\")\n\
                      let payload = dom_snapshot_payload(31, 1, source/agent_panel_node())\n\
-                     return [string_contains(payload, \"Tool activity\"), string_contains(payload, \"source-agent-tools\"), string_contains(payload, \"source_search\"), string_contains(payload, \"source_search returned relation index\")]"
+                     return [string_contains(payload, \"Tool activity\"), string_contains(payload, \"source-agent-tools\"), string_contains(payload, \"source_search\"), string_contains(payload, \"query: relation index\"), string_contains(payload, \"source_search returned relation index\")]"
                 )),
             )
             .await
@@ -750,6 +750,7 @@ fn source_agent_tool_activity_renders_for_web_endpoint() {
                 assert_eq!(values[1], Value::bool(true));
                 assert_eq!(values[2], Value::bool(true));
                 assert_eq!(values[3], Value::bool(true));
+                assert_eq!(values[4], Value::bool(true));
             })
             .expect("expected tool activity render tuple");
     });
@@ -765,7 +766,7 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                     request
                         .payload
                         .map_get(&Value::symbol(Symbol::intern("model"))),
-                    Some(Value::string("deepseek/deepseek-v4-pro"))
+                    Some(Value::string("deepseek/deepseek-v4-flash"))
                 );
                 let messages = request
                     .payload
@@ -827,10 +828,18 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                         Value::symbol(Symbol::intern("choices")),
                         Value::list([Value::map([(
                             Value::symbol(Symbol::intern("message")),
-                            Value::map([(
-                                Value::symbol(Symbol::intern("content")),
-                                Value::string("sync_view_tree is the source sync render hook."),
-                            )]),
+                            Value::map([
+                                (
+                                    Value::symbol(Symbol::intern("content")),
+                                    Value::string("**sync_view_tree** is the source sync render hook."),
+                                ),
+                                (
+                                    Value::symbol(Symbol::intern("reasoning")),
+                                    Value::string(
+                                        "The prompt contains source focus and retrieved context.",
+                                    ),
+                                ),
+                            ]),
                         )])]),
                     ),
                 ])
@@ -870,7 +879,7 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                         if *task_id == submitted.task_id
                             && value
                                 .map_get(&Value::symbol(Symbol::intern("text")))
-                                == Some(Value::string("sync_view_tree is the source sync render hook."))
+                                == Some(Value::string("**sync_view_tree** is the source sync render hook."))
                 )
             }) {
                 completed = true;
@@ -881,15 +890,20 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
         assert!(completed, "source agent prompt task did not complete");
 
         let report = driver
-            .submit_root_source_report(
+            .submit_source(
+                endpoint(34),
+                root_source(
                 "let user = one source/AgentTurnRole(?turn, \"user\")\n\
                  let assistant = one source/AgentTurnRole(?turn, \"assistant\")\n\
                  let assistant_text = one source/AgentTurnText(assistant, ?text)\n\
+                 let assistant_reasoning = one source/AgentTurnReasoning(assistant, ?reasoning)\n\
                  let model = one source/AgentTurnResolvedModel(assistant, ?model)\n\
                  let plan = one source/AgentTurnPlan(assistant, ?plan)\n\
                  let context_text = one source/AgentTurnContextText(assistant, ?text)\n\
                  let prompt = one source/AgentTurnPromptText(assistant, ?text)\n\
-                 return [user != nothing, assistant != nothing, assistant_text, model, plan != nothing, string_contains(context_text, \"Current file:\"), string_contains(context_text, \"Value::int(5).unwrap()\"), string_contains(prompt, \"Current source focus:\"), string_contains(prompt, \"source/FileLines\"), string_contains(prompt, \"mica_query tool result\")]".to_owned(),
+                 let payload = dom_snapshot_payload(31, 1, source/agent_panel_node())\n\
+                 return [user != nothing, assistant != nothing, assistant_text, assistant_reasoning, model, plan != nothing, string_contains(context_text, \"Current file:\"), string_contains(context_text, \"Value::int(5).unwrap()\"), string_contains(prompt, \"Current source focus:\"), string_contains(prompt, \"source/FileLines\"), string_contains(prompt, \"mica_query tool result\"), string_contains(payload, \"source-agent-turn-text\"), string_contains(payload, \"source-agent-reasoning\"), string_contains(payload, \"Thinking\")]",
+                ),
             )
             .await
             .unwrap();
@@ -905,15 +919,22 @@ fn source_agent_prompt_records_turns_and_grounded_prompt() {
                 assert_eq!(values[1], Value::bool(true));
                 assert_eq!(
                     values[2],
-                    Value::string("sync_view_tree is the source sync render hook.")
+                    Value::string("**sync_view_tree** is the source sync render hook.")
                 );
-                assert_eq!(values[3], Value::string("openrouter/test-model"));
-                assert_eq!(values[4], Value::bool(true));
+                assert_eq!(
+                    values[3],
+                    Value::string("The prompt contains source focus and retrieved context.")
+                );
+                assert_eq!(values[4], Value::string("openrouter/test-model"));
                 assert_eq!(values[5], Value::bool(true));
                 assert_eq!(values[6], Value::bool(true));
                 assert_eq!(values[7], Value::bool(true));
                 assert_eq!(values[8], Value::bool(true));
                 assert_eq!(values[9], Value::bool(true));
+                assert_eq!(values[10], Value::bool(true));
+                assert_eq!(values[11], Value::bool(true));
+                assert_eq!(values[12], Value::bool(true));
+                assert_eq!(values[13], Value::bool(true));
             })
             .expect("expected source agent facts tuple");
 

@@ -72,6 +72,82 @@ verb source/agent_turn_proposals_node(turn)
   return dom_element("section", {:class -> "source-agent-proposals"}, items)
 end
 
+verb source/agent_turn_reasoning_node(turn)
+  let reasoning = one source/AgentTurnReasoning(turn, ?reasoning)
+  if reasoning == nothing || reasoning == ""
+    return source/empty_node("")
+  end
+  return dom_element("details", {:class -> "source-agent-reasoning"}, [dom_element("summary", {}, [dom_text("Thinking")]), dom_element("pre", {:class -> "source-agent-reasoning-text"}, [dom_text(reasoning)])])
+end
+
+verb source/agent_tool_summary_text(tool @ #string, args)
+  if args == nothing
+    return ""
+  end
+
+  if tool == "source_search"
+    let query = args[:query]
+    if query == nothing
+      query = ""
+    end
+    let scope = args[:scope]
+    if scope == nothing || scope == ""
+      scope = "all"
+    end
+    return string_concat("query: ", query, " / scope: ", scope)
+  end
+
+  if tool == "source_file_window"
+    let path = args[:path]
+    if path == nothing || path == ""
+      path = "current file"
+    end
+    let start_line = args[:start_line]
+    if start_line == nothing
+      start_line = 1
+    end
+    let line_count = args[:line_count]
+    if line_count == nothing
+      line_count = 120
+    end
+    return string_concat(path, ":", to_literal(start_line), " +", to_literal(line_count), " lines")
+  end
+
+  if tool == "source_symbol_context"
+    let query = args[:query]
+    if query != nothing && query != ""
+      return string_concat("query: ", query)
+    end
+    let path = args[:path]
+    let byte_offset = args[:byte_offset]
+    if path != nothing && path != "" && byte_offset != nothing
+      return string_concat(path, " @ byte ", to_literal(byte_offset))
+    end
+    return "current symbol"
+  end
+
+  if tool == "source_find_references"
+    let query = args[:query]
+    if query != nothing && query != ""
+      return string_concat("query: ", query)
+    end
+    let symbol = args[:symbol]
+    if symbol != nothing && symbol != ""
+      return string_concat("symbol: ", symbol)
+    end
+    return "current symbol"
+  end
+
+  if tool == "mica_query"
+    let query = args[:query]
+    if query != nothing && query != ""
+      return query
+    end
+  end
+
+  return to_literal(args)
+end
+
 verb source/agent_tool_node(request)
   let ordinal = nothing
   let tool = "unknown"
@@ -90,7 +166,13 @@ verb source/agent_tool_node(request)
     transcript = string_concat("arguments: ", to_literal(args))
   end
   let summary = string_concat(to_literal(ordinal), ". ", tool)
-  let heading = dom_element("summary", {:class -> "source-agent-tool-heading"}, [dom_element("span", {:class -> "source-agent-tool-name"}, [dom_text(summary)]), source/meta_chip_node("status", status)])
+  let detail = source/agent_tool_summary_text(tool, args)
+  let heading_children = [dom_element("span", {:class -> "source-agent-tool-name"}, [dom_text(summary)])]
+  if detail != ""
+    heading_children = [@heading_children, dom_element("span", {:class -> "source-agent-tool-detail"}, [dom_text(detail)])]
+  end
+  heading_children = [@heading_children, source/meta_chip_node("status", status)]
+  let heading = dom_element("summary", {:class -> "source-agent-tool-heading"}, heading_children)
   let body = dom_element("pre", {:class -> "source-agent-tool-text"}, [dom_text(transcript)])
   return dom_element("details", {:class -> string_concat("source-agent-tool source-agent-tool-", status), "data-sync-key" -> to_literal(request)}, [heading, body])
 end
@@ -140,6 +222,7 @@ verb source/agent_turn_node(turn)
 
   let children = [dom_element("div", {:class -> "source-agent-turn-role"}, [dom_text(role)]), dom_element("div", {:class -> "source-agent-turn-text"}, [dom_text(text)]), dom_element("div", {:class -> "source-search-status"}, meta)]
   if role == "assistant"
+    children = [@children, source/agent_turn_reasoning_node(turn)]
     children = [@children, source/agent_turn_tools_node(turn)]
     children = [@children, source/agent_turn_citations_node(turn)]
     children = [@children, source/agent_turn_proposals_node(turn)]

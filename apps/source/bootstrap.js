@@ -2,7 +2,7 @@ import { bootstrapServerRenderedSync } from "/sync-client.js?surface=source";
 import markdownit from "https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/+esm";
 
 const markdown = markdownit({
-  breaks: false,
+  breaks: true,
   html: false,
   linkify: true,
   typographer: false,
@@ -382,12 +382,16 @@ function installSourceViewport() {
     for (const text of mount.querySelectorAll(
       ".source-agent-turn-assistant:not(.source-agent-turn-pending) .source-agent-turn-text",
     )) {
-      if (text.dataset.sourceMarkdownRendered === "true") {
+      const source = text.textContent ?? "";
+      if (
+        text.dataset.sourceMarkdownRendered === "true" &&
+        text.dataset.sourceMarkdownSource === source
+      ) {
         continue;
       }
-      const source = text.textContent ?? "";
       text.innerHTML = markdown.render(source);
       text.dataset.sourceMarkdownRendered = "true";
+      text.dataset.sourceMarkdownSource = source;
       text.classList.add("source-agent-turn-markdown");
     }
   };

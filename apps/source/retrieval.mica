@@ -77,6 +77,7 @@ make_functional_relation(:source/AgentTurnStatus, 2, [0])
 make_functional_relation(:source/AgentTurnPlan, 2, [0])
 make_functional_relation(:source/AgentTurnPromptText, 2, [0])
 make_functional_relation(:source/AgentTurnContextText, 2, [0])
+make_functional_relation(:source/AgentTurnReasoning, 2, [0])
 make_functional_relation(:source/AgentTurnProvider, 2, [0])
 make_functional_relation(:source/AgentTurnModel, 2, [0])
 make_functional_relation(:source/AgentTurnResolvedModel, 2, [0])
@@ -200,7 +201,7 @@ verb source/generation_model()
     return model
   end
 
-  return "deepseek/deepseek-v4-pro"
+  return "deepseek/deepseek-v4-flash"
 end
 
 verb source/generation_provider()
@@ -764,7 +765,7 @@ end
 
 verb source/agent_prompt_text(user_text @ #string, focus_text @ #string, context_text @ #string)
   let schema_text = source/agent_workspace_schema_text()
-  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. Use retrieved context only as supporting evidence. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. If the current file context is truncated and the answer depends on unavailable lines, call source_file_window for the needed line range before answering. If evidence is still missing, say what extra file lines or source facts are needed. Do not claim you inspected unavailable context.\n\n", schema_text, "\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
+  return string_concat("You are talking with a developer about the Mica source workspace. Use the current file context first. Use retrieved context only as supporting evidence. Be concrete about files, symbols, and uncertainty. Cite paths and line numbers, not internal citation IDs. Format final answers as concise Markdown with short paragraphs, bullets, or headings when the answer has multiple parts. Do not return one long paragraph. If the current file context is truncated and the answer depends on unavailable lines, call source_file_window for the needed line range before answering. If evidence is still missing, say what extra file lines or source facts are needed. Do not claim you inspected unavailable context.\n\n", schema_text, "\n\nUser request:\n", user_text, "\n\n", focus_text, "\n\nContext:\n", context_text)
 end
 
 verb source/agent_tool_options()
@@ -1536,7 +1537,7 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
     end
     log(:warn, string_concat("source agent tool guard triggered reason=", guard_reason, " tools_used=", to_literal(tool_count), "/", to_literal(tool_limit), " model=", requested_model))
     source/update_agent_turn_progress(assistant_turn, string_concat("Synthesizing answer from ", to_literal(tool_count), " tool results."))
-    let final_instruction = string_concat("Stop using tools now. Reason: ", guard_reason, ". Answer the user's request from the tool results already gathered. Give a concise explanation or file/path pointers first. Do not dump raw tool output as the answer. If the gathered evidence is incomplete, say exactly what remains uncertain and which files or symbols would need follow-up.")
+    let final_instruction = string_concat("Stop using tools now. Reason: ", guard_reason, ". Answer the user's request from the tool results already gathered. Use concise Markdown with short paragraphs, bullets, or headings. Give a concise explanation or file/path pointers first. Do not dump raw tool output as the answer. If the gathered evidence is incomplete, say exactly what remains uncertain and which files or symbols would need follow-up.")
     response = openai/chat_with_options(requested_model, [@messages, openai/user_message(final_instruction)], {:temperature -> 0.2})
   end
   let assistant_text = openai/assistant_text(response)
@@ -1547,6 +1548,7 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
       assistant_text = "The model returned no assistant text."
     end
   end
+  let assistant_reasoning = openai/assistant_reasoning(response)
   let resolved_model = response[:model]
   if resolved_model == nothing
     resolved_model = requested_model
@@ -1554,8 +1556,12 @@ verb source/complete_agent_prompt(endpoint, actor, user_text @ #string)
 
   retract source/AgentTurnText(assistant_turn, _)
   retract source/AgentTurnStatus(assistant_turn, _)
+  retract source/AgentTurnReasoning(assistant_turn, _)
   retract source/AgentTurnResolvedModel(assistant_turn, _)
   assert source/AgentTurnText(assistant_turn, assistant_text)
+  if assistant_reasoning != nothing && assistant_reasoning != ""
+    assert source/AgentTurnReasoning(assistant_turn, assistant_reasoning)
+  end
   assert source/AgentTurnStatus(assistant_turn, "complete")
   assert source/AgentTurnResolvedModel(assistant_turn, resolved_model)
   source/record_agent_turn_citations(assistant_turn, plan, actor)

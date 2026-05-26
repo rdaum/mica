@@ -335,12 +335,15 @@ body.source-agent-working .source-agent-turn-list::after {
 .source-agent-turn-text {
   margin: 0 0 0.45rem;
   overflow-wrap: anywhere;
+  line-height: 1.45;
   white-space: pre-wrap;
 }
 
 .source-agent-turn-markdown {
   display: grid;
   gap: 0.45rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
   white-space: normal;
 }
 
@@ -399,6 +402,33 @@ body.source-agent-working .source-agent-turn-list::after {
   color: var(--source-accent);
 }
 
+.source-agent-reasoning {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+  border-top: 1px solid rgba(216, 203, 181, 0.72);
+  padding-top: 0.45rem;
+}
+
+.source-agent-reasoning > summary {
+  width: fit-content;
+  color: var(--source-muted);
+  cursor: pointer;
+  font-size: 0.86rem;
+}
+
+.source-agent-reasoning-text {
+  max-height: 10rem;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--source-muted);
+  font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
 .source-agent-tools {
   display: grid;
   gap: 0.35rem;
@@ -452,10 +482,22 @@ body.source-agent-working .source-agent-turn-list::after {
 }
 
 .source-agent-tool-name {
+  flex: 0 0 auto;
   overflow-wrap: anywhere;
   font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
   font-size: 0.78rem;
   color: var(--source-ink);
+}
+
+.source-agent-tool-detail {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--source-muted);
+  font-family: "Berkeley Mono", "Cascadia Code", "SFMono-Regular", monospace;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .source-agent-tool-text {
