@@ -14,8 +14,8 @@
 use crate::{
     BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCatch, HirCollectionItem, HirExpr,
     HirFunctionBody, HirItem, HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem,
-    HirRuleGuard, HirScatterBinding, Literal, LocalKind, NodeId, ParamMode, SemanticProgram, Span,
-    UnaryOp, parse_semantic,
+    HirRuleGuard, HirScatterBinding, Literal, LocalKind, NodeId, ParamMode, ParseError,
+    SemanticProgram, Span, UnaryOp, parse_semantic,
 };
 use mica_relation_kernel::{
     Atom, ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Rule,
@@ -43,7 +43,7 @@ pub fn compile_semantic(
 ) -> Result<CompiledProgram, CompileError> {
     if !semantic.parse_errors.is_empty() {
         return Err(CompileError::ParseErrors {
-            count: semantic.parse_errors.len(),
+            errors: semantic.parse_errors.clone(),
         });
     }
     if let Some(diagnostic) = semantic.diagnostics.first() {
@@ -74,7 +74,7 @@ pub fn install_rules(
 ) -> Result<Option<RuleInstallation>, CompileError> {
     if !semantic.parse_errors.is_empty() {
         return Err(CompileError::ParseErrors {
-            count: semantic.parse_errors.len(),
+            errors: semantic.parse_errors.clone(),
         });
     }
     if let Some(diagnostic) = semantic.diagnostics.first() {
@@ -142,7 +142,7 @@ pub fn install_methods(
 ) -> Result<MethodInstallation, CompileError> {
     if !semantic.parse_errors.is_empty() {
         return Err(CompileError::ParseErrors {
-            count: semantic.parse_errors.len(),
+            errors: semantic.parse_errors.clone(),
         });
     }
     if let Some(diagnostic) = semantic.diagnostics.first() {
@@ -385,7 +385,7 @@ impl CompileContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompileError {
     ParseErrors {
-        count: usize,
+        errors: Vec<ParseError>,
     },
     SemanticDiagnostic {
         diagnostic: Diagnostic,

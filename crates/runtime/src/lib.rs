@@ -37,11 +37,11 @@ pub use task_manager::{
 };
 
 use mica_compiler::{
-    BinaryOp, CollectionItem, CompileContext, CompileError, Expr, HirArg, HirCatch,
-    HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirPlace, HirRecovery, HirRelationAtom,
-    HostRequestFunction, Item, Literal, MethodInstallation, MethodKind, MethodRelations, NodeId,
-    UnaryOp, compile_semantic, install_methods, install_rules_from_source, parse, parse_ast,
-    parse_semantic,
+    BinaryOp, CollectionItem, CompileContext, CompileError, DiagnosticRenderOptions,
+    DiagnosticSource, Expr, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem,
+    HirPlace, HirRecovery, HirRelationAtom, HostRequestFunction, Item, Literal, MethodInstallation,
+    MethodKind, MethodRelations, NodeId, UnaryOp, compile_semantic, format_compile_error,
+    install_methods, install_rules_from_source, parse, parse_ast, parse_semantic,
 };
 use mica_host_protocol::{
     DomNode, diff_dom_nodes, is_supported_dom_attribute, is_supported_dom_tag,
@@ -901,7 +901,43 @@ impl SourceRunner {
     }
 
     pub fn render_source_task_error(&self, error: &SourceTaskError) -> String {
-        render_source_task_error(error, &self.identity_names(), &self.relation_names())
+        render_source_task_error(
+            error,
+            &self.identity_names(),
+            &self.relation_names(),
+            None,
+            DiagnosticRenderOptions::default(),
+        )
+    }
+
+    pub fn render_source_task_error_with_source(
+        &self,
+        error: &SourceTaskError,
+        source_name: Option<&str>,
+        source: &str,
+    ) -> String {
+        self.render_source_task_error_with_source_options(
+            error,
+            source_name,
+            source,
+            DiagnosticRenderOptions::source_context(),
+        )
+    }
+
+    pub fn render_source_task_error_with_source_options(
+        &self,
+        error: &SourceTaskError,
+        source_name: Option<&str>,
+        source: &str,
+        options: DiagnosticRenderOptions,
+    ) -> String {
+        render_source_task_error(
+            error,
+            &self.identity_names(),
+            &self.relation_names(),
+            Some(DiagnosticSource::new(source_name, source)),
+            options,
+        )
     }
 
     fn report(&self, task_id: TaskId, outcome: TaskOutcome) -> RunReport {
@@ -989,6 +1025,8 @@ impl SourceRunner {
             &SourceTaskError::Compile(error),
             &self.identity_names(),
             &self.relation_names(),
+            None,
+            DiagnosticRenderOptions::default(),
         );
         let (rendered, rendered_truncated) =
             truncate_rendered_text(diagnostic.clone(), options.max_output_chars);
@@ -1223,7 +1261,7 @@ impl SourceRunner {
 
         if !semantic.parse_errors.is_empty() {
             return Err(CompileError::ParseErrors {
-                count: semantic.parse_errors.len(),
+                errors: semantic.parse_errors.clone(),
             }
             .into());
         }
@@ -1823,7 +1861,43 @@ impl SharedSourceRunner {
     }
 
     pub fn render_source_task_error(&self, error: &SourceTaskError) -> String {
-        render_source_task_error(error, &self.identity_names(), &self.relation_names())
+        render_source_task_error(
+            error,
+            &self.identity_names(),
+            &self.relation_names(),
+            None,
+            DiagnosticRenderOptions::default(),
+        )
+    }
+
+    pub fn render_source_task_error_with_source(
+        &self,
+        error: &SourceTaskError,
+        source_name: Option<&str>,
+        source: &str,
+    ) -> String {
+        self.render_source_task_error_with_source_options(
+            error,
+            source_name,
+            source,
+            DiagnosticRenderOptions::source_context(),
+        )
+    }
+
+    pub fn render_source_task_error_with_source_options(
+        &self,
+        error: &SourceTaskError,
+        source_name: Option<&str>,
+        source: &str,
+        options: DiagnosticRenderOptions,
+    ) -> String {
+        render_source_task_error(
+            error,
+            &self.identity_names(),
+            &self.relation_names(),
+            Some(DiagnosticSource::new(source_name, source)),
+            options,
+        )
     }
 
     pub fn completed_len(&self) -> usize {
@@ -1918,6 +1992,8 @@ impl SharedSourceRunner {
             &SourceTaskError::Compile(error),
             &self.identity_names(),
             &self.relation_names(),
+            None,
+            DiagnosticRenderOptions::default(),
         );
         let (rendered, rendered_truncated) =
             truncate_rendered_text(diagnostic.clone(), options.max_output_chars);
@@ -2263,7 +2339,7 @@ fn collect_source_declarations(source: &str) -> Result<SourceDeclarations, Sourc
         let semantic = parse_semantic(&chunk);
         if !semantic.parse_errors.is_empty() {
             return Err(CompileError::ParseErrors {
-                count: semantic.parse_errors.len(),
+                errors: semantic.parse_errors.clone(),
             }
             .into());
         }
@@ -5840,7 +5916,7 @@ fn reject_semantic_parse_or_diagnostic(
 ) -> Result<(), CompileError> {
     if !semantic.parse_errors.is_empty() {
         return Err(CompileError::ParseErrors {
-            count: semantic.parse_errors.len(),
+            errors: semantic.parse_errors.clone(),
         });
     }
     if let Some(diagnostic) = semantic.diagnostics.first() {
@@ -6385,13 +6461,53 @@ impl RunReport {
     }
 }
 
+pub fn format_source_task_error(error: &SourceTaskError) -> String {
+    render_source_task_error(
+        error,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        DiagnosticRenderOptions::default(),
+    )
+}
+
+pub fn format_source_task_error_with_source(
+    error: &SourceTaskError,
+    source_name: Option<&str>,
+    source: &str,
+) -> String {
+    format_source_task_error_with_source_options(
+        error,
+        source_name,
+        source,
+        DiagnosticRenderOptions::source_context(),
+    )
+}
+
+pub fn format_source_task_error_with_source_options(
+    error: &SourceTaskError,
+    source_name: Option<&str>,
+    source: &str,
+    options: DiagnosticRenderOptions,
+) -> String {
+    render_source_task_error(
+        error,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(DiagnosticSource::new(source_name, source)),
+        options,
+    )
+}
+
 fn render_source_task_error(
     error: &SourceTaskError,
     identity_names: &BTreeMap<Identity, String>,
     relation_names: &BTreeMap<Identity, String>,
+    source: Option<DiagnosticSource<'_>>,
+    options: DiagnosticRenderOptions,
 ) -> String {
     match error {
-        SourceTaskError::Compile(error) => format!("compile error: {error:?}"),
+        SourceTaskError::Compile(error) => format_compile_error(error, source, options),
         SourceTaskError::TaskManager(error) => {
             format!(
                 "task manager error: {}",

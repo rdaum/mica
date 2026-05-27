@@ -43,6 +43,7 @@ mica-vm = { path = "crates/vm" }
 rart = { version = "0.10", default-features = false }
 
 # core
+ariadne = "0.6"
 arc-swap = "1.9"
 bytes = "1.11"
 clap = { version = "4.6", features = ["derive"] }

@@ -135,7 +135,8 @@ async fn run() -> Result<(), String> {
             let source = fs::read_to_string(file)
                 .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
             let session = open_cli_session(&cli, Symbol::intern("cli"))?;
-            let report = submit_cli_source(&session, &cli, source).await?;
+            let source_name = file.display().to_string();
+            let report = submit_cli_source(&session, &cli, source, Some(&source_name)).await?;
             print_report_and_follow(&session.driver, report).await;
             let _ = session.driver.close_endpoint(session.endpoint);
             Ok(())
@@ -163,7 +164,7 @@ async fn run() -> Result<(), String> {
                         mode,
                         |path| read_filein_include(include_base, path),
                     )
-                    .map_err(format_source_error)?;
+                    .map_err(|error| format_source_error_with_source(error, file, &source))?;
                 for report in report.reports {
                     print_report(report);
                 }
@@ -172,7 +173,7 @@ async fn run() -> Result<(), String> {
                     .run_filein_with_include_loader(&source, |path| {
                         read_filein_include(include_base, path)
                     })
-                    .map_err(format_source_error)?
+                    .map_err(|error| format_source_error_with_source(error, file, &source))?
                 {
                     print_report(report);
                 }
@@ -196,7 +197,7 @@ async fn run() -> Result<(), String> {
         Command::Eval { source } => {
             let source = source.join(" ");
             let session = open_cli_session(&cli, Symbol::intern("cli"))?;
-            let report = submit_cli_source(&session, &cli, source).await?;
+            let report = submit_cli_source(&session, &cli, source, Some("<eval>")).await?;
             print_report_and_follow(&session.driver, report).await;
             let _ = session.driver.close_endpoint(session.endpoint);
             Ok(())
@@ -227,7 +228,9 @@ async fn submit_cli_source(
     session: &CliSession,
     cli: &Cli,
     source: String,
+    source_name: Option<&str>,
 ) -> Result<mica_runtime::RunReport, String> {
+    let diagnostic_source = source.clone();
     session
         .driver
         .submit_source_report(
@@ -236,7 +239,7 @@ async fn submit_cli_source(
             source,
         )
         .await
-        .map_err(format_driver_error)
+        .map_err(|error| format_driver_error_with_source(error, source_name, &diagnostic_source))
 }
 
 fn actor_symbol(actor: &str) -> Symbol {
@@ -357,7 +360,7 @@ async fn repl_loop(
 }
 
 async fn evaluate_buffer(session: &CliSession, cli: &Cli, buffer: &mut String) {
-    match submit_cli_source(session, cli, buffer.clone()).await {
+    match submit_cli_source(session, cli, buffer.clone(), Some("<repl>")).await {
         Ok(report) => {
             let task_id = report.task_id;
             let outcome = report.outcome.clone();
@@ -379,11 +382,31 @@ fn print_report(report: mica_runtime::RunReport) {
 }
 
 fn format_source_error(error: mica_runtime::SourceTaskError) -> String {
-    format!("error: {error:?}")
+    mica_runtime::format_source_task_error(&error)
+}
+
+fn format_source_error_with_source(
+    error: mica_runtime::SourceTaskError,
+    path: &std::path::Path,
+    source: &str,
+) -> String {
+    let path = path.display().to_string();
+    mica_runtime::format_source_task_error_with_source(&error, Some(&path), source)
 }
 
 fn format_driver_error(error: DriverError) -> String {
     format!("error: {error}")
+}
+
+fn format_driver_error_with_source(
+    error: DriverError,
+    source_name: Option<&str>,
+    source: &str,
+) -> String {
+    if let Some(error) = error.source() {
+        return mica_runtime::format_source_task_error_with_source(error, source_name, source);
+    }
+    format_driver_error(error)
 }
 
 async fn print_report_and_follow(driver: &CompioTaskDriver, report: mica_runtime::RunReport) {

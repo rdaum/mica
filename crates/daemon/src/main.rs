@@ -174,7 +174,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         let include_base = filein.parent().unwrap_or_else(|| Path::new("."));
         runner
             .run_filein_with_include_loader(&source, |path| read_filein_include(include_base, path))
-            .map_err(format_source_error)?;
+            .map_err(|error| format_source_error_with_source(error, filein, &source))?;
         metrics::metrics().fileins_loaded.inc();
     }
     let telnet_actor = if cli.telnet_bind.is_some() {
@@ -547,7 +547,16 @@ fn is_source_retrieval_indexing_source(source: &str) -> bool {
 }
 
 fn format_source_error(error: mica_runtime::SourceTaskError) -> String {
-    format!("error: {error:?}")
+    mica_runtime::format_source_task_error(&error)
+}
+
+fn format_source_error_with_source(
+    error: mica_runtime::SourceTaskError,
+    path: &Path,
+    source: &str,
+) -> String {
+    let path = path.display().to_string();
+    mica_runtime::format_source_task_error_with_source(&error, Some(&path), source)
 }
 
 fn format_driver_error(error: mica_driver::DriverError) -> String {

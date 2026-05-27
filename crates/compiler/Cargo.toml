@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+ariadne.workspace = true
 mica-relation-kernel.workspace = true
 mica-var.workspace = true
 mica-vm.workspace = true

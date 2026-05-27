@@ -20,6 +20,7 @@
 
 mod ast;
 mod backend;
+mod diagnostics;
 mod hir;
 mod lexer;
 mod lower;
@@ -37,6 +38,9 @@ pub use backend::{
     InstalledParam, MethodInstallation, MethodRelations, RuleInstallation, compile_semantic,
     compile_source, install_methods, install_methods_from_source, install_rules,
     install_rules_from_source,
+};
+pub use diagnostics::{
+    DiagnosticRenderOptions, DiagnosticSource, DiagnosticVerbosity, format_compile_error,
 };
 pub use hir::{
     HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,
