@@ -128,6 +128,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "is_frob",
     "to_literal",
     "from_literal",
+    "to_symbol",
     "json_encode",
     "json_decode",
     "dom_text",
@@ -3371,6 +3372,7 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
         .with_builtin("is_frob", is_frob_builtin)
         .with_builtin("to_literal", to_literal_builtin)
         .with_builtin("from_literal", from_literal_builtin)
+        .with_builtin("to_symbol", to_symbol_builtin)
         .with_builtin("json_encode", json_encode_builtin)
         .with_builtin("json_decode", json_decode_builtin)
         .with_builtin("dom_text", dom_text_builtin)
@@ -3642,6 +3644,28 @@ fn from_literal_builtin(
         return Ok(Value::nothing());
     };
     value_from_literal_expr(context, expr).map(|value| value.unwrap_or_else(Value::nothing))
+}
+
+fn to_symbol_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "to_symbol",
+            "expected to_symbol(text)",
+        ));
+    }
+    if args[0].as_symbol().is_some() {
+        return Ok(args[0].clone());
+    }
+    let Some(name) = args[0].with_str(str::to_owned) else {
+        return Err(invalid_builtin_call(
+            "to_symbol",
+            "expected string or symbol argument",
+        ));
+    };
+    Ok(Value::symbol(Symbol::intern(&name)))
 }
 
 fn value_from_literal_expr(
@@ -6212,6 +6236,7 @@ fn is_safe_read_only_builtin(name: &str) -> bool {
             | "is_frob"
             | "to_literal"
             | "from_literal"
+            | "to_symbol"
             | "json_encode"
             | "json_decode"
             | "dom_text"
@@ -7233,6 +7258,23 @@ mod tests {
                 .unwrap()
                 .outcome,
             TaskOutcome::Complete { value, .. } if value == Value::nothing()
+        ));
+    }
+
+    #[test]
+    fn runner_to_symbol_converts_strings_and_keeps_symbols() {
+        let mut runner = SourceRunner::new_empty();
+
+        assert!(matches!(
+            runner
+                .run_source("return [to_symbol(\"AgentProposal\"), to_symbol(:SourceFile)]")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([
+                    Value::symbol(Symbol::intern("AgentProposal")),
+                    Value::symbol(Symbol::intern("SourceFile")),
+                ])
         ));
     }
 
