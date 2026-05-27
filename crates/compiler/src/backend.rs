@@ -5732,6 +5732,106 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_runs_for_loop_over_integer_range_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let total = 0\n\
+             for number in 2..5\n\
+               total = total + number\n\
+             end\n\
+             return total",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(14).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_runs_for_loop_over_integer_range_indexes_and_values() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let total = 0\n\
+             for index, number in 2..4\n\
+               total = total + (index * 10) + number\n\
+             end\n\
+             return total",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(39).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_task_treats_non_finite_integer_ranges_as_empty() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let reversed = 0\n\
+             for number in 5..2\n\
+               reversed = reversed + 1\n\
+             end\n\
+             let open = 0\n\
+             for number in 2.._\n\
+               open = open + 1\n\
+             end\n\
+             let typed = 0\n\
+             for number in \"a\"..\"c\"\n\
+               typed = typed + 1\n\
+             end\n\
+             let huge = 0\n\
+             let start = 0 - 36028797018963967 - 1\n\
+             let finish = 36028797018963967\n\
+             for number in start..finish\n\
+               huge = huge + 1\n\
+             end\n\
+             return [reversed, open, typed, huge]",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::list([
+                    Value::int(0).unwrap(),
+                    Value::int(0).unwrap(),
+                    Value::int(0).unwrap(),
+                    Value::int(0).unwrap(),
+                ]),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn compiled_task_runs_for_loop_over_map_keys_and_values() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();

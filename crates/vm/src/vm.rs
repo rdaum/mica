@@ -2393,7 +2393,18 @@ fn collection_len(collection: &Value) -> Value {
     let len = collection
         .list_len()
         .or_else(|| collection.map_len())
-        .unwrap_or(0);
+        .or_else(|| {
+            collection.with_range(|start, end| {
+                let start = start.as_int()?;
+                let end = end.and_then(Value::as_int)?;
+                if end < start {
+                    return Some(0);
+                }
+                let len = end.checked_sub(start)?.checked_add(1)?;
+                usize::try_from(len).ok()
+            })?
+        });
+    let len = len.unwrap_or(0);
     i64::try_from(len)
         .ok()
         .and_then(|len| Value::int(len).ok())
@@ -2433,6 +2444,12 @@ fn collection_key_at(collection: &Value, index: &Value) -> Value {
             .and_then(|index| Value::int(index).ok())
             .unwrap_or_else(Value::nothing);
     }
+    if collection.with_range(|_, _| ()).is_some() {
+        return i64::try_from(index)
+            .ok()
+            .and_then(|index| Value::int(index).ok())
+            .unwrap_or_else(Value::nothing);
+    }
     collection
         .with_map(|entries| entries.get(index).map(|(key, _)| key.clone()))
         .flatten()
@@ -2445,6 +2462,21 @@ fn collection_value_at(collection: &Value, index: &Value) -> Value {
     };
     collection
         .list_get(index)
+        .or_else(|| {
+            collection.with_range(|start, end| {
+                let start = start.as_int()?;
+                let end = end.and_then(Value::as_int)?;
+                if end < start {
+                    return None;
+                }
+                let offset = i64::try_from(index).ok()?;
+                let value = start.checked_add(offset)?;
+                if value > end {
+                    return None;
+                }
+                Value::int(value).ok()
+            })?
+        })
         .or_else(|| {
             collection
                 .with_map(|entries| entries.get(index).map(|(_, value)| value.clone()))
