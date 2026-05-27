@@ -15,6 +15,7 @@ use clap::Parser;
 use compio::net::TcpListener;
 use compio::runtime::Runtime;
 use fast_telemetry_export::dogstatsd::DogStatsDConfig;
+use mica_auth::{AuthConfig, AuthConfigError, MicaSessionStore};
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
 use mica_runtime::{EmbeddingProviderKind, SourceRunner, TaskOutcome};
@@ -34,6 +35,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing_subscriber::EnvFilter;
 
@@ -229,6 +231,16 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     if let Some(rpc_bind) = cli.rpc_bind {
         start_rpc_server(driver.clone(), rpc_bind)?;
     }
+    let (auth_enabled, auth_config) = match AuthConfig::from_env() {
+        Ok(config) => (true, Some(config)),
+        Err(AuthConfigError::MissingKey) => (false, None),
+        Err(e) => {
+            return Err(format!(
+                "authentication is configured but invalid: {e}. \
+                 Check CONATUS_PASETO_KEY, CONATUS_SESSION_TTL_SECS."
+            ));
+        }
+    };
     if let Some(web_bind) = cli.web_bind {
         let binding = web_binding.expect("web principal should be resolved before driver spawn");
         let listener = TcpListener::bind(web_bind)
@@ -239,7 +251,16 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         metrics::metrics()
             .endpoints_started
             .inc(metrics::DaemonEndpoint::Web);
-        let host = InProcessWebHost::new(driver.clone());
+        let mut host = InProcessWebHost::new(driver.clone());
+
+        if auth_enabled {
+            let config = auth_config.unwrap();
+            let session_store = MicaSessionStore::new(Arc::new(driver.clone()));
+            let auth_subsystem = mica_web_host::auth::AuthSubsystem::new(config, session_store);
+            host = host.with_auth(auth_subsystem);
+            tracing::info!("authentication subsystem enabled");
+        }
+
         compio::runtime::spawn(async move {
             if let Err(error) = serve_web(listener, host, binding, None).await {
                 tracing::error!(error = %error, "web host stopped");
@@ -248,29 +269,38 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         .detach();
     }
     if let Some(webtransport_bind) = cli.webtransport_bind {
-        let binding = webtransport_binding
-            .expect("WebTransport principal should be resolved before driver spawn");
-        let tls = webtransport_tls.expect("WebTransport TLS should be loaded before driver spawn");
-        let endpoint = bind_webtransport(webtransport_bind, tls).await?;
-        let local_addr = endpoint.local_addr().unwrap();
-        tracing::info!(
-            bind = %webtransport_bind,
-            local_addr = %local_addr,
-            "WebTransport listener started"
-        );
-        metrics::metrics()
-            .endpoints_started
-            .inc(metrics::DaemonEndpoint::WebTransport);
-        let host = InProcessWebTransportHost::new(driver.clone());
-        if cli.telnet_bind.is_some() {
-            compio::runtime::spawn(async move {
-                if let Err(error) = serve_webtransport(endpoint, host, binding, None).await {
-                    tracing::error!(error = %error, "WebTransport host stopped");
-                }
-            })
-            .detach();
+        if auth_enabled {
+            tracing::warn!(
+                "authentication is enabled; WebTransport endpoint {} will not be started \
+                (WebTransport does not support session authentication)",
+                webtransport_bind
+            );
         } else {
-            return serve_webtransport(endpoint, host, binding, None).await;
+            let binding = webtransport_binding
+                .expect("WebTransport principal should be resolved before driver spawn");
+            let tls =
+                webtransport_tls.expect("WebTransport TLS should be loaded before driver spawn");
+            let endpoint = bind_webtransport(webtransport_bind, tls).await?;
+            let local_addr = endpoint.local_addr().unwrap();
+            tracing::info!(
+                bind = %webtransport_bind,
+                local_addr = %local_addr,
+                "WebTransport listener started"
+            );
+            metrics::metrics()
+                .endpoints_started
+                .inc(metrics::DaemonEndpoint::WebTransport);
+            let host = InProcessWebTransportHost::new(driver.clone());
+            if cli.telnet_bind.is_some() {
+                compio::runtime::spawn(async move {
+                    if let Err(error) = serve_webtransport(endpoint, host, binding, None).await {
+                        tracing::error!(error = %error, "WebTransport host stopped");
+                    }
+                })
+                .detach();
+            } else {
+                return serve_webtransport(endpoint, host, binding, None).await;
+            }
         }
     }
     if let Some(telnet_bind) = cli.telnet_bind {

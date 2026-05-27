@@ -44,6 +44,96 @@ pub(crate) async fn handle_in_process_request(
     {
         return route_request(request, close);
     }
+
+    if let Some(auth) = &host.auth {
+        if let Some(response) = auth.handle_auth_start_github(request).await {
+            return response;
+        }
+        if let Some(response) = auth.handle_auth_callback(request).await {
+            return response;
+        }
+        if let Some(response) = auth.handle_auth_logout(request).await {
+            return response;
+        }
+    }
+
+    let effective_actor = if let Some(auth) = &host.auth {
+        if crate::auth::is_pre_auth_login_path(&request.path) {
+            match host
+                .driver
+                .named_identity(Symbol::intern("source/auth_guest"))
+            {
+                Ok(actor) => Some(actor),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to resolve pre-auth login actor"
+                    );
+                    return HttpResponse::new(
+                        500,
+                        "Internal Server Error",
+                        b"Failed to resolve login identity".to_vec(),
+                    );
+                }
+            }
+        } else if !crate::auth::is_unauthenticated_path(&request.path) {
+            let cookie_header = request
+                .headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("cookie"))
+                .map(|h| std::str::from_utf8(&h.value).unwrap_or(""));
+
+            match auth.resolve_auth_context(cookie_header).await {
+                Ok(Some(ctx)) => {
+                    match host.driver.named_identity(Symbol::intern(&ctx.actor_name)) {
+                        Ok(actor) => Some(actor),
+                        Err(error) => {
+                            tracing::warn!(
+                                actor_name = %ctx.actor_name,
+                                error = %error,
+                                "failed to resolve authenticated actor"
+                            );
+                            return HttpResponse::new(
+                                500,
+                                "Internal Server Error",
+                                b"Failed to resolve user identity".to_vec(),
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {
+                    if request.method == "GET" {
+                        return crate::auth::login_redirect_response(&request.path);
+                    }
+                    return HttpResponse::new(
+                        401,
+                        "Unauthorized",
+                        b"Authentication required".to_vec(),
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "authentication failed");
+                    if request.method == "GET" {
+                        tracing::info!(
+                            path = %request.path,
+                            "clearing invalid session cookie and redirecting to login"
+                        );
+                        return crate::auth::clear_session_login_redirect_response(&request.path);
+                    }
+                    return HttpResponse::new(
+                        401,
+                        "Unauthorized",
+                        b"Invalid or expired session".to_vec(),
+                    );
+                }
+            }
+        } else {
+            binding.actor
+        }
+    } else {
+        binding.actor
+    };
+
     let request_id = match host.allocate_request() {
         Ok(request_id) => request_id,
         Err(error) => return internal_error_response(error, close),
@@ -55,13 +145,13 @@ pub(crate) async fn handle_in_process_request(
     if let Err(error) = host.driver.open_endpoint_with_context(
         request_endpoint,
         Some(binding.principal),
-        binding.actor,
+        effective_actor,
         Symbol::intern("http-request"),
     ) {
         return internal_error_response(format_driver_error(error), close);
     }
 
-    let request_facts = request_facts(request_id, binding.principal, binding.actor, request);
+    let request_facts = request_facts(request_id, binding.principal, effective_actor, request);
     let transient_tuples = request_facts
         .iter()
         .map(|fact| (fact.relation, fact.tuple.clone()))

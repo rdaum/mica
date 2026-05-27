@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod codec;
 
+pub mod auth;
 pub mod metrics;
 mod request;
 mod response;
@@ -39,6 +40,7 @@ pub struct RequestBinding {
 pub struct InProcessWebHost {
     pub(crate) driver: Arc<CompioTaskDriver>,
     pub(crate) sync: sync::InProcessSyncHost,
+    pub(crate) auth: Option<Arc<auth::AuthSubsystem>>,
     next_endpoint: AtomicU64,
     next_request: AtomicU64,
 }
@@ -49,9 +51,15 @@ impl InProcessWebHost {
         Self {
             sync: sync::InProcessSyncHost::new(driver.clone()),
             driver,
+            auth: None,
             next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
             next_request: AtomicU64::new(DAEMON_REQUEST_ID_START),
         }
+    }
+
+    pub fn with_auth(mut self, auth: auth::AuthSubsystem) -> Self {
+        self.auth = Some(Arc::new(auth));
+        self
     }
 
     pub(crate) fn allocate_endpoint(&self) -> Result<Identity, String> {

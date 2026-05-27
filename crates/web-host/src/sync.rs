@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
+use tracing;
 
 const ENDPOINT_OUTPUT_HIGH_WATER_MESSAGES: usize = 128;
 const ENDPOINT_OUTPUT_DRAIN_MESSAGES: usize = 64;
@@ -44,6 +45,7 @@ pub(crate) struct InProcessSyncHost {
 struct SyncSession {
     session_id: u64,
     endpoint: Identity,
+    actor: Option<Identity>,
     output: Arc<SessionOutput>,
     sync: Mutex<SessionSyncState>,
 }
@@ -142,10 +144,11 @@ impl Drop for InProcessSyncHost {
 }
 
 impl SyncSession {
-    fn new(session_id: u64, endpoint: Identity) -> Arc<Self> {
+    fn new(session_id: u64, endpoint: Identity, actor: Option<Identity>) -> Arc<Self> {
         Arc::new(Self {
             session_id,
             endpoint,
+            actor,
             output: SessionOutput::new(),
             sync: Mutex::new(SessionSyncState::default()),
         })
@@ -283,12 +286,47 @@ pub(crate) async fn handle_sync_input_request(
     request: &HttpRequest,
     close: bool,
 ) -> HttpResponse {
+    let actor_override = if let Some(auth) = &host.auth {
+        let cookie_header = request
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("cookie"))
+            .map(|h| std::str::from_utf8(&h.value).unwrap_or(""));
+
+        match auth.resolve_auth_context(cookie_header).await {
+            Ok(Some(ctx)) => match host.driver.named_identity(Symbol::intern(&ctx.actor_name)) {
+                Ok(actor) => Some(actor),
+                Err(error) => {
+                    tracing::warn!(
+                        actor_name = %ctx.actor_name,
+                        error = %error,
+                        "failed to resolve authenticated actor for sync"
+                    );
+                    return internal_error_response("Failed to resolve user identity", close);
+                }
+            },
+            Ok(None) => {
+                return HttpResponse::new(401, "Unauthorized", b"Authentication required".to_vec());
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "sync authentication failed");
+                return HttpResponse::new(
+                    401,
+                    "Unauthorized",
+                    b"Invalid or expired session".to_vec(),
+                );
+            }
+        }
+    } else {
+        binding.actor
+    };
+
     match sync_envelope_from_request(&request.body) {
         Ok(SyncRequestEnvelope::Sync(envelope)) => {
             let session_id = envelope.session_id;
             let view_id = envelope.view_id;
             let kind = envelope.kind;
-            let session = match ensure_session(host, binding, envelope.session_id) {
+            let session = match ensure_session(host, binding, envelope.session_id, actor_override) {
                 Ok(session) => session,
                 Err(error) => {
                     tracing::error!(
@@ -320,7 +358,7 @@ pub(crate) async fn handle_sync_input_request(
             let event_name = event.event.clone();
             let action = event.action.clone();
             let target = event.target.clone();
-            let session = match ensure_session(host, binding, event.session_id) {
+            let session = match ensure_session(host, binding, event.session_id, actor_override) {
                 Ok(session) => session,
                 Err(error) => {
                     tracing::error!(
@@ -366,8 +404,37 @@ pub(crate) async fn serve_event_stream(
     binding: RequestBinding,
     request: &HttpRequest,
 ) -> Result<(), String> {
+    let actor_override = if let Some(auth) = &host.auth {
+        let cookie_header = request
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("cookie"))
+            .map(|h| std::str::from_utf8(&h.value).unwrap_or(""));
+
+        match auth.resolve_auth_context(cookie_header).await {
+            Ok(Some(ctx)) => match host.driver.named_identity(Symbol::intern(&ctx.actor_name)) {
+                Ok(actor) => Some(actor),
+                Err(error) => {
+                    tracing::warn!(
+                        actor_name = %ctx.actor_name,
+                        error = %error,
+                        "failed to resolve authenticated actor for event stream"
+                    );
+                    return Err("Failed to resolve user identity".to_string());
+                }
+            },
+            Ok(None) => return Err("Authentication required".to_string()),
+            Err(error) => {
+                tracing::warn!(error = %error, "event stream authentication failed");
+                return Err("Invalid or expired session".to_string());
+            }
+        }
+    } else {
+        binding.actor
+    };
+
     let session_id = session_id_from_stream_request(request)?;
-    let session = ensure_session(&host, &binding, session_id)?;
+    let session = ensure_session(&host, &binding, session_id, actor_override)?;
     write_event_stream_headers(&mut stream).await?;
     write_event_chunk(&mut stream, b": connected\n\n").await?;
     write_event_stream_loop(&mut stream, session.output.clone()).await
@@ -397,8 +464,13 @@ fn ensure_session(
     host: &InProcessWebHost,
     binding: &RequestBinding,
     session_id: u64,
+    actor_override: Option<Identity>,
 ) -> Result<Arc<SyncSession>, String> {
+    let effective_actor = actor_override.or(binding.actor);
     if let Some(session) = host.sync.sessions.lock().unwrap().get(&session_id).cloned() {
+        if effective_actor.is_some() && session.actor != effective_actor {
+            return Err("session belongs to a different actor".to_owned());
+        }
         return Ok(session);
     }
 
@@ -407,15 +479,18 @@ fn ensure_session(
         .open_endpoint_with_context(
             endpoint,
             Some(binding.principal),
-            binding.actor,
+            effective_actor,
             Symbol::intern("http-sync"),
         )
         .map_err(format_driver_error)?;
 
-    let session = SyncSession::new(session_id, endpoint);
+    let session = SyncSession::new(session_id, endpoint, effective_actor);
     let mut sessions = host.sync.sessions.lock().unwrap();
     if let Some(existing) = sessions.get(&session_id).cloned() {
         host.driver.close_endpoint(endpoint);
+        if effective_actor.is_some() && existing.actor != effective_actor {
+            return Err("session belongs to a different actor".to_owned());
+        }
         return Ok(existing);
     }
     sessions.insert(session_id, session.clone());

@@ -49,6 +49,50 @@ pub(crate) fn is_sync_client_path(path: &str) -> bool {
     path == "/sync-client.js" || path.starts_with("/sync-client.js?")
 }
 
+pub(crate) fn query_params(path: &str) -> std::collections::HashMap<String, String> {
+    let mut params = std::collections::HashMap::new();
+    if let Some((_, query)) = path.split_once('?') {
+        for pair in query.split('&') {
+            if let Some((key, value)) = pair.split_once('=') {
+                let key = url_decode(key);
+                let value = url_decode(value);
+                params.insert(key, value);
+            }
+        }
+    }
+    params
+}
+
+fn url_decode(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut bytes = input.bytes();
+    while let Some(b) = bytes.next() {
+        if b == b'%' {
+            let hi = bytes.next().and_then(|b| hex_val(b));
+            let lo = bytes.next().and_then(|b| hex_val(b));
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                result.push((hi << 4 | lo) as char);
+            } else {
+                result.push('%');
+            }
+        } else if b == b'+' {
+            result.push(' ');
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        _ => None,
+    }
+}
+
 pub(crate) fn error_response(error: HttpCodecError, close: bool) -> HttpResponse {
     let response = match error {
         HttpCodecError::UnsupportedTransferEncoding => HttpResponse::text(
