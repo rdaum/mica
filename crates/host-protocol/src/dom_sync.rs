@@ -145,6 +145,7 @@ pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
     "data-sync-event",
     "data-sync-follow",
     "data-sync-key",
+    "data-sync-submit-key",
     "data-sync-on-viewport-top",
     "data-sync-stable-top",
     "data-sync-viewport-threshold",

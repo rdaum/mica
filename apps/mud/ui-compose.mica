@@ -305,7 +305,7 @@ end
 verb ui/command_bar_node(actor @ #player)
   let text = dom_element("input", {:id -> "command", :name -> "text", :autocomplete -> "off", :placeholder -> "Try: look, north, get coin, say hello", "aria-label" -> "Command"}, [])
   let button = dom_element("button", {:id -> "send-command", :type -> "submit"}, [dom_text("Send")])
-  let composer = dom_element("form", {:id -> "mud-command", :class -> "command-form", "data-sync-event" -> "submit", "data-sync-action" -> "mud_command"}, [text, button])
+  let composer = dom_element("form", {:id -> "mud-command", :class -> "command-form", "data-sync-event" -> "submit", "data-sync-action" -> "mud_command", "data-sync-submit-key" -> "ctrl+enter"}, [text, button])
   return dom_element("section", {:class -> "command-deck"}, [ui/command_chips_node(actor), composer])
 end
 

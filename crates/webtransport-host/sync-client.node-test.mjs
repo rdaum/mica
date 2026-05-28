@@ -13,6 +13,7 @@ import {
   endEventLoading,
   endSubmitLoading,
   focusAfterSubmit,
+  submitKeyMatches,
 } from "./sync-client.js";
 
 const encoded = encodeSyncEnvelope({
@@ -210,6 +211,23 @@ assert.equal(fallbackFocused, false);
 localFocused = false;
 focusAfterSubmit({ querySelector: () => null });
 assert.equal(fallbackFocused, true);
+
+assert.equal(
+  submitKeyMatches({ key: "Enter", ctrlKey: true }, "ctrl+enter"),
+  true,
+);
+assert.equal(
+  submitKeyMatches({ key: "Enter", metaKey: true }, "ctrl+enter"),
+  false,
+);
+assert.equal(
+  submitKeyMatches({ key: "Enter", ctrlKey: true, shiftKey: true }, "ctrl+enter"),
+  false,
+);
+assert.equal(
+  submitKeyMatches({ key: "Enter", metaKey: true }, "cmd+enter"),
+  true,
+);
 
 const loadingForm = {
   className: "",

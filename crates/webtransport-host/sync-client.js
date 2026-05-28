@@ -146,6 +146,7 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "data-sync-event",
   "data-sync-follow",
   "data-sync-key",
+  "data-sync-submit-key",
   "data-sync-throttle",
   "data-sync-on-viewport-top",
   "data-sync-stable-top",
@@ -947,6 +948,10 @@ export function boundEventFields(element) {
   return fields;
 }
 
+export function submitKeyMatches(event, binding) {
+  return eventMatchesSubmitKey(event, binding);
+}
+
 function parseDurationMs(value) {
   if (value === null || value === undefined || value === "") {
     return null;
@@ -974,6 +979,49 @@ function scheduleBoundEvent(element, callback) {
   }
 
   callback();
+}
+
+function eventMatchesSubmitKey(event, binding) {
+  const parts = String(binding ?? "")
+    .toLowerCase()
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return false;
+  }
+
+  let wantedKey = "";
+  let wantsCtrl = false;
+  let wantsMeta = false;
+  let wantsAlt = false;
+  let wantsShift = false;
+  for (const part of parts) {
+    if (part === "ctrl" || part === "control") {
+      wantsCtrl = true;
+    } else if (part === "cmd" || part === "command" || part === "meta") {
+      wantsMeta = true;
+    } else if (part === "alt" || part === "option") {
+      wantsAlt = true;
+    } else if (part === "shift") {
+      wantsShift = true;
+    } else {
+      wantedKey = part;
+    }
+  }
+  if (!wantedKey) {
+    return false;
+  }
+
+  const key = String(event.key ?? "").toLowerCase();
+  const normalizedKey = key === "return" ? "enter" : key;
+  return (
+    normalizedKey === wantedKey &&
+    Boolean(event.ctrlKey) === wantsCtrl &&
+    Boolean(event.metaKey) === wantsMeta &&
+    Boolean(event.altKey) === wantsAlt &&
+    Boolean(event.shiftKey) === wantsShift
+  );
 }
 
 export function dispatchSyncLoading(kind, detail) {
@@ -1316,6 +1364,8 @@ export function bootstrapServerRenderedSync(mount, status) {
   });
   let pollTimer = null;
   let inFlightDomEvent = null;
+  const pendingDomEvents = [];
+  let drainingDomEvents = false;
   const api = { client: null, state };
 
   function setStatus(text) {
@@ -1359,19 +1409,23 @@ export function bootstrapServerRenderedSync(mount, status) {
     }, state.pollMs);
   }
 
-  function finishInFlightDomEvent() {
+  function finishInFlightDomEvent(acknowledged = false) {
     const event = inFlightDomEvent;
     if (event === null) {
       return;
     }
     clearTimeout(event.timeout);
     event.end(event.loading);
+    if (acknowledged) {
+      event.afterAck?.();
+    }
     inFlightDomEvent = null;
     dispatchSyncLoading("stop", {
       kind: event.kind,
       target: event.target,
       action: event.action,
     });
+    drainDomEvents();
   }
 
   function startInFlightDomEvent(event) {
@@ -1382,6 +1436,75 @@ export function bootstrapServerRenderedSync(mount, status) {
       }
     }, 15000);
     inFlightDomEvent = event;
+  }
+
+  async function ensureReadyForDomEvent() {
+    if (connected && initialSynced) {
+      return true;
+    }
+    if (connectError) {
+      setStatus(connectionFailureText(connectError));
+      return false;
+    }
+    setStatus("Connecting");
+    try {
+      if (!(await connectPromise)) {
+        setStatus(connectionFailureText(connectError));
+        return false;
+      }
+      return true;
+    } catch (error) {
+      connectError = error;
+      setStatus(connectionFailureText(error));
+      return false;
+    }
+  }
+
+  function enqueueDomEvent(event) {
+    pendingDomEvents.push(event);
+    drainDomEvents();
+  }
+
+  async function drainDomEvents() {
+    if (drainingDomEvents || inFlightDomEvent !== null) {
+      return;
+    }
+    drainingDomEvents = true;
+    try {
+      while (inFlightDomEvent === null && pendingDomEvents.length > 0) {
+        if (!(await ensureReadyForDomEvent())) {
+          return;
+        }
+        const event = pendingDomEvents.shift();
+        const loading = event.begin();
+        startInFlightDomEvent({
+          kind: event.kind,
+          target: event.target,
+          action: event.action,
+          loading,
+          end: event.end,
+          afterAck: event.afterAck,
+        });
+        dispatchSyncLoading("start", {
+          kind: event.kind,
+          target: event.target,
+          action: event.action,
+        });
+        try {
+          event.payload.revision = state.revision;
+          event.payload.signature = state.signature;
+          await client.sendDomEvent(event.payload);
+        } catch (error) {
+          setStatus(`Event failed: ${String(error)}`);
+          finishInFlightDomEvent();
+        }
+      }
+    } finally {
+      drainingDomEvents = false;
+      if (inFlightDomEvent === null && pendingDomEvents.length > 0) {
+        drainDomEvents();
+      }
+    }
   }
 
   function sendViewportEvent(data) {
@@ -1407,43 +1530,14 @@ export function bootstrapServerRenderedSync(mount, status) {
   }
 
   async function sendBoundEvent(element, eventName) {
-    if (inFlightDomEvent !== null) {
-      return;
-    }
-    if (!connected || !initialSynced) {
-      if (connectError) {
-        setStatus(connectionFailureText(connectError));
-        return;
-      }
-      setStatus("Connecting");
-      try {
-        if (!(await connectPromise)) {
-          setStatus(connectionFailureText(connectError));
-          return;
-        }
-      } catch (error) {
-        connectError = error;
-        setStatus(connectionFailureText(error));
-        return;
-      }
-    }
-
     const action = element.dataset.syncAction ?? "";
-    const loading = beginEventLoading(element);
-    startInFlightDomEvent({
+    enqueueDomEvent({
       kind: eventName,
       target: element,
       action,
-      loading,
+      begin: () => beginEventLoading(element),
       end: endEventLoading,
-    });
-    dispatchSyncLoading("start", {
-      kind: eventName,
-      target: element,
-      action,
-    });
-    try {
-      await client.sendDomEvent({
+      payload: {
         session: state.session,
         view: state.view,
         revision: state.revision,
@@ -1452,11 +1546,8 @@ export function bootstrapServerRenderedSync(mount, status) {
         target: element.id ?? "",
         action,
         fields: boundEventFields(element),
-      });
-    } catch (error) {
-      setStatus(`Event failed: ${String(error)}`);
-      finishInFlightDomEvent();
-    }
+      },
+    });
   }
 
   function handleBoundEvent(event) {
@@ -1487,7 +1578,7 @@ export function bootstrapServerRenderedSync(mount, status) {
       initialSyncResolve(true);
     }
     bindViewportObservers(mount, sendViewportEvent);
-    finishInFlightDomEvent();
+    finishInFlightDomEvent(true);
   }
 
   function handle(envelope) {
@@ -1500,7 +1591,7 @@ export function bootstrapServerRenderedSync(mount, status) {
           (serverRevision === state.revision && serverSignature === state.signature))
       ) {
         if (serverRevision === state.revision && serverSignature === state.signature) {
-          finishInFlightDomEvent();
+          finishInFlightDomEvent(true);
         }
         return;
       }
@@ -1521,7 +1612,7 @@ export function bootstrapServerRenderedSync(mount, status) {
         (serverRevision === state.revision && serverSignature === state.signature)
       ) {
         if (serverRevision === state.revision && serverSignature === state.signature) {
-          finishInFlightDomEvent();
+          finishInFlightDomEvent(true);
         }
         return;
       }
@@ -1614,26 +1705,6 @@ export function bootstrapServerRenderedSync(mount, status) {
   }
 
   async function sendForm(form, submit) {
-    if (inFlightDomEvent !== null) {
-      return;
-    }
-    if (!connected || !initialSynced) {
-      if (connectError) {
-        setStatus(connectionFailureText(connectError));
-        return;
-      }
-      setStatus("Connecting");
-      try {
-        if (!(await connectPromise)) {
-          setStatus(connectionFailureText(connectError));
-          return;
-        }
-      } catch (error) {
-        connectError = error;
-        setStatus(connectionFailureText(error));
-        return;
-      }
-    }
     if (
       !(form instanceof HTMLFormElement) ||
       form.dataset.syncEvent !== "submit"
@@ -1648,22 +1719,20 @@ export function bootstrapServerRenderedSync(mount, status) {
     ) {
       return;
     }
-    const loading = beginSubmitLoading(form, submit);
     const action = form.dataset.syncAction ?? "";
-    startInFlightDomEvent({
+    enqueueDomEvent({
       kind: "submit",
       target: form,
       action,
-      loading,
+      begin: () => beginSubmitLoading(form, submit),
       end: endSubmitLoading,
-    });
-    dispatchSyncLoading("start", {
-      kind: "submit",
-      target: form,
-      action,
-    });
-    try {
-      await client.sendDomEvent({
+      afterAck: () => {
+        if (form.dataset.syncReset !== "false") {
+          form.reset();
+        }
+        focusAfterSubmit(form);
+      },
+      payload: {
         session: state.session,
         view: state.view,
         revision: state.revision,
@@ -1672,20 +1741,24 @@ export function bootstrapServerRenderedSync(mount, status) {
         target: form.id,
         action,
         fields,
-      });
-      if (form.dataset.syncReset !== "false") {
-        form.reset();
-      }
-      focusAfterSubmit(form);
-    } catch (error) {
-      setStatus(`Event failed: ${String(error)}`);
-      finishInFlightDomEvent();
-    }
+      },
+    });
   }
 
   mount.addEventListener("submit", async (event) => {
     event.preventDefault();
     await sendForm(event.target, event.submitter);
+  });
+  mount.addEventListener("keydown", async (event) => {
+    const form = event.target?.closest?.("form[data-sync-submit-key]");
+    if (!form || !mount.contains(form)) {
+      return;
+    }
+    if (!eventMatchesSubmitKey(event, form.dataset.syncSubmitKey)) {
+      return;
+    }
+    event.preventDefault();
+    await sendForm(form, event.submitter);
   });
   mount.addEventListener("click", handleBoundEvent);
   mount.addEventListener("change", handleBoundEvent);
