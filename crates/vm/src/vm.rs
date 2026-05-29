@@ -2515,8 +2515,12 @@ fn select_authorized_method_call(
 ) -> Result<ApplicableMethodCall, RuntimeError> {
     let mut selected = None;
     let mut ambiguous = Vec::new();
+    let mut candidate_count = 0usize;
+    let mut unauthorized_count = 0usize;
     for entry in methods {
+        candidate_count += 1;
         if !authority.can_invoke_method(&entry.method) {
+            unauthorized_count += 1;
             continue;
         }
         if let Some(previous) = selected.replace(entry) {
@@ -2532,7 +2536,17 @@ fn select_authorized_method_call(
             methods: ambiguous,
         });
     }
-    selected.ok_or(RuntimeError::NoApplicableMethod { selector })
+    selected.ok_or_else(|| {
+        if candidate_count > 0 && unauthorized_count == candidate_count {
+            tracing::warn!(
+                target: "mica_vm::dispatch",
+                selector = ?selector,
+                candidates = candidate_count,
+                "dispatch candidates were rejected by invoke authority"
+            );
+        }
+        RuntimeError::NoApplicableMethod { selector }
+    })
 }
 
 fn dynamic_dispatch_roles(value: &Value) -> Result<Vec<(Value, Value)>, RuntimeError> {
@@ -2570,8 +2584,12 @@ fn select_authorized_method(
 ) -> Result<Value, RuntimeError> {
     let mut selected = None;
     let mut ambiguous = Vec::new();
+    let mut candidate_count = 0usize;
+    let mut unauthorized_count = 0usize;
     for method in methods {
+        candidate_count += 1;
         if !authority.can_invoke_method(&method) {
+            unauthorized_count += 1;
             continue;
         }
         if let Some(previous) = selected.replace(method) {
@@ -2587,7 +2605,17 @@ fn select_authorized_method(
             methods: ambiguous,
         });
     }
-    selected.ok_or(RuntimeError::NoApplicableMethod { selector })
+    selected.ok_or_else(|| {
+        if candidate_count > 0 && unauthorized_count == candidate_count {
+            tracing::warn!(
+                target: "mica_vm::dispatch",
+                selector = ?selector,
+                candidates = candidate_count,
+                "dispatch candidates were rejected by invoke authority"
+            );
+        }
+        RuntimeError::NoApplicableMethod { selector }
+    })
 }
 
 fn ordinal_index(index: &Value) -> Option<usize> {
