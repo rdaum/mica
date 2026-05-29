@@ -42,6 +42,10 @@ verb openai/assistant_text(response @ #map)
   return message[:content]
 end
 
+verb openai/assistant_text(response)
+  return nothing
+end
+
 verb openai/assistant_reasoning(response @ #map)
   let choices = response[:choices]
   if choices == nothing || choices == []
@@ -73,5 +77,9 @@ verb openai/assistant_reasoning(response @ #map)
     return to_literal(reasoning_details)
   end
 
+  return nothing
+end
+
+verb openai/assistant_reasoning(response)
   return nothing
 end
