@@ -405,6 +405,11 @@ pub enum CompileError {
         span: Option<Span>,
         name: String,
     },
+    UnknownValue {
+        node: NodeId,
+        span: Option<Span>,
+        name: String,
+    },
     InvalidLiteral {
         node: NodeId,
         span: Option<Span>,
@@ -1214,13 +1219,19 @@ impl<'a> ProgramCompiler<'a> {
             HirExpr::ExternalRef { id, name } => {
                 if let Some(register) = self.external_locals.get(name).copied() {
                     Ok(register)
-                } else {
+                } else if self.is_compiler_builtin(name) || self.context.is_runtime_function(name) {
                     Err(CompileError::Unsupported {
                         node: *id,
                         span: self.span(*id),
                         message: format!(
                             "runtime function `{name}` is not callable from compiled tasks yet"
                         ),
+                    })
+                } else {
+                    Err(CompileError::UnknownValue {
+                        node: *id,
+                        span: self.span(*id),
+                        name: name.clone(),
                     })
                 }
             }
@@ -5071,6 +5082,33 @@ mod tests {
             mica_runtime::TaskManagerError::Task(
                 mica_runtime::TaskError::Runtime(RuntimeError::UnknownBuiltin { name })
             ) if name == Symbol::intern("missing_builtin")
+        ));
+    }
+
+    #[test]
+    fn unresolved_index_receiver_reports_unknown_value_at_receiver() {
+        let context = CompileContext::new();
+        let source = "let item = {:end_line -> 1}\nreturn found[:end_line]";
+        let error = compile_source(source, &context).unwrap_err();
+        let found_start = source.find("found").unwrap();
+        let found_span = found_start..found_start + "found".len();
+
+        assert!(matches!(
+            error,
+            CompileError::UnknownValue { name, span: Some(span), .. }
+                if name == "found" && span == found_span
+        ));
+    }
+
+    #[test]
+    fn runtime_function_value_use_keeps_runtime_function_diagnostic() {
+        let context = CompileContext::new().with_runtime_function("source_find");
+        let error = compile_source("return source_find[:end_line]", &context).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CompileError::Unsupported { message, .. }
+                if message == "runtime function `source_find` is not callable from compiled tasks yet"
         ));
     }
 

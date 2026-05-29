@@ -112,6 +112,11 @@ fn compile_error_reports(error: &CompileError) -> Vec<CompileDiagnostic> {
             &format!("unknown identity `#{name}`"),
             span.clone(),
         )],
+        CompileError::UnknownValue { name, span, .. } => vec![span_report(
+            "unknown value",
+            &format!("unknown value `{name}`"),
+            span.clone(),
+        )],
         CompileError::InvalidLiteral { message, span, .. } => {
             vec![span_report("invalid literal", message, span.clone())]
         }
