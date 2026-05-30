@@ -1,0 +1,141 @@
+{
+  parserClass="org.timbran.mica.jetbrains.parser.MicaParser"
+
+  extends="com.intellij.extapi.psi.ASTWrapperPsiElement"
+
+  psiClassPrefix="Mica"
+  psiImplClassSuffix="Impl"
+  psiPackage="org.timbran.mica.jetbrains.psi"
+  psiImplPackage="org.timbran.mica.jetbrains.psi.impl"
+
+  elementTypeHolderClass="org.timbran.mica.jetbrains.MicaElementTypes"
+  elementTypeClass="org.timbran.mica.jetbrains.MicaElementType"
+  tokenTypeClass="org.timbran.mica.jetbrains.MicaTokenType"
+
+  tokens=[
+    WHITE_SPACE="regexp:\s+"
+    NEWLINE="regexp:\r?\n"
+    LINE_COMMENT="regexp://.*"
+    IDENT="regexp:[a-zA-Z_][a-zA-Z0-9_]*"
+    ERROR_CODE="regexp:E_[a-zA-Z0-9_]+"
+    INT="regexp:[0-9]+"
+    FLOAT="regexp:[0-9]+\.[0-9]*"
+    STRING="regexp:\"([^\"\\]|\\.)*\"?"
+
+    // Keywords
+    LET_KW="let"
+    CONST_KW="const"
+    IF_KW="if"
+    ELSEIF_KW="elseif"
+    ELSE_KW="else"
+    END_KW="end"
+    BEGIN_KW="begin"
+    FOR_KW="for"
+    IN_KW="in"
+    WHILE_KW="while"
+    RETURN_KW="return"
+    RAISE_KW="raise"
+    RECOVER_KW="recover"
+    ONE_KW="one"
+    SPAWN_KW="spawn"
+    AFTER_KW="after"
+    NOT_KW="not"
+    BREAK_KW="break"
+    CONTINUE_KW="continue"
+    TRY_KW="try"
+    CATCH_KW="catch"
+    AS_KW="as"
+    FINALLY_KW="finally"
+    FN_KW="fn"
+    METHOD_KW="method"
+    VERB_KW="verb"
+    DO_KW="do"
+    ASSERT_KW="assert"
+    RETRACT_KW="retract"
+    REQUIRE_KW="require"
+    TRUE_KW="true"
+    FALSE_KW="false"
+    NOTHING_KW="nothing"
+
+    // Symbols
+    LPAREN="("
+    RPAREN=")"
+    LBRACKET="["
+    RBRACKET="]"
+    LBRACE="{"
+    RBRACE="}"
+    COMMA=","
+    SEMI=";"
+    DOT="."
+    DOT_DOT=".."
+    COLON=":"
+    HASH="#"
+    AT="@"
+    QUESTION="?"
+    UNDERSCORE="_"
+    EQ="="
+    EQ_EQ="=="
+    BANG_EQ="!="
+    LT="<"
+    LT_EQ="<="
+    GT=">"
+    GT_EQ=">="
+    PLUS="+"
+    MINUS="-"
+    STAR="*"
+    SLASH="/"
+    PERCENT="%"
+    AMP_AMP="&&"
+    PIPE_PIPE="||"
+    BANG="!"
+    ARROW="->"
+    FAT_ARROW="=>"
+    COLON_DASH=":-"
+  ]
+}
+
+micaFile ::= separator* (item separator*)*
+
+private item ::= verb_item | method_item | relation_rule | expr_stmt
+
+private separator ::= NEWLINE | SEMI
+
+verb_item ::= VERB_KW method_header block? END_KW {pin=1}
+
+method_item ::= METHOD_KW method_header separator* (method_clause separator*)* (DO_KW block)? END_KW {pin=1}
+
+method_clause ::= expr
+
+method_header ::= (IDENT | INT | FLOAT | STRING | LPAREN | RPAREN | COMMA | AT | HASH | QUESTION | COLON | SLASH)*
+
+relation_rule ::= expr COLON_DASH rule_body {pin=2}
+
+rule_body ::= separator* expr
+
+expr_stmt ::= structured_stmt | expr
+
+structured_stmt ::= if_stmt | while_stmt | for_stmt | begin_stmt | try_stmt | fn_stmt
+
+if_stmt ::= IF_KW expr block? (ELSEIF_KW expr block?)* (ELSE_KW block?)? END_KW {pin=1}
+while_stmt ::= WHILE_KW expr block? END_KW {pin=1}
+for_stmt ::= FOR_KW expr block? END_KW {pin=1}
+begin_stmt ::= BEGIN_KW block? END_KW {pin=1}
+try_stmt ::= TRY_KW block? (CATCH_KW expr? block?)* (FINALLY_KW block?)? END_KW {pin=1}
+fn_stmt ::= FN_KW method_header block? END_KW {pin=1}
+
+expr ::= expr_term+
+
+private expr_term ::= !separator !COLON_DASH !stopping_kw (
+  IDENT | INT | FLOAT | STRING | ERROR_CODE | COMMA |
+  LPAREN | RPAREN | LBRACKET | RBRACKET | LBRACE | RBRACE |
+  DOT | DOT_DOT | COLON | HASH | AT | QUESTION | UNDERSCORE |
+  EQ | EQ_EQ | BANG_EQ | LT | LT_EQ | GT | GT_EQ |
+  PLUS | MINUS | STAR | SLASH | PERCENT | AMP_AMP | PIPE_PIPE | BANG | ARROW | FAT_ARROW |
+  LET_KW | CONST_KW | IN_KW | AS_KW |
+  RETURN_KW | RAISE_KW | RECOVER_KW | ONE_KW | SPAWN_KW | AFTER_KW | NOT_KW | BREAK_KW |
+  CONTINUE_KW | ASSERT_KW | RETRACT_KW | REQUIRE_KW | TRUE_KW | FALSE_KW | NOTHING_KW
+)
+
+private stopping_kw ::= DO_KW | END_KW | ELSEIF_KW | ELSE_KW | CATCH_KW | FINALLY_KW
+
+block ::= separator* (item separator*)*

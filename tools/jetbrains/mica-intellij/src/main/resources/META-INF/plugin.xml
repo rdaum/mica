@@ -1,0 +1,35 @@
+<idea-plugin>
+    <id>org.timbran.mica.jetbrains</id>
+    <name>Mica Language Support</name>
+    <vendor email="support@timbran.org" url="https://timbran.org">Timbran</vendor>
+
+    <description><![CDATA[
+    Native language support for Mica, a live, relation-first programmable system.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType name="Mica"
+                  implementationClass="org.timbran.mica.jetbrains.MicaFileType"
+                  language="Mica"
+                  extensions="mica" />
+
+        <lang.syntaxHighlighterFactory implementationClass="org.timbran.mica.jetbrains.MicaSyntaxHighlighterFactory"
+                                 language="Mica" />
+
+        <lang.commenter language="Mica"
+                        implementationClass="org.timbran.mica.jetbrains.MicaCommenter" />
+
+        <colorSettingsPage implementation="org.timbran.mica.jetbrains.MicaColorSettingsPage" />
+
+        <lang.parserDefinition language="Mica"
+                               implementationClass="org.timbran.mica.jetbrains.MicaParserDefinition" />
+
+        <lang.psiStructureViewFactory language="Mica"
+                                       implementationClass="org.timbran.mica.jetbrains.MicaStructureViewFactory" />
+
+        <lang.formatter language="Mica"
+                        implementationClass="org.timbran.mica.jetbrains.MicaFormattingModelBuilder" />
+    </extensions>
+</idea-plugin>
