@@ -1,0 +1,19 @@
+[package]
+name = "mica-micac"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Mica filein compiler"
+
+[[bin]]
+name = "micac"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+mica-compiler.workspace = true
+mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
+mica-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true

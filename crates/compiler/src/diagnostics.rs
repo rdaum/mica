@@ -67,7 +67,7 @@ pub fn format_compile_error(
     source: Option<DiagnosticSource<'_>>,
     options: DiagnosticRenderOptions,
 ) -> String {
-    let reports = compile_error_reports(error);
+    let reports = compile_error_diagnostics(error);
     if options.verbosity == DiagnosticVerbosity::SourceContext
         && options.use_graphics
         && let Some(source) = source
@@ -87,13 +87,13 @@ pub fn format_compile_error(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompileDiagnostic {
-    title: String,
-    message: String,
-    span: Option<Span>,
+pub struct CompileDiagnostic {
+    pub title: String,
+    pub message: String,
+    pub span: Option<Span>,
 }
 
-fn compile_error_reports(error: &CompileError) -> Vec<CompileDiagnostic> {
+pub fn compile_error_diagnostics(error: &CompileError) -> Vec<CompileDiagnostic> {
     match error {
         CompileError::ParseErrors { errors } => parse_error_reports(errors),
         CompileError::SemanticDiagnostic { diagnostic } => {

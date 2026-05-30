@@ -1987,6 +1987,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-micac"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "mica-compiler",
+ "mica-relation-kernel",
+ "mica-runtime",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mica-relation-kernel"
 version = "0.1.0"
 dependencies = [

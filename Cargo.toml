@@ -9,6 +9,7 @@ members = [
     "crates/host-zmq",
     "crates/host-protocol",
     "crates/host-console",
+    "crates/micac",
     "crates/web-host",
     "crates/webtransport-host",
     "crates/telnet-host",
@@ -33,6 +34,7 @@ mica-compiler = { path = "crates/compiler" }
 mica-driver = { path = "crates/driver" }
 mica-host-protocol = { path = "crates/host-protocol" }
 mica-host-console = { path = "crates/host-console" }
+mica-micac = { path = "crates/micac" }
 mica-web-host = { path = "crates/web-host" }
 mica-webtransport-host = { path = "crates/webtransport-host" }
 mica-telnet-host = { path = "crates/telnet-host" }

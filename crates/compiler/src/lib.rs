@@ -40,7 +40,8 @@ pub use backend::{
     install_rules_from_source,
 };
 pub use diagnostics::{
-    DiagnosticRenderOptions, DiagnosticSource, DiagnosticVerbosity, format_compile_error,
+    CompileDiagnostic, DiagnosticRenderOptions, DiagnosticSource, DiagnosticVerbosity,
+    compile_error_diagnostics, format_compile_error,
 };
 pub use hir::{
     HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam, HirPlace,
