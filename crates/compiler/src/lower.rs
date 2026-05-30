@@ -159,7 +159,9 @@ impl<'a> Lower<'a> {
         &mut self,
         node: &CstNode,
     ) -> (Option<String>, Option<String>, Vec<MethodParam>) {
-        let text = self.text(node.span.clone()).trim().to_owned();
+        let raw_text = self.text(node.span.clone());
+        let leading_trim = raw_text.len() - raw_text.trim_start().len();
+        let text = raw_text.trim().to_owned();
         let selector = text
             .chars()
             .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '/')
@@ -174,7 +176,14 @@ impl<'a> Lower<'a> {
                 "method parameters use `name @ #prototype`; use bare `name` for unrestricted parameters",
             );
         }
-        let params = param_text.map(parse_method_param_list).unwrap_or_default();
+        let params = param_text
+            .map(|params| {
+                let params_start = node.span.start
+                    + leading_trim
+                    + text.find('(').map(|offset| offset + 1).unwrap_or(0);
+                parse_method_param_list(params, params_start)
+            })
+            .unwrap_or_default();
         (None, selector, params)
     }
 
@@ -1066,7 +1075,7 @@ fn lower_method_params(clauses: &[String]) -> Vec<MethodParam> {
         if clause.is_empty() {
             continue;
         }
-        params.extend(parse_method_param_list(clause));
+        params.extend(parse_method_param_list(clause, 0));
     }
     params
 }
@@ -1079,24 +1088,40 @@ fn method_clauses_use_colon_params(clauses: &[String]) -> bool {
         .any(|clause| clause.contains(':'))
 }
 
-fn parse_method_param_list(text: &str) -> Vec<MethodParam> {
-    text.split(',').filter_map(parse_method_param).collect()
+fn parse_method_param_list(text: &str, base_offset: usize) -> Vec<MethodParam> {
+    let mut params = Vec::new();
+    let mut start = 0;
+    for part in text.split(',') {
+        if let Some(param) = parse_method_param(part, base_offset + start) {
+            params.push(param);
+        }
+        start += part.len() + 1;
+    }
+    params
 }
 
-fn parse_method_param(part: &str) -> Option<MethodParam> {
+fn parse_method_param(part: &str, base_offset: usize) -> Option<MethodParam> {
+    let leading_trim = part.len() - part.trim_start().len();
     let part = part.trim();
+    let part_offset = base_offset + leading_trim;
     if part.is_empty() || part.contains(':') {
         return None;
     }
-    let (name, restriction) = match part.split_once('@') {
+    let (name, restriction, restriction_span) = match part.split_once('@') {
         Some((name, restriction)) => {
-            let restriction = restriction.trim().strip_prefix('#')?.trim();
+            let restriction_start = part_offset + name.len() + 1;
+            let restriction_leading_trim = restriction.len() - restriction.trim_start().len();
+            let restriction = restriction.trim();
+            let restriction_span_start = restriction_start + restriction_leading_trim;
+            let restriction = restriction.strip_prefix('#')?.trim();
             if restriction.is_empty() {
                 return None;
             }
-            (name, Some(restriction.to_owned()))
+            let restriction_span =
+                restriction_span_start..restriction_span_start + 1 + restriction.len();
+            (name, Some(restriction.to_owned()), Some(restriction_span))
         }
-        None => (part, None),
+        None => (part, None, None),
     };
     let name = name.split_whitespace().last().unwrap_or_default().trim();
     if name.is_empty() {
@@ -1105,6 +1130,7 @@ fn parse_method_param(part: &str) -> Option<MethodParam> {
     Some(MethodParam {
         name: name.to_owned(),
         restriction,
+        restriction_span,
     })
 }
 

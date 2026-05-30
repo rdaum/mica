@@ -26,6 +26,8 @@ LINE_COMMENT="//"[^\r\n]*
 INT=[0-9]+
 FLOAT=[0-9]+"."[0-9]*
 IDENT=[a-zA-Z_][a-zA-Z0-9_]*
+SYMBOL=":"[a-zA-Z_][a-zA-Z0-9_]*
+IDENTITY="#"[a-zA-Z_][a-zA-Z0-9_]*
 ERROR_CODE="E_"[a-zA-Z0-9_]+
 STRING=\"([^\"\\]|\\.)*\"?
 
@@ -105,6 +107,8 @@ STRING=\"([^\"\\]|\\.)*\"?
   "?"                { return QUESTION; }
   "_"                { return UNDERSCORE; }
 
+  {SYMBOL}           { return SYMBOL; }
+  {IDENTITY}         { return IDENTITY; }
   {ERROR_CODE}       { return ERROR_CODE; }
   {IDENT}            { return IDENT; }
   {INT}              { return INT; }

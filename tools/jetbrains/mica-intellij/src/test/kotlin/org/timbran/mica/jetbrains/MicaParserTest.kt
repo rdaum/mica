@@ -1,6 +1,7 @@
 package org.timbran.mica.jetbrains
 
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.psi.PsiErrorElement
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import org.timbran.mica.jetbrains.psi.MicaMethodItem
 import org.timbran.mica.jetbrains.psi.MicaRelationRule
@@ -46,5 +47,19 @@ class MicaParserTest : BasePlatformTestCase() {
         
         val relationRule = PsiTreeUtil.findChildOfType(psiFile, MicaRelationRule::class.java)
         assertNotNull("Should parse relation rule", relationRule)
+        assertNull("Should not produce parser errors", PsiTreeUtil.findChildOfType(psiFile, PsiErrorElement::class.java))
+    }
+
+    fun testSlashQualifiedRelationRule() {
+        val text = """
+            command/TrustedForGrammar(actor, provider) :-
+              Delegates(actor, #player, ?distance),
+              command/TrustedForGrammar(#player, provider)
+        """.trimIndent()
+        val psiFile = myFixture.configureByText("test.mica", text)
+
+        val relationRule = PsiTreeUtil.findChildOfType(psiFile, MicaRelationRule::class.java)
+        assertNotNull("Should parse slash-qualified relation rule", relationRule)
+        assertNull("Should not produce parser errors", PsiTreeUtil.findChildOfType(psiFile, PsiErrorElement::class.java))
     }
 }

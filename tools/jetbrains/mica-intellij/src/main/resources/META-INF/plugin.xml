@@ -10,6 +10,13 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
+        <applicationService serviceImplementation="org.timbran.mica.jetbrains.MicaSettings" />
+
+        <applicationConfigurable id="org.timbran.mica.jetbrains.settings"
+                                 groupId="tools"
+                                 displayName="Mica"
+                                 instance="org.timbran.mica.jetbrains.MicaConfigurable" />
+
         <fileType name="Mica"
                   implementationClass="org.timbran.mica.jetbrains.MicaFileType"
                   language="Mica"
@@ -33,5 +40,8 @@
 
         <lang.formatter language="Mica"
                         implementationClass="org.timbran.mica.jetbrains.MicaFormattingModelBuilder" />
+
+        <externalAnnotator language="Mica"
+                           implementationClass="org.timbran.mica.jetbrains.MicaMicacExternalAnnotator" />
     </extensions>
 </idea-plugin>

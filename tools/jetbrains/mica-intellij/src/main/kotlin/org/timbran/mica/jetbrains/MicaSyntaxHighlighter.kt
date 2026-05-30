@@ -19,6 +19,8 @@ class MicaSyntaxHighlighter : SyntaxHighlighterBase() {
         val NUMBER = TextAttributesKey.createTextAttributesKey("MICA_NUMBER", DefaultLanguageHighlighterColors.NUMBER)
         val COMMENT = TextAttributesKey.createTextAttributesKey("MICA_COMMENT", DefaultLanguageHighlighterColors.LINE_COMMENT)
         val IDENTIFIER = TextAttributesKey.createTextAttributesKey("MICA_IDENTIFIER", DefaultLanguageHighlighterColors.IDENTIFIER)
+        val SYMBOL_LITERAL = TextAttributesKey.createTextAttributesKey("MICA_SYMBOL", DefaultLanguageHighlighterColors.STATIC_FIELD)
+        val IDENTITY_LITERAL = TextAttributesKey.createTextAttributesKey("MICA_IDENTITY", DefaultLanguageHighlighterColors.INSTANCE_FIELD)
         val OPERATION_SIGN = TextAttributesKey.createTextAttributesKey("MICA_OPERATION_SIGN", DefaultLanguageHighlighterColors.OPERATION_SIGN)
         val PARENTHESES = TextAttributesKey.createTextAttributesKey("MICA_PARENTHESES", DefaultLanguageHighlighterColors.PARENTHESES)
         val BRACKETS = TextAttributesKey.createTextAttributesKey("MICA_BRACKETS", DefaultLanguageHighlighterColors.BRACKETS)
@@ -34,6 +36,8 @@ class MicaSyntaxHighlighter : SyntaxHighlighterBase() {
         private val NUMBER_KEYS = arrayOf(NUMBER)
         private val COMMENT_KEYS = arrayOf(COMMENT)
         private val IDENTIFIER_KEYS = arrayOf(IDENTIFIER)
+        private val SYMBOL_KEYS = arrayOf(SYMBOL_LITERAL)
+        private val IDENTITY_KEYS = arrayOf(IDENTITY_LITERAL)
         private val OPERATION_SIGN_KEYS = arrayOf(OPERATION_SIGN)
         private val PARENTHESES_KEYS = arrayOf(PARENTHESES)
         private val BRACKETS_KEYS = arrayOf(BRACKETS)
@@ -57,6 +61,8 @@ class MicaSyntaxHighlighter : SyntaxHighlighterBase() {
             MicaTokenSets.STRINGS.contains(tokenType) -> STRING_KEYS
             tokenType == INT || tokenType == FLOAT -> NUMBER_KEYS
             tokenType == org.timbran.mica.jetbrains.MicaElementTypes.ERROR_CODE -> ERROR_CODE_KEYS
+            tokenType == SYMBOL -> SYMBOL_KEYS
+            tokenType == IDENTITY -> IDENTITY_KEYS
             tokenType == IDENT || tokenType == UNDERSCORE -> IDENTIFIER_KEYS
             tokenType == LPAREN || tokenType == RPAREN -> PARENTHESES_KEYS
             tokenType == LBRACKET || tokenType == RBRACKET -> BRACKETS_KEYS

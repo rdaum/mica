@@ -15,6 +15,8 @@ class MicaColorSettingsPage : ColorSettingsPage {
             AttributesDescriptor("Number", MicaSyntaxHighlighter.NUMBER),
             AttributesDescriptor("Comment", MicaSyntaxHighlighter.COMMENT),
             AttributesDescriptor("Identifier", MicaSyntaxHighlighter.IDENTIFIER),
+            AttributesDescriptor("Symbol", MicaSyntaxHighlighter.SYMBOL_LITERAL),
+            AttributesDescriptor("Identity", MicaSyntaxHighlighter.IDENTITY_LITERAL),
             AttributesDescriptor("Operator", MicaSyntaxHighlighter.OPERATION_SIGN),
             AttributesDescriptor("Parentheses", MicaSyntaxHighlighter.PARENTHESES),
             AttributesDescriptor("Brackets", MicaSyntaxHighlighter.BRACKETS),

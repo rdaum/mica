@@ -23,10 +23,25 @@ class MicaLexerTest {
         
         val expected = listOf(
             LBRACKET, INT, COMMA, TokenType.WHITE_SPACE, AT, IDENT, RBRACKET,
-            TokenType.WHITE_SPACE, LBRACE, COLON, IDENT, TokenType.WHITE_SPACE, ARROW,
+            TokenType.WHITE_SPACE, LBRACE, SYMBOL, TokenType.WHITE_SPACE, ARROW,
             TokenType.WHITE_SPACE, TRUE_KW, RBRACE
         )
         assertEquals(expected, tokens)
+    }
+
+    @Test
+    fun testSymbolAndIdentityTokens() {
+        val lexer = FlexAdapter(_MicaLexer(null))
+        val text = ":lit #lamp"
+        lexer.start(text)
+
+        val tokens = mutableListOf<IElementType>()
+        while (lexer.tokenType != null) {
+            tokens.add(lexer.tokenType!!)
+            lexer.advance()
+        }
+
+        assertEquals(listOf(SYMBOL, TokenType.WHITE_SPACE, IDENTITY), tokens)
     }
 
     @Test

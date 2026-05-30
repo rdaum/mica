@@ -116,17 +116,13 @@ class MicaStructureViewElement(private val element: PsiElement) : StructureViewT
     }
 
     private fun getRelationHeadName(rule: MicaRelationRule): String {
-        val fullText = rule.expr.text.trim()
+        val fullText = rule.text.substringBefore(":-").trim()
         val openParenIdx = fullText.indexOf('(')
         val targetText = if (openParenIdx != -1) {
             fullText.substring(0, openParenIdx).trim()
         } else {
             fullText
         }
-        
-        // Conservatively extract the first valid identifier matching the regex [a-zA-Z_][a-zA-Z0-9_]*
-        val regex = Regex("[a-zA-Z_][a-zA-Z0-9_]*")
-        val match = regex.find(targetText)
-        return match?.value ?: targetText
+        return targetText.ifEmpty { fullText }
     }
 }

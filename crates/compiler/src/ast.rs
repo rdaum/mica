@@ -73,6 +73,7 @@ pub enum MethodKind {
 pub struct MethodParam {
     pub name: String,
     pub restriction: Option<String>,
+    pub restriction_span: Option<Span>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

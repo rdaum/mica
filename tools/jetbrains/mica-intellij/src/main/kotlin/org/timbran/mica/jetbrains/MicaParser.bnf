@@ -17,6 +17,8 @@
     NEWLINE="regexp:\r?\n"
     LINE_COMMENT="regexp://.*"
     IDENT="regexp:[a-zA-Z_][a-zA-Z0-9_]*"
+    SYMBOL="regexp::[a-zA-Z_][a-zA-Z0-9_]*"
+    IDENTITY="regexp:#[a-zA-Z_][a-zA-Z0-9_]*"
     ERROR_CODE="regexp:E_[a-zA-Z0-9_]+"
     INT="regexp:[0-9]+"
     FLOAT="regexp:[0-9]+\.[0-9]*"
@@ -106,9 +108,28 @@ method_item ::= METHOD_KW method_header separator* (method_clause separator*)* (
 
 method_clause ::= expr
 
-method_header ::= (IDENT | INT | FLOAT | STRING | LPAREN | RPAREN | COMMA | AT | HASH | QUESTION | COLON | SLASH)*
+method_header ::= (IDENT | SYMBOL | IDENTITY | INT | FLOAT | STRING | LPAREN | RPAREN | COMMA | AT | HASH | QUESTION | COLON | SLASH)*
 
-relation_rule ::= expr COLON_DASH rule_body {pin=2}
+relation_rule ::= relation_atom COLON_DASH rule_body {pin=2}
+
+relation_atom ::= qualified_name LPAREN relation_arg_list? RPAREN
+
+private qualified_name ::= IDENT (SLASH IDENT)*
+
+relation_arg_list ::= relation_arg (COMMA relation_arg)*
+
+relation_arg ::= relation_arg_term+
+
+private relation_arg_term ::= !COMMA !RPAREN !separator !COLON_DASH !stopping_kw (
+  IDENT | SYMBOL | IDENTITY | INT | FLOAT | STRING | ERROR_CODE |
+  LPAREN | LBRACKET | RBRACKET | LBRACE | RBRACE |
+  DOT | DOT_DOT | COLON | HASH | AT | QUESTION | UNDERSCORE |
+  EQ | EQ_EQ | BANG_EQ | LT | LT_EQ | GT | GT_EQ |
+  PLUS | MINUS | STAR | SLASH | PERCENT | AMP_AMP | PIPE_PIPE | BANG | ARROW | FAT_ARROW |
+  LET_KW | CONST_KW | IN_KW | AS_KW |
+  RETURN_KW | RAISE_KW | RECOVER_KW | ONE_KW | SPAWN_KW | AFTER_KW | NOT_KW | BREAK_KW |
+  CONTINUE_KW | ASSERT_KW | RETRACT_KW | REQUIRE_KW | TRUE_KW | FALSE_KW | NOTHING_KW
+)
 
 rule_body ::= separator* expr
 
@@ -126,7 +147,7 @@ fn_stmt ::= FN_KW method_header block? END_KW {pin=1}
 expr ::= expr_term+
 
 private expr_term ::= !separator !COLON_DASH !stopping_kw (
-  IDENT | INT | FLOAT | STRING | ERROR_CODE | COMMA |
+  IDENT | SYMBOL | IDENTITY | INT | FLOAT | STRING | ERROR_CODE | COMMA |
   LPAREN | RPAREN | LBRACKET | RBRACKET | LBRACE | RBRACE |
   DOT | DOT_DOT | COLON | HASH | AT | QUESTION | UNDERSCORE |
   EQ | EQ_EQ | BANG_EQ | LT | LT_EQ | GT | GT_EQ |

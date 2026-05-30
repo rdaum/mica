@@ -692,9 +692,13 @@ fn lower_installed_params(
             .enumerate()
             .map(|(position, param)| {
                 let restriction = match &param.restriction {
-                    Some(restriction) => {
-                        compile_param_restriction(id, semantic, context, restriction)?
-                    }
+                    Some(restriction) => compile_param_restriction(
+                        id,
+                        param.restriction_span.as_ref(),
+                        semantic,
+                        context,
+                        restriction,
+                    )?,
                     None => Value::nothing(),
                 };
                 Ok(InstalledParam {
@@ -729,7 +733,7 @@ fn lower_installed_params(
             let (name, restriction) = match part.split_once('@') {
                 Some((name, restriction)) => {
                     let restriction =
-                        compile_param_restriction(id, semantic, context, restriction)?;
+                        compile_param_restriction(id, None, semantic, context, restriction)?;
                     (name.trim(), restriction)
                 }
                 None => (part, Value::nothing()),
@@ -756,6 +760,7 @@ fn lower_installed_params(
 
 fn compile_param_restriction(
     id: NodeId,
+    span: Option<&Span>,
     semantic: &SemanticProgram,
     context: &CompileContext,
     restriction: &str,
@@ -769,7 +774,7 @@ fn compile_param_restriction(
         .identity(name)
         .ok_or_else(|| CompileError::UnknownIdentity {
             node: id,
-            span: semantic.span(id).cloned(),
+            span: span.cloned().or_else(|| semantic.span(id).cloned()),
             name: name.to_owned(),
         })?;
     if frob_only {

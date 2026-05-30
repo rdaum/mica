@@ -433,6 +433,24 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn source_failure_span_is_shifted_to_file_offset() {
+        let root = temp_root("diagnostic-offset");
+        fs::create_dir_all(&root).unwrap();
+        let filein = root.join("bad.mica");
+        let source = "// leading comment\nmake_identity(:player)\nverb test(x @ #missing)\nend\n";
+        fs::write(&filein, source).unwrap();
+
+        let cli = test_cli(vec![filein], None, true);
+        let error = run(&cli).unwrap_err();
+
+        let span = error.diagnostics[0].span.as_ref().unwrap();
+        assert_eq!(span.start, source.find("#missing").unwrap());
+        assert_eq!(span.end, span.start + "#missing".len());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn test_cli(fileins: Vec<PathBuf>, store: Option<PathBuf>, check: bool) -> Cli {
         Cli {
             fileins,

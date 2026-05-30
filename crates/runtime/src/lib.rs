@@ -40,7 +40,7 @@ use mica_compiler::{
     BinaryOp, CollectionItem, CompileContext, CompileError, DiagnosticRenderOptions,
     DiagnosticSource, Expr, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem,
     HirPlace, HirRecovery, HirRelationAtom, HostRequestFunction, Item, Literal, MethodInstallation,
-    MethodKind, MethodRelations, NodeId, UnaryOp, compile_semantic, format_compile_error,
+    MethodKind, MethodRelations, NodeId, Span, UnaryOp, compile_semantic, format_compile_error,
     install_methods, install_rules_from_source, parse, parse_ast, parse_semantic,
 };
 use mica_host_protocol::{
@@ -1085,8 +1085,11 @@ impl SourceRunner {
 
     pub fn run_filein(&mut self, source: &str) -> Result<Vec<RunReport>, SourceTaskError> {
         let mut reports = Vec::new();
-        for chunk in source_chunks(source) {
-            reports.push(self.run_source(&chunk)?);
+        for chunk in source_chunks_with_offsets(source) {
+            reports.push(
+                self.run_source(&chunk.text)
+                    .map_err(|error| shift_source_task_error(error, chunk.start))?,
+            );
         }
         Ok(reports)
     }
@@ -1097,9 +1100,12 @@ impl SourceRunner {
         mut load_include: impl FnMut(&str) -> Result<String, String>,
     ) -> Result<Vec<RunReport>, SourceTaskError> {
         let mut reports = Vec::new();
-        for chunk in source_chunks(source) {
-            let expanded = expand_filein_text_includes(&chunk, &mut load_include)?;
-            reports.push(self.run_source_with_stored_source(&expanded, &chunk)?);
+        for chunk in source_chunks_with_offsets(source) {
+            let expanded = expand_filein_text_includes(&chunk.text, &mut load_include)?;
+            reports.push(
+                self.run_source_with_stored_source(&expanded, &chunk.text)
+                    .map_err(|error| shift_source_task_error(error, chunk.start))?,
+            );
         }
         Ok(reports)
     }
@@ -2057,25 +2063,127 @@ impl SharedSourceRunner {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceChunk {
+    text: String,
+    start: usize,
+}
+
 fn source_chunks(source: &str) -> Vec<String> {
+    source_chunks_with_offsets(source)
+        .into_iter()
+        .map(|chunk| chunk.text)
+        .collect()
+}
+
+fn source_chunks_with_offsets(source: &str) -> Vec<SourceChunk> {
     let mut chunks = Vec::new();
     let mut buffer = String::new();
+    let mut buffer_start = 0;
+    let mut line_start = 0;
 
-    for line in source.lines() {
+    for segment in source.split_inclusive('\n') {
+        let line = segment.trim_end_matches(['\r', '\n']);
         if line.trim().is_empty() && buffer.trim().is_empty() {
+            line_start += segment.len();
             continue;
+        }
+        if buffer.is_empty() {
+            buffer_start = line_start;
         }
         buffer.push_str(line);
         buffer.push('\n');
         if parse(&buffer).errors.is_empty() && source_has_items(&buffer) {
-            chunks.push(std::mem::take(&mut buffer));
+            chunks.push(SourceChunk {
+                text: std::mem::take(&mut buffer),
+                start: buffer_start,
+            });
         }
+        line_start += segment.len();
     }
 
     if !buffer.trim().is_empty() && source_has_items(&buffer) {
-        chunks.push(buffer);
+        chunks.push(SourceChunk {
+            text: buffer,
+            start: buffer_start,
+        });
     }
     chunks
+}
+
+fn shift_source_task_error(error: SourceTaskError, offset: usize) -> SourceTaskError {
+    match error {
+        SourceTaskError::Compile(error) => {
+            SourceTaskError::Compile(shift_compile_error(error, offset))
+        }
+        SourceTaskError::TaskManager(error) => SourceTaskError::TaskManager(error),
+    }
+}
+
+fn shift_compile_error(error: CompileError, offset: usize) -> CompileError {
+    match error {
+        CompileError::ParseErrors { errors } => CompileError::ParseErrors {
+            errors: errors
+                .into_iter()
+                .map(|mut error| {
+                    error.span = shift_span(error.span, offset);
+                    error
+                })
+                .collect(),
+        },
+        CompileError::SemanticDiagnostic { mut diagnostic } => {
+            diagnostic.span = shift_span(diagnostic.span, offset);
+            CompileError::SemanticDiagnostic { diagnostic }
+        }
+        CompileError::Unsupported {
+            node,
+            span,
+            message,
+        } => CompileError::Unsupported {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            message,
+        },
+        CompileError::UnknownRelation { node, span, name } => CompileError::UnknownRelation {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            name,
+        },
+        CompileError::UnknownIdentity { node, span, name } => CompileError::UnknownIdentity {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            name,
+        },
+        CompileError::UnknownValue { node, span, name } => CompileError::UnknownValue {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            name,
+        },
+        CompileError::InvalidLiteral {
+            node,
+            span,
+            message,
+        } => CompileError::InvalidLiteral {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            message,
+        },
+        CompileError::UnboundLocal {
+            node,
+            span,
+            binding,
+        } => CompileError::UnboundLocal {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            binding,
+        },
+        CompileError::Runtime(error) => CompileError::Runtime(error),
+        CompileError::Kernel(error) => CompileError::Kernel(error),
+    }
+}
+
+fn shift_span(span: Span, offset: usize) -> Span {
+    span.start + offset..span.end + offset
 }
 
 fn expand_filein_text_includes(
