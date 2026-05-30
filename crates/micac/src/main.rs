@@ -105,9 +105,19 @@ fn run(cli: &Cli) -> Result<CompileSummary, CompileFailure> {
         let source = fs::read_to_string(filein)
             .map_err(|error| CompileFailure::read(filein, error.to_string()))?;
         let include_base = filein.parent().unwrap_or_else(|| Path::new("."));
-        runner
-            .run_filein_with_include_loader(&source, |path| read_filein_include(include_base, path))
-            .map_err(|error| CompileFailure::source(&runner, filein, &source, error))?;
+        if cli.check {
+            runner
+                .check_filein_with_include_loader(&source, |path| {
+                    read_filein_include(include_base, path)
+                })
+                .map_err(|error| CompileFailure::source(&runner, filein, &source, error))?;
+        } else {
+            runner
+                .run_filein_with_include_loader(&source, |path| {
+                    read_filein_include(include_base, path)
+                })
+                .map_err(|error| CompileFailure::source(&runner, filein, &source, error))?;
+        }
         loaded.push(filein.display().to_string());
     }
 
@@ -447,6 +457,85 @@ mod tests {
         let span = error.diagnostics[0].span.as_ref().unwrap();
         assert_eq!(span.start, source.find("#missing").unwrap());
         assert_eq!(span.end, span.start + "#missing".len());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_failure_collects_multiple_context_diagnostics() {
+        let root = temp_root("multiple-diagnostics");
+        fs::create_dir_all(&root).unwrap();
+        let filein = root.join("bad.mica");
+        fs::write(
+            &filein,
+            "make_identity(:player)\n\
+             make_relation(:Known, 1)\n\
+             verb test(a @ #missing_one, b @ #missing_two)\n\
+               Known(#missing_three)\n\
+               MissingRelation(#player)\n\
+             end\n",
+        )
+        .unwrap();
+
+        let cli = test_cli(vec![filein], None, true);
+        let error = run(&cli).unwrap_err();
+
+        let messages = error
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            vec![
+                "unknown identity `#missing_one`",
+                "unknown identity `#missing_two`",
+                "unknown identity `#missing_three`",
+                "unknown relation `MissingRelation`",
+            ]
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn check_mode_collects_context_diagnostics_across_filein_chunks() {
+        let root = temp_root("multiple-chunk-diagnostics");
+        fs::create_dir_all(&root).unwrap();
+        let filein = root.join("bad.mica");
+        fs::write(
+            &filein,
+            "vreb first()\n\
+               return 1\n\
+             end\n\
+             \n\
+             vreb second()\n\
+               return 2\n\
+             end\n",
+        )
+        .unwrap();
+
+        let cli = test_cli(vec![filein], None, true);
+        let error = run(&cli).unwrap_err();
+
+        let spans = error
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.span.as_ref().map(|span| span.start))
+            .collect::<Vec<_>>();
+        assert_eq!(spans, vec![Some(0), Some(22), Some(50)]);
+        assert_eq!(
+            error
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "unknown value `vreb`",
+                "expected expression",
+                "expected expression"
+            ]
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

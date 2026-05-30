@@ -627,6 +627,11 @@ impl SourceRunner {
         endpoint: Identity,
         authority: AuthorityContext,
     ) -> Result<SubmittedTask, SourceTaskError> {
+        let semantic = parse_semantic(source);
+        if semantic.parse_errors.is_empty() && semantic.diagnostics.is_empty() {
+            self.predeclare_source_names(&semantic)?;
+        }
+
         if let Some(installation) = self.install_methods_from_source(source, stored_source)? {
             let value = installed_method_value(&installation);
             let (task_id, outcome) = self.task_manager.complete_immediate(value);
@@ -643,10 +648,6 @@ impl SourceRunner {
             return Ok(SubmittedTask { task_id, outcome });
         }
 
-        let semantic = parse_semantic(source);
-        if semantic.parse_errors.is_empty() && semantic.diagnostics.is_empty() {
-            self.predeclare_source_names(&semantic)?;
-        }
         let context = self.context_for_execution(None, None, endpoint);
         let compiled = compile_semantic(semantic, &context)?;
         let runtime_context = runtime_context(None, None, endpoint);
@@ -1107,6 +1108,27 @@ impl SourceRunner {
                     .map_err(|error| shift_source_task_error(error, chunk.start))?,
             );
         }
+        Ok(reports)
+    }
+
+    pub fn check_filein_with_include_loader(
+        &mut self,
+        source: &str,
+        mut load_include: impl FnMut(&str) -> Result<String, String>,
+    ) -> Result<Vec<RunReport>, SourceTaskError> {
+        let mut reports = Vec::new();
+        let mut errors = Vec::new();
+        for chunk in source_chunks_with_offsets(source) {
+            let expanded = expand_filein_text_includes(&chunk.text, &mut load_include)?;
+            match self.run_source_with_stored_source(&expanded, &chunk.text) {
+                Ok(report) => reports.push(report),
+                Err(SourceTaskError::Compile(error)) => {
+                    errors.push(shift_compile_error(error, chunk.start));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        return_compile_errors(errors)?;
         Ok(reports)
     }
 
@@ -2120,8 +2142,26 @@ fn shift_source_task_error(error: SourceTaskError, offset: usize) -> SourceTaskE
     }
 }
 
+fn return_compile_errors(errors: Vec<CompileError>) -> Result<(), SourceTaskError> {
+    match errors.len() {
+        0 => Ok(()),
+        1 => Err(SourceTaskError::Compile(
+            errors.into_iter().next().expect("one error exists"),
+        )),
+        _ => Err(SourceTaskError::Compile(CompileError::Diagnostics {
+            errors,
+        })),
+    }
+}
+
 fn shift_compile_error(error: CompileError, offset: usize) -> CompileError {
     match error {
+        CompileError::Diagnostics { errors } => CompileError::Diagnostics {
+            errors: errors
+                .into_iter()
+                .map(|error| shift_compile_error(error, offset))
+                .collect(),
+        },
         CompileError::ParseErrors { errors } => CompileError::ParseErrors {
             errors: errors
                 .into_iter()

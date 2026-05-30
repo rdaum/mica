@@ -62,4 +62,55 @@ class MicaParserTest : BasePlatformTestCase() {
         assertNotNull("Should parse slash-qualified relation rule", relationRule)
         assertNull("Should not produce parser errors", PsiTreeUtil.findChildOfType(psiFile, PsiErrorElement::class.java))
     }
+
+    fun testMultilineRelationRuleWithLowercaseVariableNames() {
+        val text = """
+            CanRead(actor, relation) :-
+              HasRole(actor, role),
+              RoleCanRead(role, surface, relation),
+              RelationInSurface(surface, relation)
+        """.trimIndent()
+        val psiFile = myFixture.configureByText("test.mica", text)
+
+        val relationRule = PsiTreeUtil.findChildOfType(psiFile, MicaRelationRule::class.java)
+        assertNotNull("Should parse multiline relation rule", relationRule)
+        assertNull("Should not produce parser errors", PsiTreeUtil.findChildOfType(psiFile, PsiErrorElement::class.java))
+    }
+
+    fun testCapabilitiesFileRelationRules() {
+        val text = java.nio.file.Files.readString(
+            java.nio.file.Path.of("../../../apps/shared/capabilities.mica").toAbsolutePath().normalize()
+        )
+        val psiFile = myFixture.configureByText("capabilities.mica", text)
+
+        assertTrue(
+            "Should parse capabilities relation rules",
+            PsiTreeUtil.findChildrenOfType(psiFile, MicaRelationRule::class.java).size >= 4
+        )
+        assertNull("Should not produce parser errors", PsiTreeUtil.findChildOfType(psiFile, PsiErrorElement::class.java))
+    }
+
+    fun testConsecutiveMultilineRelationRules() {
+        val text = """
+            CanRead(actor, relation) :-
+              HasRole(actor, role),
+              RoleCanRead(role, surface),
+              RelationInSurface(surface, relation)
+
+            CanWrite(actor, relation) :-
+              HasRole(actor, role),
+              RoleCanWrite(role, surface),
+              RelationInSurface(surface, relation)
+
+            CanInvoke(actor, selector) :-
+              HasRole(actor, role),
+              RoleCanInvoke(role, surface),
+              SelectorInSurface(surface, selector)
+        """.trimIndent()
+        val psiFile = myFixture.configureByText("capabilities-slice.mica", text)
+
+        assertEquals(3, PsiTreeUtil.findChildrenOfType(psiFile, MicaRelationRule::class.java).size)
+        assertNull("Should not produce parser errors", PsiTreeUtil.findChildOfType(psiFile, PsiErrorElement::class.java))
+    }
+
 }

@@ -110,7 +110,7 @@ method_clause ::= expr
 
 method_header ::= (IDENT | SYMBOL | IDENTITY | INT | FLOAT | STRING | LPAREN | RPAREN | COMMA | AT | HASH | QUESTION | COLON | SLASH)*
 
-relation_rule ::= relation_atom COLON_DASH rule_body {pin=2}
+relation_rule ::= expr COLON_DASH rule_body {pin=2}
 
 relation_atom ::= qualified_name LPAREN relation_arg_list? RPAREN
 
@@ -131,7 +131,20 @@ private relation_arg_term ::= !COMMA !RPAREN !separator !COLON_DASH !stopping_kw
   CONTINUE_KW | ASSERT_KW | RETRACT_KW | REQUIRE_KW | TRUE_KW | FALSE_KW | NOTHING_KW
 )
 
-rule_body ::= separator* expr
+rule_body ::= separator* rule_body_expr (COMMA separator* rule_body_expr)* COMMA?
+
+private rule_body_expr ::= rule_body_term+
+
+private rule_body_term ::= !COMMA !separator !COLON_DASH !stopping_kw (
+  IDENT | SYMBOL | IDENTITY | INT | FLOAT | STRING | ERROR_CODE |
+  LPAREN | RPAREN | LBRACKET | RBRACKET | LBRACE | RBRACE |
+  DOT | DOT_DOT | COLON | HASH | AT | QUESTION | UNDERSCORE |
+  EQ | EQ_EQ | BANG_EQ | LT | LT_EQ | GT | GT_EQ |
+  PLUS | MINUS | STAR | SLASH | PERCENT | AMP_AMP | PIPE_PIPE | BANG | ARROW | FAT_ARROW |
+  LET_KW | CONST_KW | IN_KW | AS_KW |
+  RETURN_KW | RAISE_KW | RECOVER_KW | ONE_KW | SPAWN_KW | AFTER_KW | NOT_KW | BREAK_KW |
+  CONTINUE_KW | ASSERT_KW | RETRACT_KW | REQUIRE_KW | TRUE_KW | FALSE_KW | NOTHING_KW
+)
 
 expr_stmt ::= structured_stmt | expr
 

@@ -51,6 +51,7 @@ pub fn compile_semantic(
             diagnostic: diagnostic.clone(),
         });
     }
+    return_context_errors(context_errors(&semantic, context))?;
 
     let compiler = ProgramCompiler::new(&semantic, context);
     let program = compiler.compile_program(&semantic.hir)?;
@@ -82,6 +83,7 @@ pub fn install_rules(
             diagnostic: diagnostic.clone(),
         });
     }
+    return_context_errors(context_errors(&semantic, context))?;
 
     if !semantic
         .hir
@@ -150,6 +152,7 @@ pub fn install_methods(
             diagnostic: diagnostic.clone(),
         });
     }
+    return_context_errors(context_errors(&semantic, context))?;
 
     let method_relations = context
         .method_relations
@@ -384,6 +387,9 @@ impl CompileContext {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompileError {
+    Diagnostics {
+        errors: Vec<CompileError>,
+    },
     ParseErrors {
         errors: Vec<ParseError>,
     },
@@ -434,6 +440,383 @@ impl From<mica_relation_kernel::KernelError> for CompileError {
     fn from(value: mica_relation_kernel::KernelError) -> Self {
         Self::Kernel(value)
     }
+}
+
+fn return_context_errors(errors: Vec<CompileError>) -> Result<(), CompileError> {
+    match errors.len() {
+        0 => Ok(()),
+        1 => Err(errors.into_iter().next().expect("one error exists")),
+        _ => Err(CompileError::Diagnostics { errors }),
+    }
+}
+
+fn context_errors(semantic: &SemanticProgram, context: &CompileContext) -> Vec<CompileError> {
+    let mut validator = ContextValidator {
+        semantic,
+        context,
+        errors: Vec::new(),
+    };
+    validator.validate_items(&semantic.hir.items, &HashSet::new());
+    validator.errors
+}
+
+struct ContextValidator<'a> {
+    semantic: &'a SemanticProgram,
+    context: &'a CompileContext,
+    errors: Vec<CompileError>,
+}
+
+impl<'a> ContextValidator<'a> {
+    fn validate_items(&mut self, items: &[HirItem], external_locals: &HashSet<String>) {
+        for item in items {
+            self.validate_item(item, external_locals);
+        }
+    }
+
+    fn validate_item(&mut self, item: &HirItem, external_locals: &HashSet<String>) {
+        match item {
+            HirItem::Expr { expr, .. } => self.validate_expr(expr, external_locals, ExprUse::Value),
+            HirItem::RelationRule { head, body, .. } => {
+                self.validate_relation_atom(head, external_locals);
+                for item in body {
+                    match item {
+                        HirRuleBodyItem::Atom(atom) => {
+                            self.validate_relation_atom(atom, external_locals);
+                        }
+                        HirRuleBodyItem::Guard(guard) => {
+                            self.validate_expr(&guard.left, external_locals, ExprUse::Value);
+                            self.validate_expr(&guard.right, external_locals, ExprUse::Value);
+                        }
+                    }
+                }
+            }
+            HirItem::Method {
+                id,
+                identity,
+                params,
+                body,
+                ..
+            } => {
+                if let Some(identity) = identity {
+                    self.validate_method_identity(*id, identity);
+                    self.validate_method_program_identity(*id, identity);
+                }
+                let mut method_locals = external_locals.clone();
+                for param in params {
+                    method_locals.insert(param.name.clone());
+                    if let Some(restriction) = &param.restriction {
+                        self.validate_param_restriction(
+                            *id,
+                            param.restriction_span.as_ref(),
+                            restriction,
+                        );
+                    }
+                }
+                self.validate_items(body, &method_locals);
+            }
+        }
+    }
+
+    fn validate_expr(
+        &mut self,
+        expr: &HirExpr,
+        external_locals: &HashSet<String>,
+        expr_use: ExprUse,
+    ) {
+        match expr {
+            HirExpr::Literal { .. }
+            | HirExpr::LocalRef { .. }
+            | HirExpr::Symbol { .. }
+            | HirExpr::QueryVar { .. }
+            | HirExpr::Hole { .. }
+            | HirExpr::Break { .. }
+            | HirExpr::Continue { .. }
+            | HirExpr::Error { .. } => {}
+            HirExpr::ExternalRef { id, name } => {
+                if expr_use == ExprUse::Value
+                    && !external_locals.contains(name)
+                    && !is_compiler_builtin(name)
+                    && !self.context.is_runtime_function(name)
+                {
+                    self.errors.push(CompileError::UnknownValue {
+                        node: *id,
+                        span: self.span(*id),
+                        name: name.clone(),
+                    });
+                }
+            }
+            HirExpr::Identity { id, name } => self.validate_identity(*id, name),
+            HirExpr::Frob {
+                id,
+                delegate,
+                value,
+            } => {
+                self.validate_identity(*id, delegate);
+                self.validate_expr(value, external_locals, ExprUse::Value);
+            }
+            HirExpr::List { items, .. } => {
+                for item in items {
+                    match item {
+                        HirCollectionItem::Expr(expr) | HirCollectionItem::Splice(expr) => {
+                            self.validate_expr(expr, external_locals, ExprUse::Value);
+                        }
+                    }
+                }
+            }
+            HirExpr::Map { entries, .. } => {
+                for (key, value) in entries {
+                    self.validate_expr(key, external_locals, ExprUse::Value);
+                    self.validate_expr(value, external_locals, ExprUse::Value);
+                }
+            }
+            HirExpr::Unary { expr, .. } => {
+                self.validate_expr(expr, external_locals, ExprUse::Value);
+            }
+            HirExpr::Binary { left, right, .. } => {
+                self.validate_expr(left, external_locals, ExprUse::Value);
+                self.validate_expr(right, external_locals, ExprUse::Value);
+            }
+            HirExpr::Assign { target, value, .. } => {
+                self.validate_place(target, external_locals);
+                self.validate_expr(value, external_locals, ExprUse::Value);
+            }
+            HirExpr::Call { callee, args, .. } => {
+                self.validate_expr(callee, external_locals, ExprUse::Callee);
+                self.validate_args(args, external_locals);
+            }
+            HirExpr::RoleDispatch { selector, args, .. } => {
+                self.validate_expr(selector, external_locals, ExprUse::Value);
+                self.validate_args(args, external_locals);
+            }
+            HirExpr::ReceiverDispatch {
+                receiver,
+                selector,
+                args,
+                ..
+            } => {
+                self.validate_expr(receiver, external_locals, ExprUse::Value);
+                self.validate_expr(selector, external_locals, ExprUse::Value);
+                self.validate_args(args, external_locals);
+            }
+            HirExpr::Spawn { target, delay, .. } => {
+                self.validate_expr(target, external_locals, ExprUse::Value);
+                if let Some(delay) = delay {
+                    self.validate_expr(delay, external_locals, ExprUse::Value);
+                }
+            }
+            HirExpr::RelationAtom(atom) => self.validate_relation_atom(atom, external_locals),
+            HirExpr::FactChange { atom, .. } => self.validate_relation_atom(atom, external_locals),
+            HirExpr::Require { condition, .. }
+            | HirExpr::One {
+                expr: condition, ..
+            } => {
+                self.validate_expr(condition, external_locals, ExprUse::Value);
+            }
+            HirExpr::Index {
+                collection, index, ..
+            } => {
+                self.validate_expr(collection, external_locals, ExprUse::Value);
+                if let Some(index) = index {
+                    self.validate_expr(index, external_locals, ExprUse::Value);
+                }
+            }
+            HirExpr::Field { base, .. } => {
+                self.validate_expr(base, external_locals, ExprUse::Value);
+            }
+            HirExpr::Binding { scatter, value, .. } => {
+                for binding in scatter {
+                    if let Some(default) = &binding.default {
+                        self.validate_expr(default, external_locals, ExprUse::Value);
+                    }
+                }
+                if let Some(value) = value {
+                    self.validate_expr(value, external_locals, ExprUse::Value);
+                }
+            }
+            HirExpr::If {
+                condition,
+                then_items,
+                elseif,
+                else_items,
+                ..
+            } => {
+                self.validate_expr(condition, external_locals, ExprUse::Value);
+                self.validate_items(then_items, external_locals);
+                for (condition, items) in elseif {
+                    self.validate_expr(condition, external_locals, ExprUse::Value);
+                    self.validate_items(items, external_locals);
+                }
+                self.validate_items(else_items, external_locals);
+            }
+            HirExpr::Block { items, .. } => self.validate_items(items, external_locals),
+            HirExpr::For { iter, body, .. } => {
+                self.validate_expr(iter, external_locals, ExprUse::Value);
+                self.validate_items(body, external_locals);
+            }
+            HirExpr::While {
+                condition, body, ..
+            } => {
+                self.validate_expr(condition, external_locals, ExprUse::Value);
+                self.validate_items(body, external_locals);
+            }
+            HirExpr::Return { value, .. } => {
+                if let Some(value) = value {
+                    self.validate_expr(value, external_locals, ExprUse::Value);
+                }
+            }
+            HirExpr::Raise {
+                error,
+                message,
+                value,
+                ..
+            } => {
+                self.validate_expr(error, external_locals, ExprUse::Value);
+                if let Some(message) = message {
+                    self.validate_expr(message, external_locals, ExprUse::Value);
+                }
+                if let Some(value) = value {
+                    self.validate_expr(value, external_locals, ExprUse::Value);
+                }
+            }
+            HirExpr::Recover { expr, catches, .. } => {
+                self.validate_expr(expr, external_locals, ExprUse::Value);
+                for catch in catches {
+                    if let Some(condition) = &catch.condition {
+                        self.validate_expr(condition, external_locals, ExprUse::Value);
+                    }
+                    self.validate_expr(&catch.value, external_locals, ExprUse::Value);
+                }
+            }
+            HirExpr::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => {
+                self.validate_items(body, external_locals);
+                for catch in catches {
+                    if let Some(condition) = &catch.condition {
+                        self.validate_expr(condition, external_locals, ExprUse::Value);
+                    }
+                    self.validate_items(&catch.body, external_locals);
+                }
+                self.validate_items(finally, external_locals);
+            }
+            HirExpr::Function { params, body, .. } => {
+                for param in params {
+                    if let Some(default) = &param.default {
+                        self.validate_expr(default, external_locals, ExprUse::Value);
+                    }
+                }
+                match body {
+                    HirFunctionBody::Expr(expr) => {
+                        self.validate_expr(expr, external_locals, ExprUse::Value);
+                    }
+                    HirFunctionBody::Block(items) => self.validate_items(items, external_locals),
+                }
+            }
+        }
+    }
+
+    fn validate_args(&mut self, args: &[HirArg], external_locals: &HashSet<String>) {
+        for arg in args {
+            self.validate_expr(&arg.value, external_locals, ExprUse::Value);
+        }
+    }
+
+    fn validate_place(&mut self, place: &HirPlace, external_locals: &HashSet<String>) {
+        match place {
+            HirPlace::Local { .. } | HirPlace::Invalid { .. } => {}
+            HirPlace::Index {
+                collection, index, ..
+            } => {
+                self.validate_expr(collection, external_locals, ExprUse::Value);
+                if let Some(index) = index {
+                    self.validate_expr(index, external_locals, ExprUse::Value);
+                }
+            }
+            HirPlace::Dot { base, .. } => {
+                self.validate_expr(base, external_locals, ExprUse::Value);
+            }
+        }
+    }
+
+    fn validate_relation_atom(
+        &mut self,
+        atom: &HirRelationAtom,
+        external_locals: &HashSet<String>,
+    ) {
+        if self.context.relation(&atom.name).is_none() {
+            self.errors.push(CompileError::UnknownRelation {
+                node: atom.id,
+                span: self.span(atom.id),
+                name: atom.name.clone(),
+            });
+        }
+        self.validate_args(&atom.args, external_locals);
+    }
+
+    fn validate_identity(&mut self, id: NodeId, name: &str) {
+        if self.context.identity(name).is_none() {
+            self.errors.push(CompileError::UnknownIdentity {
+                node: id,
+                span: self.span(id),
+                name: name.to_owned(),
+            });
+        }
+    }
+
+    fn validate_method_identity(&mut self, id: NodeId, name: &str) {
+        if self.context.identity(name).is_none() {
+            self.errors.push(CompileError::UnknownIdentity {
+                node: id,
+                span: self.span(id),
+                name: name.to_owned(),
+            });
+        }
+    }
+
+    fn validate_method_program_identity(&mut self, id: NodeId, name: &str) {
+        if self.context.program_identity(name).is_none() {
+            self.errors.push(CompileError::UnknownIdentity {
+                node: id,
+                span: self.span(id),
+                name: format!("{name} program"),
+            });
+        }
+    }
+
+    fn validate_param_restriction(&mut self, id: NodeId, span: Option<&Span>, restriction: &str) {
+        let restriction_name = restriction.trim().trim_start_matches('#').trim();
+        let name = restriction_name
+            .strip_suffix("<_>")
+            .map(str::trim)
+            .unwrap_or(restriction_name);
+        if self.context.identity(name).is_none() {
+            self.errors.push(CompileError::UnknownIdentity {
+                node: id,
+                span: span.cloned().or_else(|| self.span(id)),
+                name: name.to_owned(),
+            });
+        }
+    }
+
+    fn span(&self, node: NodeId) -> Option<Span> {
+        self.semantic.span(node).cloned()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExprUse {
+    Value,
+    Callee,
+}
+
+fn is_compiler_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "commit" | "suspend" | "read" | "mailbox_recv" | "external_request" | "invoke"
+    )
 }
 
 fn compile_rule_item(
@@ -1224,7 +1607,7 @@ impl<'a> ProgramCompiler<'a> {
             HirExpr::ExternalRef { id, name } => {
                 if let Some(register) = self.external_locals.get(name).copied() {
                     Ok(register)
-                } else if self.is_compiler_builtin(name) || self.context.is_runtime_function(name) {
+                } else if is_compiler_builtin(name) || self.context.is_runtime_function(name) {
                     Err(CompileError::Unsupported {
                         node: *id,
                         span: self.span(*id),
@@ -1955,7 +2338,7 @@ impl<'a> ProgramCompiler<'a> {
         args: &[HirArg],
     ) -> Result<Register, CompileError> {
         if let HirExpr::ExternalRef { name, .. } = callee {
-            return if self.is_compiler_builtin(name) || self.context.is_runtime_function(name) {
+            return if is_compiler_builtin(name) || self.context.is_runtime_function(name) {
                 self.compile_builtin_call(id, name, args)
             } else {
                 self.compile_positional_dispatch(id, name, args)
@@ -1992,13 +2375,6 @@ impl<'a> ProgramCompiler<'a> {
             });
         }
         Ok(dst)
-    }
-
-    fn is_compiler_builtin(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "commit" | "suspend" | "read" | "mailbox_recv" | "external_request" | "invoke"
-        )
     }
 
     fn compile_direct_function_call(
@@ -5102,6 +5478,40 @@ mod tests {
             error,
             CompileError::UnknownValue { name, span: Some(span), .. }
                 if name == "found" && span == found_span
+        ));
+    }
+
+    #[test]
+    fn compile_source_collects_multiple_context_errors() {
+        let known = id(1);
+        let context = CompileContext::new().with_relation("Known", known);
+        let error = compile_source(
+            "Known(#missing_one)\n\
+             MissingRelation(#missing_two)\n\
+             return missing_value",
+            &context,
+        )
+        .unwrap_err();
+
+        let CompileError::Diagnostics { errors } = error else {
+            panic!("expected aggregate context diagnostics");
+        };
+        assert_eq!(errors.len(), 4);
+        assert!(matches!(
+            &errors[0],
+            CompileError::UnknownIdentity { name, .. } if name == "missing_one"
+        ));
+        assert!(matches!(
+            &errors[1],
+            CompileError::UnknownRelation { name, .. } if name == "MissingRelation"
+        ));
+        assert!(matches!(
+            &errors[2],
+            CompileError::UnknownIdentity { name, .. } if name == "missing_two"
+        ));
+        assert!(matches!(
+            &errors[3],
+            CompileError::UnknownValue { name, .. } if name == "missing_value"
         ));
     }
 

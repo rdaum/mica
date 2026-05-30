@@ -95,6 +95,9 @@ pub struct CompileDiagnostic {
 
 pub fn compile_error_diagnostics(error: &CompileError) -> Vec<CompileDiagnostic> {
     match error {
+        CompileError::Diagnostics { errors } => {
+            errors.iter().flat_map(compile_error_diagnostics).collect()
+        }
         CompileError::ParseErrors { errors } => parse_error_reports(errors),
         CompileError::SemanticDiagnostic { diagnostic } => {
             vec![semantic_diagnostic_report(diagnostic)]
