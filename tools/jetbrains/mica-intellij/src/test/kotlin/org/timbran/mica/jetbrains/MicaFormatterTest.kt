@@ -9,20 +9,22 @@ class MicaFormatterTest : BasePlatformTestCase() {
     private fun doTest(unformatted: String, expected: String) {
         val psiFile = myFixture.configureByText("test.mica", unformatted.trimIndent())
         assertTrue(psiFile is MicaFile)
-        
-        val settings = com.intellij.psi.codeStyle.CodeStyleSettingsManager.getSettings(project)
-        val indentOptions = settings.getCommonSettings(MicaLanguage).indentOptions
-        if (indentOptions != null) {
-            indentOptions.INDENT_SIZE = 2
-            indentOptions.TAB_SIZE = 2
-            indentOptions.CONTINUATION_INDENT_SIZE = 2
-        }
 
         WriteCommandAction.runWriteCommandAction(project) {
             CodeStyleManager.getInstance(project).reformat(psiFile)
         }
         
         assertEquals(expected.trimIndent(), psiFile.text.trim())
+    }
+
+    fun testMicaDefaultsUseTwoSpaceIndent() {
+        val settings = com.intellij.psi.codeStyle.CodeStyleSettingsManager.getSettings(project)
+        val indentOptions = settings.getCommonSettings(MicaLanguage).indentOptions
+        assertNotNull(indentOptions)
+        assertEquals(2, indentOptions?.INDENT_SIZE)
+        assertEquals(2, indentOptions?.TAB_SIZE)
+        assertEquals(2, indentOptions?.CONTINUATION_INDENT_SIZE)
+        assertFalse("Mica should use spaces by default", indentOptions?.USE_TAB_CHARACTER ?: true)
     }
 
     fun testVerbReformat() {

@@ -21,6 +21,8 @@
         <lang.commenter language="Mica"
                         implementationClass="org.timbran.mica.jetbrains.MicaCommenter" />
 
+        <langCodeStyleSettingsProvider implementation="org.timbran.mica.jetbrains.MicaCodeStyleSettingsProvider" />
+
         <colorSettingsPage implementation="org.timbran.mica.jetbrains.MicaColorSettingsPage" />
 
         <lang.parserDefinition language="Mica"

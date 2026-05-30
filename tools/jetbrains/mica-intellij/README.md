@@ -13,6 +13,8 @@ RustRover.
 - Structure view entries for verbs, methods, and relation rules.
 - Indentation and reformat support for common block forms, relation rule
   bodies, and comma continuations.
+- Mica code style defaults to two-space indentation to match repository source
+  files.
 
 This plugin does not yet provide compiler diagnostics, completion, semantic
 go-to-definition, find usages, or live Mica server editing.
