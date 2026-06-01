@@ -670,6 +670,28 @@ async fn refresh_active_sync_view_for(
         };
         crate::metrics::record_sync_patch_count(patches.len());
         if patches.is_empty() {
+            if force_ack {
+                let payload = {
+                    let _payload_timer =
+                        crate::metrics::start_sync_phase(SyncRenderPhase::DeltaPayload);
+                    dom_patch_payload_json(active.view_id, rendered.revision, &[])
+                };
+                crate::metrics::record_sync_envelope(SyncEnvelopeKind::Ack, payload.len());
+                send_sync_envelope_to(
+                    sessions,
+                    active.session_id,
+                    SyncEnvelope {
+                        kind: SyncMessageKind::ViewDelta,
+                        session_id: active.session_id,
+                        view_id: active.view_id,
+                        client_revision: active.server_revision,
+                        client_signature: active.server_signature,
+                        server_revision: rendered.revision,
+                        server_signature: rendered.signature,
+                        payload,
+                    },
+                )?;
+            }
             store_rendered_sync_view_in(sessions, active.session_id, active.view_id, &rendered);
             return Ok(());
         }
