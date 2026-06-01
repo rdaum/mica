@@ -362,6 +362,15 @@ impl DomNode {
             }
         }
     }
+
+    pub fn node_count(&self) -> usize {
+        match self {
+            Self::Text(_) => 1,
+            Self::Element { children, .. } => {
+                1 + children.iter().map(Self::node_count).sum::<usize>()
+            }
+        }
+    }
 }
 
 impl DomPatch {

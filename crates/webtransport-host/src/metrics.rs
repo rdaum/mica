@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use fast_telemetry::{
-    Counter, DeriveLabel, ExportMetrics, Gauge, LabeledCounter, LabeledHistogram,
-    LabeledSampledTimer,
+    Counter, DeriveLabel, ExportMetrics, Gauge, Histogram, LabeledCounter, LabeledHistogram,
+    LabeledSampledTimer, SampledTimerGuard,
 };
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -50,6 +50,21 @@ pub enum RenderOperation {
     Revision,
     View,
     Refresh,
+}
+
+#[derive(Copy, Clone, Debug, DeriveLabel)]
+#[label_name = "phase"]
+pub enum SyncRenderPhase {
+    Revision,
+    Tree,
+    DecodeTree,
+    SnapshotPayload,
+    Diff,
+    DeltaPayload,
+    StoreRendered,
+    SendEnvelope,
+    Refresh,
+    DomEvent,
 }
 
 #[derive(Copy, Clone, Debug, DeriveLabel)]
@@ -129,10 +144,23 @@ pub struct WebTransportMetrics {
 
     #[help = "Queued outgoing datagrams waiting for a session writer"]
     pub queued_outgoing_datagrams: Gauge,
+
+    #[help = "Sync render phase duration by phase"]
+    pub sync_phase_duration: LabeledSampledTimer<SyncRenderPhase>,
+
+    #[help = "Sync payload bytes by envelope kind"]
+    pub sync_payload_bytes: LabeledHistogram<SyncEnvelopeKind>,
+
+    #[help = "DOM nodes in rendered sync trees"]
+    pub sync_dom_nodes: Histogram,
+
+    #[help = "DOM patches in sync deltas"]
+    pub sync_patch_count: Histogram,
 }
 
 impl WebTransportMetrics {
     pub fn new(shard_count: usize) -> Self {
+        let sync_timer_stride = sync_timer_sample_stride();
         Self {
             connections_accepted: Counter::new(shard_count),
             sessions_accepted: Counter::new(shard_count),
@@ -158,8 +186,38 @@ impl WebTransportMetrics {
                 TIMER_SAMPLE_STRIDE,
             ),
             queued_outgoing_datagrams: Gauge::new(),
+            sync_phase_duration: LabeledSampledTimer::with_latency_buckets(
+                shard_count,
+                sync_timer_stride,
+            ),
+            sync_payload_bytes: LabeledHistogram::new(
+                &[
+                    512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768, 65_536, 131_072, 262_144,
+                    524_288, 1_048_576,
+                ],
+                shard_count,
+            ),
+            sync_dom_nodes: Histogram::new(
+                &[25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000],
+                shard_count,
+            ),
+            sync_patch_count: Histogram::new(
+                &[0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000],
+                shard_count,
+            ),
         }
     }
+}
+
+fn sync_timer_sample_stride() -> u64 {
+    static STRIDE: LazyLock<u64> = LazyLock::new(|| {
+        std::env::var("MICA_SYNC_TIMER_SAMPLE_STRIDE")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(TIMER_SAMPLE_STRIDE)
+    });
+    *STRIDE
 }
 
 pub fn metrics() -> &'static WebTransportMetrics {
@@ -168,4 +226,26 @@ pub fn metrics() -> &'static WebTransportMetrics {
 
 pub(crate) fn duration_us(elapsed: Duration) -> u64 {
     elapsed.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+pub(crate) fn start_sync_phase(phase: SyncRenderPhase) -> SampledTimerGuard<'static> {
+    metrics().sync_phase_duration.start(phase)
+}
+
+pub(crate) fn record_sync_payload(kind: SyncEnvelopeKind, payload_bytes: usize) {
+    metrics()
+        .sync_payload_bytes
+        .record(kind, payload_bytes.min(u64::MAX as usize) as u64);
+}
+
+pub(crate) fn record_sync_dom_nodes(node_count: usize) {
+    metrics()
+        .sync_dom_nodes
+        .record(node_count.min(u64::MAX as usize) as u64);
+}
+
+pub(crate) fn record_sync_patch_count(patch_count: usize) {
+    metrics()
+        .sync_patch_count
+        .record(patch_count.min(u64::MAX as usize) as u64);
 }

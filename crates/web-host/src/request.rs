@@ -18,6 +18,7 @@ use crate::response::{
 use crate::{InProcessWebHost, RequestBinding, format_driver_error};
 use mica_runtime::Tuple;
 use mica_var::{Identity, Symbol, Value};
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RequestFact {
@@ -40,6 +41,17 @@ pub(crate) async fn handle_in_process_request(
     request: &HttpRequest,
     close: bool,
 ) -> HttpResponse {
+    if request.method == "GET"
+        && request.path == "/_mica/metrics/snapshot"
+        && metrics_snapshot_enabled()
+    {
+        let body = serde_json::to_vec_pretty(&crate::metrics::metrics_snapshot_json())
+            .unwrap_or_else(|_| b"{\"error\":\"failed to serialize metrics\"}".to_vec());
+        return HttpResponse::new(200, "OK", body)
+            .with_header("Content-Type", b"application/json; charset=utf-8")
+            .with_header("Cache-Control", b"no-store");
+    }
+
     if request.method == "GET" && (request.path == "/healthz" || is_sync_client_path(&request.path))
     {
         return route_request(request, close);
@@ -178,6 +190,15 @@ pub(crate) async fn handle_in_process_request(
         Ok(submitted) => response_from_submitted(submitted, close),
         Err(error) => internal_error_response(format_driver_error(error), close),
     }
+}
+
+fn metrics_snapshot_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MICA_METRICS_SNAPSHOT")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+    })
 }
 
 fn visit_request_facts<E>(

@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::metrics::{IncomingDatagramKind, RenderOperation, SyncEnvelopeKind};
+use crate::metrics::{IncomingDatagramKind, RenderOperation, SyncEnvelopeKind, SyncRenderPhase};
 use crate::state::{
     ActiveSyncView, InProcessWebTransportHost, RenderedSyncView, SessionState, format_driver_error,
 };
@@ -82,6 +82,7 @@ async fn route_dom_event(
     endpoint: Identity,
     event: DomEventPayload,
 ) -> Result<(), String> {
+    let _dom_event_timer = crate::metrics::start_sync_phase(SyncRenderPhase::DomEvent);
     let trace = SyncTrace::new("dom_event");
     let Some(active) = host.active_rendered_sync_view(endpoint, event.session_id, event.view_id)
     else {
@@ -209,6 +210,7 @@ async fn refresh_active_sync_view_for(
     active: ActiveSyncView,
     force_ack: bool,
 ) -> Result<(), String> {
+    let _refresh_timer = crate::metrics::start_sync_phase(SyncRenderPhase::Refresh);
     let start = Instant::now();
     let revision = render_sync_revision_for(driver, active.endpoint, active.view_id).await?;
     let elapsed = start.elapsed();
@@ -221,6 +223,13 @@ async fn refresh_active_sync_view_for(
         .record_elapsed(RenderOperation::Refresh, elapsed);
     if revision == active.server_revision && active.last_tree.is_some() {
         if force_ack {
+            let payload = {
+                let _payload_timer =
+                    crate::metrics::start_sync_phase(SyncRenderPhase::DeltaPayload);
+                dom_patch_payload_json(active.view_id, active.server_revision, &[])
+            };
+            crate::metrics::record_sync_payload(SyncEnvelopeKind::ViewDelta, payload.len());
+            crate::metrics::record_sync_patch_count(0);
             send_sync_envelope_to(
                 sessions,
                 active.endpoint,
@@ -232,7 +241,7 @@ async fn refresh_active_sync_view_for(
                     client_signature: active.server_signature,
                     server_revision: active.server_revision,
                     server_signature: active.server_signature,
-                    payload: dom_patch_payload_json(active.view_id, active.server_revision, &[]),
+                    payload,
                 },
             )?;
         }
@@ -241,7 +250,11 @@ async fn refresh_active_sync_view_for(
 
     let rendered = render_sync_view_for(driver, active.endpoint, active.view_id).await?;
     let envelope = if let Some(last_tree) = &active.last_tree {
-        let patches = diff_dom_nodes(last_tree, &rendered.tree);
+        let patches = {
+            let _diff_timer = crate::metrics::start_sync_phase(SyncRenderPhase::Diff);
+            diff_dom_nodes(last_tree, &rendered.tree)
+        };
+        crate::metrics::record_sync_patch_count(patches.len());
         if patches.is_empty() {
             store_rendered_sync_view_in(
                 sessions,
@@ -252,7 +265,11 @@ async fn refresh_active_sync_view_for(
             );
             return Ok(());
         }
-        let payload = dom_patch_payload_json(active.view_id, rendered.revision, &patches);
+        let payload = {
+            let _payload_timer = crate::metrics::start_sync_phase(SyncRenderPhase::DeltaPayload);
+            dom_patch_payload_json(active.view_id, rendered.revision, &patches)
+        };
+        crate::metrics::record_sync_payload(SyncEnvelopeKind::ViewDelta, payload.len());
         SyncEnvelope {
             kind: SyncMessageKind::ViewDelta,
             session_id: active.session_id,
@@ -334,24 +351,38 @@ async fn render_sync_view_for(
 ) -> Result<RenderedSyncView, String> {
     let render_start = Instant::now();
     let trace = SyncTrace::new("render");
-    let revision = render_sync_revision_for(driver, endpoint, view_id).await?;
+    let revision = {
+        let _revision_timer = crate::metrics::start_sync_phase(SyncRenderPhase::Revision);
+        render_sync_revision_for(driver, endpoint, view_id).await?
+    };
     trace.mark("revision");
-    let tree_value = submit_sync_invocation_for(
-        driver,
-        endpoint,
-        "sync_view_tree",
-        vec![
-            (Symbol::intern("view"), sync_u64_value(view_id)),
-            (Symbol::intern("revision"), sync_u64_value(revision)),
-        ],
-    )
-    .await?;
+    let tree_value = {
+        let _tree_timer = crate::metrics::start_sync_phase(SyncRenderPhase::Tree);
+        submit_sync_invocation_for(
+            driver,
+            endpoint,
+            "sync_view_tree",
+            vec![
+                (Symbol::intern("view"), sync_u64_value(view_id)),
+                (Symbol::intern("revision"), sync_u64_value(revision)),
+            ],
+        )
+        .await?
+    };
     trace.mark("tree");
-    let tree = DomNode::from_mica_value(&tree_value)
-        .map_err(|error| format!("sync_view_tree returned invalid DOM tree: {error}"))?;
+    let tree = {
+        let _decode_timer = crate::metrics::start_sync_phase(SyncRenderPhase::DecodeTree);
+        DomNode::from_mica_value(&tree_value)
+            .map_err(|error| format!("sync_view_tree returned invalid DOM tree: {error}"))?
+    };
+    crate::metrics::record_sync_dom_nodes(tree.node_count());
     trace.mark("decode_tree");
-    let payload = snapshot_payload_json(view_id, revision, &tree);
+    let payload = {
+        let _payload_timer = crate::metrics::start_sync_phase(SyncRenderPhase::SnapshotPayload);
+        snapshot_payload_json(view_id, revision, &tree)
+    };
     let signature = sync_payload_signature(revision, &payload);
+    crate::metrics::record_sync_payload(SyncEnvelopeKind::ViewSnapshot, payload.len());
     trace.mark("payload");
 
     let rendered = RenderedSyncView {
@@ -438,6 +469,7 @@ pub(crate) fn store_rendered_sync_view_in(
     rendered: &RenderedSyncView,
 ) {
     if let Some(state) = sessions.lock().unwrap().get(&endpoint).cloned() {
+        let _store_timer = crate::metrics::start_sync_phase(SyncRenderPhase::StoreRendered);
         state.sync.lock().unwrap().store_rendered_view(
             session_id,
             view_id,
@@ -460,6 +492,8 @@ pub(crate) fn send_sync_envelope_to(
     crate::metrics::metrics()
         .sync_envelopes
         .inc(sync_envelope_kind(envelope.kind));
+    crate::metrics::record_sync_payload(sync_envelope_kind(envelope.kind), envelope.payload.len());
+    let _send_timer = crate::metrics::start_sync_phase(SyncRenderPhase::SendEnvelope);
     for _ in 0..SYNC_ENVELOPE_SEND_ATTEMPTS {
         for datagram in &datagrams {
             state.output.send_datagram(datagram.clone())?;
@@ -673,9 +707,7 @@ pub(crate) fn route_driver_event(
             }
             false
         }
-        DriverEvent::TaskCompleted { task_id, .. } => {
-            complete_pending_sync_task(sessions, task_id)
-        }
+        DriverEvent::TaskCompleted { task_id, .. } => complete_pending_sync_task(sessions, task_id),
         DriverEvent::TaskAborted { task_id, .. } | DriverEvent::TaskFailed { task_id, .. } => {
             complete_pending_sync_task(sessions, task_id)
         }
