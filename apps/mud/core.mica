@@ -444,7 +444,7 @@ command/HandlerScope(actor, room) :-
 verb event/next_seq(listener @ #player)
   let seq = 0
   for found in event/Delivery(listener, ?event)
-    let event_seq = one event/Seq(found[:event], ?event_seq)
+    let event_seq = found[:event].event/seq
     if event_seq > seq
       seq = event_seq
     end
@@ -508,12 +508,12 @@ verb emit_room_event_except(room @ #room, skipped @ #identity, event @ #event<_>
 end
 
 verb look(actor @ #player)
-  let room = one LocatedIn(actor, ?room)
-  event/notify(actor, one Description(room, ?text))
+  let room = actor.locatedIn
+  event/notify(actor, room.description)
 
   for found in LocatedIn(?item, room)
     let item = found[:item]
-    let text = one Description(item, ?text)
+    let text = item.description
     if item != actor && text != nothing
       event/notify(actor, text)
     end
@@ -524,7 +524,7 @@ end
 
 verb examine(actor @ #player, target @ #thing)
   if CanSee(actor, target)
-    event/notify(actor, one Description(target, ?text))
+    event/notify(actor, target.description)
     return true
   end
 
@@ -541,7 +541,7 @@ verb look_in(actor @ #player, target @ #container)
   let found_any = false
   for found in LocatedIn(?item, target)
     let item = found[:item]
-    let text = one Description(item, ?text)
+    let text = item.description
     if text != nothing
       found_any = true
       event/notify(actor, text)
@@ -572,7 +572,7 @@ verb down(actor @ #player)
 end
 
 verb go(actor @ #player, direction, leave, arrive)
-  let room = one LocatedIn(actor, ?room)
+  let room = actor.locatedIn
   let destination = one Exit(room, direction, ?destination)
 
   if destination == nothing
@@ -584,7 +584,7 @@ verb go(actor @ #player, direction, leave, arrive)
   :emit_room_event(room: room, event: event/narrative(#event/movement, leave, bindings))
   actor.locatedIn = destination
   :emit_room_event_except(room: destination, skipped: actor, event: event/narrative(#event/arrival, arrive, bindings))
-  event/notify(actor, one Description(destination, ?text))
+  event/notify(actor, destination.description)
   return true
 end
 
@@ -595,7 +595,7 @@ verb get(actor @ #player, item @ #thing)
   end
 
   if Portable(item) && CanSee(actor, item)
-    let room = one LocatedIn(actor, ?room)
+    let room = actor.locatedIn
     item.locatedIn = actor
     :emit_room_event(room: room, event: event/narrative(#event/take, "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
     return true
@@ -617,7 +617,7 @@ verb get_from(actor @ #player, item @ #thing, container @ #container)
   end
 
   if LocatedIn(item, container) && Portable(item)
-    let room = one LocatedIn(actor, ?room)
+    let room = actor.locatedIn
     item.locatedIn = actor
     :emit_room_event(room: room, event: event/narrative(#event/take_from, "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
@@ -628,7 +628,7 @@ verb get_from(actor @ #player, item @ #thing, container @ #container)
 end
 
 verb drop(actor @ #player, item @ #thing)
-  let room = one LocatedIn(actor, ?room)
+  let room = actor.locatedIn
 
   if Carrying(actor, item)
     item.locatedIn = room
@@ -642,7 +642,7 @@ end
 
 verb put(actor @ #player, item @ #thing, container @ #container)
   if Carrying(actor, item) && CanSee(actor, container)
-    let room = one LocatedIn(actor, ?room)
+    let room = actor.locatedIn
     item.locatedIn = container
     :emit_room_event(room: room, event: event/narrative(#event/put, "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
@@ -663,7 +663,7 @@ verb push(actor @ #player, target @ #thing)
     return false
   end
 
-  let room = one LocatedIn(actor, ?room)
+  let room = actor.locatedIn
   assert ButtonArmed(target)
   event/notify(actor, "You press the red button. It clicks, then begins to hum.")
   let task = spawn :button_resolves(actor: actor, target: target, room: room) after 0.25
@@ -681,7 +681,7 @@ verb button_resolves(actor @ #player, target @ #thing, room @ #room)
 end
 
 verb say(actor @ #player, message)
-  let room = one LocatedIn(actor, ?room)
+  let room = actor.locatedIn
   let event = event/narrative(#event/say, "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message})
   :emit_room_event(room: room, event: event)
   return true

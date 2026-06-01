@@ -256,7 +256,7 @@ verb template/binding_value_text(value @ #identity, viewer)
     return "you"
   end
 
-  let name = one Name(value, ?name)
+  let name = value.name
   if name != nothing
     return name
   end

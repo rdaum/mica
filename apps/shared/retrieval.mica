@@ -129,7 +129,7 @@ verb retrieval/index_entry_status(index, subject, model @ #string, text @ #strin
 end
 
 verb retrieval/text_unit_status(index, unit, model @ #string)
-  let text = one TextUnitText(unit, ?text)
+  let text = unit.textUnitText
   if text == nothing
     retract IndexEntryStatus(index, unit, model, _)
     assert IndexEntryStatus(index, unit, model, "missing")
@@ -174,7 +174,7 @@ verb ensure_subject_embedding(actor, index, subject, text @ #string, model @ #st
 end
 
 verb index_text_unit(actor, index, unit, model @ #string)
-  let text = one TextUnitText(unit, ?text)
+  let text = unit.textUnitText
   return ensure_subject_embedding(actor, index, unit, text, model)
 end
 
@@ -213,7 +213,7 @@ verb answer_refresh_status(answer)
   let stale = false
   for found in AnswerCitation(answer, ?subject)
     let subject = found[:subject]
-    let current = one TextUnitText(subject, ?text)
+    let current = subject.textUnitText
     let recorded = one AnswerCitationText(answer, subject, ?text)
     if current != recorded
       stale = true
@@ -245,7 +245,7 @@ verb answer_question(actor, index, question_text @ #string, limit, model @ #stri
 
   for context in contexts
     let subject = context[:subject]
-    let snippet = one TextUnitText(subject, ?text)
+    let snippet = subject.textUnitText
     assert AnswerCitation(answer, subject)
     assert AnswerCitationText(answer, subject, snippet)
     snippets = [@snippets, snippet]

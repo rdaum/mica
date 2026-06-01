@@ -18,7 +18,7 @@ verb ui/sync_selected_entity(actor @ #player, line, fields)
 end
 
 verb ui/sync_action_source(action)
-  let delegate = one ui/SyncAction(action, ?delegate)
+  let delegate = action.ui/syncAction
   if delegate == nothing
     return nothing
   end
@@ -35,7 +35,7 @@ verb ui/handle_sync_action(source @ #ui/load_older_events_action<_>, endpoint, s
     return false
   end
 
-  let current_limit = one session/NarrativeLimit(endpoint, ?limit)
+  let current_limit = endpoint.session/narrativeLimit
   if current_limit == nothing
     current_limit = 40
   end

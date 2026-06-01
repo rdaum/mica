@@ -41,9 +41,9 @@ verb ui/login_view_node()
 end
 
 verb ui/room_panel_node(actor @ #player)
-  let room = one LocatedIn(actor, ?room)
-  let title = one Name(room, ?title)
-  let description = one Description(room, ?description)
+  let room = actor.locatedIn
+  let title = room.name
+  let description = room.description
   let heading = dom_element("h2", {}, [dom_text(title)])
   let body = dom_element("p", {:class -> "room-description"}, [dom_text(description)])
   return dom_element("section", {:id -> "room", :class -> "panel room-panel"}, [heading, body, ui/snapshot_exits_node(room), ui/room_objects_node(actor, room)])
@@ -105,7 +105,7 @@ end
 
 verb ui/presence_card_node(viewer @ #player, actor @ #player)
   let name = ui/actor_name(actor)
-  let description = one Description(actor, ?description)
+  let description = actor.description
   let label = dom_element("strong", {:class -> "presence-name"}, [dom_text(name)])
   if actor != viewer
     label = ui/entity_action_node(string_concat("presence-", to_literal(actor)), actor, string_concat("look ", name), name, "entity-button presence-name")
@@ -115,7 +115,7 @@ verb ui/presence_card_node(viewer @ #player, actor @ #player)
 end
 
 verb ui/presence_node(actor @ #player)
-  let room = one LocatedIn(actor, ?room)
+  let room = actor.locatedIn
   let people = []
   for found in PresentActor(room, ?player)
     people = [@people, ui/presence_card_node(actor, found[:player])]
@@ -242,7 +242,7 @@ verb ui/entity_location_text(actor @ #player, entity)
     return "you"
   end
 
-  let location = one LocatedIn(entity, ?location)
+  let location = entity.locatedIn
   if location == nothing
     return "unplaced"
   elseif location == actor
@@ -276,13 +276,13 @@ verb ui/entity_facts_node(actor @ #player, entity)
 end
 
 verb ui/inspector_node(actor @ #player)
-  let selected = one session/Inspect(endpoint(), ?selected)
+  let selected = endpoint().session/inspect
   if selected == nothing || CanSee(actor, selected) == false
     return dom_element("aside", {:id -> "inspector", :class -> "panel inspector"}, [dom_element("h2", {}, [dom_text("Examine")]), dom_element("p", {:class -> "muted"}, [dom_text("Select a room object or player to examine.")])])
   end
 
   let name = ui/actor_name(selected)
-  let description = one Description(selected, ?description)
+  let description = selected.description
   let actions = [ui/inspector_action_node(string_concat("look ", name), "look", "mini-button")]
   if Portable(selected) && Carrying(actor, selected) == false
     actions = [@actions, ui/inspector_action_node(string_concat("get ", name), "take", "mini-button")]
@@ -311,7 +311,7 @@ end
 
 verb ui/command_chips_node(actor @ #player)
   let chips = [ui/command_form_node("", "look", "look", "chip")]
-  let selected = one session/Inspect(endpoint(), ?selected)
+  let selected = endpoint().session/inspect
   if selected != nothing && CanSee(actor, selected)
     let name = ui/actor_name(selected)
     chips = [@chips, ui/command_form_node("", string_concat("look ", name), string_concat("examine ", name), "chip")]
@@ -327,7 +327,7 @@ verb ui/command_chips_node(actor @ #player)
     return dom_element("div", {:class -> "command-chips", "aria-label" -> "Available actions"}, chips)
   end
 
-  let room = one LocatedIn(actor, ?room)
+  let room = actor.locatedIn
   for found in Exit(room, ?direction, ?destination)
     let direction = ui/direction_text(found[:direction])
     chips = [@chips, ui/command_form_node("", direction, direction, "chip exit-chip")]

@@ -99,11 +99,11 @@ ui/MicaPrototype(obj, ancestor) :-
   ui/MicaPrototype(proto, ancestor)
 
 verb ui/mica_inspect_selected()
-  return one ui/MicaInspect(endpoint(), ?selected)
+  return endpoint().ui/micaInspect
 end
 
 verb ui/mica_inspect_expanded()
-  return one ui/MicaInspectLayout(endpoint(), ?mode) == "expanded"
+  return endpoint().ui/micaInspectLayout == "expanded"
 end
 
 verb ui/mica_inspect_action_node(entity, label, class)
@@ -162,7 +162,7 @@ verb ui/mica_can_link(value)
     return false
   end
 
-  if one Name(value, ?name) != nothing
+  if value.name != nothing
     return true
   elseif one RelationName(value, ?relation_name) != nothing
     return true
@@ -182,7 +182,7 @@ end
 verb ui/mica_inspect_entity_node(value, class)
   let hidden = dom_element("input", {:type -> "hidden", :name -> "entity", :value -> to_literal(value)}, [])
   let label = to_literal(value)
-  let name = one Name(value, ?name)
+  let name = value.name
   if name != nothing
     label = name
   else
@@ -299,7 +299,7 @@ end
 verb ui/mica_method_catalog_node(entity)
   let rows = []
   let count = 0
-  let mode = one ui/MicaMethodMode(endpoint(), ?mode)
+  let mode = endpoint().ui/micaMethodMode
   if mode == nothing
     mode = "all"
   end
@@ -358,7 +358,7 @@ verb ui/mica_inspect_panel_node(actor @ #player)
     layout = ui/mica_inspect_layout_node("normal", "Normal")
   end
   let controls = [layout, ui/mica_inspect_close_node()]
-  let previous = one ui/MicaInspectBack(endpoint(), ?previous)
+  let previous = endpoint().ui/micaInspectBack
   if previous != nothing
     controls = [ui/mica_inspect_back_node(previous), layout, ui/mica_inspect_close_node()]
   end
@@ -366,7 +366,7 @@ verb ui/mica_inspect_panel_node(actor @ #player)
 end
 
 verb ui/mica_inspect_set_selected(endpoint, selected)
-  let previous = one ui/MicaInspect(endpoint(), ?previous)
+  let previous = endpoint().ui/micaInspect
   if previous != nothing && previous != selected
     endpoint().ui/micaInspectBack = previous
     endpoint.ui/micaInspectBack = previous
@@ -450,12 +450,12 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_back_action<_>, endpoint, s
     return false
   end
 
-  let previous = one ui/MicaInspectBack(endpoint(), ?previous)
+  let previous = endpoint().ui/micaInspectBack
   if previous == nothing
     return false
   end
 
-  let selected = one ui/MicaInspect(endpoint(), ?selected)
+  let selected = endpoint().ui/micaInspect
   endpoint().ui/micaInspect = previous
   endpoint.ui/micaInspect = previous
   retract ui/MicaInspectBack(endpoint(), _)

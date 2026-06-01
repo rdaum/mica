@@ -155,7 +155,7 @@ assert RoleCanWrite(#player, :session/NarrativeLimit)
 assert RoleCanWrite(#player, :session/Revision)
 
 verb ui/actor_name(obj)
-  let name = one Name(obj, ?name)
+  let name = obj.name
   if name == nothing
     return to_literal(obj)
   end
@@ -178,7 +178,7 @@ verb ui/direction_text(direction)
 end
 
 verb ui/current_actor()
-  return one session/Actor(endpoint(), ?actor)
+  return endpoint().session/actor
 end
 
 verb ui/entity_from_literal(text)
@@ -201,12 +201,12 @@ verb ui/status_revision()
 
   let revision = 1
   for found in event/Delivery(current, ?event)
-    let seq = one event/Seq(found[:event], ?seq)
+    let seq = found[:event].event/seq
     if seq > revision || seq == revision
       revision = seq + 1
     end
   end
-  let ui_revision = one session/Revision(endpoint(), ?stored_ui_revision)
+  let ui_revision = endpoint().session/revision
   if ui_revision != nothing && ui_revision > revision
     revision = ui_revision
   end
@@ -219,14 +219,14 @@ verb ui/bump_revision(endpoint)
   let revision = 1
   if current != nothing
     for found in event/Delivery(current, ?event)
-      let seq = one event/Seq(found[:event], ?seq)
+      let seq = found[:event].event/seq
       if seq > revision || seq == revision
         revision = seq + 1
       end
     end
   end
 
-  let ui_revision = one session/Revision(endpoint, ?stored_ui_revision)
+  let ui_revision = endpoint.session/revision
   if ui_revision != nothing && ui_revision > revision
     revision = ui_revision
   end
@@ -261,7 +261,7 @@ verb sync_view_tree(view, revision)
     return ui/login_view_node()
   end
 
-  let limit = one session/NarrativeLimit(endpoint(), ?limit)
+  let limit = endpoint().session/narrativeLimit
   if limit == nothing
     limit = 40
   end
