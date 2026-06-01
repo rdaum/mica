@@ -477,15 +477,15 @@ impl<'a> ContextValidator<'a> {
         match item {
             HirItem::Expr { expr, .. } => self.validate_expr(expr, external_locals, ExprUse::Value),
             HirItem::RelationRule { head, body, .. } => {
-                self.validate_relation_atom(head, external_locals);
+                self.validate_rule_atom(head);
                 for item in body {
                     match item {
                         HirRuleBodyItem::Atom(atom) => {
-                            self.validate_relation_atom(atom, external_locals);
+                            self.validate_rule_atom(atom);
                         }
                         HirRuleBodyItem::Guard(guard) => {
-                            self.validate_expr(&guard.left, external_locals, ExprUse::Value);
-                            self.validate_expr(&guard.right, external_locals, ExprUse::Value);
+                            self.validate_rule_term(&guard.left);
+                            self.validate_rule_term(&guard.right);
                         }
                     }
                 }
@@ -754,6 +754,30 @@ impl<'a> ContextValidator<'a> {
             });
         }
         self.validate_args(&atom.args, external_locals);
+    }
+
+    fn validate_rule_atom(&mut self, atom: &HirRelationAtom) {
+        if self.context.relation(&atom.name).is_none() {
+            self.errors.push(CompileError::UnknownRelation {
+                node: atom.id,
+                span: self.span(atom.id),
+                name: atom.name.clone(),
+            });
+        }
+        for arg in &atom.args {
+            self.validate_rule_term(&arg.value);
+        }
+    }
+
+    fn validate_rule_term(&mut self, expr: &HirExpr) {
+        match expr {
+            HirExpr::ExternalRef { .. }
+            | HirExpr::QueryVar { .. }
+            | HirExpr::Symbol { .. }
+            | HirExpr::Literal { .. } => {}
+            HirExpr::Identity { id, name } => self.validate_identity(*id, name),
+            _ => {}
+        }
     }
 
     fn validate_identity(&mut self, id: NodeId, name: &str) {
@@ -5548,6 +5572,41 @@ mod tests {
             &errors[3],
             CompileError::UnknownValue { name, .. } if name == "missing_value"
         ));
+    }
+
+    #[test]
+    fn relation_rule_variables_are_not_reported_as_unknown_values() {
+        let readable = id(1);
+        let file_revision = id(2);
+        let revision_of = id(3);
+        let can_browse = id(4);
+        let context = CompileContext::new()
+            .with_relation("Readable", readable)
+            .with_relation("FileRevision", file_revision)
+            .with_relation("RevisionOf", revision_of)
+            .with_relation("CanBrowse", can_browse);
+        let kernel = RelationKernel::new();
+        for (relation, name) in [
+            (readable, "Readable"),
+            (file_revision, "FileRevision"),
+            (revision_of, "RevisionOf"),
+            (can_browse, "CanBrowse"),
+        ] {
+            kernel
+                .create_relation(RelationMetadata::new(relation, Symbol::intern(name), 2))
+                .unwrap();
+        }
+        let installation = install_rules_from_source(
+            "Readable(actor, file) :-\n\
+               FileRevision(file, revision),\n\
+               RevisionOf(revision, repository),\n\
+               CanBrowse(actor, repository)",
+            &context,
+            &kernel,
+        )
+        .unwrap();
+
+        assert!(installation.is_some());
     }
 
     #[test]
