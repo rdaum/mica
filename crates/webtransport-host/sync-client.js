@@ -197,6 +197,59 @@ const SYNC_SUBMIT_LOADING_CLASS = "sync-submit-loading";
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const SIGNATURE_MASK = 0x007fffffffffffffn;
+const SYNC_TIMING_BUFFER_LIMIT = 2000;
+
+function nowMs() {
+  return globalThis.performance?.now?.() ?? Date.now();
+}
+
+function recordSyncTiming(name, startedAt, detail = {}) {
+  const endedAt = nowMs();
+  const entry = {
+    name,
+    start_ms: startedAt,
+    elapsed_ms: endedAt - startedAt,
+    ...detail,
+  };
+  const target = globalThis.window ?? globalThis;
+  const timings = target.__micaSyncTimings ?? [];
+  timings.push(entry);
+  if (timings.length > SYNC_TIMING_BUFFER_LIMIT) {
+    timings.splice(0, timings.length - SYNC_TIMING_BUFFER_LIMIT);
+  }
+  target.__micaSyncTimings = timings;
+  return entry;
+}
+
+function timedSync(name, detail, run) {
+  const startedAt = nowMs();
+  try {
+    const value = run();
+    recordSyncTiming(name, startedAt, detail);
+    return value;
+  } catch (error) {
+    recordSyncTiming(name, startedAt, {
+      ...detail,
+      error: String(error?.message ?? error),
+    });
+    throw error;
+  }
+}
+
+async function timedSyncAsync(name, detail, run) {
+  const startedAt = nowMs();
+  try {
+    const value = await run();
+    recordSyncTiming(name, startedAt, detail);
+    return value;
+  } catch (error) {
+    recordSyncTiming(name, startedAt, {
+      ...detail,
+      error: String(error?.message ?? error),
+    });
+    throw error;
+  }
+}
 
 function writeU64(view, offset, value) {
   view.setBigUint64(offset, BigInt(value), true);
@@ -1157,7 +1210,11 @@ export class MicaWebTransportSyncClient {
         return;
       }
       try {
-        const envelope = decodeChunkedSyncEnvelope(value, this.chunks);
+        const envelope = timedSync(
+          "decode_datagram_envelope",
+          { bytes: value?.byteLength ?? 0 },
+          () => decodeChunkedSyncEnvelope(value, this.chunks),
+        );
         if (envelope && !envelope.raw) {
           this.onEnvelope?.(envelope);
         }
@@ -1180,7 +1237,14 @@ export class MicaWebTransportSyncClient {
         return;
       }
       try {
-        const envelope = decodeSyncEnvelope(await readAllStreamBytes(stream));
+        const bytes = await timedSyncAsync("read_stream_envelope", {}, () =>
+          readAllStreamBytes(stream),
+        );
+        const envelope = timedSync(
+          "decode_stream_envelope",
+          { bytes: bytes.byteLength ?? 0 },
+          () => decodeSyncEnvelope(bytes),
+        );
         this.onEnvelope?.(envelope);
       } catch (error) {
         this.onError?.(error);
@@ -1231,7 +1295,12 @@ export class MicaSseSyncClient {
       });
       source.addEventListener("sync", (event) => {
         try {
-          this.onEnvelope?.(JSON.parse(event.data));
+          const envelope = timedSync(
+            "parse_sse_envelope",
+            { bytes: event.data?.length ?? 0 },
+            () => JSON.parse(event.data),
+          );
+          this.onEnvelope?.(envelope);
         } catch (error) {
           this.onError?.(error);
         }
@@ -1418,6 +1487,10 @@ export function bootstrapServerRenderedSync(mount, status) {
     event.end(event.loading);
     if (acknowledged) {
       event.afterAck?.();
+      recordSyncTiming("dom_event_round_trip", event.startedAt ?? nowMs(), {
+        kind: event.kind,
+        action: event.action,
+      });
     }
     inFlightDomEvent = null;
     dispatchSyncLoading("stop", {
@@ -1429,6 +1502,7 @@ export function bootstrapServerRenderedSync(mount, status) {
   }
 
   function startInFlightDomEvent(event) {
+    event.startedAt = nowMs();
     event.timeout = setTimeout(() => {
       if (inFlightDomEvent === event) {
         setStatus("Event timed out");
@@ -1493,7 +1567,11 @@ export function bootstrapServerRenderedSync(mount, status) {
         try {
           event.payload.revision = state.revision;
           event.payload.signature = state.signature;
-          await client.sendDomEvent(event.payload);
+          await timedSyncAsync(
+            "send_dom_event",
+            { kind: event.kind, action: event.action },
+            () => client.sendDomEvent(event.payload),
+          );
         } catch (error) {
           setStatus(`Event failed: ${String(error)}`);
           finishInFlightDomEvent();
@@ -1568,6 +1646,7 @@ export function bootstrapServerRenderedSync(mount, status) {
   }
 
   function accept(envelope) {
+    const startedAt = nowMs();
     state.revision = BigInt(envelope.serverRevision);
     state.signature = BigInt(envelope.serverSignature);
     mount.dataset.revision = envelope.serverRevision;
@@ -1579,9 +1658,25 @@ export function bootstrapServerRenderedSync(mount, status) {
     }
     bindViewportObservers(mount, sendViewportEvent);
     finishInFlightDomEvent(true);
+    recordSyncTiming("accept_envelope", startedAt, {
+      kind: envelope.kind,
+      revision: envelope.serverRevision,
+    });
   }
 
   function handle(envelope) {
+    const startedAt = nowMs();
+    try {
+      handleEnvelope(envelope);
+    } finally {
+      recordSyncTiming("handle_envelope", startedAt, {
+        kind: envelope.kind,
+        revision: envelope.serverRevision,
+      });
+    }
+  }
+
+  function handleEnvelope(envelope) {
     if (envelope.kind === "ViewSnapshot") {
       const serverRevision = BigInt(envelope.serverRevision);
       const serverSignature = BigInt(envelope.serverSignature);
@@ -1595,12 +1690,20 @@ export function bootstrapServerRenderedSync(mount, status) {
         }
         return;
       }
-      const snapshot = validateSnapshotEnvelope(envelope);
+      const snapshot = timedSync(
+        "validate_snapshot",
+        { bytes: envelope.payload?.length ?? 0, revision: envelope.serverRevision },
+        () => validateSnapshotEnvelope(envelope),
+      );
       if (!snapshot.valid) {
         setStatus("Snapshot rejected");
         return;
       }
-      applySnapshot(mount, snapshot.payload);
+      timedSync(
+        "apply_snapshot",
+        { revision: envelope.serverRevision },
+        () => applySnapshot(mount, snapshot.payload),
+      );
       accept(envelope);
       return;
     }
@@ -1625,12 +1728,26 @@ export function bootstrapServerRenderedSync(mount, status) {
           .catch((error) => setStatus(String(error)));
         return;
       }
-      const delta = validateDeltaEnvelope(envelope);
+      const delta = timedSync(
+        "validate_delta",
+        {
+          bytes: envelope.payload?.length ?? 0,
+          revision: envelope.serverRevision,
+        },
+        () => validateDeltaEnvelope(envelope),
+      );
       try {
         if (!delta.valid) {
           throw new Error("Delta rejected");
         }
-        applyDelta(mount, delta.payload);
+        timedSync(
+          "apply_delta",
+          {
+            revision: envelope.serverRevision,
+            patches: delta.payload?.patches?.length ?? 0,
+          },
+          () => applyDelta(mount, delta.payload),
+        );
         accept(envelope);
       } catch (error) {
         setStatus("Recovering");
