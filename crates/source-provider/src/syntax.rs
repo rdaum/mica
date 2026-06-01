@@ -5,6 +5,7 @@ use mica_var::{Symbol, Value};
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser};
 
+#[derive(Debug)]
 pub(crate) struct SyntaxDocument {
     pub(crate) text: String,
     pub(crate) line_starts: Vec<usize>,

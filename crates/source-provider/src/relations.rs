@@ -10,10 +10,11 @@ use mica_relation_kernel::{
     ComputedRelation, ComputedRelationRead, KernelError, RelationId, RelationMetadata, Tuple,
 };
 use mica_var::Value;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 const REPOSITORY_ENTRY_BOUND: &[u16] = &[0, 1, 2];
@@ -31,6 +32,7 @@ const INDEXED_TEXT_UNIT_BOUND: &[u16] = &[];
 const TEXT_SEARCH_BOUND: &[u16] = &[0, 1, 2];
 const INDEX_VALUE_BOUND: &[u16] = &[];
 const SEMANTIC_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const SOURCE_DOCUMENT_CACHE_LIMIT: usize = 64;
 
 pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
     let provider = Arc::new(LocalSourceProvider::from_env());
@@ -101,6 +103,7 @@ struct LocalSourceProvider {
     allowed_roots: Vec<PathBuf>,
     semantic_index_path: PathBuf,
     semantic_index_cache: Mutex<Option<CachedSemanticIndex>>,
+    source_document_cache: Mutex<HashMap<PathBuf, Arc<CachedSourceDocument>>>,
     rust_analyzer: RustAnalyzerProvider,
 }
 
@@ -121,6 +124,7 @@ impl LocalSourceProvider {
             allowed_roots,
             semantic_index_path,
             semantic_index_cache: Mutex::new(None),
+            source_document_cache: Mutex::new(HashMap::new()),
             rust_analyzer: RustAnalyzerProvider::from_env(),
         }
     }
@@ -202,6 +206,38 @@ impl LocalSourceProvider {
         Ok((root, absolute))
     }
 
+    fn source_document(
+        &self,
+        relation: RelationId,
+        path: &Path,
+    ) -> Result<Arc<CachedSourceDocument>, KernelError> {
+        let key = source_document_key(relation, path)?;
+        if let Some(cached) = self.source_document_cache.lock().unwrap().get(path)
+            && cached.key == key
+        {
+            return Ok(cached.clone());
+        }
+
+        let bytes = read_file_bytes(relation, path)?;
+        let text = String::from_utf8(bytes).map_err(|error| {
+            invalid_relation(relation, format!("source file is not utf-8: {error}"))
+        })?;
+        let document = Arc::new(CachedSourceDocument {
+            key,
+            hash: content_hash(text.as_bytes()),
+            line_count: text.lines().count().max(1),
+            text,
+            syntax: OnceLock::new(),
+        });
+
+        let mut cache = self.source_document_cache.lock().unwrap();
+        if cache.len() >= SOURCE_DOCUMENT_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(path.to_path_buf(), document.clone());
+        Ok(document)
+    }
+
     fn semantic_index(
         &self,
         relation: RelationId,
@@ -249,6 +285,44 @@ struct CachedSemanticIndex {
     key: Option<SemanticIndexKey>,
     last_checked: Instant,
     index: Arc<PersistentSemanticIndex>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceDocumentKey {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+#[derive(Debug)]
+struct CachedSourceDocument {
+    key: SourceDocumentKey,
+    text: String,
+    hash: String,
+    line_count: usize,
+    syntax: OnceLock<SyntaxDocument>,
+}
+
+impl CachedSourceDocument {
+    fn syntax(&self, path: &str) -> &SyntaxDocument {
+        self.syntax
+            .get_or_init(|| SyntaxDocument::parse(path, &self.text))
+    }
+}
+
+fn source_document_key(
+    relation: RelationId,
+    path: &Path,
+) -> Result<SourceDocumentKey, KernelError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        invalid_relation(
+            relation,
+            format!("failed to stat source file {}: {error}", path.display()),
+        )
+    })?;
+    Ok(SourceDocumentKey {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
 }
 
 fn semantic_index_key(
@@ -372,18 +446,14 @@ impl ComputedRelation for FileTextRelation {
         let (_root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        let bytes = read_file_bytes(metadata.id(), &file)?;
-        let text = String::from_utf8(bytes).map_err(|error| {
-            invalid_relation(metadata.id(), format!("source file is not utf-8: {error}"))
-        })?;
-        let hash = content_hash(text.as_bytes());
+        let document = self.provider.source_document(metadata.id(), &file)?;
         Ok(filter_bound_rows(
             vec![Tuple::from([
                 repository,
                 revision,
                 Value::string(path),
-                Value::string(text),
-                Value::string(hash),
+                Value::string(&document.text),
+                Value::string(&document.hash),
             ])],
             bindings,
         ))
@@ -421,12 +491,9 @@ impl ComputedRelation for FileLinesRelation {
         let (_root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        let bytes = read_file_bytes(metadata.id(), &file)?;
-        let hash = content_hash(&bytes);
-        let text = String::from_utf8(bytes).map_err(|error| {
-            invalid_relation(metadata.id(), format!("source file is not utf-8: {error}"))
-        })?;
-        let lines = text
+        let document = self.provider.source_document(metadata.id(), &file)?;
+        let lines = document
+            .text
             .lines()
             .skip(start_line.saturating_sub(1))
             .take(line_count)
@@ -440,7 +507,7 @@ impl ComputedRelation for FileLinesRelation {
                 int_value(metadata.id(), start_line as i64)?,
                 int_value(metadata.id(), line_count as i64)?,
                 Value::list(lines),
-                Value::string(hash),
+                Value::string(&document.hash),
             ])],
             bindings,
         ))
@@ -476,14 +543,13 @@ impl ComputedRelation for FileLineCountRelation {
         let (_root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        let text = read_utf8_file(metadata.id(), &file)?;
-        let count = text.lines().count().max(1);
+        let document = self.provider.source_document(metadata.id(), &file)?;
         Ok(filter_bound_rows(
             vec![Tuple::from([
                 repository,
                 revision,
                 Value::string(path),
-                int_value(metadata.id(), count as i64)?,
+                int_value(metadata.id(), document.line_count as i64)?,
             ])],
             bindings,
         ))
@@ -519,13 +585,13 @@ impl ComputedRelation for FileContentHashRelation {
         let (_root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        let bytes = read_file_bytes(metadata.id(), &file)?;
+        let document = self.provider.source_document(metadata.id(), &file)?;
         Ok(filter_bound_rows(
             vec![Tuple::from([
                 repository,
                 revision,
                 Value::string(path),
-                Value::string(content_hash(&bytes)),
+                Value::string(&document.hash),
             ])],
             bindings,
         ))
@@ -563,12 +629,8 @@ impl ComputedRelation for SyntaxLineRelation {
         let (_root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        let bytes = read_file_bytes(metadata.id(), &file)?;
-        let hash = content_hash(&bytes);
-        let text = String::from_utf8(bytes).map_err(|error| {
-            invalid_relation(metadata.id(), format!("source file is not utf-8: {error}"))
-        })?;
-        let syntax = SyntaxDocument::parse(&path, &text);
+        let document = self.provider.source_document(metadata.id(), &file)?;
+        let syntax = document.syntax(&path);
         let rows = syntax_lines(metadata.id(), &syntax, start_line, line_count)?
             .into_iter()
             .map(|line| {
@@ -580,7 +642,7 @@ impl ComputedRelation for SyntaxLineRelation {
                     int_value(metadata.id(), line_count as i64)?,
                     int_value(metadata.id(), line.number as i64)?,
                     Value::list(line.segments),
-                    Value::string(&hash),
+                    Value::string(&document.hash),
                 ]))
             })
             .collect::<Result<Vec<_>, KernelError>>()?;
@@ -617,22 +679,19 @@ impl ComputedRelation for SyntaxOutlineRelation {
         let (_root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        let bytes = read_file_bytes(metadata.id(), &file)?;
-        let text = String::from_utf8(bytes).map_err(|error| {
-            invalid_relation(metadata.id(), format!("source file is not utf-8: {error}"))
-        })?;
-        let syntax = SyntaxDocument::parse(&path, &text);
+        let document = self.provider.source_document(metadata.id(), &file)?;
+        let syntax = document.syntax(&path);
         let rows = syntax
             .outline
-            .into_iter()
+            .iter()
             .map(|item| {
                 Ok(Tuple::from([
                     repository.clone(),
                     revision.clone(),
                     Value::string(&path),
-                    Value::string(item.node),
-                    Value::string(item.kind),
-                    Value::string(item.name),
+                    Value::string(&item.node),
+                    Value::string(&item.kind),
+                    Value::string(&item.name),
                     int_value(metadata.id(), item.start_line as i64)?,
                     int_value(metadata.id(), item.end_line as i64)?,
                     int_value(metadata.id(), item.start_byte as i64)?,
@@ -674,17 +733,14 @@ impl ComputedRelation for SyntaxNodeAtRelation {
         let (_root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        let bytes = read_file_bytes(metadata.id(), &file)?;
-        let text = String::from_utf8(bytes).map_err(|error| {
-            invalid_relation(metadata.id(), format!("source file is not utf-8: {error}"))
-        })?;
-        if byte_offset > text.len() {
+        let document = self.provider.source_document(metadata.id(), &file)?;
+        if byte_offset > document.text.len() {
             return Err(invalid_relation(
                 metadata.id(),
                 "byte offset is beyond source file length",
             ));
         }
-        let syntax = SyntaxDocument::parse(&path, &text);
+        let syntax = document.syntax(&path);
         let item = syntax.node_at(byte_offset);
         let rows = if let Some(item) = item {
             vec![Tuple::from([
@@ -737,8 +793,8 @@ impl ComputedRelation for DefinitionAtRelation {
         let (root, file) =
             self.provider
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
-        let text = read_utf8_file(metadata.id(), &file)?;
-        if byte_offset > text.len() {
+        let document = self.provider.source_document(metadata.id(), &file)?;
+        if byte_offset > document.text.len() {
             return Err(invalid_relation(
                 metadata.id(),
                 "byte offset is beyond source file length",
@@ -778,23 +834,26 @@ impl ComputedRelation for DefinitionAtRelation {
             .definition(
                 &rust_workspace_root(&root),
                 &file,
-                &text,
-                byte_offset_to_lsp_position(metadata.id(), &text, byte_offset)?,
+                &document.text,
+                byte_offset_to_lsp_position(metadata.id(), &document.text, byte_offset)?,
             )
             .unwrap_or_default();
         if locations.is_empty()
-            && let Some(ch) = text.get(byte_offset..).and_then(|text| text.chars().next())
+            && let Some(ch) = document
+                .text
+                .get(byte_offset..)
+                .and_then(|text| text.chars().next())
         {
             let inner_offset = byte_offset + ch.len_utf8();
-            if inner_offset <= text.len() {
+            if inner_offset <= document.text.len() {
                 locations = self
                     .provider
                     .rust_analyzer
                     .definition(
                         &rust_workspace_root(&root),
                         &file,
-                        &text,
-                        byte_offset_to_lsp_position(metadata.id(), &text, inner_offset)?,
+                        &document.text,
+                        byte_offset_to_lsp_position(metadata.id(), &document.text, inner_offset)?,
                     )
                     .unwrap_or_default();
             }
@@ -892,12 +951,13 @@ impl ComputedRelation for ReferencesOfRelation {
                 "symbol path escapes repository root",
             ));
         }
-        let text = read_utf8_file(metadata.id(), &file)?;
-        let position = byte_offset_to_lsp_position(metadata.id(), &text, request.start_byte)?;
+        let document = self.provider.source_document(metadata.id(), &file)?;
+        let position =
+            byte_offset_to_lsp_position(metadata.id(), &document.text, request.start_byte)?;
         let locations = self
             .provider
             .rust_analyzer
-            .references(&rust_workspace_root(&root), &file, &text, position)
+            .references(&rust_workspace_root(&root), &file, &document.text, position)
             .unwrap_or_default();
         let mut rows = Vec::new();
         for location in locations {
