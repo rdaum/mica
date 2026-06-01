@@ -17,11 +17,11 @@ assert Delegates(#ui/mica_inspect_close_action, #ui/sync_action, 0)
 assert Delegates(#ui/mica_inspect_back_action, #ui/sync_action, 0)
 assert Delegates(#ui/mica_inspect_layout_action, #ui/sync_action, 0)
 assert Delegates(#ui/mica_method_mode_action, #ui/sync_action, 0)
-assert ui/SyncAction("mud_mica_inspect", #ui/mica_inspect_action)
-assert ui/SyncAction("mud_mica_inspect_close", #ui/mica_inspect_close_action)
-assert ui/SyncAction("mud_mica_inspect_back", #ui/mica_inspect_back_action)
-assert ui/SyncAction("mud_mica_inspect_layout", #ui/mica_inspect_layout_action)
-assert ui/SyncAction("mud_mica_method_mode", #ui/mica_method_mode_action)
+"mud_mica_inspect".ui/syncAction = #ui/mica_inspect_action
+"mud_mica_inspect_close".ui/syncAction = #ui/mica_inspect_close_action
+"mud_mica_inspect_back".ui/syncAction = #ui/mica_inspect_back_action
+"mud_mica_inspect_layout".ui/syncAction = #ui/mica_inspect_layout_action
+"mud_mica_method_mode".ui/syncAction = #ui/mica_method_mode_action
 
 assert RoleCanInvoke(#player, :ui/can_program)
 assert RoleCanInvoke(#player, :ui/try_mica_inspect_command)
@@ -368,24 +368,18 @@ end
 verb ui/mica_inspect_set_selected(endpoint, selected)
   let previous = one ui/MicaInspect(endpoint(), ?previous)
   if previous != nothing && previous != selected
-    retract ui/MicaInspectBack(endpoint(), _)
-    retract ui/MicaInspectBack(endpoint, _)
-    assert ui/MicaInspectBack(endpoint(), previous)
-    assert ui/MicaInspectBack(endpoint, previous)
+    endpoint().ui/micaInspectBack = previous
+    endpoint.ui/micaInspectBack = previous
   end
-  retract ui/MicaInspect(endpoint(), _)
-  retract ui/MicaInspect(endpoint, _)
-  assert ui/MicaInspect(endpoint(), selected)
-  assert ui/MicaInspect(endpoint, selected)
+  endpoint().ui/micaInspect = selected
+  endpoint.ui/micaInspect = selected
 end
 
 verb ui/mica_inspect_bump_revision(endpoint)
   let revision = ui/status_revision() + 1000
-  retract session/Revision(endpoint(), _)
-  assert session/Revision(endpoint(), revision)
+  endpoint().session/revision = revision
   if endpoint != endpoint()
-    retract session/Revision(endpoint, _)
-    assert session/Revision(endpoint, revision)
+    endpoint.session/revision = revision
   end
   return revision
 end
@@ -462,15 +456,13 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_back_action<_>, endpoint, s
   end
 
   let selected = one ui/MicaInspect(endpoint(), ?selected)
-  retract ui/MicaInspect(endpoint(), _)
-  retract ui/MicaInspect(endpoint, _)
-  assert ui/MicaInspect(endpoint(), previous)
-  assert ui/MicaInspect(endpoint, previous)
+  endpoint().ui/micaInspect = previous
+  endpoint.ui/micaInspect = previous
   retract ui/MicaInspectBack(endpoint(), _)
   retract ui/MicaInspectBack(endpoint, _)
   if selected != nothing && selected != previous
-    assert ui/MicaInspectBack(endpoint(), selected)
-    assert ui/MicaInspectBack(endpoint, selected)
+    endpoint().ui/micaInspectBack = selected
+    endpoint.ui/micaInspectBack = selected
   end
   ui/mica_inspect_bump_revision(endpoint)
   return true
@@ -494,8 +486,8 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_layout_action<_>, endpoint,
   retract ui/MicaInspectLayout(endpoint(), _)
   retract ui/MicaInspectLayout(endpoint, _)
   if mode == "expanded"
-    assert ui/MicaInspectLayout(endpoint(), mode)
-    assert ui/MicaInspectLayout(endpoint, mode)
+    endpoint().ui/micaInspectLayout = mode
+    endpoint.ui/micaInspectLayout = mode
   end
   ui/mica_inspect_bump_revision(endpoint)
   return true
@@ -516,10 +508,8 @@ verb ui/handle_sync_action(source @ #ui/mica_method_mode_action<_>, endpoint, se
     return false
   end
 
-  retract ui/MicaMethodMode(endpoint(), _)
-  retract ui/MicaMethodMode(endpoint, _)
-  assert ui/MicaMethodMode(endpoint(), mode)
-  assert ui/MicaMethodMode(endpoint, mode)
+  endpoint().ui/micaMethodMode = mode
+  endpoint.ui/micaMethodMode = mode
   ui/mica_inspect_bump_revision(endpoint)
   return true
 end

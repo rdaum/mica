@@ -561,11 +561,17 @@ impl<'a> Lower<'a> {
             .next()
             .map(|child| self.lower_expr(child))
             .unwrap_or_else(|| self.error_expr(node));
+        let tokens = self.token_children(node).collect::<Vec<_>>();
+        let name = tokens
+            .iter()
+            .position(|token| token.kind == SyntaxKind::Dot)
+            .and_then(|idx| qualified_name_from_tokens(self.source, &tokens, idx + 1))
+            .unwrap_or_default();
         Expr::Field {
             id: self.node_id(),
             span: node.span.clone(),
             base: Box::new(base),
-            name: self.last_text(node, SyntaxKind::Ident).unwrap_or_default(),
+            name,
         }
     }
 
@@ -1010,13 +1016,6 @@ impl<'a> Lower<'a> {
     fn first_text(&self, node: &CstNode, kind: SyntaxKind) -> Option<String> {
         self.token_children(node)
             .find(|token| token.kind == kind)
-            .map(|token| self.text(token.span.clone()).to_owned())
-    }
-
-    fn last_text(&self, node: &CstNode, kind: SyntaxKind) -> Option<String> {
-        self.token_children(node)
-            .filter(|token| token.kind == kind)
-            .last()
             .map(|token| self.text(token.span.clone()).to_owned())
     }
 
@@ -1531,7 +1530,7 @@ mod tests {
     #[test]
     fn lowers_literals_and_field_assignment() {
         let ast = parse_ast(
-            "#lamp.name = \"golden lamp\"\ntrue\nE_NOT_PORTABLE\nnothing\n\"Alice says, \\\"hello\\\"\"",
+            "#lamp.name = \"golden lamp\"\nendpoint.session/actor = #alice\ntrue\nE_NOT_PORTABLE\nnothing\n\"Alice says, \\\"hello\\\"\"",
         );
         assert_eq!(ast.errors, vec![]);
         assert!(matches!(
@@ -1542,6 +1541,11 @@ mod tests {
         ));
         assert!(matches!(
             &ast.items[1],
+            Item::Expr { expr: Expr::Assign { target, .. }, .. }
+                if matches!(&**target, Expr::Field { name, .. } if name == "session/actor")
+        ));
+        assert!(matches!(
+            &ast.items[2],
             Item::Expr {
                 expr: Expr::Literal {
                     value: Literal::Bool(true),
@@ -1551,12 +1555,12 @@ mod tests {
             }
         ));
         assert!(matches!(
-            &ast.items[4],
+            &ast.items[5],
             Item::Expr { expr: Expr::Literal { value: Literal::String(text), .. }, .. }
                 if text == "Alice says, \"hello\""
         ));
         assert!(matches!(
-            &ast.items[2],
+            &ast.items[3],
             Item::Expr {
                 expr: Expr::Literal {
                     value: Literal::ErrorCode(text),
@@ -1566,7 +1570,7 @@ mod tests {
             } if text == "E_NOT_PORTABLE"
         ));
         assert!(matches!(
-            &ast.items[3],
+            &ast.items[4],
             Item::Expr {
                 expr: Expr::Literal {
                     value: Literal::Nothing,

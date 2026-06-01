@@ -60,7 +60,7 @@ assert Delegates(#bob, #user, 0)
 assert Delegates(#lamp, #thing, 0)
 
 // Initial world state.
-assert Name(#lamp, "brass lamp")
+#lamp.name = "brass lamp"
 
 // Alice is a builder. Bob is a visitor.
 assert HasRole(#alice, #builder)

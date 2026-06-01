@@ -9415,6 +9415,28 @@ mod tests {
     }
 
     #[test]
+    fn runner_namespaced_dot_read_and_assignment_project_functional_relations() {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_identity(:endpoint)").unwrap();
+        runner.run_source("make_identity(:alice)").unwrap();
+        runner.run_source("make_identity(:bob)").unwrap();
+        runner
+            .run_source("make_functional_relation(:session/Actor, 2, [0])")
+            .unwrap();
+
+        let write = runner
+            .run_source("#endpoint.session/actor = #alice")
+            .unwrap();
+        let read = runner.run_source("return #endpoint.session/actor").unwrap();
+        runner.run_source("#endpoint.session/actor = #bob").unwrap();
+        let replaced = runner.run_source("return #endpoint.session/actor").unwrap();
+
+        assert_eq!(write.render(), "task 5 complete: #alice (retries: 0)");
+        assert_eq!(read.render(), "task 6 complete: #alice (retries: 0)");
+        assert_eq!(replaced.render(), "task 8 complete: #bob (retries: 0)");
+    }
+
+    #[test]
     fn runner_rejects_dot_read_on_nonfunctional_relation() {
         let mut runner = SourceRunner::new_empty();
         runner.run_source("make_identity(:thing)").unwrap();

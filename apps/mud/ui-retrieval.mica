@@ -6,7 +6,7 @@ make_identity(:retrieval/mud_world)
 make_functional_relation(:session/RetrievalPlan, 2, [0])
 
 assert Delegates(#ui/retrieval_action, #ui/sync_action, 0)
-assert ui/SyncAction("mud_retrieve_related", #ui/retrieval_action)
+"mud_retrieve_related".ui/syncAction = #ui/retrieval_action
 
 assert RoleCanRead(#player, :session/RetrievalPlan)
 assert RoleCanWrite(#player, :session/RetrievalPlan)
@@ -135,13 +135,12 @@ verb ui/retrieval_seed_world(actor @ #player)
   let index = ui/retrieval_index()
   let model = ui/retrieval_model()
   assert VectorIndex(index)
-  assert VectorIndexMetric(index, "cosine")
+  index.vectorIndexMetric = "cosine"
 
   let entities = [#alice, #bob, #coin, #box, #red_button, #first_room, #north_room, #attic]
   for entity in entities
     assert TextUnit(entity)
-    retract TextUnitText(entity, _)
-    assert TextUnitText(entity, ui/retrieval_text(entity))
+    entity.textUnitText = ui/retrieval_text(entity)
     index_text_unit(actor, index, entity, model)
   end
   return true
@@ -150,10 +149,8 @@ end
 verb ui/retrieval_query_selected(actor @ #player, endpoint, selected)
   ui/retrieval_seed_world(actor)
   let retrieval = retrieve_context(actor, ui/retrieval_index(), ui/retrieval_text(selected), 5, ui/retrieval_model())
-  retract session/RetrievalPlan(endpoint(), _)
-  retract session/RetrievalPlan(endpoint, _)
-  assert session/RetrievalPlan(endpoint(), retrieval[:plan])
-  assert session/RetrievalPlan(endpoint, retrieval[:plan])
+  endpoint().session/retrievalPlan = retrieval[:plan]
+  endpoint.session/retrievalPlan = retrieval[:plan]
   ui/bump_revision(endpoint)
   return retrieval[:plan]
 end

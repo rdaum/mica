@@ -682,11 +682,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_field(&mut self, base: CstNode) -> CstNode {
-        let children = vec![
-            CstElement::Node(base),
-            self.bump_element(),
-            self.expect_token(SyntaxKind::Ident, "expected field name after '.'"),
-        ];
+        let mut children = vec![CstElement::Node(base), self.bump_element()];
+        children.extend(self.parse_qualified_ident_or_missing("expected field name after '.'"));
         CstNode::new(SyntaxKind::FieldExpr, children)
     }
 
@@ -1135,6 +1132,7 @@ mod tests {
             "ui/Visible(#lamp)\n\
              :ui/polish(actor: #ui/alice, item: #lamp)\n\
              #lamp:ui/examine(actor: #ui/alice)\n\
+             endpoint.session/actor = #alice\n\
              let ratio = total/count",
         );
         assert_eq!(parse.errors, vec![]);

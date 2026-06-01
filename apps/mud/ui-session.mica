@@ -19,10 +19,10 @@ assert Delegates(#ui/login_action, #ui/sync_action, 0)
 assert Delegates(#ui/inspect_action, #ui/sync_action, 0)
 assert Delegates(#ui/command_action, #ui/sync_action, 0)
 assert Delegates(#ui/load_older_events_action, #ui/sync_action, 0)
-assert ui/SyncAction("mud_login", #ui/login_action)
-assert ui/SyncAction("mud_inspect", #ui/inspect_action)
-assert ui/SyncAction("mud_command", #ui/command_action)
-assert ui/SyncAction("mud_load_older_events", #ui/load_older_events_action)
+"mud_login".ui/syncAction = #ui/login_action
+"mud_inspect".ui/syncAction = #ui/inspect_action
+"mud_command".ui/syncAction = #ui/command_action
+"mud_load_older_events".ui/syncAction = #ui/load_older_events_action
 
 assert session/CanAssumeActor(#web, #alice)
 assert session/CanAssumeActor(#web, #bob)
@@ -232,8 +232,7 @@ verb ui/bump_revision(endpoint)
   end
   revision = revision + 2
 
-  retract session/Revision(endpoint, _)
-  assert session/Revision(endpoint, revision)
+  endpoint.session/revision = revision
   return revision
 end
 

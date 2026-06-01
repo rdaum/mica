@@ -117,16 +117,14 @@ verb retrieval/index_entry_status(index, subject, model @ #string, text @ #strin
     assert IndexEntryStatus(index, subject, model, "stale")
     assert EmbeddingRefreshNeeded(index, subject, model)
     retract VectorIndexContains(index, embedding)
-    retract EmbeddingStatus(embedding, _)
-    assert EmbeddingStatus(embedding, "stale")
+    embedding.embeddingStatus = "stale"
     return "stale"
   end
 
   retract IndexEntryStatus(index, subject, model, _)
   assert IndexEntryStatus(index, subject, model, "ready")
   retract EmbeddingRefreshNeeded(index, subject, model)
-  retract EmbeddingStatus(embedding, _)
-  assert EmbeddingStatus(embedding, "ready")
+  embedding.embeddingStatus = "ready"
   return "ready"
 end
 
@@ -144,7 +142,7 @@ end
 
 verb ensure_subject_embedding(actor, index, subject, text @ #string, model @ #string)
   assert VectorIndex(index)
-  assert VectorIndexMetric(index, "cosine")
+  index.vectorIndexMetric = "cosine"
 
   let status = retrieval/index_entry_status(index, subject, model, text)
   if status == "ready"
@@ -163,11 +161,11 @@ verb ensure_subject_embedding(actor, index, subject, text @ #string, model @ #st
   retract EmbeddingRefreshNeeded(index, subject, model)
 
   assert Embedding(embedding)
-  assert EmbeddingOf(embedding, subject)
-  assert EmbeddingVector(embedding, vector)
-  assert EmbeddingModel(embedding, model)
-  assert EmbeddingSourceText(embedding, text)
-  assert EmbeddingStatus(embedding, "ready")
+  embedding.embeddingOf = subject
+  embedding.embeddingVector = vector
+  embedding.embeddingModel = model
+  embedding.embeddingSourceText = text
+  embedding.embeddingStatus = "ready"
   assert VectorIndexContains(index, embedding)
   assert IndexEntryEmbedding(index, subject, model, embedding)
   assert IndexEntrySourceText(index, subject, model, text)
@@ -183,14 +181,14 @@ end
 verb retrieve_context(actor, index, question_text @ #string, limit, model @ #string)
   let question = retrieval/question_value(actor, question_text, index, limit, model)
   assert Question(question)
-  assert QuestionText(question, question_text)
-  assert AskedBy(question, actor)
+  question.questionText = question_text
+  question.askedBy = actor
 
   let plan = retrieval/plan_value(question, index, limit, model)
   assert RetrievalPlan(plan)
-  assert PlanForQuestion(plan, question)
-  assert PlanKind(plan, "nearest_embedding")
-  assert PlanModel(plan, model)
+  plan.planForQuestion = question
+  plan.planKind = "nearest_embedding"
+  plan.planModel = model
 
   let query_embedding = embed_text(model, question_text)
   let contexts = []
@@ -199,11 +197,11 @@ verb retrieve_context(actor, index, question_text @ #string, limit, model @ #str
     if CanRetrieveSubject(actor, subject)
       let context = retrieval/context_value(plan, subject)
       assert RetrievedContext(context)
-      assert ContextForPlan(context, plan)
-      assert ContextSubject(context, subject)
-      assert ContextScore(context, found[:score])
-      assert ContextReason(context, "nearest_embedding")
-      assert ContextSnapshotVersion(context, found[:snapshot_version])
+      context.contextForPlan = plan
+      context.contextSubject = subject
+      context.contextScore = found[:score]
+      context.contextReason = "nearest_embedding"
+      context.contextSnapshotVersion = found[:snapshot_version]
       contexts = [@contexts, {:context -> context, :score -> found[:score], :subject -> subject, :snapshot_version -> found[:snapshot_version]}]
     end
   end
@@ -222,9 +220,8 @@ verb answer_refresh_status(answer)
     end
   end
 
-  retract AnswerStatus(answer, _)
   if stale
-    assert AnswerStatus(answer, "stale")
+    answer.answerStatus = "stale"
     assert AnswerNeedsReview(answer)
     assert AnswerRefreshNeeded(answer)
     return "stale"
@@ -232,7 +229,7 @@ verb answer_refresh_status(answer)
 
   retract AnswerNeedsReview(answer)
   retract AnswerRefreshNeeded(answer)
-  assert AnswerStatus(answer, "fresh")
+  answer.answerStatus = "fresh"
   return "fresh"
 end
 
@@ -257,11 +254,11 @@ verb answer_question(actor, index, question_text @ #string, limit, model @ #stri
   end
 
   assert Answer(answer)
-  assert AnswerForQuestion(answer, question)
-  assert AnswerPromptText(answer, question_text)
-  assert AnswerContextText(answer, context_text)
-  assert AnswerText(answer, summary)
-  assert AnswerStatus(answer, "fresh")
+  answer.answerForQuestion = question
+  answer.answerPromptText = question_text
+  answer.answerContextText = context_text
+  answer.answerText = summary
+  answer.answerStatus = "fresh"
   retract AnswerNeedsReview(answer)
   retract AnswerRefreshNeeded(answer)
 

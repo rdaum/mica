@@ -120,31 +120,31 @@ assert Delegates(#attic, #room, 0)
 
 assert Portable(#coin)
 
-assert Name(#alice, "Alice")
-assert Name(#bob, "Bob")
-assert Name(#coin, "coin")
-assert Name(#box, "box")
-assert Name(#red_button, "button")
-assert Name(#first_room, "First Room")
-assert Name(#north_room, "North Room")
-assert Name(#attic, "Dusty Attic")
+#alice.name = "Alice"
+#bob.name = "Bob"
+#coin.name = "coin"
+#box.name = "box"
+#red_button.name = "button"
+#first_room.name = "First Room"
+#north_room.name = "North Room"
+#attic.name = "Dusty Attic"
 assert ProperNoun(#alice)
 assert ProperNoun(#bob)
 
-assert Description(#alice, "Alice is alert and ready to test the room's stranger affordances.")
-assert Description(#coin, "A tarnished brass coin catches the light.")
-assert Description(#bob, "Bob is here, looking faintly puzzled.")
-assert Description(#box, "A small wooden box rests here, open and empty.")
-assert Description(#red_button, "A red button protrudes from the wall under a brass sign reading DO NOT PRESS.")
-assert Description(#first_room, "First Room. You are standing in a plain stone room.")
-assert Description(#north_room, "North Room. It is quieter here, and the ceiling slopes upward.")
-assert Description(#attic, "Dusty Attic. Old beams vanish into shadow.")
+#alice.description = "Alice is alert and ready to test the room's stranger affordances."
+#coin.description = "A tarnished brass coin catches the light."
+#bob.description = "Bob is here, looking faintly puzzled."
+#box.description = "A small wooden box rests here, open and empty."
+#red_button.description = "A red button protrudes from the wall under a brass sign reading DO NOT PRESS."
+#first_room.description = "First Room. You are standing in a plain stone room."
+#north_room.description = "North Room. It is quieter here, and the ceiling slopes upward."
+#attic.description = "Dusty Attic. Old beams vanish into shadow."
 
-assert LocatedIn(#alice, #first_room)
-assert LocatedIn(#bob, #first_room)
-assert LocatedIn(#coin, #first_room)
-assert LocatedIn(#box, #first_room)
-assert LocatedIn(#red_button, #first_room)
+#alice.locatedIn = #first_room
+#bob.locatedIn = #first_room
+#coin.locatedIn = #first_room
+#box.locatedIn = #first_room
+#red_button.locatedIn = #first_room
 
 assert BidirectionalExit(#first_room, :north, :south, #north_room)
 assert BidirectionalExit(#north_room, :up, :down, #attic)
@@ -458,8 +458,8 @@ verb event/record_text(listener @ #player, text @ #string)
   let event = #event/log_entry<[listener, seq]>
 
   assert event/Delivery(listener, event)
-  assert event/Seq(event, seq)
-  assert event/Text(event, text)
+  event.event/seq = seq
+  event.event/text = text
 
   return event
 end
@@ -470,9 +470,9 @@ verb event/record_source(listener @ #player, source @ #event<_>)
   let text = event/render(source, listener)
 
   assert event/Delivery(listener, event)
-  assert event/Seq(event, seq)
-  assert event/Text(event, text)
-  assert event/Source(event, source)
+  event.event/seq = seq
+  event.event/text = text
+  event.event/source = source
 
   return event
 end
@@ -582,8 +582,7 @@ verb go(actor @ #player, direction, leave, arrive)
 
   let bindings = {:actor -> actor}
   :emit_room_event(room: room, event: event/narrative(#event/movement, leave, bindings))
-  retract LocatedIn(actor, _)
-  assert LocatedIn(actor, destination)
+  actor.locatedIn = destination
   :emit_room_event_except(room: destination, skipped: actor, event: event/narrative(#event/arrival, arrive, bindings))
   event/notify(actor, one Description(destination, ?text))
   return true
@@ -597,8 +596,7 @@ verb get(actor @ #player, item @ #thing)
 
   if Portable(item) && CanSee(actor, item)
     let room = one LocatedIn(actor, ?room)
-    retract LocatedIn(item, _)
-    assert LocatedIn(item, actor)
+    item.locatedIn = actor
     :emit_room_event(room: room, event: event/narrative(#event/take, "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
@@ -620,8 +618,7 @@ verb get_from(actor @ #player, item @ #thing, container @ #container)
 
   if LocatedIn(item, container) && Portable(item)
     let room = one LocatedIn(actor, ?room)
-    retract LocatedIn(item, _)
-    assert LocatedIn(item, actor)
+    item.locatedIn = actor
     :emit_room_event(room: room, event: event/narrative(#event/take_from, "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
@@ -634,8 +631,7 @@ verb drop(actor @ #player, item @ #thing)
   let room = one LocatedIn(actor, ?room)
 
   if Carrying(actor, item)
-    retract LocatedIn(item, _)
-    assert LocatedIn(item, room)
+    item.locatedIn = room
     :emit_room_event(room: room, event: event/narrative(#event/drop, "{Actor} {drop|drops} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
@@ -647,8 +643,7 @@ end
 verb put(actor @ #player, item @ #thing, container @ #container)
   if Carrying(actor, item) && CanSee(actor, container)
     let room = one LocatedIn(actor, ?room)
-    retract LocatedIn(item, _)
-    assert LocatedIn(item, container)
+    item.locatedIn = container
     :emit_room_event(room: room, event: event/narrative(#event/put, "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end

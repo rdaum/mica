@@ -1215,6 +1215,13 @@ fn query_outputs(args: &[HirArg]) -> Vec<QueryBinding> {
 }
 
 fn relation_name_for_dot(name: &str) -> String {
+    let Some((namespace, leaf)) = name.rsplit_once('/') else {
+        return uppercase_initial(name);
+    };
+    format!("{}/{}", namespace, uppercase_initial(leaf))
+}
+
+fn uppercase_initial(name: &str) -> String {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return String::new();
@@ -5210,6 +5217,34 @@ mod tests {
             CompileError::Unsupported { message, .. }
                 if message == "dot name `name` requires `Name` to be functional on position 0"
         ));
+    }
+
+    #[test]
+    fn namespaced_dot_relations_map_to_namespaced_relation_metadata() {
+        let actor = id(1);
+        let endpoint = id(10);
+        let alice = id(11);
+        let context = CompileContext::new()
+            .with_relation_metadata(
+                RelationMetadata::new(actor, Symbol::intern("session/Actor"), 2)
+                    .with_conflict_policy(ConflictPolicy::Functional {
+                        key_positions: vec![0],
+                    }),
+            )
+            .with_identity("endpoint", endpoint)
+            .with_identity("alice", alice);
+
+        let program = compile_source("#endpoint.session/actor = #alice", &context).unwrap();
+        assert!(
+            program
+                .program
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(
+                    instruction,
+                    Instruction::ReplaceFunctional { relation, .. } if *relation == actor
+                ))
+        );
     }
 
     #[test]

@@ -40,8 +40,7 @@ verb ui/handle_sync_action(source @ #ui/load_older_events_action<_>, endpoint, s
     current_limit = 40
   end
   let new_limit = current_limit + 40
-  retract session/NarrativeLimit(endpoint, _)
-  assert session/NarrativeLimit(endpoint, new_limit)
+  endpoint.session/narrativeLimit = new_limit
   ui/bump_revision(endpoint())
   return true
 end
@@ -56,8 +55,7 @@ verb ui/handle_sync_action(source @ #ui/login_action<_>, endpoint, session, view
     return false
   end
 
-  retract session/Actor(endpoint(), _)
-  assert session/Actor(endpoint(), selected)
+  endpoint().session/actor = selected
   assume_actor(selected)
   return true
 end
@@ -77,10 +75,8 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
     return false
   end
 
-  retract session/Inspect(endpoint(), _)
-  retract session/Inspect(endpoint, _)
-  assert session/Inspect(endpoint(), selected)
-  assert session/Inspect(endpoint, selected)
+  endpoint().session/inspect = selected
+  endpoint.session/inspect = selected
   event/record_text(current, string_concat("> examine ", ui/actor_name(selected)))
   return true
 end
@@ -106,10 +102,8 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
 
   let selected = ui/sync_selected_entity(current, line, fields)
   if selected != nothing
-    retract session/Inspect(endpoint(), _)
-    retract session/Inspect(endpoint, _)
-    assert session/Inspect(endpoint(), selected)
-    assert session/Inspect(endpoint, selected)
+    endpoint().session/inspect = selected
+    endpoint.session/inspect = selected
   end
   event/record_text(current, string_concat("> ", line))
   return :command(actor: current, endpoint: endpoint, line: line)
