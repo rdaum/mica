@@ -1049,28 +1049,19 @@ fn route_driver_event(
             }
             true
         }
-        DriverEvent::TaskCompleted { task_id, value } => {
-            complete_pending_sync_task(sessions, task_id, spawned_child_task_id(&value))
+        DriverEvent::TaskCompleted { task_id, .. } => {
+            complete_pending_sync_task(sessions, task_id)
         }
         DriverEvent::TaskAborted { task_id, .. } | DriverEvent::TaskFailed { task_id, .. } => {
-            complete_pending_sync_task(sessions, task_id, None)
+            complete_pending_sync_task(sessions, task_id)
         }
         DriverEvent::TaskSuspended { .. } => false,
     }
 }
 
-fn spawned_child_task_id(value: &Value) -> Option<TaskId> {
-    let task_id = value.as_int()?;
-    if task_id <= 0 {
-        return None;
-    }
-    Some(task_id as TaskId)
-}
-
 fn complete_pending_sync_task(
     sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
     task_id: TaskId,
-    child_task_id: Option<TaskId>,
 ) -> bool {
     let sessions = sessions
         .lock()
@@ -1081,9 +1072,6 @@ fn complete_pending_sync_task(
     for session in sessions {
         let mut sync = session.sync.lock().unwrap();
         if sync.pending_tasks.remove(&task_id) {
-            if let Some(child_task_id) = child_task_id {
-                sync.pending_tasks.insert(child_task_id);
-            }
             return true;
         }
     }
@@ -1238,6 +1226,25 @@ mod tests {
         stop_tx.send(()).unwrap();
         server.join().unwrap();
         result.unwrap();
+    }
+
+    #[test]
+    fn sse_pending_dom_event_finishes_when_spawn_parent_completes() {
+        let endpoint = Identity::new(0x00ee_0000_0000_0100).unwrap();
+        let session = SyncSession::new(7, endpoint, None);
+        session.sync.lock().unwrap().pending_tasks.insert(11);
+        let sessions = Arc::new(Mutex::new(HashMap::from([(7u64, session.clone())])));
+
+        let routed = route_driver_event(
+            &sessions,
+            DriverEvent::TaskCompleted {
+                task_id: 11,
+                value: Value::int(22).unwrap(),
+            },
+        );
+
+        assert!(routed);
+        assert!(session.sync.lock().unwrap().pending_tasks.is_empty());
     }
 
     fn run_mud_sse_client(addr: SocketAddr) -> Result<(), String> {

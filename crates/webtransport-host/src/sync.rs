@@ -673,28 +673,19 @@ pub(crate) fn route_driver_event(
             }
             false
         }
-        DriverEvent::TaskCompleted { task_id, value } => {
-            complete_pending_sync_task(sessions, task_id, spawned_child_task_id(&value))
+        DriverEvent::TaskCompleted { task_id, .. } => {
+            complete_pending_sync_task(sessions, task_id)
         }
         DriverEvent::TaskAborted { task_id, .. } | DriverEvent::TaskFailed { task_id, .. } => {
-            complete_pending_sync_task(sessions, task_id, None)
+            complete_pending_sync_task(sessions, task_id)
         }
         DriverEvent::TaskSuspended { .. } => false,
     }
 }
 
-fn spawned_child_task_id(value: &Value) -> Option<TaskId> {
-    let task_id = value.as_int()?;
-    if task_id <= 0 {
-        return None;
-    }
-    Some(task_id as TaskId)
-}
-
 fn complete_pending_sync_task(
     sessions: &Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
     task_id: TaskId,
-    child_task_id: Option<TaskId>,
 ) -> bool {
     let sessions = sessions
         .lock()
@@ -705,9 +696,6 @@ fn complete_pending_sync_task(
     for state in sessions {
         let mut sync = state.sync.lock().unwrap();
         if sync.pending_tasks.remove(&task_id) {
-            if let Some(child_task_id) = child_task_id {
-                sync.pending_tasks.insert(child_task_id);
-            }
             return true;
         }
     }
