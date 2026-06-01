@@ -1472,7 +1472,7 @@ export function bootstrapServerRenderedSync(mount, status) {
       return;
     }
     pollTimer = setInterval(() => {
-      if (connected) {
+      if (connected && inFlightDomEvent === null && pendingDomEvents.length === 0) {
         client.haveView(viewState("poll")).catch((error) => setStatus(String(error)));
       }
     }, state.pollMs);
