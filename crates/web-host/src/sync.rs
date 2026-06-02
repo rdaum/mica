@@ -424,10 +424,22 @@ pub(crate) async fn serve_event_stream(
                     return Err("Failed to resolve user identity".to_string());
                 }
             },
-            Ok(None) => return Err("Authentication required".to_string()),
+            Ok(None) => {
+                write_event_stream_error_response(
+                    &mut stream,
+                    HttpResponse::new(401, "Unauthorized", b"Authentication required".to_vec()),
+                )
+                .await?;
+                return Ok(());
+            }
             Err(error) => {
                 tracing::warn!(error = %error, "event stream authentication failed");
-                return Err("Invalid or expired session".to_string());
+                write_event_stream_error_response(
+                    &mut stream,
+                    HttpResponse::new(401, "Unauthorized", b"Invalid or expired session".to_vec()),
+                )
+                .await?;
+                return Ok(());
             }
         }
     } else {
@@ -442,6 +454,17 @@ pub(crate) async fn serve_event_stream(
     let result = write_event_stream_loop(&mut stream, session.output.clone()).await;
     submit_optional_sync_lifecycle(&host, &session, "sync_stream_closed").await?;
     result
+}
+
+async fn write_event_stream_error_response(
+    stream: &mut TcpStream,
+    response: HttpResponse,
+) -> Result<(), String> {
+    let mut bytes = Vec::new();
+    crate::codec::encode_response(&response, &mut bytes)
+        .map_err(|error| format!("failed to encode sync event stream error response: {error}"))?;
+    let (result, _) = stream.write_all(bytes).await.into();
+    result.map_err(|error| format!("failed to write sync event stream error response: {error}"))
 }
 
 fn session_id_from_stream_request(request: &HttpRequest) -> Result<u64, String> {
