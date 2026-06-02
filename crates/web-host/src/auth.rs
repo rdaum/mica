@@ -363,6 +363,147 @@ impl AuthSubsystem {
         )
     }
 
+    pub async fn handle_auth_login_local(
+        &self,
+        request: &crate::codec::HttpRequest,
+    ) -> Option<HttpResponse> {
+        if request.method != "POST" || strip_query(&request.path) != "/auth/login" {
+            return None;
+        }
+        if !self.config.local_password_auth_enabled {
+            return Some(HttpResponse::new(
+                404,
+                "Not Found",
+                b"Local password auth is not enabled".to_vec(),
+            ));
+        }
+
+        let form = match parse_urlencoded_form(&request.body) {
+            Ok(form) => form,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to parse local login form");
+                return Some(HttpResponse::new(
+                    400,
+                    "Bad Request",
+                    b"Invalid login form".to_vec(),
+                ));
+            }
+        };
+        let login = form.get("login").map(String::as_str).unwrap_or("").trim();
+        let password = form.get("password").map(String::as_str).unwrap_or("");
+        let return_path = validate_return_path(
+            form.get("return")
+                .cloned()
+                .unwrap_or_else(|| "/source".to_owned()),
+        )
+        .unwrap_or_else(|| "/source".to_owned());
+        if login.is_empty() || password.is_empty() {
+            return Some(HttpResponse::new(
+                400,
+                "Bad Request",
+                b"Login and password are required".to_vec(),
+            ));
+        }
+
+        let Some(local_user) = (match self
+            .session_store
+            .authenticate_local_user(login, password)
+            .await
+        {
+            Ok(user) => user,
+            Err(error) => {
+                tracing::error!(error = %error, "local password authentication failed");
+                return Some(HttpResponse::new(
+                    500,
+                    "Internal Server Error",
+                    b"Failed to authenticate local user".to_vec(),
+                ));
+            }
+        }) else {
+            return Some(HttpResponse::new(
+                401,
+                "Unauthorized",
+                b"Invalid login or password".to_vec(),
+            ));
+        };
+
+        let actor_id = match self
+            .session_store
+            .ensure_user_person(
+                &local_user.user_id,
+                "local",
+                &local_user.provider_sub,
+                &local_user.login,
+            )
+            .await
+        {
+            Ok(actor_id) => actor_id,
+            Err(error) => {
+                tracing::error!(error = %error, "failed to ensure local user person exists");
+                return Some(HttpResponse::new(
+                    500,
+                    "Internal Server Error",
+                    b"Failed to create user person".to_vec(),
+                ));
+            }
+        };
+
+        let session_id = random_session_id();
+        let now_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let record = SessionRecord {
+            session_id: session_id.clone(),
+            user_id: local_user.user_id.clone(),
+            actor: actor_id.clone(),
+            provider: "local".to_owned(),
+            provider_sub: local_user.provider_sub.clone(),
+            issued_at: now_ts,
+            expires_at: now_ts + self.config.session_ttl.as_secs() as i64,
+            revoked_at: None,
+            last_seen_at: now_ts,
+            roles_version: None,
+            user_agent_hash: None,
+        };
+        if let Err(error) = self.session_store.create_session(&record).await {
+            tracing::error!(error = %error, "failed to create local auth session");
+            return Some(HttpResponse::new(
+                500,
+                "Internal Server Error",
+                b"Failed to create session".to_vec(),
+            ));
+        }
+
+        let claims = mica_auth::SessionClaims {
+            sid: session_id,
+            sub: local_user.user_id,
+            actor: actor_id,
+            provider: "local".to_owned(),
+            provider_sub: local_user.provider_sub,
+            iat: now_rfc3339(),
+            nbf: now_rfc3339(),
+            exp: mica_auth::future_rfc3339(self.config.session_ttl),
+            roles_version: None,
+        };
+        let token = match encode_session_token(&self.config.keyring, &claims) {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::error!(error = %error, "failed to encode local auth session token");
+                return Some(HttpResponse::new(
+                    500,
+                    "Internal Server Error",
+                    b"Failed to create session token".to_vec(),
+                ));
+            }
+        };
+        Some(
+            HttpResponse::new(302, "Found", Vec::new())
+                .with_header("Location", return_path.into_bytes())
+                .with_header("Set-Cookie", build_session_cookie(&token).into_bytes()),
+        )
+    }
+
     pub async fn handle_auth_logout(
         &self,
         request: &crate::codec::HttpRequest,
@@ -457,4 +598,49 @@ fn url_encode_component(input: &str) -> String {
         }
     }
     result
+}
+
+fn parse_urlencoded_form(body: &[u8]) -> Result<HashMap<String, String>, String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut form = HashMap::new();
+    for pair in text.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        form.insert(url_decode_component(key)?, url_decode_component(value)?);
+    }
+    Ok(form)
+}
+
+fn url_decode_component(input: &str) -> Result<String, String> {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut iter = input.as_bytes().iter().copied();
+    while let Some(byte) = iter.next() {
+        match byte {
+            b'+' => bytes.push(b' '),
+            b'%' => {
+                let hi = iter
+                    .next()
+                    .ok_or_else(|| "incomplete percent escape".to_owned())?;
+                let lo = iter
+                    .next()
+                    .ok_or_else(|| "incomplete percent escape".to_owned())?;
+                let hi = hex_value(hi).ok_or_else(|| "invalid percent escape".to_owned())?;
+                let lo = hex_value(lo).ok_or_else(|| "invalid percent escape".to_owned())?;
+                bytes.push((hi << 4) | lo);
+            }
+            _ => bytes.push(byte),
+        }
+    }
+    String::from_utf8(bytes).map_err(|error| error.to_string())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }

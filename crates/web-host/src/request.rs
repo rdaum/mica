@@ -64,6 +64,9 @@ pub(crate) async fn handle_in_process_request(
         if let Some(response) = auth.handle_auth_callback(request).await {
             return response;
         }
+        if let Some(response) = auth.handle_auth_login_local(request).await {
+            return response;
+        }
         if let Some(response) = auth.handle_auth_logout(request).await {
             return response;
         }

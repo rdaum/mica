@@ -2,6 +2,8 @@ use mica_driver::CompioTaskDriver;
 use mica_var::{Symbol, Value};
 use std::sync::Arc;
 
+use crate::{hash_password, verify_password};
+
 fn mica_escape(s: &str) -> String {
     let mut escaped = String::with_capacity(s.len());
     for c in s.chars() {
@@ -67,6 +69,13 @@ pub struct SessionRecord {
 
 pub struct MicaSessionStore {
     driver: Arc<CompioTaskDriver>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalAuthenticatedUser {
+    pub user_id: String,
+    pub provider_sub: String,
+    pub login: String,
 }
 
 impl MicaSessionStore {
@@ -338,6 +347,123 @@ return "{escaped_person_symbol}"
             }
         }
     }
+
+    pub async fn create_local_user(
+        &self,
+        login: &str,
+        password: &str,
+        display_name: &str,
+    ) -> Result<LocalAuthenticatedUser, String> {
+        let provider_sub = normalize_local_login(login)?;
+        let user_id = self
+            .ensure_user_exists(login, "local", &provider_sub)
+            .await?;
+        let password_hash =
+            hash_password(password).map_err(|error| format!("failed to hash password: {error}"))?;
+        self.set_local_password_hash(&user_id, &password_hash)
+            .await?;
+        self.ensure_user_person(&user_id, "local", &provider_sub, display_name)
+            .await?;
+        Ok(LocalAuthenticatedUser {
+            user_id,
+            provider_sub,
+            login: login.to_owned(),
+        })
+    }
+
+    async fn set_local_password_hash(
+        &self,
+        user_id: &str,
+        password_hash: &str,
+    ) -> Result<(), String> {
+        let escaped_user_id = mica_escape(user_id);
+        let escaped_password_hash = mica_escape(password_hash);
+        let source = format!(
+            r#"
+let user = make_identity(to_symbol("{escaped_user_id}"))
+retract source/LocalPasswordHash(user, _)
+assert source/LocalPasswordHash(user, "{escaped_password_hash}")
+return true
+"#,
+            escaped_user_id = escaped_user_id,
+            escaped_password_hash = escaped_password_hash,
+        );
+        let report = self
+            .driver
+            .submit_root_source_report(source)
+            .await
+            .map_err(|e| format!("failed to set local password hash: {e}"))?;
+        match report.outcome {
+            mica_runtime::TaskOutcome::Complete { .. } => Ok(()),
+            mica_runtime::TaskOutcome::Aborted { error, .. } => {
+                Err(format!("set local password hash aborted: {error}"))
+            }
+            mica_runtime::TaskOutcome::Suspended { .. } => {
+                Err("set local password hash suspended unexpectedly".to_owned())
+            }
+        }
+    }
+
+    pub async fn authenticate_local_user(
+        &self,
+        login: &str,
+        password: &str,
+    ) -> Result<Option<LocalAuthenticatedUser>, String> {
+        let provider_sub = normalize_local_login(login)?;
+        let user_symbol = stable_user_symbol("local", &provider_sub);
+        let escaped_provider_sub = mica_escape(&provider_sub);
+        let escaped_user_symbol = mica_escape(&user_symbol);
+        let source = format!(
+            r#"
+let user = one source/UserExternalIdentity(:local, "{escaped_provider_sub}", ?user)
+user != nothing || return nothing
+let password_hash = one source/LocalPasswordHash(user, ?password_hash)
+password_hash != nothing || return nothing
+return {{:user_id -> "{escaped_user_symbol}", :password_hash -> password_hash}}
+"#,
+            escaped_provider_sub = escaped_provider_sub,
+            escaped_user_symbol = escaped_user_symbol,
+        );
+        let report = self
+            .driver
+            .submit_root_source_report(source)
+            .await
+            .map_err(|e| format!("failed to authenticate local user: {e}"))?;
+        let map = match report.outcome {
+            mica_runtime::TaskOutcome::Complete { value, .. } => {
+                if value == Value::nothing() {
+                    return Ok(None);
+                }
+                value
+            }
+            mica_runtime::TaskOutcome::Aborted { error, .. } => {
+                return Err(format!("authenticate local user aborted: {error}"));
+            }
+            mica_runtime::TaskOutcome::Suspended { .. } => {
+                return Err("authenticate local user suspended unexpectedly".to_owned());
+            }
+        };
+        let user_id = map_string(&map, "user_id")?;
+        let password_hash = map_string(&map, "password_hash")?;
+        let valid = verify_password(password, &password_hash)
+            .map_err(|error| format!("failed to verify password: {error}"))?;
+        if !valid {
+            return Ok(None);
+        }
+        Ok(Some(LocalAuthenticatedUser {
+            user_id,
+            provider_sub,
+            login: login.to_owned(),
+        }))
+    }
+}
+
+fn normalize_local_login(login: &str) -> Result<String, String> {
+    let normalized = login.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err("local login must not be empty".to_owned());
+    }
+    Ok(normalized)
 }
 
 fn map_string(value: &Value, key: &str) -> Result<String, String> {
@@ -400,6 +526,7 @@ make_functional_relation(:source/UserExternalIdentity, 3, [0, 1])
 make_relation(:source/UserProvider, 2)
 make_functional_relation(:source/UserLogin, 2, [0])
 make_relation(:source/UserRole, 2)
+make_functional_relation(:source/LocalPasswordHash, 2, [0])
 make_relation(:source/Person, 1)
 make_relation(:source/UserPerson, 2)
 make_functional_relation(:source/DefaultUserPerson, 2, [0])
@@ -559,6 +686,36 @@ return true
                 report.outcome,
                 mica_runtime::TaskOutcome::Complete { value, .. } if value == Value::from(true)
             ));
+        });
+    }
+
+    #[test]
+    fn local_password_authenticates_against_stored_hash() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut runner = SourceRunner::new_empty();
+            runner.run_filein(session_schema()).unwrap();
+            let store = MicaSessionStore::new(Arc::new(CompioTaskDriver::spawn(runner).unwrap()));
+
+            let created = store
+                .create_local_user("Alice", "correct horse", "Alice")
+                .await
+                .unwrap();
+            assert_eq!(created.user_id, "source/user_local_alice");
+            assert_eq!(created.provider_sub, "alice");
+
+            let rejected = store
+                .authenticate_local_user("alice", "wrong")
+                .await
+                .unwrap();
+            assert_eq!(rejected, None);
+
+            let authenticated = store
+                .authenticate_local_user("ALICE", "correct horse")
+                .await
+                .unwrap()
+                .expect("local password should authenticate");
+            assert_eq!(authenticated.user_id, "source/user_local_alice");
+            assert_eq!(authenticated.provider_sub, "alice");
         });
     }
 }

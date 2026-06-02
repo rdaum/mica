@@ -7,6 +7,7 @@ pub struct AuthConfig {
     pub keyring: PasetoKeyring,
     pub session_ttl: Duration,
     pub cookie_name: String,
+    pub local_password_auth_enabled: bool,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     pub github_redirect_uri: Option<String>,
@@ -44,6 +45,16 @@ fn parse_allowed_logins(value: Option<String>) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+fn parse_bool_env(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
 }
 
 #[derive(Debug)]
@@ -99,6 +110,7 @@ impl AuthConfig {
             keyring,
             session_ttl: Duration::from_secs(ttl_secs),
             cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
+            local_password_auth_enabled: parse_bool_env("CONATUS_LOCAL_PASSWORD_AUTH"),
             github_client_id: std::env::var("CONATUS_GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("CONATUS_GITHUB_CLIENT_SECRET").ok(),
             github_redirect_uri: std::env::var("CONATUS_GITHUB_REDIRECT_URI").ok(),
@@ -115,6 +127,7 @@ impl AuthConfig {
             keyring: PasetoKeyring::new(key),
             session_ttl: Duration::from_secs(86400),
             cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
+            local_password_auth_enabled: false,
             github_client_id: None,
             github_client_secret: None,
             github_redirect_uri: None,
@@ -128,6 +141,7 @@ impl AuthConfig {
             keyring: PasetoKeyring::new(key),
             session_ttl,
             cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
+            local_password_auth_enabled: false,
             github_client_id: None,
             github_client_secret: None,
             github_redirect_uri: None,

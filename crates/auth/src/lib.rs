@@ -2,6 +2,7 @@ pub mod config;
 pub mod cookie;
 pub mod oauth;
 pub mod paseto;
+pub mod password;
 pub mod session;
 
 pub use config::{AuthConfig, AuthConfigError};
@@ -18,4 +19,5 @@ pub use paseto::{
     PasetoError, PasetoKey, PasetoKeyring, SessionClaims, decode_session_token,
     encode_session_token, future_rfc3339, now_rfc3339, random_session_id,
 };
-pub use session::{MicaSessionStore, SessionRecord};
+pub use password::{PasswordError, hash_password, verify_password};
+pub use session::{LocalAuthenticatedUser, MicaSessionStore, SessionRecord};
