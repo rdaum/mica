@@ -28,6 +28,7 @@ use mica_webtransport_host::{
     InProcessWebTransportHost, SessionBinding, WebTransportTlsConfig,
     bind_server_endpoint as bind_webtransport, serve_in_process as serve_webtransport,
 };
+use serde_json::Value as JsonValue;
 use std::env;
 use std::fs;
 use std::future;
@@ -256,6 +257,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         if auth_enabled {
             let config = auth_config.unwrap();
             let session_store = MicaSessionStore::new(Arc::new(driver.clone()));
+            bootstrap_local_users(&session_store).await?;
             let auth_subsystem = mica_web_host::auth::AuthSubsystem::new(config, session_store);
             host = host.with_auth(auth_subsystem);
             tracing::info!("authentication subsystem enabled");
@@ -321,6 +323,95 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     }
     future::pending::<()>().await;
     Ok(())
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct LocalUserBootstrap {
+    login: String,
+    password: String,
+    display_name: String,
+}
+
+async fn bootstrap_local_users(session_store: &MicaSessionStore) -> Result<(), String> {
+    let raw = match env::var("CONATUS_LOCAL_USERS_JSON") {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => return Ok(()),
+    };
+
+    let users = parse_local_users_json(&raw)?;
+    for user in users {
+        session_store
+            .create_local_user(&user.login, &user.password, &user.display_name)
+            .await
+            .map_err(|error| format!("failed to bootstrap local user {}: {error}", user.login))?;
+        tracing::info!(login = %user.login, "bootstrapped local auth user");
+    }
+
+    Ok(())
+}
+
+fn parse_local_users_json(raw: &str) -> Result<Vec<LocalUserBootstrap>, String> {
+    let value: JsonValue = serde_json::from_str(raw)
+        .map_err(|error| format!("invalid CONATUS_LOCAL_USERS_JSON: {error}"))?;
+    let users = value
+        .as_array()
+        .ok_or_else(|| "CONATUS_LOCAL_USERS_JSON must be a JSON array".to_owned())?;
+
+    users
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_local_user_bootstrap(index, value))
+        .collect()
+}
+
+fn parse_local_user_bootstrap(
+    index: usize,
+    value: &JsonValue,
+) -> Result<LocalUserBootstrap, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("CONATUS_LOCAL_USERS_JSON entry {index} must be a JSON object"))?;
+    let login = required_json_string(object, index, "login")?;
+    let password = required_json_string(object, index, "password")?;
+    let display_name = object
+        .get("display_name")
+        .or_else(|| object.get("displayName"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or(&login)
+        .trim()
+        .to_owned();
+
+    if display_name.is_empty() {
+        return Err(format!(
+            "CONATUS_LOCAL_USERS_JSON entry {index} has an empty display_name"
+        ));
+    }
+
+    Ok(LocalUserBootstrap {
+        login,
+        password,
+        display_name,
+    })
+}
+
+fn required_json_string(
+    object: &serde_json::Map<String, JsonValue>,
+    index: usize,
+    field: &str,
+) -> Result<String, String> {
+    let value = object
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            format!("CONATUS_LOCAL_USERS_JSON entry {index} missing string field {field}")
+        })?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!(
+            "CONATUS_LOCAL_USERS_JSON entry {index} has an empty {field}"
+        ));
+    }
+    Ok(value.to_owned())
 }
 
 fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), String> {
@@ -591,4 +682,42 @@ fn format_source_error_with_source(
 
 fn format_driver_error(error: mica_driver::DriverError) -> String {
     format!("error: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_local_user_bootstrap_json() {
+        let users = parse_local_users_json(
+            r#"[
+                {"login":"alice","password":"secret","display_name":"Alice"},
+                {"login":"bob","password":"also-secret"}
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            users,
+            vec![
+                LocalUserBootstrap {
+                    login: "alice".to_owned(),
+                    password: "secret".to_owned(),
+                    display_name: "Alice".to_owned(),
+                },
+                LocalUserBootstrap {
+                    login: "bob".to_owned(),
+                    password: "also-secret".to_owned(),
+                    display_name: "bob".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_local_user_bootstrap_without_password() {
+        let error = parse_local_users_json(r#"[{"login":"alice"}]"#).unwrap_err();
+        assert!(error.contains("missing string field password"));
+    }
 }
