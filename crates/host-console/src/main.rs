@@ -20,7 +20,7 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CONSOLE_ENDPOINT_PREFIX: u64 = 0x00ef_0000_0000_0000;
 const OUTPUT_DRAIN_LIMIT: u32 = 64;
@@ -131,7 +131,17 @@ async fn handle_slash_command(console: &mut HostConsole, command: &str) -> Resul
         }
         "source" | "eval" => {
             let source = required_arg(name, rest)?;
-            console.submit_source(source.to_owned()).await?;
+            for value in console.submit_source(source.to_owned()).await? {
+                println!("{value}");
+            }
+            console.drain_output().await?;
+            Ok(true)
+        }
+        "source-wait" | "eval-wait" => {
+            let source = required_arg(name, rest)?;
+            for value in console.submit_source_wait(source.to_owned()).await? {
+                println!("{value}");
+            }
             console.drain_output().await?;
             Ok(true)
         }
@@ -310,6 +320,89 @@ impl HostConsole {
             .await?;
         self.expect_accepted_collecting_completions(request_id, messages)
             .await
+    }
+
+    async fn submit_source_wait(&mut self, source: String) -> Result<Vec<Value>, String> {
+        self.open_endpoint().await?;
+        let request_id = self.next_request_id();
+        let messages = self
+            .request(HostMessage::SubmitSource {
+                request_id,
+                endpoint: self.endpoint,
+                actor: self.actor,
+                source,
+            })
+            .await?;
+
+        let mut task_id = None;
+        let mut completed = Vec::new();
+        for message in messages {
+            match message {
+                HostMessage::RequestAccepted {
+                    request_id: actual,
+                    task_id: accepted_task_id,
+                } if actual == request_id => task_id = accepted_task_id,
+                HostMessage::RequestRejected {
+                    request_id: actual,
+                    code,
+                    message,
+                } if actual == request_id => {
+                    return Err(format!(
+                        "request rejected with {}: {message}",
+                        symbol_name(code)
+                    ));
+                }
+                HostMessage::TaskCompleted {
+                    task_id: actual,
+                    value,
+                } if task_id == Some(actual) => {
+                    completed.push(value);
+                    return Ok(completed);
+                }
+                HostMessage::TaskFailed {
+                    task_id: actual,
+                    error,
+                } if task_id == Some(actual) => {
+                    return Err(format!("task failed: {error}"));
+                }
+                other => self.route_message(other).await?,
+            }
+        }
+
+        let Some(task_id) = task_id else {
+            return Ok(completed);
+        };
+
+        loop {
+            compio::time::sleep(Duration::from_millis(100)).await;
+            let drain_request = self.next_request_id();
+            let messages = self
+                .request(HostMessage::DrainOutput {
+                    request_id: drain_request,
+                    endpoint: self.endpoint,
+                    limit: 1,
+                })
+                .await?;
+            for message in messages {
+                match message {
+                    HostMessage::TaskCompleted {
+                        task_id: actual,
+                        value,
+                    } if actual == task_id => {
+                        completed.push(value);
+                        return Ok(completed);
+                    }
+                    HostMessage::TaskFailed {
+                        task_id: actual,
+                        error,
+                    } if actual == task_id => return Err(format!("task failed: {error}")),
+                    HostMessage::RequestAccepted {
+                        request_id: actual, ..
+                    } if actual == drain_request => {}
+                    other => self.route_message(other).await?,
+                }
+            }
+        }
     }
 
     async fn drain_output(&mut self) -> Result<(), String> {
@@ -587,6 +680,8 @@ fn print_help() {
 /open              open the current host endpoint
 /close             close the current host endpoint
 /source SOURCE     submit raw Mica source as the selected actor
+/source-wait SOURCE
+                  submit raw Mica source and wait for task completion
 /drain             drain queued output for the current endpoint
 /quit              close the endpoint and exit
 
