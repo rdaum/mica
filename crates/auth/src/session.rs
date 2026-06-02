@@ -371,6 +371,39 @@ return "{escaped_person_symbol}"
         })
     }
 
+    pub async fn grant_user_role(&self, user_id: &str, role: &str) -> Result<(), String> {
+        let role_symbol = match role.trim().to_ascii_lowercase().as_str() {
+            "admin" => "source/role_admin",
+            "operator" => "source/role_operator",
+            "viewer" => "source/role_viewer",
+            other => return Err(format!("unsupported auth role {other:?}")),
+        };
+        let escaped_user_id = mica_escape(user_id);
+        let source = format!(
+            r#"
+let user = make_identity(to_symbol("{escaped_user_id}"))
+source/UserRole(user, :{role_symbol}) || assert source/UserRole(user, :{role_symbol})
+return true
+"#,
+            escaped_user_id = escaped_user_id,
+            role_symbol = role_symbol,
+        );
+        let report = self
+            .driver
+            .submit_root_source_report(source)
+            .await
+            .map_err(|e| format!("failed to grant user role: {e}"))?;
+        match report.outcome {
+            mica_runtime::TaskOutcome::Complete { .. } => Ok(()),
+            mica_runtime::TaskOutcome::Aborted { error, .. } => {
+                Err(format!("grant user role aborted: {error}"))
+            }
+            mica_runtime::TaskOutcome::Suspended { .. } => {
+                Err("grant user role suspended unexpectedly".to_owned())
+            }
+        }
+    }
+
     async fn set_local_password_hash(
         &self,
         user_id: &str,

@@ -330,6 +330,7 @@ struct LocalUserBootstrap {
     login: String,
     password: String,
     display_name: String,
+    roles: Vec<String>,
 }
 
 async fn bootstrap_local_users(session_store: &MicaSessionStore) -> Result<(), String> {
@@ -340,10 +341,21 @@ async fn bootstrap_local_users(session_store: &MicaSessionStore) -> Result<(), S
 
     let users = parse_local_users_json(&raw)?;
     for user in users {
-        session_store
+        let local_user = session_store
             .create_local_user(&user.login, &user.password, &user.display_name)
             .await
             .map_err(|error| format!("failed to bootstrap local user {}: {error}", user.login))?;
+        for role in &user.roles {
+            session_store
+                .grant_user_role(&local_user.user_id, role)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "failed to grant role {role} to local user {}: {error}",
+                        user.login
+                    )
+                })?;
+        }
         tracing::info!(login = %user.login, "bootstrapped local auth user");
     }
 
@@ -380,6 +392,7 @@ fn parse_local_user_bootstrap(
         .unwrap_or(&login)
         .trim()
         .to_owned();
+    let roles = parse_local_user_roles(object, index)?;
 
     if display_name.is_empty() {
         return Err(format!(
@@ -391,7 +404,34 @@ fn parse_local_user_bootstrap(
         login,
         password,
         display_name,
+        roles,
     })
+}
+
+fn parse_local_user_roles(
+    object: &serde_json::Map<String, JsonValue>,
+    index: usize,
+) -> Result<Vec<String>, String> {
+    let Some(value) = object.get("roles") else {
+        return Ok(Vec::new());
+    };
+    let roles = value.as_array().ok_or_else(|| {
+        format!("CONATUS_LOCAL_USERS_JSON entry {index} field roles must be an array")
+    })?;
+    let mut parsed = Vec::new();
+    for role in roles {
+        let role = role.as_str().ok_or_else(|| {
+            format!("CONATUS_LOCAL_USERS_JSON entry {index} field roles must contain strings")
+        })?;
+        let role = role.trim().to_ascii_lowercase();
+        if !matches!(role.as_str(), "admin" | "operator" | "viewer") {
+            return Err(format!(
+                "CONATUS_LOCAL_USERS_JSON entry {index} has unsupported role {role:?}"
+            ));
+        }
+        parsed.push(role);
+    }
+    Ok(parsed)
 }
 
 fn required_json_string(
@@ -705,11 +745,13 @@ mod tests {
                     login: "alice".to_owned(),
                     password: "secret".to_owned(),
                     display_name: "Alice".to_owned(),
+                    roles: Vec::new(),
                 },
                 LocalUserBootstrap {
                     login: "bob".to_owned(),
                     password: "also-secret".to_owned(),
                     display_name: "bob".to_owned(),
+                    roles: Vec::new(),
                 },
             ]
         );
@@ -719,5 +761,23 @@ mod tests {
     fn rejects_local_user_bootstrap_without_password() {
         let error = parse_local_users_json(r#"[{"login":"alice"}]"#).unwrap_err();
         assert!(error.contains("missing string field password"));
+    }
+
+    #[test]
+    fn parses_local_user_bootstrap_roles() {
+        let users = parse_local_users_json(
+            r#"[{"login":"alice","password":"secret","roles":["viewer","operator"]}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(users[0].roles, vec!["viewer", "operator"]);
+    }
+
+    #[test]
+    fn rejects_unknown_local_user_bootstrap_role() {
+        let error =
+            parse_local_users_json(r#"[{"login":"alice","password":"secret","roles":["root"]}]"#)
+                .unwrap_err();
+        assert!(error.contains("unsupported role"));
     }
 }
