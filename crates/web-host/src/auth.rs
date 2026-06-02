@@ -286,11 +286,31 @@ impl AuthSubsystem {
                 ));
             }
         };
+        let display_name = user_info
+            .name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(&user_info.login);
+        let actor_id = match self
+            .session_store
+            .ensure_user_person(&user_id, "github", &user_info.id.to_string(), display_name)
+            .await
+        {
+            Ok(actor_id) => actor_id,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to ensure user person exists");
+                return Some(HttpResponse::new(
+                    500,
+                    "Internal Server Error",
+                    b"Failed to create user person".to_vec(),
+                ));
+            }
+        };
 
         let record = SessionRecord {
             session_id: session_id.clone(),
             user_id: user_id.clone(),
-            actor: user_id.clone(),
+            actor: actor_id.clone(),
             provider: "github".to_owned(),
             provider_sub: user_info.id.to_string(),
             issued_at: now_ts,
@@ -313,7 +333,7 @@ impl AuthSubsystem {
         let claims = mica_auth::SessionClaims {
             sid: session_id,
             sub: user_id.clone(),
-            actor: user_id,
+            actor: actor_id,
             provider: "github".to_owned(),
             provider_sub: user_info.id.to_string(),
             iat: now_rfc3339(),

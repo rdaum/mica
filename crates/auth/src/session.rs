@@ -18,6 +18,14 @@ fn mica_escape(s: &str) -> String {
 }
 
 fn stable_user_symbol(provider: &str, provider_sub: &str) -> String {
+    stable_subject_symbol("source/user", provider, provider_sub)
+}
+
+fn stable_person_symbol(provider: &str, provider_sub: &str) -> String {
+    stable_subject_symbol("source/person", provider, provider_sub)
+}
+
+fn stable_subject_symbol(prefix: &str, provider: &str, provider_sub: &str) -> String {
     fn push_sanitized(out: &mut String, value: &str) {
         let mut last_was_separator = false;
         for c in value.chars() {
@@ -34,7 +42,7 @@ fn stable_user_symbol(provider: &str, provider_sub: &str) -> String {
         }
     }
 
-    let mut symbol = "source/user".to_owned();
+    let mut symbol = prefix.to_owned();
     symbol.push('_');
     push_sanitized(&mut symbol, provider);
     symbol.push('_');
@@ -278,6 +286,58 @@ return "{escaped_user_symbol}"
             }
         }
     }
+
+    pub async fn ensure_user_person(
+        &self,
+        user_id: &str,
+        provider: &str,
+        provider_sub: &str,
+        display_name: &str,
+    ) -> Result<String, String> {
+        let escaped_user_id = mica_escape(user_id);
+        let escaped_display_name = mica_escape(display_name);
+        let person_symbol = stable_person_symbol(provider, provider_sub);
+        let escaped_person_symbol = mica_escape(&person_symbol);
+        let source = format!(
+            r#"
+let user = make_identity(to_symbol("{escaped_user_id}"))
+let person_symbol = to_symbol("{escaped_person_symbol}")
+let person = make_identity(person_symbol)
+assert source/Person(person)
+source/UserPerson(user, person) || assert source/UserPerson(user, person)
+let current_default = one source/DefaultUserPerson(user, ?person)
+current_default != nothing || assert source/DefaultUserPerson(user, person)
+retract source/DisplayName(person, _)
+assert source/DisplayName(person, "{escaped_display_name}")
+retract source/Description(person, _)
+assert source/Description(person, "{escaped_display_name}, present through authenticated login.")
+let room = one source/DefaultRoom(?room)
+if room != nothing && person.source/locatedIn == nothing
+  assert source/LocatedIn(person, room)
+end
+return "{escaped_person_symbol}"
+"#,
+            escaped_user_id = escaped_user_id,
+            escaped_person_symbol = escaped_person_symbol,
+            escaped_display_name = escaped_display_name,
+        );
+        let report = self
+            .driver
+            .submit_root_source_report(source)
+            .await
+            .map_err(|e| format!("failed to ensure user person exists: {e}"))?;
+        match report.outcome {
+            mica_runtime::TaskOutcome::Complete { value, .. } => value
+                .with_str(str::to_owned)
+                .ok_or_else(|| "ensure user person returned non-string identity name".to_owned()),
+            mica_runtime::TaskOutcome::Aborted { error, .. } => {
+                Err(format!("ensure user person aborted: {error}"))
+            }
+            mica_runtime::TaskOutcome::Suspended { .. } => {
+                Err("ensure user person suspended unexpectedly".to_owned())
+            }
+        }
+    }
 }
 
 fn map_string(value: &Value, key: &str) -> Result<String, String> {
@@ -340,6 +400,15 @@ make_functional_relation(:source/UserExternalIdentity, 3, [0, 1])
 make_relation(:source/UserProvider, 2)
 make_functional_relation(:source/UserLogin, 2, [0])
 make_relation(:source/UserRole, 2)
+make_relation(:source/Person, 1)
+make_relation(:source/UserPerson, 2)
+make_functional_relation(:source/DefaultUserPerson, 2, [0])
+make_functional_relation(:source/DisplayName, 2, [0])
+make_functional_relation(:source/Description, 2, [0])
+make_functional_relation(:source/LocatedIn, 2, [0])
+make_relation(:source/DefaultRoom, 1)
+make_identity(:source/room)
+assert source/DefaultRoom(#source/room)
 "#
     }
 
@@ -440,6 +509,46 @@ return true
 source/UserExternalIdentity(:github, "1001", #source/user_github_1001) || return false
 source/UserLogin(#source/user_github_1001, "new-login") || return false
 source/UserLogin(#source/user_github_1001, "old-login") && return false
+return true
+"#
+                    .to_owned(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                report.outcome,
+                mica_runtime::TaskOutcome::Complete { value, .. } if value == Value::from(true)
+            ));
+        });
+    }
+
+    #[test]
+    fn ensure_user_person_attaches_default_person() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut runner = SourceRunner::new_empty();
+            runner.run_filein(session_schema()).unwrap();
+            let store = MicaSessionStore::new(Arc::new(CompioTaskDriver::spawn(runner).unwrap()));
+
+            let user_id = store
+                .ensure_user_exists("alice-login", "github", "1001")
+                .await
+                .unwrap();
+            let person_id = store
+                .ensure_user_person(&user_id, "github", "1001", "Alice Liddell")
+                .await
+                .unwrap();
+
+            assert_eq!(person_id, "source/person_github_1001");
+            let report = store
+                .driver
+                .submit_root_source_report(
+                    r#"
+source/Person(#source/person_github_1001) || return false
+source/UserPerson(#source/user_github_1001, #source/person_github_1001) || return false
+source/DefaultUserPerson(#source/user_github_1001, #source/person_github_1001) || return false
+source/DisplayName(#source/person_github_1001, "Alice Liddell") || return false
+source/Description(#source/person_github_1001, "Alice Liddell, present through authenticated login.") || return false
+source/LocatedIn(#source/person_github_1001, #source/room) || return false
 return true
 "#
                     .to_owned(),
