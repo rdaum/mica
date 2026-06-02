@@ -1,14 +1,26 @@
 use mica_compiler::HostRequestFunction;
 use mica_var::{Symbol, Value};
 
+fn openai_timeout() -> Option<Value> {
+    let timeout = std::env::var("MICA_OPENAI_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(60);
+    if timeout <= 0 {
+        return None;
+    }
+    Some(Value::int(timeout).expect("timeout should fit in mica int"))
+}
+
 pub fn host_request_functions() -> Vec<(String, HostRequestFunction)> {
+    let timeout = openai_timeout();
     vec![
         (
             "openai_chat_completion".to_owned(),
             HostRequestFunction {
                 service: Symbol::intern("openai"),
                 payload_fields: vec![Symbol::intern("model"), Symbol::intern("messages")],
-                timeout: Some(Value::int(60).expect("static timeout should fit in mica int")),
+                timeout: timeout.clone(),
             },
         ),
         (
@@ -20,7 +32,7 @@ pub fn host_request_functions() -> Vec<(String, HostRequestFunction)> {
                     Symbol::intern("messages"),
                     Symbol::intern("options"),
                 ],
-                timeout: Some(Value::int(60).expect("static timeout should fit in mica int")),
+                timeout,
             },
         ),
     ]

@@ -121,6 +121,8 @@ struct HttpRequestSpec {
 struct OpenaiRequestSpec {
     request: HttpRequestSpec,
     response_mode: OpenaiResponseMode,
+    model: String,
+    message_count: Option<usize>,
 }
 
 enum OpenaiResponseMode {
@@ -151,6 +153,9 @@ impl HttpRequestSpec {
 
 impl OpenaiRequestSpec {
     fn from_payload(payload: &Value) -> Result<Self, String> {
+        let model = map_string(payload, "model")?;
+        let message_count = map_get(payload, "messages")
+            .and_then(|messages| messages.with_list(|items| items.len()));
         let base_url = optional_map_string(payload, "base_url")?
             .or_else(|| std::env::var("MICA_OPENAI_BASE_URL").ok())
             .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
@@ -197,6 +202,8 @@ impl OpenaiRequestSpec {
                 body,
             },
             response_mode,
+            model,
+            message_count,
         })
     }
 }
@@ -262,10 +269,42 @@ async fn perform_http_request(spec: HttpRequestSpec) -> Result<Value, String> {
 }
 
 async fn perform_openai_request(spec: OpenaiRequestSpec) -> Result<Value, String> {
+    let url = spec.request.url.clone();
+    let body_bytes = spec.request.body.len();
+    let model = spec.model.clone();
+    let message_count = spec.message_count.unwrap_or(0);
+    tracing::info!(
+        model = %model,
+        url = %url,
+        body_bytes,
+        message_count,
+        response_mode = match spec.response_mode {
+            OpenaiResponseMode::Http => "http",
+            OpenaiResponseMode::Json => "json",
+        },
+        "OpenAI request prepared"
+    );
+    let start = Instant::now();
     match spec.response_mode {
-        OpenaiResponseMode::Http => perform_http_request(spec.request).await,
+        OpenaiResponseMode::Http => {
+            let result = perform_http_request(spec.request).await;
+            tracing::info!(
+                model = %model,
+                elapsed_ms = start.elapsed().as_millis(),
+                ok = result.is_ok(),
+                "OpenAI HTTP-mode request finished"
+            );
+            result
+        }
         OpenaiResponseMode::Json => {
             let response = perform_http_bytes(spec.request).await?;
+            tracing::info!(
+                model = %model,
+                status = response.status,
+                response_bytes = response.body.len(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "OpenAI response received"
+            );
             if !(200..300).contains(&response.status) {
                 let message = String::from_utf8_lossy(&response.body);
                 return Err(format!(
