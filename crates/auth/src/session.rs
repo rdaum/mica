@@ -17,6 +17,31 @@ fn mica_escape(s: &str) -> String {
     escaped
 }
 
+fn stable_user_symbol(provider: &str, provider_sub: &str) -> String {
+    fn push_sanitized(out: &mut String, value: &str) {
+        let mut last_was_separator = false;
+        for c in value.chars() {
+            if c.is_ascii_alphanumeric() {
+                out.push(c.to_ascii_lowercase());
+                last_was_separator = false;
+            } else if !last_was_separator {
+                out.push('_');
+                last_was_separator = true;
+            }
+        }
+        while out.ends_with('_') {
+            out.pop();
+        }
+    }
+
+    let mut symbol = "source/user".to_owned();
+    symbol.push('_');
+    push_sanitized(&mut symbol, provider);
+    symbol.push('_');
+    push_sanitized(&mut symbol, provider_sub);
+    symbol
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionRecord {
     pub session_id: String,
@@ -209,23 +234,32 @@ return true
         &self,
         login: &str,
         provider: &str,
-        _provider_sub: &str,
-    ) -> Result<(), String> {
+        provider_sub: &str,
+    ) -> Result<String, String> {
         let escaped_login = mica_escape(login);
         let escaped_provider = mica_escape(provider);
+        let escaped_provider_sub = mica_escape(provider_sub);
+        let user_symbol = stable_user_symbol(provider, provider_sub);
+        let escaped_user_symbol = mica_escape(&user_symbol);
         let source = format!(
             r#"
-let identity = make_identity(to_symbol("{escaped_login}"))
+let provider = to_symbol("{escaped_provider}")
+let provider_sub = "{escaped_provider_sub}"
+let user_symbol = to_symbol("{escaped_user_symbol}")
+let identity = make_identity(user_symbol)
+source/UserExternalIdentity(provider, provider_sub, identity) || assert source/UserExternalIdentity(provider, provider_sub, identity)
 assert source/User(identity)
 retract source/UserProvider(identity, _)
-assert source/UserProvider(identity, to_symbol("{escaped_provider}"))
+assert source/UserProvider(identity, provider)
 retract source/UserLogin(identity, _)
 assert source/UserLogin(identity, "{escaped_login}")
 source/UserRole(identity, :source/role_viewer) || assert source/UserRole(identity, :source/role_viewer)
-return true
+return "{escaped_user_symbol}"
 "#,
             escaped_login = escaped_login,
             escaped_provider = escaped_provider,
+            escaped_provider_sub = escaped_provider_sub,
+            escaped_user_symbol = escaped_user_symbol,
         );
         let report = self
             .driver
@@ -233,7 +267,9 @@ return true
             .await
             .map_err(|e| format!("failed to ensure user exists: {e}"))?;
         match report.outcome {
-            mica_runtime::TaskOutcome::Complete { .. } => Ok(()),
+            mica_runtime::TaskOutcome::Complete { value, .. } => value
+                .with_str(str::to_owned)
+                .ok_or_else(|| "ensure user returned non-string identity name".to_owned()),
             mica_runtime::TaskOutcome::Aborted { error, .. } => {
                 Err(format!("ensure user aborted: {error}"))
             }
@@ -299,6 +335,11 @@ make_functional_relation(:source/SessionIssuedAt, 2, [0])
 make_functional_relation(:source/SessionExpiresAt, 2, [0])
 make_functional_relation(:source/SessionRevokedAt, 2, [0])
 make_functional_relation(:source/SessionLastSeenAt, 2, [0])
+make_relation(:source/User, 1)
+make_functional_relation(:source/UserExternalIdentity, 3, [0, 1])
+make_relation(:source/UserProvider, 2)
+make_functional_relation(:source/UserLogin, 2, [0])
+make_relation(:source/UserRole, 2)
 "#
     }
 
@@ -337,6 +378,78 @@ make_functional_relation(:source/SessionLastSeenAt, 2, [0])
             assert_eq!(loaded.expires_at, 20);
             assert_eq!(loaded.revoked_at, None);
             assert_eq!(loaded.last_seen_at, 10);
+        });
+    }
+
+    #[test]
+    fn ensure_user_uses_provider_subject_as_stable_identity() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut runner = SourceRunner::new_empty();
+            runner.run_filein(session_schema()).unwrap();
+            let store = MicaSessionStore::new(Arc::new(CompioTaskDriver::spawn(runner).unwrap()));
+
+            let user_id = store
+                .ensure_user_exists("alice-login", "github", "1001")
+                .await
+                .unwrap();
+
+            assert_eq!(user_id, "source/user_github_1001");
+            let report = store
+                .driver
+                .submit_root_source_report(
+                    r#"
+source/User(#source/user_github_1001) || return false
+source/UserExternalIdentity(:github, "1001", #source/user_github_1001) || return false
+source/UserProvider(#source/user_github_1001, :github) || return false
+source/UserLogin(#source/user_github_1001, "alice-login") || return false
+source/UserRole(#source/user_github_1001, :source/role_viewer) || return false
+return true
+"#
+                    .to_owned(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                report.outcome,
+                mica_runtime::TaskOutcome::Complete { value, .. } if value == Value::from(true)
+            ));
+        });
+    }
+
+    #[test]
+    fn ensure_user_preserves_identity_when_login_changes() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut runner = SourceRunner::new_empty();
+            runner.run_filein(session_schema()).unwrap();
+            let store = MicaSessionStore::new(Arc::new(CompioTaskDriver::spawn(runner).unwrap()));
+
+            let first = store
+                .ensure_user_exists("old-login", "github", "1001")
+                .await
+                .unwrap();
+            let second = store
+                .ensure_user_exists("new-login", "github", "1001")
+                .await
+                .unwrap();
+
+            assert_eq!(first, second);
+            let report = store
+                .driver
+                .submit_root_source_report(
+                    r#"
+source/UserExternalIdentity(:github, "1001", #source/user_github_1001) || return false
+source/UserLogin(#source/user_github_1001, "new-login") || return false
+source/UserLogin(#source/user_github_1001, "old-login") && return false
+return true
+"#
+                    .to_owned(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                report.outcome,
+                mica_runtime::TaskOutcome::Complete { value, .. } if value == Value::from(true)
+            ));
         });
     }
 }

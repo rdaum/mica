@@ -271,23 +271,26 @@ impl AuthSubsystem {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        if let Err(e) = self
+        let user_id = match self
             .session_store
             .ensure_user_exists(&user_info.login, "github", &user_info.id.to_string())
             .await
         {
-            tracing::error!(error = %e, "failed to ensure user exists");
-            return Some(HttpResponse::new(
-                500,
-                "Internal Server Error",
-                b"Failed to create user identity".to_vec(),
-            ));
-        }
+            Ok(user_id) => user_id,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to ensure user exists");
+                return Some(HttpResponse::new(
+                    500,
+                    "Internal Server Error",
+                    b"Failed to create user identity".to_vec(),
+                ));
+            }
+        };
 
         let record = SessionRecord {
             session_id: session_id.clone(),
-            user_id: user_info.login.clone(),
-            actor: user_info.login.clone(),
+            user_id: user_id.clone(),
+            actor: user_id.clone(),
             provider: "github".to_owned(),
             provider_sub: user_info.id.to_string(),
             issued_at: now_ts,
@@ -309,8 +312,8 @@ impl AuthSubsystem {
 
         let claims = mica_auth::SessionClaims {
             sid: session_id,
-            sub: user_info.login.clone(),
-            actor: user_info.login,
+            sub: user_id.clone(),
+            actor: user_id,
             provider: "github".to_owned(),
             provider_sub: user_info.id.to_string(),
             iat: now_rfc3339(),
