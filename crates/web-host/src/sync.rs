@@ -436,9 +436,12 @@ pub(crate) async fn serve_event_stream(
 
     let session_id = session_id_from_stream_request(request)?;
     let session = ensure_session(&host, &binding, session_id, actor_override)?;
+    submit_optional_sync_lifecycle(&host, &session, "sync_stream_opened").await?;
     write_event_stream_headers(&mut stream).await?;
     write_event_chunk(&mut stream, b": connected\n\n").await?;
-    write_event_stream_loop(&mut stream, session.output.clone()).await
+    let result = write_event_stream_loop(&mut stream, session.output.clone()).await;
+    submit_optional_sync_lifecycle(&host, &session, "sync_stream_closed").await?;
+    result
 }
 
 fn session_id_from_stream_request(request: &HttpRequest) -> Result<u64, String> {
@@ -496,6 +499,42 @@ fn ensure_session(
     }
     sessions.insert(session_id, session.clone());
     Ok(session)
+}
+
+async fn submit_optional_sync_lifecycle(
+    host: &InProcessWebHost,
+    session: &Arc<SyncSession>,
+    selector: &str,
+) -> Result<(), String> {
+    let submitted = match host
+        .driver
+        .submit_invocation_for_endpoint(
+            session.endpoint,
+            Symbol::intern(selector),
+            vec![(
+                Symbol::intern("session"),
+                sync_u64_value(session.session_id),
+            )],
+        )
+        .await
+    {
+        Ok(submitted) => submitted,
+        Err(error) => {
+            tracing::debug!(
+                selector = %selector,
+                error = %format_driver_error(error),
+                "optional sync lifecycle hook failed to submit"
+            );
+            return Ok(());
+        }
+    };
+    match submitted.outcome {
+        TaskOutcome::Complete { .. } | TaskOutcome::Suspended { .. } => Ok(()),
+        TaskOutcome::Aborted { error, .. } => {
+            tracing::debug!(selector = %selector, error = %error, "optional sync lifecycle hook aborted");
+            Ok(())
+        }
+    }
 }
 
 async fn route_dom_event(
