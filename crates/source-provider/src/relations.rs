@@ -342,6 +342,24 @@ fn semantic_index_key(
     }
 }
 
+fn repository_index_name(
+    reader: &dyn ComputedRelationRead,
+    relation: RelationId,
+    repository: &Value,
+) -> Result<Option<String>, KernelError> {
+    let Some(name_relation) = relation_id(reader, "source/RepositoryName", 2) else {
+        return Ok(None);
+    };
+    let rows = reader.scan_relation(name_relation, &[Some(repository.clone()), None])?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    row.values()[1]
+        .with_str(str::to_owned)
+        .ok_or_else(|| invalid_relation(relation, "repository name must be a string"))
+        .map(Some)
+}
+
 struct RepositoryEntryRelation {
     provider: Arc<LocalSourceProvider>,
 }
@@ -801,8 +819,9 @@ impl ComputedRelation for DefinitionAtRelation {
             ));
         }
         let index = self.provider.semantic_index(metadata.id())?;
+        let repository_name = repository_index_name(reader, metadata.id(), &repository)?;
         let indexed_rows = index
-            .definition_at(&path, byte_offset)
+            .definition_at(repository_name.as_deref(), &path, byte_offset)
             .into_iter()
             .map(|symbol| {
                 Ok(Tuple::from([
@@ -914,9 +933,10 @@ impl ComputedRelation for ReferencesOfRelation {
             return Ok(Vec::new());
         };
         let index = self.provider.semantic_index(metadata.id())?;
+        let repository_name = repository_index_name(reader, metadata.id(), &repository)?;
         if request.provider == SemanticSymbolProvider::Index {
             let rows = index
-                .references_of(&request)
+                .references_of(repository_name.as_deref(), &request)
                 .into_iter()
                 .map(|reference| {
                     Ok(Tuple::from([
@@ -1000,7 +1020,7 @@ impl ComputedRelation for SymbolSearchRelation {
 
     fn scan(
         &self,
-        _reader: &dyn ComputedRelationRead,
+        reader: &dyn ComputedRelationRead,
         metadata: &RelationMetadata,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
@@ -1009,8 +1029,9 @@ impl ComputedRelation for SymbolSearchRelation {
         let query = bound_string(metadata.id(), bindings, 2, "query")?;
         let limit = bound_non_negative_int(metadata.id(), bindings, 3, "limit")?;
         let index = self.provider.semantic_index(metadata.id())?;
+        let repository_name = repository_index_name(reader, metadata.id(), &repository)?;
         let rows = index
-            .search(&query, limit)
+            .search(repository_name.as_deref(), &query, limit)
             .into_iter()
             .map(|symbol| {
                 Ok(Tuple::from([
@@ -1175,7 +1196,8 @@ fn text_search<'a>(
             let mut score = score_text_unit(unit, &query_lower, &terms);
             let mut match_line = text_match_line(unit, &query_lower, &terms);
             for symbol in &symbol_matches {
-                if symbol.path == unit.path
+                if symbol.repository == unit.repository
+                    && symbol.path == unit.path
                     && symbol.start_line <= unit.end_line
                     && unit.start_line <= symbol.end_line
                 {
@@ -1466,11 +1488,17 @@ impl ComputedRelation for IndexRepositoryRelation {
         let repository_relation = relation_id(reader, "source/Repository", 1).ok_or_else(|| {
             invalid_relation(metadata.id(), "missing relation source/Repository/1")
         })?;
-        let rows = reader
-            .scan_relation(repository_relation, &[None])?
-            .into_iter()
-            .map(|row| Tuple::from([Value::string(&index.id), row.values()[0].clone()]))
-            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        for row in reader.scan_relation(repository_relation, &[None])? {
+            let repository = row.values()[0].clone();
+            let name = repository_index_name(reader, metadata.id(), &repository)?;
+            if name
+                .as_deref()
+                .is_none_or(|name| index.covers_repository(name))
+            {
+                rows.push(Tuple::from([Value::string(&index.id), repository]));
+            }
+        }
         Ok(filter_bound_rows(rows, bindings))
     }
 }
@@ -1501,11 +1529,31 @@ impl ComputedRelation for IndexRevisionRelation {
         let index = self.provider.semantic_index(metadata.id())?;
         let revision_relation = relation_id(reader, "source/Revision", 1)
             .ok_or_else(|| invalid_relation(metadata.id(), "missing relation source/Revision/1"))?;
-        let rows = reader
-            .scan_relation(revision_relation, &[None])?
-            .into_iter()
-            .map(|row| Tuple::from([Value::string(&index.id), row.values()[0].clone()]))
-            .collect::<Vec<_>>();
+        let revision_of_relation =
+            relation_id(reader, "source/RevisionOf", 2).ok_or_else(|| {
+                invalid_relation(metadata.id(), "missing relation source/RevisionOf/2")
+            })?;
+        let mut rows = Vec::new();
+        for row in reader.scan_relation(revision_relation, &[None])? {
+            let revision = row.values()[0].clone();
+            let revision_of =
+                reader.scan_relation(revision_of_relation, &[Some(revision.clone()), None])?;
+            let Some(repository) = revision_of
+                .into_iter()
+                .next()
+                .map(|row| row.values()[1].clone())
+            else {
+                rows.push(Tuple::from([Value::string(&index.id), revision]));
+                continue;
+            };
+            let name = repository_index_name(reader, metadata.id(), &repository)?;
+            if name
+                .as_deref()
+                .is_none_or(|name| index.covers_repository(name))
+            {
+                rows.push(Tuple::from([Value::string(&index.id), revision]));
+            }
+        }
         Ok(filter_bound_rows(rows, bindings))
     }
 }

@@ -1,7 +1,10 @@
 #[cfg(test)]
 mod tests {
     use mica_runtime::{SourceRunner, TaskOutcome};
-    use mica_source_provider::{build_source_index_file, write_failed_source_index_file};
+    use mica_source_provider::{
+        SourceIndexRoot, build_source_index_file, build_source_index_file_for_roots,
+        write_failed_source_index_file,
+    };
     use mica_var::{Symbol, Value};
     use std::env;
     use std::fs;
@@ -18,6 +21,7 @@ mod tests {
             .run_source(&format!(
                 "make_identity(:repo)\n\
                  make_identity(:rev)\n\
+                 make_relation(:source/RepositoryName, 2)\n\
                  make_relation(:source/RepositoryRoot, 2)\n\
                  make_relation(:source/RevisionOf, 2)\n\
                  make_relation(:source/RepositoryEntry, 6)\n\
@@ -44,6 +48,7 @@ mod tests {
                  make_relation(:source/Revision, 1)\n\
                  assert source/Repository(#repo)\n\
                  assert source/Revision(#rev)\n\
+                 assert source/RepositoryName(#repo, \"default\")\n\
                  assert source/RepositoryRoot(#repo, {root:?})\n\
                  assert source/RevisionOf(#rev, #repo)"
             ))
@@ -455,7 +460,7 @@ mod tests {
                 .with_list(|values| {
                     assert!(
                         values[0]
-                            .with_str(|symbol| symbol.starts_with("idx:src/relations.rs:"))
+                            .with_str(|symbol| symbol.starts_with("idx:default:src/relations.rs:"))
                             .unwrap_or(false)
                     );
                     assert_eq!(values[1], Value::string("src/relations.rs"));
@@ -502,6 +507,88 @@ mod tests {
             ));
         });
         let _ = fs::remove_file(index_path);
+    }
+
+    #[test]
+    fn persistent_source_index_filters_symbols_by_repository_name() {
+        let fixture_root = env::current_dir().unwrap().join("target").join(format!(
+            "source-index-multiroot-fixture-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let alpha_root = fixture_root.join("alpha");
+        let beta_root = fixture_root.join("beta");
+        fs::create_dir_all(alpha_root.join("src")).unwrap();
+        fs::create_dir_all(beta_root.join("src")).unwrap();
+        fs::write(alpha_root.join("src/lib.rs"), "pub fn only_alpha() {}\n").unwrap();
+        fs::write(beta_root.join("src/lib.rs"), "pub fn only_beta() {}\n").unwrap();
+
+        let index_path = temp_index_path("multiroot");
+        build_source_index_file_for_roots(
+            &[
+                SourceIndexRoot {
+                    name: "alpha".to_owned(),
+                    root: alpha_root.clone(),
+                },
+                SourceIndexRoot {
+                    name: "beta".to_owned(),
+                    root: beta_root.clone(),
+                },
+            ],
+            &index_path,
+        )
+        .unwrap();
+
+        with_source_index_env(&index_path, Some(Path::new("/bin/false")), || {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations_at(&mut runner, &alpha_root.display().to_string());
+            runner
+                .run_source(&format!(
+                    "make_identity(:repo_beta)\n\
+                     make_identity(:rev_beta)\n\
+                     retract source/RepositoryName(#repo, _)\n\
+                     assert source/RepositoryName(#repo, \"alpha\")\n\
+                     assert source/Repository(#repo_beta)\n\
+                     assert source/Revision(#rev_beta)\n\
+                     assert source/RepositoryName(#repo_beta, \"beta\")\n\
+                     assert source/RepositoryRoot(#repo_beta, {beta_root:?})\n\
+                     assert source/RevisionOf(#rev_beta, #repo_beta)",
+                    beta_root = beta_root.display().to_string(),
+                ))
+                .unwrap();
+
+            let report = runner
+                .run_source(
+                    "let alpha = []\n\
+                     for result in source/SymbolSearch(#repo, #rev, \"only_\", 10, ?symbol, ?name, ?kind, ?path, ?start_line, ?end_line, ?provider)\n\
+                       alpha = [@alpha, result[:name]]\n\
+                     end\n\
+                     let beta = []\n\
+                     for result in source/SymbolSearch(#repo_beta, #rev_beta, \"only_\", 10, ?symbol, ?name, ?kind, ?path, ?start_line, ?end_line, ?provider)\n\
+                       beta = [@beta, result[:name]]\n\
+                     end\n\
+                     return [alpha, beta]",
+                )
+                .unwrap();
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_list(|values| {
+                    assert_eq!(
+                        values[0].with_list(|names| names.to_vec()),
+                        Some(vec![Value::string("only_alpha")])
+                    );
+                    assert_eq!(
+                        values[1].with_list(|names| names.to_vec()),
+                        Some(vec![Value::string("only_beta")])
+                    );
+                })
+                .expect("expected repository-filtered symbol lists");
+        });
+
+        let _ = fs::remove_file(index_path);
+        let _ = fs::remove_dir_all(fixture_root);
     }
 
     #[test]

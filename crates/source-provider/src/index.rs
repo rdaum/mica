@@ -15,19 +15,32 @@ const SOURCE_TEXT_CHUNK_LINES: usize = 40;
 const SOURCE_TEXT_CHUNK_BYTES: usize = 1_200;
 
 #[derive(Clone, Debug)]
+pub struct SourceIndexRoot {
+    pub name: String,
+    pub root: PathBuf,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct PersistentSemanticIndex {
     pub(crate) id: String,
     pub(crate) provider: String,
     pub(crate) version: String,
     pub(crate) status: String,
     pub(crate) error: String,
+    pub(crate) repositories: Vec<IndexedRepository>,
     pub(crate) symbols: Vec<IndexedSymbol>,
     pub(crate) references: Vec<IndexedReference>,
     pub(crate) text_units: Vec<IndexedTextUnit>,
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct IndexedRepository {
+    pub(crate) name: String,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct IndexedSymbol {
+    pub(crate) repository: String,
     pub(crate) symbol: String,
     pub(crate) name: String,
     pub(crate) kind: String,
@@ -40,6 +53,7 @@ pub(crate) struct IndexedSymbol {
 
 #[derive(Clone, Debug)]
 pub(crate) struct IndexedReference {
+    pub(crate) repository: String,
     pub(crate) symbol: String,
     pub(crate) name: String,
     pub(crate) path: String,
@@ -51,6 +65,7 @@ pub(crate) struct IndexedReference {
 
 #[derive(Clone, Debug)]
 pub(crate) struct IndexedTextUnit {
+    pub(crate) repository: String,
     pub(crate) unit: String,
     pub(crate) ordinal: usize,
     pub(crate) kind: String,
@@ -70,6 +85,7 @@ impl PersistentSemanticIndex {
             version: SOURCE_INDEX_VERSION.to_owned(),
             status: "missing".to_owned(),
             error: format!("semantic index not found at {}", path.display()),
+            repositories: Vec::new(),
             symbols: Vec::new(),
             references: Vec::new(),
             text_units: Vec::new(),
@@ -126,13 +142,38 @@ impl PersistentSemanticIndex {
             .and_then(JsonValue::as_str)
             .unwrap_or("")
             .to_owned();
+        let default_repository = json
+            .get("repository")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let repositories = json
+            .get("repositories")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(indexed_repository_from_json)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(|error| invalid_relation(relation, error))?
+            .unwrap_or_else(|| {
+                if default_repository.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![IndexedRepository {
+                        name: default_repository.clone(),
+                    }]
+                }
+            });
         let symbols = json
             .get("symbols")
             .and_then(JsonValue::as_array)
             .map(|items| {
                 items
                     .iter()
-                    .map(indexed_symbol_from_json)
+                    .map(|item| indexed_symbol_from_json(item, &default_repository))
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -144,7 +185,7 @@ impl PersistentSemanticIndex {
             .map(|items| {
                 items
                     .iter()
-                    .map(indexed_reference_from_json)
+                    .map(|item| indexed_reference_from_json(item, &default_repository))
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -156,7 +197,7 @@ impl PersistentSemanticIndex {
             .map(|items| {
                 items
                     .iter()
-                    .map(indexed_text_unit_from_json)
+                    .map(|item| indexed_text_unit_from_json(item, &default_repository))
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()
@@ -168,6 +209,7 @@ impl PersistentSemanticIndex {
             version,
             status,
             error,
+            repositories,
             symbols,
             references,
             text_units,
@@ -178,7 +220,20 @@ impl PersistentSemanticIndex {
         self.status == "complete"
     }
 
-    pub(crate) fn definition_at(&self, path: &str, byte_offset: usize) -> Vec<IndexedSymbol> {
+    pub(crate) fn covers_repository(&self, repository: &str) -> bool {
+        self.repositories.is_empty()
+            || self
+                .repositories
+                .iter()
+                .any(|candidate| candidate.name == repository)
+    }
+
+    pub(crate) fn definition_at(
+        &self,
+        repository: Option<&str>,
+        path: &str,
+        byte_offset: usize,
+    ) -> Vec<IndexedSymbol> {
         if !self.is_complete() {
             return Vec::new();
         }
@@ -186,13 +241,15 @@ impl PersistentSemanticIndex {
             .references
             .iter()
             .find(|reference| {
-                reference.path == path
+                repository_matches(repository, &reference.repository)
+                    && reference.path == path
                     && reference.start_byte <= byte_offset
                     && byte_offset <= reference.end_byte
             })
             .or_else(|| {
                 self.references.iter().find(|reference| {
-                    reference.path == path
+                    repository_matches(repository, &reference.repository)
+                        && reference.path == path
                         && reference.start_byte <= byte_offset.saturating_add(1)
                         && byte_offset <= reference.end_byte
                 })
@@ -203,7 +260,9 @@ impl PersistentSemanticIndex {
         let mut symbols = self
             .symbols
             .iter()
-            .filter(|symbol| symbol.name == reference.name)
+            .filter(|symbol| {
+                repository_matches(repository, &symbol.repository) && symbol.name == reference.name
+            })
             .cloned()
             .collect::<Vec<_>>();
         symbols.sort_by_key(|symbol| {
@@ -217,18 +276,30 @@ impl PersistentSemanticIndex {
         symbols
     }
 
-    pub(crate) fn references_of(&self, symbol: &SemanticSymbol) -> Vec<IndexedReference> {
+    pub(crate) fn references_of(
+        &self,
+        repository: Option<&str>,
+        symbol: &SemanticSymbol,
+    ) -> Vec<IndexedReference> {
         if !self.is_complete() {
             return Vec::new();
         }
         self.references
             .iter()
-            .filter(|reference| reference.symbol == symbol.id || reference.name == symbol.name)
+            .filter(|reference| {
+                repository_matches(repository, &reference.repository)
+                    && (reference.symbol == symbol.id || reference.name == symbol.name)
+            })
             .cloned()
             .collect()
     }
 
-    pub(crate) fn search(&self, query: &str, limit: usize) -> Vec<IndexedSymbol> {
+    pub(crate) fn search(
+        &self,
+        repository: Option<&str>,
+        query: &str,
+        limit: usize,
+    ) -> Vec<IndexedSymbol> {
         if !self.is_complete() {
             return Vec::new();
         }
@@ -236,7 +307,10 @@ impl PersistentSemanticIndex {
         let mut symbols = self
             .symbols
             .iter()
-            .filter(|symbol| symbol.name.to_ascii_lowercase().contains(&needle))
+            .filter(|symbol| {
+                repository_matches(repository, &symbol.repository)
+                    && symbol.name.to_ascii_lowercase().contains(&needle)
+            })
             .cloned()
             .collect::<Vec<_>>();
         symbols.sort_by_key(|symbol| {
@@ -253,8 +327,31 @@ impl PersistentSemanticIndex {
     }
 }
 
-fn indexed_symbol_from_json(value: &JsonValue) -> Result<IndexedSymbol, String> {
+fn repository_matches(filter: Option<&str>, repository: &str) -> bool {
+    filter.is_none_or(|filter| repository.is_empty() || repository == filter)
+}
+
+fn indexed_repository_from_json(value: &JsonValue) -> Result<IndexedRepository, String> {
+    let _root = json_string(value, "root")?;
+    Ok(IndexedRepository {
+        name: json_string(value, "name")?,
+    })
+}
+
+fn optional_json_string(value: &JsonValue, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+}
+
+fn indexed_symbol_from_json(
+    value: &JsonValue,
+    default_repository: &str,
+) -> Result<IndexedSymbol, String> {
     Ok(IndexedSymbol {
+        repository: optional_json_string(value, "repository")
+            .unwrap_or_else(|| default_repository.to_owned()),
         symbol: json_string(value, "symbol")?,
         name: json_string(value, "name")?,
         kind: json_string(value, "kind")?,
@@ -266,8 +363,13 @@ fn indexed_symbol_from_json(value: &JsonValue) -> Result<IndexedSymbol, String> 
     })
 }
 
-fn indexed_reference_from_json(value: &JsonValue) -> Result<IndexedReference, String> {
+fn indexed_reference_from_json(
+    value: &JsonValue,
+    default_repository: &str,
+) -> Result<IndexedReference, String> {
     Ok(IndexedReference {
+        repository: optional_json_string(value, "repository")
+            .unwrap_or_else(|| default_repository.to_owned()),
         symbol: json_string(value, "symbol")?,
         name: json_string(value, "name")?,
         path: json_string(value, "path")?,
@@ -278,8 +380,13 @@ fn indexed_reference_from_json(value: &JsonValue) -> Result<IndexedReference, St
     })
 }
 
-fn indexed_text_unit_from_json(value: &JsonValue) -> Result<IndexedTextUnit, String> {
+fn indexed_text_unit_from_json(
+    value: &JsonValue,
+    default_repository: &str,
+) -> Result<IndexedTextUnit, String> {
     Ok(IndexedTextUnit {
+        repository: optional_json_string(value, "repository")
+            .unwrap_or_else(|| default_repository.to_owned()),
         unit: json_string(value, "unit")?,
         ordinal: json_usize(value, "ordinal")?,
         kind: json_string(value, "kind")?,
@@ -309,10 +416,18 @@ fn json_usize(value: &JsonValue, field: &str) -> Result<usize, String> {
 }
 
 pub fn build_source_index_file(root: &Path, output: &Path) -> Result<(), String> {
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("invalid source index root {}: {error}", root.display()))?;
-    let index = build_source_index_json(&root)?;
+    let root = SourceIndexRoot {
+        name: "default".to_owned(),
+        root: root.to_owned(),
+    };
+    build_source_index_file_for_roots(&[root], output)
+}
+
+pub fn build_source_index_file_for_roots(
+    roots: &[SourceIndexRoot],
+    output: &Path,
+) -> Result<(), String> {
+    let index = build_source_index_json(roots)?;
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -349,6 +464,7 @@ pub fn write_failed_source_index_file(
         "status": "failed",
         "root": root,
         "error": error,
+        "repositories": [],
         "symbols": [],
         "references": [],
         "text_units": [],
@@ -363,67 +479,98 @@ pub fn write_failed_source_index_file(
     })
 }
 
-fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
-    let mut files = indexed_source_files(root)?;
-    files.sort();
+fn build_source_index_json(roots: &[SourceIndexRoot]) -> Result<JsonValue, String> {
+    if roots.is_empty() {
+        return Err("source index requires at least one root".to_owned());
+    }
+    let mut repositories = Vec::new();
     let mut symbols = Vec::new();
     let mut references = Vec::new();
     let mut text_units = Vec::new();
     let mut text_unit_ordinal = 0usize;
-    for file in files {
-        let relative = file
-            .strip_prefix(root)
-            .map_err(|_| format!("indexed file escaped root: {}", file.display()))?;
-        let path = relative_path_string(relative)?;
-        let text = fs::read_to_string(&file)
-            .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
-        text_units.extend(indexed_text_units_for_file(
-            &path,
-            &text,
-            &mut text_unit_ordinal,
-        ));
-        let syntax = SyntaxDocument::parse(&path, &text);
-        for item in &syntax.outline {
-            if !is_index_identifier(&item.name) {
-                continue;
+
+    for root_spec in roots {
+        let root = root_spec.root.canonicalize().map_err(|error| {
+            format!(
+                "invalid source index root {}: {error}",
+                root_spec.root.display()
+            )
+        })?;
+        repositories.push(json!({
+            "name": root_spec.name,
+            "root": root.display().to_string(),
+        }));
+        let mut files = indexed_source_files(&root)?;
+        files.sort();
+        for file in files {
+            let relative = file
+                .strip_prefix(&root)
+                .map_err(|_| format!("indexed file escaped root: {}", file.display()))?;
+            let path = relative_path_string(relative)?;
+            let text = fs::read_to_string(&file)
+                .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+            text_units.extend(indexed_text_units_for_file(
+                &root_spec.name,
+                &path,
+                &text,
+                &mut text_unit_ordinal,
+            ));
+            let syntax = SyntaxDocument::parse(&path, &text);
+            for item in &syntax.outline {
+                if !is_index_identifier(&item.name) {
+                    continue;
+                }
+                let symbol = indexed_symbol_id(
+                    &root_spec.name,
+                    &path,
+                    item.start_byte,
+                    item.end_byte,
+                    &item.name,
+                );
+                symbols.push(json!({
+                    "repository": root_spec.name,
+                    "symbol": symbol,
+                    "name": item.name,
+                    "kind": item.kind,
+                    "path": path,
+                    "start_line": item.start_line,
+                    "end_line": item.end_line,
+                    "start_byte": item.start_byte,
+                    "end_byte": item.end_byte,
+                }));
             }
-            let symbol = indexed_symbol_id(&path, item.start_byte, item.end_byte, &item.name);
-            symbols.push(json!({
-                "symbol": symbol,
-                "name": item.name,
-                "kind": item.kind,
-                "path": path,
-                "start_line": item.start_line,
-                "end_line": item.end_line,
-                "start_byte": item.start_byte,
-                "end_byte": item.end_byte,
-            }));
-        }
-        for span in &syntax.highlights {
-            if !matches!(span.kind, "function" | "type" | "property" | "identifier") {
-                continue;
+            for span in &syntax.highlights {
+                if !matches!(span.kind, "function" | "type" | "property" | "identifier") {
+                    continue;
+                }
+                let Some(name) = text.get(span.start..span.end) else {
+                    continue;
+                };
+                if !is_index_identifier(name) {
+                    continue;
+                }
+                let start_line = byte_line(&syntax.line_starts, span.start);
+                let end_line = byte_line(&syntax.line_starts, span.end);
+                references.push(json!({
+                    "repository": root_spec.name,
+                    "symbol": "",
+                    "name": name,
+                    "path": path,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "start_byte": span.start,
+                    "end_byte": span.end,
+                }));
             }
-            let Some(name) = text.get(span.start..span.end) else {
-                continue;
-            };
-            if !is_index_identifier(name) {
-                continue;
-            }
-            let start_line = byte_line(&syntax.line_starts, span.start);
-            let end_line = byte_line(&syntax.line_starts, span.end);
-            references.push(json!({
-                "symbol": "",
-                "name": name,
-                "path": path,
-                "start_line": start_line,
-                "end_line": end_line,
-                "start_byte": span.start,
-                "end_byte": span.end,
-            }));
         }
     }
     symbols.sort_by_key(|value| {
         (
+            value
+                .get("repository")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .to_owned(),
             value
                 .get("name")
                 .and_then(JsonValue::as_str)
@@ -443,6 +590,11 @@ fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
     references.sort_by_key(|value| {
         (
             value
+                .get("repository")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            value
                 .get("name")
                 .and_then(JsonValue::as_str)
                 .unwrap_or("")
@@ -460,38 +612,60 @@ fn build_source_index_json(root: &Path) -> Result<JsonValue, String> {
     });
     symbols.dedup();
     references.dedup();
-    let symbol_by_name = symbols
+    let symbol_by_repository_name = symbols
         .iter()
         .filter_map(|symbol| {
             Some((
-                symbol.get("name")?.as_str()?.to_owned(),
+                (
+                    symbol.get("repository")?.as_str()?.to_owned(),
+                    symbol.get("name")?.as_str()?.to_owned(),
+                ),
                 symbol.get("symbol")?.as_str()?.to_owned(),
             ))
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     for reference in &mut references {
+        let Some(repository) = reference.get("repository").and_then(JsonValue::as_str) else {
+            continue;
+        };
         if let Some(name) = reference.get("name").and_then(JsonValue::as_str)
-            && let Some(symbol) = symbol_by_name.get(name)
+            && let Some(symbol) =
+                symbol_by_repository_name.get(&(repository.to_owned(), name.to_owned()))
             && let Some(object) = reference.as_object_mut()
         {
             object.insert("symbol".to_owned(), JsonValue::String(symbol.clone()));
         }
     }
+    let root = if repositories.len() == 1 {
+        repositories[0]
+            .get("root")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .to_owned()
+    } else {
+        "multiple".to_owned()
+    };
     Ok(json!({
         "schema": SOURCE_INDEX_SCHEMA,
         "id": SOURCE_INDEX_ID,
         "provider": SOURCE_INDEX_PROVIDER,
         "version": SOURCE_INDEX_VERSION,
         "status": "complete",
-        "root": root.display().to_string(),
-        "error": "",
+        "root": root,
+        "repositories": repositories,
         "symbols": symbols,
         "references": references,
         "text_units": text_units,
+        "error": "",
     }))
 }
 
-fn indexed_text_units_for_file(path: &str, text: &str, next_ordinal: &mut usize) -> Vec<JsonValue> {
+fn indexed_text_units_for_file(
+    repository: &str,
+    path: &str,
+    text: &str,
+    next_ordinal: &mut usize,
+) -> Vec<JsonValue> {
     let mut units = Vec::new();
     let mut chunk = Vec::new();
     let mut chunk_start_line = 1usize;
@@ -509,6 +683,7 @@ fn indexed_text_units_for_file(path: &str, text: &str, next_ordinal: &mut usize)
         {
             push_indexed_text_unit(
                 &mut units,
+                repository,
                 path,
                 chunk_start_line,
                 line_number - 1,
@@ -524,6 +699,7 @@ fn indexed_text_units_for_file(path: &str, text: &str, next_ordinal: &mut usize)
             for part in split_text_by_bytes(line, SOURCE_TEXT_CHUNK_BYTES) {
                 push_indexed_text_unit(
                     &mut units,
+                    repository,
                     path,
                     line_number,
                     line_number,
@@ -545,11 +721,13 @@ fn indexed_text_units_for_file(path: &str, text: &str, next_ordinal: &mut usize)
     }
 
     if !chunk.is_empty() {
+        let end_line = chunk_start_line + chunk.len() - 1;
         push_indexed_text_unit(
             &mut units,
+            repository,
             path,
             chunk_start_line,
-            chunk_start_line + chunk.len() - 1,
+            end_line,
             &chunk.join("\n"),
             next_ordinal,
         );
@@ -560,13 +738,14 @@ fn indexed_text_units_for_file(path: &str, text: &str, next_ordinal: &mut usize)
 
 fn push_indexed_text_unit(
     units: &mut Vec<JsonValue>,
+    repository: &str,
     path: &str,
     start_line: usize,
     end_line: usize,
-    chunk_text: &str,
+    text: &str,
     next_ordinal: &mut usize,
 ) {
-    if chunk_text.trim().is_empty() {
+    if text.trim().is_empty() {
         return;
     }
 
@@ -577,7 +756,8 @@ fn push_indexed_text_unit(
         format!("{path}:{start_line}-{end_line}")
     };
     units.push(json!({
-        "unit": indexed_text_unit_id(path, start_line, end_line, *next_ordinal),
+        "repository": repository,
+        "unit": indexed_text_unit_id(repository, path, start_line, end_line, *next_ordinal),
         "ordinal": *next_ordinal,
         "kind": source_language_kind(SourceLanguage::from_path(path)),
         "title": title,
@@ -585,7 +765,7 @@ fn push_indexed_text_unit(
         "start_line": start_line,
         "end_line": end_line,
         "model": SOURCE_TEXT_UNIT_MODEL,
-        "text": format!("{path}:{start_line}-{end_line}\n{chunk_text}"),
+        "text": format!("{repository}:{path}:{start_line}-{end_line}\n{text}"),
     }));
 }
 
@@ -657,12 +837,24 @@ fn relative_path_string(path: &Path) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
-fn indexed_symbol_id(path: &str, start_byte: usize, end_byte: usize, name: &str) -> String {
-    format!("idx:{path}:{start_byte}:{end_byte}:{name}")
+fn indexed_symbol_id(
+    repository: &str,
+    path: &str,
+    start_byte: usize,
+    end_byte: usize,
+    name: &str,
+) -> String {
+    format!("idx:{repository}:{path}:{start_byte}:{end_byte}:{name}")
 }
 
-fn indexed_text_unit_id(path: &str, start_line: usize, end_line: usize, ordinal: usize) -> String {
-    format!("idx:text:{path}:{start_line}:{end_line}:{ordinal}")
+fn indexed_text_unit_id(
+    repository: &str,
+    path: &str,
+    start_line: usize,
+    end_line: usize,
+    ordinal: usize,
+) -> String {
+    format!("idx:text:{repository}:{path}:{start_line}:{end_line}:{ordinal}")
 }
 
 fn source_language_kind(language: SourceLanguage) -> &'static str {

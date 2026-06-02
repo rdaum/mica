@@ -11,12 +11,14 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use mica_compiler::parse;
 use mica_driver::{CompioTaskDriver, DriverError, DriverEvent};
 use mica_relation_kernel::FjallDurabilityMode;
 use mica_runtime::{EmbeddingProviderKind, FileinMode, SourceRunner, SuspendKind, TaskOutcome};
-use mica_source_provider::{build_source_index_file, write_failed_source_index_file};
+use mica_source_provider::{
+    SourceIndexRoot, build_source_index_file_for_roots, write_failed_source_index_file,
+};
 use mica_var::{Identity, Symbol};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -104,8 +106,8 @@ enum Command {
         source: Vec<String>,
     },
     SourceIndex {
-        #[arg(long, default_value = ".", value_name = "DIR")]
-        root: PathBuf,
+        #[arg(long, action = ArgAction::Append, value_name = "NAME=DIR")]
+        root: Vec<String>,
         #[arg(
             long,
             default_value = ".cache/source-index/mica-worktree.json",
@@ -204,19 +206,57 @@ async fn run() -> Result<(), String> {
         }
         Command::SourceIndex { root, output } => {
             reject_actor(&cli)?;
-            match build_source_index_file(root, output) {
+            let roots = parse_source_index_roots(root)?;
+            let error_root = roots
+                .first()
+                .map(|root| root.root.clone())
+                .unwrap_or_else(|| PathBuf::from("."));
+            match build_source_index_file_for_roots(&roots, output) {
                 Ok(()) => {
                     println!("wrote source index {}", output.display());
                     Ok(())
                 }
                 Err(error) => {
-                    let _ = write_failed_source_index_file(root, output, &error);
+                    let _ = write_failed_source_index_file(&error_root, output, &error);
                     Err(error)
                 }
             }
         }
         Command::Repl => repl(&cli).await,
     }
+}
+
+fn parse_source_index_roots(root_specs: &[String]) -> Result<Vec<SourceIndexRoot>, String> {
+    let specs = if root_specs.is_empty() {
+        vec!["default=.".to_owned()]
+    } else {
+        root_specs.to_vec()
+    };
+    specs
+        .into_iter()
+        .map(|spec| {
+            let (name, root) = match spec.split_once('=') {
+                Some((name, root)) => (name.trim().to_owned(), PathBuf::from(root.trim())),
+                None => {
+                    let root = PathBuf::from(spec.trim());
+                    let name = root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or("default")
+                        .to_owned();
+                    (name, root)
+                }
+            };
+            if name.is_empty() {
+                return Err("source index root name must not be empty".to_owned());
+            }
+            if root.as_os_str().is_empty() {
+                return Err(format!("source index root {name} has an empty path"));
+            }
+            Ok(SourceIndexRoot { name, root })
+        })
+        .collect()
 }
 
 struct CliSession {

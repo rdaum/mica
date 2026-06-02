@@ -33,16 +33,31 @@ pub(crate) enum SemanticSymbolProvider {
 
 impl SemanticSymbol {
     pub(crate) fn parse(symbol: &str) -> Option<Self> {
-        let mut parts = symbol.splitn(5, ':');
-        let provider = match parts.next()? {
+        let parts = symbol.split(':').collect::<Vec<_>>();
+        let provider = match parts.first().copied()? {
             "idx" => SemanticSymbolProvider::Index,
             "ra" => SemanticSymbolProvider::RustAnalyzer,
             _ => return None,
         };
-        let path = parts.next()?.to_owned();
-        let start_byte = parts.next()?.parse().ok()?;
-        let _end_byte = parts.next()?.parse::<usize>().ok()?;
-        let name = parts.next()?.to_owned();
+        let (path, start_byte, name) = if provider == SemanticSymbolProvider::Index
+            && parts.len() >= 6
+            && parts
+                .get(3)
+                .and_then(|part| part.parse::<usize>().ok())
+                .is_some()
+        {
+            (
+                (*parts.get(2)?).to_owned(),
+                parts.get(3)?.parse().ok()?,
+                (*parts.get(5)?).to_owned(),
+            )
+        } else {
+            (
+                (*parts.get(1)?).to_owned(),
+                parts.get(2)?.parse().ok()?,
+                (*parts.get(4)?).to_owned(),
+            )
+        };
         Some(Self {
             id: symbol.to_owned(),
             provider,
