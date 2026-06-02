@@ -912,6 +912,10 @@ impl SourceRunner {
         )
     }
 
+    pub fn render_task_value(&self, value: &Value) -> String {
+        render_value(value, &self.identity_names(), &self.relation_names())
+    }
+
     pub fn render_source_task_error_with_source(
         &self,
         error: &SourceTaskError,
@@ -1897,6 +1901,10 @@ impl SharedSourceRunner {
             None,
             DiagnosticRenderOptions::default(),
         )
+    }
+
+    pub fn render_task_value(&self, value: &Value) -> String {
+        render_value(value, &self.identity_names(), &self.relation_names())
     }
 
     pub fn render_source_task_error_with_source(

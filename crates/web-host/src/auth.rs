@@ -286,6 +286,42 @@ impl AuthSubsystem {
                 ));
             }
         };
+        if let Err(e) = self
+            .session_store
+            .grant_user_role(&user_id, &self.config.github_default_role)
+            .await
+        {
+            tracing::error!(
+                login = %user_info.login,
+                role = %self.config.github_default_role,
+                error = %e,
+                "failed to grant default GitHub user role"
+            );
+            return Some(HttpResponse::new(
+                500,
+                "Internal Server Error",
+                b"Failed to grant user role".to_vec(),
+            ));
+        }
+        if self
+            .config
+            .github_admin_logins
+            .iter()
+            .any(|login| login.eq_ignore_ascii_case(&user_info.login))
+        {
+            if let Err(e) = self.session_store.grant_user_role(&user_id, "admin").await {
+                tracing::error!(
+                    login = %user_info.login,
+                    error = %e,
+                    "failed to grant GitHub admin user role"
+                );
+                return Some(HttpResponse::new(
+                    500,
+                    "Internal Server Error",
+                    b"Failed to grant admin role".to_vec(),
+                ));
+            }
+        }
         let display_name = user_info
             .name
             .as_deref()

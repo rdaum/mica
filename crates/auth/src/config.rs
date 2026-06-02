@@ -13,6 +13,8 @@ pub struct AuthConfig {
     pub github_redirect_uri: Option<String>,
     pub github_org: Option<String>,
     pub github_allowed_logins: Vec<String>,
+    pub github_admin_logins: Vec<String>,
+    pub github_default_role: String,
 }
 
 impl AuthConfig {
@@ -47,6 +49,10 @@ fn parse_allowed_logins(value: Option<String>) -> Vec<String> {
         .collect()
 }
 
+fn parse_login_lists(values: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
+    values.into_iter().flat_map(parse_allowed_logins).collect()
+}
+
 fn parse_bool_env(name: &str) -> bool {
     match std::env::var(name) {
         Ok(value) => matches!(
@@ -57,12 +63,25 @@ fn parse_bool_env(name: &str) -> bool {
     }
 }
 
+fn parse_role_env(name: &str, default: &str) -> Result<String, AuthConfigError> {
+    let role = std::env::var(name).unwrap_or_else(|_| default.to_owned());
+    let role = role.trim().to_ascii_lowercase();
+    if matches!(role.as_str(), "admin" | "operator" | "viewer") {
+        return Ok(role);
+    }
+    Err(AuthConfigError::InvalidRole {
+        name: name.to_owned(),
+        value: role,
+    })
+}
+
 #[derive(Debug)]
 pub enum AuthConfigError {
     MissingKey,
     InvalidKeyHex(String),
     InvalidPreviousKeyHex(String),
     InvalidTtl(String),
+    InvalidRole { name: String, value: String },
 }
 
 impl std::fmt::Display for AuthConfigError {
@@ -74,6 +93,12 @@ impl std::fmt::Display for AuthConfigError {
                 write!(f, "invalid previous PASETO key hex: {msg}")
             }
             Self::InvalidTtl(msg) => write!(f, "invalid session TTL: {msg}"),
+            Self::InvalidRole { name, value } => {
+                write!(
+                    f,
+                    "{name} must be one of admin, operator, or viewer; got {value:?}"
+                )
+            }
         }
     }
 }
@@ -118,6 +143,11 @@ impl AuthConfig {
             github_allowed_logins: parse_allowed_logins(
                 std::env::var("CONATUS_GITHUB_ALLOWED_LOGINS").ok(),
             ),
+            github_admin_logins: parse_login_lists([
+                std::env::var("CONATUS_ADMIN_GITHUB_LOGIN").ok(),
+                std::env::var("CONATUS_GITHUB_ADMIN_LOGINS").ok(),
+            ]),
+            github_default_role: parse_role_env("CONATUS_GITHUB_DEFAULT_ROLE", "operator")?,
         })
     }
 
@@ -133,6 +163,8 @@ impl AuthConfig {
             github_redirect_uri: None,
             github_org: None,
             github_allowed_logins: Vec::new(),
+            github_admin_logins: Vec::new(),
+            github_default_role: "viewer".to_owned(),
         }
     }
 
@@ -147,6 +179,8 @@ impl AuthConfig {
             github_redirect_uri: None,
             github_org: None,
             github_allowed_logins: Vec::new(),
+            github_admin_logins: Vec::new(),
+            github_default_role: "viewer".to_owned(),
         }
     }
 }

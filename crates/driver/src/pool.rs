@@ -154,6 +154,10 @@ impl CompioTaskDriver {
         }
     }
 
+    pub fn format_value(&self, value: &Value) -> String {
+        self.inner.runner.render_task_value(value)
+    }
+
     pub async fn submit_source(
         &self,
         endpoint: Identity,

@@ -598,7 +598,7 @@ async fn route_dom_event(
             ],
         )
         .await
-        .map_err(format_driver_error)?;
+        .map_err(|error| host.driver.format_error(&error))?;
     trace.mark("sync_event");
     match submitted.outcome {
         TaskOutcome::Complete { .. } => {}
@@ -611,7 +611,7 @@ async fn route_dom_event(
                 .insert(submitted.task_id);
         }
         TaskOutcome::Aborted { error, .. } => {
-            let message = format!("sync_event aborted: {error}");
+            let message = format!("sync_event aborted: {}", host.driver.format_value(&error));
             tracing::error!(
                 target: "mica_web_host::sync",
                 task_id = submitted.task_id,
@@ -857,11 +857,12 @@ async fn submit_sync_invocation_for(
     let submitted = driver
         .submit_invocation_for_endpoint(endpoint, Symbol::intern(selector), roles)
         .await
-        .map_err(format_driver_error)?;
+        .map_err(|error| driver.format_error(&error))?;
     match submitted.outcome {
         TaskOutcome::Complete { value, .. } => Ok(value),
         TaskOutcome::Aborted { error, .. } => Err(format!(
-            "sync render invocation {selector} aborted: {error}"
+            "sync render invocation {selector} aborted: {}",
+            driver.format_value(&error)
         )),
         TaskOutcome::Suspended { .. } => {
             Err(format!("sync render invocation {selector} suspended"))

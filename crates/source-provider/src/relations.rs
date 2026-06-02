@@ -168,8 +168,15 @@ impl LocalSourceProvider {
         )?
         .with_str(str::to_owned)
         .ok_or_else(|| invalid_relation(relation, "repository root must be a string"))?;
-        let root = PathBuf::from(root).canonicalize().map_err(|error| {
-            invalid_relation(relation, format!("invalid repository root: {error}"))
+        let configured_root = PathBuf::from(root);
+        let root = configured_root.canonicalize().map_err(|error| {
+            invalid_relation(
+                relation,
+                format!(
+                    "invalid repository root {}: {error}",
+                    configured_root.display()
+                ),
+            )
         })?;
         if self
             .allowed_roots
@@ -198,8 +205,17 @@ impl LocalSourceProvider {
     ) -> Result<(PathBuf, PathBuf), KernelError> {
         validate_relative_path(relation, relative_path)?;
         let root = self.repository_root(reader, relation, repository, revision)?;
-        let absolute = root.join(relative_path).canonicalize().map_err(|error| {
-            invalid_relation(relation, format!("failed to resolve path: {error}"))
+        let candidate = root.join(relative_path);
+        let absolute = candidate.canonicalize().map_err(|error| {
+            invalid_relation(
+                relation,
+                format!(
+                    "failed to resolve path {} from repository root {} and relative path {}: {error}",
+                    candidate.display(),
+                    root.display(),
+                    relative_path
+                ),
+            )
         })?;
         if !absolute.starts_with(&root) {
             return Err(invalid_relation(
