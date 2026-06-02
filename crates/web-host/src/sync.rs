@@ -564,7 +564,8 @@ async fn route_dom_event(
             return Err(message);
         }
     }
-    let result = refresh_active_sync_view(host, session, event.view_id, true).await;
+    let result =
+        refresh_active_sync_views_after_dom_event(host, session.session_id, event.view_id).await;
     trace.mark("refresh");
     result
 }
@@ -595,34 +596,24 @@ async fn send_recovery_snapshot_from_rendered(
     Ok(())
 }
 
-async fn refresh_active_sync_view(
-    host: &InProcessWebHost,
-    session: &Arc<SyncSession>,
-    view_id: u64,
-    force_ack: bool,
-) -> Result<(), String> {
-    let Some(view_state) = active_rendered_sync_view(session, view_id) else {
-        return Ok(());
-    };
-    let active = ActiveSyncView {
-        endpoint: session.endpoint,
-        session_id: session.session_id,
-        view_id,
-        client_revision: view_state.client_revision,
-        client_signature: view_state.client_signature,
-        server_revision: view_state.server_revision,
-        server_signature: view_state.server_signature,
-        last_tree: view_state.last_tree,
-    };
-    refresh_active_sync_view_for(&host.driver, &host.sync.sessions, active, force_ack).await
-}
-
 async fn refresh_active_sync_views_for(
     driver: &CompioTaskDriver,
     sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
 ) -> Result<(), String> {
     for active in active_sync_views(sessions) {
         refresh_active_sync_view_for(driver, sessions, active, false).await?;
+    }
+    Ok(())
+}
+
+async fn refresh_active_sync_views_after_dom_event(
+    host: &InProcessWebHost,
+    source_session_id: u64,
+    source_view_id: u64,
+) -> Result<(), String> {
+    for active in active_sync_views(&host.sync.sessions) {
+        let force_ack = active.session_id == source_session_id && active.view_id == source_view_id;
+        refresh_active_sync_view_for(&host.driver, &host.sync.sessions, active, force_ack).await?;
     }
     Ok(())
 }
@@ -1301,6 +1292,44 @@ mod tests {
         assert!(session.sync.lock().unwrap().pending_tasks.is_empty());
     }
 
+    #[test]
+    fn sse_mud_pushes_alice_command_to_bob_view() {
+        let (addr_tx, addr_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            Runtime::new().unwrap().block_on(async move {
+                let listener = TcpListener::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+                    .await
+                    .unwrap();
+                let addr = listener.local_addr().unwrap();
+                let runner = sync_mud_runner();
+                let principal = runner.named_identity(Symbol::intern("web")).unwrap();
+                let driver = CompioTaskDriver::spawn(runner).unwrap();
+                let host = InProcessWebHost::new(driver);
+                let binding = RequestBinding {
+                    principal,
+                    actor: None,
+                };
+                addr_tx.send(addr).unwrap();
+                compio::runtime::spawn(async move {
+                    if let Err(error) = serve_in_process(listener, host, binding, None).await {
+                        tracing::warn!(error = %error, "test web host stopped");
+                    }
+                })
+                .detach();
+                while stop_rx.try_recv().is_err() {
+                    compio::time::sleep(Duration::from_millis(10)).await;
+                }
+            });
+        });
+
+        let addr = addr_rx.recv().unwrap();
+        let result = run_mud_sse_two_session_client(addr);
+        stop_tx.send(()).unwrap();
+        server.join().unwrap();
+        result.unwrap();
+    }
+
     fn run_mud_sse_client(addr: SocketAddr) -> Result<(), String> {
         let session_id = 7u64;
         let mut stream = open_event_stream(addr, session_id)?;
@@ -1482,6 +1511,81 @@ mod tests {
         Ok(())
     }
 
+    fn run_mud_sse_two_session_client(addr: SocketAddr) -> Result<(), String> {
+        let alice_session_id = 101u64;
+        let bob_session_id = 202u64;
+        let mut alice_stream = open_event_stream(addr, alice_session_id)?;
+        let mut bob_stream = open_event_stream(addr, bob_session_id)?;
+
+        let alice_snapshot = request_initial_snapshot(addr, &mut alice_stream, alice_session_id)?;
+        let bob_snapshot = request_initial_snapshot(addr, &mut bob_stream, bob_session_id)?;
+
+        post_dom_event(
+            addr,
+            DomEventPayload {
+                session_id: alice_session_id,
+                view_id: 21,
+                revision: alice_snapshot.server_revision,
+                signature: alice_snapshot.server_signature,
+                event: "submit".to_owned(),
+                target: "mud-login-alice".to_owned(),
+                action: "mud_login".to_owned(),
+                fields: BTreeMap::from([("text".to_owned(), "alice".to_owned())]),
+            },
+        )?;
+        let alice_login =
+            read_newer_sync_envelope(&mut alice_stream, alice_snapshot.server_revision)?;
+
+        post_dom_event(
+            addr,
+            DomEventPayload {
+                session_id: bob_session_id,
+                view_id: 21,
+                revision: bob_snapshot.server_revision,
+                signature: bob_snapshot.server_signature,
+                event: "submit".to_owned(),
+                target: "mud-login-bob".to_owned(),
+                action: "mud_login".to_owned(),
+                fields: BTreeMap::from([("text".to_owned(), "bob".to_owned())]),
+            },
+        )?;
+        let bob_login = read_envelope_containing(
+            &mut bob_stream,
+            bob_snapshot.server_revision,
+            &["The Mica Rooms"],
+        )?;
+
+        post_dom_event(
+            addr,
+            DomEventPayload {
+                session_id: alice_session_id,
+                view_id: 21,
+                revision: alice_login.server_revision,
+                signature: alice_login.server_signature,
+                event: "submit".to_owned(),
+                target: "mud-command".to_owned(),
+                action: "mud_command".to_owned(),
+                fields: BTreeMap::from([("text".to_owned(), "get coin".to_owned())]),
+            },
+        )?;
+
+        let bob_delta = read_envelope_containing(
+            &mut bob_stream,
+            bob_login.server_revision,
+            &["takes", "coin"],
+        )?;
+        if bob_delta.view_id != 21 {
+            return Err(format!(
+                "expected Bob view 21 update, got {}",
+                bob_delta.view_id
+            ));
+        }
+        if bob_delta.server_revision <= bob_login.server_revision {
+            return Err("Bob update did not advance past Bob's login revision".to_owned());
+        }
+        Ok(())
+    }
+
     fn open_event_stream(
         addr: SocketAddr,
         session_id: u64,
@@ -1531,6 +1635,41 @@ mod tests {
             .read_to_end(&mut body)
             .map_err(|error| format!("failed to read sync POST response: {error}"))?;
         Ok(())
+    }
+
+    fn request_initial_snapshot(
+        addr: SocketAddr,
+        stream: &mut BufReader<StdTcpStream>,
+        session_id: u64,
+    ) -> Result<SyncEnvelope, String> {
+        post_sync_input(
+            addr,
+            encoded_sync_envelope(
+                SyncEnvelope {
+                    kind: SyncMessageKind::NeedView,
+                    session_id,
+                    view_id: 21,
+                    client_revision: 0,
+                    client_signature: 0,
+                    server_revision: 0,
+                    server_signature: 0,
+                    payload: b"need".to_vec(),
+                }
+                .as_ref(),
+            ),
+        )?;
+        let snapshot = read_next_sync_envelope(stream)?;
+        if snapshot.kind != SyncMessageKind::ViewSnapshot {
+            return Err(format!(
+                "expected initial snapshot, got {:?}",
+                snapshot.kind
+            ));
+        }
+        Ok(snapshot)
+    }
+
+    fn post_dom_event(addr: SocketAddr, event: DomEventPayload) -> Result<(), String> {
+        post_sync_input(addr, dom_event_payload_json(&event))
     }
 
     fn read_http_status(reader: &mut BufReader<StdTcpStream>) -> Result<String, String> {
@@ -1585,6 +1724,41 @@ mod tests {
             }
             return parse_sync_sse_payload(&payload);
         }
+    }
+
+    fn read_newer_sync_envelope(
+        reader: &mut BufReader<StdTcpStream>,
+        previous_revision: u64,
+    ) -> Result<SyncEnvelope, String> {
+        loop {
+            let envelope = read_next_sync_envelope(reader)?;
+            if envelope.server_revision > previous_revision {
+                return Ok(envelope);
+            }
+        }
+    }
+
+    fn read_envelope_containing(
+        reader: &mut BufReader<StdTcpStream>,
+        previous_revision: u64,
+        needles: &[&str],
+    ) -> Result<SyncEnvelope, String> {
+        let mut last_seen = None;
+        for _ in 0..8 {
+            let envelope = read_newer_sync_envelope(reader, previous_revision)?;
+            let payload: serde_json::Value = serde_json::from_slice(&envelope.payload)
+                .map_err(|error| format!("failed to parse sync payload: {error}"))?;
+            let payload_text = serde_json::to_string(&payload).unwrap();
+            if needles.iter().all(|needle| payload_text.contains(needle)) {
+                return Ok(envelope);
+            }
+            last_seen = Some(payload_text);
+        }
+        Err(format!(
+            "did not receive sync payload containing {:?}; last seen: {}",
+            needles,
+            last_seen.unwrap_or_else(|| "<none>".to_owned())
+        ))
     }
 
     fn parse_sync_sse_payload(payload: &str) -> Result<SyncEnvelope, String> {
