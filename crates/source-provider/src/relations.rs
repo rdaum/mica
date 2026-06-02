@@ -10,7 +10,7 @@ use mica_relation_kernel::{
     ComputedRelation, ComputedRelationRead, KernelError, RelationId, RelationMetadata, Tuple,
 };
 use mica_var::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,7 @@ const DEFINITION_AT_BOUND: &[u16] = &[0, 1, 2, 3];
 const REFERENCES_OF_BOUND: &[u16] = &[0, 1, 2];
 const SYMBOL_SEARCH_BOUND: &[u16] = &[0, 1, 2, 3];
 const INDEXED_TEXT_UNIT_BOUND: &[u16] = &[];
+const INDEXED_FILE_BOUND: &[u16] = &[];
 const TEXT_SEARCH_BOUND: &[u16] = &[0, 1, 2];
 const INDEX_VALUE_BOUND: &[u16] = &[];
 const SEMANTIC_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -71,6 +72,9 @@ pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
             provider: provider.clone(),
         }),
         Arc::new(IndexedTextUnitRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(IndexedFileRelation {
             provider: provider.clone(),
         }),
         Arc::new(TextSearchRelation {
@@ -1107,6 +1111,58 @@ impl ComputedRelation for IndexedTextUnitRelation {
     }
 }
 
+struct IndexedFileRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for IndexedFileRelation {
+    fn name(&self) -> &'static str {
+        "persistent-source-indexed-file"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/IndexedFile") && metadata.arity() == 6
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        INDEXED_FILE_BOUND
+    }
+
+    fn scan(
+        &self,
+        _reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let index = self.provider.semantic_index(metadata.id())?;
+        if !index.is_complete() {
+            return Ok(Vec::new());
+        }
+
+        let mut files = BTreeMap::<(&str, &str), &IndexedTextUnit>::new();
+        for unit in &index.text_units {
+            files
+                .entry((unit.repository.as_str(), unit.path.as_str()))
+                .or_insert(unit);
+        }
+
+        let rows = files
+            .into_values()
+            .map(|unit| {
+                Ok(Tuple::from([
+                    Value::string(&index.id),
+                    Value::string(&unit.repository),
+                    Value::string(&unit.path),
+                    Value::string(&unit.title),
+                    Value::string(indexed_file_language(&unit.path)),
+                    Value::string(&unit.model),
+                ]))
+            })
+            .collect::<Result<Vec<_>, KernelError>>()?;
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
 struct TextSearchRelation {
     provider: Arc<LocalSourceProvider>,
 }
@@ -1233,6 +1289,16 @@ fn text_search<'a>(
     });
     hits.truncate(limit);
     hits
+}
+
+fn indexed_file_language(path: &str) -> &'static str {
+    match SourceLanguage::from_path(path) {
+        SourceLanguage::Rust => "rust",
+        SourceLanguage::Mica => "mica",
+        SourceLanguage::Markdown => "markdown",
+        SourceLanguage::JavaScript => "javascript",
+        SourceLanguage::Plain => "file",
+    }
 }
 
 fn search_terms(query: &str) -> Vec<String> {
