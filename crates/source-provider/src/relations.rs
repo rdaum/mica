@@ -6,10 +6,12 @@ use crate::navigation::{
 use crate::rust_analyzer::RustAnalyzerProvider;
 use crate::syntax::{SourceLanguage, SyntaxDocument, syntax_lines};
 use crate::util::*;
+use crate::vcs::VcsProvider;
+use jj_lib::object_id::ObjectId;
 use mica_relation_kernel::{
     ComputedRelation, ComputedRelationRead, KernelError, RelationId, RelationMetadata, Tuple,
 };
-use mica_var::Value;
+use mica_var::{Symbol, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
@@ -32,6 +34,8 @@ const INDEXED_TEXT_UNIT_BOUND: &[u16] = &[];
 const INDEXED_FILE_BOUND: &[u16] = &[];
 const TEXT_SEARCH_BOUND: &[u16] = &[0, 1, 2];
 const INDEX_VALUE_BOUND: &[u16] = &[];
+const VCS_COMMIT_KEY_BOUND: &[u16] = &[0, 1];
+const VCS_REPOSITORY_BOUND: &[u16] = &[0];
 const SEMANTIC_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SOURCE_DOCUMENT_CACHE_LIMIT: usize = 64;
 
@@ -98,7 +102,27 @@ pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
         Arc::new(IndexVersionRelation {
             provider: provider.clone(),
         }),
-        Arc::new(IndexBuildErrorRelation { provider }),
+        Arc::new(IndexBuildErrorRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(RepositoryVcsRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(CommitExistsRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(CommitTreeRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(CommitAuthorRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(CommitMessageRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(CommitParentsRelation {
+            provider: provider.clone(),
+        }),
     ]
 }
 
@@ -109,6 +133,7 @@ struct LocalSourceProvider {
     semantic_index_cache: Mutex<Option<CachedSemanticIndex>>,
     source_document_cache: Mutex<HashMap<PathBuf, Arc<CachedSourceDocument>>>,
     rust_analyzer: RustAnalyzerProvider,
+    vcs_providers: Mutex<HashMap<PathBuf, Arc<VcsProvider>>>,
 }
 
 impl LocalSourceProvider {
@@ -130,6 +155,7 @@ impl LocalSourceProvider {
             semantic_index_cache: Mutex::new(None),
             source_document_cache: Mutex::new(HashMap::new()),
             rust_analyzer: RustAnalyzerProvider::from_env(),
+            vcs_providers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -193,6 +219,65 @@ impl LocalSourceProvider {
                 ),
             ))
         }
+    }
+
+    fn vcs_provider_for(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        relation: RelationId,
+        repository: &Value,
+    ) -> Result<Arc<VcsProvider>, KernelError> {
+        let root_relation = relation_id(reader, "source/RepositoryRoot", 2).ok_or_else(|| {
+            invalid_relation(relation, "missing relation source/RepositoryRoot/2")
+        })?;
+        let root = one_value(
+            reader,
+            root_relation,
+            &[Some(repository.clone()), None],
+            relation,
+            "expected source/RepositoryRoot(repository, root)",
+        )?
+        .with_str(str::to_owned)
+        .ok_or_else(|| invalid_relation(relation, "repository root must be a string"))?;
+        let root_path = PathBuf::from(root);
+        let allowed_root = root_path.canonicalize().map_err(|error| {
+            invalid_relation(
+                relation,
+                format!("invalid repository root {}: {error}", root_path.display()),
+            )
+        })?;
+        if !self
+            .allowed_roots
+            .iter()
+            .any(|allowed| allowed_root.starts_with(allowed))
+        {
+            return Err(invalid_relation(
+                relation,
+                format!(
+                    "repository root {} is not under an allowed source root",
+                    allowed_root.display()
+                ),
+            ));
+        }
+        let git_file = allowed_root.join(".git");
+        {
+            let cache = self.vcs_providers.lock().unwrap();
+            if let Some(provider) = cache.get(&git_file) {
+                return Ok(provider.clone());
+            }
+        }
+        let provider = VcsProvider::open(&git_file).map_err(|error| {
+            invalid_relation(
+                relation,
+                format!("failed to open vcs for {}: {error}", allowed_root.display()),
+            )
+        })?;
+        let provider = Arc::new(provider);
+        self.vcs_providers
+            .lock()
+            .unwrap()
+            .insert(git_file, provider.clone());
+        Ok(provider)
     }
 
     fn resolve_path(
@@ -1644,3 +1729,272 @@ index_value_relation!(IndexProviderRelation, "IndexProvider", provider);
 index_value_relation!(IndexStatusRelation, "IndexStatus", status);
 index_value_relation!(IndexVersionRelation, "IndexVersion", version);
 index_value_relation!(IndexBuildErrorRelation, "IndexBuildError", error);
+
+struct RepositoryVcsRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for RepositoryVcsRelation {
+    fn name(&self) -> &'static str {
+        "local-source-repository-vcs"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/RepositoryVcs") && metadata.arity() == 2
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_REPOSITORY_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let _vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        Ok(filter_bound_rows(
+            vec![Tuple::from([
+                repository,
+                Value::symbol(Symbol::intern("source/vcs_jj")),
+            ])],
+            bindings,
+        ))
+    }
+}
+
+struct CommitExistsRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for CommitExistsRelation {
+    fn name(&self) -> &'static str {
+        "local-source-commit-exists"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/CommitExists") && metadata.arity() == 2
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_COMMIT_KEY_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let commit_hex = bound_string(metadata.id(), bindings, 1, "commit")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commit_id = vcs
+            .resolve_commit(&commit_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        if vcs
+            .commit_exists(&commit_id)
+            .map_err(|e| invalid_relation(metadata.id(), e))?
+        {
+            Ok(filter_bound_rows(
+                vec![Tuple::from([repository, Value::string(commit_hex)])],
+                bindings,
+            ))
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
+struct CommitTreeRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for CommitTreeRelation {
+    fn name(&self) -> &'static str {
+        "local-source-commit-tree"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/CommitTree") && metadata.arity() == 3
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_COMMIT_KEY_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let commit_hex = bound_string(metadata.id(), bindings, 1, "commit")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commit_id = vcs
+            .resolve_commit(&commit_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let tree_id = vcs
+            .commit_tree(&commit_id)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        Ok(filter_bound_rows(
+            vec![Tuple::from([
+                repository,
+                Value::string(commit_hex),
+                Value::string(tree_id.hex()),
+            ])],
+            bindings,
+        ))
+    }
+}
+
+struct CommitAuthorRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for CommitAuthorRelation {
+    fn name(&self) -> &'static str {
+        "local-source-commit-author"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/CommitAuthor") && metadata.arity() == 5
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_COMMIT_KEY_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let commit_hex = bound_string(metadata.id(), bindings, 1, "commit")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commit_id = vcs
+            .resolve_commit(&commit_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let (name, email, timestamp) = vcs
+            .commit_author(&commit_id)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        Ok(filter_bound_rows(
+            vec![Tuple::from([
+                repository,
+                Value::string(commit_hex),
+                Value::string(name),
+                Value::string(email),
+                int_value(metadata.id(), timestamp)?,
+            ])],
+            bindings,
+        ))
+    }
+}
+
+struct CommitMessageRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for CommitMessageRelation {
+    fn name(&self) -> &'static str {
+        "local-source-commit-message"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/CommitMessage") && metadata.arity() == 3
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_COMMIT_KEY_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let commit_hex = bound_string(metadata.id(), bindings, 1, "commit")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commit_id = vcs
+            .resolve_commit(&commit_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let message = vcs
+            .commit_message(&commit_id)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        Ok(filter_bound_rows(
+            vec![Tuple::from([
+                repository,
+                Value::string(commit_hex),
+                Value::string(message),
+            ])],
+            bindings,
+        ))
+    }
+}
+
+struct CommitParentsRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for CommitParentsRelation {
+    fn name(&self) -> &'static str {
+        "local-source-commit-parents"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/CommitParents") && metadata.arity() == 4
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_COMMIT_KEY_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let commit_hex = bound_string(metadata.id(), bindings, 1, "commit")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commit_id = vcs
+            .resolve_commit(&commit_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let parents = vcs
+            .commit_parents(&commit_id)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let tuples: Vec<Tuple> = parents
+            .iter()
+            .enumerate()
+            .map(|(idx, parent)| {
+                Tuple::from([
+                    repository.clone(),
+                    Value::string(&commit_hex),
+                    int_value(metadata.id(), idx as i64).unwrap(),
+                    Value::string(parent.hex()),
+                ])
+            })
+            .collect();
+        Ok(filter_bound_rows(tuples, bindings))
+    }
+}
