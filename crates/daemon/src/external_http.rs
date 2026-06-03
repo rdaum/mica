@@ -836,6 +836,10 @@ mod tests {
                         Value::string("/v1/embeddings"),
                     ),
                     (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("source-workspace"),
+                    ),
+                    (
                         Value::symbol(Symbol::intern("json")),
                         Value::map([
                             (
