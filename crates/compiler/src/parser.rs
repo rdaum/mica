@@ -699,6 +699,13 @@ impl<'a> Parser<'a> {
             children.push(self.raw_bump_element());
             children.push(self.raw_bump_element());
         }
+        if matches!(
+            self.raw_current_kind(),
+            SyntaxKind::Minus | SyntaxKind::Colon
+        ) {
+            children.push(self.missing("expected DOM attribute name part"));
+            children.push(self.raw_bump_element());
+        }
 
         self.skip_dom_trivia();
         if self.raw_current_kind() == SyntaxKind::Eq {
@@ -1367,6 +1374,20 @@ mod tests {
         );
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::DomAttr));
+    }
+
+    #[test]
+    fn malformed_dom_attribute_name_parts_still_advance() {
+        let parse = parse("return dom <div data-=\"x\" role:=\"button\">x</div>");
+        assert_eq!(parse.errors.len(), 2);
+        assert!(
+            parse
+                .errors
+                .iter()
+                .all(|error| error.message == "expected DOM attribute name part")
+        );
+        assert!(contains(&parse.root, SyntaxKind::DomAttr));
+        assert!(contains(&parse.root, SyntaxKind::DomText));
     }
 
     #[test]
