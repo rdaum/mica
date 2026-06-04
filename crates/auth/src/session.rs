@@ -320,10 +320,6 @@ retract source/DisplayName(person, _)
 assert source/DisplayName(person, "{escaped_display_name}")
 retract source/Description(person, _)
 assert source/Description(person, "{escaped_display_name}, present through authenticated login.")
-let room = one source/DefaultRoom(?room)
-if room != nothing && person.source/locatedIn == nothing
-  assert source/LocatedIn(person, room)
-end
 return "{escaped_person_symbol}"
 "#,
             escaped_user_id = escaped_user_id,
@@ -565,10 +561,6 @@ make_relation(:source/UserPerson, 2)
 make_functional_relation(:source/DefaultUserPerson, 2, [0])
 make_functional_relation(:source/DisplayName, 2, [0])
 make_functional_relation(:source/Description, 2, [0])
-make_functional_relation(:source/LocatedIn, 2, [0])
-make_relation(:source/DefaultRoom, 1)
-make_identity(:source/room)
-assert source/DefaultRoom(#source/room)
 "#
     }
 
@@ -708,7 +700,6 @@ source/UserPerson(#source/user_github_1001, #source/person_github_1001) || retur
 source/DefaultUserPerson(#source/user_github_1001, #source/person_github_1001) || return false
 source/DisplayName(#source/person_github_1001, "Alice Liddell") || return false
 source/Description(#source/person_github_1001, "Alice Liddell, present through authenticated login.") || return false
-source/LocatedIn(#source/person_github_1001, #source/room) || return false
 return true
 "#
                     .to_owned(),
