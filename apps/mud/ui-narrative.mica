@@ -3,7 +3,7 @@
 verb ui/event_actor_node(value @ #identity, viewer)
   let name = ui/actor_name(value)
   if value == viewer
-    return dom_element("strong", {:class -> "event-entity", "data-entity" -> to_literal(value)}, [dom_text("you")])
+    return dom <strong class="event-entity" data-entity={to_literal(value)}>you</strong>
   end
 
   return ui/entity_action_node("", value, string_concat("look ", name), name, "entity-button event-entity actor-entity")
@@ -15,7 +15,7 @@ verb ui/event_object_node(event, value @ #identity, viewer)
 end
 
 verb ui/event_object_node(event, value @ #string, viewer)
-  return dom_element("span", {:class -> "event-quote"}, [dom_text(value)])
+  return dom <span class="event-quote">{value}</span>
 end
 
 verb ui/event_verb(actor, viewer, self, other)
@@ -29,58 +29,58 @@ end
 verb ui/event_body_node(event, viewer)
   let source = event.event/source
   if source == nothing
-    return dom_element("div", {:class -> "event-text"}, [dom_text(event.event/text)])
+    return dom <div class="event-text">{event.event/text}</div>
   end
 
   return ui/event_body_for(source, viewer)
 end
 
 verb ui/event_body_for(source, viewer)
-  return dom_element("div", {:class -> "event-text"}, [dom_text(event/render(source, viewer))])
+  return dom <div class="event-text">{event/render(source, viewer)}</div>
 end
 
 verb ui/event_body_for(source @ #event/movement<_>, viewer)
   let actor = event/bindings(source)[:actor]
-  return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " move away.", " moves away."))])
+  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " move away.", " moves away.")}</div>
 end
 
 verb ui/event_body_for(source @ #event/arrival<_>, viewer)
   let actor = event/bindings(source)[:actor]
-  return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " arrive.", " arrives."))])
+  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " arrive.", " arrives.")}</div>
 end
 
 verb ui/event_body_for(source @ #event/take<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
-  return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " take ", " takes ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(".")])
+  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " take ", " takes ")}{ui/event_object_node(source, bindings[:item], viewer)}.</div>
 end
 
 verb ui/event_body_for(source @ #event/take_from<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
-  return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " take ", " takes ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(" from "), ui/event_object_node(source, bindings[:container], viewer), dom_text(".")])
+  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " take ", " takes ")}{ui/event_object_node(source, bindings[:item], viewer)} from {ui/event_object_node(source, bindings[:container], viewer)}.</div>
 end
 
 verb ui/event_body_for(source @ #event/drop<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
-  return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " drop ", " drops ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(".")])
+  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " drop ", " drops ")}{ui/event_object_node(source, bindings[:item], viewer)}.</div>
 end
 
 verb ui/event_body_for(source @ #event/put<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
-  return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " put ", " puts ")), ui/event_object_node(source, bindings[:item], viewer), dom_text(" in "), ui/event_object_node(source, bindings[:container], viewer), dom_text(".")])
+  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " put ", " puts ")}{ui/event_object_node(source, bindings[:item], viewer)} in {ui/event_object_node(source, bindings[:container], viewer)}.</div>
 end
 
 verb ui/event_body_for(source @ #event/say<_>, viewer)
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
-  return dom_element("div", {:class -> "event-text"}, [ui/event_actor_node(actor, viewer), dom_text(ui/event_verb(actor, viewer, " say, ", " says, ")), dom_element("span", {:class -> "event-quote"}, [dom_text(string_concat("\"", bindings[:message], "\""))])])
+  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " say, ", " says, ")}<span class="event-quote">{string_concat("\"", bindings[:message], "\"")}</span></div>
 end
 
 verb ui/event_body_for(source @ #event/button<_>, viewer)
-  return dom_element("div", {:class -> "event-text"}, [ui/event_object_node(source, #red_button, viewer), dom_text(" gives one final cheerful ding.")])
+  return dom <div class="event-text">{ui/event_object_node(source, #red_button, viewer)} gives one final cheerful ding.</div>
 end
 
 verb ui/event_class(source)
@@ -156,7 +156,10 @@ verb ui/event_label(source @ #event/button<_>)
 end
 
 verb ui/event_meta_chip_node(label, value)
-  return dom_element("span", {:class -> "event-meta-chip"}, [dom_element("span", {:class -> "event-meta-label"}, [dom_text(label)]), dom_element("span", {:class -> "event-meta-value"}, [dom_text(value)])])
+  return dom <span class="event-meta-chip">
+    <span class="event-meta-label">{label}</span>
+    <span class="event-meta-value">{value}</span>
+  </span>
 end
 
 verb ui/event_meta_node(source, seq)
@@ -182,7 +185,7 @@ verb ui/event_meta_node(source, seq)
     chips = [@chips, ui/event_meta_chip_node("message", message)]
   end
 
-  return dom_element("div", {:class -> "event-meta"}, chips)
+  return dom <div class="event-meta">{@chips}</div>
 end
 
 verb ui/event_node(event)
@@ -190,11 +193,18 @@ verb ui/event_node(event)
   let text = event.event/text
   let source = event.event/source
   if source == nothing
-    return dom_element("li", {"data-sync-key" -> to_literal(event), :class -> "event-line"}, [dom_element("span", {:class -> "event-seq"}, [dom_text(string_concat("#", to_literal(seq)))]), dom_text(text)])
+    return dom <li data-sync-key={to_literal(event)} class="event-line">
+      <span class="event-seq">{string_concat("#", to_literal(seq))}</span>{text}
+    </li>
   end
 
-  let badge = dom_element("span", {:class -> "event-kind"}, [dom_text(ui/event_label(source))])
-  return dom_element("li", {"data-sync-key" -> to_literal(event), :class -> ui/event_class(source)}, [dom_element("div", {:class -> "event-line-main"}, [dom_element("span", {:class -> "event-seq"}, [dom_text(string_concat("#", to_literal(seq)))]), badge, ui/event_body_node(event, ui/current_actor())])])
+  return dom <li data-sync-key={to_literal(event)} class={ui/event_class(source)}>
+    <div class="event-line-main">
+      <span class="event-seq">{string_concat("#", to_literal(seq))}</span>
+      <span class="event-kind">{ui/event_label(source)}</span>
+      {ui/event_body_node(event, ui/current_actor())}
+    </div>
+  </li>
 end
 
 verb ui/latest_event_node(actor @ #player, revision)
@@ -209,16 +219,31 @@ verb ui/latest_event_node(actor @ #player, revision)
   end
 
   if latest == nothing
-    return dom_element("section", {:id -> "latest-event", :class -> "latest-event empty"}, [dom_element("span", {:class -> "muted"}, [dom_text("No events yet.")])])
+    return dom <section id="latest-event" class="latest-event empty">
+      <span class="muted">No events yet.</span>
+    </section>
   end
 
   let text = latest.event/text
   let source = latest.event/source
   if source == nothing
-    return dom_element("section", {:id -> "latest-event", :class -> "latest-event system"}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text("system")])]), dom_element("div", {:class -> "latest-body"}, [dom_text(text)])])
+    return dom <section id="latest-event" class="latest-event system">
+      <div class="latest-heading">
+        <strong>Latest</strong>
+        <span class="event-kind">system</span>
+      </div>
+      <div class="latest-body">{text}</div>
+    </section>
   end
 
-  return dom_element("section", {:id -> "latest-event", :class -> string_concat("latest-event ", ui/event_label(source))}, [dom_element("div", {:class -> "latest-heading"}, [dom_element("strong", {}, [dom_text("Latest")]), dom_element("span", {:class -> "event-kind"}, [dom_text(ui/event_label(source))])]), dom_element("div", {:class -> "latest-body"}, [ui/event_body_node(latest, actor)]), ui/event_meta_node(source, latest_seq)])
+  return dom <section id="latest-event" class={string_concat("latest-event ", ui/event_label(source))}>
+    <div class="latest-heading">
+      <strong>Latest</strong>
+      <span class="event-kind">{ui/event_label(source)}</span>
+    </div>
+    <div class="latest-body">{ui/event_body_node(latest, actor)}</div>
+    {ui/event_meta_node(source, latest_seq)}
+  </section>
 end
 
 verb ui/narrative_node(actor @ #player, revision, limit)
@@ -233,7 +258,7 @@ verb ui/narrative_node(actor @ #player, revision, limit)
   end
 
   if count == 0
-    events = [dom_element("li", {:class -> "muted"}, [dom_text("The room is quiet.")])]
+    events = [dom <li class="muted">The room is quiet.</li>]
   else
     let first_rendered = 0
     if count > limit
@@ -254,17 +279,25 @@ verb ui/narrative_node(actor @ #player, revision, limit)
     end
   end
 
-  let heading = dom_element("div", {:class -> "narrative-heading"}, [dom_element("h2", {}, [dom_text("Narrative")]), dom_element("span", {:class -> "narrative-count"}, [dom_text(to_literal(count)), dom_text(" events")])])
+  let heading = dom <div class="narrative-heading">
+    <h2>Narrative</h2>
+    <span class="narrative-count">{to_literal(count)} events</span>
+  </div>
 
   let children = []
   if count > limit
-    children = [dom_element("form", {:class -> "narrative-older-form", "data-sync-event" -> "submit", "data-sync-action" -> "mud_load_older_events"}, [dom_element("button", {:class -> "mini-button"}, [dom_text(string_concat("Load older (", to_literal(count - limit), " more)"))])])]
+    children = [dom <form class="narrative-older-form" data-sync-event="submit" data-sync-action="mud_load_older_events">
+      <button class="mini-button">{string_concat("Load older (", to_literal(count - limit), " more)")}</button>
+    </form>]
   end
 
-  let list_attrs = {:class -> "event-list"}
   if count > limit
-    list_attrs = {:class -> "event-list", "data-sync-on-viewport-top" -> "mud_load_older_events", "data-sync-viewport-threshold" -> "24"}
+    children = [@children, dom <ul class="event-list" data-sync-on-viewport-top="mud_load_older_events" data-sync-viewport-threshold="24">{@events}</ul>]
+  else
+    children = [@children, dom <ul class="event-list">{@events}</ul>]
   end
-  children = [@children, dom_element("ul", list_attrs, events)]
-  return dom_element("section", {:id -> "narrative", :class -> "panel narrative", "aria-live" -> "polite", "data-sync-follow" -> "bottom", "data-sync-stable-top" -> "true"}, [heading, @children])
+  return dom <section id="narrative" class="panel narrative" aria-live="polite" data-sync-follow="bottom" data-sync-stable-top="true">
+    {heading}
+    {@children}
+  </section>
 end

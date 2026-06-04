@@ -25,10 +25,18 @@ verb http/document(view)
   let signature = sync_snapshot_signature(view, payload)
   let root = sync_snapshot_tree(view)
   let mount = sync_mount_node(view, snapshot[:revision], signature, root)
-  let head = dom_element("head", {}, [dom_element("meta", {:charset -> "utf-8"}, []), dom_element("title", {}, [dom_text("Mica MUD")]), dom_element("style", {}, [dom_raw(string_concat(http/base_style(), http/login_style(), http/presence_style(), http/narrative_style()))])])
-  let status = dom_element("div", {:id -> "status", :class -> "sync-status"}, [dom_text("Synced revision "), dom_text(to_literal(snapshot[:revision]))])
-  let body = dom_element("body", {}, [mount, status, dom_element("script", {:type -> "module"}, [dom_raw(http/bootstrap_script())])])
-  return to_xml([dom_raw("<!doctype html>"), dom_element("html", {}, [head, body])])
+  let head = dom <head>
+    <meta charset="utf-8" />
+    <title>Mica MUD</title>
+    <style>{dom_raw(string_concat(http/base_style(), http/login_style(), http/presence_style(), http/narrative_style()))}</style>
+  </head>
+  let status = dom <div id="status" class="sync-status">Synced revision {to_literal(snapshot[:revision])}</div>
+  let body = dom <body>
+    {mount}
+    {status}
+    <script type="module">{dom_raw(http/bootstrap_script())}</script>
+  </body>
+  return to_xml([dom_raw("<!doctype html>"), dom <html>{head}{body}</html>])
 end
 
 verb http/base_style()

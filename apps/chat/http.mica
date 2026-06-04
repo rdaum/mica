@@ -22,12 +22,19 @@ verb chat_document(view)
   let signature = sync_snapshot_signature(view, payload)
   let root = sync_snapshot_tree(view)
   let mount = sync_mount_node(view, snapshot[:revision], signature, root)
-  let status = dom_element("div", {:id -> "status", :class -> "status"}, [dom_text("Synced revision "), dom_text(to_literal(snapshot[:revision]))])
-  let header = dom_element("header", {}, [dom_element("h1", {}, [dom_text("Mica Chat")]), status])
-  let shell = dom_element("main", {:id -> "shell"}, [header, mount])
-  let head = dom_element("head", {}, [dom_element("meta", {:charset -> "utf-8"}, []), dom_element("title", {}, [dom_text("Mica Chat")]), dom_element("style", {}, [dom_raw(chat_style())])])
-  let body = dom_element("body", {}, [shell, dom_element("script", {:type -> "module"}, [dom_raw(chat_bootstrap_script())])])
-  let document = [dom_raw("<!doctype html>"), dom_element("html", {}, [head, body])]
+  let status = dom <div id="status" class="status">Synced revision {to_literal(snapshot[:revision])}</div>
+  let header = dom <header><h1>Mica Chat</h1>{status}</header>
+  let shell = dom <main id="shell">{header}{mount}</main>
+  let head = dom <head>
+    <meta charset="utf-8" />
+    <title>Mica Chat</title>
+    <style>{dom_raw(chat_style())}</style>
+  </head>
+  let body = dom <body>
+    {shell}
+    <script type="module">{dom_raw(chat_bootstrap_script())}</script>
+  </body>
+  let document = [dom_raw("<!doctype html>"), dom <html>{head}{body}</html>]
   return to_xml(document)
 end
 

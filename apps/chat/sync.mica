@@ -50,8 +50,9 @@ end
 verb chat_message_node(message)
   let author = one MessageAuthor(message, ?author)
   let text = one MessageText(message, ?text)
-  let author_node = dom_element("span", {:class -> "author"}, [dom_text(author)])
-  return dom_element("li", {"data-sync-key" -> to_literal(message)}, [author_node, dom_text(": "), dom_text(text)])
+  return dom <li data-sync-key={to_literal(message)}>
+    <span class="author">{author}</span>: {text}
+  </li>
 end
 
 verb chat_composer_node()
@@ -98,6 +99,8 @@ verb sync_view_tree(view, revision)
     end
   end
 
-  let message_list = dom_element("ul", {:id -> "messages"}, messages)
-  return dom_element("main", {:id -> "chat-root"}, [message_list, chat_composer_node()])
+  return dom <main id="chat-root">
+    <ul id="messages">{@messages}</ul>
+    {chat_composer_node()}
+  </main>
 end

@@ -107,26 +107,29 @@ verb ui/mica_inspect_expanded()
 end
 
 verb ui/mica_inspect_action_node(entity, label, class)
-  let hidden = dom_element("input", {:type -> "hidden", :name -> "entity", :value -> to_literal(entity)}, [])
-  let button = dom_element("button", {:type -> "submit", :class -> class, "data-entity" -> to_literal(entity)}, [dom_text(label)])
-  let attrs = {:class -> "mud-action mica-inspect-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect"}
-  return dom_element("form", attrs, [hidden, button])
+  return dom <form class="mud-action mica-inspect-action" data-sync-event="submit" data-sync-action="mud_mica_inspect">
+    <input type="hidden" name="entity" value={to_literal(entity)} />
+    <button type="submit" class={class} data-entity={to_literal(entity)}>{label}</button>
+  </form>
 end
 
 verb ui/mica_inspect_close_node()
-  let button = dom_element("button", {:type -> "submit", :class -> "mini-button mica-close"}, [dom_text("Close")])
-  return dom_element("form", {:class -> "mud-action mica-close-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_close"}, [button])
+  return dom <form class="mud-action mica-close-action" data-sync-event="submit" data-sync-action="mud_mica_inspect_close">
+    <button type="submit" class="mini-button mica-close">Close</button>
+  </form>
 end
 
 verb ui/mica_inspect_back_node(previous)
-  let button = dom_element("button", {:type -> "submit", :class -> "mini-button"}, [dom_text(string_concat("Back to ", ui/actor_name(previous)))])
-  return dom_element("form", {:class -> "mud-action mica-back-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_back"}, [button])
+  return dom <form class="mud-action mica-back-action" data-sync-event="submit" data-sync-action="mud_mica_inspect_back">
+    <button type="submit" class="mini-button">{string_concat("Back to ", ui/actor_name(previous))}</button>
+  </form>
 end
 
 verb ui/mica_inspect_layout_node(mode, label)
-  let hidden = dom_element("input", {:type -> "hidden", :name -> "mode", :value -> mode}, [])
-  let button = dom_element("button", {:type -> "submit", :class -> "mini-button mica-layout-toggle"}, [dom_text(label)])
-  return dom_element("form", {:class -> "mud-action mica-layout-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect_layout"}, [hidden, button])
+  return dom <form class="mud-action mica-layout-action" data-sync-event="submit" data-sync-action="mud_mica_inspect_layout">
+    <input type="hidden" name="mode" value={mode} />
+    <button type="submit" class="mini-button mica-layout-toggle">{label}</button>
+  </form>
 end
 
 verb ui/mica_method_mode_node(mode, label, selected)
@@ -135,9 +138,10 @@ verb ui/mica_method_mode_node(mode, label, selected)
     class = "mini-button method-filter active"
   end
 
-  let hidden = dom_element("input", {:type -> "hidden", :name -> "mode", :value -> mode}, [])
-  let button = dom_element("button", {:type -> "submit", :class -> class}, [dom_text(label)])
-  return dom_element("form", {:class -> "mud-action method-filter-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_method_mode"}, [hidden, button])
+  return dom <form class="mud-action method-filter-action" data-sync-event="submit" data-sync-action="mud_mica_method_mode">
+    <input type="hidden" name="mode" value={mode} />
+    <button type="submit" class={class}>{label}</button>
+  </form>
 end
 
 verb ui/relation_label(relation)
@@ -150,11 +154,14 @@ verb ui/relation_label(relation)
 end
 
 verb ui/mica_empty_node(text)
-  return dom_element("p", {:class -> "muted mica-empty"}, [dom_text(text)])
+  return dom <p class="muted mica-empty">{text}</p>
 end
 
 verb ui/mica_section_node(title, children)
-  return dom_element("section", {:class -> "mica-section"}, [dom_element("h3", {}, [dom_text(title)]), dom_element("div", {:class -> "mica-section-body"}, children)])
+  return dom <section class="mica-section">
+    <h3>{title}</h3>
+    <div class="mica-section-body">{@children}</div>
+  </section>
 end
 
 verb ui/mica_can_link(value)
@@ -180,7 +187,6 @@ verb ui/mica_can_link(value)
 end
 
 verb ui/mica_inspect_entity_node(value, class)
-  let hidden = dom_element("input", {:type -> "hidden", :name -> "entity", :value -> to_literal(value)}, [])
   let label = to_literal(value)
   let name = value.name
   if name != nothing
@@ -191,8 +197,10 @@ verb ui/mica_inspect_entity_node(value, class)
       label = to_literal(relation_name)
     end
   end
-  let button = dom_element("button", {:type -> "submit", :class -> class, "data-entity" -> to_literal(value)}, [dom_text(label)])
-  return dom_element("form", {:class -> "mud-action mica-identity-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_mica_inspect"}, [hidden, button])
+  return dom <form class="mud-action mica-identity-action" data-sync-event="submit" data-sync-action="mud_mica_inspect">
+    <input type="hidden" name="entity" value={to_literal(value)} />
+    <button type="submit" class={class} data-entity={to_literal(value)}>{label}</button>
+  </form>
 end
 
 verb ui/mica_value_node(value)
@@ -200,28 +208,34 @@ verb ui/mica_value_node(value)
     return ui/mica_inspect_entity_node(value, "mica-identity-link")
   end
 
-  return dom_element("code", {}, [dom_text(to_literal(value))])
+  return dom <code>{to_literal(value)}</code>
 end
 
 verb ui/mica_tuple_node(tuple)
-  let children = [dom_text("[")]
+  let children = ["["]
   let first = true
   for value in tuple
     if first
       first = false
     else
-      children = [@children, dom_text(", ")]
+      children = [@children, ", "]
     end
     children = [@children, ui/mica_value_node(value)]
   end
-  children = [@children, dom_text("]")]
-  return dom_element("div", {:class -> "mica-tuple"}, children)
+  children = [@children, "]"]
+  return dom <div class="mica-tuple">{@children}</div>
 end
 
 verb ui/mica_fact_row_node(relation, position, tuple)
-  let heading = dom_element("summary", {:class -> "mica-row-summary"}, [dom_element("code", {:class -> "mica-row-title"}, [dom_text(string_concat(ui/relation_label(relation), string_concat(" @ ", to_literal(position))))]), dom_element("code", {:class -> "mica-row-preview"}, [dom_text(to_literal(tuple))])])
-  let body = dom_element("div", {:class -> "mica-row-body"}, [dom_element("div", {:class -> "mica-relation"}, [ui/mica_inspect_entity_node(relation, "mica-relation-link"), dom_element("code", {}, [dom_text(string_concat(" @ ", to_literal(position)))])]), ui/mica_tuple_node(tuple)])
-  return dom_element("details", {:class -> "mica-row"}, [heading, body])
+  let heading = dom <summary class="mica-row-summary">
+    <code class="mica-row-title">{string_concat(ui/relation_label(relation), string_concat(" @ ", to_literal(position)))}</code>
+    <code class="mica-row-preview">{to_literal(tuple)}</code>
+  </summary>
+  let body = dom <div class="mica-row-body">
+    <div class="mica-relation">{ui/mica_inspect_entity_node(relation, "mica-relation-link")}<code>{string_concat(" @ ", to_literal(position))}</code></div>
+    {ui/mica_tuple_node(tuple)}
+  </div>
+  return dom <details class="mica-row">{heading}{body}</details>
 end
 
 verb ui/mica_subject_facts_node(entity)
@@ -267,14 +281,17 @@ end
 verb ui/mica_delegates_header_node(entity)
   let chips = []
   for found in Delegates(entity, ?delegate, ?distance)
-    chips = [@chips, dom_element("span", {:class -> "mica-delegate-chip"}, [ui/mica_value_node(found[:delegate]), dom_text(string_concat(" (", string_concat(to_literal(found[:distance]), ")")))])]
+    chips = [@chips, dom <span class="mica-delegate-chip">{ui/mica_value_node(found[:delegate])}{string_concat(" (", string_concat(to_literal(found[:distance]), ")"))}</span>]
   end
 
   if chips == []
-    return dom_element("div", {:class -> "mica-delegates muted"}, [dom_text("No direct delegates visible")])
+    return dom <div class="mica-delegates muted">No direct delegates visible</div>
   end
 
-  return dom_element("div", {:class -> "mica-delegates"}, [dom_element("span", {:class -> "mica-delegates-label"}, [dom_text("Delegates")]), dom_element("div", {:class -> "mica-delegate-list"}, chips)])
+  return dom <div class="mica-delegates">
+    <span class="mica-delegates-label">Delegates</span>
+    <div class="mica-delegate-list">{@chips}</div>
+  </div>
 end
 
 verb ui/mica_method_source_excerpt(method_id)
@@ -291,9 +308,12 @@ end
 
 verb ui/mica_method_row_node(method_id, selector, role, restriction, position)
   let meta = string_concat(to_literal(role), string_concat(" @ ", to_literal(position)))
-  let label = dom_element("div", {:class -> "mica-method-label"}, [dom_element("code", {}, [dom_text(to_literal(selector))]), dom_text(" via "), ui/mica_value_node(restriction)])
-  let summary = dom_element("summary", {:class -> "mica-method-head"}, [label, dom_element("span", {:class -> "muted"}, [dom_text(meta)])])
-  return dom_element("details", {:class -> "mica-method-row"}, [summary, dom_element("pre", {:class -> "mica-source"}, [dom_text(ui/mica_method_source_excerpt(method_id))])])
+  let label = dom <div class="mica-method-label"><code>{to_literal(selector)}</code> via {ui/mica_value_node(restriction)}</div>
+  let summary = dom <summary class="mica-method-head">{label}<span class="muted">{meta}</span></summary>
+  return dom <details class="mica-method-row">
+    {summary}
+    <pre class="mica-source">{ui/mica_method_source_excerpt(method_id)}</pre>
+  </details>
 end
 
 verb ui/mica_method_catalog_node(entity)
@@ -303,7 +323,11 @@ verb ui/mica_method_catalog_node(entity)
   if mode == nothing
     mode = "all"
   end
-  let controls = dom_element("div", {:class -> "method-filters", "aria-label" -> "Method catalogue filter"}, [ui/mica_method_mode_node("all", "All", mode), ui/mica_method_mode_node("direct", "Direct", mode), ui/mica_method_mode_node("inherited", "Inherited", mode)])
+  let controls = dom <div class="method-filters" aria-label="Method catalogue filter">
+    {ui/mica_method_mode_node("all", "All", mode)}
+    {ui/mica_method_mode_node("direct", "Direct", mode)}
+    {ui/mica_method_mode_node("inherited", "Inherited", mode)}
+  </div>
   if mode != "inherited"
     for found in Param(?m, ?role, entity, ?position)
       let method_id = found[:m]
@@ -343,13 +367,16 @@ verb ui/mica_method_catalog_node(entity)
   for row in rows
     children = [@children, row]
   end
-  return dom_element("section", {:class -> "mica-section mica-method-section"}, [dom_element("h3", {}, [dom_text("Method catalogue")]), dom_element("div", {:class -> "mica-section-body"}, children)])
+  return dom <section class="mica-section mica-method-section">
+    <h3>Method catalogue</h3>
+    <div class="mica-section-body">{@children}</div>
+  </section>
 end
 
 verb ui/mica_inspect_panel_node(actor @ #player)
   let selected = ui/mica_inspect_selected()
   if selected == nothing
-    return dom_element("section", {:id -> "mica-inspect", :class -> "panel mica-inspect empty"}, [])
+    return dom <section id="mica-inspect" class="panel mica-inspect empty"></section>
   end
 
   let title = string_concat(ui/actor_name(selected), string_concat(" ", to_literal(selected)))
@@ -362,7 +389,21 @@ verb ui/mica_inspect_panel_node(actor @ #player)
   if previous != nothing
     controls = [ui/mica_inspect_back_node(previous), layout, ui/mica_inspect_close_node()]
   end
-  return dom_element("section", {:id -> "mica-inspect", :class -> "panel mica-inspect", "data-entity" -> to_literal(selected)}, [dom_element("div", {:class -> "mica-inspect-header"}, [dom_element("div", {:class -> "mica-inspect-title"}, [dom_element("h2", {}, [dom_text("Mica Inspect")]), dom_element("code", {}, [dom_text(title)]), ui/mica_delegates_header_node(selected)]), dom_element("div", {:class -> "mica-inspect-controls"}, controls)]), dom_element("div", {:class -> "mica-inspect-grid"}, [ui/mica_subject_facts_node(selected), ui/mica_mentioned_facts_node(selected), ui/mica_method_catalog_node(selected)])])
+  return dom <section id="mica-inspect" class="panel mica-inspect" data-entity={to_literal(selected)}>
+    <div class="mica-inspect-header">
+      <div class="mica-inspect-title">
+        <h2>Mica Inspect</h2>
+        <code>{title}</code>
+        {ui/mica_delegates_header_node(selected)}
+      </div>
+      <div class="mica-inspect-controls">{@controls}</div>
+    </div>
+    <div class="mica-inspect-grid">
+      {ui/mica_subject_facts_node(selected)}
+      {ui/mica_mentioned_facts_node(selected)}
+      {ui/mica_method_catalog_node(selected)}
+    </div>
+  </section>
 end
 
 verb ui/mica_inspect_set_selected(endpoint, selected)

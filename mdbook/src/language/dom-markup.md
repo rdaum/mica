@@ -33,6 +33,13 @@ code. It is meant for server-owned UI composition: sync view trees, forms,
 panels, lists, document shells, and other places where the Mica code is
 describing nested DOM structure.
 
+This is useful when the UI is part of the shared system rather than a separate
+client application. The view can stay close to the facts, rules, authority
+checks, and verbs that decide what a user is allowed to see or do, while the
+source still reads like the DOM tree it produces. That makes it a good fit for
+small tools, inspectors, operational panels, room views, and other Mica-hosted
+interfaces where the server owns the browser state.
+
 The markup form makes those trees readable at a glance. It avoids long
 `dom_element(...)` calls where the tag, attributes, and children are separated
 by punctuation instead of layout:
@@ -48,6 +55,10 @@ Prefer ordinary expressions when the code is mostly computation, and use
 `dom <...>` at the boundary where that computed state becomes a DOM node.
 Helper verbs can still return DOM values, and markup can call those helpers
 with `{helper(...)}` or splice lists with `{@children}`.
+
+Keep using ordinary Mica values and helper verbs for data preparation,
+branching, filtering, and highly dynamic DOM construction. The markup syntax is
+for making the final tree obvious, not for replacing the rest of the language.
 
 ## Elements
 

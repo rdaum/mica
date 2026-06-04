@@ -156,22 +156,31 @@ verb ui/retrieval_query_selected(actor @ #player, endpoint, selected)
 end
 
 verb ui/retrieval_action_node()
-  let button = dom_element("button", {:class -> "mini-button retrieval-button", :type -> "submit"}, [dom_text("Related context")])
-  return dom_element("form", {:class -> "mud-action retrieval-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_retrieve_related"}, [button])
+  return dom <form class="mud-action retrieval-action" data-sync-event="submit" data-sync-action="mud_retrieve_related">
+    <button class="mini-button retrieval-button" type="submit">Related context</button>
+  </form>
 end
 
 verb ui/retrieval_result_row_node(actor @ #player, subject, score, status @ #string)
   let inspect = ui/entity_action_node(string_concat("related-", to_literal(subject)), subject, string_concat("look ", ui/actor_name(subject)), ui/actor_name(subject), "entity-button related-link")
-  let meta = dom_element("div", {:class -> "retrieval-meta"}, [dom_element("span", {:class -> string_concat("retrieval-status retrieval-status-", status)}, [dom_text(status)]), dom_element("span", {:class -> "retrieval-score"}, [dom_text(to_literal(score))])])
-  return dom_element("li", {"data-sync-key" -> to_literal(subject), :class -> "retrieval-row"}, [inspect, meta])
+  return dom <li data-sync-key={to_literal(subject)} class="retrieval-row">
+    {inspect}
+    <div class="retrieval-meta">
+      <span class={string_concat("retrieval-status retrieval-status-", status)}>{status}</span>
+      <span class="retrieval-score">{to_literal(score)}</span>
+    </div>
+  </li>
 end
 
 verb ui/retrieval_panel_node(actor @ #player, selected)
-  let children = [dom_element("div", {:class -> "retrieval-toolbar"}, [ui/retrieval_action_node()])]
+  let children = [dom <div class="retrieval-toolbar">{ui/retrieval_action_node()}</div>]
   let plan = endpoint().session/retrievalPlan
   if plan == nothing
-    children = [@children, dom_element("p", {:class -> "muted"}, [dom_text("Run retrieval to see related rooms, people, and objects.")])]
-    return dom_element("section", {:class -> "panel retrieval-panel"}, [dom_element("h3", {}, [dom_text("Related context")]), @children])
+    children = [@children, dom <p class="muted">Run retrieval to see related rooms, people, and objects.</p>]
+    return dom <section class="panel retrieval-panel">
+      <h3>Related context</h3>
+      {@children}
+    </section>
   end
 
   let items = []
@@ -189,11 +198,14 @@ verb ui/retrieval_panel_node(actor @ #player, selected)
   end
 
   if items == []
-    children = [@children, dom_element("p", {:class -> "muted"}, [dom_text("No related context found yet.")])]
+    children = [@children, dom <p class="muted">No related context found yet.</p>]
   else
-    children = [@children, dom_element("ul", {:class -> "retrieval-results"}, items)]
+    children = [@children, dom <ul class="retrieval-results">{@items}</ul>]
   end
-  return dom_element("section", {:class -> "panel retrieval-panel"}, [dom_element("h3", {}, [dom_text("Related context")]), @children])
+  return dom <section class="panel retrieval-panel">
+    <h3>Related context</h3>
+    {@children}
+  </section>
 end
 
 verb ui/handle_sync_action(source @ #ui/retrieval_action<_>, endpoint, session, view, event, target, fields)

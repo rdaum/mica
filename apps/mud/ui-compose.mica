@@ -1,52 +1,67 @@
 // DOM composition for the server-owned MUD view.
 
 verb ui/command_form_node(id, text, label, class)
-  let hidden = dom_element("input", {:type -> "hidden", :name -> "text", :value -> text}, [])
-  let button = dom_element("button", {:type -> "submit", :class -> class, "data-command" -> text}, [dom_text(label)])
-  let attrs = {:class -> "mud-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_command"}
   if id != ""
-    attrs[:id] = id
+    return dom <form id={id} class="mud-action" data-sync-event="submit" data-sync-action="mud_command">
+      <input type="hidden" name="text" value={text} />
+      <button type="submit" class={class} data-command={text}>{label}</button>
+    </form>
   end
 
-  return dom_element("form", attrs, [hidden, button])
+  return dom <form class="mud-action" data-sync-event="submit" data-sync-action="mud_command">
+    <input type="hidden" name="text" value={text} />
+    <button type="submit" class={class} data-command={text}>{label}</button>
+  </form>
 end
 
 verb ui/entity_action_node(id, entity, text, label, class)
-  let hidden = dom_element("input", {:type -> "hidden", :name -> "entity", :value -> to_literal(entity)}, [])
-  let button = dom_element("button", {:type -> "submit", :class -> class, "data-entity" -> to_literal(entity)}, [dom_text(label)])
-  let attrs = {:class -> "mud-action entity-action", "data-sync-event" -> "submit", "data-sync-action" -> "mud_inspect"}
+  let entity_label = to_literal(entity)
   if id != ""
-    attrs[:id] = id
+    return dom <form id={id} class="mud-action entity-action" data-sync-event="submit" data-sync-action="mud_inspect">
+      <input type="hidden" name="entity" value={entity_label} />
+      <button type="submit" class={class} data-entity={entity_label}>{label}</button>
+    </form>
   end
 
-  return dom_element("form", attrs, [hidden, button])
+  return dom <form class="mud-action entity-action" data-sync-event="submit" data-sync-action="mud_inspect">
+    <input type="hidden" name="entity" value={entity_label} />
+    <button type="submit" class={class} data-entity={entity_label}>{label}</button>
+  </form>
 end
 
 verb ui/login_choice_node(actor, name, initial, detail)
-  let hidden = dom_element("input", {:type -> "hidden", :name -> "text", :value -> actor}, [])
-  let badge = dom_element("span", {:class -> "actor-initial"}, [dom_text(initial)])
-  let title = dom_element("strong", {:class -> "actor-name"}, [dom_text(name)])
-  let copy = dom_element("p", {:class -> "actor-detail"}, [dom_text(detail)])
-  let meta = dom_element("span", {:class -> "actor-meta"}, [dom_text("Server-owned session view")])
-  let button = dom_element("button", {:type -> "submit"}, [dom_text(string_concat("Enter as ", name))])
-  return dom_element("form", {:id -> string_concat("mud-login-", actor), :class -> "login-choice actor-card", "data-sync-event" -> "submit", "data-sync-action" -> "mud_login"}, [hidden, badge, title, copy, meta, button])
+  return dom <form id={string_concat("mud-login-", actor)} class="login-choice actor-card" data-sync-event="submit" data-sync-action="mud_login">
+    <input type="hidden" name="text" value={actor} />
+    <span class="actor-initial">{initial}</span>
+    <strong class="actor-name">{name}</strong>
+    <p class="actor-detail">{detail}</p>
+    <span class="actor-meta">Server-owned session view</span>
+    <button type="submit">{string_concat("Enter as ", name)}</button>
+  </form>
 end
 
 verb ui/login_view_node()
   let alice = ui/login_choice_node("alice", "Alice", "A", "Starts in the first room with the brass coin, the box, and the suspicious red button.")
   let bob = ui/login_choice_node("bob", "Bob", "B", "A second browser can enter as Bob and watch Alice's actions arrive as DOM-synced events.")
-  let choices = dom_element("div", {:class -> "login-choices"}, [alice, bob])
-  let copy = dom_element("p", {:class -> "lede"}, [dom_text("Choose a demo actor. No password yet; each browser session gets its own server-owned world view.")])
-  return dom_element("main", {:id -> "mud-root", :class -> "mud-login"}, [dom_element("section", {:class -> "login-card"}, [dom_element("h1", {}, [dom_text("Mica MUD")]), copy, choices])])
+  return dom <main id="mud-root" class="mud-login">
+    <section class="login-card">
+      <h1>Mica MUD</h1>
+      <p class="lede">Choose a demo actor. No password yet; each browser session gets its own server-owned world view.</p>
+      <div class="login-choices">{alice}{bob}</div>
+    </section>
+  </main>
 end
 
 verb ui/room_panel_node(actor @ #player)
   let room = actor.locatedIn
   let title = room.name
   let description = room.description
-  let heading = dom_element("h2", {}, [dom_text(title)])
-  let body = dom_element("p", {:class -> "room-description"}, [dom_text(description)])
-  return dom_element("section", {:id -> "room", :class -> "panel room-panel"}, [heading, body, ui/snapshot_exits_node(room), ui/room_objects_node(actor, room)])
+  return dom <section id="room" class="panel room-panel">
+    <h2>{title}</h2>
+    <p class="room-description">{description}</p>
+    {ui/snapshot_exits_node(room)}
+    {ui/room_objects_node(actor, room)}
+  </section>
 end
 
 verb ui/room_object_count(actor @ #player, room @ #room)
@@ -91,7 +106,10 @@ verb ui/inventory_count(actor @ #player)
 end
 
 verb ui/summary_metric_node(label, value)
-  return dom_element("div", {:class -> "summary-metric"}, [dom_element("span", {:class -> "summary-value"}, [dom_text(to_literal(value))]), dom_element("span", {:class -> "summary-label"}, [dom_text(label)])])
+  return dom <div class="summary-metric">
+    <span class="summary-value">{to_literal(value)}</span>
+    <span class="summary-label">{label}</span>
+  </div>
 end
 
 verb ui/scene_summary_node(actor @ #player, room @ #room)
@@ -100,18 +118,24 @@ verb ui/scene_summary_node(actor @ #player, room @ #room)
   metrics = [@metrics, ui/summary_metric_node("things", ui/room_object_count(actor, room))]
   metrics = [@metrics, ui/summary_metric_node("exits", ui/room_exit_count(room))]
   metrics = [@metrics, ui/summary_metric_node("carried", ui/inventory_count(actor))]
-  return dom_element("section", {:id -> "scene-summary", :class -> "scene-summary", "aria-label" -> "Current scene summary"}, [dom_element("span", {:class -> "summary-room"}, [dom_text("Room: "), dom_text(ui/actor_name(room))]), dom_element("div", {:class -> "summary-metrics"}, metrics)])
+  return dom <section id="scene-summary" class="scene-summary" aria-label="Current scene summary">
+    <span class="summary-room">Room: {ui/actor_name(room)}</span>
+    <div class="summary-metrics">{@metrics}</div>
+  </section>
 end
 
 verb ui/presence_card_node(viewer @ #player, actor @ #player)
   let name = ui/actor_name(actor)
   let description = actor.description
-  let label = dom_element("strong", {:class -> "presence-name"}, [dom_text(name)])
+  let label = dom <strong class="presence-name">{name}</strong>
   if actor != viewer
     label = ui/entity_action_node(string_concat("presence-", to_literal(actor)), actor, string_concat("look ", name), name, "entity-button presence-name")
   end
 
-  return dom_element("li", {"data-sync-key" -> to_literal(actor), :class -> "presence-card"}, [label, dom_element("p", {}, [dom_text(description)])])
+  return dom <li data-sync-key={to_literal(actor)} class="presence-card">
+    {label}
+    <p>{description}</p>
+  </li>
 end
 
 verb ui/presence_node(actor @ #player)
@@ -121,15 +145,24 @@ verb ui/presence_node(actor @ #player)
     people = [@people, ui/presence_card_node(actor, found[:player])]
   end
 
-  return dom_element("aside", {:id -> "presence", :class -> "panel presence"}, [dom_element("h2", {}, [dom_text("People here")]), dom_element("ul", {}, people)])
+  return dom <aside id="presence" class="panel presence">
+    <h2>People here</h2>
+    <ul>{@people}</ul>
+  </aside>
 end
 
 verb ui/snapshot_row_node(label, chips)
   if chips == []
-    return dom_element("div", {:class -> "snapshot-row empty"}, [dom_element("span", {:class -> "snapshot-label"}, [dom_text(label)]), dom_element("span", {:class -> "muted"}, [dom_text("None")])])
+    return dom <div class="snapshot-row empty">
+      <span class="snapshot-label">{label}</span>
+      <span class="muted">None</span>
+    </div>
   end
 
-  return dom_element("div", {:class -> "snapshot-row"}, [dom_element("span", {:class -> "snapshot-label"}, [dom_text(label)]), dom_element("div", {:class -> "snapshot-rail"}, chips)])
+  return dom <div class="snapshot-row">
+    <span class="snapshot-label">{label}</span>
+    <div class="snapshot-rail">{@chips}</div>
+  </div>
 end
 
 verb ui/snapshot_exits_node(room @ #room)
@@ -172,7 +205,11 @@ verb ui/snapshot_players_node(actor @ #player, room @ #room)
 end
 
 verb ui/room_snapshot_node(actor @ #player, room @ #room)
-  return dom_element("nav", {:class -> "room-snapshot", "aria-label" -> "Room snapshot"}, [ui/snapshot_exits_node(room), ui/snapshot_things_node(actor, room), ui/snapshot_players_node(actor, room)])
+  return dom <nav class="room-snapshot" aria-label="Room snapshot">
+    {ui/snapshot_exits_node(room)}
+    {ui/snapshot_things_node(actor, room)}
+    {ui/snapshot_players_node(actor, room)}
+  </nav>
 end
 
 verb ui/exits_node(room @ #room)
@@ -185,15 +222,18 @@ verb ui/room_objects_node(actor @ #player, room @ #room)
     let item = found[:item]
     if item != actor && PresentActor(room, item) == false
       let name = ui/actor_name(item)
-      objects = [@objects, dom_element("li", {"data-sync-key" -> to_literal(item), :class -> "object-row"}, [ui/entity_action_node(string_concat("inspect-", to_literal(item)), item, string_concat("look ", name), name, "entity-button object-link")])]
+      objects = [@objects, dom <li data-sync-key={to_literal(item)} class="object-row">{ui/entity_action_node(string_concat("inspect-", to_literal(item)), item, string_concat("look ", name), name, "entity-button object-link")}</li>]
     end
   end
 
   if objects == []
-    objects = [dom_element("li", {:class -> "muted"}, [dom_text("Nothing catches your eye.")])]
+    objects = [dom <li class="muted">Nothing catches your eye.</li>]
   end
 
-  return dom_element("section", {:class -> "objects"}, [dom_element("h2", {}, [dom_text("Here")]), dom_element("ul", {:class -> "object-list"}, objects)])
+  return dom <section class="objects">
+    <h2>Here</h2>
+    <ul class="object-list">{@objects}</ul>
+  </section>
 end
 
 verb ui/inventory_node(actor @ #player)
@@ -201,14 +241,20 @@ verb ui/inventory_node(actor @ #player)
   for found in Carrying(actor, ?item)
     let item = found[:item]
     let name = ui/actor_name(item)
-    items = [@items, dom_element("li", {"data-sync-key" -> to_literal(item)}, [ui/entity_action_node(string_concat("inventory-inspect-", to_literal(item)), item, string_concat("look ", name), name, "entity-button inventory-link"), ui/command_form_node(string_concat("drop-", to_literal(item)), string_concat("drop ", name), "drop", "mini-button")])]
+    items = [@items, dom <li data-sync-key={to_literal(item)}>
+      {ui/entity_action_node(string_concat("inventory-inspect-", to_literal(item)), item, string_concat("look ", name), name, "entity-button inventory-link")}
+      {ui/command_form_node(string_concat("drop-", to_literal(item)), string_concat("drop ", name), "drop", "mini-button")}
+    </li>]
   end
 
   if items == []
-    items = [dom_element("li", {:class -> "muted"}, [dom_text("Empty hands.")])]
+    items = [dom <li class="muted">Empty hands.</li>]
   end
 
-  return dom_element("aside", {:id -> "inventory", :class -> "panel inventory"}, [dom_element("h2", {}, [dom_text("Inventory")]), dom_element("ul", {}, items)])
+  return dom <aside id="inventory" class="panel inventory">
+    <h2>Inventory</h2>
+    <ul>{@items}</ul>
+  </aside>
 end
 
 verb ui/inspector_action_node(command, label, class)
@@ -255,7 +301,10 @@ verb ui/entity_location_text(actor @ #player, entity)
 end
 
 verb ui/entity_fact_node(label, value, class)
-  return dom_element("div", {:class -> string_concat("entity-fact ", class)}, [dom_element("span", {:class -> "entity-fact-label"}, [dom_text(label)]), dom_element("span", {:class -> "entity-fact-value"}, [dom_text(value)])])
+  return dom <div class={string_concat("entity-fact ", class)}>
+    <span class="entity-fact-label">{label}</span>
+    <span class="entity-fact-value">{value}</span>
+  </div>
 end
 
 verb ui/entity_facts_node(actor @ #player, entity)
@@ -272,13 +321,16 @@ verb ui/entity_facts_node(actor @ #player, entity)
     facts = [@facts, ui/entity_fact_node("visibility", "visible", "entity-visibility")]
   end
 
-  return dom_element("div", {:class -> "entity-facts"}, facts)
+  return dom <div class="entity-facts">{@facts}</div>
 end
 
 verb ui/inspector_node(actor @ #player)
   let selected = endpoint().session/inspect
   if selected == nothing || CanSee(actor, selected) == false
-    return dom_element("aside", {:id -> "inspector", :class -> "panel inspector"}, [dom_element("h2", {}, [dom_text("Examine")]), dom_element("p", {:class -> "muted"}, [dom_text("Select a room object or player to examine.")])])
+    return dom <aside id="inspector" class="panel inspector">
+      <h2>Examine</h2>
+      <p class="muted">Select a room object or player to examine.</p>
+    </aside>
   end
 
   let name = ui/actor_name(selected)
@@ -297,16 +349,31 @@ verb ui/inspector_node(actor @ #player)
     actions = [@actions, ui/mica_inspect_action_node(selected, "Mica inspect", "mini-button mica-button")]
   end
 
-  let avatar = dom_element("span", {:class -> "entity-avatar"}, [dom_text(ui/entity_initial(name))])
-  let title = dom_element("div", {:class -> "inspector-title-row"}, [avatar, dom_element("div", {}, [dom_element("strong", {:class -> "inspector-title"}, [dom_text(name)]), dom_element("span", {:class -> "inspector-subtitle"}, [dom_text(ui/entity_kind(selected))])])])
-  return dom_element("aside", {:id -> "inspector", :class -> "panel inspector", "data-entity" -> to_literal(selected)}, [dom_element("h2", {}, [dom_text("Examine")]), title, dom_element("p", {:class -> "inspector-description"}, [dom_text(description)]), ui/entity_facts_node(actor, selected), ui/retrieval_panel_node(actor, selected), dom_element("div", {:class -> "object-actions inspector-actions"}, actions)])
+  return dom <aside id="inspector" class="panel inspector" data-entity={to_literal(selected)}>
+    <h2>Examine</h2>
+    <div class="inspector-title-row">
+      <span class="entity-avatar">{ui/entity_initial(name)}</span>
+      <div>
+        <strong class="inspector-title">{name}</strong>
+        <span class="inspector-subtitle">{ui/entity_kind(selected)}</span>
+      </div>
+    </div>
+    <p class="inspector-description">{description}</p>
+    {ui/entity_facts_node(actor, selected)}
+    {ui/retrieval_panel_node(actor, selected)}
+    <div class="object-actions inspector-actions">{@actions}</div>
+  </aside>
 end
 
 verb ui/command_bar_node(actor @ #player)
-  let text = dom_element("input", {:id -> "command", :name -> "text", :autocomplete -> "off", :placeholder -> "Try: look, north, get coin, say hello", "aria-label" -> "Command"}, [])
-  let button = dom_element("button", {:id -> "send-command", :type -> "submit"}, [dom_text("Send")])
-  let composer = dom_element("form", {:id -> "mud-command", :class -> "command-form", "data-sync-event" -> "submit", "data-sync-action" -> "mud_command", "data-sync-submit-key" -> "ctrl+enter"}, [text, button])
-  return dom_element("section", {:class -> "command-deck"}, [ui/command_chips_node(actor), composer])
+  let composer = dom <form id="mud-command" class="command-form" data-sync-event="submit" data-sync-action="mud_command" data-sync-submit-key="ctrl+enter">
+    <input id="command" name="text" autocomplete="off" placeholder="Try: look, north, get coin, say hello" aria-label="Command" />
+    <button id="send-command" type="submit">Send</button>
+  </form>
+  return dom <section class="command-deck">
+    {ui/command_chips_node(actor)}
+    {composer}
+  </section>
 end
 
 verb ui/command_chips_node(actor @ #player)
@@ -324,7 +391,7 @@ verb ui/command_chips_node(actor @ #player)
     if selected == #red_button
       chips = [@chips, ui/command_form_node("", "push button", "push button", "chip danger")]
     end
-    return dom_element("div", {:class -> "command-chips", "aria-label" -> "Available actions"}, chips)
+    return dom <div class="command-chips" aria-label="Available actions">{@chips}</div>
   end
 
   let room = actor.locatedIn
@@ -347,22 +414,23 @@ verb ui/command_chips_node(actor @ #player)
     end
   end
 
-  return dom_element("div", {:class -> "command-chips", "aria-label" -> "Available actions"}, chips)
+  return dom <div class="command-chips" aria-label="Available actions">{@chips}</div>
 end
 
 verb ui/world_view_node(actor @ #player, revision, limit)
-  let title = dom_element("h1", {}, [dom_text("The Mica Rooms")])
-  let status = dom_element("div", {:class -> "status"}, [dom_text(ui/actor_name(actor)), dom_text(" · revision "), dom_text(to_literal(revision))])
-  let header = dom_element("header", {:class -> "topbar"}, [title, status])
-  let sidebar = dom_element("div", {:class -> "mud-sidebar"}, [ui/presence_node(actor), ui/inventory_node(actor), ui/inspector_node(actor)])
-  let stage = dom_element("div", {:class -> "mud-grid"}, [ui/room_panel_node(actor), ui/narrative_node(actor, revision, limit), sidebar])
+  let header = dom <header class="topbar">
+    <h1>The Mica Rooms</h1>
+    <div class="status">{ui/actor_name(actor)} · revision {to_literal(revision)}</div>
+  </header>
+  let sidebar = dom <div class="mud-sidebar">{ui/presence_node(actor)}{ui/inventory_node(actor)}{ui/inspector_node(actor)}</div>
+  let stage = dom <div class="mud-grid">{ui/room_panel_node(actor)}{ui/narrative_node(actor, revision, limit)}{sidebar}</div>
   let children = [header, stage]
   let class = "mud-shell"
   if ui/can_program(actor)
     let mica_selected = ui/mica_inspect_selected()
     if mica_selected != nothing
       if ui/mica_inspect_expanded()
-        stage = dom_element("div", {:class -> "mud-grid mica-inspect-preview"}, [ui/narrative_node(actor, revision, 8)])
+        stage = dom <div class="mud-grid mica-inspect-preview">{ui/narrative_node(actor, revision, 8)}</div>
         children = [header, stage]
         class = "mud-shell has-mica-inspect mica-inspect-expanded"
       end
@@ -373,5 +441,5 @@ verb ui/world_view_node(actor @ #player, revision, limit)
     end
   end
   children = [@children, ui/command_bar_node(actor)]
-  return dom_element("main", {:id -> "mud-root", :class -> class}, children)
+  return dom <main id="mud-root" class={class}>{@children}</main>
 end

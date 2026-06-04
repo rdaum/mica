@@ -25,6 +25,5 @@ verb sync_snapshot_signature(view, payload)
 end
 
 verb sync_mount_node(view, revision, signature, root)
-  let attrs = {:id -> "mount", "data-view" -> view, "data-revision" -> revision, "data-signature" -> signature, "data-sync-url" -> "/sync"}
-  return dom_element("div", attrs, [root])
+  return dom <div id="mount" data-view={view} data-revision={revision} data-signature={signature} data-sync-url="/sync">{root}</div>
 end
