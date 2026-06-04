@@ -7667,7 +7667,7 @@ mod tests {
             .unwrap();
 
         let report = runner
-            .run_source("return :parent(endpoint: #endpoint)")
+            .run_source("return :parent(endpoint: endpoint())")
             .unwrap();
 
         assert!(matches!(
@@ -8015,7 +8015,7 @@ mod tests {
             .unwrap();
 
         let report = runner
-            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"say hello\")")
+            .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"say hello\")")
             .unwrap();
 
         assert!(matches!(
@@ -8030,7 +8030,7 @@ mod tests {
         assert_eq!(emissions[1].value, Value::string("Alice says, \"hello\""));
 
         let report = runner
-            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"up\")")
+            .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"up\")")
             .unwrap();
         assert!(matches!(
             report.outcome,
@@ -8042,7 +8042,7 @@ mod tests {
         assert_eq!(emissions[0].value, Value::string("You cannot go that way."));
 
         let report = runner
-            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"get coin\")")
+            .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"get coin\")")
             .unwrap();
         assert!(matches!(
             report.outcome,
@@ -8056,7 +8056,7 @@ mod tests {
         assert_eq!(emissions[1].value, Value::string("Alice takes the coin."));
 
         let report = runner
-            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"look\")")
+            .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"look\")")
             .unwrap();
         assert!(matches!(
             report.outcome,
@@ -8070,7 +8070,7 @@ mod tests {
             == Value::string("A small wooden box rests here, open and empty.")));
 
         let report = runner
-            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"look box\")")
+            .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"look box\")")
             .unwrap();
         assert!(matches!(
             report.outcome,
@@ -8085,7 +8085,7 @@ mod tests {
 
         let report = runner
             .run_source(
-                "return :command(actor: #alice, endpoint: #endpoint, line: \"look at box\")",
+                "return :command(actor: #alice, endpoint: endpoint(), line: \"look at box\")",
             )
             .unwrap();
         assert!(matches!(
@@ -8101,7 +8101,7 @@ mod tests {
 
         let report = runner
             .run_source(
-                "return :command(actor: #alice, endpoint: #endpoint, line: \"look in box\")",
+                "return :command(actor: #alice, endpoint: endpoint(), line: \"look in box\")",
             )
             .unwrap();
         assert!(matches!(
@@ -8114,7 +8114,7 @@ mod tests {
 
         let report = runner
             .run_source(
-                "return :command(actor: #alice, endpoint: #endpoint, line: \"put coin in box\")",
+                "return :command(actor: #alice, endpoint: endpoint(), line: \"put coin in box\")",
             )
             .unwrap();
         assert!(matches!(
@@ -8136,7 +8136,7 @@ mod tests {
 
         let report = runner
             .run_source(
-                "return :command(actor: #alice, endpoint: #endpoint, line: \"look in box\")",
+                "return :command(actor: #alice, endpoint: endpoint(), line: \"look in box\")",
             )
             .unwrap();
         assert!(matches!(
@@ -8152,7 +8152,7 @@ mod tests {
 
         let report = runner
             .run_source(
-                "return :command(actor: #alice, endpoint: #endpoint, line: \"take coin from box\")",
+                "return :command(actor: #alice, endpoint: endpoint(), line: \"take coin from box\")",
             )
             .unwrap();
         assert!(matches!(
@@ -8173,7 +8173,7 @@ mod tests {
         );
 
         let report = runner
-            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"get coin\")")
+            .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"get coin\")")
             .unwrap();
         assert!(matches!(
             report.outcome,
@@ -8185,7 +8185,7 @@ mod tests {
         assert_eq!(emissions[0].value, Value::string("You already have that."));
 
         let report = runner
-            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"drop coin\")")
+            .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"drop coin\")")
             .unwrap();
         assert!(matches!(
             report.outcome,
@@ -8199,7 +8199,7 @@ mod tests {
         assert_eq!(emissions[1].value, Value::string("Alice drops the coin."));
 
         let report = runner
-            .run_source("return :command(actor: #alice, endpoint: #endpoint, line: \"dance\")")
+            .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"dance\")")
             .unwrap();
 
         assert!(matches!(

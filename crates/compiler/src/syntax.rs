@@ -160,6 +160,47 @@ impl SyntaxKind {
     pub fn is_trivia(self) -> bool {
         matches!(self, Self::Whitespace | Self::Newline | Self::LineComment)
     }
+
+    pub fn is_dom_name_atom(self) -> bool {
+        matches!(
+            self,
+            Self::Ident
+                | Self::ErrorCode
+                | Self::LetKw
+                | Self::ConstKw
+                | Self::IfKw
+                | Self::ElseIfKw
+                | Self::ElseKw
+                | Self::EndKw
+                | Self::BeginKw
+                | Self::ForKw
+                | Self::InKw
+                | Self::WhileKw
+                | Self::ReturnKw
+                | Self::RaiseKw
+                | Self::RecoverKw
+                | Self::OneKw
+                | Self::SpawnKw
+                | Self::AfterKw
+                | Self::NotKw
+                | Self::BreakKw
+                | Self::ContinueKw
+                | Self::TryKw
+                | Self::CatchKw
+                | Self::AsKw
+                | Self::FinallyKw
+                | Self::FnKw
+                | Self::MethodKw
+                | Self::VerbKw
+                | Self::DoKw
+                | Self::AssertKw
+                | Self::RetractKw
+                | Self::RequireKw
+                | Self::TrueKw
+                | Self::FalseKw
+                | Self::NothingKw
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

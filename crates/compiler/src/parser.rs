@@ -680,11 +680,21 @@ impl<'a> Parser<'a> {
     fn parse_dom_attr(&mut self) -> CstNode {
         self.skip_dom_trivia();
         let mut children = Vec::new();
-        children.push(self.dom_expect_token(SyntaxKind::Ident, "expected DOM attribute name"));
+        if self.raw_current_kind().is_dom_name_atom() {
+            children.push(self.raw_bump_element());
+        } else {
+            children.push(self.missing("expected DOM attribute name"));
+            if !matches!(
+                self.raw_current_kind(),
+                SyntaxKind::Eq | SyntaxKind::Gt | SyntaxKind::Slash | SyntaxKind::Eof
+            ) {
+                children.push(self.raw_bump_element());
+            }
+        }
         while matches!(
             self.raw_current_kind(),
             SyntaxKind::Minus | SyntaxKind::Colon
-        ) && self.raw_nth_non_ws_kind(1) == SyntaxKind::Ident
+        ) && self.raw_nth_non_ws_kind(1).is_dom_name_atom()
         {
             children.push(self.raw_bump_element());
             children.push(self.raw_bump_element());
@@ -1348,6 +1358,15 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::RoleCallExpr));
         assert!(contains(&parse.root, SyntaxKind::ReceiverCallExpr));
+    }
+
+    #[test]
+    fn parses_dom_attribute_name_parts_that_are_keywords() {
+        let parse = parse(
+            "return dom <option for=\"target\" data-source-symbol-end={to_literal(2)}>symbol</option>",
+        );
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::DomAttr));
     }
 
     #[test]

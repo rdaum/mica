@@ -397,14 +397,12 @@ impl<'a> Lower<'a> {
         let tokens = self.token_children(node).collect::<Vec<_>>();
         let first = tokens
             .first()
-            .filter(|token| token.kind == SyntaxKind::Ident)?;
+            .filter(|token| token.kind.is_dom_name_atom())?;
         let name_end = tokens
             .iter()
             .take_while(|token| {
-                matches!(
-                    token.kind,
-                    SyntaxKind::Ident | SyntaxKind::Minus | SyntaxKind::Colon
-                )
+                token.kind.is_dom_name_atom()
+                    || matches!(token.kind, SyntaxKind::Minus | SyntaxKind::Colon)
             })
             .last()
             .map(|token| token.span.end)
@@ -1491,6 +1489,47 @@ mod tests {
             CollectionItem::Expr(Expr::Call { callee, .. })
                 if matches!(callee.as_ref(), Expr::Name { name, .. } if name == "dom_text")
         )));
+    }
+
+    #[test]
+    fn lowers_dom_attribute_name_parts_that_are_keywords() {
+        let ast = parse_ast(
+            "return dom <option for=\"target\" data-source-symbol-end={to_literal(2)}>symbol</option>",
+        );
+        assert_eq!(ast.errors, vec![]);
+        let Item::Expr {
+            expr: Expr::Return {
+                value: Some(value), ..
+            },
+            ..
+        } = &ast.items[0]
+        else {
+            panic!("expected return");
+        };
+        let Expr::Call { args, .. } = &**value else {
+            panic!("expected dom_element call");
+        };
+        let Expr::Map { entries, .. } = &args[1].value else {
+            panic!("expected attr map");
+        };
+        assert!(entries.iter().any(|(key, _)| {
+            matches!(
+                key,
+                Expr::Literal {
+                    value: Literal::String(key),
+                    ..
+                } if key == "for"
+            )
+        }));
+        assert!(entries.iter().any(|(key, _)| {
+            matches!(
+                key,
+                Expr::Literal {
+                    value: Literal::String(key),
+                    ..
+                } if key == "data-source-symbol-end"
+            )
+        }));
     }
 
     #[test]
