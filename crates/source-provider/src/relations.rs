@@ -2293,6 +2293,7 @@ impl ComputedRelation for FileHistoryRelation {
                 Tuple::from([
                     repository.clone(),
                     Value::string(&path),
+                    int_value(metadata.id(), limit as i64).unwrap(),
                     Value::string(commit.hex()),
                     Value::list(parent_list),
                     Value::string(name),
@@ -2300,7 +2301,6 @@ impl ComputedRelation for FileHistoryRelation {
                     int_value(metadata.id(), ts).unwrap(),
                     Value::string(first_line(&msg)),
                     Value::string(msg),
-                    int_value(metadata.id(), limit as i64).unwrap(),
                 ])
             })
             .collect();
