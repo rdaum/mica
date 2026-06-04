@@ -1,11 +1,34 @@
-use jj_lib::backend::{Backend, CommitId, TreeId};
+use jj_lib::backend::{Backend, CommitId, FileId, Tree, TreeId, TreeValue};
 use jj_lib::git_backend::GitBackend;
-use std::collections::HashMap;
+use jj_lib::object_id::ObjectId;
+use jj_lib::repo_path::{RepoPathBuf, RepoPathComponentBuf};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tokio::io::AsyncReadExt;
+
+const MAX_COMMIT_WALK: usize = 512;
+const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChangeKind {
+    Added,
+    Modified,
+    Removed,
+}
+
+impl ChangeKind {
+    pub(crate) fn symbol_name(&self) -> &'static str {
+        match self {
+            ChangeKind::Added => "source/vcs_added",
+            ChangeKind::Modified => "source/vcs_modified",
+            ChangeKind::Removed => "source/vcs_removed",
+        }
+    }
+}
 
 pub(crate) struct VcsProvider {
     backend: GitBackend,
@@ -46,10 +69,31 @@ impl VcsProvider {
         })
     }
 
+    // -- commit identity ---------------------------------------------------
+
     pub(crate) fn resolve_commit(&self, commit_hex: &str) -> Result<CommitId, String> {
+        if commit_hex.is_empty() {
+            return Err("commit hex must not be empty".to_string());
+        }
         CommitId::try_from_hex(commit_hex)
             .ok_or_else(|| format!("invalid commit hex: '{commit_hex}'"))
     }
+
+    pub(crate) fn commit_exists(&self, commit_id: &CommitId) -> Result<bool, String> {
+        match pollster::block_on(self.backend.read_commit(commit_id)) {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("not found") {
+                    Ok(false)
+                } else {
+                    Err(format!("commit exists check failed: {e}"))
+                }
+            }
+        }
+    }
+
+    // -- commit metadata (cached) ------------------------------------------
 
     pub(crate) fn commit_tree(&self, commit_id: &CommitId) -> Result<TreeId, String> {
         {
@@ -127,20 +171,630 @@ impl VcsProvider {
         Ok(commit.parents.clone())
     }
 
-    pub(crate) fn commit_exists(&self, commit_id: &CommitId) -> Result<bool, String> {
-        match pollster::block_on(self.backend.read_commit(commit_id)) {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("not found") {
-                    Ok(false)
-                } else {
-                    Err(format!("commit exists check failed: {e}"))
+    // -- head resolution ---------------------------------------------------
+
+    fn resolve_head(&self) -> Result<CommitId, String> {
+        let git_repo = self.backend.git_repo();
+        let mut head_ref = git_repo
+            .find_reference("HEAD")
+            .map_err(|e| format!("failed to find HEAD: {e}"))?;
+        let peeled = head_ref
+            .peel_to_id()
+            .map_err(|e| format!("failed to peel HEAD: {e}"))?;
+        let hex = peeled.to_string();
+        self.resolve_commit(&hex)
+    }
+
+    // -- tree / blob access ------------------------------------------------
+
+    fn read_tree(&self, tree_id: &TreeId) -> Result<Tree, String> {
+        pollster::block_on(self.backend.read_tree(&RepoPathBuf::root(), tree_id))
+            .map_err(|e| format!("failed to read tree: {e}"))
+    }
+
+    fn read_file_bytes(&self, file_id: &FileId) -> Result<Vec<u8>, String> {
+        pollster::block_on(async {
+            let reader = self
+                .backend
+                .read_file(&RepoPathBuf::root(), file_id)
+                .await
+                .map_err(|e| format!("failed to read file: {e}"))?;
+            let limit = MAX_FILE_SIZE + 1;
+            let mut taken = reader.take(limit);
+            let mut buf = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut taken, &mut buf)
+                .await
+                .map_err(|e| format!("failed to read file content: {e}"))?;
+            if buf.len() as u64 >= limit {
+                return Err(format!(
+                    "file too large (>= {:.1} MB)",
+                    MAX_FILE_SIZE as f64 / 1_000_000.0
+                ));
+            }
+            Ok(buf)
+        })
+    }
+
+    fn read_file_text(&self, file_id: &FileId) -> Result<String, String> {
+        let bytes = self.read_file_bytes(file_id)?;
+        String::from_utf8(bytes).map_err(|e| format!("file is not valid UTF-8: {e}"))
+    }
+
+    fn tree_file_id_at_path(&self, tree_id: &TreeId, path: &str) -> Result<Option<FileId>, String> {
+        if path.is_empty() {
+            return Err("empty path".to_string());
+        }
+        let components: Vec<&str> = path.split('/').collect();
+        let mut current_tree_id = tree_id.clone();
+        for (i, component) in components.iter().enumerate() {
+            let tree = self.read_tree(&current_tree_id)?;
+            let name = RepoPathComponentBuf::new(component.to_string())
+                .map_err(|e| format!("invalid path component '{component}': {e}"))?;
+            let value = tree.value(&name);
+            if i == components.len() - 1 {
+                return match value {
+                    Some(TreeValue::File { id, .. }) => Ok(Some(id.clone())),
+                    Some(_) => Ok(None),
+                    None => Ok(None),
+                };
+            }
+            match value {
+                Some(TreeValue::Tree(subtree_id)) => {
+                    current_tree_id = subtree_id.clone();
                 }
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    fn read_file_at_tree(&self, tree_id: &TreeId, path: &str) -> Result<Option<String>, String> {
+        match self.tree_file_id_at_path(tree_id, path)? {
+            Some(file_id) => {
+                let text = self.read_file_text(&file_id)?;
+                Ok(Some(text))
+            }
+            None => Ok(None),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn read_file_at_commit(
+        &self,
+        commit_id: &CommitId,
+        path: &str,
+    ) -> Result<Option<String>, String> {
+        let tree_id = self.commit_tree(commit_id)?;
+        self.read_file_at_tree(&tree_id, path)
+    }
+
+    fn collect_file_ids(
+        &self,
+        tree_id: &TreeId,
+        prefix: &str,
+    ) -> Result<HashMap<String, FileId>, String> {
+        let tree = self.read_tree(tree_id)?;
+        let mut files = HashMap::new();
+        for entry in tree.entries() {
+            let name_str = entry
+                .name()
+                .to_fs_name()
+                .map_err(|_| {
+                    "tree contains a path component that cannot be represented as a source path"
+                        .to_string()
+                })?
+                .to_string();
+            let full_path = if prefix.is_empty() {
+                name_str
+            } else {
+                format!("{}/{}", prefix, name_str)
+            };
+            match entry.value() {
+                TreeValue::File { id, .. } => {
+                    files.insert(full_path, id.clone());
+                }
+                TreeValue::Tree(subtree_id) => {
+                    let sub = self.collect_file_ids(subtree_id, &full_path)?;
+                    files.extend(sub);
+                }
+                _ => {}
+            }
+        }
+        Ok(files)
+    }
+
+    fn diff_trees(
+        &self,
+        from_tree_id: &TreeId,
+        to_tree_id: &TreeId,
+    ) -> Result<Vec<(String, ChangeKind)>, String> {
+        let from_files = self.collect_file_ids(from_tree_id, "")?;
+        let to_files = self.collect_file_ids(to_tree_id, "")?;
+        let mut all_names: Vec<&String> = from_files.keys().chain(to_files.keys()).collect();
+        all_names.sort();
+        all_names.dedup();
+        let mut result = Vec::new();
+        for name in all_names {
+            match (from_files.get(name), to_files.get(name)) {
+                (None, Some(_)) => result.push((name.clone(), ChangeKind::Added)),
+                (Some(_), None) => result.push((name.clone(), ChangeKind::Removed)),
+                (Some(from_id), Some(to_id)) => {
+                    if from_id != to_id {
+                        result.push((name.clone(), ChangeKind::Modified));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(result)
+    }
+
+    // -- changed files -----------------------------------------------------
+
+    pub(crate) fn changed_files(
+        &self,
+        from: &CommitId,
+        to: &CommitId,
+    ) -> Result<Vec<(String, ChangeKind)>, String> {
+        let from_tree_id = self.commit_tree(from)?;
+        let to_tree_id = self.commit_tree(to)?;
+        self.diff_trees(&from_tree_id, &to_tree_id)
+    }
+
+    // -- file diff ---------------------------------------------------------
+
+    pub(crate) fn file_diff(
+        &self,
+        from: &CommitId,
+        to: &CommitId,
+        path: &str,
+    ) -> Result<Option<(ChangeKind, String)>, String> {
+        let from_tree_id = self.commit_tree(from)?;
+        let to_tree_id = self.commit_tree(to)?;
+        let from_text = self.read_file_at_tree(&from_tree_id, path)?;
+        let to_text = self.read_file_at_tree(&to_tree_id, path)?;
+
+        match diff_kind(from_text.as_deref(), to_text.as_deref()) {
+            None => Ok(None),
+            Some(kind) => {
+                let diff = unified_diff(
+                    from_text.as_deref().unwrap_or(""),
+                    to_text.as_deref().unwrap_or(""),
+                    path,
+                    from,
+                    to,
+                );
+                Ok(Some((kind, diff)))
             }
         }
     }
+
+    // -- commit log --------------------------------------------------------
+
+    pub(crate) fn commit_log(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(CommitId, Vec<CommitId>, String, String, i64, String)>, String> {
+        let effective_limit = limit.min(MAX_COMMIT_WALK);
+        let head = self.resolve_head()?;
+        let mut results = Vec::new();
+        let mut visited: HashSet<CommitId> = HashSet::new();
+        let mut queue: Vec<CommitId> = vec![head];
+
+        while let Some(current) = queue.pop() {
+            if results.len() >= effective_limit {
+                break;
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let parents = self.commit_parents(&current)?;
+            let (name, email, ts) = self.commit_author(&current)?;
+            let msg = self.commit_message(&current)?;
+            results.push((current.clone(), parents.clone(), name, email, ts, msg));
+            for p in parents.iter().rev() {
+                queue.push(p.clone());
+            }
+        }
+
+        Ok(results)
+    }
+
+    // -- commit search -----------------------------------------------------
+
+    pub(crate) fn commit_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(CommitId, Vec<CommitId>, String, String, i64, String)>, String> {
+        let effective_limit = limit.min(MAX_COMMIT_WALK);
+        let query_lower = query.to_lowercase();
+        let head = self.resolve_head()?;
+        let mut results = Vec::new();
+        let mut visited: HashSet<CommitId> = HashSet::new();
+        let mut queue: Vec<CommitId> = vec![head];
+
+        while let Some(current) = queue.pop() {
+            if results.len() >= effective_limit || visited.len() >= MAX_COMMIT_WALK {
+                break;
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let parents = self.commit_parents(&current)?;
+            let (name, email, ts) = self.commit_author(&current)?;
+            let msg = self.commit_message(&current)?;
+
+            let name_lower = name.to_lowercase();
+            let email_lower = email.to_lowercase();
+            let msg_lower = msg.to_lowercase();
+            if name_lower.contains(&query_lower)
+                || email_lower.contains(&query_lower)
+                || msg_lower.contains(&query_lower)
+            {
+                results.push((current.clone(), parents.clone(), name, email, ts, msg));
+            }
+
+            for p in parents.iter().rev() {
+                queue.push(p.clone());
+            }
+        }
+
+        Ok(results)
+    }
+
+    // -- file history ------------------------------------------------------
+
+    pub(crate) fn file_history(
+        &self,
+        path: &str,
+        limit: usize,
+    ) -> Result<Vec<(CommitId, Vec<CommitId>, String, String, i64, String)>, String> {
+        let effective_limit = limit.min(MAX_COMMIT_WALK);
+        let head = self.resolve_head()?;
+        let mut results = Vec::new();
+        let mut visited: HashSet<CommitId> = HashSet::new();
+        let mut queue: Vec<CommitId> = vec![head];
+
+        while let Some(current) = queue.pop() {
+            if results.len() >= effective_limit || visited.len() >= MAX_COMMIT_WALK {
+                break;
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let tree_id = self.commit_tree(&current)?;
+            let current_fid = self.tree_file_id_at_path(&tree_id, path)?;
+
+            let parents = self.commit_parents(&current)?;
+            let mut file_changed = parents.is_empty();
+
+            for parent in &parents {
+                if file_changed {
+                    break;
+                }
+                let parent_tree_id = self.commit_tree(parent)?;
+                let parent_fid = self.tree_file_id_at_path(&parent_tree_id, path)?;
+                if current_fid != parent_fid {
+                    file_changed = true;
+                }
+            }
+
+            if file_changed {
+                let (name, email, ts) = self.commit_author(&current)?;
+                let msg = self.commit_message(&current)?;
+                results.push((current.clone(), parents.clone(), name, email, ts, msg));
+            }
+
+            for p in parents.iter().rev() {
+                queue.push(p.clone());
+            }
+        }
+
+        Ok(results)
+    }
+
+    // -- blame -------------------------------------------------------------
+
+    pub(crate) fn blame(
+        &self,
+        commit_id: &CommitId,
+        path: &str,
+    ) -> Result<Vec<(u64, CommitId, String, String, i64, String)>, String> {
+        let tree_id = self.commit_tree(commit_id)?;
+        let file_id = match self.tree_file_id_at_path(&tree_id, path)? {
+            Some(fid) => fid,
+            None => return Ok(Vec::new()),
+        };
+
+        let text = self.read_file_text(&file_id)?;
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+        let mut result: Vec<(u64, CommitId, String, String, i64, String)> = Vec::new();
+        let mut visited: HashSet<CommitId> = HashSet::new();
+        let mut queue: Vec<CommitId> = vec![commit_id.clone()];
+        let mut remaining: Vec<(usize, usize)> = vec![(0, lines.len())];
+
+        while let Some(current) = queue.pop() {
+            if visited.len() >= MAX_COMMIT_WALK || remaining.is_empty() {
+                break;
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+
+            let current_tree_id = self.commit_tree(&current)?;
+            let current_fid = match self.tree_file_id_at_path(&current_tree_id, path)? {
+                Some(fid) => fid,
+                None => {
+                    let (name, email, ts) = self.commit_author(&current)?;
+                    let msg = self.commit_message(&current)?;
+                    for (start, end) in remaining.drain(..) {
+                        for line in start..end {
+                            result.push((
+                                (line + 1) as u64,
+                                current.clone(),
+                                name.clone(),
+                                email.clone(),
+                                ts,
+                                msg.clone(),
+                            ));
+                        }
+                    }
+                    break;
+                }
+            };
+
+            let current_text = self.read_file_text(&current_fid)?;
+            let current_lines: Vec<&str> = current_text.lines().collect();
+            let parents = self.commit_parents(&current)?;
+
+            if parents.is_empty() {
+                let (name, email, ts) = self.commit_author(&current)?;
+                let msg = self.commit_message(&current)?;
+                for (start, end) in remaining.drain(..) {
+                    for line in start..end {
+                        result.push((
+                            (line + 1) as u64,
+                            current.clone(),
+                            name.clone(),
+                            email.clone(),
+                            ts,
+                            msg.clone(),
+                        ));
+                    }
+                }
+                break;
+            }
+
+            let mut new_remaining = Vec::new();
+            for (start, end) in remaining.drain(..) {
+                let mut resolved = false;
+                for parent in &parents {
+                    let parent_tree_id = self.commit_tree(parent)?;
+                    if let Some(parent_fid) = self.tree_file_id_at_path(&parent_tree_id, path)? {
+                        let parent_text = self.read_file_text(&parent_fid)?;
+                        let parent_lines: Vec<&str> = parent_text.lines().collect();
+                        let mut range_start = start;
+                        for line in start..end {
+                            let cur = current_lines.get(line).copied().unwrap_or("");
+                            let par = parent_lines.get(line).copied().unwrap_or("\0");
+                            if cur == par {
+                                if range_start < line {
+                                    let (name, email, ts) = self.commit_author(&current)?;
+                                    let msg = self.commit_message(&current)?;
+                                    for l in range_start..line {
+                                        result.push((
+                                            (l + 1) as u64,
+                                            current.clone(),
+                                            name.clone(),
+                                            email.clone(),
+                                            ts,
+                                            msg.clone(),
+                                        ));
+                                    }
+                                }
+                                range_start = line + 1;
+                                resolved = true;
+                            }
+                        }
+                        if range_start < end {
+                            new_remaining.push((range_start, end));
+                        }
+                        break;
+                    }
+                }
+                if !resolved {
+                    let (name, email, ts) = self.commit_author(&current)?;
+                    let msg = self.commit_message(&current)?;
+                    for line in start..end {
+                        result.push((
+                            (line + 1) as u64,
+                            current.clone(),
+                            name.clone(),
+                            email.clone(),
+                            ts,
+                            msg.clone(),
+                        ));
+                    }
+                }
+            }
+            remaining = new_remaining;
+            if !remaining.is_empty() {
+                for p in parents.iter().rev() {
+                    queue.push(p.clone());
+                }
+            }
+        }
+
+        result.sort_by_key(|(line, _, _, _, _, _)| *line);
+        Ok(result)
+    }
 }
+
+// -- unified diff helper ---------------------------------------------------
+
+fn diff_kind(old: Option<&str>, new: Option<&str>) -> Option<ChangeKind> {
+    match (old, new) {
+        (None, None) => None,
+        (None, Some(_)) => Some(ChangeKind::Added),
+        (Some(_), None) => Some(ChangeKind::Removed),
+        (Some(a), Some(b)) if a == b => None,
+        (Some(_), Some(_)) => Some(ChangeKind::Modified),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffLine<'a> {
+    text: &'a str,
+    has_newline: bool,
+}
+
+fn split_diff_lines(text: &str) -> Vec<DiffLine<'_>> {
+    text.split_inclusive('\n')
+        .map(|line| {
+            if let Some(stripped) = line.strip_suffix('\n') {
+                DiffLine {
+                    text: stripped,
+                    has_newline: true,
+                }
+            } else {
+                DiffLine {
+                    text: line,
+                    has_newline: false,
+                }
+            }
+        })
+        .collect()
+}
+
+fn unified_diff(
+    old_text: &str,
+    new_text: &str,
+    path: &str,
+    from: &CommitId,
+    to: &CommitId,
+) -> String {
+    let from_hash = &from.hex()[..8.min(from.hex().len())];
+    let to_hash = &to.hex()[..8.min(to.hex().len())];
+    let mut out = String::new();
+    out.push_str(&format!("--- a/{}\t{}\n", path, from_hash));
+    out.push_str(&format!("+++ b/{}\t{}\n", path, to_hash));
+
+    let old_lines = split_diff_lines(old_text);
+    let new_lines = split_diff_lines(new_text);
+    let n = old_lines.len();
+    let m = new_lines.len();
+    let max = n + m;
+    let mut v = vec![0isize; 2 * max + 1];
+    let mut trace: Vec<Vec<isize>> = Vec::new();
+
+    let mut done = false;
+    let mut d: isize = 0;
+    while (d as usize) <= max && !done {
+        let v_snap = v.clone();
+        trace.push(v_snap);
+        for k in (-d..=d).step_by(2) {
+            let idx = (k + max as isize) as usize;
+            let mut x = if d == 0 {
+                0
+            } else if k == -d || (k != d && v[idx - 1] < v[idx + 1]) {
+                v[idx + 1]
+            } else {
+                v[idx - 1] + 1
+            };
+            let mut y = (x - k) as usize;
+            while x < n as isize && y < m && old_lines[x as usize] == new_lines[y] {
+                x += 1;
+                y += 1;
+            }
+            v[idx] = x;
+            if x as usize >= n && y >= m {
+                done = true;
+                break;
+            }
+        }
+        d += 1;
+    }
+
+    let mut hunks: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut x = n as isize;
+    let mut y = m as isize;
+    for (di, v_snap) in trace.iter().enumerate().rev() {
+        let dv = di as isize;
+        let k = x - y as isize;
+        let km1_idx = (k - 1 + max as isize) as usize;
+        let kp1_idx = (k + 1 + max as isize) as usize;
+        let prev_k = if dv == 0 {
+            0
+        } else if k == -dv || (k != dv && v_snap[km1_idx] < v_snap[kp1_idx]) {
+            k + 1
+        } else {
+            k - 1
+        };
+        let prev_x = v_snap[(prev_k + max as isize) as usize];
+        let prev_y = prev_x - prev_k;
+        let old_start = prev_x as usize;
+        let old_end = x as usize;
+        let new_start = prev_y as usize;
+        let new_end = y as usize;
+        let old_slice = &old_lines[old_start..old_end];
+        let new_slice = &new_lines[new_start..new_end];
+        if old_slice != new_slice {
+            hunks.push((old_start, old_end, new_start, new_end));
+        }
+        x = prev_x;
+        y = prev_y;
+    }
+    hunks.reverse();
+
+    for (old_start, old_end, new_start, new_end) in &hunks {
+        let old_count = old_end - old_start;
+        let new_count = new_end - new_start;
+        if old_count == 0 {
+            out.push_str(&format!(
+                "@@ -{},0 +{},{} @@\n",
+                old_start + 1,
+                new_start + 1,
+                new_count
+            ));
+        } else if new_count == 0 {
+            out.push_str(&format!(
+                "@@ -{},{} +{},0 @@\n",
+                old_start + 1,
+                old_count,
+                new_start + 1
+            ));
+        } else {
+            out.push_str(&format!(
+                "@@ -{},{} +{},{} @@\n",
+                old_start + 1,
+                old_count,
+                new_start + 1,
+                new_count
+            ));
+        }
+        for line in &old_lines[*old_start..*old_end] {
+            out.push_str(&format!("-{}\n", line.text));
+            if !line.has_newline {
+                out.push_str("\\ No newline at end of file\n");
+            }
+        }
+        for line in &new_lines[*new_start..*new_end] {
+            out.push_str(&format!("+{}\n", line.text));
+            if !line.has_newline {
+                out.push_str("\\ No newline at end of file\n");
+            }
+        }
+    }
+
+    out
+}
+
+// -- gitfile resolution ----------------------------------------------------
 
 fn resolve_git_dir(path: &Path) -> Result<PathBuf, String> {
     if path.is_dir() {
@@ -179,7 +833,6 @@ fn resolve_git_dir(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jj_lib::object_id::ObjectId;
     use std::path::PathBuf;
 
     fn mica_git_dir() -> PathBuf {
@@ -200,10 +853,8 @@ mod tests {
         let root = vcs.backend.root_commit_id().clone();
         let tree = vcs.commit_tree(&root).expect("tree");
         assert!(!tree.hex().is_empty());
-
         let parents = vcs.commit_parents(&root).expect("parents");
         assert!(parents.is_empty(), "root commit has no parents");
-
         let _msg = vcs.commit_message(&root).expect("message");
     }
 
@@ -214,7 +865,6 @@ mod tests {
         let hex = root.hex();
         let resolved = vcs.resolve_commit(&hex).expect("resolve");
         assert_eq!(root, resolved);
-
         let bad = vcs.resolve_commit("nothex");
         assert!(bad.is_err());
     }
@@ -253,5 +903,73 @@ mod tests {
         fs::write(&gitfile, "gitdir: sub/actual.git\n").expect("write");
         let resolved = resolve_git_dir(&gitfile).expect("resolve");
         assert_eq!(resolved, target);
+    }
+
+    fn dummy_commit() -> CommitId {
+        CommitId::from_hex("0000000000000000000000000000000000000000")
+    }
+
+    #[test]
+    fn diff_kind_tracks_file_presence() {
+        assert_eq!(diff_kind(None, None), None);
+        assert_eq!(diff_kind(None, Some("new")), Some(ChangeKind::Added));
+        assert_eq!(diff_kind(Some("old"), None), Some(ChangeKind::Removed));
+        assert_eq!(diff_kind(Some("same"), Some("same")), None);
+        assert_eq!(
+            diff_kind(Some("old"), Some("new")),
+            Some(ChangeKind::Modified)
+        );
+    }
+
+    #[test]
+    fn diff_add_only() {
+        let from = dummy_commit();
+        let to = dummy_commit();
+        let diff = unified_diff("", "added line\n", "test.txt", &from, &to);
+        assert!(diff.contains("@@ -1,0 +1,1 @@"));
+        assert!(diff.contains("+added line"));
+    }
+
+    #[test]
+    fn diff_delete_only() {
+        let from = dummy_commit();
+        let to = dummy_commit();
+        let diff = unified_diff("removed line\n", "", "test.txt", &from, &to);
+        assert!(diff.contains("@@ -1,1 +1,0 @@"));
+        assert!(diff.contains("-removed line"));
+    }
+
+    #[test]
+    fn diff_replace() {
+        let from = dummy_commit();
+        let to = dummy_commit();
+        let diff = unified_diff("old line\n", "new line\n", "test.txt", &from, &to);
+        // Myers diff represents a replace as separate delete + add hunks
+        assert!(diff.contains("@@ -1,1 +1,0 @@"));
+        assert!(diff.contains("@@ -2,0 +1,1 @@"));
+        assert!(diff.contains("-old line"));
+        assert!(diff.contains("+new line"));
+    }
+
+    #[test]
+    fn diff_unchanged() {
+        let from = dummy_commit();
+        let to = dummy_commit();
+        let diff = unified_diff("same\n", "same\n", "test.txt", &from, &to);
+        assert!(!diff.contains("@@"), "unchanged should have no hunks");
+    }
+
+    #[test]
+    fn diff_final_newline_change() {
+        let from = dummy_commit();
+        let to = dummy_commit();
+        let diff = unified_diff("same", "same\n", "test.txt", &from, &to);
+        assert!(
+            diff.contains("@@"),
+            "newline-only change should emit a hunk"
+        );
+        assert!(diff.contains("-same"));
+        assert!(diff.contains("+same"));
+        assert!(diff.contains("\\ No newline at end of file"));
     }
 }

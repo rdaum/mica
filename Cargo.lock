@@ -3314,6 +3314,7 @@ dependencies = [
  "pollster",
  "serde_json",
  "tempfile",
+ "tokio",
  "tree-sitter",
  "tree-sitter-javascript",
  "tree-sitter-md",

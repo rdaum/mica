@@ -36,6 +36,11 @@ const TEXT_SEARCH_BOUND: &[u16] = &[0, 1, 2];
 const INDEX_VALUE_BOUND: &[u16] = &[];
 const VCS_COMMIT_KEY_BOUND: &[u16] = &[0, 1];
 const VCS_REPOSITORY_BOUND: &[u16] = &[0];
+const VCS_TWO_COMMIT_BOUND: &[u16] = &[0, 1, 2];
+const VCS_TWO_COMMIT_PATH_BOUND: &[u16] = &[0, 1, 2, 3];
+const VCS_COMMIT_PATH_BOUND: &[u16] = &[0, 1];
+const VCS_BLAME_BOUND: &[u16] = &[0, 1, 2];
+const VCS_SEARCH_BOUND: &[u16] = &[0, 1];
 const SEMANTIC_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SOURCE_DOCUMENT_CACHE_LIMIT: usize = 64;
 
@@ -121,6 +126,27 @@ pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
             provider: provider.clone(),
         }),
         Arc::new(CommitParentsRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(ChangedFilesRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(FileDiffRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(CommitLogRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(CommitSearchRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(FileHistoryRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(FileBlameRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(FileBlameHunkRelation {
             provider: provider.clone(),
         }),
     ]
@@ -1997,4 +2023,461 @@ impl ComputedRelation for CommitParentsRelation {
             .collect();
         Ok(filter_bound_rows(tuples, bindings))
     }
+}
+
+struct ChangedFilesRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for ChangedFilesRelation {
+    fn name(&self) -> &'static str {
+        "local-source-changed-files"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/ChangedFiles") && metadata.arity() == 5
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_TWO_COMMIT_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let from_hex = bound_string(metadata.id(), bindings, 1, "from_commit")?;
+        let to_hex = bound_string(metadata.id(), bindings, 2, "to_commit")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let from_id = vcs
+            .resolve_commit(&from_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let to_id = vcs
+            .resolve_commit(&to_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let changed = vcs
+            .changed_files(&from_id, &to_id)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let tuples: Vec<Tuple> = changed
+            .into_iter()
+            .map(|(path, kind)| {
+                Tuple::from([
+                    repository.clone(),
+                    Value::string(&from_hex),
+                    Value::string(&to_hex),
+                    Value::string(path),
+                    Value::symbol(Symbol::intern(kind.symbol_name())),
+                ])
+            })
+            .collect();
+        Ok(filter_bound_rows(tuples, bindings))
+    }
+}
+
+struct FileDiffRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for FileDiffRelation {
+    fn name(&self) -> &'static str {
+        "local-source-file-diff"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/FileDiff") && metadata.arity() == 7
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_TWO_COMMIT_PATH_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let from_hex = bound_string(metadata.id(), bindings, 1, "from_commit")?;
+        let to_hex = bound_string(metadata.id(), bindings, 2, "to_commit")?;
+        let path = bound_string(metadata.id(), bindings, 3, "path")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let from_id = vcs
+            .resolve_commit(&from_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let to_id = vcs
+            .resolve_commit(&to_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let diff = vcs
+            .file_diff(&from_id, &to_id, &path)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        Ok(filter_bound_rows(
+            diff.into_iter()
+                .map(|(kind, text)| {
+                    Tuple::from([
+                        repository.clone(),
+                        Value::string(&from_hex),
+                        Value::string(&to_hex),
+                        Value::string(&path),
+                        Value::symbol(Symbol::intern(kind.symbol_name())),
+                        Value::string(&path),
+                        Value::string(text),
+                    ])
+                })
+                .collect(),
+            bindings,
+        ))
+    }
+}
+
+struct CommitLogRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for CommitLogRelation {
+    fn name(&self) -> &'static str {
+        "local-source-commit-log"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/CommitLog") && metadata.arity() == 9
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_REPOSITORY_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let limit = match bindings.get(1) {
+            Some(Some(val)) => val.as_int().unwrap_or(20) as usize,
+            _ => 20,
+        };
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commits = vcs
+            .commit_log(limit)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let tuples: Vec<Tuple> = commits
+            .into_iter()
+            .map(|(commit, parents, name, email, ts, msg)| {
+                let parent_list: Vec<Value> =
+                    parents.iter().map(|p| Value::string(p.hex())).collect();
+                Tuple::from([
+                    repository.clone(),
+                    int_value(metadata.id(), limit as i64).unwrap(),
+                    Value::string(commit.hex()),
+                    Value::list(parent_list),
+                    Value::string(name),
+                    Value::string(email),
+                    int_value(metadata.id(), ts).unwrap(),
+                    Value::string(first_line(&msg)),
+                    Value::string(msg),
+                ])
+            })
+            .collect();
+        Ok(filter_bound_rows(tuples, bindings))
+    }
+}
+
+struct CommitSearchRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for CommitSearchRelation {
+    fn name(&self) -> &'static str {
+        "local-source-commit-search"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/CommitSearch") && metadata.arity() == 9
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_SEARCH_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let query = bound_string(metadata.id(), bindings, 1, "query")?;
+        let limit = match bindings.get(2) {
+            Some(Some(val)) => val.as_int().unwrap_or(20) as usize,
+            _ => 20,
+        };
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commits = vcs
+            .commit_search(&query, limit)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let tuples: Vec<Tuple> = commits
+            .into_iter()
+            .map(|(commit, parents, name, email, ts, msg)| {
+                let parent_list: Vec<Value> =
+                    parents.iter().map(|p| Value::string(p.hex())).collect();
+                Tuple::from([
+                    repository.clone(),
+                    Value::string(&query),
+                    int_value(metadata.id(), limit as i64).unwrap(),
+                    Value::string(commit.hex()),
+                    Value::list(parent_list),
+                    Value::string(name),
+                    Value::string(email),
+                    int_value(metadata.id(), ts).unwrap(),
+                    Value::string(first_line(&msg)),
+                ])
+            })
+            .collect();
+        Ok(filter_bound_rows(tuples, bindings))
+    }
+}
+
+struct FileHistoryRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for FileHistoryRelation {
+    fn name(&self) -> &'static str {
+        "local-source-file-history"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/FileHistory") && metadata.arity() == 10
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_COMMIT_PATH_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let path = bound_string(metadata.id(), bindings, 1, "path")?;
+        let limit = match bindings.get(2) {
+            Some(Some(val)) => val.as_int().unwrap_or(20) as usize,
+            _ => 20,
+        };
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commits = vcs
+            .file_history(&path, limit)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let tuples: Vec<Tuple> = commits
+            .into_iter()
+            .map(|(commit, parents, name, email, ts, msg)| {
+                let parent_list: Vec<Value> =
+                    parents.iter().map(|p| Value::string(p.hex())).collect();
+                Tuple::from([
+                    repository.clone(),
+                    Value::string(&path),
+                    Value::string(commit.hex()),
+                    Value::list(parent_list),
+                    Value::string(name),
+                    Value::string(email),
+                    int_value(metadata.id(), ts).unwrap(),
+                    Value::string(first_line(&msg)),
+                    Value::string(msg),
+                    int_value(metadata.id(), limit as i64).unwrap(),
+                ])
+            })
+            .collect();
+        Ok(filter_bound_rows(tuples, bindings))
+    }
+}
+
+struct FileBlameRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for FileBlameRelation {
+    fn name(&self) -> &'static str {
+        "local-source-file-blame"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/FileBlame") && metadata.arity() == 9
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_BLAME_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let commit_hex = bound_string(metadata.id(), bindings, 1, "commit")?;
+        let path = bound_string(metadata.id(), bindings, 2, "path")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commit_id = vcs
+            .resolve_commit(&commit_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let lines = vcs
+            .blame(&commit_id, &path)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let tuples: Vec<Tuple> = lines
+            .into_iter()
+            .map(|(line, origin, name, email, ts, msg)| {
+                Tuple::from([
+                    repository.clone(),
+                    Value::string(&commit_hex),
+                    Value::string(&path),
+                    int_value(metadata.id(), line as i64).unwrap(),
+                    Value::string(origin.hex()),
+                    Value::string(name),
+                    Value::string(email),
+                    int_value(metadata.id(), ts).unwrap(),
+                    Value::string(first_line(&msg)),
+                ])
+            })
+            .collect();
+        Ok(filter_bound_rows(tuples, bindings))
+    }
+}
+
+struct FileBlameHunkRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for FileBlameHunkRelation {
+    fn name(&self) -> &'static str {
+        "local-source-file-blame-hunk"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/FileBlameHunk") && metadata.arity() == 10
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_BLAME_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let commit_hex = bound_string(metadata.id(), bindings, 1, "commit")?;
+        let path = bound_string(metadata.id(), bindings, 2, "path")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let commit_id = vcs
+            .resolve_commit(&commit_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let lines = vcs
+            .blame(&commit_id, &path)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let tuples =
+            merge_adjacent_blame_lines(lines, &repository, &commit_hex, &path, metadata.id())?;
+        Ok(filter_bound_rows(tuples, bindings))
+    }
+}
+
+fn first_line(msg: &str) -> String {
+    msg.lines().next().unwrap_or("").to_string()
+}
+
+fn merge_adjacent_blame_lines(
+    lines: Vec<(u64, jj_lib::backend::CommitId, String, String, i64, String)>,
+    repository: &Value,
+    commit_hex: &str,
+    path: &str,
+    relation: RelationId,
+) -> Result<Vec<Tuple>, KernelError> {
+    if lines.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut tuples = Vec::new();
+    let mut hunk_start = lines[0].0;
+    let mut hunk_end = lines[0].0;
+    let mut current = (
+        lines[0].1.clone(),
+        lines[0].2.clone(),
+        lines[0].3.clone(),
+        lines[0].4,
+        lines[0].5.clone(),
+    );
+    for (line, origin, name, email, ts, msg) in lines.iter().skip(1) {
+        let next = (
+            origin.clone(),
+            name.clone(),
+            email.clone(),
+            *ts,
+            msg.clone(),
+        );
+        if next == current && *line == hunk_end + 1 {
+            hunk_end = *line;
+        } else {
+            tuples.push(blame_hunk_tuple(
+                repository, commit_hex, path, hunk_start, hunk_end, &current.0, &current.1,
+                &current.2, current.3, &current.4, relation,
+            )?);
+            hunk_start = *line;
+            hunk_end = *line;
+            current = next;
+        }
+    }
+    tuples.push(blame_hunk_tuple(
+        repository, commit_hex, path, hunk_start, hunk_end, &current.0, &current.1, &current.2,
+        current.3, &current.4, relation,
+    )?);
+    Ok(tuples)
+}
+
+fn blame_hunk_tuple(
+    repository: &Value,
+    commit_hex: &str,
+    path: &str,
+    start_line: u64,
+    end_line: u64,
+    origin: &jj_lib::backend::CommitId,
+    name: &str,
+    email: &str,
+    ts: i64,
+    msg: &str,
+    relation: RelationId,
+) -> Result<Tuple, KernelError> {
+    Ok(Tuple::from([
+        repository.clone(),
+        Value::string(commit_hex),
+        Value::string(path),
+        int_value(relation, start_line as i64)?,
+        int_value(relation, end_line as i64)?,
+        Value::string(origin.hex()),
+        Value::string(name),
+        Value::string(email),
+        int_value(relation, ts)?,
+        Value::string(first_line(msg)),
+    ]))
 }
