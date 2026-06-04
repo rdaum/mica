@@ -37,6 +37,21 @@ items[2.._]
 `[@prefix, last]` splices the list in `prefix` into a new list before `last`.
 `2.._` is an open-ended range used by index operations.
 
+## DOM Markup
+
+```mica
+dom <button type="submit" class={class}>
+  Save
+</button>
+
+dom <ul>{@items}</ul>
+```
+
+`dom <...>` builds DOM node values and lowers to `dom_element(...)` and
+`dom_text(...)`. Use `{expr}` for dynamic attributes or children, and `{@expr}`
+to splice a list of child nodes. Bare `<tag>` is not expression syntax; the
+`dom` prefix is required.
+
 ## Relations
 
 ```mica

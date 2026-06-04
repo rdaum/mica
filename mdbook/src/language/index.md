@@ -32,7 +32,9 @@ The main language pieces are:
 - verbs: installed behaviour selected by named-role dispatch;
 - authority: policy facts compiled into cheap runtime checks;
 - effects: committed outputs to hosts and endpoints;
-- tasks: transactional executions that can commit, suspend, resume, and spawn.
+- tasks: transactional executions that can commit, suspend, resume, and spawn;
+- DOM markup: `dom <...>` expressions that build server-owned browser DOM
+  trees using ordinary Mica expressions for dynamic values.
 
 The syntax is Algol-family and expression-oriented. There is no separate
 statement-only layer. Assignment, conditionals, queries, dispatch, and builtin
