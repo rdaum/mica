@@ -4297,6 +4297,10 @@ fn render_dom_xml(
         escape_html_text(&text, out);
         return Ok(());
     }
+    if let Some(text) = node.with_str(str::to_owned) {
+        escape_html_text(&text, out);
+        return Ok(());
+    }
     if let Some(raw) = dom_raw(node) {
         out.push_str(&raw);
         return Ok(());
@@ -7167,6 +7171,18 @@ mod tests {
                 .outcome,
             TaskOutcome::Complete { value, .. }
                 if value == Value::string("<h4>References</h4>")
+        ));
+        assert!(matches!(
+            runner
+                .run_source(
+                    "let label = \"Send & go\"\n\
+                     let extra = [dom <span class=\"note\">!</span>]\n\
+                     return dom_html(dom <button id=\"send\" type=\"submit\">{label}{@extra}</button>)"
+                )
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::string("<button id=\"send\" type=\"submit\">Send &amp; go<span class=\"note\">!</span></button>")
         ));
         let expanded_dom = runner
             .run_source(

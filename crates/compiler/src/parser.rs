@@ -15,10 +15,11 @@ use crate::{CstElement, CstNode, CstToken, Parse, ParseError, SyntaxKind, Token,
 
 pub fn parse(source: &str) -> Parse {
     let tokens = lex(source);
-    Parser::new(&tokens).parse()
+    Parser::new(source, &tokens).parse()
 }
 
 struct Parser<'a> {
+    source: &'a str,
     tokens: &'a [Token],
     pos: usize,
     errors: Vec<ParseError>,
@@ -26,8 +27,9 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(tokens: &'a [Token]) -> Self {
+    fn new(source: &'a str, tokens: &'a [Token]) -> Self {
         Self {
+            source,
             tokens,
             pos: 0,
             errors: Vec::new(),
@@ -247,6 +249,7 @@ impl<'a> Parser<'a> {
                 self.parse_identity_expr()
             }
             SyntaxKind::Colon => self.parse_symbol_or_role_call(),
+            SyntaxKind::Ident if self.looks_like_dom_expr() => self.parse_dom_expr(),
             SyntaxKind::Question if self.nth_kind(1) == SyntaxKind::Ident => {
                 if !self.query_vars_allowed {
                     self.error("query variables are only valid as relation arguments");
@@ -605,6 +608,139 @@ impl<'a> Parser<'a> {
         } else {
             CstNode::new(SyntaxKind::IdentityExpr, children)
         }
+    }
+
+    fn parse_dom_expr(&mut self) -> CstNode {
+        let children = vec![
+            self.bump_element(),
+            CstElement::Node(self.parse_dom_element()),
+        ];
+        CstNode::new(SyntaxKind::DomExpr, children)
+    }
+
+    fn parse_dom_element(&mut self) -> CstNode {
+        let mut children = Vec::new();
+        children.push(self.dom_expect_token(SyntaxKind::Lt, "expected '<' to start DOM element"));
+        let tag = self.dom_expect_token(SyntaxKind::Ident, "expected DOM tag name");
+        let tag_name = self.token_text(&tag).unwrap_or_default();
+        children.push(tag);
+
+        while !matches!(
+            self.dom_current_kind(),
+            SyntaxKind::Gt | SyntaxKind::Slash | SyntaxKind::Eof
+        ) {
+            children.push(CstElement::Node(self.parse_dom_attr()));
+        }
+
+        if self.dom_current_kind() == SyntaxKind::Slash {
+            children.push(self.dom_bump_element());
+            children.push(self.dom_expect_token(
+                SyntaxKind::Gt,
+                "expected '>' after self-closing DOM element",
+            ));
+            return CstNode::new(SyntaxKind::DomElement, children);
+        }
+
+        children.push(
+            self.dom_expect_token(SyntaxKind::Gt, "expected '>' after DOM element start tag"),
+        );
+
+        while !matches!(self.raw_current_kind(), SyntaxKind::Eof) {
+            if self.raw_current_kind() == SyntaxKind::Lt
+                && self.raw_nth_non_ws_kind(1) == SyntaxKind::Slash
+            {
+                break;
+            }
+            if self.raw_current_kind() == SyntaxKind::Lt {
+                children.push(CstElement::Node(self.parse_dom_element()));
+            } else if self.raw_current_kind() == SyntaxKind::LBrace {
+                children.push(CstElement::Node(self.parse_dom_child_expr()));
+            } else {
+                children.push(CstElement::Node(self.parse_dom_text()));
+            }
+        }
+
+        children.push(self.dom_expect_token(SyntaxKind::Lt, "expected DOM closing tag"));
+        children.push(self.dom_expect_token(SyntaxKind::Slash, "expected '/' in DOM closing tag"));
+        let close_tag = self.dom_expect_token(SyntaxKind::Ident, "expected DOM closing tag name");
+        if let Some(close_tag_name) = self.token_text(&close_tag)
+            && close_tag_name != tag_name
+        {
+            self.errors.push(ParseError::new(
+                format!("expected closing tag </{tag_name}>"),
+                element_span(&close_tag),
+            ));
+        }
+        children.push(close_tag);
+        children.push(self.dom_expect_token(SyntaxKind::Gt, "expected '>' after DOM closing tag"));
+
+        CstNode::new(SyntaxKind::DomElement, children)
+    }
+
+    fn parse_dom_attr(&mut self) -> CstNode {
+        self.skip_dom_trivia();
+        let mut children = Vec::new();
+        children.push(self.dom_expect_token(SyntaxKind::Ident, "expected DOM attribute name"));
+        while matches!(
+            self.raw_current_kind(),
+            SyntaxKind::Minus | SyntaxKind::Colon
+        ) && self.raw_nth_non_ws_kind(1) == SyntaxKind::Ident
+        {
+            children.push(self.raw_bump_element());
+            children.push(self.raw_bump_element());
+        }
+
+        self.skip_dom_trivia();
+        if self.raw_current_kind() == SyntaxKind::Eq {
+            children.push(self.raw_bump_element());
+            self.skip_dom_trivia();
+            if self.raw_current_kind() == SyntaxKind::String {
+                children.push(self.raw_bump_element());
+            } else if self.raw_current_kind() == SyntaxKind::LBrace {
+                children.push(self.raw_bump_element());
+                children.push(CstElement::Node(self.parse_expr(0)));
+                children.push(self.expect_token(
+                    SyntaxKind::RBrace,
+                    "expected '}' after DOM attribute expression",
+                ));
+            } else {
+                children
+                    .push(self.missing("expected quoted string or '{...}' DOM attribute value"));
+            }
+        }
+        CstNode::new(SyntaxKind::DomAttr, children)
+    }
+
+    fn parse_dom_child_expr(&mut self) -> CstNode {
+        let mut children = vec![self.raw_bump_element()];
+        if self.current_kind() == SyntaxKind::At {
+            children.push(self.bump_element());
+        }
+        children.push(CstElement::Node(self.parse_expr(0)));
+        children.push(self.expect_token(
+            SyntaxKind::RBrace,
+            "expected '}' after DOM child expression",
+        ));
+        CstNode::new(SyntaxKind::DomChildExpr, children)
+    }
+
+    fn parse_dom_text(&mut self) -> CstNode {
+        let start = self.raw_current_span().start;
+        let mut end = start;
+        while !matches!(
+            self.raw_current_kind(),
+            SyntaxKind::Lt | SyntaxKind::LBrace | SyntaxKind::Eof
+        ) {
+            end = self.raw_current_span().end;
+            self.pos += 1;
+        }
+        CstNode::new(
+            SyntaxKind::DomText,
+            vec![CstElement::Token(CstToken {
+                kind: SyntaxKind::DomText,
+                span: start..end,
+            })],
+        )
     }
 
     fn parse_symbol_or_role_call(&mut self) -> CstNode {
@@ -969,6 +1105,87 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn looks_like_dom_expr(&self) -> bool {
+        let token = self.nth_non_ws_token(0);
+        token.kind == SyntaxKind::Ident
+            && self.source[token.span.clone()] == *"dom"
+            && self.nth_non_ws_kind_from(self.pos, 1) == SyntaxKind::Lt
+            && self.nth_non_ws_kind_from(self.pos, 2) == SyntaxKind::Ident
+    }
+
+    fn raw_current_kind(&self) -> SyntaxKind {
+        self.tokens
+            .get(self.pos)
+            .or_else(|| self.tokens.last())
+            .expect("lexer always emits EOF")
+            .kind
+    }
+
+    fn raw_current_span(&self) -> std::ops::Range<usize> {
+        self.tokens
+            .get(self.pos)
+            .or_else(|| self.tokens.last())
+            .expect("lexer always emits EOF")
+            .span
+            .clone()
+    }
+
+    fn raw_nth_non_ws_kind(&self, n: usize) -> SyntaxKind {
+        self.nth_non_ws_token_from(self.pos, n).kind
+    }
+
+    fn raw_bump_element(&mut self) -> CstElement {
+        let token = self
+            .tokens
+            .get(self.pos)
+            .or_else(|| self.tokens.last())
+            .expect("lexer always emits EOF")
+            .clone();
+        if token.kind != SyntaxKind::Eof {
+            self.pos += 1;
+        }
+        CstElement::Token(token.into())
+    }
+
+    fn skip_dom_trivia(&mut self) {
+        while matches!(
+            self.tokens
+                .get(self.pos)
+                .or_else(|| self.tokens.last())
+                .expect("lexer always emits EOF")
+                .kind,
+            SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::LineComment
+        ) {
+            self.pos += 1;
+        }
+    }
+
+    fn dom_current_kind(&mut self) -> SyntaxKind {
+        self.skip_dom_trivia();
+        self.raw_current_kind()
+    }
+
+    fn dom_bump_element(&mut self) -> CstElement {
+        self.skip_dom_trivia();
+        self.raw_bump_element()
+    }
+
+    fn dom_expect_token(&mut self, kind: SyntaxKind, message: &str) -> CstElement {
+        self.skip_dom_trivia();
+        if self.raw_current_kind() == kind {
+            self.raw_bump_element()
+        } else {
+            self.missing(message)
+        }
+    }
+
+    fn token_text(&self, element: &CstElement) -> Option<String> {
+        let CstElement::Token(token) = element else {
+            return None;
+        };
+        Some(self.source[token.span.clone()].to_owned())
+    }
+
     fn current_span(&mut self) -> std::ops::Range<usize> {
         self.skip_ws_comments();
         self.tokens
@@ -1002,6 +1219,13 @@ fn element_end(element: &CstElement) -> usize {
     match element {
         CstElement::Node(node) => node.span.end,
         CstElement::Token(token) => token.span.end,
+    }
+}
+
+fn element_span(element: &CstElement) -> std::ops::Range<usize> {
+    match element {
+        CstElement::Node(node) => node.span.clone(),
+        CstElement::Token(token) => token.span.clone(),
     }
 }
 

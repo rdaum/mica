@@ -275,6 +275,9 @@ pub struct DomEventPayload {
 
 impl DomNode {
     pub fn from_mica_value(value: &Value) -> Result<Self, String> {
+        if let Some(text) = value.with_str(str::to_owned) {
+            return Ok(Self::Text(text));
+        }
         if let Some(text) = value
             .map_get(&Value::symbol(Symbol::intern("text")))
             .and_then(|value| value.with_str(str::to_owned))
@@ -891,6 +894,27 @@ mod tests {
         assert_eq!(json["view"], 11);
         assert_eq!(json["revision"], 20);
         assert_eq!(json["root"]["text"], "hello");
+    }
+
+    #[test]
+    fn mica_value_accepts_bare_string_children_as_text_nodes() {
+        let node = Value::map([
+            (Value::symbol(Symbol::intern("tag")), Value::string("span")),
+            (Value::symbol(Symbol::intern("attrs")), Value::map([])),
+            (
+                Value::symbol(Symbol::intern("children")),
+                Value::list([Value::string("hello")]),
+            ),
+        ]);
+
+        assert_eq!(
+            DomNode::from_mica_value(&node).unwrap(),
+            DomNode::Element {
+                tag: "span".to_owned(),
+                attrs: BTreeMap::new(),
+                children: vec![DomNode::Text("hello".to_owned())],
+            }
+        );
     }
 
     #[test]

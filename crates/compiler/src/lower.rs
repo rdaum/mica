@@ -195,6 +195,7 @@ impl<'a> Lower<'a> {
             SyntaxKind::IdentityExpr => self.lower_identity(node),
             SyntaxKind::FrobExpr => self.lower_frob(node),
             SyntaxKind::SymbolExpr => self.lower_symbol(node),
+            SyntaxKind::DomExpr => self.lower_dom_expr(node),
             SyntaxKind::HoleExpr => Expr::Hole {
                 id: self.node_id(),
                 span: node.span.clone(),
@@ -346,6 +347,118 @@ impl<'a> Lower<'a> {
                 .map(|child| self.lower_expr(child))
                 .unwrap_or_else(|| self.error_expr(node))
         }
+    }
+
+    fn lower_dom_expr(&mut self, node: &CstNode) -> Expr {
+        self.node_children(node)
+            .find(|child| child.kind == SyntaxKind::DomElement)
+            .map(|child| self.lower_dom_element(child))
+            .unwrap_or_else(|| self.error_expr(node))
+    }
+
+    fn lower_dom_element(&mut self, node: &CstNode) -> Expr {
+        let tag = self
+            .token_children(node)
+            .find(|token| token.kind == SyntaxKind::Ident)
+            .map(|token| self.text(token.span.clone()).to_owned())
+            .unwrap_or_default();
+
+        let attrs = self
+            .node_children(node)
+            .filter(|child| child.kind == SyntaxKind::DomAttr)
+            .filter_map(|child| self.lower_dom_attr(child))
+            .collect::<Vec<_>>();
+
+        let children = self
+            .node_children(node)
+            .filter_map(|child| match child.kind {
+                SyntaxKind::DomElement => Some(CollectionItem::Expr(self.lower_dom_element(child))),
+                SyntaxKind::DomChildExpr => Some(self.lower_dom_child_expr(child)),
+                SyntaxKind::DomText => self.lower_dom_text(child).map(CollectionItem::Expr),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let tag = self.literal_string(node.span.clone(), tag);
+        let attrs = Expr::Map {
+            id: self.node_id(),
+            span: node.span.clone(),
+            entries: attrs,
+        };
+        let children = Expr::List {
+            id: self.node_id(),
+            span: node.span.clone(),
+            items: children,
+        };
+        self.call_expr(node.span.clone(), "dom_element", vec![tag, attrs, children])
+    }
+
+    fn lower_dom_attr(&mut self, node: &CstNode) -> Option<(Expr, Expr)> {
+        let tokens = self.token_children(node).collect::<Vec<_>>();
+        let first = tokens
+            .first()
+            .filter(|token| token.kind == SyntaxKind::Ident)?;
+        let name_end = tokens
+            .iter()
+            .take_while(|token| {
+                matches!(
+                    token.kind,
+                    SyntaxKind::Ident | SyntaxKind::Minus | SyntaxKind::Colon
+                )
+            })
+            .last()
+            .map(|token| token.span.end)
+            .unwrap_or(first.span.end);
+        let name = self.text(first.span.start..name_end).to_owned();
+        let key = self.literal_string(first.span.start..name_end, name);
+
+        let value = self
+            .node_children(node)
+            .find(|child| is_expr_node(child.kind))
+            .map(|child| self.lower_expr(child))
+            .or_else(|| {
+                tokens
+                    .iter()
+                    .find(|token| token.kind == SyntaxKind::String)
+                    .map(|token| {
+                        self.literal_string(
+                            token.span.clone(),
+                            unquote(self.text(token.span.clone())),
+                        )
+                    })
+            })
+            .unwrap_or_else(|| Expr::Literal {
+                id: self.node_id(),
+                span: node.span.clone(),
+                value: Literal::Bool(true),
+            });
+
+        Some((key, value))
+    }
+
+    fn lower_dom_child_expr(&mut self, node: &CstNode) -> CollectionItem {
+        let value = self
+            .node_children(node)
+            .find(|child| is_expr_node(child.kind))
+            .map(|child| self.lower_expr(child))
+            .unwrap_or_else(|| self.error_expr(node));
+        if self
+            .token_children(node)
+            .any(|token| token.kind == SyntaxKind::At)
+        {
+            CollectionItem::Splice(value)
+        } else {
+            CollectionItem::Expr(value)
+        }
+    }
+
+    fn lower_dom_text(&mut self, node: &CstNode) -> Option<Expr> {
+        let text = self.text(node.span.clone());
+        if text.trim().is_empty() {
+            return None;
+        }
+        let text = self.literal_string(node.span.clone(), text.to_owned());
+        Some(self.call_expr(node.span.clone(), "dom_text", vec![text]))
     }
 
     fn lower_list(&mut self, node: &CstNode) -> Expr {
@@ -996,6 +1109,40 @@ impl<'a> Lower<'a> {
         }
     }
 
+    fn literal_string(&mut self, span: std::ops::Range<usize>, value: String) -> Expr {
+        Expr::Literal {
+            id: self.node_id(),
+            span,
+            value: Literal::String(value),
+        }
+    }
+
+    fn name_expr(&mut self, span: std::ops::Range<usize>, name: &str) -> Expr {
+        Expr::Name {
+            id: self.node_id(),
+            span,
+            name: name.to_owned(),
+        }
+    }
+
+    fn call_expr(&mut self, span: std::ops::Range<usize>, callee: &str, values: Vec<Expr>) -> Expr {
+        let args = values
+            .into_iter()
+            .map(|value| Arg {
+                id: self.node_id(),
+                role: None,
+                splice: false,
+                value,
+            })
+            .collect();
+        Expr::Call {
+            id: self.node_id(),
+            span: span.clone(),
+            callee: Box::new(self.name_expr(span, callee)),
+            args,
+        }
+    }
+
     fn node_children<'n>(&self, node: &'n CstNode) -> impl Iterator<Item = &'n CstNode> + use<'n> {
         node.children.iter().filter_map(|child| match child {
             CstElement::Node(node) => Some(node),
@@ -1222,6 +1369,7 @@ fn is_expr_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::IdentityExpr
             | SyntaxKind::FrobExpr
             | SyntaxKind::SymbolExpr
+            | SyntaxKind::DomExpr
             | SyntaxKind::HoleExpr
             | SyntaxKind::AtomExpr
     )
@@ -1283,6 +1431,88 @@ mod tests {
             panic!("expected receiver call");
         };
         assert!(matches!(&**selector, Expr::Symbol { name, .. } if name == "put"));
+    }
+
+    #[test]
+    fn lowers_dom_markup_to_dom_calls() {
+        let ast = parse_ast(
+            "return dom <button type=\"submit\" class={class} data-sync-key=\"send\">\n\
+               Send {label}<span aria-selected={selected}>!</span>{@extra}\n\
+             </button>",
+        );
+        assert_eq!(ast.errors, vec![]);
+        let Item::Expr {
+            expr: Expr::Return {
+                value: Some(value), ..
+            },
+            ..
+        } = &ast.items[0]
+        else {
+            panic!("expected return");
+        };
+        let Expr::Call { callee, args, .. } = &**value else {
+            panic!("expected dom_element call");
+        };
+        assert!(matches!(&**callee, Expr::Name { name, .. } if name == "dom_element"));
+        assert_eq!(args.len(), 3);
+        assert!(matches!(
+            &args[0].value,
+            Expr::Literal {
+                value: Literal::String(tag),
+                ..
+            } if tag == "button"
+        ));
+        let Expr::Map { entries, .. } = &args[1].value else {
+            panic!("expected attr map");
+        };
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().any(|(key, value)| {
+            matches!(
+                (key, value),
+                (
+                    Expr::Literal {
+                        value: Literal::String(key),
+                        ..
+                    },
+                    Expr::Name { name, .. }
+                ) if key == "class" && name == "class"
+            )
+        }));
+        let Expr::List { items, .. } = &args[2].value else {
+            panic!("expected child list");
+        };
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, CollectionItem::Splice(_)))
+        );
+        assert!(items.iter().any(|item| matches!(
+            item,
+            CollectionItem::Expr(Expr::Call { callee, .. })
+                if matches!(callee.as_ref(), Expr::Name { name, .. } if name == "dom_text")
+        )));
+    }
+
+    #[test]
+    fn dom_identifier_is_not_reserved_without_markup() {
+        let ast = parse_ast("let dom = 1\nreturn dom < 2");
+        assert_eq!(ast.errors, vec![]);
+        let Item::Expr {
+            expr: Expr::Return {
+                value: Some(value), ..
+            },
+            ..
+        } = &ast.items[1]
+        else {
+            panic!("expected return");
+        };
+        assert!(matches!(
+            &**value,
+            Expr::Binary {
+                op: BinaryOp::Lt,
+                ..
+            }
+        ));
     }
 
     #[test]
