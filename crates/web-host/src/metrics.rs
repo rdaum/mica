@@ -250,6 +250,24 @@ pub fn metrics_snapshot_json() -> JsonValue {
             "suspended_tasks": mica_runtime::metrics::metrics().suspended_tasks.get(),
             "transient_tuples": mica_runtime::metrics::metrics().transient_tuples.get(),
         },
+        "mica_vm": {
+            "relation_operations": labeled_counter_snapshot(&mica_runtime::vm_metrics::metrics().relation_operations),
+            "relation_operation_shapes": labeled_counter_snapshot(&mica_runtime::vm_metrics::metrics().relation_operation_shapes),
+            "relation_operation_rows": histogram_snapshot(&mica_runtime::vm_metrics::metrics().relation_operation_rows),
+            "relation_operation_elapsed_us": mica_runtime::vm_metrics::metrics().relation_operation_elapsed_us.sum(),
+            "top_relation_operations": relation_operation_summaries_snapshot(32),
+        },
+        "mica_relation_kernel": {
+            "transaction_read_operations": labeled_counter_snapshot(&mica_runtime::relation_kernel_metrics::metrics().transaction_read_operations),
+            "transaction_read_rows": labeled_histogram_snapshot(&mica_runtime::relation_kernel_metrics::metrics().transaction_read_rows),
+            "derived_materializations": mica_runtime::relation_kernel_metrics::metrics().derived_materializations.sum(),
+            "derived_materialization_duration_us": histogram_snapshot(&mica_runtime::relation_kernel_metrics::metrics().derived_materialization_duration_us),
+            "derived_materialization_rows": histogram_snapshot(&mica_runtime::relation_kernel_metrics::metrics().derived_materialization_rows),
+            "top_derived_relations": derived_relation_summaries_snapshot(16),
+            "snapshot_relations": mica_runtime::relation_kernel_metrics::metrics().snapshot_relations.get(),
+            "snapshot_rules": mica_runtime::relation_kernel_metrics::metrics().snapshot_rules.get(),
+            "snapshot_version": mica_runtime::relation_kernel_metrics::metrics().snapshot_version.get(),
+        },
     })
 }
 
@@ -305,6 +323,41 @@ fn histogram_snapshot(histogram: &Histogram) -> JsonValue {
         "sum": histogram.sum(),
         "buckets": buckets,
     })
+}
+
+fn relation_operation_summaries_snapshot(limit: usize) -> JsonValue {
+    JsonValue::Array(
+        mica_runtime::vm_metrics::relation_operation_summaries(limit)
+            .into_iter()
+            .map(|summary| {
+                json!({
+                    "relation_id": summary.relation_id,
+                    "relation_name": summary.relation_name,
+                    "operation": summary.operation,
+                    "bound_mask": summary.bound_mask,
+                    "calls": summary.calls,
+                    "rows": summary.rows,
+                    "elapsed_us": summary.elapsed_us,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn derived_relation_summaries_snapshot(limit: usize) -> JsonValue {
+    JsonValue::Array(
+        mica_runtime::relation_kernel_metrics::derived_relation_summaries(limit)
+            .into_iter()
+            .map(|summary| {
+                json!({
+                    "relation_id": summary.relation_id,
+                    "relation_name": summary.relation_name,
+                    "materializations": summary.materializations,
+                    "rows": summary.rows,
+                })
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn connection_started() {

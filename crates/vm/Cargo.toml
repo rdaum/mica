@@ -8,6 +8,7 @@ description = "Register-based bytecode VM for Mica"
 
 [dependencies]
 arc-swap.workspace = true
+fast-telemetry.workspace = true
 mica-relation-kernel.workspace = true
 mica-var.workspace = true
 tracing.workspace = true

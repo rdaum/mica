@@ -22,6 +22,7 @@ mod authority;
 mod builtin;
 mod effect;
 mod error;
+pub mod metrics;
 mod program;
 mod vm;
 

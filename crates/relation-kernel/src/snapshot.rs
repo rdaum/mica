@@ -355,9 +355,23 @@ impl Snapshot {
     fn derived_tuples(&self) -> Result<&BTreeMap<RelationId, Vec<Tuple>>, KernelError> {
         self.derived_cache
             .get_or_init(|| {
-                RuleSet::new(active_rules(&self.rules))
+                let start = std::time::Instant::now();
+                let derived = RuleSet::new(active_rules(&self.rules))
                     .evaluate_fixpoint(&ExtensionalSnapshotReader { snapshot: self })
-                    .map_err(KernelError::from)
+                    .map_err(KernelError::from)?;
+                crate::metrics::record_derived_materialization(
+                    start.elapsed(),
+                    derived.iter().map(|(relation, rows)| {
+                        let name = self
+                            .relation(*relation)
+                            .ok()
+                            .and_then(|relation| relation.metadata().name().name())
+                            .unwrap_or("<unknown>")
+                            .to_owned();
+                        (*relation, name, rows.len())
+                    }),
+                );
+                Ok(derived)
             })
             .as_ref()
             .map_err(Clone::clone)

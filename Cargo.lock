@@ -3351,6 +3351,7 @@ name = "mica-vm"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "fast-telemetry",
  "mica-relation-kernel",
  "mica-var",
  "tracing",

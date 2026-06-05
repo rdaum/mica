@@ -22,7 +22,8 @@ mod task_manager;
 mod vm_tests;
 
 pub use embedding::{EmbeddingProvider, EmbeddingProviderKind};
-pub use mica_relation_kernel::Tuple;
+pub use mica_relation_kernel::{Tuple, metrics as relation_kernel_metrics};
+pub use mica_vm::metrics as vm_metrics;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, CatchHandler, Emission, ErrorField, ExternalRequest, Frame, Instruction,

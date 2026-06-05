@@ -12,6 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::builtin::{RuntimePorts, TransientAccess};
+use crate::metrics::RelationOperation;
 use crate::program::{CompactListItem, CompactMapItem, CompactRelationArg, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
@@ -259,7 +260,8 @@ impl RelationRead for VmHostContext<'_, '_> {
         relation: mica_relation_kernel::RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, mica_relation_kernel::KernelError> {
-        let start = self.trace.start();
+        let metrics_start = Instant::now();
+        let trace_start = self.trace.start();
         let rows = match &self.transient {
             Some(TransientAccess::Exclusive(transient)) => {
                 let reader =
@@ -275,8 +277,19 @@ impl RelationRead for VmHostContext<'_, '_> {
             None => self.tx.scan_relation(relation, bindings),
         }?;
         let rows = self.filter_authorized_system_rows(relation, rows);
+        let metadata = self.relation_metadata(relation);
+        crate::metrics::record_relation_operation(
+            RelationOperation::Scan,
+            relation,
+            metadata
+                .as_ref()
+                .and_then(|metadata| metadata.name().name()),
+            bindings,
+            rows.len(),
+            metrics_start.elapsed(),
+        );
         self.trace
-            .record_relation("scan", relation, bindings, rows.len(), start);
+            .record_relation("scan", relation, bindings, rows.len(), trace_start);
         Ok(rows)
     }
 
@@ -286,7 +299,8 @@ impl RelationRead for VmHostContext<'_, '_> {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, mica_relation_kernel::KernelError>,
     ) -> Result<(), mica_relation_kernel::KernelError> {
-        let start = self.trace.start();
+        let metrics_start = Instant::now();
+        let trace_start = self.trace.start();
         let mut rows = 0usize;
         let metadata = self.relation_metadata(relation);
         let result = match &self.transient {
@@ -327,8 +341,20 @@ impl RelationRead for VmHostContext<'_, '_> {
                 visitor(tuple)
             }),
         };
+        if result.is_ok() {
+            crate::metrics::record_relation_operation(
+                RelationOperation::Visit,
+                relation,
+                metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.name().name()),
+                bindings,
+                rows,
+                metrics_start.elapsed(),
+            );
+        }
         self.trace
-            .record_relation("visit", relation, bindings, rows, start);
+            .record_relation("visit", relation, bindings, rows, trace_start);
         result
     }
 }
