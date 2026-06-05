@@ -262,6 +262,7 @@ impl<'a> Parser<'a> {
             | SyntaxKind::Int
             | SyntaxKind::Float
             | SyntaxKind::String
+            | SyntaxKind::Bytes
             | SyntaxKind::TrueKw
             | SyntaxKind::FalseKw
             | SyntaxKind::NothingKw => self.single_token_node(SyntaxKind::LiteralExpr),
@@ -962,6 +963,7 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::Int
                 | SyntaxKind::Float
                 | SyntaxKind::String
+                | SyntaxKind::Bytes
                 | SyntaxKind::TrueKw
                 | SyntaxKind::FalseKw
                 | SyntaxKind::NothingKw

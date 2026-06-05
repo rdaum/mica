@@ -37,6 +37,7 @@ pub use task_manager::{
     Effect, EffectLog, SharedTaskManager, SuspendedTask, TaskManager, TaskManagerError,
 };
 
+use base64::{Engine, engine::general_purpose};
 use mica_compiler::{
     BinaryOp, CollectionItem, CompileContext, CompileError, DiagnosticRenderOptions,
     DiagnosticSource, Expr, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem,
@@ -2837,7 +2838,7 @@ fn source_literal(
         ValueKind::Symbol => render_symbol(value.as_symbol().unwrap(), ":"),
         ValueKind::ErrorCode => render_symbol(value.as_error_code().unwrap(), ""),
         ValueKind::String => value.with_str(|value| format!("{value:?}")).unwrap(),
-        ValueKind::Bytes => format!("{value:?}"),
+        ValueKind::Bytes => bytes_literal(value),
         ValueKind::List => value
             .with_list(|values| {
                 render_sequence(
@@ -3911,6 +3912,7 @@ fn literal_value(literal: &Literal) -> Result<Option<Value>, RuntimeError> {
             .map(Some)
             .map_err(|_| invalid_builtin_call("from_literal", "invalid float literal")),
         Literal::String(value) => Ok(Some(Value::string(value))),
+        Literal::Bytes(value) => Ok(Some(Value::bytes(value))),
         Literal::Bool(value) => Ok(Some(Value::bool(*value))),
         Literal::ErrorCode(value) => Ok(Some(Value::error_code(Symbol::intern(value)))),
         Literal::Nothing => Ok(Some(Value::nothing())),
@@ -6880,7 +6882,7 @@ fn render_value(
         ValueKind::Symbol => render_symbol(value.as_symbol().unwrap(), ":"),
         ValueKind::ErrorCode => render_symbol(value.as_error_code().unwrap(), ""),
         ValueKind::String => value.with_str(|value| format!("{value:?}")).unwrap(),
-        ValueKind::Bytes => format!("{value:?}"),
+        ValueKind::Bytes => bytes_literal(value),
         ValueKind::List => value
             .with_list(|values| {
                 render_sequence(
@@ -6954,6 +6956,12 @@ fn render_symbol(symbol: Symbol, prefix: &str) -> String {
         Some(name) => format!("{prefix}{name}"),
         None => format!("{prefix}#{}", symbol.id()),
     }
+}
+
+fn bytes_literal(value: &Value) -> String {
+    value
+        .with_bytes(|bytes| format!("b\"{}\"", general_purpose::URL_SAFE.encode(bytes)))
+        .unwrap()
 }
 
 fn render_sequence(open: &str, close: &str, items: impl IntoIterator<Item = String>) -> String {
@@ -7397,6 +7405,10 @@ mod tests {
                 .outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("#take_event<[\"coin\"]>")
         ));
+        assert!(matches!(
+            runner.run_source("return to_literal(b\"3q2-7w==\")").unwrap().outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::string("b\"3q2-7w==\"")
+        ));
     }
 
     #[test]
@@ -7407,7 +7419,7 @@ mod tests {
         assert!(matches!(
             runner
                 .run_source(
-                    "let value = [nothing, true, -42, \"x\", :foo, #take_event, {:a -> 1}, 2.._]
+                    "let value = [nothing, true, -42, \"x\", b\"3q2-7w==\", :foo, #take_event, {:a -> 1}, 2.._]
                      return from_literal(to_literal(value)) == value"
                 )
                 .unwrap()

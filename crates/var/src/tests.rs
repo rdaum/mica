@@ -236,7 +236,7 @@ fn string_bytes_list_map_and_range_are_values() {
         bytes.with_bytes(|value| value.to_vec()),
         Some(vec![0xde, 0xad, 0xbe, 0xef])
     );
-    assert_eq!(format!("{bytes:?}"), "#bytes(\"\\xde\\xad\\xbe\\xef\")");
+    assert_eq!(format!("{bytes:?}"), "b\"3q2-7w==\"");
 
     let list = Value::list([Value::int(1).unwrap(), Value::int(2).unwrap()]);
     assert_eq!(list.with_list(|values| values.len()), Some(2));

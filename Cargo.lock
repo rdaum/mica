@@ -3161,6 +3161,7 @@ name = "mica-compiler"
 version = "0.1.0"
 dependencies = [
  "ariadne",
+ "base64",
  "mica-relation-kernel",
  "mica-runtime",
  "mica-var",
@@ -3291,6 +3292,7 @@ dependencies = [
 name = "mica-runtime"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "fast-telemetry",
  "mica-compiler",
  "mica-host-protocol",
@@ -3342,6 +3344,7 @@ dependencies = [
 name = "mica-var"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "micromeasure",
  "proptest",
 ]

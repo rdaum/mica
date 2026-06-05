@@ -25,6 +25,7 @@ pub enum SyntaxKind {
     Int,
     Float,
     String,
+    Bytes,
     LetKw,
     ConstKw,
     IfKw,

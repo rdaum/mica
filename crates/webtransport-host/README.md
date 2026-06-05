@@ -10,7 +10,7 @@ the socket, QUIC endpoint, task spawning, and HTTP/3 connection polling.
 When linked in process by `mica-daemon --webtransport-bind`, accepted
 WebTransport sessions open Mica endpoints with protocol `#webtransport`.
 Incoming WebTransport datagrams resume tasks waiting on endpoint input as
-`#bytes(...)` values. Mica emissions targeted at the endpoint are sent back to
+`b"..."` byte values. Mica emissions targeted at the endpoint are sent back to
 the client as WebTransport datagrams; byte values are preserved and other values
 are encoded as text.
 

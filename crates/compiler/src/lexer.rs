@@ -51,6 +51,7 @@ impl<'a> Lexer<'a> {
                     SyntaxKind::LineComment
                 }
                 '"' => self.lex_string(),
+                'b' if self.peek_next() == Some('"') => self.lex_bytes(),
                 '0'..='9' => self.lex_number(),
                 'a'..='z' | 'A'..='Z' => self.lex_ident_or_keyword(start),
                 '_' => {
@@ -174,6 +175,18 @@ impl<'a> Lexer<'a> {
             }
         }
         SyntaxKind::String
+    }
+
+    fn lex_bytes(&mut self) -> SyntaxKind {
+        self.bump();
+        self.bump();
+        while let Some(ch) = self.peek() {
+            self.bump();
+            if ch == '"' {
+                break;
+            }
+        }
+        SyntaxKind::Bytes
     }
 
     fn lex_number(&mut self) -> SyntaxKind {
@@ -317,6 +330,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(kinds[0], SyntaxKind::ErrorCode);
         assert_eq!(kinds[2], SyntaxKind::ErrorCode);
+    }
+
+    #[test]
+    fn lexes_bytes_literals() {
+        let kinds = lex(r#"b"3q2-7w==""#)
+            .into_iter()
+            .map(|t| t.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds[0], SyntaxKind::Bytes);
     }
 
     #[test]

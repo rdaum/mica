@@ -1011,6 +1011,7 @@ fn literal_value_for_rule(
             Ok(Value::float(value))
         }
         Literal::String(value) => Ok(Value::string(value)),
+        Literal::Bytes(value) => Ok(Value::bytes(value)),
         Literal::Bool(value) => Ok(Value::bool(*value)),
         Literal::ErrorCode(value) => Ok(Value::error_code(Symbol::intern(value))),
         Literal::Nothing => Ok(Value::nothing()),
@@ -4295,6 +4296,7 @@ impl<'a> ProgramCompiler<'a> {
                 Ok(Value::float(value))
             }
             Literal::String(value) => Ok(Value::string(value)),
+            Literal::Bytes(value) => Ok(Value::bytes(value)),
             Literal::Bool(value) => Ok(Value::bool(*value)),
             Literal::ErrorCode(value) => Ok(Value::error_code(Symbol::intern(value))),
             Literal::Nothing => Ok(Value::nothing()),

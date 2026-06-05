@@ -16,6 +16,7 @@ use crate::{
     CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, MethodParam,
     NodeId, Param, ParamMode, ParseError, RecoveryClause, SyntaxKind, UnaryOp, parse,
 };
+use base64::{Engine, engine::general_purpose};
 
 pub fn parse_ast(source: &str) -> Ast {
     let parse = parse(source);
@@ -267,6 +268,14 @@ impl<'a> Lower<'a> {
             SyntaxKind::Int => Literal::Int(self.text(token.span.clone()).to_owned()),
             SyntaxKind::Float => Literal::Float(self.text(token.span.clone()).to_owned()),
             SyntaxKind::String => Literal::String(unquote(self.text(token.span.clone()))),
+            SyntaxKind::Bytes => match decode_bytes_literal(self.text(token.span.clone())) {
+                Ok(bytes) => Literal::Bytes(bytes),
+                Err(message) => {
+                    self.errors
+                        .push(ParseError::new(message, token.span.clone()));
+                    Literal::Bytes(Vec::new())
+                }
+            },
             SyntaxKind::TrueKw => Literal::Bool(true),
             SyntaxKind::FalseKw => Literal::Bool(false),
             SyntaxKind::ErrorCode => Literal::ErrorCode(self.text(token.span.clone()).to_owned()),
@@ -1211,6 +1220,18 @@ fn qualified_name_from_tokens(source: &str, tokens: &[&CstToken], start: usize) 
     Some(source[first.span.start..end].to_owned())
 }
 
+fn decode_bytes_literal(text: &str) -> Result<Vec<u8>, String> {
+    let Some(content) = text
+        .strip_prefix("b\"")
+        .and_then(|text| text.strip_suffix('"'))
+    else {
+        return Err("invalid bytes literal".to_owned());
+    };
+    general_purpose::URL_SAFE
+        .decode(content)
+        .map_err(|error| format!("invalid bytes literal: invalid base64: {error}"))
+}
+
 fn lower_method_params(clauses: &[String]) -> Vec<MethodParam> {
     let mut params = Vec::new();
     for clause in clauses {
@@ -1799,7 +1820,7 @@ mod tests {
     #[test]
     fn lowers_literals_and_field_assignment() {
         let ast = parse_ast(
-            "#lamp.name = \"golden lamp\"\nendpoint.session/actor = #alice\ntrue\nE_NOT_PORTABLE\nnothing\n\"Alice says, \\\"hello\\\"\"",
+            "#lamp.name = \"golden lamp\"\nendpoint.session/actor = #alice\ntrue\nE_NOT_PORTABLE\nnothing\n\"Alice says, \\\"hello\\\"\"\nb\"3q2-7w==\"",
         );
         assert_eq!(ast.errors, vec![]);
         assert!(matches!(
@@ -1848,6 +1869,26 @@ mod tests {
                 ..
             }
         ));
+        assert!(matches!(
+            &ast.items[6],
+            Item::Expr {
+                expr: Expr::Literal {
+                    value: Literal::Bytes(bytes),
+                    ..
+                },
+                ..
+            } if bytes == &[0xde, 0xad, 0xbe, 0xef]
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_bytes_literal_base64() {
+        let ast = parse_ast("b\"SGVsbG8\"");
+        assert!(
+            ast.errors
+                .iter()
+                .any(|error| error.message.contains("invalid bytes literal"))
+        );
     }
 
     #[test]

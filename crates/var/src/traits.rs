@@ -16,6 +16,7 @@ use crate::value::{
     TAG_BYTES, TAG_ERROR, TAG_FROB, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value, ValueKind,
     normalize_f32,
 };
+use base64::{Engine, engine::general_purpose};
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -321,11 +322,7 @@ impl fmt::Debug for Value {
             },
             ValueKind::String => self.with_str(|value| write!(f, "{value:?}")).unwrap(),
             ValueKind::Bytes => self
-                .with_bytes(|value| {
-                    f.write_str("#bytes(\"")?;
-                    write_hex_bytes(value, f)?;
-                    f.write_str("\")")
-                })
+                .with_bytes(|value| write!(f, "b\"{}\"", general_purpose::URL_SAFE.encode(value)))
                 .unwrap(),
             ValueKind::List => self
                 .with_list(|values| f.debug_list().entries(values).finish())
@@ -372,11 +369,7 @@ impl fmt::Display for Value {
             },
             ValueKind::String => self.with_str(|value| f.write_str(value)).unwrap(),
             ValueKind::Bytes => self
-                .with_bytes(|value| {
-                    f.write_str("#bytes(\"")?;
-                    write_hex_bytes(value, f)?;
-                    f.write_str("\")")
-                })
+                .with_bytes(|value| write!(f, "b\"{}\"", general_purpose::URL_SAFE.encode(value)))
                 .unwrap(),
             ValueKind::List => self
                 .with_list(|values| {
@@ -423,16 +416,6 @@ fn ordered_f32_bits(value: f32) -> u32 {
     } else {
         bits ^ 0x8000_0000
     }
-}
-
-fn write_hex_bytes(bytes: &[u8], f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in bytes {
-        f.write_str("\\x")?;
-        f.write_str(std::str::from_utf8(&[HEX[(byte >> 4) as usize]]).unwrap())?;
-        f.write_str(std::str::from_utf8(&[HEX[(byte & 0x0f) as usize]]).unwrap())?;
-    }
-    Ok(())
 }
 
 fn write_range(start: &Value, end: Option<&Value>, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 ariadne.workspace = true
+base64.workspace = true
 mica-relation-kernel.workspace = true
 mica-var.workspace = true
 mica-vm.workspace = true
