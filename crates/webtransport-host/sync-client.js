@@ -97,6 +97,13 @@ const SUPPORTED_TAGS = new Set([
   "sub",
   "summary",
   "sup",
+  "circle",
+  "line",
+  "path",
+  "polygon",
+  "polyline",
+  "rect",
+  "svg",
   "table",
   "tbody",
   "td",
@@ -191,6 +198,35 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "value",
   "width",
   "wrap",
+  "cx",
+  "cy",
+  "d",
+  "fill",
+  "points",
+  "r",
+  "rx",
+  "ry",
+  "stroke",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "stroke-width",
+  "viewBox",
+  "x",
+  "x1",
+  "x2",
+  "y",
+  "y1",
+  "y2",
+]);
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const SVG_TAGS = new Set([
+  "circle",
+  "line",
+  "path",
+  "polygon",
+  "polyline",
+  "rect",
+  "svg",
 ]);
 const SYNC_LOADING_CLASS = "sync-loading";
 const SYNC_SUBMIT_LOADING_CLASS = "sync-submit-loading";
@@ -647,7 +683,7 @@ function nodeAtPath(mount, path) {
   return node;
 }
 
-function renderNode(node) {
+function renderNode(node, namespace = null) {
   if (Object.hasOwn(node, "text")) {
     return document.createTextNode(String(node.text));
   }
@@ -656,7 +692,15 @@ function renderNode(node) {
   if (!SUPPORTED_TAGS.has(tag)) {
     throw new Error(`unsupported snapshot tag: ${tag}`);
   }
-  const element = document.createElement(tag);
+  const childNamespace = namespace === SVG_NAMESPACE || tag === "svg"
+    ? SVG_NAMESPACE
+    : null;
+  if (childNamespace === SVG_NAMESPACE && !SVG_TAGS.has(tag)) {
+    throw new Error(`unsupported SVG snapshot tag: ${tag}`);
+  }
+  const element = childNamespace === SVG_NAMESPACE
+    ? document.createElementNS(SVG_NAMESPACE, tag)
+    : document.createElement(tag);
   if (node.id !== undefined) {
     element.id = String(node.id);
   }
@@ -665,7 +709,7 @@ function renderNode(node) {
   }
   applyAttributes(element, node.attrs ?? {});
   for (const child of node.children ?? []) {
-    element.append(renderNode(child));
+    element.append(renderNode(child, childNamespace));
   }
   return element;
 }

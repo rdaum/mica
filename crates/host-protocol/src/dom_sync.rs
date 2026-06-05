@@ -98,6 +98,13 @@ pub const SUPPORTED_DOM_TAGS: &[&str] = &[
     "sub",
     "summary",
     "sup",
+    "circle",
+    "line",
+    "path",
+    "polygon",
+    "polyline",
+    "rect",
+    "svg",
     "table",
     "tbody",
     "td",
@@ -189,6 +196,25 @@ pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
     "value",
     "width",
     "wrap",
+    "cx",
+    "cy",
+    "d",
+    "fill",
+    "points",
+    "r",
+    "rx",
+    "ry",
+    "stroke",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-width",
+    "viewBox",
+    "x",
+    "x1",
+    "x2",
+    "y",
+    "y1",
+    "y2",
 ];
 
 pub fn is_supported_dom_tag(tag: &str) -> bool {
@@ -995,6 +1021,82 @@ mod tests {
 
         assert!(DomNode::from_mica_value(&code_row).is_ok());
         assert!(DomNode::from_mica_value(&collapsed_row).is_ok());
+    }
+
+    #[test]
+    fn mica_value_accepts_svg_icon_tags_and_attrs() {
+        let icon = Value::map([
+            (Value::symbol(Symbol::intern("tag")), Value::string("svg")),
+            (
+                Value::symbol(Symbol::intern("attrs")),
+                Value::map([
+                    (Value::string("class"), Value::string("source-icon")),
+                    (Value::string("viewBox"), Value::string("0 0 24 24")),
+                    (Value::string("fill"), Value::string("none")),
+                    (Value::string("stroke"), Value::string("currentColor")),
+                    (Value::string("stroke-width"), Value::string("2")),
+                    (Value::string("stroke-linecap"), Value::string("round")),
+                    (Value::string("stroke-linejoin"), Value::string("round")),
+                    (Value::string("aria-hidden"), Value::string("true")),
+                ]),
+            ),
+            (
+                Value::symbol(Symbol::intern("children")),
+                Value::list([Value::map([
+                    (Value::symbol(Symbol::intern("tag")), Value::string("path")),
+                    (
+                        Value::symbol(Symbol::intern("attrs")),
+                        Value::map([(Value::string("d"), Value::string("m9 17-5-5 5-5"))]),
+                    ),
+                    (Value::symbol(Symbol::intern("children")), Value::list([])),
+                ]), Value::map([
+                    (Value::symbol(Symbol::intern("tag")), Value::string("rect")),
+                    (
+                        Value::symbol(Symbol::intern("attrs")),
+                        Value::map([
+                            (Value::string("x"), Value::string("3")),
+                            (Value::string("y"), Value::string("4")),
+                            (Value::string("width"), Value::string("7")),
+                            (Value::string("height"), Value::string("7")),
+                            (Value::string("rx"), Value::string("1")),
+                        ]),
+                    ),
+                    (Value::symbol(Symbol::intern("children")), Value::list([])),
+                ])]),
+            ),
+        ]);
+
+        assert_eq!(
+            DomNode::from_mica_value(&icon).unwrap(),
+            DomNode::Element {
+                tag: "svg".to_owned(),
+                attrs: BTreeMap::from([
+                    ("aria-hidden".to_owned(), "true".to_owned()),
+                    ("class".to_owned(), "source-icon".to_owned()),
+                    ("fill".to_owned(), "none".to_owned()),
+                    ("stroke".to_owned(), "currentColor".to_owned()),
+                    ("stroke-linecap".to_owned(), "round".to_owned()),
+                    ("stroke-linejoin".to_owned(), "round".to_owned()),
+                    ("stroke-width".to_owned(), "2".to_owned()),
+                    ("viewBox".to_owned(), "0 0 24 24".to_owned()),
+                ]),
+                children: vec![DomNode::Element {
+                    tag: "path".to_owned(),
+                    attrs: BTreeMap::from([("d".to_owned(), "m9 17-5-5 5-5".to_owned())]),
+                    children: vec![],
+                }, DomNode::Element {
+                    tag: "rect".to_owned(),
+                    attrs: BTreeMap::from([
+                        ("height".to_owned(), "7".to_owned()),
+                        ("rx".to_owned(), "1".to_owned()),
+                        ("width".to_owned(), "7".to_owned()),
+                        ("x".to_owned(), "3".to_owned()),
+                        ("y".to_owned(), "4".to_owned()),
+                    ]),
+                    children: vec![],
+                }],
+            }
+        );
     }
 
     #[test]

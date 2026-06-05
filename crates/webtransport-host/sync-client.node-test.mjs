@@ -7,6 +7,7 @@ import {
   decodeSyncEnvelope,
   encodeSyncEnvelope,
   applyDelta,
+  applySnapshot,
   beginEventLoading,
   beginSubmitLoading,
   boundEventFields,
@@ -360,6 +361,7 @@ class FakeElement {
 
   constructor(tag) {
     this.localName = tag;
+    this.namespaceURI = null;
   }
 
   get firstChild() {
@@ -468,6 +470,11 @@ globalThis.document = {
   createElement(tag) {
     return new FakeElement(tag);
   },
+  createElementNS(namespace, tag) {
+    const element = new FakeElement(tag);
+    element.namespaceURI = namespace;
+    return element;
+  },
   createTextNode(text) {
     return new FakeText(text);
   },
@@ -475,6 +482,32 @@ globalThis.document = {
     return elementsById.get(id) ?? null;
   },
 };
+
+const svgMount = new FakeElement("div");
+applySnapshot(svgMount, {
+  root: {
+    tag: "button",
+    attrs: {},
+    children: [
+      {
+        tag: "svg",
+        attrs: {
+          class: "source-icon",
+          viewBox: "0 0 24 24",
+          fill: "none",
+          stroke: "currentColor",
+          "stroke-width": "2",
+        },
+        children: [{ tag: "path", attrs: { d: "m9 17-5-5 5-5" }, children: [] }],
+      },
+    ],
+  },
+});
+const renderedSvg = svgMount.firstChild.childNodes[0];
+assert.equal(renderedSvg.namespaceURI, "http://www.w3.org/2000/svg");
+assert.equal(renderedSvg.localName, "svg");
+assert.equal(renderedSvg.childNodes[0].namespaceURI, "http://www.w3.org/2000/svg");
+assert.equal(renderedSvg.getAttribute("viewBox"), "0 0 24 24");
 
 const mount = new FakeElement("div");
 const root = new FakeElement("main");
