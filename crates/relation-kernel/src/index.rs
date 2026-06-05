@@ -92,6 +92,11 @@ impl RelationState {
         &self,
         bindings: &[Option<Value>],
     ) -> Result<usize, KernelError> {
+        self.validate_bindings(bindings)?;
+        if let Some(values) = full_tuple_binding_values(bindings) {
+            return Ok(usize::from(self.tuples.tuple_for_values(&values).is_some()));
+        }
+
         match self.checked_access(bindings)? {
             Some(access) => access.estimate_prefix_count(bindings),
             None if bindings.iter().any(Option::is_some) => {
@@ -102,6 +107,11 @@ impl RelationState {
     }
 
     pub(crate) fn scan(&self, bindings: &[Option<Value>]) -> Result<Vec<Tuple>, KernelError> {
+        self.validate_bindings(bindings)?;
+        if let Some(values) = full_tuple_binding_values(bindings) {
+            return Ok(self.tuples.tuple_for_values(&values).into_iter().collect());
+        }
+
         match self.checked_access(bindings)? {
             Some(access) => access.scan_prefix(bindings),
             None => Ok(self.tuples.matching(bindings)),
@@ -113,6 +123,14 @@ impl RelationState {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
+        self.validate_bindings(bindings)?;
+        if let Some(values) = full_tuple_binding_values(bindings) {
+            if let Some(tuple) = self.tuples.tuple_for_values(&values) {
+                let _ = visitor(&tuple)?;
+            }
+            return Ok(());
+        }
+
         match self.checked_access(bindings)? {
             Some(access) => access.visit_prefix(bindings, visitor),
             None => self.visit_matching(bindings, visitor),
@@ -307,6 +325,11 @@ impl RelationState {
         &self,
         bindings: &[Option<Value>],
     ) -> Result<Option<ScanAccess<'_>>, KernelError> {
+        self.validate_bindings(bindings)?;
+        Ok(self.best_access(bindings))
+    }
+
+    fn validate_bindings(&self, bindings: &[Option<Value>]) -> Result<(), KernelError> {
         if bindings.len() != self.metadata.arity() as usize {
             return Err(KernelError::ArityMismatch {
                 relation: self.metadata.id(),
@@ -314,7 +337,7 @@ impl RelationState {
                 actual: bindings.len(),
             });
         }
-        Ok(self.best_access(bindings))
+        Ok(())
     }
 
     fn best_access(&self, bindings: &[Option<Value>]) -> Option<ScanAccess<'_>> {
@@ -430,6 +453,10 @@ fn natural_leading_bound_count(bindings: &[Option<Value>]) -> usize {
         .iter()
         .take_while(|binding| binding.is_some())
         .count()
+}
+
+fn full_tuple_binding_values(bindings: &[Option<Value>]) -> Option<Vec<Value>> {
+    bindings.iter().cloned().collect()
 }
 
 fn natural_prefix_covers_all_bindings(bindings: &[Option<Value>], bound_count: usize) -> bool {

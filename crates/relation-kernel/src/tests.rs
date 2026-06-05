@@ -640,6 +640,78 @@ fn relation_reads_union_asserted_and_rule_derived_tuples() {
 }
 
 #[test]
+fn exact_relation_indexes_remain_visible_when_rules_exist() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(1), Symbol::intern("Indexed"), 2).with_index([0]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(rel(2), Symbol::intern("Base"), 2))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(rel(3), Symbol::intern("Derived"), 2))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(3),
+                [var("left"), var("right")],
+                [Atom::positive(rel(2), [var("left"), var("right")])],
+            ),
+            "Derived(left, right) :- Base(left, right)",
+        )
+        .unwrap();
+
+    let snapshot = kernel.snapshot();
+    assert!(
+        snapshot
+            .has_exact_relation_index(rel(1), &[0])
+            .expect("indexed relation should answer index metadata")
+    );
+    assert!(
+        snapshot
+            .has_exact_relation_index(rel(3), &[0, 1])
+            .expect("derived relation should expose natural full tuple index")
+    );
+}
+
+#[test]
+fn transaction_derived_cache_invalidates_after_local_write() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(rel(1), Symbol::intern("Base"), 1))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(rel(2), Symbol::intern("Derived"), 1))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(2),
+                [var("item")],
+                [Atom::positive(rel(1), [var("item")])],
+            ),
+            "Derived(item) :- Base(item)",
+        )
+        .unwrap();
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(1), Tuple::from([int(1)])).unwrap();
+    assert_eq!(
+        tx.scan(rel(2), &[None]).unwrap(),
+        vec![Tuple::from([int(1)])]
+    );
+
+    tx.assert(rel(1), Tuple::from([int(2)])).unwrap();
+    assert_eq!(
+        tx.scan(rel(2), &[None]).unwrap(),
+        vec![Tuple::from([int(1)]), Tuple::from([int(2)])]
+    );
+}
+
+#[test]
 fn installed_rules_have_catalog_facts_and_can_be_disabled() {
     let kernel = RelationKernel::new();
     kernel

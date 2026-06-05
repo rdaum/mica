@@ -12,8 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::RelationState;
-use crate::snapshot::{active_rules, relation_has_active_rule_head};
-use crate::tuple::extend_matching_tuple_rows;
+use crate::snapshot::{active_rules, build_derived_relations, relation_has_active_rule_head};
 use crate::{
     ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationId,
     RelationMetadata, RelationRead, RuleSet, ScanControl, Transaction, Tuple,
@@ -297,6 +296,10 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
+        if !self.relation_depends_on_visible_transient(relation) {
+            return self.tx.scan_relation(relation, bindings);
+        }
+
         let mut visible = scan_composed_transaction_extensional(
             self.tx,
             self.transient,
@@ -313,9 +316,10 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
             };
             let derived = RuleSet::new(active_rules(self.tx.base.rules()))
                 .evaluate_fixpoint(&reader)
-                .map_err(KernelError::from)?;
+                .map_err(KernelError::from)
+                .and_then(|derived| build_derived_relations(&self.tx.base.relations, derived))?;
             if let Some(rows) = derived.get(&relation) {
-                extend_matching_tuple_rows(&mut visible, rows, bindings);
+                visible.extend(rows.scan(bindings)?);
             }
         }
 
@@ -328,7 +332,7 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
         bindings: &[Option<Value>],
         visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
     ) -> Result<(), KernelError> {
-        if !self.transient.relation_visible(self.scopes, relation) {
+        if !self.relation_depends_on_visible_transient(relation) {
             return self.tx.visit_relation(relation, bindings, visitor);
         }
         for tuple in self.scan_relation(relation, bindings)? {
@@ -465,6 +469,17 @@ fn dispatch_relation_can_be_derived(tx: &Transaction<'_>, relations: DispatchRel
 }
 
 impl ComposedTransactionRead<'_, '_> {
+    fn relation_depends_on_visible_transient(&self, relation: RelationId) -> bool {
+        let mut seen = BTreeSet::new();
+        relation_depends_on_visible_transient(
+            self.tx,
+            self.transient,
+            self.scopes,
+            relation,
+            &mut seen,
+        )
+    }
+
     fn dispatch_cache_is_transient(&self, relations: DispatchRelations) -> bool {
         let dispatch_relations = [
             relations.method_selector,
@@ -494,4 +509,26 @@ impl ComposedTransactionRead<'_, '_> {
                     .iter()
                     .any(|scope| self.transient.scope_len(*scope) > 0)
     }
+}
+
+fn relation_depends_on_visible_transient(
+    tx: &Transaction<'_>,
+    transient: &TransientStore,
+    scopes: &[Identity],
+    relation: RelationId,
+    seen: &mut BTreeSet<RelationId>,
+) -> bool {
+    if transient.relation_visible(scopes, relation) {
+        return true;
+    }
+    if !seen.insert(relation) {
+        return false;
+    }
+    tx.base.rules().iter().any(|rule| {
+        rule.active()
+            && rule.rule().head_relation() == relation
+            && rule.rule().body_atoms().any(|atom| {
+                relation_depends_on_visible_transient(tx, transient, scopes, atom.relation(), seen)
+            })
+    })
 }

@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::RelationState;
-use crate::snapshot::active_rules;
-use crate::tuple::finish_with_matching_tuple_rows;
+use crate::snapshot::{active_rules, build_derived_relations};
+use crate::tuple::union_ordered_tuple_rows;
 use crate::{
     CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, FactId, KernelError,
     RelationId, RelationMetadata, RelationRead, RelationWorkspace, Rule, RuleDefinition, RuleSet,
@@ -23,7 +23,8 @@ use mica_var::Value;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
-type ProjectedDerivedCache = RefCell<Option<Result<BTreeMap<RelationId, Vec<Tuple>>, KernelError>>>;
+type ProjectedDerivedCache =
+    RefCell<Option<Result<BTreeMap<RelationId, RelationState>, KernelError>>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct ProjectedStore {
@@ -203,11 +204,12 @@ impl ProjectedStore {
             .ok_or(KernelError::UnknownRelation(relation))
     }
 
-    fn derived_tuples(&self) -> Result<BTreeMap<RelationId, Vec<Tuple>>, KernelError> {
+    fn derived_relations(&self) -> Result<BTreeMap<RelationId, RelationState>, KernelError> {
         if self.derived_cache.borrow().is_none() {
             let derived = RuleSet::new(active_rules(&self.rules))
                 .evaluate_fixpoint(&ExtensionalProjectedReader { store: self })
-                .map_err(KernelError::from);
+                .map_err(KernelError::from)
+                .and_then(|derived| build_derived_relations(&self.relations, derived));
             *self.derived_cache.borrow_mut() = Some(derived);
         }
         self.derived_cache.borrow().as_ref().unwrap().clone()
@@ -233,8 +235,8 @@ impl RelationRead for ProjectedStore {
         if self.rules.is_empty() {
             return Ok(visible);
         }
-        if let Some(rows) = self.derived_tuples()?.get(&relation) {
-            visible = finish_with_matching_tuple_rows(visible, rows, bindings);
+        if let Some(rows) = self.derived_relations()?.get(&relation) {
+            visible = union_ordered_tuple_rows(visible, rows.scan(bindings)?);
         }
         Ok(visible)
     }

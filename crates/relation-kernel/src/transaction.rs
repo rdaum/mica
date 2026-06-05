@@ -19,12 +19,10 @@ use crate::index::{RelationMutationKind, RelationState};
 use crate::metrics::{CommitOutcome, TransactionReadOperation, TransactionWriteOperation};
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
-    active_rules, empty_derived_cache, empty_dispatch_cache, empty_method_program_cache,
-    relation_has_active_rule_head,
+    active_rules, build_derived_relations, empty_derived_cache, empty_dispatch_cache,
+    empty_method_program_cache, relation_has_active_rule_head,
 };
-use crate::tuple::{
-    difference_ordered_tuple_rows, finish_with_matching_tuple_rows, union_ordered_tuple_rows,
-};
+use crate::tuple::{difference_ordered_tuple_rows, union_ordered_tuple_rows};
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRead, DispatchRelations,
     KernelError, RelationId, RelationKernel, RelationMetadata, RelationRead, RelationWorkspace,
@@ -32,6 +30,7 @@ use crate::{
 };
 use mica_var::{Symbol, Value};
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
@@ -41,6 +40,7 @@ pub struct Transaction<'a> {
     pub(crate) base: Arc<Snapshot>,
     writes: HashMap<RelationId, RelationWriteOverlay>,
     functional_visible: HashMap<RelationId, FunctionalVisibleMap>,
+    derived_cache: RefCell<Option<Result<HashMap<RelationId, RelationState>, KernelError>>>,
 }
 
 impl<'a> Transaction<'a> {
@@ -50,6 +50,7 @@ impl<'a> Transaction<'a> {
             base,
             writes: HashMap::new(),
             functional_visible: HashMap::new(),
+            derived_cache: RefCell::new(None),
         }
     }
 
@@ -195,11 +196,9 @@ impl<'a> Transaction<'a> {
         let mut visible = self.scan_extensional_rows(relation, bindings)?;
 
         if relation_has_active_rule_head(self.base.rules(), relation) {
-            let derived = RuleSet::new(active_rules(self.base.rules()))
-                .evaluate_fixpoint(&ExtensionalTransactionReader { tx: self })
-                .map_err(KernelError::from)?;
+            let derived = self.derived_relations()?;
             if let Some(rows) = derived.get(&relation) {
-                visible = finish_with_matching_tuple_rows(visible, rows, bindings);
+                visible = union_ordered_tuple_rows(visible, rows.scan(bindings)?);
             }
         }
 
@@ -233,6 +232,18 @@ impl<'a> Transaction<'a> {
             .transaction_read_rows
             .record(TransactionReadOperation::EstimateScan, rows as u64);
         Ok(rows)
+    }
+
+    fn derived_relations(&self) -> Result<HashMap<RelationId, RelationState>, KernelError> {
+        if self.derived_cache.borrow().is_none() {
+            let derived = RuleSet::new(active_rules(self.base.rules()))
+                .evaluate_fixpoint(&ExtensionalTransactionReader { tx: self })
+                .map_err(KernelError::from)
+                .and_then(|derived| build_derived_relations(&self.base.relations, derived))
+                .map(|derived| derived.into_iter().collect());
+            *self.derived_cache.borrow_mut() = Some(derived);
+        }
+        self.derived_cache.borrow().as_ref().unwrap().clone()
     }
 
     pub(crate) fn estimate_extensional_scan(
@@ -545,7 +556,9 @@ impl<'a> Transaction<'a> {
                 .transaction_write_operations
                 .inc(TransactionWriteOperation::Retract),
         }
-        self.record_functional_change(relation, &tuple, change)
+        self.record_functional_change(relation, &tuple, change)?;
+        *self.derived_cache.borrow_mut() = None;
+        Ok(())
     }
 
     fn record_functional_change(
@@ -796,9 +809,6 @@ impl RelationRead for Transaction<'_> {
         relation: RelationId,
         positions: &[u16],
     ) -> Result<bool, KernelError> {
-        if !self.base.rules().is_empty() {
-            return Ok(false);
-        }
         self.base.relation_has_exact_index(relation, positions)
     }
 
@@ -811,7 +821,8 @@ impl RelationRead for Transaction<'_> {
         right_bindings: &[Option<Value>],
         right_positions: &[u16],
     ) -> Result<Option<Vec<Tuple>>, KernelError> {
-        if self.base.rules().is_empty()
+        if !relation_has_active_rule_head(self.base.rules(), left_relation)
+            && !relation_has_active_rule_head(self.base.rules(), right_relation)
             && !self.has_local_writes(left_relation)
             && !self.has_local_writes(right_relation)
             && let Some(rows) = self.base.join_extensional_relation_scans(

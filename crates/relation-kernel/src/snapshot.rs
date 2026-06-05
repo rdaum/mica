@@ -16,7 +16,7 @@ use crate::computed::{ComputedRelationRead, ComputedRelationRegistry};
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
-use crate::tuple::finish_with_matching_tuple_rows;
+use crate::tuple::union_ordered_tuple_rows;
 use crate::{
     ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationId,
     RelationMetadata, RelationRead, RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple,
@@ -26,7 +26,8 @@ use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock};
 
-pub(crate) type DerivedCache = Arc<OnceLock<Result<BTreeMap<RelationId, Vec<Tuple>>, KernelError>>>;
+pub(crate) type DerivedCache =
+    Arc<OnceLock<Result<BTreeMap<RelationId, RelationState>, KernelError>>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Commit {
@@ -171,9 +172,9 @@ impl Snapshot {
             return Ok(visible);
         }
 
-        let derived = self.derived_tuples()?;
+        let derived = self.derived_relations()?;
         if let Some(rows) = derived.get(&relation) {
-            visible = finish_with_matching_tuple_rows(visible, rows, bindings);
+            visible = union_ordered_tuple_rows(visible, rows.scan(bindings)?);
         }
         Ok(visible)
     }
@@ -300,12 +301,9 @@ impl Snapshot {
     ) -> Result<usize, KernelError> {
         let mut estimate = self.relation(relation)?.estimate_scan_count(bindings)?;
         if relation_has_active_rule_head(&self.rules, relation)
-            && let Some(rows) = self.derived_tuples()?.get(&relation)
+            && let Some(rows) = self.derived_relations()?.get(&relation)
         {
-            estimate += rows
-                .iter()
-                .filter(|tuple| tuple.matches_bindings(bindings))
-                .count();
+            estimate += rows.estimate_scan_count(bindings)?;
         }
         Ok(estimate)
     }
@@ -352,23 +350,24 @@ impl Snapshot {
             .ok_or(KernelError::UnknownRelation(relation))
     }
 
-    fn derived_tuples(&self) -> Result<&BTreeMap<RelationId, Vec<Tuple>>, KernelError> {
+    fn derived_relations(&self) -> Result<&BTreeMap<RelationId, RelationState>, KernelError> {
         self.derived_cache
             .get_or_init(|| {
                 let start = std::time::Instant::now();
                 let derived = RuleSet::new(active_rules(&self.rules))
                     .evaluate_fixpoint(&ExtensionalSnapshotReader { snapshot: self })
                     .map_err(KernelError::from)?;
+                let derived = build_derived_relations(&self.relations, derived)?;
                 crate::metrics::record_derived_materialization(
                     start.elapsed(),
-                    derived.iter().map(|(relation, rows)| {
+                    derived.iter().map(|(relation, state)| {
                         let name = self
                             .relation(*relation)
                             .ok()
                             .and_then(|relation| relation.metadata().name().name())
                             .unwrap_or("<unknown>")
                             .to_owned();
-                        (*relation, name, rows.len())
+                        (*relation, name, state.cardinality())
                     }),
                 );
                 Ok(derived)
@@ -452,6 +451,25 @@ impl Snapshot {
             .insert(relation, method, program.clone());
         Ok(program)
     }
+}
+
+pub(crate) fn build_derived_relations(
+    relations: &HashMap<RelationId, RelationState>,
+    derived: BTreeMap<RelationId, Vec<Tuple>>,
+) -> Result<BTreeMap<RelationId, RelationState>, KernelError> {
+    derived
+        .into_iter()
+        .map(|(relation_id, rows)| {
+            let metadata = relations
+                .get(&relation_id)
+                .ok_or(KernelError::UnknownRelation(relation_id))?
+                .metadata()
+                .clone();
+            let mut state = RelationState::empty(metadata)?;
+            state.apply_ordered_asserts_to_empty(rows.iter(), |_, _| {});
+            Ok((relation_id, state))
+        })
+        .collect()
 }
 
 pub(crate) fn empty_derived_cache() -> DerivedCache {
@@ -563,9 +581,6 @@ impl RelationRead for Snapshot {
         relation: RelationId,
         positions: &[u16],
     ) -> Result<bool, KernelError> {
-        if !self.rules().is_empty() {
-            return Ok(false);
-        }
         self.relation_has_exact_index(relation, positions)
     }
 
@@ -578,7 +593,8 @@ impl RelationRead for Snapshot {
         right_bindings: &[Option<Value>],
         right_positions: &[u16],
     ) -> Result<Option<Vec<Tuple>>, KernelError> {
-        if self.rules().is_empty()
+        if !relation_has_active_rule_head(&self.rules, left_relation)
+            && !relation_has_active_rule_head(&self.rules, right_relation)
             && let Some(rows) = self.join_extensional_relation_scans(
                 left_relation,
                 left_bindings,
