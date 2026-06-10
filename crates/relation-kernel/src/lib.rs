@@ -21,7 +21,6 @@
 
 mod catalog;
 mod closure;
-mod commit_bloom;
 mod computed;
 mod dispatch;
 mod dispatch_cache;

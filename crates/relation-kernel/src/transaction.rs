@@ -13,7 +13,6 @@
 
 mod overlay;
 
-use crate::commit_bloom::CommitBloom;
 use crate::computed::ComputedRelationRead;
 use crate::index::{RelationMutationKind, RelationState};
 use crate::metrics::{CommitOutcome, TransactionReadOperation, TransactionWriteOperation};
@@ -713,7 +712,6 @@ impl<'a> Transaction<'a> {
             version: next.version,
             catalog_changes: Arc::from([]),
             changes: changes.into(),
-            bloom: CommitBloom::new(),
         };
         next.commits = current.commits.append(commit.clone());
         Ok((Arc::new(next), commit))

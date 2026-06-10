@@ -11,7 +11,6 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::commit_bloom::CommitBloom;
 use crate::{
     Atom, CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, RelationId,
     RelationMetadata, Rule, RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleGuard, Term, Tuple,
@@ -102,7 +101,6 @@ pub(super) fn decode_commit(bytes: &[u8]) -> Result<Commit, String> {
         version,
         catalog_changes: catalog_changes.into(),
         changes: changes.into(),
-        bloom: CommitBloom::new(),
     })
 }
 

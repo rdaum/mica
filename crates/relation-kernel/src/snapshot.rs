@@ -11,7 +11,6 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::commit_bloom::CommitBloom;
 use crate::computed::{ComputedRelationRead, ComputedRelationRegistry};
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
@@ -34,7 +33,6 @@ pub struct Commit {
     pub(crate) version: Version,
     pub(crate) catalog_changes: Arc<[CatalogChange]>,
     pub(crate) changes: Arc<[FactChange]>,
-    pub(crate) bloom: CommitBloom,
 }
 
 impl Commit {

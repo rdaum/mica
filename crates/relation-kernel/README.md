@@ -34,7 +34,6 @@ inspection views.
 - `src/provider/`: commit provider boundary. `memory.rs` contains the
   in-memory provider, `fjall/mod.rs` contains the Fjall-backed durable state
   provider, and `fjall/codec.rs` contains the persisted binary encoding.
-- `src/commit_bloom.rs`: compact write-set tracking for conflict checks.
 - `src/tests.rs`: integration-style kernel tests.
 
 ## Role In Mica

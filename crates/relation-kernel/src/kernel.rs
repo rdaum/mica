@@ -294,7 +294,6 @@ impl RelationKernel {
             version: next.version,
             catalog_changes: Arc::from([CatalogChange::RelationCreated(metadata.clone())]),
             changes: Arc::from([]),
-            bloom: crate::commit_bloom::CommitBloom::new(),
         };
         next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
@@ -338,7 +337,6 @@ impl RelationKernel {
             version: next.version,
             catalog_changes: Arc::from([CatalogChange::RuleInstalled(definition.clone())]),
             changes: Arc::from([]),
-            bloom: crate::commit_bloom::CommitBloom::new(),
         };
         next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
@@ -374,7 +372,6 @@ impl RelationKernel {
             version: next.version,
             catalog_changes: Arc::from([CatalogChange::RuleDisabled(rule_id)]),
             changes: Arc::from([]),
-            bloom: crate::commit_bloom::CommitBloom::new(),
         };
         next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
