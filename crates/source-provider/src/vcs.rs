@@ -1,3 +1,6 @@
+use gix_imara_diff::{
+    Algorithm, Diff, InternedInput, Interner, Token, UnifiedDiffConfig, UnifiedDiffPrinter,
+};
 use jj_lib::backend::{Backend, CommitId, FileId, Tree, TreeId, TreeValue};
 use jj_lib::git_backend::GitBackend;
 use jj_lib::object_id::ObjectId;
@@ -647,28 +650,57 @@ fn diff_kind(old: Option<&str>, new: Option<&str>) -> Option<ChangeKind> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DiffLine<'a> {
-    text: &'a str,
-    has_newline: bool,
+struct SourceLineDiffPrinter<'a>(&'a Interner<&'a str>);
+
+impl UnifiedDiffPrinter for SourceLineDiffPrinter<'_> {
+    fn display_header(
+        &self,
+        mut f: impl fmt::Write,
+        start_before: u32,
+        start_after: u32,
+        len_before: u32,
+        len_after: u32,
+    ) -> fmt::Result {
+        writeln!(
+            f,
+            "@@ -{},{} +{},{} @@",
+            start_before + 1,
+            len_before,
+            start_after + 1,
+            len_after
+        )
+    }
+
+    fn display_context_token(&self, mut f: impl fmt::Write, token: Token) -> fmt::Result {
+        self.display_line(&mut f, ' ', token)
+    }
+
+    fn display_hunk(
+        &self,
+        mut f: impl fmt::Write,
+        before: &[Token],
+        after: &[Token],
+    ) -> fmt::Result {
+        for &token in before {
+            self.display_line(&mut f, '-', token)?;
+        }
+        for &token in after {
+            self.display_line(&mut f, '+', token)?;
+        }
+        Ok(())
+    }
 }
 
-fn split_diff_lines(text: &str) -> Vec<DiffLine<'_>> {
-    text.split_inclusive('\n')
-        .map(|line| {
-            if let Some(stripped) = line.strip_suffix('\n') {
-                DiffLine {
-                    text: stripped,
-                    has_newline: true,
-                }
-            } else {
-                DiffLine {
-                    text: line,
-                    has_newline: false,
-                }
-            }
-        })
-        .collect()
+impl SourceLineDiffPrinter<'_> {
+    fn display_line(&self, mut f: impl fmt::Write, prefix: char, token: Token) -> fmt::Result {
+        let line = self.0[token];
+        write!(f, "{prefix}{line}")?;
+        if !line.ends_with('\n') {
+            writeln!(f)?;
+            writeln!(f, "\\ No newline at end of file")?;
+        }
+        Ok(())
+    }
 }
 
 fn unified_diff(
@@ -684,112 +716,18 @@ fn unified_diff(
     out.push_str(&format!("--- a/{}\t{}\n", path, from_hash));
     out.push_str(&format!("+++ b/{}\t{}\n", path, to_hash));
 
-    let old_lines = split_diff_lines(old_text);
-    let new_lines = split_diff_lines(new_text);
-    let n = old_lines.len();
-    let m = new_lines.len();
-    let max = n + m;
-    let mut v = vec![0isize; 2 * max + 1];
-    let mut trace: Vec<Vec<isize>> = Vec::new();
-
-    let mut done = false;
-    let mut d: isize = 0;
-    while (d as usize) <= max && !done {
-        let v_snap = v.clone();
-        trace.push(v_snap);
-        for k in (-d..=d).step_by(2) {
-            let idx = (k + max as isize) as usize;
-            let mut x = if d == 0 {
-                0
-            } else if k == -d || (k != d && v[idx - 1] < v[idx + 1]) {
-                v[idx + 1]
-            } else {
-                v[idx - 1] + 1
-            };
-            let mut y = (x - k) as usize;
-            while x < n as isize && y < m && old_lines[x as usize] == new_lines[y] {
-                x += 1;
-                y += 1;
-            }
-            v[idx] = x;
-            if x as usize >= n && y >= m {
-                done = true;
-                break;
-            }
-        }
-        d += 1;
-    }
-
-    let mut hunks: Vec<(usize, usize, usize, usize)> = Vec::new();
-    let mut x = n as isize;
-    let mut y = m as isize;
-    for (di, v_snap) in trace.iter().enumerate().rev() {
-        let dv = di as isize;
-        let k = x - y as isize;
-        let km1_idx = (k - 1 + max as isize) as usize;
-        let kp1_idx = (k + 1 + max as isize) as usize;
-        let prev_k = if dv == 0 {
-            0
-        } else if k == -dv || (k != dv && v_snap[km1_idx] < v_snap[kp1_idx]) {
-            k + 1
-        } else {
-            k - 1
-        };
-        let prev_x = v_snap[(prev_k + max as isize) as usize];
-        let prev_y = prev_x - prev_k;
-        let old_start = prev_x as usize;
-        let old_end = x as usize;
-        let new_start = prev_y as usize;
-        let new_end = y as usize;
-        let old_slice = &old_lines[old_start..old_end];
-        let new_slice = &new_lines[new_start..new_end];
-        if old_slice != new_slice {
-            hunks.push((old_start, old_end, new_start, new_end));
-        }
-        x = prev_x;
-        y = prev_y;
-    }
-    hunks.reverse();
-
-    for (old_start, old_end, new_start, new_end) in &hunks {
-        let old_count = old_end - old_start;
-        let new_count = new_end - new_start;
-        if old_count == 0 {
-            out.push_str(&format!(
-                "@@ -{},0 +{},{} @@\n",
-                old_start + 1,
-                new_start + 1,
-                new_count
-            ));
-        } else if new_count == 0 {
-            out.push_str(&format!(
-                "@@ -{},{} +{},0 @@\n",
-                old_start + 1,
-                old_count,
-                new_start + 1
-            ));
-        } else {
-            out.push_str(&format!(
-                "@@ -{},{} +{},{} @@\n",
-                old_start + 1,
-                old_count,
-                new_start + 1,
-                new_count
-            ));
-        }
-        for line in &old_lines[*old_start..*old_end] {
-            out.push_str(&format!("-{}\n", line.text));
-            if !line.has_newline {
-                out.push_str("\\ No newline at end of file\n");
-            }
-        }
-        for line in &new_lines[*new_start..*new_end] {
-            out.push_str(&format!("+{}\n", line.text));
-            if !line.has_newline {
-                out.push_str("\\ No newline at end of file\n");
-            }
-        }
-    }
+    let input = InternedInput::new(old_text, new_text);
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+    out.push_str(
+        &diff
+            .unified_diff(
+                &SourceLineDiffPrinter(&input.interner),
+                UnifiedDiffConfig::default(),
+                &input,
+            )
+            .to_string(),
+    );
 
     out
 }
@@ -944,11 +882,71 @@ mod tests {
         let from = dummy_commit();
         let to = dummy_commit();
         let diff = unified_diff("old line\n", "new line\n", "test.txt", &from, &to);
-        // Myers diff represents a replace as separate delete + add hunks
-        assert!(diff.contains("@@ -1,1 +1,0 @@"));
-        assert!(diff.contains("@@ -2,0 +1,1 @@"));
+        assert!(diff.contains("@@ -1,1 +1,1 @@"));
         assert!(diff.contains("-old line"));
         assert!(diff.contains("+new line"));
+    }
+
+    #[test]
+    fn diff_modified_block_keeps_context_and_pairs_changes() {
+        let from = dummy_commit();
+        let to = dummy_commit();
+        let old = "\
+fn main() {
+    let value = 1;
+    println!(\"{value}\");
+}
+";
+        let new = "\
+fn main() {
+    let value = 2;
+    println!(\"value={value}\");
+}
+";
+        let diff = unified_diff(old, new, "test.rs", &from, &to);
+        assert!(diff.contains("@@ -1,4 +1,4 @@"));
+        assert!(diff.contains(" fn main() {"));
+        assert!(diff.contains("-    let value = 1;"));
+        assert!(diff.contains("+    let value = 2;"));
+        assert!(diff.contains("-    println!(\"{value}\");"));
+        assert!(diff.contains("+    println!(\"value={value}\");"));
+        assert!(diff.contains(" }"));
+        assert_eq!(
+            diff.lines().filter(|line| line.starts_with("@@ ")).count(),
+            1,
+            "nearby replacements should render as one understandable hunk:\n{diff}"
+        );
+    }
+
+    #[test]
+    fn file_diff_for_review_fixture_is_not_whole_file_replacement() {
+        let vcs = VcsProvider::open(&mica_git_dir()).expect("open mica repo");
+        let from = vcs
+            .resolve_commit("696dbc78cc394c7882c3199d2bac62b38a2ed2bd")
+            .expect("resolve fixture base");
+        let to = vcs
+            .resolve_commit("fea67143608204247917088611d51f1f828f4cc3")
+            .expect("resolve fixture patch set");
+        let (kind, diff) = vcs
+            .file_diff(&from, &to, "crates/relation-kernel/src/snapshot.rs")
+            .expect("diff fixture file")
+            .expect("fixture file changed");
+
+        assert_eq!(kind, ChangeKind::Modified);
+        assert!(diff.contains("-use crate::commit_bloom::CommitBloom;"));
+        assert!(diff.contains("-    pub(crate) bloom: CommitBloom,"));
+        assert_eq!(
+            diff.lines().filter(|line| line.starts_with("@@ ")).count(),
+            2,
+            "fixture diff should be two small hunks, not a full-file replacement:\n{diff}"
+        );
+        assert!(
+            diff.lines()
+                .filter(|line| line.starts_with('+') && !line.starts_with("+++ "))
+                .count()
+                <= 1,
+            "fixture is mostly removals and should not re-add the file body:\n{diff}"
+        );
     }
 
     #[test]

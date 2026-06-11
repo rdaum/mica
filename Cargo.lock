@@ -3309,6 +3309,7 @@ dependencies = [
 name = "mica-source-provider"
 version = "0.1.0"
 dependencies = [
+ "gix-imara-diff",
  "jj-lib",
  "mica-compiler",
  "mica-relation-kernel",
