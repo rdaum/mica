@@ -29,6 +29,8 @@ pub enum RuntimeError {
     },
     InstructionBudgetExceeded {
         budget: usize,
+        current_stack: Vec<String>,
+        hot_spots: Vec<String>,
     },
     MaxCallDepthExceeded {
         max_depth: usize,

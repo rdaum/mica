@@ -28,6 +28,7 @@ use mica_relation_kernel::{
 };
 use mica_var::{FunctionId, Identity, Symbol, Value, ValueKind};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
@@ -186,6 +187,124 @@ pub struct VmHostContext<'ctx, 'kernel> {
     transient: Option<TransientAccess<'ctx>>,
     transient_scopes: &'ctx [Identity],
     trace: VmHostTrace,
+}
+
+const BUDGET_PROFILE_SAMPLE_INTERVAL: usize = 1024;
+const BUDGET_PROFILE_TOP_LIMIT: usize = 12;
+
+#[derive(Clone, Debug, Default)]
+struct BudgetProfiler {
+    samples: BTreeMap<(usize, usize, &'static str), usize>,
+}
+
+impl BudgetProfiler {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn sample(&mut self, instruction: usize, vm: &RegisterVm) {
+        if instruction % BUDGET_PROFILE_SAMPLE_INTERVAL != 0 {
+            return;
+        }
+
+        let Some(frame) = vm.state.current_frame() else {
+            return;
+        };
+        let opcode = vm
+            .program_opcode(frame.program_index(), frame.ip())
+            .map(opcode_name)
+            .unwrap_or("out-of-bounds");
+        *self
+            .samples
+            .entry((frame.program_index(), frame.ip(), opcode))
+            .or_insert(0) += 1;
+    }
+
+    fn profile(&self, vm: &RegisterVm) -> BudgetProfile {
+        let mut hotspots = self
+            .samples
+            .iter()
+            .map(|((program, ip, opcode), samples)| (*samples, *program, *ip, *opcode))
+            .collect::<Vec<_>>();
+        hotspots.sort_by(|left, right| right.cmp(left));
+        hotspots.truncate(BUDGET_PROFILE_TOP_LIMIT);
+
+        let current_stack = vm
+            .trace_frames()
+            .into_iter()
+            .map(|frame| frame.render())
+            .collect::<Vec<_>>();
+        let hot_spots = hotspots
+            .into_iter()
+            .map(|(samples, program, ip, opcode)| {
+                BudgetTraceFrame {
+                    depth: 0,
+                    program,
+                    program_id: vm.program_id_label(program),
+                    ip,
+                    opcode,
+                    samples,
+                }
+                .render()
+            })
+            .collect::<Vec<_>>();
+
+        BudgetProfile {
+            current_stack,
+            hot_spots,
+        }
+    }
+
+    fn emit(&self, budget: usize, profile: &BudgetProfile) {
+        tracing::error!(
+            target: "mica_vm::budget",
+            budget,
+            sample_interval = BUDGET_PROFILE_SAMPLE_INTERVAL,
+            frames = profile.current_stack.len(),
+            current_stack = ?profile.current_stack,
+            hot_spots = ?profile.hot_spots,
+            "VM instruction budget exhausted"
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BudgetProfile {
+    current_stack: Vec<String>,
+    hot_spots: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct BudgetTraceFrame {
+    depth: usize,
+    program: usize,
+    program_id: Option<String>,
+    ip: usize,
+    opcode: &'static str,
+    samples: usize,
+}
+
+impl BudgetTraceFrame {
+    fn render(&self) -> String {
+        let program = self.program_id.as_deref().unwrap_or("<anonymous program>");
+        if self.samples == 0 {
+            return format!(
+                "#{depth} program[{program_index}] {program} ip={ip} opcode={opcode}",
+                depth = self.depth,
+                program_index = self.program,
+                ip = self.ip,
+                opcode = self.opcode
+            );
+        }
+
+        format!(
+            "samples={samples} program[{program_index}] {program} ip={ip} opcode={opcode}",
+            samples = self.samples,
+            program_index = self.program,
+            ip = self.ip,
+            opcode = self.opcode
+        )
+    }
 }
 
 impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
@@ -887,6 +1006,67 @@ impl<W: RelationWorkspace> VmHost for ProjectedVmHostContext<'_, W> {
     }
 }
 
+fn opcode_name(opcode: &Opcode) -> &'static str {
+    match opcode {
+        Opcode::Load { .. } => "Load",
+        Opcode::Move { .. } => "Move",
+        Opcode::Unary { .. } => "Unary",
+        Opcode::Binary { .. } => "Binary",
+        Opcode::BuildList { .. } => "BuildList",
+        Opcode::BuildMap { .. } => "BuildMap",
+        Opcode::BuildMapDynamic { .. } => "BuildMapDynamic",
+        Opcode::BuildRange { .. } => "BuildRange",
+        Opcode::Index { .. } => "Index",
+        Opcode::SetIndex { .. } => "SetIndex",
+        Opcode::ErrorField { .. } => "ErrorField",
+        Opcode::One { .. } => "One",
+        Opcode::CollectionLen { .. } => "CollectionLen",
+        Opcode::CollectionKeyAt { .. } => "CollectionKeyAt",
+        Opcode::CollectionValueAt { .. } => "CollectionValueAt",
+        Opcode::ScanExists { .. } => "ScanExists",
+        Opcode::ScanBindings { .. } => "ScanBindings",
+        Opcode::ScanValue { .. } => "ScanValue",
+        Opcode::Assert { .. } => "Assert",
+        Opcode::Retract { .. } => "Retract",
+        Opcode::RetractWhere { .. } => "RetractWhere",
+        Opcode::ScanDynamic { .. } => "ScanDynamic",
+        Opcode::AssertDynamic { .. } => "AssertDynamic",
+        Opcode::RetractDynamic { .. } => "RetractDynamic",
+        Opcode::ReplaceFunctional { .. } => "ReplaceFunctional",
+        Opcode::Branch { .. } => "Branch",
+        Opcode::Jump { .. } => "Jump",
+        Opcode::EnterTry { .. } => "EnterTry",
+        Opcode::ExitTry => "ExitTry",
+        Opcode::EndFinally => "EndFinally",
+        Opcode::Emit { .. } => "Emit",
+        Opcode::LoadFunction { .. } => "LoadFunction",
+        Opcode::CallValue { .. } => "CallValue",
+        Opcode::CallValueDynamic { .. } => "CallValueDynamic",
+        Opcode::Call { .. } => "Call",
+        Opcode::BuiltinCall { .. } => "BuiltinCall",
+        Opcode::BuiltinCallDynamic { .. } => "BuiltinCallDynamic",
+        Opcode::Dispatch { .. } => "Dispatch",
+        Opcode::DynamicDispatch { .. } => "DynamicDispatch",
+        Opcode::PositionalDispatch { .. } => "PositionalDispatch",
+        Opcode::PositionalDispatchDynamic { .. } => "PositionalDispatchDynamic",
+        Opcode::SpawnDispatch { .. } => "SpawnDispatch",
+        Opcode::SpawnDispatchDynamic { .. } => "SpawnDispatchDynamic",
+        Opcode::SpawnPositionalDispatch { .. } => "SpawnPositionalDispatch",
+        Opcode::SpawnPositionalDispatchDynamic { .. } => "SpawnPositionalDispatchDynamic",
+        Opcode::Commit => "Commit",
+        Opcode::Suspend { .. } => "Suspend",
+        Opcode::SuspendValue { .. } => "SuspendValue",
+        Opcode::CommitValue { .. } => "CommitValue",
+        Opcode::Read { .. } => "Read",
+        Opcode::MailboxRecv { .. } => "MailboxRecv",
+        Opcode::ExternalRequest { .. } => "ExternalRequest",
+        Opcode::RollbackRetry => "RollbackRetry",
+        Opcode::Return { .. } => "Return",
+        Opcode::Abort { .. } => "Abort",
+        Opcode::Raise { .. } => "Raise",
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RegisterVm {
     state: VmState,
@@ -941,20 +1121,63 @@ impl RegisterVm {
         self.write_register(register, value)
     }
 
+    fn program_opcode(&self, program: usize, ip: usize) -> Option<&Opcode> {
+        self.state
+            .programs
+            .get(program)
+            .and_then(|program| program.opcodes().get(ip))
+    }
+
+    fn program_id_label(&self, program: usize) -> Option<String> {
+        self.state
+            .resolved_programs
+            .iter()
+            .find(|(_, index)| *index == program)
+            .map(|(program_id, _)| format!("{program_id:?}"))
+    }
+
+    fn trace_frames(&self) -> Vec<BudgetTraceFrame> {
+        self.state
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(depth, frame)| {
+                let opcode = self
+                    .program_opcode(frame.program_index(), frame.ip())
+                    .map(opcode_name)
+                    .unwrap_or("out-of-bounds");
+                BudgetTraceFrame {
+                    depth,
+                    program: frame.program_index(),
+                    program_id: self.program_id_label(frame.program_index()),
+                    ip: frame.ip(),
+                    opcode,
+                    samples: 0,
+                }
+            })
+            .collect()
+    }
+
     pub fn run_until_host_response<H: VmHost>(
         &mut self,
         host: &mut H,
         instruction_budget: usize,
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
-        for _ in 0..instruction_budget {
+        let mut profiler = BudgetProfiler::new();
+        for instruction in 0..instruction_budget {
+            profiler.sample(instruction, self);
             let response = self.step(host, max_call_depth)?;
             if response != VmHostResponse::Continue {
                 return Ok(response);
             }
         }
+        let profile = profiler.profile(self);
+        profiler.emit(instruction_budget, &profile);
         Err(RuntimeError::InstructionBudgetExceeded {
             budget: instruction_budget,
+            current_stack: profile.current_stack,
+            hot_spots: profile.hot_spots,
         })
     }
 

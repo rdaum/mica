@@ -284,9 +284,9 @@ impl<'a> Task<'a> {
                     &mut host,
                     self.limits.instruction_budget,
                     self.limits.max_call_depth,
-                )?;
+                );
                 host.emit_trace_summary(self.task_id);
-                response
+                response?
             };
             tracing::trace!(
                 task_id = self.task_id,
@@ -333,11 +333,13 @@ impl<'a> Task<'a> {
                     self.runtime_context,
                 )
                 .with_shared_transient(transient, transient_scopes);
-                self.vm.run_until_host_response(
+                let response = self.vm.run_until_host_response(
                     &mut host,
                     self.limits.instruction_budget,
                     self.limits.max_call_depth,
-                )?
+                );
+                host.emit_trace_summary(self.task_id);
+                response?
             };
 
             if let Some(outcome) = self.outcome_from_host_response(response)? {

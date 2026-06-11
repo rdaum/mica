@@ -176,6 +176,26 @@ fn mint_read_located(
 }
 
 #[test]
+fn instruction_budget_exhaustion_reports_runtime_error() {
+    let kernel = RelationKernel::new();
+    let program = Program::new(0, [Instruction::Jump { target: 0 }]).unwrap();
+
+    let error = run_program(&kernel, program, 3).unwrap_err();
+    let TaskError::Runtime(RuntimeError::InstructionBudgetExceeded {
+        budget,
+        current_stack,
+        hot_spots,
+    }) = error
+    else {
+        panic!("unexpected error: {error:?}");
+    };
+
+    assert_eq!(budget, 3);
+    assert!(current_stack.iter().any(|frame| frame.contains("Jump")));
+    assert!(hot_spots.iter().any(|frame| frame.contains("Jump")));
+}
+
+#[test]
 fn builtin_can_return_ephemeral_capability_value() {
     let kernel = kernel_with_world_relations();
     let program = Program::new(
