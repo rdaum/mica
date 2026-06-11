@@ -550,7 +550,6 @@ fn actor_name(actor: &str) -> Result<String, String> {
 
 fn log_startup_source_begin(source: &str) {
     tracing::info!(
-        source = %source,
         description = startup_source_description(source),
         "startup source started"
     );
@@ -558,7 +557,6 @@ fn log_startup_source_begin(source: &str) {
 
 fn log_startup_source_end(source: &str, rendered_report: &str) {
     tracing::info!(
-        source = %source,
         description = startup_source_description(source),
         report = %rendered_report,
         "startup source completed"
@@ -600,7 +598,6 @@ async fn run_startup_source(driver: &CompioTaskDriver, source: &str) -> Result<(
                         && let Some(child_task_id) = spawned_child_task_id(&value)
                     {
                         tracing::info!(
-                            source = %source,
                             description = startup_source_description(source),
                             parent_task_id = task_id,
                             child_task_id,
