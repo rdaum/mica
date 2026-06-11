@@ -38,6 +38,7 @@ const VCS_COMMIT_KEY_BOUND: &[u16] = &[0, 1];
 const VCS_REPOSITORY_BOUND: &[u16] = &[0];
 const VCS_TWO_COMMIT_BOUND: &[u16] = &[0, 1, 2];
 const VCS_TWO_COMMIT_PATH_BOUND: &[u16] = &[0, 1, 2, 3];
+const VCS_TWO_COMMIT_PATH_RANGE_BOUND: &[u16] = &[0, 1, 2, 3, 4, 5];
 const VCS_COMMIT_PATH_BOUND: &[u16] = &[0, 1];
 const VCS_BLAME_BOUND: &[u16] = &[0, 1, 2];
 const VCS_SEARCH_BOUND: &[u16] = &[0, 1];
@@ -132,6 +133,12 @@ pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
             provider: provider.clone(),
         }),
         Arc::new(FileDiffRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(FileDiffLineRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(FileLineProjectionRelation {
             provider: provider.clone(),
         }),
         Arc::new(CommitLogRelation {
@@ -2137,6 +2144,324 @@ impl ComputedRelation for FileDiffRelation {
     }
 }
 
+#[derive(Clone, Debug)]
+struct StructuredDiffLine {
+    hunk: usize,
+    line_index: usize,
+    side: &'static str,
+    old_line: Option<usize>,
+    new_line: Option<usize>,
+    kind: &'static str,
+    text: String,
+}
+
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    parse_hunk_header_full(line).map(|header| (header.old_start, header.new_start))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HunkHeader {
+    old_start: usize,
+    old_count: usize,
+    new_start: usize,
+    new_count: usize,
+}
+
+fn parse_hunk_range(part: &str) -> Option<(usize, usize)> {
+    let (start, count) = part.split_once(',').unwrap_or((part, "1"));
+    Some((start.parse().ok()?, count.parse().ok()?))
+}
+
+fn parse_hunk_header_full(line: &str) -> Option<HunkHeader> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old_part, rest) = rest.split_once(" +")?;
+    let (new_part, _) = rest.split_once(" @@")?;
+    let (old_start, old_count) = parse_hunk_range(old_part)?;
+    let (new_start, new_count) = parse_hunk_range(new_part)?;
+    Some(HunkHeader {
+        old_start,
+        old_count,
+        new_start,
+        new_count,
+    })
+}
+
+fn structured_diff_lines(diff_text: &str) -> Vec<StructuredDiffLine> {
+    let mut rows = Vec::new();
+    let mut hunk = 0usize;
+    let mut line_index = 0usize;
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+
+    for line in diff_text.lines() {
+        if line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+        if let Some((old_start, new_start)) = parse_hunk_header(line) {
+            hunk += 1;
+            line_index = 0;
+            old_line = old_start;
+            new_line = new_start;
+            continue;
+        }
+        if hunk == 0 || line.starts_with("\\ No newline") {
+            continue;
+        }
+        if let Some(text) = line.strip_prefix('-') {
+            line_index += 1;
+            rows.push(StructuredDiffLine {
+                hunk,
+                line_index,
+                side: "source/review_old_side",
+                old_line: Some(old_line),
+                new_line: None,
+                kind: "source/diff_removed",
+                text: text.to_owned(),
+            });
+            old_line += 1;
+            continue;
+        }
+        if let Some(text) = line.strip_prefix('+') {
+            line_index += 1;
+            rows.push(StructuredDiffLine {
+                hunk,
+                line_index,
+                side: "source/review_new_side",
+                old_line: None,
+                new_line: Some(new_line),
+                kind: "source/diff_added",
+                text: text.to_owned(),
+            });
+            new_line += 1;
+            continue;
+        }
+        if let Some(text) = line.strip_prefix(' ') {
+            line_index += 1;
+            rows.push(StructuredDiffLine {
+                hunk,
+                line_index,
+                side: "source/review_both_sides",
+                old_line: Some(old_line),
+                new_line: Some(new_line),
+                kind: "source/diff_context",
+                text: text.to_owned(),
+            });
+            old_line += 1;
+            new_line += 1;
+        }
+    }
+
+    rows
+}
+
+fn project_line_range(
+    diff_text: &str,
+    start: usize,
+    end: usize,
+) -> Option<(usize, usize, &'static str)> {
+    if start == 0 || end < start {
+        return None;
+    }
+
+    let mut delta: isize = 0;
+    let mut shifted = false;
+    for line in diff_text.lines() {
+        let Some(header) = parse_hunk_header_full(line) else {
+            continue;
+        };
+        let old_hunk_end = if header.old_count == 0 {
+            header.old_start
+        } else {
+            header.old_start + header.old_count - 1
+        };
+
+        if end < header.old_start {
+            break;
+        }
+        if start > old_hunk_end {
+            let hunk_delta = header.new_count as isize - header.old_count as isize;
+            if hunk_delta != 0 {
+                shifted = true;
+            }
+            delta += hunk_delta;
+            continue;
+        }
+
+        let new_start = header.new_start;
+        let new_end = if header.new_count == 0 {
+            header.new_start
+        } else {
+            header.new_start + header.new_count - 1
+        };
+        if header.old_count == header.new_count && start >= header.old_start && end <= old_hunk_end
+        {
+            let offset = start - header.old_start;
+            return Some((
+                new_start + offset,
+                new_start + offset + (end - start),
+                "source/review_projection_fuzzy",
+            ));
+        }
+        return Some((
+            new_start,
+            new_end.max(new_start),
+            "source/review_projection_fuzzy",
+        ));
+    }
+
+    let projected_start = (start as isize + delta).max(1) as usize;
+    let projected_end = (end as isize + delta).max(projected_start as isize) as usize;
+    let quality = if shifted {
+        "source/review_projection_shifted"
+    } else {
+        "source/review_projection_exact"
+    };
+    Some((projected_start, projected_end, quality))
+}
+
+struct FileDiffLineRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for FileDiffLineRelation {
+    fn name(&self) -> &'static str {
+        "local-source-file-diff-line"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/FileDiffLine") && metadata.arity() == 11
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_TWO_COMMIT_PATH_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let from_hex = bound_string(metadata.id(), bindings, 1, "from_commit")?;
+        let to_hex = bound_string(metadata.id(), bindings, 2, "to_commit")?;
+        let path = bound_string(metadata.id(), bindings, 3, "path")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let from_id = vcs
+            .resolve_commit(&from_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let to_id = vcs
+            .resolve_commit(&to_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let Some((_kind, diff_text)) = vcs
+            .file_diff(&from_id, &to_id, &path)
+            .map_err(|e| invalid_relation(metadata.id(), e))?
+        else {
+            return Ok(Vec::new());
+        };
+
+        let mut rows = Vec::new();
+        for line in structured_diff_lines(&diff_text) {
+            rows.push(Tuple::from([
+                repository.clone(),
+                Value::string(&from_hex),
+                Value::string(&to_hex),
+                Value::string(&path),
+                int_value(metadata.id(), line.hunk as i64)?,
+                int_value(metadata.id(), line.line_index as i64)?,
+                Value::symbol(Symbol::intern(line.side)),
+                line.old_line
+                    .map(|line| int_value(metadata.id(), line as i64))
+                    .transpose()?
+                    .unwrap_or_else(Value::nothing),
+                line.new_line
+                    .map(|line| int_value(metadata.id(), line as i64))
+                    .transpose()?
+                    .unwrap_or_else(Value::nothing),
+                Value::symbol(Symbol::intern(line.kind)),
+                Value::string(line.text),
+            ]));
+        }
+
+        Ok(filter_bound_rows(rows, bindings))
+    }
+}
+
+struct FileLineProjectionRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for FileLineProjectionRelation {
+    fn name(&self) -> &'static str {
+        "local-source-file-line-projection"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/FileLineProjection") && metadata.arity() == 9
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_TWO_COMMIT_PATH_RANGE_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let from_hex = bound_string(metadata.id(), bindings, 1, "from_commit")?;
+        let to_hex = bound_string(metadata.id(), bindings, 2, "to_commit")?;
+        let path = bound_string(metadata.id(), bindings, 3, "path")?;
+        let start_line = bound_positive_int(metadata.id(), bindings, 4, "start_line")?;
+        let end_line = bound_positive_int(metadata.id(), bindings, 5, "end_line")?;
+        if end_line < start_line {
+            return Err(invalid_relation(
+                metadata.id(),
+                "end_line must be greater than or equal to start_line",
+            ));
+        }
+
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let from_id = vcs
+            .resolve_commit(&from_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let to_id = vcs
+            .resolve_commit(&to_hex)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let diff = vcs
+            .file_diff(&from_id, &to_id, &path)
+            .map_err(|e| invalid_relation(metadata.id(), e))?;
+        let (projected_start, projected_end, quality) = if let Some((_kind, diff_text)) = diff {
+            project_line_range(&diff_text, start_line, end_line).ok_or_else(|| {
+                invalid_relation(metadata.id(), "could not project line range through diff")
+            })?
+        } else {
+            (start_line, end_line, "source/review_projection_exact")
+        };
+
+        Ok(filter_bound_rows(
+            vec![Tuple::from([
+                repository,
+                Value::string(&from_hex),
+                Value::string(&to_hex),
+                Value::string(&path),
+                int_value(metadata.id(), start_line as i64)?,
+                int_value(metadata.id(), end_line as i64)?,
+                int_value(metadata.id(), projected_start as i64)?,
+                int_value(metadata.id(), projected_end as i64)?,
+                Value::symbol(Symbol::intern(quality)),
+            ])],
+            bindings,
+        ))
+    }
+}
+
 struct CommitLogRelation {
     provider: Arc<LocalSourceProvider>,
 }
@@ -2480,4 +2805,57 @@ fn blame_hunk_tuple(
         int_value(relation, ts)?,
         Value::string(first_line(msg)),
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structured_diff_lines_preserve_side_and_line_numbers() {
+        let diff = "\
+--- a/src/lib.rs\told
++++ b/src/lib.rs\tnew
+@@ -2,2 +2,2 @@
+-old line
++new line
+";
+
+        let rows = structured_diff_lines(diff);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].hunk, 1);
+        assert_eq!(rows[0].line_index, 1);
+        assert_eq!(rows[0].side, "source/review_old_side");
+        assert_eq!(rows[0].old_line, Some(2));
+        assert_eq!(rows[0].new_line, None);
+        assert_eq!(rows[0].kind, "source/diff_removed");
+        assert_eq!(rows[0].text, "old line");
+
+        assert_eq!(rows[1].hunk, 1);
+        assert_eq!(rows[1].line_index, 2);
+        assert_eq!(rows[1].side, "source/review_new_side");
+        assert_eq!(rows[1].old_line, None);
+        assert_eq!(rows[1].new_line, Some(2));
+        assert_eq!(rows[1].kind, "source/diff_added");
+        assert_eq!(rows[1].text, "new line");
+    }
+
+    #[test]
+    fn project_line_range_accounts_for_prior_hunk_delta() {
+        let diff = "\
+--- a/src/lib.rs\told
++++ b/src/lib.rs\tnew
+@@ -2,1 +2,3 @@
+-old line
++new line
++extra one
++extra two
+";
+
+        assert_eq!(
+            project_line_range(diff, 10, 12),
+            Some((12, 14, "source/review_projection_shifted"))
+        );
+    }
 }
