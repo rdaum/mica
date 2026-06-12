@@ -8,6 +8,7 @@
 //   string_from_chars(chars)
 //   string_concat(parts...)
 //   string_join(parts, separator)
+//   sort(list)
 //   words(text)
 //   string_equal_fold(left, right)
 //   string_starts_with(text, prefix)

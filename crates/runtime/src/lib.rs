@@ -148,6 +148,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "string_from_chars",
     "string_concat",
     "string_join",
+    "sort",
     "words",
     "string_starts_with",
     "string_contains",
@@ -3548,6 +3549,7 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
         .with_builtin("string_from_chars", string_from_chars_builtin)
         .with_builtin("string_concat", string_concat_builtin)
         .with_builtin("string_join", string_join_builtin)
+        .with_builtin("sort", sort_builtin)
         .with_builtin("words", words_builtin)
         .with_builtin("string_starts_with", string_starts_with_builtin)
         .with_builtin("string_contains", string_contains_builtin)
@@ -4662,6 +4664,20 @@ fn string_join_builtin(
     };
     let separator = builtin_string_arg("string_join", args, 1)?;
     Ok(Value::string(parts?.join(&separator)))
+}
+
+fn sort_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("sort", "expected sort(list)"));
+    }
+    let Some(mut values) = args[0].with_list(<[Value]>::to_vec) else {
+        return Err(invalid_builtin_call("sort", "expected list argument"));
+    };
+    values.sort();
+    Ok(Value::list(values))
 }
 
 fn words_builtin(
@@ -7069,6 +7085,27 @@ mod tests {
                 .unwrap()
                 .outcome,
             TaskOutcome::Complete { value, .. } if value == Value::string("a/b/c")
+        ));
+        assert!(matches!(
+            runner.run_source("return sort([3, 1, 2])").unwrap().outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([
+                    Value::int(1).unwrap(),
+                    Value::int(2).unwrap(),
+                    Value::int(3).unwrap(),
+                ])
+        ));
+        assert!(matches!(
+            runner
+                .run_source("return sort([[\"b\", 2], [\"a\", 3], [\"a\", 1]])")
+                .unwrap()
+                .outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([
+                    Value::list([Value::string("a"), Value::int(1).unwrap()]),
+                    Value::list([Value::string("a"), Value::int(3).unwrap()]),
+                    Value::list([Value::string("b"), Value::int(2).unwrap()]),
+                ])
         ));
         assert!(matches!(
             runner
