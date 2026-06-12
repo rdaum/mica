@@ -1,5 +1,6 @@
 mod index;
 mod navigation;
+pub mod receive;
 mod relations;
 mod rust_analyzer;
 mod syntax;

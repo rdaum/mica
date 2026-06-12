@@ -3,6 +3,7 @@ mod tests {
     use mica_runtime::{SourceRunner, TaskOutcome};
     use mica_source_provider::{
         SourceIndexRoot, build_source_index_file, build_source_index_file_for_roots,
+        receive::{GitReceiveRecorder, ReceiveCommandLine},
         write_failed_source_index_file,
     };
     use mica_var::{Symbol, Value};
@@ -37,6 +38,7 @@ mod tests {
                  make_relation(:source/SymbolSearch, 11)\n\
                  make_relation(:source/IndexedTextUnit, 9)\n\
                  make_relation(:source/TextSearch, 11)\n\
+                 make_relation(:source/GitReceivedRefUpdate, 12)\n\
                  make_relation(:source/SourceIndex, 1)\n\
                  make_relation(:source/IndexRepository, 2)\n\
                  make_relation(:source/IndexRevision, 2)\n\
@@ -311,6 +313,83 @@ mod tests {
     }
 
     #[test]
+    fn source_provider_exposes_git_received_ref_updates() {
+        let tmp = unique_test_dir("mica-git-receive-");
+        let remote = tmp.join("remote.git");
+        let work = tmp.join("work");
+        git(["init", "--bare", path(&remote)]);
+        git(["clone", path(&remote), path(&work)]);
+        git_in(&work, ["config", "user.name", "Mica Tester"]);
+        git_in(&work, ["config", "user.email", "mica@example.test"]);
+        fs::write(work.join("README.md"), "base\n").expect("base file should be written");
+        git_in(&work, ["add", "README.md"]);
+        git_in(&work, ["commit", "-m", "Initial base"]);
+        git_in(&work, ["push", "origin", "HEAD:refs/heads/main"]);
+        git_in(&work, ["checkout", "-b", "receive"]);
+        fs::write(work.join("README.md"), "base\nchange\n").expect("change should be written");
+        git_in(
+            &work,
+            [
+                "commit",
+                "-am",
+                "Received change\n\nChange-Id: I1234567890abcdef1234567890abcdef12345678",
+            ],
+        );
+        let new_id = git_output_in(&work, ["rev-parse", "HEAD"]);
+        git_in(&work, ["push", "origin", "HEAD:refs/for/main"]);
+        GitReceiveRecorder::new(&remote)
+            .receive_command(&ReceiveCommandLine {
+                old_id: "0000000000000000000000000000000000000000".to_string(),
+                new_id: new_id.trim().to_string(),
+                ref_name: "refs/for/main".to_string(),
+            })
+            .expect("receive command should be recorded");
+
+        let mut runner = SourceRunner::new_empty();
+        load_source_relations_at(&mut runner, &tmp.display().to_string());
+        let git_dir = remote.canonicalize().unwrap().display().to_string();
+        let report = runner
+            .run_source(&format!(
+                "let row = one source/GitReceivedRefUpdate({git_dir:?}, ?update_id, ?target_ref, ?ref_name, ?commit_id, ?first_parent_id, ?change_id, ?subject, ?author_name, ?author_email, ?author_time, ?received_at)\n\
+                 return {{:target_ref -> row[:target_ref], :ref_name -> row[:ref_name], :first_parent_id -> row[:first_parent_id], :change_id -> row[:change_id], :subject -> row[:subject], :author_email -> row[:author_email]}}"
+            ))
+            .expect("received ref update query should run");
+
+        let TaskOutcome::Complete { value, .. } = report.outcome else {
+            panic!("expected complete outcome, got {:?}", report.outcome);
+        };
+        value
+            .with_map(|entries| {
+                assert_eq!(
+                    map_get(entries, "target_ref"),
+                    Some(&Value::string("refs/heads/main"))
+                );
+                assert_eq!(
+                    map_get(entries, "ref_name"),
+                    Some(&Value::string("refs/for/main"))
+                );
+                let first_parent = map_get(entries, "first_parent_id")
+                    .and_then(|value| value.with_str(str::to_string))
+                    .unwrap_or_default();
+                assert!(!first_parent.is_empty());
+                assert_eq!(
+                    map_get(entries, "change_id"),
+                    Some(&Value::string("I1234567890abcdef1234567890abcdef12345678"))
+                );
+                assert_eq!(
+                    map_get(entries, "subject"),
+                    Some(&Value::string("Received change"))
+                );
+                assert_eq!(
+                    map_get(entries, "author_email"),
+                    Some(&Value::string("mica@example.test"))
+                );
+            })
+            .expect("result should be a map");
+        fs::remove_dir_all(&tmp).expect("temporary git receive dir should remove");
+    }
+
+    #[test]
     fn source_provider_returns_rust_syntax_outline() {
         let mut runner = SourceRunner::new_empty();
         load_source_relations(&mut runner);
@@ -327,6 +406,65 @@ mod tests {
             report.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::bool(true)
         ));
+    }
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let mut path = env::current_dir().unwrap();
+        path.push(format!(
+            "{prefix}{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("test directory should be created");
+        path
+    }
+
+    fn git<const N: usize>(args: [&str; N]) {
+        run_git(args, None);
+    }
+
+    fn git_in<const N: usize>(work_dir: &Path, args: [&str; N]) {
+        run_git(args, Some(work_dir));
+    }
+
+    fn git_output_in<const N: usize>(work_dir: &Path, args: [&str; N]) -> String {
+        let output = std::process::Command::new("git")
+            .current_dir(work_dir)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("git output should be utf-8")
+    }
+
+    fn run_git<const N: usize>(args: [&str; N], work_dir: Option<&Path>) {
+        let mut command = std::process::Command::new("git");
+        if let Some(work_dir) = work_dir {
+            command.current_dir(work_dir);
+        }
+        let output = command.args(args).output().expect("git should run");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn path(path: &Path) -> &str {
+        path.to_str().expect("test path should be utf-8")
+    }
+
+    fn map_get<'a>(entries: &'a [(Value, Value)], key: &str) -> Option<&'a Value> {
+        let key = Value::symbol(Symbol::intern(key));
+        entries
+            .iter()
+            .find_map(|(candidate, value)| (candidate == &key).then_some(value))
     }
 
     #[test]

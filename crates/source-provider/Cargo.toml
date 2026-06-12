@@ -7,12 +7,14 @@ license.workspace = true
 description = "Source browsing computed relations and index providers for Mica"
 
 [dependencies]
+clap = { workspace = true, features = ["derive"] }
 gix-imara-diff = { version = "0.2.2", features = ["unified_diff"] }
 jj-lib = { version = "0.41", features = ["git"] }
 mica-compiler.workspace = true
 mica-relation-kernel.workspace = true
 mica-var.workspace = true
 pollster = "0.4"
+serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["io-util"] }
@@ -20,3 +22,7 @@ tree-sitter.workspace = true
 tree-sitter-javascript.workspace = true
 tree-sitter-md.workspace = true
 tree-sitter-rust.workspace = true
+
+[[bin]]
+name = "mica-git-receive-record"
+path = "src/bin/mica-git-receive-record.rs"

@@ -3,6 +3,7 @@ use crate::navigation::{
     SemanticSymbol, SemanticSymbolProvider, byte_offset_to_lsp_position, semantic_location,
     semantic_symbol,
 };
+use crate::receive::GitReceiveRecorder;
 use crate::rust_analyzer::RustAnalyzerProvider;
 use crate::syntax::{SourceLanguage, SyntaxDocument, syntax_lines};
 use crate::util::*;
@@ -42,6 +43,7 @@ const VCS_TWO_COMMIT_PATH_RANGE_BOUND: &[u16] = &[0, 1, 2, 3, 4, 5];
 const VCS_COMMIT_PATH_BOUND: &[u16] = &[0, 1];
 const VCS_BLAME_BOUND: &[u16] = &[0, 1, 2];
 const VCS_SEARCH_BOUND: &[u16] = &[0, 1];
+const GIT_RECEIVED_REF_UPDATE_BOUND: &[u16] = &[0];
 const SEMANTIC_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SOURCE_DOCUMENT_CACHE_LIMIT: usize = 64;
 
@@ -112,6 +114,9 @@ pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
             provider: provider.clone(),
         }),
         Arc::new(RepositoryVcsRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(GitReceivedRefUpdateRelation {
             provider: provider.clone(),
         }),
         Arc::new(CommitExistsRelation {
@@ -311,6 +316,31 @@ impl LocalSourceProvider {
             .unwrap()
             .insert(git_file, provider.clone());
         Ok(provider)
+    }
+
+    fn allowed_git_dir(&self, relation: RelationId, git_dir: &str) -> Result<PathBuf, KernelError> {
+        let path = PathBuf::from(git_dir);
+        let canonical = path.canonicalize().map_err(|error| {
+            invalid_relation(
+                relation,
+                format!("invalid git dir {}: {error}", path.display()),
+            )
+        })?;
+        if self
+            .allowed_roots
+            .iter()
+            .any(|allowed| canonical.starts_with(allowed))
+        {
+            Ok(canonical)
+        } else {
+            Err(invalid_relation(
+                relation,
+                format!(
+                    "git dir {} is not under an allowed source root",
+                    canonical.display()
+                ),
+            ))
+        }
     }
 
     fn resolve_path(
@@ -1797,6 +1827,57 @@ impl ComputedRelation for RepositoryVcsRelation {
             ])],
             bindings,
         ))
+    }
+}
+
+struct GitReceivedRefUpdateRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for GitReceivedRefUpdateRelation {
+    fn name(&self) -> &'static str {
+        "local-source-git-received-ref-update"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/GitReceivedRefUpdate") && metadata.arity() == 12
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        GIT_RECEIVED_REF_UPDATE_BOUND
+    }
+
+    fn scan(
+        &self,
+        _reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let git_dir = bound_string(metadata.id(), bindings, 0, "git dir")?;
+        let git_dir_path = self.provider.allowed_git_dir(metadata.id(), &git_dir)?;
+        let recorder = GitReceiveRecorder::new(&git_dir_path);
+        let updates = recorder
+            .read_updates()
+            .map_err(|error| invalid_relation(metadata.id(), error))?;
+        let mut rows = Vec::new();
+        for update in updates {
+            let first_parent_id = update.parent_ids.first().cloned().unwrap_or_default();
+            rows.push(Tuple::from([
+                Value::string(git_dir_path.display().to_string()),
+                Value::string(update.update_id),
+                Value::string(update.target_ref),
+                Value::string(update.ref_name),
+                Value::string(update.commit_id),
+                Value::string(first_parent_id),
+                Value::string(update.change_id_footer.unwrap_or_default()),
+                Value::string(update.subject),
+                Value::string(update.author_name),
+                Value::string(update.author_email),
+                int_value(metadata.id(), update.author_time)?,
+                int_value(metadata.id(), update.received_at)?,
+            ]));
+        }
+        Ok(filter_bound_rows(rows, bindings))
     }
 }
 

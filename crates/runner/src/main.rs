@@ -102,6 +102,8 @@ enum Command {
         output: Option<PathBuf>,
     },
     Eval {
+        #[arg(long = "filein", action = ArgAction::Append, value_name = "FILE")]
+        filein: Vec<PathBuf>,
         #[arg(required = true, trailing_var_arg = true)]
         source: Vec<String>,
     },
@@ -196,9 +198,9 @@ async fn run() -> Result<(), String> {
             }
             Ok(())
         }
-        Command::Eval { source } => {
+        Command::Eval { filein, source } => {
             let source = source.join(" ");
-            let session = open_cli_session(&cli, Symbol::intern("cli"))?;
+            let session = open_cli_session_with_fileins(&cli, Symbol::intern("cli"), filein)?;
             let report = submit_cli_source(&session, &cli, source, Some("<eval>")).await?;
             print_report_and_follow(&session.driver, report).await;
             let _ = session.driver.close_endpoint(session.endpoint);
@@ -318,7 +320,16 @@ fn open_runner(cli: &Cli) -> Result<SourceRunner, String> {
 }
 
 fn open_cli_session(cli: &Cli, protocol: Symbol) -> Result<CliSession, String> {
-    let runner = open_runner(cli)?;
+    open_cli_session_with_fileins(cli, protocol, &[])
+}
+
+fn open_cli_session_with_fileins(
+    cli: &Cli,
+    protocol: Symbol,
+    fileins: &[PathBuf],
+) -> Result<CliSession, String> {
+    let mut runner = open_runner(cli)?;
+    load_fileins(&mut runner, fileins)?;
     let actor = cli
         .actor
         .as_deref()
@@ -331,6 +342,18 @@ fn open_cli_session(cli: &Cli, protocol: Symbol) -> Result<CliSession, String> {
         .open_endpoint(endpoint, actor, protocol)
         .map_err(format_driver_error)?;
     Ok(CliSession { driver, endpoint })
+}
+
+fn load_fileins(runner: &mut SourceRunner, fileins: &[PathBuf]) -> Result<(), String> {
+    for file in fileins {
+        let source = fs::read_to_string(file)
+            .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+        let include_base = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+        runner
+            .run_filein_with_include_loader(&source, |path| read_filein_include(include_base, path))
+            .map_err(|error| format_source_error_with_source(error, file, &source))?;
+    }
+    Ok(())
 }
 
 fn cli_endpoint() -> Identity {
