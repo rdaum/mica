@@ -1,0 +1,3366 @@
+use super::{
+    AuthorityContext, CompileError, Emission, Instruction, Operand, Program, RuntimeError,
+    SYSTEM_ENDPOINT, SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind, TaskError,
+    TaskManagerError, TaskOutcome,
+};
+use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
+use super::{relation_name_relation, subject_fact_relation};
+use mica_var::{Identity, Symbol, Value};
+use std::sync::Arc;
+
+#[test]
+fn runner_executes_source_against_empty_kernel() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner.run_source("return 1 + 2").unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(3).unwrap()
+    ));
+}
+
+#[test]
+fn runner_installs_default_emit_builtin() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:target)").unwrap();
+    let report = runner
+        .run_source("return emit(#target, \"hello\")")
+        .unwrap();
+    let target = Identity::new(0x00e0_0000_0000_0000).unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, effects, .. }
+            if value == Value::string("hello")
+                && effects == vec![Emission::new(target, Value::string("hello"))]
+    ));
+}
+
+#[test]
+fn runner_emit_requires_target_identity() {
+    let mut runner = SourceRunner::new_empty();
+
+    let missing_target = runner.run_source("return emit(\"hello\")").unwrap_err();
+    assert!(format!("{missing_target:?}").contains("emit expects target identity and value"));
+
+    let non_identity = runner
+        .run_source("return emit(:target, \"hello\")")
+        .unwrap_err();
+    assert!(format!("{non_identity:?}").contains("InvalidEffectTarget"));
+}
+
+#[test]
+fn runner_string_primitives_support_character_level_munging() {
+    let mut runner = SourceRunner::new_empty();
+
+    assert!(matches!(
+        runner.run_source("return string_len(\"hé\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(2).unwrap()
+    ));
+    assert!(matches!(
+        runner.run_source("return string_chars(\"ab\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([Value::string("a"), Value::string("b")])
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return string_slice(\"héllo\", 1, 4)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("éll")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return string_from_chars([\"h\", \"é\"])")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("hé")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return string_concat(\"ab\", \"cd\", \"é\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("abcdé")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return string_join([\"a\", \"b\", \"c\"], \"/\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("a/b/c")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return url_encode_component(\"refs/heads/main I+é\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("refs%2Fheads%2Fmain%20I%2B%C3%A9")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return url_decode_component(\"refs%2Fheads%2Fmain%20I%2B%C3%A9\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("refs/heads/main I+é")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return url_decode_component(\"hello+world\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("hello world")
+    ));
+    assert!(matches!(
+        runner.run_source("return sort([3, 1, 2])").unwrap().outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::int(1).unwrap(),
+                Value::int(2).unwrap(),
+                Value::int(3).unwrap(),
+            ])
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return sort([[\"b\", 2], [\"a\", 3], [\"a\", 1]])")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::list([Value::string("a"), Value::int(1).unwrap()]),
+                Value::list([Value::string("a"), Value::int(3).unwrap()]),
+                Value::list([Value::string("b"), Value::int(2).unwrap()]),
+            ])
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return words(\"say \\\"hello world\\\" north\\\\ east\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::string("say"),
+                Value::string("hello world"),
+                Value::string("north east"),
+            ])
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return string_equal_fold(\"North\", \"north\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return string_starts_with(\"north\", \"nor\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return string_contains(\"brass coin\", \"coin\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return edit_distance(\"coin\", \"coiin\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return parse_ordinal(\"twenty-first\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(21).unwrap()
+    ));
+    assert!(matches!(
+        runner.run_source("return lower(\"North\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("north")
+    ));
+}
+
+#[test]
+fn runner_url_decode_rejects_malformed_components() {
+    let mut runner = SourceRunner::new_empty();
+
+    let incomplete = runner
+        .run_source("return url_decode_component(\"abc%\")")
+        .unwrap_err();
+    assert!(format!("{incomplete:?}").contains("incomplete percent escape"));
+
+    let invalid_escape = runner
+        .run_source("return url_decode_component(\"abc%xx\")")
+        .unwrap_err();
+    assert!(format!("{invalid_escape:?}").contains("invalid percent escape"));
+
+    let invalid_utf8 = runner
+        .run_source("return url_decode_component(\"%FF\")")
+        .unwrap_err();
+    assert!(format!("{invalid_utf8:?}").contains("decoded component is not valid UTF-8"));
+}
+
+#[test]
+fn runner_json_and_dom_primitives_build_wire_values() {
+    let mut runner = SourceRunner::new_empty();
+
+    assert!(matches!(
+        runner
+            .run_source(
+                "return json_encode({:message -> \"hello\", :values -> [1, true, nothing]})"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("{\"message\":\"hello\",\"values\":[1,true,null]}")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return json_decode(\"{\\\"message\\\":\\\"hello\\\",\\\"values\\\":[1,true,null]}\")"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::map([
+                (Value::symbol(Symbol::intern("message")), Value::string("hello")),
+                (
+                    Value::symbol(Symbol::intern("values")),
+                    Value::list([Value::int(1).unwrap(), Value::bool(true), Value::nothing()])
+                ),
+            ])
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return json_encode(dom_element(\"button\", {:id -> \"send\", :type -> \"submit\"}, [dom_text(\"Send\")]))"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("{\"attrs\":{\"id\":\"send\",\"type\":\"submit\"},\"children\":[{\"text\":\"Send\"}],\"tag\":\"button\"}")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return dom_html(dom_element(\"button\", {:id -> \"send\", :type -> \"submit\"}, [dom_text(\"Send & go\")]))"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("<button id=\"send\" type=\"submit\">Send &amp; go</button>")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return dom_html(dom_element(\"h4\", {}, [dom_text(\"References\")]))")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("<h4>References</h4>")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "let label = \"Send & go\"\n\
+                 let extra = [dom <span class=\"note\">!</span>]\n\
+                 return dom_html(dom <button id=\"send\" type=\"submit\">{label}{@extra}</button>)"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("<button id=\"send\" type=\"submit\">Send &amp; go<span class=\"note\">!</span></button>")
+    ));
+    let expanded_dom = runner
+            .run_source(
+                "return dom_html(dom_element(\"img\", {:alt -> \"Logo\", \"aria-describedby\" -> \"caption\", \"data-route\" -> \"home\", :loading -> \"lazy\", :src -> \"/logo.png\"}, []))",
+            )
+            .unwrap()
+            .outcome;
+    let TaskOutcome::Complete { value, .. } = expanded_dom else {
+        panic!("expanded DOM primitive did not complete");
+    };
+    let html = value.with_str(str::to_owned).unwrap();
+    assert!(html.starts_with("<img "));
+    assert!(html.contains("alt=\"Logo\""));
+    assert!(html.contains("aria-describedby=\"caption\""));
+    assert!(html.contains("data-route=\"home\""));
+    assert!(html.contains("loading=\"lazy\""));
+    assert!(html.contains("src=\"/logo.png\""));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return to_xml(dom_element(\"widget\", {\"data-id\" -> 7}, [dom_text(\"Send & go\")]))"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("<widget data-id=\"7\">Send &amp; go</widget>")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return to_xml([dom_raw(\"<!doctype html>\"), dom_element(\"script\", {:type -> \"module\"}, [dom_raw(\"if (a < b) go();\")])])"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("<!doctype html><script type=\"module\">if (a < b) go();</script>")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return json_encode(from_xml(\"<button id='send' type='submit'>Send</button>\"))"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("{\"attrs\":{\"id\":\"send\",\"type\":\"submit\"},\"children\":[{\"text\":\"Send\"}],\"tag\":\"button\"}")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return to_xml(from_xml(\"<form id='chat-composer'><input id='actor'/><button>Send</button></form>\"))"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("<form id=\"chat-composer\"><input id=\"actor\"></input><button>Send</button></form>")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return json_encode(dom_diff(dom_text(\"old\"), dom_text(\"new\")))"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("[{\"op\":\"set_text\",\"path\":[],\"text\":\"new\"}]")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return json_encode(dom_diff(dom_element(\"ul\", {}, []), dom_element(\"ul\", {:id -> \"messages\"}, [dom_text(\"hi\")])))"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("[{\"name\":\"id\",\"op\":\"set_attr\",\"path\":[],\"value\":\"messages\"},{\"node\":{\"text\":\"hi\"},\"op\":\"append_child\",\"path\":[]}]")
+    ));
+}
+
+#[test]
+fn runner_string_filein_installs_primitive_prototype_verbs() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/string.mica"))
+        .unwrap();
+
+    assert!(matches!(
+        runner.run_source("return trim(\"  hello  \")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("hello")
+    ));
+    assert!(matches!(
+        runner.run_source("return split(\"a  b\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([Value::string("a"), Value::string("b")])
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return join([\"a\", \"b\"], \"-\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("a-b")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return strip_prefix(\"north\", \"no\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("rth")
+    ));
+}
+
+#[test]
+fn runner_frob_builtins_construct_and_inspect_values() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:take_event)").unwrap();
+
+    let delegate = runner.actor_identity(Symbol::intern("take_event")).unwrap();
+    let report = runner
+        .run_source(
+            "let event = frob(#take_event, {:item -> \"coin\"})\n\
+                 return [is_frob(event), frob_delegate(event), frob_value(event)[:item]]",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::bool(true),
+                Value::identity(delegate),
+                Value::string("coin"),
+            ])
+    ));
+}
+
+#[test]
+fn runner_frob_literals_compile_to_frob_values() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:take_event)").unwrap();
+
+    let report = runner
+        .run_source("return frob_value(#take_event<{:item -> \"coin\"}>)[:item]")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("coin")
+    ));
+}
+
+#[test]
+fn runner_empty_relation_results_are_falsey() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source("make_relation(:Seen, 1)\nmake_identity(:missing)\nmake_identity(:present)")
+        .unwrap();
+
+    let report = runner
+            .run_source(
+                "let empty_list_branch = false\n\
+                 if []\n\
+                   empty_list_branch = true\n\
+                 end\n\
+                 let non_empty_list_branch = false\n\
+                 if [nothing]\n\
+                   non_empty_list_branch = true\n\
+                 end\n\
+                 let empty_relation_branch = false\n\
+                 if Seen(#missing)\n\
+                   empty_relation_branch = true\n\
+                 end\n\
+                 assert Seen(#present)\n\
+                 let non_empty_relation_branch = false\n\
+                 if Seen(#present)\n\
+                   non_empty_relation_branch = true\n\
+                 end\n\
+                 return [empty_list_branch, non_empty_list_branch, empty_relation_branch, non_empty_relation_branch, not []]",
+            )
+            .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::bool(false),
+                Value::bool(true),
+                Value::bool(false),
+                Value::bool(true),
+                Value::bool(true),
+            ])
+    ));
+}
+
+#[test]
+fn runner_to_literal_renders_parseable_value_source() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:take_event)").unwrap();
+
+    assert!(matches!(
+        runner
+            .run_source("return to_literal([nothing, true, 42, \"x\", :foo])")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("[nothing, true, 42, \"x\", :foo]")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return to_literal(#take_event<[\"coin\"]>)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("#take_event<[\"coin\"]>")
+    ));
+    assert!(matches!(
+        runner.run_source("return to_literal(b\"3q2-7w==\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("b\"3q2-7w==\"")
+    ));
+}
+
+#[test]
+fn runner_from_literal_parses_to_literal_output() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:take_event)").unwrap();
+
+    assert!(matches!(
+        runner
+            .run_source(
+                "let value = [nothing, true, -42, \"x\", b\"3q2-7w==\", :foo, #take_event, {:a -> 1}, 2.._]
+                 return from_literal(to_literal(value)) == value"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return from_literal(to_literal(#take_event<[\"coin\"]>))")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::frob(
+                runner.named_identity(Symbol::intern("take_event")).unwrap(),
+                Value::list([Value::string("coin")])
+            )
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return from_literal(\"#missing_identity\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::nothing()
+    ));
+}
+
+#[test]
+fn runner_to_symbol_converts_strings_and_keeps_symbols() {
+    let mut runner = SourceRunner::new_empty();
+
+    assert!(matches!(
+        runner
+            .run_source("return [to_symbol(\"AgentProposal\"), to_symbol(:SourceFile)]")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::symbol(Symbol::intern("AgentProposal")),
+                Value::symbol(Symbol::intern("SourceFile")),
+            ])
+    ));
+}
+
+#[test]
+fn runner_dispatches_frobs_by_delegate_restriction() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "make_identity(:event)\n\
+                 make_identity(:take_event)\n\
+                 make_relation(:Delegates, 3)\n\
+                 assert Delegates(#take_event, #event, 0)\n\
+                 verb render(event @ #event<_>)\n\
+                   return frob_value(event)[:item]\n\
+                 end\n",
+        )
+        .unwrap();
+
+    let report = runner
+        .run_source("return :render(event: #take_event<{:item -> \"coin\"}>)")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("coin")
+    ));
+}
+
+#[test]
+fn runner_dispatch_selects_most_specific_method() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "make_identity(:event)\n\
+                 make_identity(:take_event)\n\
+                 make_relation(:Delegates, 3)\n\
+                 assert Delegates(#take_event, #event, 0)\n\
+                 verb render(event)\n\
+                   return \"fallback\"\n\
+                 end\n\
+                 verb render(event @ #event<_>)\n\
+                   return \"event\"\n\
+                 end\n\
+                 verb render(event @ #take_event<_>)\n\
+                   return \"take\"\n\
+                 end\n",
+        )
+        .unwrap();
+
+    let report = runner
+        .run_source("return :render(event: #take_event<\"payload\">)")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("take")
+    ));
+}
+
+#[test]
+fn runner_openai_filein_installs_chat_helpers() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/openai.mica"))
+        .unwrap();
+
+    assert!(matches!(
+        runner
+            .run_source("return openai/user_message(\"ping\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value
+                .map_get(&Value::symbol(Symbol::intern("role")))
+                == Some(Value::string("user"))
+                && value
+                    .map_get(&Value::symbol(Symbol::intern("content")))
+                    == Some(Value::string("ping"))
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return openai/assistant_text({:choices -> [{:message -> {:content -> \"pong\"}}]})"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("pong")
+    ));
+}
+
+#[test]
+fn runner_event_substitution_filein_renders_per_viewer() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/string.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/events.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/core.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
+        .unwrap();
+
+    assert!(matches!(
+        runner
+            .run_source("return template/demo(#alice)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("You pick up the coin.")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return template/demo(#bob)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("Alice picks up the coin.")
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "let template = template/compile(\"{Actor} {pick|picks} up {the item}.\")\n\
+                 return template/decompile(template)",
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("{Actor} {pick|picks} up {the item}.")
+    ));
+
+    let literal_report = runner
+        .run_source(
+            "let template = template/compile(\"{Actor} {pick|picks} up {the item}.\")\n\
+                 return template/literal(template)",
+        )
+        .unwrap();
+    let TaskOutcome::Complete { value, .. } = literal_report.outcome else {
+        panic!("expected template literal task to complete");
+    };
+    let Some(literal) = value.with_str(str::to_owned) else {
+        panic!("expected template literal to return a string");
+    };
+    assert!(literal.starts_with("#template/substitution<["));
+    assert!(literal.contains("#template/name<"));
+    assert!(literal.contains("#template/self_alt<"));
+    assert!(literal.contains("#template/article<"));
+}
+
+#[test]
+fn runner_submit_source_as_exposes_context_and_drains_emissions() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:GrantEffect, 1)").unwrap();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("assert GrantEffect(#alice)").unwrap();
+    let actor = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0001).unwrap();
+
+    let submitted = runner
+        .submit_source_as(actor, endpoint, "emit(#endpoint, \"hello\")")
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("hello")
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(emissions[0].task_id, submitted.task_id);
+    assert_eq!(emissions[0].target, endpoint);
+    assert_eq!(emissions[0].value, Value::string("hello"));
+    assert!(runner.drain_emissions().is_empty());
+}
+
+#[test]
+fn runner_submit_invocation_as_adds_actor_and_endpoint_roles() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/capabilities.mica"))
+        .unwrap();
+    let actor = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0002).unwrap();
+    let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+
+    let submitted = runner
+        .submit_invocation_as(
+            actor,
+            endpoint,
+            Symbol::intern("polish"),
+            vec![(Symbol::intern("item"), Value::identity(lamp))],
+        )
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("polished brass lamp")
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(emissions[0].task_id, submitted.task_id);
+    assert_eq!(emissions[0].target, actor);
+}
+
+#[test]
+fn runner_persisted_method_can_spawn_child_invocation() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "verb parent(endpoint)\n\
+                   let child = spawn :child(endpoint: endpoint) after 0\n\
+                   return child\n\
+                 end\n\
+                 verb child(endpoint)\n\
+                   return endpoint\n\
+                 end\n",
+        )
+        .unwrap();
+
+    let report = runner
+        .run_source("return :parent(endpoint: endpoint())")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(SpawnRequest {
+                selector,
+                delay_millis: Some(0),
+                ..
+            }),
+            ..
+        } if selector == Symbol::intern("child")
+    ));
+}
+
+#[test]
+fn runner_can_spawn_receiver_positional_invocation() {
+    let mut runner = SourceRunner::new_empty();
+    let coin = runner.run_source("return make_identity(:coin)").unwrap();
+    let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+        panic!("expected coin identity creation to complete");
+    };
+    let alice = runner.run_source("return make_identity(:alice)").unwrap();
+    let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+        panic!("expected alice identity creation to complete");
+    };
+    runner
+        .run_filein(
+            "verb parent()\n\
+                   let child = spawn #coin:inspect(#alice) after 0\n\
+                   return child\n\
+                 end\n\
+                 verb inspect(receiver, actor)\n\
+                   return [receiver, actor]\n\
+                 end\n",
+        )
+        .unwrap();
+
+    let report = runner.run_source("return :parent()").unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(SpawnRequest {
+                selector,
+                target: SpawnTarget::PositionalArgs(args),
+                delay_millis: Some(0),
+            }),
+            ..
+        } if selector == Symbol::intern("inspect") && args == vec![coin, alice]
+    ));
+}
+
+#[test]
+fn runner_can_spawn_positional_invocation_with_argument_splices() {
+    let mut runner = SourceRunner::new_empty();
+    let coin = runner.run_source("return make_identity(:coin)").unwrap();
+    let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+        panic!("expected coin identity creation to complete");
+    };
+    let alice = runner.run_source("return make_identity(:alice)").unwrap();
+    let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+        panic!("expected alice identity creation to complete");
+    };
+    runner
+        .run_filein(
+            "verb parent()\n\
+                   let args = [#coin]\n\
+                   let child = spawn :inspect(#alice, @args) after 0.5\n\
+                   return child\n\
+                 end\n\
+                 verb inspect(actor, item)\n\
+                   return [actor, item]\n\
+                 end\n",
+        )
+        .unwrap();
+
+    let report = runner.run_source("return :parent()").unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(SpawnRequest {
+                selector,
+                target: SpawnTarget::PositionalArgs(args),
+                delay_millis: Some(500),
+            }),
+            ..
+        } if selector == Symbol::intern("inspect") && args == vec![alice, coin]
+    ));
+}
+
+#[test]
+fn runner_can_spawn_named_invocation_with_argument_splices() {
+    let mut runner = SourceRunner::new_empty();
+    let coin = runner.run_source("return make_identity(:coin)").unwrap();
+    let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+        panic!("expected coin identity creation to complete");
+    };
+    let alice = runner.run_source("return make_identity(:alice)").unwrap();
+    let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+        panic!("expected alice identity creation to complete");
+    };
+    runner
+        .run_filein(
+            "verb parent()\n\
+                   let roles = {:item -> #coin}\n\
+                   let child = spawn :inspect(actor: #alice, @roles) after 0.25\n\
+                   return child\n\
+                 end\n\
+                 verb inspect(actor, item)\n\
+                   return [actor, item]\n\
+                 end\n",
+        )
+        .unwrap();
+
+    let report = runner.run_source("return :parent()").unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(SpawnRequest {
+                selector,
+                target: SpawnTarget::NamedRoles(roles),
+                delay_millis: Some(250),
+            }),
+            ..
+        } if selector == Symbol::intern("inspect")
+            && roles == vec![
+                (Symbol::intern("actor"), alice),
+                (Symbol::intern("item"), coin),
+            ]
+    ));
+}
+
+#[test]
+fn runner_can_spawn_receiver_positional_invocation_with_argument_splices() {
+    let mut runner = SourceRunner::new_empty();
+    let coin = runner.run_source("return make_identity(:coin)").unwrap();
+    let TaskOutcome::Complete { value: coin, .. } = coin.outcome else {
+        panic!("expected coin identity creation to complete");
+    };
+    let alice = runner.run_source("return make_identity(:alice)").unwrap();
+    let TaskOutcome::Complete { value: alice, .. } = alice.outcome else {
+        panic!("expected alice identity creation to complete");
+    };
+    runner
+        .run_filein(
+            "verb parent()\n\
+                   let args = [#alice]\n\
+                   let child = spawn #coin:inspect(@args) after 0\n\
+                   return child\n\
+                 end\n\
+                 verb inspect(receiver, actor)\n\
+                   return [receiver, actor]\n\
+                 end\n",
+        )
+        .unwrap();
+
+    let report = runner.run_source("return :parent()").unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Spawn(SpawnRequest {
+                selector,
+                target: SpawnTarget::PositionalArgs(args),
+                delay_millis: Some(0),
+            }),
+            ..
+        } if selector == Symbol::intern("inspect") && args == vec![coin, alice]
+    ));
+}
+
+#[test]
+fn shared_runner_executes_invocations_from_multiple_threads() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "make_identity(:player)\n\
+                 make_identity(:alice)\n\
+                 make_relation(:Delegates, 3)\n\
+                 assert Delegates(#alice, #player, 0)\n\
+                 verb count_up(actor @ #player, count)\n\
+                   let i = 0\n\
+                   while i < count\n\
+                     i = i + 1\n\
+                   end\n\
+                   return i\n\
+                 end\n",
+        )
+        .unwrap();
+    let actor = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let completed_before = runner.task_manager.completed_len();
+    let runner = Arc::new(runner.into_shared());
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for worker in 0..4 {
+            let runner = Arc::clone(&runner);
+            handles.push(scope.spawn(move || {
+                for _ in 0..10 {
+                    let submitted = runner
+                        .submit_invocation(TaskRequest {
+                            principal: None,
+                            actor: None,
+                            endpoint: Identity::new(0x00ee_2000_0000_0000 + worker).unwrap(),
+                            authority: AuthorityContext::root(),
+                            input: TaskInput::Invocation {
+                                selector: Symbol::intern("count_up"),
+                                roles: vec![
+                                    (Symbol::intern("actor"), Value::identity(actor)),
+                                    (Symbol::intern("count"), Value::int(100).unwrap()),
+                                ],
+                            },
+                        })
+                        .unwrap();
+                    assert!(matches!(
+                        submitted.outcome,
+                        TaskOutcome::Complete { value, .. } if value == Value::int(100).unwrap()
+                    ));
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+
+    assert_eq!(runner.completed_len(), completed_before + 40);
+}
+
+#[test]
+fn shared_runner_reads_endpoint_transient_state_from_multiple_threads() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    for worker in 0..4 {
+        runner
+            .open_endpoint(
+                Identity::new(0x00ee_2100_0000_0000 + worker).unwrap(),
+                Some(alice),
+                Symbol::intern("telnet"),
+            )
+            .unwrap();
+    }
+    let runner = Arc::new(runner.into_shared());
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for worker in 0..4 {
+            let runner = Arc::clone(&runner);
+            handles.push(scope.spawn(move || {
+                let endpoint = Identity::new(0x00ee_2100_0000_0000 + worker).unwrap();
+                for _ in 0..10 {
+                    let request = runner
+                        .source_request_for_endpoint(
+                            endpoint,
+                            "return EndpointActor(endpoint(), #alice)",
+                        )
+                        .unwrap();
+                    let request = TaskRequest {
+                        authority: AuthorityContext::root(),
+                        ..request
+                    };
+                    let submitted = runner.submit_source(request).unwrap();
+                    assert!(matches!(
+                        submitted.outcome,
+                        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+                    ));
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+}
+
+#[test]
+fn runner_dispatch_binds_unrestricted_method_params() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/string.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/events.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/core.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
+        .unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+
+    let report = runner
+        .run_source("return :say(actor: #alice, message: \"hello\")")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 2);
+    assert_eq!(emissions[0].target, alice);
+    assert_eq!(emissions[0].value, Value::string("You say, \"hello\""));
+    assert_eq!(emissions[1].target, bob);
+    assert_eq!(emissions[1].value, Value::string("Alice says, \"hello\""));
+}
+
+#[test]
+fn runner_mud_command_parser_runs_in_mica() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/string.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/events.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/core.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/command-parser.mica"))
+        .unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+    let endpoint = SYSTEM_ENDPOINT;
+
+    runner.run_source("make_identity(:polluted_coin)").unwrap();
+    runner
+        .run_source("assert Delegates(#polluted_coin, #thing, 0)")
+        .unwrap();
+    runner
+        .run_source("assert command/Noun(#polluted_coin, \"coin\")")
+        .unwrap();
+    runner
+        .run_source("assert LocatedIn(#polluted_coin, #first_room)")
+        .unwrap();
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"say hello\")")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 2);
+    assert_eq!(emissions[0].target, alice);
+    assert_eq!(emissions[0].value, Value::string("You say, \"hello\""));
+    assert_eq!(emissions[1].target, bob);
+    assert_eq!(emissions[1].value, Value::string("Alice says, \"hello\""));
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"up\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(emissions[0].target, alice);
+    assert_eq!(emissions[0].value, Value::string("You cannot go that way."));
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"get coin\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 2);
+    assert_eq!(emissions[0].target, alice);
+    assert_eq!(emissions[0].value, Value::string("You take the coin."));
+    assert_eq!(emissions[1].target, bob);
+    assert_eq!(emissions[1].value, Value::string("Alice takes the coin."));
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"look\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert!(
+        emissions.iter().all(
+            |effect| effect.value != Value::string("A tarnished brass coin catches the light.")
+        )
+    );
+    assert!(
+        emissions.iter().any(|effect| effect.value
+            == Value::string("A small wooden box rests here, open and empty."))
+    );
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"look box\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(
+        emissions[0].value,
+        Value::string("A small wooden box rests here, open and empty.")
+    );
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"look at box\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(
+        emissions[0].value,
+        Value::string("A small wooden box rests here, open and empty.")
+    );
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"look in box\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(emissions[0].value, Value::string("It is empty."));
+
+    let report = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"put coin in box\")",
+        )
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 2);
+    assert_eq!(emissions[0].target, alice);
+    assert_eq!(
+        emissions[0].value,
+        Value::string("You put the coin in the box.")
+    );
+    assert_eq!(emissions[1].target, bob);
+    assert_eq!(
+        emissions[1].value,
+        Value::string("Alice puts the coin in the box.")
+    );
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"look in box\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(
+        emissions[0].value,
+        Value::string("A tarnished brass coin catches the light.")
+    );
+
+    let report = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"take coin from box\")",
+        )
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 2);
+    assert_eq!(emissions[0].target, alice);
+    assert_eq!(
+        emissions[0].value,
+        Value::string("You take the coin from the box.")
+    );
+    assert_eq!(emissions[1].target, bob);
+    assert_eq!(
+        emissions[1].value,
+        Value::string("Alice takes the coin from the box.")
+    );
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"get coin\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(emissions[0].target, alice);
+    assert_eq!(emissions[0].value, Value::string("You already have that."));
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"drop coin\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 2);
+    assert_eq!(emissions[0].target, alice);
+    assert_eq!(emissions[0].value, Value::string("You drop the coin."));
+    assert_eq!(emissions[1].target, bob);
+    assert_eq!(emissions[1].value, Value::string("Alice drops the coin."));
+
+    let report = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"dance\")")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+    ));
+    let emissions = runner.drain_emissions();
+    assert_eq!(emissions.len(), 1);
+    assert_eq!(emissions[0].target, endpoint);
+    assert_eq!(
+        emissions[0].value,
+        Value::string("I do not understand that.")
+    );
+}
+
+#[test]
+fn runner_mud_core_derives_exits_and_recursive_location() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/string.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/events.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/core.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
+        .unwrap();
+    let first_room = runner.named_identity(Symbol::intern("first_room")).unwrap();
+    let north_room = runner.named_identity(Symbol::intern("north_room")).unwrap();
+    let attic = runner.named_identity(Symbol::intern("attic")).unwrap();
+    let coin = runner.named_identity(Symbol::intern("coin")).unwrap();
+
+    let report = runner
+        .run_source("return one Exit(#north_room, :south, ?destination)")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(first_room)
+    ));
+
+    let report = runner.run_source("return CanSee(#alice, #coin)").unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+
+    runner
+        .run_source("return :get(actor: #alice, item: #coin)")
+        .unwrap();
+    let report = runner
+        .run_source(
+            "let event = one event/Delivery(#alice, ?event)\n\
+                 let source = one event/Source(event, ?source)\n\
+                 return [frob_delegate(source), event/bindings(source)[:item]]",
+        )
+        .unwrap();
+    let take_event = runner.named_identity(Symbol::intern("event/take")).unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([Value::identity(take_event), Value::identity(coin)])
+    ));
+
+    let report = runner.run_source("return Carrying(#alice, #coin)").unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+
+    let north = runner.run_source("return :north(actor: #alice)").unwrap();
+    assert!(matches!(
+        north.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let report = runner
+        .run_source("return Within(#coin, #north_room)")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let report = runner
+        .run_source("return one LocatedIn(#alice, ?room)")
+        .unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. } if *value == Value::identity(north_room)
+        ),
+        "{}",
+        report.render()
+    );
+
+    let north = runner.run_source("return :north(actor: #alice)").unwrap();
+    assert!(matches!(
+        north.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+    ));
+    let report = runner
+        .run_source("return one LocatedIn(#alice, ?room)")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(north_room)
+    ));
+
+    let drop = runner
+        .run_source("return :drop(actor: #alice, item: #coin)")
+        .unwrap();
+    assert!(matches!(
+        drop.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let report = runner
+        .run_source("return one LocatedIn(#coin, ?room)")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(north_room)
+    ));
+
+    let up = runner.run_source("return :up(actor: #alice)").unwrap();
+    assert!(matches!(
+        up.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let report = runner
+        .run_source("return one LocatedIn(#alice, ?room)")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(attic)
+    ));
+
+    let down = runner.run_source("return :down(actor: #alice)").unwrap();
+    assert!(matches!(
+        down.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let report = runner
+        .run_source("return one LocatedIn(#alice, ?room)")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(north_room)
+    ));
+
+    let south = runner.run_source("return :south(actor: #alice)").unwrap();
+    assert!(matches!(
+        south.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    let report = runner
+        .run_source("return one LocatedIn(#alice, ?room)")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(first_room)
+    ));
+}
+
+#[test]
+fn runner_mud_narrative_renders_recent_event_window() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/string.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/events.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/core.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-narrative.mica"))
+        .unwrap();
+
+    let report = runner
+            .run_source(
+                "let i = 0\n\
+                 while i < 45\n\
+                   let text = string_concat(\"message \", to_literal(i))\n\
+                   if i == 0\n\
+                     text = \"oldest-zero\"\n\
+                   elseif i == 4\n\
+                     text = \"oldest-four\"\n\
+                   elseif i == 5\n\
+                     text = \"first-kept\"\n\
+                   elseif i == 44\n\
+                     text = \"latest-kept\"\n\
+                   end\n\
+                   event/notify(#alice, text)\n\
+                   i = i + 1\n\
+                 end\n\
+                 let literal = to_literal(ui/narrative_node(#alice, 100, 40))\n\
+                 return [string_contains(literal, \"45\"), string_contains(literal, \"oldest-zero\"), string_contains(literal, \"oldest-four\"), string_contains(literal, \"first-kept\"), string_contains(literal, \"latest-kept\")]",
+            )
+            .unwrap();
+
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if *value == Value::list([
+                    Value::bool(true),
+                    Value::bool(false),
+                    Value::bool(false),
+                    Value::bool(true),
+                    Value::bool(true),
+                ])
+        ),
+        "{}",
+        report.render()
+    );
+}
+
+#[test]
+fn runner_resume_task_uses_continuation_request_authority() {
+    let mut runner = SourceRunner::new_empty();
+    let program = Arc::new(
+        Program::new(
+            0,
+            [
+                Instruction::Suspend {
+                    kind: SuspendKind::TimedMillis(1),
+                },
+                Instruction::Return {
+                    value: Operand::Value(Value::bool(true)),
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    let (task_id, first) = runner.task_manager.submit(program).unwrap();
+    assert!(matches!(first, TaskOutcome::Suspended { .. }));
+
+    let outcome = runner
+        .resume_task(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Continuation {
+                task_id,
+                value: Value::nothing(),
+            },
+        })
+        .unwrap();
+
+    assert!(matches!(
+        outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+}
+
+#[test]
+fn runner_suspend_returns_continuation_value() {
+    let mut runner = SourceRunner::new_empty();
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return suspend()".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Never,
+            ..
+        }
+    ));
+
+    let outcome = runner
+        .resume_task(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Continuation {
+                task_id: submitted.task_id,
+                value: Value::string("awake"),
+            },
+        })
+        .unwrap();
+
+    assert!(matches!(
+        outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("awake")
+    ));
+}
+
+#[test]
+fn runner_commit_yields_and_resumes_with_nothing() {
+    let mut runner = SourceRunner::new_empty();
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return commit()".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Commit,
+            ..
+        }
+    ));
+
+    let outcome = runner
+        .resume_task(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Continuation {
+                task_id: submitted.task_id,
+                value: Value::nothing(),
+            },
+        })
+        .unwrap();
+
+    assert!(matches!(
+        outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::nothing()
+    ));
+}
+
+#[test]
+fn runner_tasks_builtin_lists_running_and_suspended_tasks() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("suspend(10)").unwrap();
+    let report = runner.run_source("return tasks()").unwrap();
+    let TaskOutcome::Complete { value, .. } = report.outcome else {
+        panic!("tasks() did not complete");
+    };
+    let tasks = value.with_list(<[Value]>::to_vec).unwrap();
+
+    assert!(
+        tasks
+            .iter()
+            .any(|task| task_status(task) == Some((1, Symbol::intern("suspended"))))
+    );
+    assert!(
+        tasks
+            .iter()
+            .any(|task| task_status(task) == Some((2, Symbol::intern("running"))))
+    );
+}
+
+#[test]
+fn runner_context_builtins_return_runtime_identities() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0003).unwrap();
+
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: Some(alice),
+            actor: Some(alice),
+            endpoint,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return [principal(), actor(), endpoint()]".to_owned()),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_list(<[Value]>::to_vec).unwrap()
+                == vec![
+                    Value::identity(alice),
+                    Value::identity(alice),
+                    Value::identity(endpoint),
+                ]
+    ));
+}
+
+#[test]
+fn runner_context_builtins_return_system_endpoint_without_actor_context() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source("return [principal(), actor(), endpoint()]")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_list(<[Value]>::to_vec).unwrap()
+                == vec![
+                    Value::nothing(),
+                    Value::nothing(),
+                    Value::identity(SYSTEM_ENDPOINT),
+                ]
+    ));
+}
+
+#[test]
+fn runner_transient_facts_are_visible_to_runtime_scopes() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:lamp)").unwrap();
+    runner.run_source("make_relation(:Selected, 1)").unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+
+    let inserted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "assert_transient(#alice, :Selected, [#lamp])\n\
+                     return Selected(?item)"
+                    .to_owned(),
+            ),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        inserted.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_list(<[Value]>::to_vec).unwrap()
+                == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+    ));
+
+    let visible = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return Selected(?item)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        visible.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_list(<[Value]>::to_vec).unwrap()
+                == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+    ));
+
+    let root = runner.run_source("return Selected(?item)").unwrap();
+    assert!(matches!(
+        root.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::list([])
+    ));
+}
+
+#[test]
+fn runner_transient_retract_and_scope_drop_update_visibility() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:bob)").unwrap();
+    runner.run_source("make_identity(:lamp)").unwrap();
+    runner.run_source("make_relation(:Selected, 1)").unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+
+    for scope in [alice, bob] {
+        runner
+            .submit_source(TaskRequest {
+                principal: None,
+                actor: Some(scope),
+                endpoint: SYSTEM_ENDPOINT,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Source(
+                    "return assert_transient(actor(), :Selected, [#lamp])".to_owned(),
+                ),
+            })
+            .unwrap();
+    }
+
+    let retracted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "return retract_transient(#alice, :Selected, [#lamp])".to_owned(),
+            ),
+        })
+        .unwrap();
+    assert!(matches!(
+        retracted.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+
+    let alice_visible = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return Selected(?item)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        alice_visible.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::list([])
+    ));
+
+    let dropped = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(bob),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return drop_transient_scope(#bob)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        dropped.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
+    ));
+
+    let bob_visible = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(bob),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return Selected(?item)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        bob_visible.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::list([])
+    ));
+}
+
+#[test]
+fn runner_can_drop_own_transient_scope_without_admin_authority() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:lamp)").unwrap();
+    runner.run_source("make_relation(:Selected, 1)").unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+
+    runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "return assert_transient(#alice, :Selected, [#lamp])".to_owned(),
+            ),
+        })
+        .unwrap();
+
+    let dropped = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::empty(),
+            input: TaskInput::Source("return drop_transient_scope(#alice)".to_owned()),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        dropped.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
+    ));
+
+    let visible = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return Selected(?item)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        visible.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::list([])
+    ));
+}
+
+#[test]
+fn runner_cannot_drop_another_actor_transient_scope_without_admin_authority() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:bob)").unwrap();
+    runner.run_source("make_identity(:lamp)").unwrap();
+    runner.run_source("make_relation(:Selected, 1)").unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+    let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+
+    runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(bob),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "return assert_transient(#bob, :Selected, [#lamp])".to_owned(),
+            ),
+        })
+        .unwrap();
+
+    let denied = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::empty(),
+            input: TaskInput::Source("return drop_transient_scope(#bob)".to_owned()),
+        })
+        .unwrap_err();
+    assert!(format!("{denied:?}").contains("PermissionDenied"));
+
+    let visible = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(bob),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return Selected(?item)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        visible.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_list(<[Value]>::to_vec).unwrap()
+                == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+    ));
+}
+
+#[test]
+fn runner_derived_relations_can_read_transient_facts() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:lamp)").unwrap();
+    runner.run_source("make_relation(:Selected, 1)").unwrap();
+    runner.run_source("make_relation(:Visible, 1)").unwrap();
+    runner
+        .run_source("Visible(item) :- Selected(item)")
+        .unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+
+    let visible = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "assert_transient(#alice, :Selected, [#lamp])\n\
+                     return Visible(?item)"
+                    .to_owned(),
+            ),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        visible.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_list(<[Value]>::to_vec).unwrap()
+                == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+    ));
+}
+
+#[test]
+fn runner_endpoint_facts_are_transient_and_endpoint_scoped() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0010).unwrap();
+    runner
+        .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+        .unwrap();
+
+    let visible = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return EndpointActor(?endpoint, #alice)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        visible.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_list(<[Value]>::to_vec).unwrap()
+                == vec![Value::map([(Value::symbol(Symbol::intern("endpoint")), Value::identity(endpoint))])]
+    ));
+
+    let root = runner
+        .run_source("return EndpointActor(?endpoint, #alice)")
+        .unwrap();
+    assert!(matches!(
+        root.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::list([])
+    ));
+
+    assert_eq!(runner.close_endpoint(endpoint), 4);
+    let closed = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: Some(alice),
+            endpoint,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return EndpointActor(?endpoint, #alice)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        closed.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::list([])
+    ));
+}
+
+#[test]
+fn runner_endpoint_invocation_uses_principal_authority_without_actor() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "make_identity(:web)\n\
+                 make_relation(:RequestPath, 2)\n\
+                 make_relation(:CanRead, 2)\n\
+                 make_relation(:CanInvoke, 2)\n\
+                 assert CanRead(#web, :RequestPath)\n\
+                 assert CanInvoke(#web, :http_request)\n\
+                 verb http_request(request)\n\
+                   return one RequestPath(request, ?path)\n\
+                 end\n",
+        )
+        .unwrap();
+    let web = runner.actor_identity(Symbol::intern("web")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0011).unwrap();
+    let request = Identity::new(0x00eb_0000_0000_0011).unwrap();
+    runner
+        .open_endpoint_with_context(endpoint, Some(web), None, Symbol::intern("http-request"))
+        .unwrap();
+    runner
+        .assert_transient_named(
+            endpoint,
+            Symbol::intern("RequestPath"),
+            vec![Value::identity(request), Value::string("/hello")],
+        )
+        .unwrap();
+
+    let submitted = runner
+        .submit_invocation_for_endpoint(
+            endpoint,
+            Symbol::intern("http_request"),
+            vec![(Symbol::intern("request"), Value::identity(request))],
+        )
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_str(|text| text == "/hello").unwrap_or(false)
+    ));
+}
+
+#[test]
+fn runner_assume_actor_requires_principal_specific_policy() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:account)").unwrap();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:bob)").unwrap();
+    runner
+        .run_source("make_relation(:session/CanAssumeActor, 2)")
+        .unwrap();
+    let account = runner.actor_identity(Symbol::intern("account")).unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0012).unwrap();
+    runner
+        .open_endpoint_with_context(
+            endpoint,
+            Some(account),
+            Some(alice),
+            Symbol::intern("telnet"),
+        )
+        .unwrap();
+
+    let denied_request = runner
+        .source_request_for_endpoint(endpoint, "return assume_actor(#bob)")
+        .unwrap();
+    let denied = runner.submit_source(denied_request).unwrap_err();
+    assert!(format!("{denied:?}").contains("PermissionDenied"));
+
+    runner
+        .run_source("assert session/CanAssumeActor(#account, #bob)")
+        .unwrap();
+    let allowed_request = runner
+        .source_request_for_endpoint(endpoint, "return assume_actor(#bob)")
+        .unwrap();
+    let switched = runner.submit_source(allowed_request).unwrap();
+    assert!(matches!(
+        switched.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(bob)
+    ));
+
+    let actor_request = runner
+        .source_request_for_endpoint(endpoint, "return actor()")
+        .unwrap();
+    let actor = runner.submit_source(actor_request).unwrap();
+    assert!(matches!(
+        actor.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(bob)
+    ));
+}
+
+#[test]
+fn runner_endpoint_actor_cannot_be_rebound_by_raw_transient_write() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:account)").unwrap();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:bob)").unwrap();
+    let account = runner.actor_identity(Symbol::intern("account")).unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0013).unwrap();
+    runner
+        .open_endpoint_with_context(
+            endpoint,
+            Some(account),
+            Some(alice),
+            Symbol::intern("telnet"),
+        )
+        .unwrap();
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "return assert_transient(endpoint(), :EndpointActor, [endpoint(), #bob])",
+        )
+        .unwrap();
+    let denied = runner.submit_source(request).unwrap_err();
+    assert!(format!("{denied:?}").contains("PermissionDenied"));
+
+    let actor_request = runner
+        .source_request_for_endpoint(endpoint, "return actor()")
+        .unwrap();
+    let actor = runner.submit_source(actor_request).unwrap();
+    assert!(matches!(
+        actor.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(alice)
+    ));
+}
+
+#[test]
+fn runner_routes_actor_effect_targets_to_open_endpoints() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:alice)").unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0011).unwrap();
+
+    assert_eq!(runner.route_effect_targets(alice), vec![alice]);
+    runner
+        .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+        .unwrap();
+    assert_eq!(runner.route_effect_targets(alice), vec![endpoint]);
+    assert_eq!(runner.route_effect_targets(endpoint), vec![endpoint]);
+
+    runner.close_endpoint(endpoint);
+    assert_eq!(runner.route_effect_targets(alice), vec![alice]);
+}
+
+#[test]
+fn runner_destroy_identity_retracts_subject_facts_and_name_binding() {
+    let mut runner = SourceRunner::new_empty();
+    let thing = runner.run_source("return make_identity(:thing)").unwrap();
+    let TaskOutcome::Complete {
+        value: thing_value, ..
+    } = thing.outcome
+    else {
+        panic!("make_identity did not complete");
+    };
+    let thing = thing_value.as_identity().unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner.run_source("make_relation(:Object, 1)").unwrap();
+    runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+    runner.run_source("assert Object(#thing)").unwrap();
+    runner.run_source("assert Object(#room)").unwrap();
+    runner
+        .run_source("assert LocatedIn(#thing, #room)")
+        .unwrap();
+    runner
+        .run_source("assert LocatedIn(#room, #thing)")
+        .unwrap();
+
+    let destroyed = runner
+        .run_source("return destroy_identity(#thing)")
+        .unwrap();
+
+    assert!(matches!(
+        destroyed.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(3).unwrap()
+    ));
+    let snapshot = runner.task_manager.kernel().snapshot();
+    assert!(
+        snapshot
+            .subject_facts(&Value::identity(thing))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        snapshot
+            .mentioned_facts(&Value::identity(thing))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        format!("{:?}", runner.run_source("return #thing").unwrap_err())
+            .contains("UnknownIdentity")
+    );
+    assert!(runner.run_source("return #room").is_ok());
+}
+
+#[test]
+fn runner_read_waits_for_input_and_returns_continuation_value() {
+    let mut runner = SourceRunner::new_empty();
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return read(:line)".to_owned()),
+        })
+        .unwrap();
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::WaitingForInput(value),
+            ..
+        } if value == Value::symbol(Symbol::intern("line"))
+    ));
+
+    let outcome = runner
+        .resume_task(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Continuation {
+                task_id: submitted.task_id,
+                value: Value::string("look"),
+            },
+        })
+        .unwrap();
+
+    assert!(matches!(
+        outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("look")
+    ));
+}
+
+#[test]
+fn runner_suspend_seconds_becomes_timed_suspend() {
+    let mut runner = SourceRunner::new_empty();
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source("return suspend(0.5)".to_owned()),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::TimedMillis(500),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn runner_aborts_on_divide_by_zero_before_builtin_effect() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:target)").unwrap();
+    let report = runner.run_source("return emit(#target, 1 / 0)").unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Aborted { error, effects, .. }
+            if error.error_code_symbol() == Some(Symbol::intern("E_DIV"))
+                && effects.is_empty()
+    ));
+}
+
+fn task_status(value: &Value) -> Option<(i64, Symbol)> {
+    let id = value
+        .map_get(&Value::symbol(Symbol::intern("id")))?
+        .as_int()?;
+    let state = value
+        .map_get(&Value::symbol(Symbol::intern("state")))?
+        .as_symbol()?;
+    Some((id, state))
+}
+
+#[test]
+fn runner_make_relation_refreshes_compile_context() {
+    let mut runner = SourceRunner::new_empty();
+    let made = runner.run_source("return make_relation(:Hog, 1)").unwrap();
+    assert_eq!(
+        made.render(),
+        "task 1 complete: relation(:Hog) (retries: 0)"
+    );
+    let relation = match made.outcome {
+        TaskOutcome::Complete { value, .. } => value.as_identity().unwrap(),
+        other => panic!("unexpected make_relation outcome: {other:?}"),
+    };
+
+    let asserted = runner.run_source("assert Hog(1)\nreturn true").unwrap();
+
+    assert!(matches!(
+        asserted.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert_eq!(
+        runner
+            .task_manager
+            .kernel()
+            .snapshot()
+            .scan(relation, &[Some(Value::int(1).unwrap())])
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn runner_same_source_body_can_use_declared_relation() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "make_relation(:Hog, 1)\n\
+                 assert Hog(1)\n\
+                 return Hog(?value)",
+        )
+        .unwrap();
+
+    assert_eq!(
+        report.render(),
+        "task 1 complete: [[:value: 1]] (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_same_source_body_can_use_declared_functional_relation_and_identity() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "make_identity(:thing)\n\
+                 make_functional_relation(:Name, 2, [0])\n\
+                 #thing.name = \"brass lamp\"\n\
+                 return #thing.name",
+        )
+        .unwrap();
+
+    assert_eq!(
+        report.render(),
+        "task 1 complete: \"brass lamp\" (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_same_source_body_can_use_declared_identity_without_reusing_id() {
+    let mut runner = SourceRunner::new_empty();
+    let first = runner
+        .run_source(
+            "make_identity(:thing)\n\
+                 return #thing",
+        )
+        .unwrap();
+    let second = runner.run_source("return make_identity(:room)").unwrap();
+
+    let TaskOutcome::Complete { value: first, .. } = first.outcome else {
+        panic!("expected first identity");
+    };
+    let TaskOutcome::Complete { value: second, .. } = second.outcome else {
+        panic!("expected second identity");
+    };
+    assert_ne!(first, second);
+}
+
+#[test]
+fn runner_make_relation_is_idempotent_for_matching_arity() {
+    let mut runner = SourceRunner::new_empty();
+    let first = runner.run_source("return make_relation(:Hog, 1)").unwrap();
+    let second = runner.run_source("return make_relation(:Hog, 1)").unwrap();
+
+    assert!(matches!(
+        (first.outcome, second.outcome),
+        (
+            TaskOutcome::Complete { value: first, .. },
+            TaskOutcome::Complete { value: second, .. }
+        ) if first == second
+    ));
+}
+
+#[test]
+fn runner_make_identity_refreshes_compile_context() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Object, 1)").unwrap();
+    let made = runner.run_source("return make_identity(:root)").unwrap();
+    let root = match made.outcome {
+        TaskOutcome::Complete { value, .. } => value.as_identity().unwrap(),
+        other => panic!("unexpected make_identity outcome: {other:?}"),
+    };
+
+    let asserted = runner
+        .run_source("assert Object(#root)\nreturn true")
+        .unwrap();
+
+    assert!(matches!(
+        asserted.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert_eq!(
+        runner
+            .task_manager
+            .kernel()
+            .snapshot()
+            .scan(
+                runner.context.relation("Object").unwrap(),
+                &[Some(Value::identity(root))]
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn report_renders_named_identities_in_values_and_effects() {
+    let mut runner = SourceRunner::new_empty();
+    let made = runner.run_source("return make_identity(:thing)").unwrap();
+    let report = runner
+        .run_source("return emit(#thing, [#thing, {:owner -> #thing}])")
+        .unwrap();
+
+    assert_eq!(made.render(), "task 1 complete: #thing (retries: 0)");
+    assert_eq!(
+        report.render(),
+        "task 2 complete: [#thing, [:owner: #thing]] (retries: 0)\neffect #thing: [#thing, [:owner: #thing]]"
+    );
+}
+
+#[test]
+fn source_task_error_renders_named_identity_values() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source("return make_identity(:not_callable)")
+        .unwrap();
+    let identity = match report.outcome {
+        TaskOutcome::Complete { value, .. } => value.as_identity().unwrap(),
+        _ => panic!("identity creation did not complete"),
+    };
+    let error = SourceTaskError::TaskManager(TaskManagerError::Task(TaskError::Runtime(
+        RuntimeError::InvalidCallable(Value::identity(identity)),
+    )));
+
+    assert_eq!(
+        runner.render_source_task_error(&error),
+        "task manager error: invalid callable #not_callable"
+    );
+}
+
+#[test]
+fn runner_relation_calls_with_query_vars_return_binding_maps() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:thing)").unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner.run_source("make_relation(:Location, 2)").unwrap();
+    runner.run_source("assert Location(#thing, #room)").unwrap();
+
+    let report = runner.run_source("return Location(#thing, ?room)").unwrap();
+
+    assert_eq!(
+        report.render(),
+        "task 5 complete: [[:room: #room]] (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_relation_queries_allow_all_positions_free() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:thing)").unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner.run_source("make_relation(:Location, 2)").unwrap();
+    runner.run_source("assert Location(#thing, #room)").unwrap();
+
+    let report = runner.run_source("return Location(?what, ?where)").unwrap();
+
+    assert_eq!(
+        report.render(),
+        "task 5 complete: [[:what: #thing, :where: #room]] (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_one_and_dot_read_project_functional_relations() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:thing)").unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner
+        .run_source("make_functional_relation(:Location, 2, [0])")
+        .unwrap();
+    runner.run_source("assert Location(#thing, #room)").unwrap();
+
+    let one = runner
+        .run_source("return one Location(#thing, ?room)")
+        .unwrap();
+    let dot = runner.run_source("return #thing.location").unwrap();
+
+    assert_eq!(one.render(), "task 5 complete: #room (retries: 0)");
+    assert_eq!(dot.render(), "task 6 complete: #room (retries: 0)");
+}
+
+#[test]
+fn runner_namespaced_dot_read_and_assignment_project_functional_relations() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:endpoint)").unwrap();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:bob)").unwrap();
+    runner
+        .run_source("make_functional_relation(:session/Actor, 2, [0])")
+        .unwrap();
+
+    let write = runner
+        .run_source("#endpoint.session/actor = #alice")
+        .unwrap();
+    let read = runner.run_source("return #endpoint.session/actor").unwrap();
+    runner.run_source("#endpoint.session/actor = #bob").unwrap();
+    let replaced = runner.run_source("return #endpoint.session/actor").unwrap();
+
+    assert_eq!(write.render(), "task 5 complete: #alice (retries: 0)");
+    assert_eq!(read.render(), "task 6 complete: #alice (retries: 0)");
+    assert_eq!(replaced.render(), "task 8 complete: #bob (retries: 0)");
+}
+
+#[test]
+fn runner_rejects_dot_read_on_nonfunctional_relation() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:thing)").unwrap();
+    runner.run_source("make_relation(:Location, 2)").unwrap();
+
+    let error = runner.run_source("return #thing.location").unwrap_err();
+
+    assert!(matches!(
+        error,
+        SourceTaskError::Compile(CompileError::Unsupported { message, .. })
+            if message == "dot name `location` requires `Location` to be functional on position 0"
+    ));
+}
+
+#[test]
+fn runner_root_source_can_mix_method_definition_and_task_code() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "verb greet()\n\
+                   return \"hello\"\n\
+                 end\n\
+                 return :greet()",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("hello")
+    ));
+}
+
+#[test]
+fn runner_root_source_can_mix_rule_definition_and_task_code() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "make_identity(:alice)\n\
+                 make_identity(:lamp)\n\
+                 make_identity(:room)\n\
+                 make_relation(:LocatedIn, 2)\n\
+                 make_relation(:VisibleTo, 2)\n\
+                 assert LocatedIn(#alice, #room)\n\
+                 assert LocatedIn(#lamp, #room)\n\
+                 VisibleTo(actor, obj) :-\n\
+                   LocatedIn(actor, room),\n\
+                   LocatedIn(obj, room)\n\
+                 return VisibleTo(#alice, ?obj)",
+        )
+        .unwrap();
+
+    assert_eq!(
+        report.render(),
+        "task 9 complete: [[:obj: #alice], [:obj: #lamp]] (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_installs_relation_rules_and_queries_derived_tuples() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+    runner.run_source("make_relation(:VisibleTo, 2)").unwrap();
+    let rule = runner
+        .run_source("VisibleTo(actor, obj) :-\n  LocatedIn(actor, room),\n  LocatedIn(obj, room)")
+        .unwrap();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:lamp)").unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner
+        .run_source("assert LocatedIn(#alice, #room)")
+        .unwrap();
+    runner.run_source("assert LocatedIn(#lamp, #room)").unwrap();
+
+    let query = runner.run_source("return VisibleTo(#alice, ?obj)").unwrap();
+
+    assert_eq!(rule.render(), "task 3 complete: #rule1 (retries: 0)");
+    assert_eq!(
+        query.render(),
+        "task 9 complete: [[:obj: #alice], [:obj: #lamp]] (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_installs_relation_rules_with_comparison_guards() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "make_identity(:current)\n\
+                 make_identity(:rev1)\n\
+                 make_identity(:rev2)\n\
+                 make_identity(:file_a)\n\
+                 make_identity(:file_b)\n\
+                 make_relation(:IndexRevision, 2)\n\
+                 make_relation(:FileRevision, 2)\n\
+                 make_relation(:StaleFile, 2)\n\
+                 assert IndexRevision(#current, #rev1)\n\
+                 assert FileRevision(#file_a, #rev1)\n\
+                 assert FileRevision(#file_b, #rev2)\n\
+                 StaleFile(index, file) :-\n\
+                   IndexRevision(index, index_revision),\n\
+                   FileRevision(file, file_revision),\n\
+                   index_revision != file_revision\n\
+                 return StaleFile(#current, ?file)",
+        )
+        .unwrap();
+
+    assert_eq!(
+        report.render(),
+        "task 13 complete: [[:file: #file_b]] (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_inspects_and_disables_rules() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+    runner.run_source("make_relation(:VisibleTo, 2)").unwrap();
+    runner
+        .run_source("VisibleTo(actor, obj) :-\n  LocatedIn(actor, room),\n  LocatedIn(obj, room)")
+        .unwrap();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:lamp)").unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner
+        .run_source("assert LocatedIn(#alice, #room)")
+        .unwrap();
+    runner.run_source("assert LocatedIn(#lamp, #room)").unwrap();
+
+    let rules = runner.run_source("return rules(:VisibleTo)").unwrap();
+    let source = runner
+        .run_source("return describe_rule(one rules(:VisibleTo))")
+        .unwrap();
+    let disabled = runner
+        .run_source("disable_rule(one rules(:VisibleTo))")
+        .unwrap();
+    let query = runner.run_source("return VisibleTo(#alice, ?obj)").unwrap();
+
+    assert_eq!(rules.render(), "task 9 complete: [#rule1] (retries: 0)");
+    assert_eq!(
+        source.render(),
+        "task 10 complete: \"VisibleTo(actor, obj) :-\\n  LocatedIn(actor, room),\\n  LocatedIn(obj, room)\" (retries: 0)"
+    );
+    assert_eq!(disabled.render(), "task 11 complete: nothing (retries: 0)");
+    assert_eq!(query.render(), "task 12 complete: [] (retries: 0)");
+}
+
+#[test]
+fn runner_fileouts_active_rules() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+    runner.run_source("make_relation(:VisibleTo, 2)").unwrap();
+    runner
+        .run_source("VisibleTo(actor, obj) :- LocatedIn(actor, obj)")
+        .unwrap();
+
+    let fileout = runner
+        .run_source("return fileout_rules(:VisibleTo)")
+        .unwrap();
+
+    assert_eq!(
+        fileout.render(),
+        "task 4 complete: \"VisibleTo(actor, obj) :- LocatedIn(actor, obj)\" (retries: 0)"
+    );
+
+    let TaskOutcome::Complete { value, .. } = fileout.outcome else {
+        panic!("expected fileout to complete");
+    };
+    let source = value.with_str(str::to_owned).unwrap();
+    let mut imported = SourceRunner::new_empty();
+    imported.run_source("make_relation(:LocatedIn, 2)").unwrap();
+    imported.run_source("make_relation(:VisibleTo, 2)").unwrap();
+    let installed = imported.run_source(&source).unwrap();
+    assert_eq!(installed.render(), "task 3 complete: #rule1 (retries: 0)");
+}
+
+#[test]
+fn runner_queries_system_catalog_relations() {
+    let mut runner = SourceRunner::new_empty();
+
+    let report = runner
+        .run_source("return one RelationName(?relation, :RelationName)")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(relation_name_relation())
+    ));
+}
+
+#[test]
+fn runner_queries_identity_neighbourhood_relations() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source(
+            "make_identity(:coin)\n\
+                 make_identity(:room)\n\
+                 make_relation(:LocatedIn, 2)\n\
+                 assert LocatedIn(#coin, #room)",
+        )
+        .unwrap();
+
+    let report = runner
+        .run_source(
+            "let relation = one RelationName(?relation, :LocatedIn)\n\
+                 return one MentionedFact(#coin, relation, 0, ?tuple)",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([Value::identity(runner.named_identity(Symbol::intern("coin")).unwrap()), Value::identity(runner.named_identity(Symbol::intern("room")).unwrap())])
+    ));
+}
+
+#[test]
+fn runner_filters_reflection_rows_by_underlying_relation_authority() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source(
+            "make_identity(:programmer)\n\
+                 make_identity(:coin)\n\
+                 make_identity(:room)\n\
+                 make_relation(:CanRead, 2)\n\
+                 make_relation(:LocatedIn, 2)\n\
+                 make_relation(:Secret, 2)\n\
+                 assert LocatedIn(#coin, #room)\n\
+                 assert Secret(#coin, \"hidden\")\n\
+                 assert CanRead(#programmer, :MentionedFact)\n\
+                 assert CanRead(#programmer, :RelationName)\n\
+                 assert CanRead(#programmer, :LocatedIn)",
+        )
+        .unwrap();
+
+    let report = runner
+        .run_source_as(
+            Symbol::intern("programmer"),
+            "let located = one RelationName(?located, :LocatedIn)\n\
+                 let secret = one RelationName(?secret, :Secret)\n\
+                 let visible = MentionedFact(#coin, located, ?position, ?tuple)\n\
+                 let hidden = MentionedFact(#coin, secret, ?hidden_position, ?hidden_tuple)\n\
+                 return [visible, hidden]",
+        )
+        .unwrap();
+
+    let TaskOutcome::Complete { value, .. } = report.outcome else {
+        panic!("expected reflection query to complete");
+    };
+    value
+        .with_list(|results| {
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0].list_len(), Some(1));
+            assert_eq!(results[1].list_len(), Some(0));
+        })
+        .expect("expected result list");
+}
+
+#[test]
+fn runner_queries_method_source_as_relation() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:thing)").unwrap();
+    runner
+        .run_source(
+            "verb inspect(target @ #thing)\n\
+                   return target\n\
+                 end",
+        )
+        .unwrap();
+    let report = runner
+        .run_source(
+            "let rows = MethodSource(?m, ?s)\n\
+                 return rows",
+        )
+        .unwrap();
+
+    assert!(report.render().contains("verb inspect"));
+}
+
+#[test]
+fn runner_rejects_writes_to_system_relations() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:thing)").unwrap();
+
+    let error = runner
+        .run_source("assert SubjectFact(#thing, :bogus, [])")
+        .unwrap_err();
+
+    assert!(
+        format!("{error:?}").contains(&format!("ReadOnlyRelation({:?})", subject_fact_relation()))
+    );
+}
+
+#[test]
+fn runner_filein_unit_fileout_round_trips_readable_source() {
+    let mut runner = SourceRunner::new_empty();
+    let unit = Symbol::intern("mud_core");
+    runner
+        .run_filein_with_unit(
+            unit,
+            "make_identity(:lamp)\n\
+                 make_identity(:room)\n\
+                 make_relation(:Name, 2)\n\
+                 make_relation(:LocatedIn, 2)\n\
+                 make_relation(:VisibleTo, 2)\n\
+                 assert Name(#lamp, \"brass lamp\")\n\
+                 assert LocatedIn(#lamp, #room)\n\
+                 VisibleTo(actor, obj) :- LocatedIn(obj, actor)\n\
+                 verb look(actor @ #room)\n\
+                   return \"ok\"\n\
+                 end\n",
+            FileinMode::Add,
+        )
+        .unwrap();
+
+    let source = runner.fileout_unit(unit).unwrap();
+
+    assert!(source.contains("make_identity(:lamp)"));
+    assert!(source.contains("make_relation(:Name, 2)"));
+    assert!(source.contains("assert Name(#lamp, \"brass lamp\")"));
+    assert!(source.contains("VisibleTo(actor, obj) :- LocatedIn(obj, actor)"));
+    assert!(source.contains("verb look(actor @ #room)"));
+
+    let mut imported = SourceRunner::new_empty();
+    imported
+        .run_filein_with_unit(unit, &source, FileinMode::Add)
+        .unwrap();
+    let query = imported.run_source("return Name(#lamp, ?name)").unwrap();
+    let dispatch = imported.run_source("return :look(actor: #room)").unwrap();
+    assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+    assert!(dispatch.render().contains("\"ok\""));
+}
+
+#[test]
+fn runner_fileout_preserves_frob_fact_literals() {
+    let mut runner = SourceRunner::new_empty();
+    let unit = Symbol::intern("events");
+    runner
+        .run_filein_with_unit(
+            unit,
+            "make_identity(:take_event)\n\
+                 make_relation(:CompiledEvent, 1)\n\
+                 assert CompiledEvent(#take_event<{:item -> \"coin\"}>)\n",
+            FileinMode::Add,
+        )
+        .unwrap();
+
+    let source = runner.fileout_unit(unit).unwrap();
+
+    assert!(source.contains("assert CompiledEvent(#take_event<{:item -> \"coin\"}>)"));
+    let mut imported = SourceRunner::new_empty();
+    imported
+        .run_filein_with_unit(unit, &source, FileinMode::Add)
+        .unwrap();
+    let query = imported
+        .run_source("return frob_value(one CompiledEvent(?event))[:item]")
+        .unwrap();
+    assert!(matches!(
+        query.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("coin")
+    ));
+}
+
+#[test]
+fn runner_fileout_preserves_slash_qualified_names() {
+    let mut runner = SourceRunner::new_empty();
+    let unit = Symbol::intern("ui");
+    runner
+        .run_filein_with_unit(
+            unit,
+            "make_identity(:ui/alice)\n\
+                 make_identity(:ui/lamp)\n\
+                 make_functional_relation(:ui/Name, 2, [0])\n\
+                 make_relation(:ui/Visible, 2)\n\
+                 make_relation(:ui/CanSee, 2)\n\
+                 assert ui/Name(#ui/lamp, \"brass lamp\")\n\
+                 assert ui/Visible(#ui/alice, #ui/lamp)\n\
+                 ui/CanSee(actor, obj) :- ui/Visible(actor, obj)\n\
+                 verb ui/look(actor, item)\n\
+                   return one ui/Name(item, ?name)\n\
+                 end\n",
+            FileinMode::Add,
+        )
+        .unwrap();
+
+    let source = runner.fileout_unit(unit).unwrap();
+
+    assert!(source.contains("make_identity(:ui/lamp)"));
+    assert!(source.contains("make_functional_relation(:ui/Name, 2, [0])"));
+    assert!(source.contains("assert ui/Name(#ui/lamp, \"brass lamp\")"));
+    assert!(source.contains("ui/CanSee(actor, obj) :- ui/Visible(actor, obj)"));
+    assert!(source.contains("verb ui/look(actor, item)"));
+
+    let mut imported = SourceRunner::new_empty();
+    imported
+        .run_filein_with_unit(unit, &source, FileinMode::Add)
+        .unwrap();
+    let query = imported
+        .run_source("return ui/Name(#ui/lamp, ?name)")
+        .unwrap();
+    let dispatch = imported
+        .run_source("return :ui/look(actor: #ui/alice, item: #ui/lamp)")
+        .unwrap();
+    assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+    assert!(dispatch.render().contains("\"brass lamp\""));
+}
+
+#[test]
+fn runner_filein_include_text_compiles_and_fileout_preserves_reference() {
+    let mut runner = SourceRunner::new_empty();
+    let unit = Symbol::intern("web_assets");
+    let source = "verb page_style()\n\
+                      return include_text(\"style.css\")\n\
+                    end\n";
+    let css = "body { color: #f5f0e8; }\nbutton::before { content: \"go\"; }\n";
+    runner
+        .run_filein_with_unit_and_include_loader(unit, source, FileinMode::Add, |path| {
+            if path == "style.css" {
+                Ok(css.to_owned())
+            } else {
+                Err(format!("unexpected include {path}"))
+            }
+        })
+        .unwrap();
+
+    let report = runner.run_source("return :page_style()").unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string(css)
+    ));
+
+    let filed_out = runner.fileout_unit(unit).unwrap();
+    assert!(filed_out.contains("include_text(\"style.css\")"));
+    assert!(!filed_out.contains("button::before"));
+
+    let mut imported = SourceRunner::new_empty();
+    imported
+        .run_filein_with_unit_and_include_loader(unit, &filed_out, FileinMode::Add, |_| {
+            Ok(css.to_owned())
+        })
+        .unwrap();
+    let report = imported.run_source("return :page_style()").unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string(css)
+    ));
+}
+
+#[test]
+fn runner_filein_replace_removes_facts_no_longer_in_source_unit() {
+    let mut runner = SourceRunner::new_empty();
+    let unit = Symbol::intern("mud_core");
+    runner
+        .run_filein_with_unit(
+            unit,
+            "make_identity(:lamp)\n\
+                 make_relation(:Name, 2)\n\
+                 assert Name(#lamp, \"brass lamp\")\n",
+            FileinMode::Add,
+        )
+        .unwrap();
+    runner
+        .run_filein_with_unit(
+            unit,
+            "make_identity(:lamp)\n\
+                 make_relation(:Name, 2)\n\
+                 assert Name(#lamp, \"golden lamp\")\n",
+            FileinMode::Replace,
+        )
+        .unwrap();
+
+    let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
+    let source = runner.fileout_unit(unit).unwrap();
+
+    assert!(query.render().contains("[[:name: \"golden lamp\"]]"));
+    assert!(source.contains("assert Name(#lamp, \"golden lamp\")"));
+    assert!(!source.contains("brass lamp"));
+}
+
+#[test]
+fn runner_fjall_store_reopens_state() {
+    let path = std::env::temp_dir().join(format!(
+        "mica-runtime-fjall-{}-{}",
+        std::process::id(),
+        Symbol::intern("runner_fjall_store_reopens_state").id()
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+
+    {
+        let mut runner =
+            SourceRunner::open_fjall(&path, mica_relation_kernel::FjallDurabilityMode::Strict)
+                .unwrap();
+        runner.run_source("make_identity(:lamp)").unwrap();
+        runner.run_source("make_relation(:Name, 2)").unwrap();
+        runner
+            .run_source("assert Name(#lamp, \"brass lamp\")")
+            .unwrap();
+    }
+
+    {
+        let mut runner =
+            SourceRunner::open_fjall(&path, mica_relation_kernel::FjallDurabilityMode::Strict)
+                .unwrap();
+        let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
+        assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+    }
+
+    let _ = std::fs::remove_dir_all(&path);
+}
+
+#[test]
+fn runner_installs_rules_with_surface_negation() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:LocatedIn, 2)").unwrap();
+    runner.run_source("make_relation(:HiddenFrom, 2)").unwrap();
+    runner.run_source("make_relation(:VisibleTo, 2)").unwrap();
+    runner
+            .run_source(
+                "VisibleTo(actor, obj) :-\n  LocatedIn(actor, room),\n  LocatedIn(obj, room),\n  not HiddenFrom(obj, actor)",
+            )
+            .unwrap();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:lamp)").unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner
+        .run_source("assert LocatedIn(#alice, #room)")
+        .unwrap();
+    runner.run_source("assert LocatedIn(#lamp, #room)").unwrap();
+    runner
+        .run_source("assert HiddenFrom(#lamp, #alice)")
+        .unwrap();
+
+    let query = runner.run_source("return VisibleTo(#alice, ?obj)").unwrap();
+
+    assert_eq!(
+        query.render(),
+        "task 11 complete: [[:obj: #alice]] (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_filein_installs_mud_verbs_and_invokes_dispatch() {
+    let mut runner = SourceRunner::new_empty();
+    let reports = runner
+        .run_filein(
+            "make_identity(:player)\n\
+                 make_identity(:thing)\n\
+                 make_identity(:portable)\n\
+                 make_identity(:container)\n\
+                 make_identity(:alice)\n\
+                 make_identity(:coin)\n\
+                 make_identity(:box)\n\
+                 make_relation(:Delegates, 3)\n\
+                 make_relation(:HeldBy, 2)\n\
+                 make_relation(:In, 2)\n\
+                 make_relation(:Portable, 1)\n\
+                 make_relation(:CanSee, 2)\n\
+                 assert Delegates(#portable, #thing, 0)\n\
+                 assert Delegates(#coin, #portable, 0)\n\
+                 assert Delegates(#alice, #player, 0)\n\
+                 assert Delegates(#box, #container, 0)\n\
+                 assert Portable(#coin)\n\
+                 CanSee(actor, item) :-\n\
+                   HeldBy(actor, item)\n\
+                 CanSee(actor, item) :-\n\
+                   HeldBy(actor, container),\n\
+                   In(item, container)\n\
+                 verb get(actor @ #player, item @ #thing)\n\
+                   if Portable(item)\n\
+                     assert HeldBy(actor, item)\n\
+                     return true\n\
+                   else\n\
+                     return false\n\
+                   end\n\
+                 end\n\
+                 verb put(actor @ #player, item @ #thing, container @ #container)\n\
+                   if HeldBy(actor, item)\n\
+                     assert In(item, container)\n\
+                     return true\n\
+                   else\n\
+                     return false\n\
+                   end\n\
+                 end\n\
+                 :get(item: #coin, actor: #alice)\n\
+                 :put(container: #box, item: #coin, actor: #alice)\n\
+                 return In(#coin, ?container)\n\
+                 return CanSee(#alice, ?item)\n",
+        )
+        .unwrap();
+
+    assert_eq!(
+        reports[17].render(),
+        "task 18 complete: #rule1 (retries: 0)"
+    );
+    assert_eq!(
+        reports[18].render(),
+        "task 19 complete: #rule2 (retries: 0)"
+    );
+    assert_eq!(
+        reports[19].render(),
+        "task 20 complete: #verb_get_1 (retries: 0)"
+    );
+    assert_eq!(
+        reports[20].render(),
+        "task 21 complete: #verb_put_2 (retries: 0)"
+    );
+    assert_eq!(reports[21].render(), "task 22 complete: true (retries: 0)");
+    assert_eq!(reports[22].render(), "task 23 complete: true (retries: 0)");
+    assert_eq!(
+        reports[23].render(),
+        "task 24 complete: [[:container: #box]] (retries: 0)"
+    );
+    assert_eq!(
+        reports[24].render(),
+        "task 25 complete: [[:item: #coin]] (retries: 0)"
+    );
+}
+
+#[test]
+fn runner_make_identity_is_idempotent_for_matching_name() {
+    let mut runner = SourceRunner::new_empty();
+    let first = runner.run_source("return make_identity(:root)").unwrap();
+    let second = runner.run_source("return make_identity(:root)").unwrap();
+
+    assert!(matches!(
+        (first.outcome, second.outcome),
+        (
+            TaskOutcome::Complete { value: first, .. },
+            TaskOutcome::Complete { value: second, .. }
+        ) if first == second
+    ));
+}
+
+#[test]
+fn runner_mailbox_allocates_fresh_directional_caps() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "let first = mailbox()\n\
+                 let second = mailbox()\n\
+                 return first[0] != first[1] && first[0] != second[0] && first[1] != second[1]",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+}
+
+#[test]
+fn runner_mailbox_recv_expands_argument_splices() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "let caps = mailbox()\n\
+                 let args = [[caps[0]], 0.5]\n\
+                 return mailbox_recv(@args)",
+        )
+        .unwrap();
+
+    let TaskOutcome::Suspended {
+        kind: SuspendKind::MailboxRecv(request),
+        ..
+    } = report.outcome
+    else {
+        panic!("mailbox_recv(@args) did not suspend on mailbox receive");
+    };
+
+    assert_eq!(request.timeout_millis, Some(500));
+    assert_eq!(request.receivers.len(), 1);
+    runner
+        .mailbox_for_receiver(&request.receivers[0])
+        .expect("spliced receiver should be a valid receive cap");
+}
+
+#[test]
+fn runner_mints_actor_authority_from_policy_facts() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/capabilities.mica"))
+        .unwrap();
+
+    let alice = runner
+        .run_source_as(
+            Symbol::intern("alice"),
+            ":polish(actor: #alice, item: #lamp)",
+        )
+        .unwrap();
+    assert!(alice.render().contains("complete: \"polished brass lamp\""));
+    assert!(
+        alice
+            .render()
+            .contains("effect #alice: [\"polished\", #alice, #lamp]")
+    );
+
+    let bob_read = runner
+        .run_source_as(Symbol::intern("bob"), "return #lamp.name")
+        .unwrap();
+    assert!(
+        bob_read
+            .render()
+            .contains("complete: \"polished brass lamp\"")
+    );
+
+    let bob_write = runner
+        .run_source_as(Symbol::intern("bob"), "#lamp.name = \"stolen\"")
+        .unwrap_err();
+    assert!(format!("{bob_write:?}").contains("PermissionDenied"));
+    assert!(format!("{bob_write:?}").contains("operation: \"write\""));
+
+    let bob_dispatch = runner
+        .run_source_as(Symbol::intern("bob"), ":polish(actor: #bob, item: #lamp)")
+        .unwrap_err();
+    assert!(format!("{bob_dispatch:?}").contains("NoApplicableMethod"));
+
+    let bob_catalog = runner
+        .run_source_as(Symbol::intern("bob"), "make_relation(:Escape, 1)")
+        .unwrap_err();
+    assert!(format!("{bob_catalog:?}").contains("operation: \"grant\""));
+
+    runner
+        .run_source("retract HasRole(#alice, #builder)")
+        .unwrap();
+    runner
+        .run_source("assert HasRole(#alice, #visitor)")
+        .unwrap();
+
+    let alice_read_after_role_change = runner
+        .run_source_as(Symbol::intern("alice"), "return #lamp.name")
+        .unwrap();
+    assert!(
+        alice_read_after_role_change
+            .render()
+            .contains("complete: \"polished brass lamp\"")
+    );
+
+    let alice_dispatch_after_role_change = runner
+        .run_source_as(
+            Symbol::intern("alice"),
+            ":polish(actor: #alice, item: #lamp)",
+        )
+        .unwrap_err();
+    assert!(format!("{alice_dispatch_after_role_change:?}").contains("NoApplicableMethod"));
+}
+
+#[test]
+fn runner_keeps_direct_grant_facts_as_policy_fallback() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(
+            "make_identity(:bob)\n\
+                 make_functional_relation(:Name, 2, [0])\n\
+                 make_relation(:GrantRead, 2)\n\
+                 assert Name(#bob, \"Bob\")\n\
+                 assert GrantRead(#bob, :Name)\n",
+        )
+        .unwrap();
+
+    let bob_read = runner
+        .run_source_as(Symbol::intern("bob"), "return #bob.name")
+        .unwrap();
+    assert!(bob_read.render().contains("complete: \"Bob\""));
+
+    let bob_write = runner
+        .run_source_as(Symbol::intern("bob"), "#bob.name = \"Robert\"")
+        .unwrap_err();
+    assert!(format!("{bob_write:?}").contains("PermissionDenied"));
+    assert!(format!("{bob_write:?}").contains("operation: \"write\""));
+}
+
+#[test]
+fn runner_filein_ignores_comment_only_chunks() {
+    let mut runner = SourceRunner::new_empty();
+    let reports = runner
+        .run_filein(
+            "// one comment\n\
+                 // another comment\n\
+                 make_identity(:root)\n\
+                 // trailing comment\n",
+        )
+        .unwrap();
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].render(), "task 1 complete: #root (retries: 0)");
+}
+
+#[test]
+fn runner_fileout_preserves_functional_relation_declarations() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein_with_unit(
+            Symbol::intern("schema"),
+            "make_functional_relation(:Name, 2, [0])",
+            FileinMode::Add,
+        )
+        .unwrap();
+
+    let source = runner.fileout_unit(Symbol::intern("schema")).unwrap();
+
+    assert!(source.contains("make_functional_relation(:Name, 2, [0])"));
+}
+
+#[test]
+fn report_renders_task_outcome() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner.run_source("return true").unwrap();
+
+    assert_eq!(report.render(), "task 1 complete: true (retries: 0)");
+}
