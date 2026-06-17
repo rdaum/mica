@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
-use mica_source_provider::receive::{GitReceiveRecorder, default_git_dir};
-use std::fs;
-use std::io::{self, BufReader};
-use std::path::PathBuf;
+use mica_source_provider::receive::{GitReceiveRecorder, GitReceivedRefUpdate, default_git_dir};
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufReader, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(about = "Record Git refs/for/* post-receive commands for Mica")]
@@ -39,6 +39,7 @@ fn main() {
             let stdin = io::stdin();
             let updates = recorder.receive_post_receive_lines(BufReader::new(stdin.lock()));
             updates.and_then(|updates| {
+                log_received_updates(recorder.git_dir(), &updates)?;
                 if !args.quiet {
                     serde_json::to_writer_pretty(io::stdout(), &updates)
                         .map_err(|error| format!("failed to write JSON output: {error}"))?;
@@ -79,9 +80,39 @@ fn main() {
     }
 }
 
+fn log_received_updates(
+    git_dir: &Path,
+    updates: &[GitReceivedRefUpdate],
+) -> Result<(), String> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let log_path = git_dir.join("mica-receive").join("receive.log");
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("failed to open {}: {error}", log_path.display()))?;
+    for update in updates {
+        let change_id = update.change_id_footer.as_deref().unwrap_or("<none>");
+        let line = format!(
+            "received update={} target={} commit={} change_id={} subject={}\n",
+            update.update_id, update.target_ref, update.commit_id, change_id, update.subject
+        );
+        eprint!("remote: conatus {line}");
+        log.write_all(line.as_bytes())
+            .map_err(|error| format!("failed to write {}: {error}", log_path.display()))?;
+    }
+    Ok(())
+}
+
 fn install_post_receive_hook(
-    git_dir: &std::path::Path,
-    binary: &std::path::Path,
+    git_dir: &Path,
+    binary: &Path,
 ) -> Result<(), String> {
     let hooks_dir = git_dir.join("hooks");
     fs::create_dir_all(&hooks_dir)
