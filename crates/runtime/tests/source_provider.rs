@@ -345,47 +345,49 @@ mod tests {
             })
             .expect("receive command should be recorded");
 
-        let mut runner = SourceRunner::new_empty();
-        load_source_relations_at(&mut runner, &tmp.display().to_string());
-        let git_dir = remote.canonicalize().unwrap().display().to_string();
-        let report = runner
-            .run_source(&format!(
-                "let row = one source/GitReceivedRefUpdate({git_dir:?}, ?update_id, ?target_ref, ?ref_name, ?commit_id, ?first_parent_id, ?change_id, ?subject, ?author_name, ?author_email, ?author_time, ?received_at)\n\
-                 return {{:target_ref -> row[:target_ref], :ref_name -> row[:ref_name], :first_parent_id -> row[:first_parent_id], :change_id -> row[:change_id], :subject -> row[:subject], :author_email -> row[:author_email]}}"
-            ))
-            .expect("received ref update query should run");
+        with_source_root_env(&tmp, || {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations_at(&mut runner, &tmp.display().to_string());
+            let git_dir = remote.canonicalize().unwrap().display().to_string();
+            let report = runner
+                .run_source(&format!(
+                    "let row = one source/GitReceivedRefUpdate({git_dir:?}, ?update_id, ?target_ref, ?ref_name, ?commit_id, ?first_parent_id, ?change_id, ?subject, ?author_name, ?author_email, ?author_time, ?received_at)\n\
+                     return {{:target_ref -> row[:target_ref], :ref_name -> row[:ref_name], :first_parent_id -> row[:first_parent_id], :change_id -> row[:change_id], :subject -> row[:subject], :author_email -> row[:author_email]}}"
+                ))
+                .expect("received ref update query should run");
 
-        let TaskOutcome::Complete { value, .. } = report.outcome else {
-            panic!("expected complete outcome, got {:?}", report.outcome);
-        };
-        value
-            .with_map(|entries| {
-                assert_eq!(
-                    map_get(entries, "target_ref"),
-                    Some(&Value::string("refs/heads/main"))
-                );
-                assert_eq!(
-                    map_get(entries, "ref_name"),
-                    Some(&Value::string("refs/for/main"))
-                );
-                let first_parent = map_get(entries, "first_parent_id")
-                    .and_then(|value| value.with_str(str::to_string))
-                    .unwrap_or_default();
-                assert!(!first_parent.is_empty());
-                assert_eq!(
-                    map_get(entries, "change_id"),
-                    Some(&Value::string("I1234567890abcdef1234567890abcdef12345678"))
-                );
-                assert_eq!(
-                    map_get(entries, "subject"),
-                    Some(&Value::string("Received change"))
-                );
-                assert_eq!(
-                    map_get(entries, "author_email"),
-                    Some(&Value::string("mica@example.test"))
-                );
-            })
-            .expect("result should be a map");
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            value
+                .with_map(|entries| {
+                    assert_eq!(
+                        map_get(entries, "target_ref"),
+                        Some(&Value::string("refs/heads/main"))
+                    );
+                    assert_eq!(
+                        map_get(entries, "ref_name"),
+                        Some(&Value::string("refs/for/main"))
+                    );
+                    let first_parent = map_get(entries, "first_parent_id")
+                        .and_then(|value| value.with_str(str::to_string))
+                        .unwrap_or_default();
+                    assert!(!first_parent.is_empty());
+                    assert_eq!(
+                        map_get(entries, "change_id"),
+                        Some(&Value::string("I1234567890abcdef1234567890abcdef12345678"))
+                    );
+                    assert_eq!(
+                        map_get(entries, "subject"),
+                        Some(&Value::string("Received change"))
+                    );
+                    assert_eq!(
+                        map_get(entries, "author_email"),
+                        Some(&Value::string("mica@example.test"))
+                    );
+                })
+                .expect("result should be a map");
+        });
         fs::remove_dir_all(&tmp).expect("temporary git receive dir should remove");
     }
 
