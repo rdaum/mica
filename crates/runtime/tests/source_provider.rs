@@ -39,6 +39,9 @@ mod tests {
                  make_relation(:source/IndexedTextUnit, 9)\n\
                  make_relation(:source/TextSearch, 11)\n\
                  make_relation(:source/GitReceivedRefUpdate, 12)\n\
+                 make_relation(:source/RefTarget, 3)\n\
+                 make_relation(:source/GitRefTarget, 3)\n\
+                 make_relation(:source/CommitExists, 2)\n\
                  make_relation(:source/SourceIndex, 1)\n\
                  make_relation(:source/IndexRepository, 2)\n\
                  make_relation(:source/IndexRevision, 2)\n\
@@ -321,6 +324,7 @@ mod tests {
         git(["clone", path(&remote), path(&work)]);
         git_in(&work, ["config", "user.name", "Mica Tester"]);
         git_in(&work, ["config", "user.email", "mica@example.test"]);
+        git_in(&work, ["checkout", "-b", "main"]);
         fs::write(work.join("README.md"), "base\n").expect("base file should be written");
         git_in(&work, ["add", "README.md"]);
         git_in(&work, ["commit", "-m", "Initial base"]);
@@ -389,6 +393,83 @@ mod tests {
                 .expect("result should be a map");
         });
         fs::remove_dir_all(&tmp).expect("temporary git receive dir should remove");
+    }
+
+    #[test]
+    fn source_provider_resolves_git_ref_targets() {
+        let tmp = unique_test_dir("mica-git-ref-target-");
+        let remote = tmp.join("remote.git");
+        let work = tmp.join("work");
+        git(["init", "--bare", path(&remote)]);
+        git(["clone", path(&remote), path(&work)]);
+        git_in(&work, ["config", "user.name", "Mica Tester"]);
+        git_in(&work, ["config", "user.email", "mica@example.test"]);
+        fs::write(work.join("README.md"), "base\n").expect("base file should be written");
+        git_in(&work, ["add", "README.md"]);
+        git_in(&work, ["commit", "-m", "Initial base"]);
+        git_in(&work, ["push", "origin", "HEAD:refs/heads/main"]);
+        let head = git_output_in(&work, ["rev-parse", "HEAD"]);
+
+        with_source_root_env(&tmp, || {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations_at(&mut runner, &work.display().to_string());
+            let report = runner
+                .run_source(
+                    "return one source/RefTarget(#repo, \"refs/heads/main\", ?commit)",
+                )
+                .expect("ref target query should run");
+
+            let TaskOutcome::Complete { value, .. } = report.outcome else {
+                panic!("expected complete outcome, got {:?}", report.outcome);
+            };
+            assert_eq!(value, Value::string(head.trim()));
+
+            let git_dir = remote.canonicalize().unwrap().display().to_string();
+            let remote_report = runner
+                .run_source(&format!(
+                    "return one source/GitRefTarget({git_dir:?}, \"refs/heads/main\", ?commit)"
+                ))
+                .expect("git ref target query should run");
+            let TaskOutcome::Complete { value, .. } = remote_report.outcome else {
+                panic!("expected complete outcome, got {:?}", remote_report.outcome);
+            };
+            assert_eq!(value, Value::string(head.trim()));
+
+            let missing = runner
+                .run_source("return one source/RefTarget(#repo, \"refs/heads/missing\", ?commit)")
+                .expect("missing ref query should run");
+            assert!(matches!(
+                missing.outcome,
+                TaskOutcome::Complete { value, .. } if value == Value::nothing()
+            ));
+        });
+        fs::remove_dir_all(&tmp).expect("temporary git ref dir should remove");
+    }
+
+    #[test]
+    fn source_provider_commit_exists_finds_review_fixture_history() {
+        let mica_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        with_source_root_env(&mica_root, || {
+            let mut runner = SourceRunner::new_empty();
+            load_source_relations_at(&mut runner, &mica_root.display().to_string());
+            for commit in [
+                "696dbc78cc394c7882c3199d2bac62b38a2ed2bd",
+                "fea67143608204247917088611d51f1f828f4cc3",
+            ] {
+                let report = runner
+                    .run_source(&format!(
+                        "return source/CommitExists(#repo, {commit:?})"
+                    ))
+                    .expect("commit exists query should run");
+
+                assert!(
+                    matches!(&report.outcome, TaskOutcome::Complete { value, .. } if *value == Value::bool(true)),
+                    "expected CommitExists to find {commit}, got {:?}",
+                    report.outcome
+                );
+            }
+        });
     }
 
     #[test]

@@ -83,11 +83,17 @@ impl VcsProvider {
     }
 
     pub(crate) fn commit_exists(&self, commit_id: &CommitId) -> Result<bool, String> {
-        match pollster::block_on(self.backend.read_commit(commit_id)) {
+        let git_id = gix::ObjectId::from_hex(commit_id.hex().as_bytes())
+            .map_err(|e| format!("invalid commit id {}: {e}", commit_id.hex()))?;
+        match self.backend.git_repo().find_commit(git_id) {
             Ok(_) => Ok(true),
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("not found") {
+                if msg.contains("object not found")
+                    || msg.contains("did not find")
+                    || msg.contains("could not be found")
+                    || msg.contains("is not a commit")
+                {
                     Ok(false)
                 } else {
                     Err(format!("commit exists check failed: {e}"))
@@ -186,6 +192,22 @@ impl VcsProvider {
             .map_err(|e| format!("failed to peel HEAD: {e}"))?;
         let hex = peeled.to_string();
         self.resolve_commit(&hex)
+    }
+
+    pub(crate) fn resolve_ref(&self, ref_name: &str) -> Result<Option<CommitId>, String> {
+        if ref_name.is_empty() {
+            return Err("ref name must not be empty".to_string());
+        }
+        let git_repo = self.backend.git_repo();
+        let mut reference = match git_repo.find_reference(ref_name) {
+            Ok(reference) => reference,
+            Err(_) => return Ok(None),
+        };
+        let peeled = reference
+            .peel_to_id()
+            .map_err(|e| format!("failed to peel ref {ref_name}: {e}"))?;
+        let hex = peeled.to_string();
+        self.resolve_commit(&hex).map(Some)
     }
 
     // -- tree / blob access ------------------------------------------------
@@ -810,8 +832,22 @@ mod tests {
     #[test]
     fn commit_exists_true_for_real() {
         let vcs = VcsProvider::open(&mica_git_dir()).expect("open");
-        let root = vcs.backend.root_commit_id().clone();
-        assert!(vcs.commit_exists(&root).expect("commit_exists"));
+        let head = vcs.resolve_head().expect("resolve HEAD");
+        assert!(vcs.commit_exists(&head).expect("commit_exists"));
+    }
+
+    #[test]
+    fn commit_exists_true_for_review_fixture_history() {
+        let vcs = VcsProvider::open(&mica_git_dir()).expect("open mica repo");
+        let base = vcs
+            .resolve_commit("696dbc78cc394c7882c3199d2bac62b38a2ed2bd")
+            .expect("resolve fixture base");
+        let patch_set = vcs
+            .resolve_commit("fea67143608204247917088611d51f1f828f4cc3")
+            .expect("resolve fixture patch set");
+
+        assert!(vcs.commit_exists(&base).expect("base exists"));
+        assert!(vcs.commit_exists(&patch_set).expect("patch set exists"));
     }
 
     #[test]

@@ -8,6 +8,7 @@ description = "Source browsing computed relations and index providers for Mica"
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
+gix = "0.83.0"
 gix-imara-diff = { version = "0.2.2", features = ["unified_diff"] }
 jj-lib = { version = "0.41", features = ["git"] }
 mica-compiler.workspace = true

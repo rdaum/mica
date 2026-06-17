@@ -36,6 +36,8 @@ const INDEXED_FILE_BOUND: &[u16] = &[];
 const TEXT_SEARCH_BOUND: &[u16] = &[0, 1, 2];
 const INDEX_VALUE_BOUND: &[u16] = &[];
 const VCS_COMMIT_KEY_BOUND: &[u16] = &[0, 1];
+const VCS_REF_TARGET_BOUND: &[u16] = &[0, 1];
+const GIT_REF_TARGET_BOUND: &[u16] = &[0, 1];
 const VCS_REPOSITORY_BOUND: &[u16] = &[0];
 const VCS_TWO_COMMIT_BOUND: &[u16] = &[0, 1, 2];
 const VCS_TWO_COMMIT_PATH_BOUND: &[u16] = &[0, 1, 2, 3];
@@ -114,6 +116,12 @@ pub fn default_computed_relations() -> Vec<Arc<dyn ComputedRelation>> {
             provider: provider.clone(),
         }),
         Arc::new(RepositoryVcsRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(RefTargetRelation {
+            provider: provider.clone(),
+        }),
+        Arc::new(GitRefTargetRelation {
             provider: provider.clone(),
         }),
         Arc::new(GitReceivedRefUpdateRelation {
@@ -1883,6 +1891,100 @@ impl ComputedRelation for GitReceivedRefUpdateRelation {
 
 struct CommitExistsRelation {
     provider: Arc<LocalSourceProvider>,
+}
+
+struct RefTargetRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+struct GitRefTargetRelation {
+    provider: Arc<LocalSourceProvider>,
+}
+
+impl ComputedRelation for RefTargetRelation {
+    fn name(&self) -> &'static str {
+        "local-source-ref-target"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/RefTarget") && metadata.arity() == 3
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        VCS_REF_TARGET_BOUND
+    }
+
+    fn scan(
+        &self,
+        reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let repository = bound_value(metadata.id(), bindings, 0, "repository")?;
+        let ref_name = bound_string(metadata.id(), bindings, 1, "ref name")?;
+        let vcs = self
+            .provider
+            .vcs_provider_for(reader, metadata.id(), &repository)?;
+        let Some(commit_id) = vcs
+            .resolve_ref(&ref_name)
+            .map_err(|e| invalid_relation(metadata.id(), e))?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(filter_bound_rows(
+            vec![Tuple::from([
+                repository,
+                Value::string(ref_name),
+                Value::string(commit_id.hex()),
+            ])],
+            bindings,
+        ))
+    }
+}
+
+impl ComputedRelation for GitRefTargetRelation {
+    fn name(&self) -> &'static str {
+        "local-source-git-ref-target"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("source/GitRefTarget") && metadata.arity() == 3
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        GIT_REF_TARGET_BOUND
+    }
+
+    fn scan(
+        &self,
+        _reader: &dyn ComputedRelationRead,
+        metadata: &RelationMetadata,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let git_dir = bound_string(metadata.id(), bindings, 0, "git dir")?;
+        let ref_name = bound_string(metadata.id(), bindings, 1, "ref name")?;
+        let git_dir_path = self.provider.allowed_git_dir(metadata.id(), &git_dir)?;
+        let vcs = VcsProvider::open(&git_dir_path).map_err(|error| {
+            invalid_relation(
+                metadata.id(),
+                format!("failed to open vcs for {}: {error}", git_dir_path.display()),
+            )
+        })?;
+        let Some(commit_id) = vcs
+            .resolve_ref(&ref_name)
+            .map_err(|e| invalid_relation(metadata.id(), e))?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(filter_bound_rows(
+            vec![Tuple::from([
+                Value::string(git_dir_path.display().to_string()),
+                Value::string(ref_name),
+                Value::string(commit_id.hex()),
+            ])],
+            bindings,
+        ))
+    }
 }
 
 impl ComputedRelation for CommitExistsRelation {
