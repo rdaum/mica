@@ -1042,27 +1042,30 @@ mod tests {
             ),
             (
                 Value::symbol(Symbol::intern("children")),
-                Value::list([Value::map([
-                    (Value::symbol(Symbol::intern("tag")), Value::string("path")),
-                    (
-                        Value::symbol(Symbol::intern("attrs")),
-                        Value::map([(Value::string("d"), Value::string("m9 17-5-5 5-5"))]),
-                    ),
-                    (Value::symbol(Symbol::intern("children")), Value::list([])),
-                ]), Value::map([
-                    (Value::symbol(Symbol::intern("tag")), Value::string("rect")),
-                    (
-                        Value::symbol(Symbol::intern("attrs")),
-                        Value::map([
-                            (Value::string("x"), Value::string("3")),
-                            (Value::string("y"), Value::string("4")),
-                            (Value::string("width"), Value::string("7")),
-                            (Value::string("height"), Value::string("7")),
-                            (Value::string("rx"), Value::string("1")),
-                        ]),
-                    ),
-                    (Value::symbol(Symbol::intern("children")), Value::list([])),
-                ])]),
+                Value::list([
+                    Value::map([
+                        (Value::symbol(Symbol::intern("tag")), Value::string("path")),
+                        (
+                            Value::symbol(Symbol::intern("attrs")),
+                            Value::map([(Value::string("d"), Value::string("m9 17-5-5 5-5"))]),
+                        ),
+                        (Value::symbol(Symbol::intern("children")), Value::list([])),
+                    ]),
+                    Value::map([
+                        (Value::symbol(Symbol::intern("tag")), Value::string("rect")),
+                        (
+                            Value::symbol(Symbol::intern("attrs")),
+                            Value::map([
+                                (Value::string("x"), Value::string("3")),
+                                (Value::string("y"), Value::string("4")),
+                                (Value::string("width"), Value::string("7")),
+                                (Value::string("height"), Value::string("7")),
+                                (Value::string("rx"), Value::string("1")),
+                            ]),
+                        ),
+                        (Value::symbol(Symbol::intern("children")), Value::list([])),
+                    ]),
+                ]),
             ),
         ]);
 
@@ -1080,21 +1083,24 @@ mod tests {
                     ("stroke-width".to_owned(), "2".to_owned()),
                     ("viewBox".to_owned(), "0 0 24 24".to_owned()),
                 ]),
-                children: vec![DomNode::Element {
-                    tag: "path".to_owned(),
-                    attrs: BTreeMap::from([("d".to_owned(), "m9 17-5-5 5-5".to_owned())]),
-                    children: vec![],
-                }, DomNode::Element {
-                    tag: "rect".to_owned(),
-                    attrs: BTreeMap::from([
-                        ("height".to_owned(), "7".to_owned()),
-                        ("rx".to_owned(), "1".to_owned()),
-                        ("width".to_owned(), "7".to_owned()),
-                        ("x".to_owned(), "3".to_owned()),
-                        ("y".to_owned(), "4".to_owned()),
-                    ]),
-                    children: vec![],
-                }],
+                children: vec![
+                    DomNode::Element {
+                        tag: "path".to_owned(),
+                        attrs: BTreeMap::from([("d".to_owned(), "m9 17-5-5 5-5".to_owned())]),
+                        children: vec![],
+                    },
+                    DomNode::Element {
+                        tag: "rect".to_owned(),
+                        attrs: BTreeMap::from([
+                            ("height".to_owned(), "7".to_owned()),
+                            ("rx".to_owned(), "1".to_owned()),
+                            ("width".to_owned(), "7".to_owned()),
+                            ("x".to_owned(), "3".to_owned()),
+                            ("y".to_owned(), "4".to_owned()),
+                        ]),
+                        children: vec![],
+                    }
+                ],
             }
         );
     }
