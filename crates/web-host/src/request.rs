@@ -76,11 +76,12 @@ pub(crate) async fn handle_in_process_request(
         if crate::auth::is_pre_auth_login_path(&request.path) {
             match host
                 .driver
-                .named_identity(Symbol::intern("source/auth_guest"))
+                .named_identity(Symbol::intern(&auth.config.login_actor))
             {
                 Ok(actor) => Some(actor),
                 Err(error) => {
                     tracing::warn!(
+                        actor_name = %auth.config.login_actor,
                         error = %error,
                         "failed to resolve pre-auth login actor"
                     );

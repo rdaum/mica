@@ -430,9 +430,9 @@ impl AuthSubsystem {
         let return_path = validate_return_path(
             form.get("return")
                 .cloned()
-                .unwrap_or_else(|| "/source".to_owned()),
+                .unwrap_or_else(|| self.config.local_login_return_path.clone()),
         )
-        .unwrap_or_else(|| "/source".to_owned());
+        .unwrap_or_else(|| self.config.local_login_return_path.clone());
         if login.is_empty() || password.is_empty() {
             return Some(HttpResponse::new(
                 400,

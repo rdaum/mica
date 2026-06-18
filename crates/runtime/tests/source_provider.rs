@@ -414,9 +414,7 @@ mod tests {
             let mut runner = SourceRunner::new_empty();
             load_source_relations_at(&mut runner, &work.display().to_string());
             let report = runner
-                .run_source(
-                    "return one source/RefTarget(#repo, \"refs/heads/main\", ?commit)",
-                )
+                .run_source("return one source/RefTarget(#repo, \"refs/heads/main\", ?commit)")
                 .expect("ref target query should run");
 
             let TaskOutcome::Complete { value, .. } = report.outcome else {
@@ -458,9 +456,7 @@ mod tests {
                 "fea67143608204247917088611d51f1f828f4cc3",
             ] {
                 let report = runner
-                    .run_source(&format!(
-                        "return source/CommitExists(#repo, {commit:?})"
-                    ))
+                    .run_source(&format!("return source/CommitExists(#repo, {commit:?})"))
                     .expect("commit exists query should run");
 
                 assert!(

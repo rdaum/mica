@@ -1,10 +1,14 @@
 use crate::oauth::GithubOAuthConfig;
 use crate::paseto::{PasetoKey, PasetoKeyring};
+use crate::session::AuthSchema;
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct AuthConfig {
     pub keyring: PasetoKeyring,
+    pub schema: AuthSchema,
+    pub login_actor: String,
+    pub local_login_return_path: String,
     pub session_ttl: Duration,
     pub cookie_name: String,
     pub local_password_auth_enabled: bool,
@@ -34,6 +38,41 @@ impl AuthConfig {
             _ => None,
         }
     }
+}
+
+fn parse_string_env(name: &str, default: &str) -> String {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.to_owned())
+}
+
+fn parse_schema_namespace() -> Result<String, AuthConfigError> {
+    let namespace = parse_string_env("MICA_AUTH_SCHEMA_NAMESPACE", "auth");
+    if namespace
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Ok(namespace);
+    }
+    Err(AuthConfigError::InvalidSchemaNamespace(namespace))
+}
+
+fn parse_return_path() -> Result<String, AuthConfigError> {
+    let path = parse_string_env("MICA_AUTH_LOCAL_LOGIN_RETURN", "/");
+    if path.is_empty() || !path.starts_with('/') || path.starts_with("//") {
+        return Err(AuthConfigError::InvalidLocalLoginReturnPath(path));
+    }
+    for c in path.chars() {
+        match c {
+            '\x00'..='\x1f' | '\x7f' | ':' => {
+                return Err(AuthConfigError::InvalidLocalLoginReturnPath(path));
+            }
+            _ => {}
+        }
+    }
+    Ok(path)
 }
 
 fn parse_allowed_logins(value: Option<String>) -> Vec<String> {
@@ -82,6 +121,8 @@ pub enum AuthConfigError {
     InvalidPreviousKeyHex(String),
     InvalidTtl(String),
     InvalidRole { name: String, value: String },
+    InvalidSchemaNamespace(String),
+    InvalidLocalLoginReturnPath(String),
 }
 
 impl std::fmt::Display for AuthConfigError {
@@ -99,6 +140,18 @@ impl std::fmt::Display for AuthConfigError {
                     "{name} must be one of admin, operator, or viewer; got {value:?}"
                 )
             }
+            Self::InvalidSchemaNamespace(value) => {
+                write!(
+                    f,
+                    "MICA_AUTH_SCHEMA_NAMESPACE must contain only ASCII letters, digits, or underscores; got {value:?}"
+                )
+            }
+            Self::InvalidLocalLoginReturnPath(value) => {
+                write!(
+                    f,
+                    "MICA_AUTH_LOCAL_LOGIN_RETURN must be a local absolute path; got {value:?}"
+                )
+            }
         }
     }
 }
@@ -108,16 +161,16 @@ impl std::error::Error for AuthConfigError {}
 impl AuthConfig {
     pub fn from_env() -> Result<Self, AuthConfigError> {
         let key_hex =
-            std::env::var("CONATUS_PASETO_KEY").map_err(|_| AuthConfigError::MissingKey)?;
+            std::env::var("MICA_AUTH_PASETO_KEY").map_err(|_| AuthConfigError::MissingKey)?;
         let key = PasetoKey::from_hex("active".to_owned(), &key_hex)
             .map_err(|_| AuthConfigError::InvalidKeyHex(key_hex.clone()))?;
 
-        let ttl_secs: u64 = std::env::var("CONATUS_SESSION_TTL_SECS")
+        let ttl_secs: u64 = std::env::var("MICA_AUTH_SESSION_TTL_SECS")
             .unwrap_or_else(|_| "43200".to_owned())
             .parse()
             .map_err(|e| AuthConfigError::InvalidTtl(format!("{e}")))?;
 
-        let previous_key = match std::env::var("CONATUS_PASETO_KEY_PREVIOUS") {
+        let previous_key = match std::env::var("MICA_AUTH_PASETO_KEY_PREVIOUS") {
             Ok(hex) => Some(
                 PasetoKey::from_hex("previous".to_owned(), &hex)
                     .map_err(|_| AuthConfigError::InvalidPreviousKeyHex(hex.clone()))?,
@@ -133,21 +186,24 @@ impl AuthConfig {
 
         Ok(Self {
             keyring,
+            schema: AuthSchema::namespaced(&parse_schema_namespace()?),
+            login_actor: parse_string_env("MICA_AUTH_LOGIN_ACTOR", "auth/guest"),
+            local_login_return_path: parse_return_path()?,
             session_ttl: Duration::from_secs(ttl_secs),
             cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
-            local_password_auth_enabled: parse_bool_env("CONATUS_LOCAL_PASSWORD_AUTH"),
-            github_client_id: std::env::var("CONATUS_GITHUB_CLIENT_ID").ok(),
-            github_client_secret: std::env::var("CONATUS_GITHUB_CLIENT_SECRET").ok(),
-            github_redirect_uri: std::env::var("CONATUS_GITHUB_REDIRECT_URI").ok(),
-            github_org: std::env::var("CONATUS_GITHUB_ORG").ok(),
+            local_password_auth_enabled: parse_bool_env("MICA_AUTH_LOCAL_PASSWORD"),
+            github_client_id: std::env::var("MICA_AUTH_GITHUB_CLIENT_ID").ok(),
+            github_client_secret: std::env::var("MICA_AUTH_GITHUB_CLIENT_SECRET").ok(),
+            github_redirect_uri: std::env::var("MICA_AUTH_GITHUB_REDIRECT_URI").ok(),
+            github_org: std::env::var("MICA_AUTH_GITHUB_ORG").ok(),
             github_allowed_logins: parse_allowed_logins(
-                std::env::var("CONATUS_GITHUB_ALLOWED_LOGINS").ok(),
+                std::env::var("MICA_AUTH_GITHUB_ALLOWED_LOGINS").ok(),
             ),
             github_admin_logins: parse_login_lists([
-                std::env::var("CONATUS_ADMIN_GITHUB_LOGIN").ok(),
-                std::env::var("CONATUS_GITHUB_ADMIN_LOGINS").ok(),
+                std::env::var("MICA_AUTH_ADMIN_GITHUB_LOGIN").ok(),
+                std::env::var("MICA_AUTH_GITHUB_ADMIN_LOGINS").ok(),
             ]),
-            github_default_role: parse_role_env("CONATUS_GITHUB_DEFAULT_ROLE", "operator")?,
+            github_default_role: parse_role_env("MICA_AUTH_GITHUB_DEFAULT_ROLE", "operator")?,
         })
     }
 
@@ -155,6 +211,9 @@ impl AuthConfig {
         let key = PasetoKey::new("dev-key".to_owned(), *b"devkeydevkeydevkeydevkeydevkey!!");
         Self {
             keyring: PasetoKeyring::new(key),
+            schema: AuthSchema::namespaced("auth"),
+            login_actor: "auth/guest".to_owned(),
+            local_login_return_path: "/".to_owned(),
             session_ttl: Duration::from_secs(86400),
             cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
             local_password_auth_enabled: false,
@@ -171,6 +230,9 @@ impl AuthConfig {
     pub fn with_key(key: PasetoKey, session_ttl: Duration) -> Self {
         Self {
             keyring: PasetoKeyring::new(key),
+            schema: AuthSchema::namespaced("auth"),
+            login_actor: "auth/guest".to_owned(),
+            local_login_return_path: "/".to_owned(),
             session_ttl,
             cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
             local_password_auth_enabled: false,

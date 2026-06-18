@@ -238,7 +238,7 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         Err(e) => {
             return Err(format!(
                 "authentication is configured but invalid: {e}. \
-                 Check CONATUS_PASETO_KEY, CONATUS_SESSION_TTL_SECS."
+                 Check MICA_AUTH_PASETO_KEY, MICA_AUTH_SESSION_TTL_SECS."
             ));
         }
     };
@@ -256,7 +256,8 @@ async fn run_async(cli: Cli) -> Result<(), String> {
 
         if auth_enabled {
             let config = auth_config.unwrap();
-            let session_store = MicaSessionStore::new(Arc::new(driver.clone()));
+            let session_store =
+                MicaSessionStore::new(Arc::new(driver.clone()), config.schema.clone());
             bootstrap_local_users(&session_store).await?;
             let auth_subsystem = mica_web_host::auth::AuthSubsystem::new(config, session_store);
             host = host.with_auth(auth_subsystem);
@@ -334,7 +335,7 @@ struct LocalUserBootstrap {
 }
 
 async fn bootstrap_local_users(session_store: &MicaSessionStore) -> Result<(), String> {
-    let raw = match env::var("CONATUS_LOCAL_USERS_JSON") {
+    let raw = match env::var("MICA_AUTH_LOCAL_USERS_JSON") {
         Ok(raw) if !raw.trim().is_empty() => raw,
         _ => return Ok(()),
     };
@@ -364,10 +365,10 @@ async fn bootstrap_local_users(session_store: &MicaSessionStore) -> Result<(), S
 
 fn parse_local_users_json(raw: &str) -> Result<Vec<LocalUserBootstrap>, String> {
     let value: JsonValue = serde_json::from_str(raw)
-        .map_err(|error| format!("invalid CONATUS_LOCAL_USERS_JSON: {error}"))?;
+        .map_err(|error| format!("invalid MICA_AUTH_LOCAL_USERS_JSON: {error}"))?;
     let users = value
         .as_array()
-        .ok_or_else(|| "CONATUS_LOCAL_USERS_JSON must be a JSON array".to_owned())?;
+        .ok_or_else(|| "MICA_AUTH_LOCAL_USERS_JSON must be a JSON array".to_owned())?;
 
     users
         .iter()
@@ -382,7 +383,7 @@ fn parse_local_user_bootstrap(
 ) -> Result<LocalUserBootstrap, String> {
     let object = value
         .as_object()
-        .ok_or_else(|| format!("CONATUS_LOCAL_USERS_JSON entry {index} must be a JSON object"))?;
+        .ok_or_else(|| format!("MICA_AUTH_LOCAL_USERS_JSON entry {index} must be a JSON object"))?;
     let login = required_json_string(object, index, "login")?;
     let password = required_json_string(object, index, "password")?;
     let display_name = object
@@ -396,7 +397,7 @@ fn parse_local_user_bootstrap(
 
     if display_name.is_empty() {
         return Err(format!(
-            "CONATUS_LOCAL_USERS_JSON entry {index} has an empty display_name"
+            "MICA_AUTH_LOCAL_USERS_JSON entry {index} has an empty display_name"
         ));
     }
 
@@ -416,17 +417,17 @@ fn parse_local_user_roles(
         return Ok(Vec::new());
     };
     let roles = value.as_array().ok_or_else(|| {
-        format!("CONATUS_LOCAL_USERS_JSON entry {index} field roles must be an array")
+        format!("MICA_AUTH_LOCAL_USERS_JSON entry {index} field roles must be an array")
     })?;
     let mut parsed = Vec::new();
     for role in roles {
         let role = role.as_str().ok_or_else(|| {
-            format!("CONATUS_LOCAL_USERS_JSON entry {index} field roles must contain strings")
+            format!("MICA_AUTH_LOCAL_USERS_JSON entry {index} field roles must contain strings")
         })?;
         let role = role.trim().to_ascii_lowercase();
         if !matches!(role.as_str(), "admin" | "operator" | "viewer") {
             return Err(format!(
-                "CONATUS_LOCAL_USERS_JSON entry {index} has unsupported role {role:?}"
+                "MICA_AUTH_LOCAL_USERS_JSON entry {index} has unsupported role {role:?}"
             ));
         }
         parsed.push(role);
@@ -443,12 +444,12 @@ fn required_json_string(
         .get(field)
         .and_then(JsonValue::as_str)
         .ok_or_else(|| {
-            format!("CONATUS_LOCAL_USERS_JSON entry {index} missing string field {field}")
+            format!("MICA_AUTH_LOCAL_USERS_JSON entry {index} missing string field {field}")
         })?;
     let value = value.trim();
     if value.is_empty() {
         return Err(format!(
-            "CONATUS_LOCAL_USERS_JSON entry {index} has an empty {field}"
+            "MICA_AUTH_LOCAL_USERS_JSON entry {index} has an empty {field}"
         ));
     }
     Ok(value.to_owned())

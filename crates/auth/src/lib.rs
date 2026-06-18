@@ -20,4 +20,6 @@ pub use paseto::{
     encode_session_token, future_rfc3339, now_rfc3339, random_session_id,
 };
 pub use password::{PasswordError, hash_password, verify_password};
-pub use session::{LocalAuthenticatedUser, MicaSessionStore, SessionRecord};
+pub use session::{
+    AuthRoleSymbols, AuthSchema, LocalAuthenticatedUser, MicaSessionStore, SessionRecord,
+};
