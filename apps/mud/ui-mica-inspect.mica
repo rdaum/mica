@@ -413,15 +413,11 @@ verb ui/mica_inspect_set_selected(endpoint, selected)
   end
   endpoint().ui/micaInspect = selected
   endpoint.ui/micaInspect = selected
+  ui/mica_inspect_bump_revision(endpoint)
 end
 
 verb ui/mica_inspect_bump_revision(endpoint)
-  let revision = ui/status_revision() + 1000
-  endpoint().session/revision = revision
-  if endpoint != endpoint()
-    endpoint.session/revision = revision
-  end
-  return revision
+  return ui/bump_revision(endpoint)
 end
 
 verb ui/try_mica_inspect_command(current @ #player, endpoint, line @ #string)
@@ -436,7 +432,6 @@ verb ui/try_mica_inspect_command(current @ #player, endpoint, line @ #string)
   end
 
   ui/mica_inspect_set_selected(endpoint, selected)
-  event/record_text(current, string_concat("> mica inspect ", ui/actor_name(selected)))
   return true
 end
 
@@ -456,7 +451,6 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_action<_>, endpoint, sessio
   end
 
   ui/mica_inspect_set_selected(endpoint, selected)
-  event/record_text(current, string_concat("> mica inspect ", ui/actor_name(selected)))
   return true
 end
 

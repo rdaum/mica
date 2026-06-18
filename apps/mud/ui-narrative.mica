@@ -163,7 +163,7 @@ verb ui/event_meta_chip_node(label, value)
 end
 
 verb ui/event_meta_node(source, seq)
-  let chips = [ui/event_meta_chip_node("seq", to_literal(seq)), ui/event_meta_chip_node("kind", ui/event_label(source))]
+  let chips = [ui/event_meta_chip_node("kind", ui/event_label(source))]
   let bindings = event/bindings(source)
   let actor = bindings[:actor]
   if actor != nothing
@@ -194,13 +194,12 @@ verb ui/event_node(event)
   let source = event.event/source
   if source == nothing
     return dom <li data-sync-key={to_literal(event)} class="event-line">
-      <span class="event-seq">{string_concat("#", to_literal(seq))}</span>{text}
+      {text}
     </li>
   end
 
   return dom <li data-sync-key={to_literal(event)} class={ui/event_class(source)}>
     <div class="event-line-main">
-      <span class="event-seq">{string_concat("#", to_literal(seq))}</span>
       <span class="event-kind">{ui/event_label(source)}</span>
       {ui/event_body_node(event, ui/current_actor())}
     </div>
@@ -281,7 +280,6 @@ verb ui/narrative_node(actor @ #player, revision, limit)
 
   let heading = dom <div class="narrative-heading">
     <h2>Narrative</h2>
-    <span class="narrative-count">{to_literal(count)} events</span>
   </div>
 
   let children = []

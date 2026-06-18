@@ -220,6 +220,5 @@ verb ui/handle_sync_action(source @ #ui/retrieval_action<_>, endpoint, session, 
   end
 
   ui/retrieval_query_selected(current, endpoint, selected)
-  event/record_text(current, string_concat("> related ", ui/actor_name(selected)))
   return true
 end

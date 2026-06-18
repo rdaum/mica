@@ -62,7 +62,15 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
 
   endpoint().session/inspect = selected
   endpoint.session/inspect = selected
-  event/record_text(current, string_concat("> examine ", ui/actor_name(selected)))
+  let pulse = endpoint.session/inspectPulse
+  if pulse == "odd"
+    pulse = "even"
+  else
+    pulse = "odd"
+  end
+  endpoint().session/inspectPulse = pulse
+  endpoint.session/inspectPulse = pulse
+  ui/bump_revision(endpoint())
   return true
 end
 
@@ -89,9 +97,18 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
   if selected != nothing
     endpoint().session/inspect = selected
     endpoint.session/inspect = selected
+    let pulse = endpoint.session/inspectPulse
+    if pulse == "odd"
+      pulse = "even"
+    else
+      pulse = "odd"
+    end
+    endpoint().session/inspectPulse = pulse
+    endpoint.session/inspectPulse = pulse
   end
-  event/record_text(current, string_concat("> ", line))
-  return :command(actor: current, endpoint: endpoint, line: line)
+  let handled = command(current, endpoint, line)
+  ui/bump_revision(endpoint())
+  return handled
 end
 
 verb sync_event(endpoint, session, view, event, target, action, fields)

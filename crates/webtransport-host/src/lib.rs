@@ -908,6 +908,9 @@ mod tests {
             .run_filein(include_str!("../../../apps/mud/core.mica"))
             .unwrap();
         runner
+            .run_filein(include_str!("../../../apps/mud/auth.mica"))
+            .unwrap();
+        runner
             .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
             .unwrap();
         runner

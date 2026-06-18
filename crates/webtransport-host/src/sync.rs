@@ -703,11 +703,13 @@ pub(crate) fn route_driver_event(
                 for datagram in effect_datagrams(effect.target, &effect.value) {
                     let _ = state.output.send_datagram(datagram);
                 }
-                return true;
             }
-            false
+            true
         }
-        DriverEvent::TaskCompleted { task_id, .. } => complete_pending_sync_task(sessions, task_id),
+        DriverEvent::TaskCompleted { task_id, .. } => {
+            let _ = complete_pending_sync_task(sessions, task_id);
+            true
+        }
         DriverEvent::TaskAborted { task_id, .. } | DriverEvent::TaskFailed { task_id, .. } => {
             complete_pending_sync_task(sessions, task_id)
         }

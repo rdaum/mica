@@ -4,6 +4,7 @@ make_relation(:ui/View, 1)
 make_functional_relation(:ui/SyncAction, 2, [0])
 make_functional_relation(:session/Actor, 2, [0])
 make_functional_relation(:session/Inspect, 2, [0])
+make_functional_relation(:session/InspectPulse, 2, [0])
 make_functional_relation(:session/NarrativeLimit, 2, [0])
 make_functional_relation(:session/Revision, 2, [0])
 
@@ -39,6 +40,7 @@ assert CanRead(#web, :ui/View)
 assert CanRead(#web, :ui/SyncAction)
 assert CanRead(#web, :session/Actor)
 assert CanRead(#web, :session/Inspect)
+assert CanRead(#web, :session/InspectPulse)
 assert CanRead(#web, :session/NarrativeLimit)
 assert CanRead(#web, :session/Revision)
 assert CanRead(#web, :Delegates)
@@ -52,6 +54,7 @@ assert CanWrite(#web, :event/Text)
 assert CanWrite(#web, :event/Source)
 assert CanWrite(#web, :session/Actor)
 assert CanWrite(#web, :session/Inspect)
+assert CanWrite(#web, :session/InspectPulse)
 assert CanWrite(#web, :session/NarrativeLimit)
 assert CanWrite(#web, :session/Revision)
 
@@ -150,6 +153,7 @@ assert RoleCanInvoke(#player, :http/presence_style)
 assert RoleCanInvoke(#player, :http/narrative_style)
 assert RoleCanInvoke(#player, :http/bootstrap_script)
 assert RoleCanRead(#player, :session/Inspect)
+assert RoleCanRead(#player, :session/InspectPulse)
 assert RoleCanRead(#player, :event/Source)
 assert RoleCanRead(#player, :session/NarrativeLimit)
 assert RoleCanRead(#player, :session/Revision)
@@ -164,6 +168,7 @@ assert RoleCanRead(#player, :RequestActor)
 assert RoleCanRead(#player, :RequestHeader)
 assert RoleCanRead(#player, :RequestBody)
 assert RoleCanWrite(#player, :session/Inspect)
+assert RoleCanWrite(#player, :session/InspectPulse)
 assert RoleCanWrite(#player, :session/NarrativeLimit)
 assert RoleCanWrite(#player, :session/Revision)
 
@@ -234,6 +239,8 @@ verb ui/status_revision()
       revision = seq + 1
     end
   end
+  revision = revision * 2
+
   let ui_revision = endpoint().session/revision
   if ui_revision != nothing && ui_revision > revision
     revision = ui_revision
@@ -254,11 +261,13 @@ verb ui/bump_revision(endpoint)
     end
   end
 
+  revision = revision * 2
+
   let ui_revision = endpoint.session/revision
   if ui_revision != nothing && ui_revision > revision
     revision = ui_revision
   end
-  revision = revision + 2
+  revision = revision + 1
 
   endpoint.session/revision = revision
   return revision

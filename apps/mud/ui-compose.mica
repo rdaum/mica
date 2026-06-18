@@ -313,8 +313,17 @@ end
 
 verb ui/inspector_node(actor @ #player)
   let selected = endpoint().session/inspect
+  let pulse = endpoint().session/inspectPulse
+  let pulse_class = "inspector panel"
+  if pulse != nothing
+    if pulse == "even"
+      pulse_class = "inspector panel inspect-flash-even"
+    else
+      pulse_class = "inspector panel inspect-flash-odd"
+    end
+  end
   if selected == nothing || CanSee(actor, selected) == false
-    return dom <aside id="inspector" class="panel inspector">
+    return dom <aside id="inspector" class={pulse_class}>
       <h2>Examine</h2>
       <p class="muted">Select a room object or player to examine.</p>
     </aside>
@@ -336,7 +345,7 @@ verb ui/inspector_node(actor @ #player)
     actions = [@actions, ui/mica_inspect_action_node(selected, "Mica inspect", "mini-button mica-button")]
   end
 
-  return dom <aside id="inspector" class="panel inspector" data-entity={to_literal(selected)}>
+  return dom <aside id="inspector" class={pulse_class} data-entity={to_literal(selected)}>
     <h2>Examine</h2>
     <div class="inspector-title-row">
       <span class="entity-avatar">{ui/entity_initial(name)}</span>
@@ -407,7 +416,6 @@ end
 verb ui/world_view_node(actor @ #player, revision, limit)
   let header = dom <header class="topbar">
     <h1>The Mica Rooms</h1>
-    <div class="status">{ui/actor_name(actor)} · revision {to_literal(revision)}</div>
   </header>
   let sidebar = dom <div class="mud-sidebar">{ui/presence_node(actor)}{ui/inventory_node(actor)}{ui/inspector_node(actor)}</div>
   let stage = dom <div class="mud-grid">{ui/room_panel_node(actor)}{ui/narrative_node(actor, revision, limit)}{sidebar}</div>

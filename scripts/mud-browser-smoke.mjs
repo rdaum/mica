@@ -50,6 +50,12 @@ try {
   await alice.locator("#room").waitFor();
   await bob.locator("#room").waitFor();
   await created.locator("#room").waitFor();
+  const shellWidth = await alice
+    .locator(".mud-shell")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  const viewportWidth = await alice.evaluate(() => window.innerWidth);
+  assert.ok(shellWidth >= viewportWidth - 2, `mud shell width ${shellWidth} did not fill viewport ${viewportWidth}`);
+  assert.equal(await alice.locator("#status, .sync-status, .status").count(), 0);
   await expectText(created, "First Room");
   await expectText(created, createdLogin);
   await alice.waitForFunction(() => {
@@ -104,6 +110,12 @@ try {
       inspector.querySelector(".inspector-actions")?.textContent.includes("Mica inspect")
     );
   });
+  await alice.waitForFunction(() => {
+    const inspector = document.querySelector("#inspector");
+    return (
+      inspector?.classList.contains("inspect-flash-even") || inspector?.classList.contains("inspect-flash-odd")
+    );
+  });
   await alice.locator(".retrieval-action .retrieval-button").click();
   await alice.waitForFunction(() => {
     const panel = document.querySelector(".retrieval-panel");
@@ -122,7 +134,9 @@ try {
     const narrative = document.querySelector("#narrative");
     return (
       narrative?.dataset.syncFollow === "bottom" &&
-      narrative.querySelector(".narrative-count")?.textContent.includes("events") &&
+      !narrative.querySelector(".narrative-count") &&
+      !narrative.querySelector(".event-seq") &&
+      !narrative.textContent.includes(`> ${line}`) &&
       narrative.querySelector(".event-line.speech .event-kind")?.textContent === "speech" &&
       narrative.querySelector(".event-line.speech .actor-entity")?.textContent === "Alice" &&
       narrative.querySelector(".event-line.speech .event-quote")?.textContent &&
@@ -175,6 +189,10 @@ try {
   console.log("MUD browser smoke passed");
 } finally {
   await browser.close();
+}
+
+async function expectText(page, text) {
+  await page.waitForFunction((expected) => document.body?.textContent.includes(expected), text);
 }
 
 async function signIn(page, login, password) {

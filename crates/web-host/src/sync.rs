@@ -1145,21 +1145,22 @@ fn route_driver_event(
 ) -> bool {
     match event {
         DriverEvent::Effect(effect) => {
-            let session = sessions
+            if let Some(session) = sessions
                 .lock()
                 .unwrap()
                 .values()
                 .find(|session| session.endpoint == effect.target)
-                .cloned();
-            let Some(session) = session else {
-                return false;
-            };
-            if let Some(envelope) = sync_envelope_from_value(session.session_id, &effect.value) {
+                .cloned()
+                && let Some(envelope) = sync_envelope_from_value(session.session_id, &effect.value)
+            {
                 let _ = session.output.send_sync_envelope(envelope);
             }
             true
         }
-        DriverEvent::TaskCompleted { task_id, .. } => complete_pending_sync_task(sessions, task_id),
+        DriverEvent::TaskCompleted { task_id, .. } => {
+            let _ = complete_pending_sync_task(sessions, task_id);
+            true
+        }
         DriverEvent::TaskAborted { task_id, .. } | DriverEvent::TaskFailed { task_id, .. } => {
             complete_pending_sync_task(sessions, task_id)
         }
@@ -1387,39 +1388,51 @@ mod tests {
             return Err("snapshot did not contain the MUD world view".to_owned());
         }
 
-        post_sync_input(
-            addr,
-            encoded_sync_envelope(
-                SyncEnvelope {
-                    kind: SyncMessageKind::HaveView,
-                    session_id,
-                    view_id: 21,
-                    client_revision: snapshot.server_revision,
-                    client_signature: snapshot.server_signature,
-                    server_revision: snapshot.server_revision,
-                    server_signature: snapshot.server_signature,
-                    payload: dom_event_payload_json(&DomEventPayload {
+        let mut current = snapshot;
+        let mut command_delta = None;
+        for _ in 0..2 {
+            post_sync_input(
+                addr,
+                encoded_sync_envelope(
+                    SyncEnvelope {
+                        kind: SyncMessageKind::HaveView,
                         session_id,
                         view_id: 21,
-                        revision: snapshot.server_revision,
-                        signature: snapshot.server_signature,
-                        event: "submit".to_owned(),
-                        target: "mud-command".to_owned(),
-                        action: "mud_command".to_owned(),
-                        fields: BTreeMap::from([("text".to_owned(), "look coin".to_owned())]),
-                    }),
-                }
-                .as_ref(),
-            ),
-        )?;
-        let command_delta = read_next_sync_envelope(&mut stream)?;
+                        client_revision: current.server_revision,
+                        client_signature: current.server_signature,
+                        server_revision: current.server_revision,
+                        server_signature: current.server_signature,
+                        payload: dom_event_payload_json(&DomEventPayload {
+                            session_id,
+                            view_id: 21,
+                            revision: current.server_revision,
+                            signature: current.server_signature,
+                            event: "submit".to_owned(),
+                            target: "mud-command".to_owned(),
+                            action: "mud_command".to_owned(),
+                            fields: BTreeMap::from([("text".to_owned(), "look coin".to_owned())]),
+                        }),
+                    }
+                    .as_ref(),
+                ),
+            )?;
+            let envelope = read_next_sync_envelope(&mut stream)?;
+            if envelope.kind == SyncMessageKind::ViewSnapshot {
+                current = envelope;
+            } else {
+                command_delta = Some(envelope);
+                break;
+            }
+        }
+        let command_delta = command_delta
+            .ok_or_else(|| "expected command delta after recovery snapshot".to_owned())?;
         if command_delta.kind != SyncMessageKind::ViewDelta {
             return Err(format!(
                 "expected command delta, got {:?}",
                 command_delta.kind
             ));
         }
-        if command_delta.server_revision <= snapshot.server_revision {
+        if command_delta.server_revision <= current.server_revision {
             return Err("command delta did not advance the server revision".to_owned());
         }
         let command_payload: serde_json::Value = serde_json::from_slice(&command_delta.payload)
@@ -1456,37 +1469,48 @@ mod tests {
             return Err(format!("expected snapshot, got {:?}", snapshot.kind));
         }
 
-        post_sync_input(
-            addr,
-            encoded_sync_envelope(
-                SyncEnvelope {
-                    kind: SyncMessageKind::HaveView,
-                    session_id,
-                    view_id: 21,
-                    client_revision: snapshot.server_revision,
-                    client_signature: snapshot.server_signature,
-                    server_revision: snapshot.server_revision,
-                    server_signature: snapshot.server_signature,
-                    payload: dom_event_payload_json(&DomEventPayload {
+        let mut current = snapshot;
+        let mut ack = None;
+        for _ in 0..2 {
+            post_sync_input(
+                addr,
+                encoded_sync_envelope(
+                    SyncEnvelope {
+                        kind: SyncMessageKind::HaveView,
                         session_id,
                         view_id: 21,
-                        revision: snapshot.server_revision,
-                        signature: snapshot.server_signature,
-                        event: "submit".to_owned(),
-                        target: "noop".to_owned(),
-                        action: "does_not_exist".to_owned(),
-                        fields: BTreeMap::new(),
-                    }),
-                }
-                .as_ref(),
-            ),
-        )?;
-        let ack = read_next_sync_envelope(&mut stream)?;
+                        client_revision: current.server_revision,
+                        client_signature: current.server_signature,
+                        server_revision: current.server_revision,
+                        server_signature: current.server_signature,
+                        payload: dom_event_payload_json(&DomEventPayload {
+                            session_id,
+                            view_id: 21,
+                            revision: current.server_revision,
+                            signature: current.server_signature,
+                            event: "submit".to_owned(),
+                            target: "noop".to_owned(),
+                            action: "does_not_exist".to_owned(),
+                            fields: BTreeMap::new(),
+                        }),
+                    }
+                    .as_ref(),
+                ),
+            )?;
+            let envelope = read_next_sync_envelope(&mut stream)?;
+            if envelope.kind == SyncMessageKind::ViewSnapshot {
+                current = envelope;
+            } else {
+                ack = Some(envelope);
+                break;
+            }
+        }
+        let ack = ack.ok_or_else(|| "expected no-op ack after recovery snapshot".to_owned())?;
         if ack.kind != SyncMessageKind::ViewDelta {
             return Err(format!("expected no-op delta ack, got {:?}", ack.kind));
         }
-        if ack.server_revision != snapshot.server_revision
-            || ack.server_signature != snapshot.server_signature
+        if ack.server_revision != current.server_revision
+            || ack.server_signature != current.server_signature
         {
             return Err("no-op delta ack did not preserve rendered revision".to_owned());
         }

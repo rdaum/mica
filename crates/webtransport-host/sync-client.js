@@ -1482,7 +1482,9 @@ export function bootstrapServerRenderedSync(mount, status) {
   const api = { client: null, state };
 
   function setStatus(text) {
-    status.textContent = text;
+    if (status) {
+      status.textContent = text;
+    }
   }
 
   function connectionFailureText(error) {

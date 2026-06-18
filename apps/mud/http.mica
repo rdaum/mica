@@ -127,10 +127,8 @@ verb http/document(view)
     <title>Mica MUD</title>
     <style>{dom_raw(string_concat(http/base_style(), http/login_style(), http/presence_style(), http/narrative_style()))}</style>
   </head>
-  let status = dom <div id="status" class="sync-status">Synced revision {to_literal(snapshot[:revision])}</div>
   let body = dom <body>
     {mount}
-    {status}
     <script type="module">{dom_raw(http/bootstrap_script())}</script>
   </body>
   return to_xml([dom_raw("<!doctype html>"), dom <html>{head}{body}</html>])
