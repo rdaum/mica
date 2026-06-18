@@ -84,9 +84,14 @@ filein_args=()
 for filein in "${fileins[@]}"; do
   filein_args+=(--filein "${filein}")
 done
+startup_source_args=()
+if [[ -n "${MICA_WT_STARTUP_SOURCE:-}" ]]; then
+  startup_source_args+=(--startup-source "${MICA_WT_STARTUP_SOURCE}")
+fi
 
 cargo run ${MICA_WT_BUILD_FLAGS:-} --bin mica-daemon -- \
   "${filein_args[@]}" \
+  "${startup_source_args[@]}" \
   --embedding-provider "${embedding_provider}" \
   --web-bind "${http_host}:${http_port}" \
   --webtransport-bind "${wt_bind}" \

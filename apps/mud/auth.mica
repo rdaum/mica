@@ -1,0 +1,76 @@
+// Authentication relations and login policy for the browser MUD app.
+
+make_identity(:mud/auth_guest)
+make_identity(:mud/config_local_password_auth)
+make_identity(:mud/config_github_auth)
+make_identity(:mud/user_local_alice)
+make_identity(:mud/user_local_bob)
+
+make_relation(:mud/AuthSession, 1)
+make_functional_relation(:mud/SessionUser, 2, [0])
+make_functional_relation(:mud/SessionActor, 2, [0])
+make_functional_relation(:mud/SessionProvider, 2, [0])
+make_functional_relation(:mud/SessionProviderSub, 2, [0])
+make_functional_relation(:mud/SessionIssuedAt, 2, [0])
+make_functional_relation(:mud/SessionExpiresAt, 2, [0])
+make_functional_relation(:mud/SessionRevokedAt, 2, [0])
+make_functional_relation(:mud/SessionLastSeenAt, 2, [0])
+
+make_relation(:mud/User, 1)
+make_functional_relation(:mud/UserExternalIdentity, 3, [0, 1])
+make_relation(:mud/UserProvider, 2)
+make_functional_relation(:mud/UserLogin, 2, [0])
+make_relation(:mud/UserRole, 2)
+make_functional_relation(:mud/LocalPasswordHash, 2, [0])
+make_relation(:mud/Person, 1)
+make_relation(:mud/UserPerson, 2)
+make_functional_relation(:mud/DefaultUserPerson, 2, [0])
+make_functional_relation(:mud/DisplayName, 2, [0])
+make_functional_relation(:mud/Description, 2, [0])
+make_functional_relation(:mud/RuntimeConfig, 2, [0])
+
+assert mud/UserExternalIdentity(:local, "alice", #mud/user_local_alice)
+assert mud/UserExternalIdentity(:local, "bob", #mud/user_local_bob)
+assert mud/DefaultUserPerson(#mud/user_local_alice, #alice)
+assert mud/DefaultUserPerson(#mud/user_local_bob, #bob)
+assert mud/UserPerson(#mud/user_local_alice, #alice)
+assert mud/UserPerson(#mud/user_local_bob, #bob)
+
+Delegates(person, #player, 0) :-
+  mud/Person(person)
+
+Name(person, name) :-
+  mud/Person(person),
+  mud/DisplayName(person, name)
+
+Description(person, description) :-
+  mud/Person(person),
+  mud/Description(person, description)
+
+ProperNoun(person) :-
+  mud/Person(person)
+
+assert CanRead(#mud/auth_guest, :HttpRequest)
+assert CanRead(#mud/auth_guest, :RequestMethod)
+assert CanRead(#mud/auth_guest, :RequestPath)
+assert CanRead(#mud/auth_guest, :RequestVersion)
+assert CanRead(#mud/auth_guest, :RequestPrincipal)
+assert CanRead(#mud/auth_guest, :RequestActor)
+assert CanRead(#mud/auth_guest, :RequestHeader)
+assert CanRead(#mud/auth_guest, :RequestBody)
+assert CanRead(#mud/auth_guest, :mud/RuntimeConfig)
+assert CanInvoke(#mud/auth_guest, :http_request)
+assert CanInvoke(#mud/auth_guest, :http_login_document)
+assert CanInvoke(#mud/auth_guest, :http_login_style)
+assert CanInvoke(#mud/auth_guest, :http_response)
+assert CanInvoke(#mud/auth_guest, :http_html)
+assert CanInvoke(#mud/auth_guest, :http_text)
+assert CanInvoke(#mud/auth_guest, :dom_text)
+assert CanInvoke(#mud/auth_guest, :dom_element)
+assert CanInvoke(#mud/auth_guest, :dom_raw)
+assert CanInvoke(#mud/auth_guest, :to_xml)
+assert CanInvoke(#mud/auth_guest, :string_concat)
+assert CanInvoke(#mud/auth_guest, :string_len)
+assert CanInvoke(#mud/auth_guest, :string_slice)
+assert CanInvoke(#mud/auth_guest, :string_contains)
+assert CanInvoke(#mud/auth_guest, :string_starts_with)

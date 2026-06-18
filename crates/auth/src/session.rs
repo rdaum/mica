@@ -162,6 +162,23 @@ pub struct LocalAuthenticatedUser {
     pub login: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum LocalUserCreateError {
+    AlreadyExists(String),
+    Store(String),
+}
+
+impl std::fmt::Display for LocalUserCreateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyExists(login) => write!(f, "local user {login:?} already exists"),
+            Self::Store(error) => f.write_str(error),
+        }
+    }
+}
+
+impl std::error::Error for LocalUserCreateError {}
+
 impl MicaSessionStore {
     pub fn new(driver: Arc<CompioTaskDriver>, schema: AuthSchema) -> Self {
         Self { driver, schema }
@@ -429,16 +446,25 @@ return "{escaped_user_symbol}"
             r#"
 let user = make_identity(to_symbol("{escaped_user_id}"))
 let person_symbol = to_symbol("{escaped_person_symbol}")
-let person = make_identity(person_symbol)
-assert {person}(person)
-{user_person}(user, person) || assert {user_person}(user, person)
 let current_default = one {default_user_person}(user, ?person)
-current_default != nothing || assert {default_user_person}(user, person)
-retract {display_name}(person, _)
-assert {display_name}(person, "{escaped_display_name}")
-retract {description}(person, _)
-assert {description}(person, "{escaped_display_name}, present through authenticated login.")
-return "{escaped_person_symbol}"
+let actor = current_default
+let actor_symbol = ""
+if current_default != nothing
+  actor_symbol = string_slice(to_literal(current_default), 1, string_len(to_literal(current_default)))
+else
+  let person = make_identity(person_symbol)
+  assert {person}(person)
+  {user_person}(user, person) || assert {user_person}(user, person)
+  assert {default_user_person}(user, person)
+  actor = person
+  actor_symbol = "{escaped_person_symbol}"
+end
+{user_person}(user, actor) || assert {user_person}(user, actor)
+retract {display_name}(actor, _)
+assert {display_name}(actor, "{escaped_display_name}")
+retract {description}(actor, _)
+assert {description}(actor, "{escaped_display_name}, present through authenticated login.")
+return actor_symbol
 "#,
             person = schema.person,
             user_person = schema.user_person,
@@ -472,8 +498,39 @@ return "{escaped_person_symbol}"
         login: &str,
         password: &str,
         display_name: &str,
+    ) -> Result<LocalAuthenticatedUser, LocalUserCreateError> {
+        let provider_sub = normalize_local_login(login).map_err(LocalUserCreateError::Store)?;
+        if self
+            .lookup_local_user_id(&provider_sub)
+            .await
+            .map_err(LocalUserCreateError::Store)?
+            .is_some()
+        {
+            return Err(LocalUserCreateError::AlreadyExists(provider_sub));
+        }
+        self.upsert_local_user_with_provider_sub(login, password, display_name, &provider_sub)
+            .await
+            .map_err(LocalUserCreateError::Store)
+    }
+
+    pub async fn upsert_local_user(
+        &self,
+        login: &str,
+        password: &str,
+        display_name: &str,
     ) -> Result<LocalAuthenticatedUser, String> {
         let provider_sub = normalize_local_login(login)?;
+        self.upsert_local_user_with_provider_sub(login, password, display_name, &provider_sub)
+            .await
+    }
+
+    async fn upsert_local_user_with_provider_sub(
+        &self,
+        login: &str,
+        password: &str,
+        display_name: &str,
+        provider_sub: &str,
+    ) -> Result<LocalAuthenticatedUser, String> {
         let user_id = self
             .ensure_user_exists(login, "local", &provider_sub)
             .await?;
@@ -485,9 +542,45 @@ return "{escaped_person_symbol}"
             .await?;
         Ok(LocalAuthenticatedUser {
             user_id,
-            provider_sub,
+            provider_sub: provider_sub.to_owned(),
             login: login.to_owned(),
         })
+    }
+
+    async fn lookup_local_user_id(&self, provider_sub: &str) -> Result<Option<String>, String> {
+        let schema = &self.schema;
+        let escaped_provider_sub = mica_escape(provider_sub);
+        let source = format!(
+            r#"
+let user = one {user_external_identity}(:local, "{escaped_provider_sub}", ?user)
+user != nothing || return nothing
+return string_slice(to_literal(user), 1, string_len(to_literal(user)))
+"#,
+            user_external_identity = schema.user_external_identity,
+            escaped_provider_sub = escaped_provider_sub,
+        );
+        let report = self
+            .driver
+            .submit_root_source_report(source)
+            .await
+            .map_err(|e| format!("failed to lookup local user: {e}"))?;
+        match report.outcome {
+            mica_runtime::TaskOutcome::Complete { value, .. } => {
+                if value == Value::nothing() {
+                    return Ok(None);
+                }
+                value
+                    .with_str(str::to_owned)
+                    .map(Some)
+                    .ok_or_else(|| "lookup local user returned non-string identity name".to_owned())
+            }
+            mica_runtime::TaskOutcome::Aborted { error, .. } => {
+                Err(format!("lookup local user aborted: {error}"))
+            }
+            mica_runtime::TaskOutcome::Suspended { .. } => {
+                Err("lookup local user suspended unexpectedly".to_owned())
+            }
+        }
     }
 
     pub async fn grant_user_role(&self, user_id: &str, role: &str) -> Result<(), String> {
@@ -881,6 +974,41 @@ return true
     }
 
     #[test]
+    fn create_local_user_rejects_existing_login() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut runner = SourceRunner::new_empty();
+            runner.run_filein(session_schema()).unwrap();
+            let store = source_store(runner);
+
+            store
+                .create_local_user("Alice", "correct horse", "Alice")
+                .await
+                .unwrap();
+            let duplicate = store
+                .create_local_user("alice", "different horse", "Alice")
+                .await
+                .unwrap_err();
+            assert_eq!(
+                duplicate,
+                LocalUserCreateError::AlreadyExists("alice".to_owned())
+            );
+
+            let updated = store
+                .upsert_local_user("alice", "different horse", "Alice")
+                .await
+                .unwrap();
+            assert_eq!(updated.user_id, "source/user_local_alice");
+            assert!(
+                store
+                    .authenticate_local_user("alice", "different horse")
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        });
+    }
+
+    #[test]
     fn schema_namespace_controls_relation_and_identity_names() {
         compio::runtime::Runtime::new().unwrap().block_on(async {
             let mut runner = SourceRunner::new_empty();
@@ -943,6 +1071,86 @@ return true
             assert!(matches!(
                 report.outcome,
                 mica_runtime::TaskOutcome::Complete { value, .. } if value == Value::from(true)
+            ));
+        });
+    }
+
+    #[test]
+    fn ensure_user_person_returns_configured_default_person() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut runner = SourceRunner::new_empty();
+            runner
+                .run_filein(
+                    r#"
+make_identity(:alice)
+make_relation(:mud/AuthSession, 1)
+make_functional_relation(:mud/SessionUser, 2, [0])
+make_functional_relation(:mud/SessionActor, 2, [0])
+make_functional_relation(:mud/SessionProvider, 2, [0])
+make_functional_relation(:mud/SessionProviderSub, 2, [0])
+make_functional_relation(:mud/SessionIssuedAt, 2, [0])
+make_functional_relation(:mud/SessionExpiresAt, 2, [0])
+make_functional_relation(:mud/SessionRevokedAt, 2, [0])
+make_functional_relation(:mud/SessionLastSeenAt, 2, [0])
+make_relation(:mud/User, 1)
+make_functional_relation(:mud/UserExternalIdentity, 3, [0, 1])
+make_relation(:mud/UserProvider, 2)
+make_functional_relation(:mud/UserLogin, 2, [0])
+make_relation(:mud/UserRole, 2)
+make_functional_relation(:mud/LocalPasswordHash, 2, [0])
+make_relation(:mud/Person, 1)
+make_relation(:mud/UserPerson, 2)
+make_functional_relation(:mud/DefaultUserPerson, 2, [0])
+make_functional_relation(:mud/DisplayName, 2, [0])
+make_functional_relation(:mud/Description, 2, [0])
+"#,
+                )
+                .unwrap();
+            let store = MicaSessionStore::new(
+                Arc::new(CompioTaskDriver::spawn(runner).unwrap()),
+                AuthSchema::namespaced("mud"),
+            );
+
+            let user_id = store
+                .ensure_user_exists("alice", "local", "alice")
+                .await
+                .unwrap();
+            store
+                .driver
+                .submit_root_source_report(
+                    r#"
+assert mud/DefaultUserPerson(#mud/user_local_alice, #alice)
+"#
+                    .to_owned(),
+                )
+                .await
+                .unwrap();
+            let person_id = store
+                .ensure_user_person(&user_id, "local", "alice", "Alice")
+                .await
+                .unwrap();
+
+            assert_eq!(person_id, "alice");
+            let report = store
+                .driver
+                .submit_root_source_report(
+                    r##"
+mud/DisplayName(#alice, "Alice") || return false
+mud/UserPerson(#mud/user_local_alice, #alice) || return false
+let generated = from_literal("#mud/person_local_alice")
+generated != nothing && mud/UserPerson(#mud/user_local_alice, generated) && return false
+return true
+"##
+                    .to_owned(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                report.outcome,
+                mica_runtime::TaskOutcome::Complete {
+                    value,
+                    ..
+                } if value == Value::bool(true)
             ));
         });
     }

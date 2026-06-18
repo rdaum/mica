@@ -45,21 +45,6 @@ verb ui/handle_sync_action(source @ #ui/load_older_events_action<_>, endpoint, s
   return true
 end
 
-verb ui/handle_sync_action(source @ #ui/login_action<_>, endpoint, session, view, event, target, fields)
-  if ui/View(view) == false || event != "submit"
-    return false
-  end
-
-  let selected = ui/login_actor(fields[:text])
-  if selected == nothing
-    return false
-  end
-
-  endpoint().session/actor = selected
-  assume_actor(selected)
-  return true
-end
-
 verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, view, event, target, fields)
   if ui/View(view) == false || event != "submit"
     return false

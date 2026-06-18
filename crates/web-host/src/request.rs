@@ -67,6 +67,9 @@ pub(crate) async fn handle_in_process_request(
         if let Some(response) = auth.handle_auth_login_local(request).await {
             return response;
         }
+        if let Some(response) = auth.handle_auth_create_local(request).await {
+            return response;
+        }
         if let Some(response) = auth.handle_auth_logout(request).await {
             return response;
         }
@@ -134,7 +137,11 @@ pub(crate) async fn handle_in_process_request(
                             path = %request.path,
                             "clearing invalid session cookie and redirecting to login"
                         );
-                        return crate::auth::clear_session_login_redirect_response(&request.path);
+                        return crate::auth::clear_session_login_redirect_response(
+                            &request.path,
+                            &auth.config.cookie_name,
+                            auth.config.cookie_secure,
+                        );
                     }
                     return HttpResponse::new(
                         401,

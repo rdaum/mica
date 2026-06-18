@@ -28,9 +28,9 @@ Run the DOM-synced MUD web app:
 scripts/mud.sh
 ```
 
-Open the printed `/mud` URL in a browser. The initial document is a
-server-rendered login view; after choosing Alice or Bob, WebTransport DOM sync
-replaces it with the server-owned room view and command input.
+Open the printed `/mud` URL in a browser. The wrapper enables local password
+auth with seeded Alice and Bob users; after sign-in, DOM sync renders the
+server-owned room view and command input.
 
 The MUD app is described in more detail in [`mud/README.md`](./mud/README.md).
 

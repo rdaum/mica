@@ -11,6 +11,7 @@ pub struct AuthConfig {
     pub local_login_return_path: String,
     pub session_ttl: Duration,
     pub cookie_name: String,
+    pub cookie_secure: bool,
     pub local_password_auth_enabled: bool,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
@@ -93,12 +94,16 @@ fn parse_login_lists(values: impl IntoIterator<Item = Option<String>>) -> Vec<St
 }
 
 fn parse_bool_env(name: &str) -> bool {
+    parse_bool_env_default(name, false)
+}
+
+fn parse_bool_env_default(name: &str, default: bool) -> bool {
     match std::env::var(name) {
         Ok(value) => matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         ),
-        Err(_) => false,
+        Err(_) => default,
     }
 }
 
@@ -190,7 +195,11 @@ impl AuthConfig {
             login_actor: parse_string_env("MICA_AUTH_LOGIN_ACTOR", "auth/guest"),
             local_login_return_path: parse_return_path()?,
             session_ttl: Duration::from_secs(ttl_secs),
-            cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
+            cookie_name: parse_string_env(
+                "MICA_AUTH_COOKIE_NAME",
+                crate::cookie::SESSION_COOKIE_NAME,
+            ),
+            cookie_secure: parse_bool_env_default("MICA_AUTH_COOKIE_SECURE", true),
             local_password_auth_enabled: parse_bool_env("MICA_AUTH_LOCAL_PASSWORD"),
             github_client_id: std::env::var("MICA_AUTH_GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("MICA_AUTH_GITHUB_CLIENT_SECRET").ok(),
@@ -216,6 +225,7 @@ impl AuthConfig {
             local_login_return_path: "/".to_owned(),
             session_ttl: Duration::from_secs(86400),
             cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
+            cookie_secure: true,
             local_password_auth_enabled: false,
             github_client_id: None,
             github_client_secret: None,
@@ -235,6 +245,7 @@ impl AuthConfig {
             local_login_return_path: "/".to_owned(),
             session_ttl,
             cookie_name: crate::cookie::SESSION_COOKIE_NAME.to_owned(),
+            cookie_secure: true,
             local_password_auth_enabled: false,
             github_client_id: None,
             github_client_secret: None,

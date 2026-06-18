@@ -31,18 +31,27 @@ const browser = await browserType.launch({
 });
 
 try {
-  const context = await browser.newContext();
-  const alice = await context.newPage();
-  const bob = await context.newPage();
+  const aliceContext = await browser.newContext();
+  const bobContext = await browser.newContext();
+  const createdContext = await browser.newContext();
+  const alice = await aliceContext.newPage();
+  const bob = await bobContext.newPage();
+  const created = await createdContext.newPage();
 
   await alice.goto(url);
   await bob.goto(url);
+  await created.goto(url);
 
-  await alice.locator("#mud-login-alice button").click();
-  await bob.locator("#mud-login-bob button").click();
+  await signIn(alice, "alice", "alice-pass");
+  await signIn(bob, "bob", "bob-pass");
+  const createdLogin = `player-${Date.now()}`;
+  await createPlayer(created, createdLogin, "player-pass");
 
   await alice.locator("#room").waitFor();
   await bob.locator("#room").waitFor();
+  await created.locator("#room").waitFor();
+  await expectText(created, "First Room");
+  await expectText(created, createdLogin);
   await alice.waitForFunction(() => {
     const room = document.querySelector("#room");
     return (
@@ -166,4 +175,33 @@ try {
   console.log("MUD browser smoke passed");
 } finally {
   await browser.close();
+}
+
+async function signIn(page, login, password) {
+  const form = page.locator("form.local-signin");
+  if (await form.count() === 0) {
+    return;
+  }
+  await form.locator("input[name='login']").fill(login);
+  await form.locator("input[name='password']").fill(password);
+  await Promise.all([
+    page.waitForURL(/\/mud(?:[?#].*)?$/),
+    form.locator("button[type='submit']").click(),
+  ]);
+}
+
+async function createPlayer(page, login, password) {
+  const form = page.locator("form.local-signin");
+  if (await form.count() === 0) {
+    return;
+  }
+  await page.locator("a.auth-tab", { hasText: "Create Player" }).click();
+  const createForm = page.locator("form.local-signin");
+  await createForm.locator("input[name='login']").fill(login);
+  await createForm.locator("input[name='password']").fill(password);
+  await createForm.locator("input[name='confirm_password']").fill(password);
+  await Promise.all([
+    page.waitForURL(/\/mud(?:[?#].*)?$/),
+    createForm.locator("button[type='submit']").click(),
+  ]);
 }

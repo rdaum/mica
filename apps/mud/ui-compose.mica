@@ -29,25 +29,12 @@ verb ui/entity_action_node(id, entity, text, label, class)
   </form>
 end
 
-verb ui/login_choice_node(actor, name, initial, detail)
-  return dom <form id={string_concat("mud-login-", actor)} class="login-choice actor-card" data-sync-event="submit" data-sync-action="mud_login">
-    <input type="hidden" name="text" value={actor} />
-    <span class="actor-initial">{initial}</span>
-    <strong class="actor-name">{name}</strong>
-    <p class="actor-detail">{detail}</p>
-    <span class="actor-meta">Server-owned session view</span>
-    <button type="submit">{string_concat("Enter as ", name)}</button>
-  </form>
-end
-
-verb ui/login_view_node()
-  let alice = ui/login_choice_node("alice", "Alice", "A", "Starts in the first room with the brass coin, the box, and the suspicious red button.")
-  let bob = ui/login_choice_node("bob", "Bob", "B", "A second browser can enter as Bob and watch Alice's actions arrive as DOM-synced events.")
+verb ui/auth_required_node()
   return dom <main id="mud-root" class="mud-login">
     <section class="login-card">
       <h1>Mica MUD</h1>
-      <p class="lede">Choose a demo actor. No password yet; each browser session gets its own server-owned world view.</p>
-      <div class="login-choices">{alice}{bob}</div>
+      <p class="lede">Sign in to enter the world.</p>
+      <a class="login-link" href="/auth/login?return=%2Fmud">Open sign-in</a>
     </section>
   </main>
 end

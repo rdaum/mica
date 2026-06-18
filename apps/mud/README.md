@@ -13,10 +13,10 @@ relations and verbs, not privileged runtime records.
 
 Likewise, the UI itself is ordinary Mica source rather than a separate client
 application. UI verbs query world, session, and event relations, then return DOM
-node values. The sync adapter exposes a view revision and tree to the host; the
-host diffs that tree and sends patches to the browser. Browser interactions come
-back as declared sync events, which Mica handlers turn into relation updates and
-the next rendered revision.
+node values. Mica exposes a view revision and tree to the host; the host diffs
+that tree and sends patches to the browser. Browser interactions come back as
+declared sync events, which Mica handlers turn into relation updates and the next
+rendered revision.
 
 Together, the world model, command surface, event log, authority policy, and
 browser UI demonstrate a unified declarative, data-oriented application design.
@@ -46,6 +46,8 @@ browser UI demonstrate a unified declarative, data-oriented application design.
 
 - `core.mica`: world identities, relations, parser grammar, role policy, and
   command verbs.
+- `auth.mica`: MUD auth/session relations, pre-auth login actor policy, and
+  default local-user mappings for Alice and Bob.
 - `command-parser.mica`: parser support for turning command text into command
   invocations.
 - `event-substitutions.mica`: event text/template rendering support.
@@ -58,7 +60,7 @@ browser UI demonstrate a unified declarative, data-oriented application design.
   and login DOM composition.
 - `ui-narrative.mica`: event/narrative DOM composition and event-source-specific
   rendering.
-- `ui-actions.mica`: browser sync event adapter and delegated sync action
+- `ui-actions.mica`: browser sync event routing and delegated sync action
   handlers.
 - `http.mica`: `/mud` HTTP document route and transport-neutral sync mount.
 - `style.css`, `login.css`, `presence.css`, `narrative.css`: text assets loaded
@@ -75,6 +77,7 @@ cargo run --bin mica-daemon -- \
   --filein apps/shared/string.mica \
   --filein apps/shared/events.mica \
   --filein apps/mud/core.mica \
+  --filein apps/mud/auth.mica \
   --filein apps/mud/event-substitutions.mica \
   --filein apps/mud/command-parser.mica \
   --telnet-bind 127.0.0.1:7777
@@ -113,11 +116,10 @@ cargo run --bin mica-daemon -- \
   --web-bind 127.0.0.1:8080
 ```
 
-Open `http://127.0.0.1:8080/mud`. The page starts as a server-rendered login
-view, then the browser opens an SSE stream and sends sync envelopes back over
-ordinary HTTP `POST`s. Choosing Alice or Bob switches the view onto the
-server-owned world state without app code caring whether the transport is SSE
-or WebTransport.
+Open `http://127.0.0.1:8080/mud`. When auth is enabled, the host redirects to
+`/auth/login` first. After username/password or GitHub OAuth sign-in, the
+authenticated actor drives the server-owned world view without app code caring
+whether the transport is SSE or WebTransport.
 
 ## WebTransport DOM Sync Fixture
 
@@ -129,10 +131,17 @@ scripts/mud.sh
 
 The wrapper starts `mica-daemon` with the explicit sync filein set needed by the
 browser app: sync host support, shared string/event libraries, the MUD world and
-parser, DOM sync support, MUD UI/session/action fileins, and the `/mud` HTTP
-document route.
+parser, auth/session relations, DOM sync support, MUD UI/session/action fileins,
+and the `/mud` HTTP document route.
 
-Open the printed `/mud` URL. The page starts as a server-rendered login view.
+Open the printed `/mud` URL. Local password auth is enabled by default with
+seeded users:
+
+```text
+alice / alice-pass
+bob / bob-pass
+```
+
 To force the shared bootstrap onto WebTransport, open the printed URL with
 `transport=webtransport`, the WebTransport `url`, and the certificate hash:
 
@@ -140,9 +149,19 @@ To force the shared bootstrap onto WebTransport, open the printed URL with
 /mud?transport=webtransport&url=https://127.0.0.1:4433/view&certHash=...
 ```
 
-After choosing Alice or Bob, the browser view is driven by the same DOM sync
-contract over WebTransport: Mica renders the DOM tree, the host diffs it, and
-the browser applies patches.
+After sign-in, the browser view is driven by the same DOM sync contract over
+WebTransport: Mica renders the DOM tree, the host diffs it, and the browser
+applies patches.
+
+For GitHub OAuth, set the current Mica auth variables and use:
+
+```sh
+export MICA_AUTH_GITHUB_CLIENT_ID=...
+export MICA_AUTH_GITHUB_CLIENT_SECRET=...
+export MICA_AUTH_ADMIN_GITHUB_LOGIN=your-login
+export MICA_AUTH_GITHUB_ALLOWED_LOGINS=your-login
+scripts/mud-github-auth.sh
+```
 
 The smoke wrapper is quiet by default. Set `MICA_MUD_SMOKE_TRACE=1` to enable
 sync, driver, task, and VM host tracing. Set `MICA_WT_POLL_MS=0` to disable the

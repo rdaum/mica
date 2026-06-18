@@ -7,7 +7,9 @@ pub mod session;
 
 pub use config::{AuthConfig, AuthConfigError};
 pub use cookie::{
-    SESSION_COOKIE_NAME, build_clear_session_cookie, build_session_cookie, extract_session_cookie,
+    INSECURE_SESSION_COOKIE_NAME, SESSION_COOKIE_NAME, build_clear_session_cookie,
+    build_clear_session_cookie_with_options, build_session_cookie,
+    build_session_cookie_with_options, extract_session_cookie, extract_session_cookie_named,
 };
 pub use oauth::{
     GithubOAuthConfig, GithubUserInfo, OAuthError, build_authorization_url,
@@ -21,5 +23,6 @@ pub use paseto::{
 };
 pub use password::{PasswordError, hash_password, verify_password};
 pub use session::{
-    AuthRoleSymbols, AuthSchema, LocalAuthenticatedUser, MicaSessionStore, SessionRecord,
+    AuthRoleSymbols, AuthSchema, LocalAuthenticatedUser, LocalUserCreateError, MicaSessionStore,
+    SessionRecord,
 };

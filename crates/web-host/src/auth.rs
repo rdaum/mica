@@ -1,9 +1,10 @@
 use crate::codec::HttpResponse;
 use mica_auth::{
-    AuthConfig, MicaSessionStore, SessionRecord, build_authorization_url_with_pkce,
-    build_clear_session_cookie, build_session_cookie, check_org_membership, compute_pkce_challenge,
+    AuthConfig, LocalAuthenticatedUser, LocalUserCreateError, MicaSessionStore, SessionRecord,
+    build_authorization_url_with_pkce, build_clear_session_cookie_with_options,
+    build_session_cookie_with_options, check_org_membership, compute_pkce_challenge,
     decode_session_token, encode_session_token, exchange_code_for_token_with_pkce,
-    extract_session_cookie, generate_oauth_state, generate_pkce_verifier, get_user_info,
+    extract_session_cookie_named, generate_oauth_state, generate_pkce_verifier, get_user_info,
     now_rfc3339, random_session_id,
 };
 use std::collections::HashMap;
@@ -87,7 +88,8 @@ impl AuthSubsystem {
             return Ok(None);
         };
 
-        let Some(token) = extract_session_cookie(cookie_header) else {
+        let Some(token) = extract_session_cookie_named(cookie_header, &self.config.cookie_name)
+        else {
             return Ok(None);
         };
 
@@ -390,7 +392,11 @@ impl AuthSubsystem {
             }
         };
 
-        let cookie = build_session_cookie(&token);
+        let cookie = build_session_cookie_with_options(
+            &self.config.cookie_name,
+            &token,
+            self.config.cookie_secure,
+        );
 
         Some(
             HttpResponse::new(302, "Found", Vec::new())
@@ -463,6 +469,93 @@ impl AuthSubsystem {
             ));
         };
 
+        Some(self.local_session_response(local_user, return_path).await)
+    }
+
+    pub async fn handle_auth_create_local(
+        &self,
+        request: &crate::codec::HttpRequest,
+    ) -> Option<HttpResponse> {
+        if request.method != "POST" || strip_query(&request.path) != "/auth/create" {
+            return None;
+        }
+        if !self.config.local_password_auth_enabled {
+            return Some(HttpResponse::new(
+                404,
+                "Not Found",
+                b"Local password auth is not enabled".to_vec(),
+            ));
+        }
+
+        let form = match parse_urlencoded_form(&request.body) {
+            Ok(form) => form,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to parse local create form");
+                return Some(HttpResponse::new(
+                    400,
+                    "Bad Request",
+                    b"Invalid create form".to_vec(),
+                ));
+            }
+        };
+        let login = form.get("login").map(String::as_str).unwrap_or("").trim();
+        let password = form.get("password").map(String::as_str).unwrap_or("");
+        let confirm_password = form
+            .get("confirm_password")
+            .map(String::as_str)
+            .unwrap_or("");
+        let return_path = validate_return_path(
+            form.get("return")
+                .cloned()
+                .unwrap_or_else(|| self.config.local_login_return_path.clone()),
+        )
+        .unwrap_or_else(|| self.config.local_login_return_path.clone());
+        if login.is_empty() || password.is_empty() || confirm_password.is_empty() {
+            return Some(HttpResponse::new(
+                400,
+                "Bad Request",
+                b"Player name and password are required".to_vec(),
+            ));
+        }
+        if password != confirm_password {
+            return Some(HttpResponse::new(
+                400,
+                "Bad Request",
+                b"Passwords do not match".to_vec(),
+            ));
+        }
+
+        let local_user = match self
+            .session_store
+            .create_local_user(login, password, login)
+            .await
+        {
+            Ok(user) => user,
+            Err(LocalUserCreateError::AlreadyExists(_)) => {
+                return Some(HttpResponse::new(
+                    409,
+                    "Conflict",
+                    b"Player name is already taken".to_vec(),
+                ));
+            }
+            Err(LocalUserCreateError::Store(error)) => {
+                tracing::error!(error = %error, "failed to create local auth user");
+                return Some(HttpResponse::new(
+                    500,
+                    "Internal Server Error",
+                    b"Failed to create player".to_vec(),
+                ));
+            }
+        };
+
+        Some(self.local_session_response(local_user, return_path).await)
+    }
+
+    async fn local_session_response(
+        &self,
+        local_user: LocalAuthenticatedUser,
+        return_path: String,
+    ) -> HttpResponse {
         let actor_id = match self
             .session_store
             .ensure_user_person(
@@ -476,11 +569,11 @@ impl AuthSubsystem {
             Ok(actor_id) => actor_id,
             Err(error) => {
                 tracing::error!(error = %error, "failed to ensure local user person exists");
-                return Some(HttpResponse::new(
+                return HttpResponse::new(
                     500,
                     "Internal Server Error",
                     b"Failed to create user person".to_vec(),
-                ));
+                );
             }
         };
 
@@ -504,11 +597,11 @@ impl AuthSubsystem {
         };
         if let Err(error) = self.session_store.create_session(&record).await {
             tracing::error!(error = %error, "failed to create local auth session");
-            return Some(HttpResponse::new(
+            return HttpResponse::new(
                 500,
                 "Internal Server Error",
                 b"Failed to create session".to_vec(),
-            ));
+            );
         }
 
         let claims = mica_auth::SessionClaims {
@@ -526,18 +619,24 @@ impl AuthSubsystem {
             Ok(token) => token,
             Err(error) => {
                 tracing::error!(error = %error, "failed to encode local auth session token");
-                return Some(HttpResponse::new(
+                return HttpResponse::new(
                     500,
                     "Internal Server Error",
                     b"Failed to create session token".to_vec(),
-                ));
+                );
             }
         };
-        Some(
-            HttpResponse::new(302, "Found", Vec::new())
-                .with_header("Location", return_path.into_bytes())
-                .with_header("Set-Cookie", build_session_cookie(&token).into_bytes()),
-        )
+        HttpResponse::new(302, "Found", Vec::new())
+            .with_header("Location", return_path.into_bytes())
+            .with_header(
+                "Set-Cookie",
+                build_session_cookie_with_options(
+                    &self.config.cookie_name,
+                    &token,
+                    self.config.cookie_secure,
+                )
+                .into_bytes(),
+            )
     }
 
     pub async fn handle_auth_logout(
@@ -556,7 +655,9 @@ impl AuthSubsystem {
             .find(|h| h.name.eq_ignore_ascii_case("cookie"))
             .map(|h| std::str::from_utf8(&h.value).unwrap_or(""));
 
-        if let Some(token) = cookie_header.and_then(|h| extract_session_cookie(h)) {
+        if let Some(token) =
+            cookie_header.and_then(|h| extract_session_cookie_named(h, &self.config.cookie_name))
+        {
             if let Ok(claims) = decode_session_token(&self.config.keyring, &token) {
                 if let Err(e) = self.session_store.revoke_session(&claims.sid).await {
                     tracing::warn!(session_id = %claims.sid, error = %e, "failed to revoke session");
@@ -564,7 +665,10 @@ impl AuthSubsystem {
             }
         }
 
-        let clear_cookie = build_clear_session_cookie();
+        let clear_cookie = build_clear_session_cookie_with_options(
+            &self.config.cookie_name,
+            self.config.cookie_secure,
+        );
 
         Some(
             HttpResponse::new(302, "Found", Vec::new())
@@ -595,8 +699,12 @@ pub fn login_redirect_response(return_path: &str) -> HttpResponse {
     HttpResponse::new(302, "Found", Vec::new()).with_header("Location", location.into_bytes())
 }
 
-pub fn clear_session_login_redirect_response(return_path: &str) -> HttpResponse {
-    let clear_cookie = build_clear_session_cookie();
+pub fn clear_session_login_redirect_response(
+    return_path: &str,
+    cookie_name: &str,
+    cookie_secure: bool,
+) -> HttpResponse {
+    let clear_cookie = build_clear_session_cookie_with_options(cookie_name, cookie_secure);
     login_redirect_response(return_path).with_header("Set-Cookie", clear_cookie.into_bytes())
 }
 

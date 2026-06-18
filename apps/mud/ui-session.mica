@@ -1,6 +1,5 @@
-// Server-owned UI session state and sync adapter selectors for the MUD app.
+// Server-owned UI session state and sync action selectors for the MUD app.
 
-make_relation(:session/CanAssumeActor, 2)
 make_relation(:ui/View, 1)
 make_functional_relation(:ui/SyncAction, 2, [0])
 make_functional_relation(:session/Actor, 2, [0])
@@ -9,38 +8,30 @@ make_functional_relation(:session/NarrativeLimit, 2, [0])
 make_functional_relation(:session/Revision, 2, [0])
 
 make_identity(:ui/sync_action)
-make_identity(:ui/login_action)
 make_identity(:ui/inspect_action)
 make_identity(:ui/command_action)
 make_identity(:ui/load_older_events_action)
 
 assert ui/View(21)
-assert Delegates(#ui/login_action, #ui/sync_action, 0)
 assert Delegates(#ui/inspect_action, #ui/sync_action, 0)
 assert Delegates(#ui/command_action, #ui/sync_action, 0)
 assert Delegates(#ui/load_older_events_action, #ui/sync_action, 0)
-"mud_login".ui/syncAction = #ui/login_action
 "mud_inspect".ui/syncAction = #ui/inspect_action
 "mud_command".ui/syncAction = #ui/command_action
 "mud_load_older_events".ui/syncAction = #ui/load_older_events_action
 
-assert session/CanAssumeActor(#web, #alice)
-assert session/CanAssumeActor(#web, #bob)
-
 assert CanInvoke(#web, :sync_event)
 assert CanInvoke(#web, :sync_view_revision)
 assert CanInvoke(#web, :sync_view_tree)
-assert CanInvoke(#web, :ui/login_view_node)
-assert CanInvoke(#web, :ui/login_choice_node)
+assert CanInvoke(#web, :ui/auth_required_node)
 assert CanInvoke(#web, :ui/status_revision)
 assert CanInvoke(#web, :ui/current_actor)
 assert CanInvoke(#web, :ui/entity_from_literal)
-assert CanInvoke(#web, :ui/login_actor)
 assert CanInvoke(#web, :ui/actor_name)
 assert CanInvoke(#web, :event/next_seq)
 assert CanInvoke(#web, :event/record_text)
 assert CanInvoke(#web, :event/record_source)
-assert CanInvoke(#web, :assume_actor)
+assert CanInvoke(#web, :actor)
 assert CanInvoke(#web, :string_concat)
 assert CanInvoke(#web, :lower)
 assert CanInvoke(#web, :trim)
@@ -50,7 +41,6 @@ assert CanRead(#web, :session/Actor)
 assert CanRead(#web, :session/Inspect)
 assert CanRead(#web, :session/NarrativeLimit)
 assert CanRead(#web, :session/Revision)
-assert CanRead(#web, :session/CanAssumeActor)
 assert CanRead(#web, :Delegates)
 assert CanRead(#web, :Name)
 assert CanRead(#web, :event/Delivery)
@@ -78,19 +68,23 @@ CanEffect(#web) :-
   RoleCanEffect(#player)
 
 assert RoleCanInvoke(#player, :sync_event)
+assert RoleCanInvoke(#player, :sync_snapshot)
+assert RoleCanInvoke(#player, :sync_snapshot_payload)
+assert RoleCanInvoke(#player, :sync_snapshot_tree)
+assert RoleCanInvoke(#player, :sync_snapshot_signature)
+assert RoleCanInvoke(#player, :sync_mount_node)
 assert RoleCanInvoke(#player, :sync_view_revision)
 assert RoleCanInvoke(#player, :sync_view_tree)
 assert RoleCanInvoke(#player, :ui/status_revision)
 assert RoleCanInvoke(#player, :ui/bump_revision)
 assert RoleCanInvoke(#player, :ui/current_actor)
+assert RoleCanInvoke(#player, :ui/ensure_actor_location)
 assert RoleCanInvoke(#player, :ui/entity_from_literal)
-assert RoleCanInvoke(#player, :ui/login_actor)
 assert RoleCanInvoke(#player, :ui/actor_name)
 assert RoleCanInvoke(#player, :ui/direction_text)
-assert RoleCanInvoke(#player, :ui/login_choice_node)
+assert RoleCanInvoke(#player, :ui/auth_required_node)
 assert RoleCanInvoke(#player, :ui/command_form_node)
 assert RoleCanInvoke(#player, :ui/entity_action_node)
-assert RoleCanInvoke(#player, :ui/login_view_node)
 assert RoleCanInvoke(#player, :ui/world_view_node)
 assert RoleCanInvoke(#player, :ui/room_panel_node)
 assert RoleCanInvoke(#player, :ui/scene_summary_node)
@@ -133,23 +127,42 @@ assert RoleCanInvoke(#player, :ui/event_object_node)
 assert RoleCanInvoke(#player, :ui/event_verb)
 assert RoleCanInvoke(#player, :dom_text)
 assert RoleCanInvoke(#player, :dom_element)
+assert RoleCanInvoke(#player, :dom_raw)
 assert RoleCanInvoke(#player, :to_literal)
+assert RoleCanInvoke(#player, :to_xml)
 assert RoleCanInvoke(#player, :from_literal)
 assert RoleCanInvoke(#player, :string_concat)
 assert RoleCanInvoke(#player, :string_len)
 assert RoleCanInvoke(#player, :string_slice)
 assert RoleCanInvoke(#player, :lower)
 assert RoleCanInvoke(#player, :trim)
+assert RoleCanInvoke(#player, :actor)
 assert RoleCanInvoke(#player, :frob)
 assert RoleCanInvoke(#player, :ui/sync_action_source)
 assert RoleCanInvoke(#player, :ui/handle_sync_action)
-assert RoleCanRead(#player, :session/Actor)
+assert RoleCanInvoke(#player, :http_request)
+assert RoleCanInvoke(#player, :http/document)
+assert RoleCanInvoke(#player, :http_response)
+assert RoleCanInvoke(#player, :http_html)
+assert RoleCanInvoke(#player, :http/base_style)
+assert RoleCanInvoke(#player, :http/login_style)
+assert RoleCanInvoke(#player, :http/presence_style)
+assert RoleCanInvoke(#player, :http/narrative_style)
+assert RoleCanInvoke(#player, :http/bootstrap_script)
 assert RoleCanRead(#player, :session/Inspect)
 assert RoleCanRead(#player, :event/Source)
 assert RoleCanRead(#player, :session/NarrativeLimit)
 assert RoleCanRead(#player, :session/Revision)
 assert RoleCanRead(#player, :ui/View)
 assert RoleCanRead(#player, :ui/SyncAction)
+assert RoleCanRead(#player, :HttpRequest)
+assert RoleCanRead(#player, :RequestMethod)
+assert RoleCanRead(#player, :RequestPath)
+assert RoleCanRead(#player, :RequestVersion)
+assert RoleCanRead(#player, :RequestPrincipal)
+assert RoleCanRead(#player, :RequestActor)
+assert RoleCanRead(#player, :RequestHeader)
+assert RoleCanRead(#player, :RequestBody)
 assert RoleCanWrite(#player, :session/Inspect)
 assert RoleCanWrite(#player, :session/NarrativeLimit)
 assert RoleCanWrite(#player, :session/Revision)
@@ -178,7 +191,22 @@ verb ui/direction_text(direction)
 end
 
 verb ui/current_actor()
-  return endpoint().session/actor
+  let current = actor()
+  if current != nothing && Delegates(current, #player, 0)
+    return current
+  end
+
+  return nothing
+end
+
+verb ui/ensure_actor_location(actor @ #player)
+  let room = actor.locatedIn
+  if room == nothing
+    actor.locatedIn = #first_room
+    return #first_room
+  end
+
+  return room
 end
 
 verb ui/entity_from_literal(text)
@@ -236,17 +264,6 @@ verb ui/bump_revision(endpoint)
   return revision
 end
 
-verb ui/login_actor(name)
-  let normalized = lower(trim(name))
-  if normalized == "alice"
-    return #alice
-  elseif normalized == "bob"
-    return #bob
-  end
-
-  return nothing
-end
-
 verb sync_view_revision(view)
   if ui/View(view) == false
     return 0
@@ -258,8 +275,9 @@ end
 verb sync_view_tree(view, revision)
   let current = ui/current_actor()
   if ui/View(view) == false || current == nothing
-    return ui/login_view_node()
+    return ui/auth_required_node()
   end
+  ui/ensure_actor_location(current)
 
   let limit = endpoint().session/narrativeLimit
   if limit == nothing

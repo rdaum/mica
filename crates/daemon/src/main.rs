@@ -343,7 +343,7 @@ async fn bootstrap_local_users(session_store: &MicaSessionStore) -> Result<(), S
     let users = parse_local_users_json(&raw)?;
     for user in users {
         let local_user = session_store
-            .create_local_user(&user.login, &user.password, &user.display_name)
+            .upsert_local_user(&user.login, &user.password, &user.display_name)
             .await
             .map_err(|error| format!("failed to bootstrap local user {}: {error}", user.login))?;
         for role in &user.roles {
