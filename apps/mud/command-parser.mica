@@ -85,13 +85,13 @@ verb command(actor @ #player, endpoint, line)
   let tokens = words(lower(raw))
 
   if tokens == []
-    emit(endpoint, "I do not understand that.")
+    event/notify_to(actor, endpoint, "I do not understand that.")
     return false
   end
 
   let selector = one command/VerbAlias(tokens[0], ?selector)
   if selector == nothing
-    emit(endpoint, "I do not understand that.")
+    event/notify_to(actor, endpoint, "I do not understand that.")
     return false
   end
 
@@ -106,10 +106,10 @@ verb command(actor @ #player, endpoint, line)
   end
 
   if saw_not_visible
-    emit(endpoint, "I do not see that.")
+    event/notify_to(actor, endpoint, "I do not see that.")
     return false
   end
 
-  emit(endpoint, "I do not understand that.")
+  event/notify_to(actor, endpoint, "I do not understand that.")
   return false
 end

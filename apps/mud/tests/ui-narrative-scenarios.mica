@@ -1,0 +1,83 @@
+// MUD narrative DOM rendering scenarios.
+
+verb test/ui_narrative_renders_recent_event_window()
+  let i = 0
+  while i < 45
+    let text = string_concat("message ", to_literal(i))
+    if i == 0
+      text = "oldest-zero"
+    elseif i == 4
+      text = "oldest-four"
+    elseif i == 5
+      text = "first-kept"
+    elseif i == 44
+      text = "latest-kept"
+    end
+    event/notify(#alice, text)
+    i = i + 1
+  end
+
+  let literal = to_literal(ui/narrative_node(#alice, 100, 40))
+  test/assert_true(string_contains(literal, "45"), "narrative older count")
+  test/assert_true(string_contains(literal, "oldest-zero") == false, "narrative hides oldest zero")
+  test/assert_true(string_contains(literal, "oldest-four") == false, "narrative hides oldest four")
+  test/assert_true(string_contains(literal, "first-kept"), "narrative keeps first visible")
+  test/assert_true(string_contains(literal, "latest-kept"), "narrative keeps latest")
+
+  return true
+end
+
+verb test/ui_narrative_renders_structured_events()
+  event/notify(#alice, "structured notice")
+  let source = test/latest_event_source(#alice)
+  let latest = nothing
+  let latest_seq = -1
+  for found in event/Delivery(#alice, ?event)
+    let event = found[:event]
+    let seq = event.event/seq
+    if seq > latest_seq
+      latest = event
+      latest_seq = seq
+    end
+  end
+  let literal = to_literal(ui/event_body_node(latest, #alice))
+  test/assert_true(source != nothing, "notify stores event source")
+  test/assert_equal(event/metadata(source, :label, nothing), "utility", "notify source label")
+  test/assert_true(string_contains(literal, "event-quote"), "notify DOM quote")
+  test/assert_true(string_contains(literal, "structured notice"), "notify DOM text")
+
+  source = event/scene(#event/take, "transfer", "event-line transfer", "{Actor} {take|takes} {the item}.", {:actor -> #alice, :item -> #coin})
+  literal = to_literal(ui/event_body_for(source, #bob))
+  test/assert_true(string_contains(literal, "actor-entity"), "structured actor entity")
+  test/assert_true(string_contains(literal, "event-entity"), "structured event entity")
+  test/assert_true(string_contains(literal, "coin"), "structured object text")
+  test/assert_true(string_contains(literal, "Alice takes") == false, "structured event avoids flat text")
+
+  source = event/scene_at(event/scene(#event/drop, "transfer", "event-line transfer", "{Actor} {drop|drops} {d} in {l}.", {:actor -> #alice, :dobj -> #coin}), #first_room)
+  literal = to_literal(ui/event_body_for(source, #alice))
+  test/assert_true(string_contains(literal, "actor-entity"), "alias actor entity")
+  test/assert_true(string_contains(literal, "event-entity"), "alias event entity")
+  test/assert_true(string_contains(literal, "coin"), "alias object text")
+  test/assert_true(string_contains(literal, "here"), "alias location text")
+  test/assert_true(string_contains(literal, "You drop") == false, "alias avoids flat text")
+
+  let template = template/from_parts([template/name(:actor, true), " ", template/self_alt("inspect", "inspects"), " ", template/self_alt("yourself", [template/article(:the, :dobj, false)]), "."])
+  source = event/scene_from_template(#event/examine, "examine", "event-line utility", template, {:actor -> #alice, :dobj -> #coin})
+  literal = to_literal(ui/event_body_for(source, #bob))
+  test/assert_true(string_contains(literal, "actor-entity"), "nested DOM actor entity")
+  test/assert_true(string_contains(literal, "entity-button event-entity"), "nested DOM object entity")
+  test/assert_true(string_contains(literal, "coin"), "nested DOM object text")
+  test/assert_true(string_contains(literal, "inspects"), "nested DOM branch text")
+
+  source = event/scene(#event/say, "speech", "event-line speech", "{Actor} {say|says}, \"{message}\"", {:actor -> #alice, :message -> "hello"})
+  literal = to_literal(ui/event_body_for(source, #bob))
+  test/assert_true(string_contains(literal, "event-quote"), "speech DOM quote")
+  test/assert_true(string_contains(literal, "hello"), "speech DOM message")
+
+  source = event/replacing_group(event/scene(#event/look, "look", "event-line utility", "{Actor} {inspect|inspects} {the d}.", {:actor -> #alice, :dobj -> #coin}), :inspect_coin)
+  literal = to_literal(ui/event_body_for(source, #bob))
+  test/assert_true(string_contains(literal, "Alice inspects") == false, "replacement DOM keeps structured nodes")
+  test/assert_true(string_contains(literal, "coin"), "replacement DOM object text")
+
+  return true
+end

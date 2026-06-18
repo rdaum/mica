@@ -640,6 +640,7 @@ mod tests {
             include_str!("../../../apps/shared/string.mica"),
             include_str!("../../../apps/shared/events.mica"),
             include_str!("../../../apps/mud/core.mica"),
+            include_str!("../../../apps/mud/auth.mica"),
             include_str!("../../../apps/mud/event-substitutions.mica"),
             include_str!("../../../apps/mud/command-parser.mica"),
             include_str!("../../../apps/shared/retrieval.mica"),
@@ -700,6 +701,7 @@ mod tests {
             include_str!("../../../apps/shared/string.mica"),
             include_str!("../../../apps/shared/events.mica"),
             include_str!("../../../apps/mud/core.mica"),
+            include_str!("../../../apps/mud/auth.mica"),
             include_str!("../../../apps/mud/event-substitutions.mica"),
             include_str!("../../../apps/mud/command-parser.mica"),
             include_str!("../../../apps/shared/retrieval.mica"),
@@ -715,11 +717,17 @@ mod tests {
             runner.run_filein(filein).unwrap();
         }
 
-        let report = runner
+        runner
             .run_source(
                 "assert session/Actor(endpoint(), #alice)\n\
-                 assert session/Inspect(endpoint(), #bob)\n\
-                 return sync_event(endpoint(), nothing, 21, \"submit\", \"\", \"mud_retrieve_related\", {})",
+                 assert session/Inspect(endpoint(), #bob)",
+            )
+            .unwrap();
+
+        let report = runner
+            .run_source_as(
+                Symbol::intern("alice"),
+                "return sync_event(endpoint(), nothing, 21, \"submit\", \"\", \"mud_retrieve_related\", {})",
             )
             .unwrap();
         let TaskOutcome::Complete { value, .. } = report.outcome else {

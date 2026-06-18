@@ -2,15 +2,20 @@
 //
 // This layer deliberately keeps events as ordinary Mica values. An event is a
 // frob whose delegate describes the event kind and whose payload carries a
-// compiled template plus named bindings. Domain-specific cores can define their
-// own event delegates and delivery policy.
+// compiled template, named bindings, and browser-facing metadata. Domain-
+// specific cores can define their own event delegates, metadata vocabulary, and
+// delivery policy.
 
 make_identity(:event)
 
 make_relation(:Delegates, 3)
 
+verb event/from_template(delegate @ #identity, template, bindings @ #map)
+  return frob(delegate, {:template -> template, :bindings -> bindings, :audience -> :narrative, :presentation -> :line, :content_type -> :text})
+end
+
 verb event/narrative(delegate @ #identity, template_source @ #string, bindings @ #map)
-  return frob(delegate, {:template -> template/compile(template_source), :bindings -> bindings})
+  return event/from_template(delegate, template/compile(template_source), bindings)
 end
 
 verb event/bindings(event @ #event<_>)
@@ -23,6 +28,49 @@ end
 
 verb event/render(event @ #event<_>, viewer)
   return template/render(event/template(event), event/bindings(event), viewer)
+end
+
+verb event/metadata(event @ #event<_>, key, default)
+  let value = frob_value(event)[key]
+  if value == nothing
+    return default
+  end
+
+  return value
+end
+
+verb event/with_metadata(event @ #event<_>, key, value)
+  let payload = frob_value(event)
+  payload[key] = value
+  return frob(frob_delegate(event), payload)
+end
+
+verb event/with_label(event @ #event<_>, label @ #string)
+  return event/with_metadata(event, :label, label)
+end
+
+verb event/with_class(event @ #event<_>, class @ #string)
+  return event/with_metadata(event, :class, class)
+end
+
+verb event/with_audience(event @ #event<_>, audience)
+  return event/with_metadata(event, :audience, audience)
+end
+
+verb event/with_presentation(event @ #event<_>, presentation)
+  return event/with_metadata(event, :presentation, presentation)
+end
+
+verb event/with_group(event @ #event<_>, group)
+  return event/with_metadata(event, :group, group)
+end
+
+verb event/replacing_group(event @ #event<_>, group)
+  return event/with_metadata(event/with_group(event, group), :replace_group, group)
+end
+
+verb event/with_location(event @ #event<_>, location)
+  return event/with_metadata(event, :location, location)
 end
 
 verb event/literal(event @ #event<_>)

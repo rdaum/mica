@@ -17,6 +17,9 @@ make_identity(:event/take_from)
 make_identity(:event/drop)
 make_identity(:event/put)
 make_identity(:event/say)
+make_identity(:event/look)
+make_identity(:event/examine)
+make_identity(:event/utility)
 make_identity(:event/button)
 make_identity(:event/log_entry)
 
@@ -51,6 +54,11 @@ make_functional_relation(:Description, 2, [0])
 make_functional_relation(:LocatedIn, 2, [0])
 make_relation(:ProperNoun, 1)
 make_relation(:Plural, 1)
+make_functional_relation(:PronounSubject, 2, [0])
+make_functional_relation(:PronounObject, 2, [0])
+make_functional_relation(:PronounPossessiveAdjective, 2, [0])
+make_functional_relation(:PronounPossessiveNoun, 2, [0])
+make_functional_relation(:PronounReflexive, 2, [0])
 
 // A durable bidirectional-exit fact records one author-facing connection. The
 // derived Exit relation exposes both directions for command handling and query.
@@ -107,6 +115,9 @@ assert Delegates(#event/take_from, #event, 0)
 assert Delegates(#event/drop, #event, 0)
 assert Delegates(#event/put, #event, 0)
 assert Delegates(#event/say, #event, 0)
+assert Delegates(#event/look, #event, 0)
+assert Delegates(#event/examine, #event, 0)
+assert Delegates(#event/utility, #event, 0)
 assert Delegates(#event/button, #event, 0)
 assert Delegates(#event/log_entry, #event, 0)
 assert Delegates(#coin, #portable, 0)
@@ -130,6 +141,16 @@ assert Portable(#coin)
 #attic.name = "Dusty Attic"
 assert ProperNoun(#alice)
 assert ProperNoun(#bob)
+assert PronounSubject(#alice, "she")
+assert PronounObject(#alice, "her")
+assert PronounPossessiveAdjective(#alice, "her")
+assert PronounPossessiveNoun(#alice, "hers")
+assert PronounReflexive(#alice, "herself")
+assert PronounSubject(#bob, "he")
+assert PronounObject(#bob, "him")
+assert PronounPossessiveAdjective(#bob, "his")
+assert PronounPossessiveNoun(#bob, "his")
+assert PronounReflexive(#bob, "himself")
 
 #alice.description = "Alice is alert and ready to test the room's stranger affordances."
 #coin.description = "A tarnished brass coin catches the light."
@@ -279,6 +300,11 @@ assert RoleCanRead(#player, :Description)
 assert RoleCanRead(#player, :LocatedIn)
 assert RoleCanRead(#player, :ProperNoun)
 assert RoleCanRead(#player, :Plural)
+assert RoleCanRead(#player, :PronounSubject)
+assert RoleCanRead(#player, :PronounObject)
+assert RoleCanRead(#player, :PronounPossessiveAdjective)
+assert RoleCanRead(#player, :PronounPossessiveNoun)
+assert RoleCanRead(#player, :PronounReflexive)
 assert RoleCanRead(#player, :Portable)
 assert RoleCanRead(#player, :BidirectionalExit)
 assert RoleCanRead(#player, :Exit)
@@ -326,17 +352,30 @@ assert RoleCanInvoke(#player, :north)
 assert RoleCanInvoke(#player, :south)
 assert RoleCanInvoke(#player, :up)
 assert RoleCanInvoke(#player, :down)
+assert RoleCanInvoke(#player, :event/from_template)
 assert RoleCanInvoke(#player, :event/narrative)
 assert RoleCanInvoke(#player, :event/bindings)
 assert RoleCanInvoke(#player, :event/template)
 assert RoleCanInvoke(#player, :event/render)
 assert RoleCanInvoke(#player, :event/literal)
+assert RoleCanInvoke(#player, :event/metadata)
+assert RoleCanInvoke(#player, :event/with_metadata)
+assert RoleCanInvoke(#player, :event/with_label)
+assert RoleCanInvoke(#player, :event/with_class)
+assert RoleCanInvoke(#player, :event/with_audience)
+assert RoleCanInvoke(#player, :event/with_presentation)
+assert RoleCanInvoke(#player, :event/with_group)
+assert RoleCanInvoke(#player, :event/replacing_group)
+assert RoleCanInvoke(#player, :event/with_location)
+assert RoleCanInvoke(#player, :event/scene)
+assert RoleCanInvoke(#player, :event/scene_from_template)
+assert RoleCanInvoke(#player, :event/scene_at)
 assert RoleCanInvoke(#player, :emit_room_event)
 assert RoleCanInvoke(#player, :emit_room_event_except)
 assert RoleCanInvoke(#player, :event/next_seq)
-assert RoleCanInvoke(#player, :event/record_text)
 assert RoleCanInvoke(#player, :event/record_source)
 assert RoleCanInvoke(#player, :event/notify)
+assert RoleCanInvoke(#player, :event/notify_to)
 assert RoleCanInvoke(#player, :get)
 assert RoleCanInvoke(#player, :get_from)
 assert RoleCanInvoke(#player, :drop)
@@ -346,19 +385,46 @@ assert RoleCanInvoke(#player, :button_resolves)
 assert RoleCanInvoke(#player, :say)
 assert RoleCanInvoke(#player, :template/error)
 assert RoleCanInvoke(#player, :template/capitalize)
+assert RoleCanInvoke(#player, :template/phrase)
 assert RoleCanInvoke(#player, :template/symbol_from_token)
 assert RoleCanInvoke(#player, :template/binding_token)
+assert RoleCanInvoke(#player, :template/compact_binding_token)
+assert RoleCanInvoke(#player, :template/pronoun_type)
+assert RoleCanInvoke(#player, :template/parse_binding_suffix)
+assert RoleCanInvoke(#player, :template/pronoun_token)
+assert RoleCanInvoke(#player, :template/verb_token)
 assert RoleCanInvoke(#player, :template/split_once)
 assert RoleCanInvoke(#player, :template/article_for)
 assert RoleCanInvoke(#player, :template/parse_token)
 assert RoleCanInvoke(#player, :template/compile)
+assert RoleCanInvoke(#player, :template/from_parts)
+assert RoleCanInvoke(#player, :template/name)
+assert RoleCanInvoke(#player, :template/reference)
+assert RoleCanInvoke(#player, :template/self_alt)
+assert RoleCanInvoke(#player, :template/article)
+assert RoleCanInvoke(#player, :template/pronoun)
+assert RoleCanInvoke(#player, :template/conjugation)
 assert RoleCanInvoke(#player, :template/binding_name)
 assert RoleCanInvoke(#player, :template/binding_value_text)
+assert RoleCanInvoke(#player, :template/binding_value)
+assert RoleCanInvoke(#player, :template/reference_text)
+assert RoleCanInvoke(#player, :template/pronoun_default)
+assert RoleCanInvoke(#player, :template/self_pronoun)
+assert RoleCanInvoke(#player, :template/pronoun_for)
+assert RoleCanInvoke(#player, :template/conjugate)
 assert RoleCanInvoke(#player, :template/render_part)
+assert RoleCanInvoke(#player, :template/render_value)
 assert RoleCanInvoke(#player, :template/render)
 assert RoleCanInvoke(#player, :template/literal)
 assert RoleCanInvoke(#player, :template/decompile_part)
 assert RoleCanInvoke(#player, :template/decompile)
+assert RoleCanInvoke(#player, :message_bag/make)
+assert RoleCanInvoke(#player, :message_bag/is_message_bag)
+assert RoleCanInvoke(#player, :message_bag/entries)
+assert RoleCanInvoke(#player, :message_bag/pick)
+assert RoleCanInvoke(#player, :message_bag/add)
+assert RoleCanInvoke(#player, :message_bag/remove)
+assert RoleCanInvoke(#player, :message_bag/set_entry)
 assert RoleCanInvoke(#player, :frob)
 assert RoleCanInvoke(#player, :frob_delegate)
 assert RoleCanInvoke(#player, :frob_value)
@@ -453,18 +519,27 @@ verb event/next_seq(listener @ #player)
   return seq + 1
 end
 
-verb event/record_text(listener @ #player, text @ #string)
-  let seq = event/next_seq(listener)
-  let event = #event/log_entry<[listener, seq]>
-
-  assert event/Delivery(listener, event)
-  event.event/seq = seq
-  event.event/text = text
-
-  return event
-end
-
 verb event/record_source(listener @ #player, source @ #event<_>)
+  let replace_group = event/metadata(source, :replace_group, nothing)
+  if replace_group != nothing
+    let existing = nothing
+    let existing_seq = -1
+    for found in event/Delivery(listener, ?event)
+      let candidate = found[:event]
+      let candidate_source = candidate.event/source
+      if event/metadata(candidate_source, :group, nothing) == replace_group && candidate.event/seq > existing_seq
+        existing = candidate
+        existing_seq = candidate.event/seq
+      end
+    end
+
+    if existing != nothing
+      existing.event/source = source
+      existing.event/text = event/render(source, listener)
+      return existing
+    end
+  end
+
   let seq = event/next_seq(listener)
   let event = #event/log_entry<[listener, seq]>
   let text = event/render(source, listener)
@@ -478,16 +553,22 @@ verb event/record_source(listener @ #player, source @ #event<_>)
 end
 
 verb event/notify(listener @ #player, text @ #string)
-  event/record_text(listener, text)
-  emit(listener, text)
+  return event/notify_to(listener, listener, text)
+end
+
+verb event/notify_to(listener @ #player, endpoint, text @ #string)
+  let source = event/scene(#event/utility, "utility", "event-line utility", "{message}", {:actor -> listener, :message -> text})
+  event/record_source(listener, source)
+  emit(endpoint, event/render(source, listener))
   return true
 end
 
 verb emit_room_event(room @ #room, event @ #event<_>)
+  let source = event/scene_at(event, room)
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
-    let text = event/render(event, listener)
-    event/record_source(listener, event)
+    let text = event/render(source, listener)
+    event/record_source(listener, source)
     emit(listener, text)
   end
 
@@ -495,11 +576,12 @@ verb emit_room_event(room @ #room, event @ #event<_>)
 end
 
 verb emit_room_event_except(room @ #room, skipped @ #identity, event @ #event<_>)
+  let source = event/scene_at(event, room)
   for found in PresentActor(room, ?listener)
     let listener = found[:listener]
     if listener != skipped
-      let text = event/render(event, listener)
-      event/record_source(listener, event)
+      let text = event/render(source, listener)
+      event/record_source(listener, source)
       emit(listener, text)
     end
   end
@@ -507,9 +589,33 @@ verb emit_room_event_except(room @ #room, skipped @ #identity, event @ #event<_>
   return true
 end
 
+verb event/scene(delegate @ #identity, label @ #string, class @ #string, template @ #string, bindings @ #map)
+  return event/with_class(event/with_label(event/narrative(delegate, template, bindings), label), class)
+end
+
+verb event/scene_from_template(delegate @ #identity, label @ #string, class @ #string, template, bindings @ #map)
+  return event/with_class(event/with_label(event/from_template(delegate, template, bindings), label), class)
+end
+
+verb event/scene_at(event @ #event<_>, room @ #room)
+  let payload = frob_value(event)
+  let bindings = payload[:bindings]
+  if bindings == nothing
+    bindings = {}
+  end
+  if bindings[:location] == nothing
+    bindings[:location] = room
+    payload[:bindings] = bindings
+  end
+  payload[:location] = room
+  return frob(frob_delegate(event), payload)
+end
+
 verb look(actor @ #player)
   let room = actor.locatedIn
-  event/notify(actor, room.description)
+  let source = event/scene(#event/look, "look", "event-line utility", "{message}", {:actor -> actor, :location -> room, :message -> room.description})
+  event/record_source(actor, source)
+  emit(actor, event/render(source, actor))
 
   for found in LocatedIn(?item, room)
     let item = found[:item]
@@ -524,7 +630,9 @@ end
 
 verb examine(actor @ #player, target @ #thing)
   if CanSee(actor, target)
-    event/notify(actor, target.description)
+    let source = event/scene(#event/examine, "examine", "event-line utility", "{message}", {:actor -> actor, :target -> target, :message -> target.description})
+    event/record_source(actor, source)
+    emit(actor, event/render(source, actor))
     return true
   end
 
@@ -581,49 +689,49 @@ verb go(actor @ #player, direction, leave, arrive)
   end
 
   let bindings = {:actor -> actor}
-  :emit_room_event(room: room, event: event/narrative(#event/movement, leave, bindings))
+  :emit_room_event(room: room, event: event/scene(#event/movement, "movement", "event-line movement", leave, bindings))
   actor.locatedIn = destination
-  :emit_room_event_except(room: destination, skipped: actor, event: event/narrative(#event/arrival, arrive, bindings))
+  :emit_room_event_except(room: destination, skipped: actor, event: event/scene(#event/arrival, "movement", "event-line movement", arrive, bindings))
   event/notify(actor, destination.description)
   return true
 end
 
 verb get(actor @ #player, item @ #thing)
   if Carrying(actor, item)
-    emit(actor, "You already have that.")
+    event/notify(actor, "You already have that.")
     return false
   end
 
   if Portable(item) && CanSee(actor, item)
     let room = actor.locatedIn
     item.locatedIn = actor
-    :emit_room_event(room: room, event: event/narrative(#event/take, "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
+    :emit_room_event(room: room, event: event/scene(#event/take, "transfer", "event-line transfer", "{Actor} {take|takes} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
 
-  emit(actor, "You cannot take that.")
+  event/notify(actor, "You cannot take that.")
   return false
 end
 
 verb get_from(actor @ #player, item @ #thing, container @ #container)
   if Carrying(actor, item)
-    emit(actor, "You already have that.")
+    event/notify(actor, "You already have that.")
     return false
   end
 
   if CanSee(actor, container) == false
-    emit(actor, "I do not see that.")
+    event/notify(actor, "I do not see that.")
     return false
   end
 
   if LocatedIn(item, container) && Portable(item)
     let room = actor.locatedIn
     item.locatedIn = actor
-    :emit_room_event(room: room, event: event/narrative(#event/take_from, "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
+    :emit_room_event(room: room, event: event/scene(#event/take_from, "transfer", "event-line transfer", "{Actor} {take|takes} {the item} from {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
 
-  emit(actor, "That is not in there.")
+  event/notify(actor, "That is not in there.")
   return false
 end
 
@@ -632,11 +740,11 @@ verb drop(actor @ #player, item @ #thing)
 
   if Carrying(actor, item)
     item.locatedIn = room
-    :emit_room_event(room: room, event: event/narrative(#event/drop, "{Actor} {drop|drops} {the item}.", {:actor -> actor, :item -> item}))
+    :emit_room_event(room: room, event: event/scene(#event/drop, "transfer", "event-line transfer", "{Actor} {drop|drops} {the item}.", {:actor -> actor, :item -> item}))
     return true
   end
 
-  emit(actor, "You are not carrying that.")
+  event/notify(actor, "You are not carrying that.")
   return false
 end
 
@@ -644,11 +752,11 @@ verb put(actor @ #player, item @ #thing, container @ #container)
   if Carrying(actor, item) && CanSee(actor, container)
     let room = actor.locatedIn
     item.locatedIn = container
-    :emit_room_event(room: room, event: event/narrative(#event/put, "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
+    :emit_room_event(room: room, event: event/scene(#event/put, "transfer", "event-line transfer", "{Actor} {put|puts} {the item} in {the container}.", {:actor -> actor, :item -> item, :container -> container}))
     return true
   end
 
-  emit(actor, "You are not carrying that.")
+  event/notify(actor, "You are not carrying that.")
   return false
 end
 
@@ -676,13 +784,13 @@ verb button_resolves(actor @ #player, target @ #thing, room @ #room)
   end
 
   retract ButtonArmed(target)
-  :emit_room_event(room: room, event: event/narrative(#event/button, "The red button gives one final cheerful ding.", {}))
+  :emit_room_event(room: room, event: event/scene(#event/button, "alert", "event-line alert", "The red button gives one final cheerful ding.", {:target -> target}))
   return true
 end
 
 verb say(actor @ #player, message)
   let room = actor.locatedIn
-  let event = event/narrative(#event/say, "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message})
+  let event = event/with_presentation(event/scene(#event/say, "speech", "event-line speech", "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message}), :speech)
   :emit_room_event(room: room, event: event)
   return true
 end

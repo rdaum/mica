@@ -1,0 +1,143 @@
+// MUD event and substitution runtime scenarios.
+
+verb test/assert_equal(actual, expected, label @ #string)
+  if actual != expected
+    raise E_INVARG, string_concat(label, " failed")
+  end
+
+  return true
+end
+
+verb test/assert_true(value, label @ #string)
+  if value != true
+    raise E_INVARG, string_concat(label, " failed")
+  end
+
+  return true
+end
+
+verb test/latest_event_source(actor @ #player)
+  let latest = nothing
+  let latest_seq = -1
+  for found in event/Delivery(actor, ?event)
+    let event = found[:event]
+    let seq = event.event/seq
+    if seq > latest_seq
+      latest = event
+      latest_seq = seq
+    end
+  end
+
+  if latest == nothing
+    raise E_INVARG, "no delivered event"
+  end
+
+  return latest.event/source
+end
+
+verb test/event_substitutions_render_per_viewer()
+  test/assert_equal(template/demo(#alice), "You pick up the coin.", "actor demo")
+  test/assert_equal(template/demo(#bob), "Alice picks up the coin.", "observer demo")
+
+  let template = template/compile("{Actor} {pick|picks} up {the item}.")
+  test/assert_equal(template/decompile(template), "{Actor} {pick|picks} up {the item}.", "template decompile")
+
+  let literal = template/literal(template)
+  test/assert_true(string_starts_with(literal, "#template/substitution<["), "template literal delegate")
+  test/assert_true(string_contains(literal, "#template/name<"), "template literal name")
+  test/assert_true(string_contains(literal, "#template/self_alt<"), "template literal self alt")
+  test/assert_true(string_contains(literal, "#template/article<"), "template literal article")
+
+  test/assert_equal(template/phrase("Hello world.", [ :strip_period ]), "Hello world", "phrase strips period")
+  test/assert_equal(template/phrase("Hello world", [ :initial_lowercase ]), "hello world", "phrase lowercases first")
+  test/assert_equal(template/phrase("Hello world.", [ :strip_period, :initial_lowercase ]), "hello world", "phrase combines options")
+  test/assert_equal(template/phrase("", [ :strip_period, :initial_lowercase ]), "", "phrase handles empty text")
+
+  template = template/compile("{Actor} {look} at {d} in {l}.")
+  test/assert_equal(template/render(template, {:actor -> #alice, :dobj -> #coin, :location -> #first_room}, #alice), "You look at the coin in here.", "alias actor render")
+  #bob.locatedIn = #north_room
+  test/assert_equal(template/render(template, {:actor -> #alice, :dobj -> #coin, :location -> #first_room}, #bob), "Alice looks at the coin in the First Room.", "alias observer render")
+  #bob.locatedIn = #first_room
+
+  let event = event/scene_at(event/narrative(#event/look, "{Lc}: {d} rests here.", {:actor -> #alice, :dobj -> #coin}), #first_room)
+  test/assert_equal(event/render(event, #alice), "Here: the coin rests here.", "scene location render")
+  test/assert_equal(event/bindings(event)[:location], #first_room, "scene location binding")
+
+  template = template/compile("{Actor} {be} carrying {the item}; {s} {have} {p} prize.")
+  test/assert_equal(template/render(template, {:actor -> #alice, :item -> #coin}, #bob), "Alice is carrying the coin; she has her prize.", "pronoun observer render")
+  test/assert_equal(template/render(template, {:actor -> #alice, :item -> #coin}, #alice), "You are carrying the coin; you have your prize.", "pronoun actor render")
+
+  template = template/from_parts([template/name(:actor, true), " ", template/self_alt("try", "tries"), " to lift ", template/article(:the, :dobj, false), ", but ", template/article(:the, :dobj, false), " slips from ", template/self_alt("your", template/pronoun(:actor, :possessive_adjective, false)), " grip."])
+  test/assert_equal(template/render(template, {:actor -> #alice, :dobj -> #coin}, #alice), "You try to lift the coin, but the coin slips from your grip.", "nested self actor render")
+  test/assert_equal(template/render(template, {:actor -> #alice, :dobj -> #coin}, #bob), "Alice tries to lift the coin, but the coin slips from her grip.", "nested self observer render")
+
+  event = event/with_class(event/with_label(event/narrative(#event/say, "{Actor} {say|says} hi.", {:actor -> #alice}), "speech"), "event-line speech")
+  test/assert_equal(event/render(event, #bob), "Alice says hi.", "event metadata render")
+  test/assert_equal(event/metadata(event, :label, "system"), "speech", "event label metadata")
+  test/assert_equal(event/metadata(event, :class, "event-line"), "event-line speech", "event class metadata")
+
+  template = template/compile("{Actor} {have} {the d}.")
+  event = event/from_template(#event/look, template, {:actor -> #alice, :dobj -> #coin})
+  test/assert_equal(template/decompile(event/template(event)), "{Actor} {have} {the d}.", "compiled event decompile")
+  test/assert_equal(event/render(event, #alice), "You have the coin.", "compiled event actor render")
+  test/assert_equal(event/render(event, #bob), "Alice has the coin.", "compiled event observer render")
+
+  let bag = message_bag/make([template/compile("{Actor} {look} at {the d}."), template/compile("{Actor} {feel|feels} ready.")])
+  bag = message_bag/set_entry(bag, 0, template/compile("{Actor} {have} {the d}."))
+  bag = message_bag/remove(bag, 0)
+  bag = message_bag/add(bag, template/compile("{The d} {be_dobj} here."))
+  let picked = message_bag/pick(bag)
+  event = event/scene_from_template(#event/look, "look", "event-line utility", picked, {:actor -> #alice, :dobj -> #coin})
+  test/assert_true(message_bag/is_message_bag(bag), "message bag predicate")
+  test/assert_equal(template/decompile(picked), "{Actor} {feel|feels} ready.", "message bag pick")
+  test/assert_equal(event/render(event, #alice), "You feel ready.", "message bag actor render")
+  test/assert_equal(event/render(event, #bob), "Alice feels ready.", "message bag observer render")
+
+  return true
+end
+
+verb test/command_parser_records_structured_utility_events()
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "up"), false, "blocked direction command")
+  let source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/utility, "blocked command utility delegate")
+  test/assert_equal(event/metadata(source, :label, nothing), "utility", "blocked command utility label")
+  test/assert_equal(event/metadata(source, :class, nothing), "event-line utility", "blocked command utility class")
+  test/assert_equal(event/bindings(source)[:message], "You cannot go that way.", "blocked command utility message")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "dance"), false, "unknown command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/utility, "unknown command utility delegate")
+  test/assert_equal(event/metadata(source, :label, nothing), "utility", "unknown command utility label")
+  test/assert_equal(event/bindings(source)[:message], "I do not understand that.", "unknown command utility message")
+
+  return true
+end
+
+verb test/event_delivery_replaces_group_for_listener()
+  let first = event/with_group(event/scene(#event/look, "look", "event-line utility", "Searching {the d}...", {:actor -> #alice, :dobj -> #coin}), :inspect_coin)
+  let delivered = event/record_source(#alice, first)
+  let seq = delivered.event/seq
+  test/assert_equal(delivered.event/text, "Searching the coin...", "group initial text")
+
+  let replacement = event/replacing_group(event/scene(#event/look, "look", "event-line utility", "{Actor} {find|finds} {the d}.", {:actor -> #alice, :dobj -> #coin}), :inspect_coin)
+  let replaced = event/record_source(#alice, replacement)
+  test/assert_equal(replaced, delivered, "replacement keeps delivery identity")
+  test/assert_equal(replaced.event/seq, seq, "replacement keeps sequence")
+  test/assert_equal(replaced.event/text, "You find the coin.", "replacement updates text")
+  test/assert_equal(event/metadata(replaced.event/source, :group, nothing), :inspect_coin, "replacement stores group")
+  test/assert_equal(event/metadata(replaced.event/source, :replace_group, nothing), :inspect_coin, "replacement stores replacement marker")
+
+  let count = 0
+  for found in event/Delivery(#alice, ?event)
+    if found[:event] == delivered
+      count = count + 1
+    end
+  end
+  test/assert_equal(count, 1, "replacement does not append duplicate delivery")
+
+  let bob_event = event/record_source(#bob, replacement)
+  test/assert_true(bob_event != delivered, "replacement is per listener")
+  test/assert_equal(bob_event.event/text, "Alice finds the coin.", "replacement appends without listener group")
+
+  return true
+end

@@ -26,11 +26,15 @@
 
 make_identity(:template/substitution)
 make_identity(:template/name)
+make_identity(:template/reference)
 make_identity(:template/self_alt)
 make_identity(:template/article)
+make_identity(:template/pronoun)
+make_identity(:template/conjugation)
+make_identity(:template/message_bag)
 
 verb template/error(message @ #string)
-  raise E_TEMPLATE, message
+  raise E_INVARG, message
 end
 
 verb template/capitalize(text @ #string)
@@ -95,18 +99,41 @@ verb template/capitalize(text @ #string)
   return text
 end
 
+verb template/phrase(text @ #string, options @ #list)
+  let result = text
+  let strip_period = false
+  let initial_lowercase = false
+  for option in options
+    if option == :strip_period
+      strip_period = true
+    elseif option == :initial_lowercase
+      initial_lowercase = true
+    end
+  end
+
+  if strip_period && string_len(result) > 0 && string_slice(result, string_len(result) - 1, string_len(result)) == "."
+    result = string_slice(result, 0, string_len(result) - 1)
+  end
+
+  if initial_lowercase && string_len(result) > 0
+    result = string_concat(lower(string_slice(result, 0, 1)), string_slice(result, 1, string_len(result)))
+  end
+
+  return result
+end
+
 verb template/symbol_from_token(token @ #string)
   let lowered = lower(trim(token))
 
-  if lowered == "actor"
+  if lowered == "actor" || lowered == "n" || lowered == "nc"
     return :actor
-  elseif lowered == "this"
+  elseif lowered == "this" || lowered == "t" || lowered == "tc"
     return :this
-  elseif lowered == "dobj"
+  elseif lowered == "dobj" || lowered == "d" || lowered == "dc"
     return :dobj
-  elseif lowered == "iobj"
+  elseif lowered == "iobj" || lowered == "i" || lowered == "ic"
     return :iobj
-  elseif lowered == "location"
+  elseif lowered == "location" || lowered == "l" || lowered == "lc"
     return :location
   elseif lowered == "item"
     return :item
@@ -145,6 +172,94 @@ verb template/binding_token(binding)
   return "?"
 end
 
+verb template/compact_binding_token(binding)
+  let name = template/binding_token(binding)
+  if name == "dobj"
+    return "d"
+  elseif name == "iobj"
+    return "i"
+  elseif name == "this"
+    return "t"
+  elseif name == "location"
+    return "l"
+  end
+
+  return name
+end
+
+verb template/pronoun_type(token @ #string)
+  if token == "s"
+    return :subject
+  elseif token == "o"
+    return :object_case
+  elseif token == "p"
+    return :possessive_adjective
+  elseif token == "q"
+    return :possessive_noun
+  elseif token == "r"
+    return :reflexive
+  end
+
+  return nothing
+end
+
+verb template/parse_binding_suffix(token @ #string)
+  if string_starts_with(token, "_dobj")
+    return :dobj
+  elseif string_starts_with(token, "_iobj")
+    return :iobj
+  end
+
+  return :actor
+end
+
+verb template/pronoun_token(token @ #string)
+  let lowered = lower(trim(token))
+  let cap = string_slice(trim(token), 0, 1) != string_slice(lowered, 0, 1)
+  let base = lowered
+  let binding = :actor
+
+  if string_len(lowered) > 5 && string_slice(lowered, string_len(lowered) - 5, string_len(lowered)) == "_dobj"
+    base = string_slice(lowered, 0, string_len(lowered) - 5)
+    binding = :dobj
+  elseif string_len(lowered) > 5 && string_slice(lowered, string_len(lowered) - 5, string_len(lowered)) == "_iobj"
+    base = string_slice(lowered, 0, string_len(lowered) - 5)
+    binding = :iobj
+  end
+
+  if string_len(base) == 2 && string_slice(base, 1, 2) == "c"
+    cap = true
+    base = string_slice(base, 0, 1)
+  end
+
+  let pronoun = template/pronoun_type(base)
+  if pronoun == nothing
+    return nothing
+  end
+
+  return #template/pronoun<{:binding -> binding, :pronoun -> pronoun, :cap -> cap}>
+end
+
+verb template/verb_token(token @ #string)
+  let lowered = lower(trim(token))
+  let binding = :actor
+  let verb_name = lowered
+
+  if string_len(lowered) > 5 && string_slice(lowered, string_len(lowered) - 5, string_len(lowered)) == "_dobj"
+    verb_name = string_slice(lowered, 0, string_len(lowered) - 5)
+    binding = :dobj
+  elseif string_len(lowered) > 5 && string_slice(lowered, string_len(lowered) - 5, string_len(lowered)) == "_iobj"
+    verb_name = string_slice(lowered, 0, string_len(lowered) - 5)
+    binding = :iobj
+  end
+
+  if verb_name == "be" || verb_name == "have" || verb_name == "look"
+    return #template/conjugation<{:binding -> binding, :verb_name -> verb_name}>
+  end
+
+  return nothing
+end
+
 verb template/split_once(text @ #string, separator @ #string)
   let index = 0
   let limit = string_len(text) - string_len(separator)
@@ -177,9 +292,20 @@ end
 
 verb template/parse_token(token @ #string)
   let trimmed = trim(token)
+  let lowered = lower(trimmed)
   let branches = template/split_once(trimmed, "|")
   if branches != []
     return #template/self_alt<{:self -> trim(branches[0]), :other -> trim(branches[1])}>
+  end
+
+  let pronoun = template/pronoun_token(trimmed)
+  if pronoun != nothing
+    return pronoun
+  end
+
+  let verb_part = template/verb_token(trimmed)
+  if verb_part != nothing
+    return verb_part
   end
 
   if string_starts_with(trimmed, "the ")
@@ -190,6 +316,11 @@ verb template/parse_token(token @ #string)
     return #template/article<{:article -> :a, :binding -> template/symbol_from_token(string_slice(trimmed, 2, string_len(trimmed))), :cap -> false}>
   elseif string_starts_with(trimmed, "A ")
     return #template/article<{:article -> :a, :binding -> template/symbol_from_token(string_slice(trimmed, 2, string_len(trimmed))), :cap -> true}>
+  end
+
+  if lowered == "d" || lowered == "dc" || lowered == "i" || lowered == "ic" || lowered == "t" || lowered == "tc" || lowered == "l" || lowered == "lc"
+    let cap = string_slice(lowered, string_len(lowered) - 1, string_len(lowered)) == "c"
+    return #template/reference<{:binding -> template/symbol_from_token(lowered), :cap -> cap}>
   end
 
   let cap = false
@@ -238,6 +369,34 @@ verb template/compile(source @ #string)
   return #template/substitution<parts>
 end
 
+verb template/from_parts(parts @ #list)
+  return #template/substitution<parts>
+end
+
+verb template/name(binding, cap)
+  return #template/name<{:binding -> binding, :cap -> cap}>
+end
+
+verb template/reference(binding, cap)
+  return #template/reference<{:binding -> binding, :cap -> cap}>
+end
+
+verb template/self_alt(self, other)
+  return #template/self_alt<{:self -> self, :other -> other}>
+end
+
+verb template/article(article, binding, cap)
+  return #template/article<{:article -> article, :binding -> binding, :cap -> cap}>
+end
+
+verb template/pronoun(binding, pronoun, cap)
+  return #template/pronoun<{:binding -> binding, :pronoun -> pronoun, :cap -> cap}>
+end
+
+verb template/conjugation(binding, verb_name @ #string)
+  return #template/conjugation<{:binding -> binding, :verb_name -> verb_name}>
+end
+
 verb template/binding_name(bindings @ #map, binding, viewer)
   let value = bindings[binding]
   if value == nothing
@@ -264,9 +423,77 @@ verb template/binding_value_text(value @ #identity, viewer)
   return "<unnamed>"
 end
 
+verb template/binding_value(bindings @ #map, binding)
+  if binding == :actor
+    return bindings[:actor]
+  elseif binding == :this
+    let value = bindings[:this]
+    if value == nothing
+      value = bindings[:target]
+    end
+    return value
+  elseif binding == :dobj
+    let value = bindings[:dobj]
+    if value == nothing
+      value = bindings[:item]
+    end
+    if value == nothing
+      value = bindings[:target]
+    end
+    return value
+  elseif binding == :iobj
+    let value = bindings[:iobj]
+    if value == nothing
+      value = bindings[:container]
+    end
+    return value
+  elseif binding == :location
+    return bindings[:location]
+  end
+
+  return bindings[binding]
+end
+
+verb template/reference_text(value, viewer, binding, cap)
+  let name = template/binding_value_text(value, viewer)
+  let here = binding == :location && value == viewer.locatedIn
+  if here
+    name = "here"
+  end
+
+  if value == viewer || here
+    if cap
+      return template/capitalize(name)
+    end
+    return name
+  end
+
+  let article = ""
+  if ProperNoun(value) == false
+    article = "the"
+  end
+
+  if article == ""
+    if cap
+      return template/capitalize(name)
+    end
+    return name
+  end
+
+  if cap
+    article = template/capitalize(article)
+  end
+
+  return string_concat(article, " ", name)
+end
+
 verb template/render_part(part @ #template/name<_>, bindings @ #map, viewer)
   let data = frob_value(part)
-  let name = template/binding_name(bindings, data[:binding], viewer)
+  let value = template/binding_value(bindings, data[:binding])
+  let name = "<no-binding>"
+  if value != nothing
+    name = template/binding_value_text(value, viewer)
+  end
 
   if data[:cap]
     return template/capitalize(name)
@@ -275,26 +502,39 @@ verb template/render_part(part @ #template/name<_>, bindings @ #map, viewer)
   return name
 end
 
-verb template/render_part(part @ #template/self_alt<_>, bindings @ #map, viewer)
+verb template/render_part(part @ #template/reference<_>, bindings @ #map, viewer)
   let data = frob_value(part)
-
-  if bindings[:actor] == viewer
-    return data[:self]
-  end
-
-  return data[:other]
-end
-
-verb template/render_part(part @ #template/article<_>, bindings @ #map, viewer)
-  let data = frob_value(part)
-  let value = bindings[data[:binding]]
+  let value = template/binding_value(bindings, data[:binding])
   if value == nothing
     return "<no-binding>"
   end
 
-  let name = template/binding_name(bindings, data[:binding], viewer)
+  return template/reference_text(value, viewer, data[:binding], data[:cap])
+end
+
+verb template/render_part(part @ #template/self_alt<_>, bindings @ #map, viewer)
+  let data = frob_value(part)
+
+  if bindings[:actor] == viewer
+    return template/render_value(data[:self], bindings, viewer)
+  end
+
+  return template/render_value(data[:other], bindings, viewer)
+end
+
+verb template/render_part(part @ #template/article<_>, bindings @ #map, viewer)
+  let data = frob_value(part)
+  let value = template/binding_value(bindings, data[:binding])
+  if value == nothing
+    return "<no-binding>"
+  end
+
+  let name = template/binding_value_text(value, viewer)
+  if data[:binding] == :location && value == viewer.locatedIn
+    name = "here"
+  end
   let article = ""
-  if value != viewer && ProperNoun(value) == false
+  if value != viewer && (data[:binding] != :location || value != viewer.locatedIn) && ProperNoun(value) == false
     if data[:article] == :the
       article = "the"
     elseif data[:article] == :a && Plural(value) == false
@@ -315,18 +555,214 @@ verb template/render_part(part @ #template/article<_>, bindings @ #map, viewer)
   return string_concat(article, " ", name)
 end
 
+verb template/pronoun_default(pronoun)
+  if pronoun == :subject
+    return "they"
+  elseif pronoun == :object_case
+    return "them"
+  elseif pronoun == :possessive_adjective
+    return "their"
+  elseif pronoun == :possessive_noun
+    return "theirs"
+  elseif pronoun == :reflexive
+    return "themselves"
+  end
+
+  return "they"
+end
+
+verb template/self_pronoun(pronoun)
+  if pronoun == :subject || pronoun == :object_case
+    return "you"
+  elseif pronoun == :possessive_adjective
+    return "your"
+  elseif pronoun == :possessive_noun
+    return "yours"
+  elseif pronoun == :reflexive
+    return "yourself"
+  end
+
+  return "you"
+end
+
+verb template/pronoun_for(value @ #identity, pronoun)
+  if pronoun == :subject
+    let text = one PronounSubject(value, ?text)
+    if text != nothing
+      return text
+    end
+  elseif pronoun == :object_case
+    let text = one PronounObject(value, ?text)
+    if text != nothing
+      return text
+    end
+  elseif pronoun == :possessive_adjective
+    let text = one PronounPossessiveAdjective(value, ?text)
+    if text != nothing
+      return text
+    end
+  elseif pronoun == :possessive_noun
+    let text = one PronounPossessiveNoun(value, ?text)
+    if text != nothing
+      return text
+    end
+  elseif pronoun == :reflexive
+    let text = one PronounReflexive(value, ?text)
+    if text != nothing
+      return text
+    end
+  end
+
+  return template/pronoun_default(pronoun)
+end
+
+verb template/pronoun_for(value, pronoun)
+  return template/pronoun_default(pronoun)
+end
+
+verb template/render_part(part @ #template/pronoun<_>, bindings @ #map, viewer)
+  let data = frob_value(part)
+  let value = template/binding_value(bindings, data[:binding])
+  let text = template/pronoun_default(data[:pronoun])
+  if value == viewer
+    text = template/self_pronoun(data[:pronoun])
+  elseif value != nothing
+    text = template/pronoun_for(value, data[:pronoun])
+  end
+
+  if data[:cap]
+    return template/capitalize(text)
+  end
+
+  return text
+end
+
+verb template/conjugate(verb_name @ #string, is_self)
+  if verb_name == "be"
+    if is_self
+      return "are"
+    end
+    return "is"
+  elseif verb_name == "have"
+    if is_self
+      return "have"
+    end
+    return "has"
+  elseif verb_name == "look"
+    if is_self
+      return "look"
+    end
+    return "looks"
+  end
+
+  return verb_name
+end
+
+verb template/render_part(part @ #template/conjugation<_>, bindings @ #map, viewer)
+  let data = frob_value(part)
+  return template/conjugate(data[:verb_name], template/binding_value(bindings, data[:binding]) == viewer)
+end
+
 verb template/render_part(part @ #string, bindings @ #map, viewer)
   return part
+end
+
+verb template/render_value(value @ #template/substitution<_>, bindings @ #map, viewer)
+  return template/render(value, bindings, viewer)
+end
+
+verb template/render_value(value @ #list, bindings @ #map, viewer)
+  let rendered = []
+
+  for part in value
+    rendered = [@rendered, template/render_value(part, bindings, viewer)]
+  end
+
+  return string_join(rendered, "")
+end
+
+verb template/render_value(value, bindings @ #map, viewer)
+  return template/render_part(value, bindings, viewer)
 end
 
 verb template/render(template @ #template/substitution<_>, bindings @ #map, viewer)
   let rendered = []
 
   for part in frob_value(template)
-    rendered = [@rendered, template/render_part(part, bindings, viewer)]
+    rendered = [@rendered, template/render_value(part, bindings, viewer)]
   end
 
   return string_join(rendered, "")
+end
+
+verb message_bag/make(entries @ #list)
+  return #template/message_bag<entries>
+end
+
+verb message_bag/is_message_bag(value @ #template/message_bag<_>)
+  return true
+end
+
+verb message_bag/is_message_bag(value)
+  return false
+end
+
+verb message_bag/entries(bag @ #template/message_bag<_>)
+  return frob_value(bag)
+end
+
+verb message_bag/pick(bag @ #template/message_bag<_>)
+  let entries = message_bag/entries(bag)
+  if entries == []
+    raise E_RANGE, "message bag is empty"
+  end
+
+  return entries[0]
+end
+
+verb message_bag/add(bag @ #template/message_bag<_>, template @ #template/substitution<_>)
+  return #template/message_bag<[@message_bag/entries(bag), template]>
+end
+
+verb message_bag/remove(bag @ #template/message_bag<_>, index)
+  let entries = message_bag/entries(bag)
+  let next = []
+  let removed = false
+
+  for current, template in entries
+    if current == index
+      removed = true
+    else
+      next = [@next, template]
+    end
+  end
+
+  if removed == false
+    raise E_RANGE, "message bag index out of range"
+  end
+
+  return #template/message_bag<next>
+end
+
+verb message_bag/set_entry(bag @ #template/message_bag<_>, index, template @ #template/substitution<_>)
+  let entries = message_bag/entries(bag)
+  let next = []
+  let updated = false
+
+  for current, entry in entries
+    if current == index
+      next = [@next, template]
+      updated = true
+    else
+      next = [@next, entry]
+    end
+  end
+
+  if updated == false
+    raise E_RANGE, "message bag index out of range"
+  end
+
+  return #template/message_bag<next>
 end
 
 verb template/literal(template @ #template/substitution<_>)
@@ -338,6 +774,16 @@ verb template/decompile_part(part @ #template/name<_>)
   let name = template/binding_token(data[:binding])
   if data[:cap]
     name = template/capitalize(name)
+  end
+
+  return string_concat("{", name, "}")
+end
+
+verb template/decompile_part(part @ #template/reference<_>)
+  let data = frob_value(part)
+  let name = template/compact_binding_token(data[:binding])
+  if data[:cap]
+    name = string_concat(name, "c")
   end
 
   return string_concat("{", name, "}")
@@ -358,7 +804,41 @@ verb template/decompile_part(part @ #template/article<_>)
     article = template/capitalize(article)
   end
 
-  return string_concat("{", article, " ", template/binding_token(data[:binding]), "}")
+  return string_concat("{", article, " ", template/compact_binding_token(data[:binding]), "}")
+end
+
+verb template/decompile_part(part @ #template/pronoun<_>)
+  let data = frob_value(part)
+  let token = "s"
+  if data[:pronoun] == :object_case
+    token = "o"
+  elseif data[:pronoun] == :possessive_adjective
+    token = "p"
+  elseif data[:pronoun] == :possessive_noun
+    token = "q"
+  elseif data[:pronoun] == :reflexive
+    token = "r"
+  end
+  if data[:cap]
+    token = string_concat(token, "c")
+  end
+  if data[:binding] == :dobj
+    token = string_concat(token, "_dobj")
+  elseif data[:binding] == :iobj
+    token = string_concat(token, "_iobj")
+  end
+  return string_concat("{", token, "}")
+end
+
+verb template/decompile_part(part @ #template/conjugation<_>)
+  let data = frob_value(part)
+  let token = data[:verb_name]
+  if data[:binding] == :dobj
+    token = string_concat(token, "_dobj")
+  elseif data[:binding] == :iobj
+    token = string_concat(token, "_iobj")
+  end
+  return string_concat("{", token, "}")
 end
 
 verb template/decompile_part(part @ #string)

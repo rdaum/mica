@@ -648,49 +648,27 @@ fn runner_event_substitution_filein_renders_per_viewer() {
     runner
         .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
         .unwrap();
-
-    assert!(matches!(
-        runner
-            .run_source("return template/demo(#alice)")
-            .unwrap()
-            .outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::string("You pick up the coin.")
-    ));
-    assert!(matches!(
-        runner
-            .run_source("return template/demo(#bob)")
-            .unwrap()
-            .outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::string("Alice picks up the coin.")
-    ));
-    assert!(matches!(
-        runner
-            .run_source(
-                "let template = template/compile(\"{Actor} {pick|picks} up {the item}.\")\n\
-                 return template/decompile(template)",
-            )
-            .unwrap()
-            .outcome,
-        TaskOutcome::Complete { value, .. }
-            if value == Value::string("{Actor} {pick|picks} up {the item}.")
-    ));
-
-    let literal_report = runner
-        .run_source(
-            "let template = template/compile(\"{Actor} {pick|picks} up {the item}.\")\n\
-                 return template/literal(template)",
-        )
+    runner
+        .run_filein(include_str!("../../../apps/mud/tests/event-scenarios.mica"))
         .unwrap();
-    let TaskOutcome::Complete { value, .. } = literal_report.outcome else {
-        panic!("expected template literal task to complete");
-    };
-    let Some(literal) = value.with_str(str::to_owned) else {
-        panic!("expected template literal to return a string");
-    };
-    assert!(literal.starts_with("#template/substitution<["));
-    assert!(literal.contains("#template/name<"));
-    assert!(literal.contains("#template/self_alt<"));
-    assert!(literal.contains("#template/article<"));
+
+    let report = runner
+        .run_source("return test/event_substitutions_render_per_viewer()")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+
+    let report = runner
+        .run_source("return test/event_delivery_replaces_group_for_listener()")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
 }
 
 #[test]
@@ -1095,6 +1073,9 @@ fn runner_mud_command_parser_runs_in_mica() {
     runner
         .run_filein(include_str!("../../../apps/mud/command-parser.mica"))
         .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/tests/event-scenarios.mica"))
+        .unwrap();
     let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
     let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
     let endpoint = SYSTEM_ENDPOINT;
@@ -1307,6 +1288,16 @@ fn runner_mud_command_parser_runs_in_mica() {
         emissions[0].value,
         Value::string("I do not understand that.")
     );
+
+    let report = runner
+        .run_source("return test/command_parser_records_structured_utility_events()")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+    runner.drain_emissions();
 }
 
 #[test]
@@ -1473,47 +1464,104 @@ fn runner_mud_narrative_renders_recent_event_window() {
     runner
         .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
         .unwrap();
+    runner.run_source("make_identity(:web)").unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-session.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-compose.mica"))
+        .unwrap();
     runner
         .run_filein(include_str!("../../../apps/mud/ui-narrative.mica"))
         .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/tests/event-scenarios.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!(
+            "../../../apps/mud/tests/ui-narrative-scenarios.mica"
+        ))
+        .unwrap();
 
     let report = runner
-            .run_source(
-                "let i = 0\n\
-                 while i < 45\n\
-                   let text = string_concat(\"message \", to_literal(i))\n\
-                   if i == 0\n\
-                     text = \"oldest-zero\"\n\
-                   elseif i == 4\n\
-                     text = \"oldest-four\"\n\
-                   elseif i == 5\n\
-                     text = \"first-kept\"\n\
-                   elseif i == 44\n\
-                     text = \"latest-kept\"\n\
-                   end\n\
-                   event/notify(#alice, text)\n\
-                   i = i + 1\n\
-                 end\n\
-                 let literal = to_literal(ui/narrative_node(#alice, 100, 40))\n\
-                 return [string_contains(literal, \"45\"), string_contains(literal, \"oldest-zero\"), string_contains(literal, \"oldest-four\"), string_contains(literal, \"first-kept\"), string_contains(literal, \"latest-kept\")]",
-            )
-            .unwrap();
-
+        .run_source("return test/ui_narrative_renders_recent_event_window()")
+        .unwrap();
     assert!(
-        matches!(
-            report.outcome,
-            TaskOutcome::Complete { ref value, .. }
-                if *value == Value::list([
-                    Value::bool(true),
-                    Value::bool(false),
-                    Value::bool(false),
-                    Value::bool(true),
-                    Value::bool(true),
-                ])
-        ),
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
         "{}",
         report.render()
     );
+
+    let report = runner
+        .run_source("return test/ui_narrative_renders_structured_events()")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+}
+
+#[test]
+fn runner_mud_auth_sync_view_tree_renders() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/sync-host.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/string.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/events.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/core.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/auth.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/command-parser.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/shared/sync-dom.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-session.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-mica-inspect.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-compose.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-retrieval.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-narrative.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-actions.mica"))
+        .unwrap();
+
+    let report = runner
+        .run_source_as(
+            Symbol::intern("web"),
+            "return to_literal(sync_view_tree(21, 0))",
+        )
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value.with_str(|text| text.contains("mud-login")).unwrap_or(false)
+    ));
 }
 
 #[test]

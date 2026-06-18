@@ -1,17 +1,33 @@
 // Narrative/event-log composition for the server-owned MUD view.
 
 verb ui/event_actor_node(value @ #identity, viewer)
+  return ui/event_identity_node(value, viewer, false, "entity-button event-entity actor-entity")
+end
+
+verb ui/event_identity_node(value @ #identity, viewer, cap, class)
   let name = ui/actor_name(value)
   if value == viewer
-    return dom <strong class="event-entity" data-entity={to_literal(value)}>you</strong>
+    let label = "you"
+    if cap
+      label = "You"
+    end
+    return dom <strong class={class} data-entity={to_literal(value)}>{label}</strong>
   end
 
-  return ui/entity_action_node("", value, string_concat("look ", name), name, "entity-button event-entity actor-entity")
+  return ui/entity_action_node("", value, string_concat("look ", name), name, class)
+end
+
+verb ui/event_identity_node(value @ #string, viewer, cap, class)
+  let text = value
+  if cap
+    text = template/capitalize(text)
+  end
+
+  return dom <span class="event-entity">{text}</span>
 end
 
 verb ui/event_object_node(event, value @ #identity, viewer)
-  let name = ui/actor_name(value)
-  return ui/entity_action_node("", value, string_concat("look ", name), name, "entity-button event-entity")
+  return ui/event_identity_node(value, viewer, false, "entity-button event-entity")
 end
 
 verb ui/event_object_node(event, value @ #string, viewer)
@@ -28,62 +44,188 @@ end
 
 verb ui/event_body_node(event, viewer)
   let source = event.event/source
-  if source == nothing
-    return dom <div class="event-text">{event.event/text}</div>
-  end
-
   return ui/event_body_for(source, viewer)
 end
 
 verb ui/event_body_for(source, viewer)
-  return dom <div class="event-text">{event/render(source, viewer)}</div>
+  return ui/event_template_body_node(source, viewer)
+end
+
+verb ui/event_template_body_node(source @ #event<_>, viewer)
+  let nodes = []
+  let bindings = event/bindings(source)
+  let template = event/template(source)
+  for part in frob_value(template)
+    nodes = [@nodes, @ui/event_template_value_nodes(source, part, bindings, viewer)]
+  end
+
+  return dom <div class="event-text">{@nodes}</div>
+end
+
+verb ui/event_template_value_nodes(source, value @ #template/substitution<_>, bindings @ #map, viewer)
+  let nodes = []
+  for part in frob_value(value)
+    nodes = [@nodes, @ui/event_template_value_nodes(source, part, bindings, viewer)]
+  end
+  return nodes
+end
+
+verb ui/event_template_value_nodes(source, value @ #list, bindings @ #map, viewer)
+  let nodes = []
+  for part in value
+    nodes = [@nodes, @ui/event_template_value_nodes(source, part, bindings, viewer)]
+  end
+  return nodes
+end
+
+verb ui/event_template_value_nodes(source, value, bindings @ #map, viewer)
+  return ui/event_template_part_nodes(source, value, bindings, viewer)
+end
+
+verb ui/event_template_part_nodes(source, part, bindings @ #map, viewer)
+  return [dom_text(template/render_part(part, bindings, viewer))]
+end
+
+verb ui/event_template_part_nodes(source, part @ #template/self_alt<_>, bindings @ #map, viewer)
+  let data = frob_value(part)
+  if bindings[:actor] == viewer
+    return ui/event_template_value_nodes(source, data[:self], bindings, viewer)
+  end
+
+  return ui/event_template_value_nodes(source, data[:other], bindings, viewer)
+end
+
+verb ui/event_template_part_nodes(source, part @ #template/name<_>, bindings @ #map, viewer)
+  let data = frob_value(part)
+  let value = template/binding_value(bindings, data[:binding])
+  if value == nothing
+    return [dom_text("<no-binding>")]
+  end
+
+  if data[:binding] == :message
+    return [ui/event_object_node(source, template/binding_value_text(value, viewer), viewer)]
+  end
+
+  if data[:binding] == :actor
+    return [ui/event_identity_node(value, viewer, data[:cap], "entity-button event-entity actor-entity")]
+  end
+
+  return [ui/event_identity_node(value, viewer, data[:cap], "entity-button event-entity")]
+end
+
+verb ui/event_template_part_nodes(source, part @ #template/reference<_>, bindings @ #map, viewer)
+  let data = frob_value(part)
+  let value = template/binding_value(bindings, data[:binding])
+  if value == nothing
+    return [dom_text("<no-binding>")]
+  end
+
+  if data[:binding] == :location && value == viewer.locatedIn
+    let text = "here"
+    if data[:cap]
+      text = "Here"
+    end
+    return [dom <span class="event-entity">{text}</span>]
+  end
+
+  let article = ""
+  if value != viewer && ProperNoun(value) == false
+    article = "the"
+  end
+
+  let cap_entity = data[:cap] && article == ""
+  if article == ""
+    return [ui/event_identity_node(value, viewer, cap_entity, "entity-button event-entity")]
+  end
+
+  if data[:cap]
+    article = template/capitalize(article)
+  end
+
+  return [dom_text(string_concat(article, " ")), ui/event_identity_node(value, viewer, false, "entity-button event-entity")]
+end
+
+verb ui/event_template_part_nodes(source, part @ #template/article<_>, bindings @ #map, viewer)
+  let data = frob_value(part)
+  let value = template/binding_value(bindings, data[:binding])
+  if value == nothing
+    return [dom_text("<no-binding>")]
+  end
+
+  let name = template/binding_value_text(value, viewer)
+  if data[:binding] == :location && value == viewer.locatedIn
+    name = "here"
+  end
+  let article = ""
+  if value != viewer && (data[:binding] != :location || value != viewer.locatedIn) && ProperNoun(value) == false
+    if data[:article] == :the
+      article = "the"
+    elseif data[:article] == :a && Plural(value) == false
+      article = template/article_for(name)
+    end
+  end
+
+  let cap_entity = data[:cap] && article == ""
+  if article == ""
+    if data[:binding] == :location && value == viewer.locatedIn
+      if cap_entity
+        name = template/capitalize(name)
+      end
+      return [dom <span class="event-entity">{name}</span>]
+    end
+    return [ui/event_identity_node(value, viewer, cap_entity, "entity-button event-entity")]
+  end
+
+  if data[:cap]
+    article = template/capitalize(article)
+  end
+
+  return [dom_text(string_concat(article, " ")), ui/event_identity_node(value, viewer, false, "entity-button event-entity")]
 end
 
 verb ui/event_body_for(source @ #event/movement<_>, viewer)
-  let actor = event/bindings(source)[:actor]
-  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " move away.", " moves away.")}</div>
+  return ui/event_template_body_node(source, viewer)
 end
 
 verb ui/event_body_for(source @ #event/arrival<_>, viewer)
-  let actor = event/bindings(source)[:actor]
-  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " arrive.", " arrives.")}</div>
+  return ui/event_template_body_node(source, viewer)
 end
 
 verb ui/event_body_for(source @ #event/take<_>, viewer)
-  let bindings = event/bindings(source)
-  let actor = bindings[:actor]
-  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " take ", " takes ")}{ui/event_object_node(source, bindings[:item], viewer)}.</div>
+  return ui/event_template_body_node(source, viewer)
 end
 
 verb ui/event_body_for(source @ #event/take_from<_>, viewer)
-  let bindings = event/bindings(source)
-  let actor = bindings[:actor]
-  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " take ", " takes ")}{ui/event_object_node(source, bindings[:item], viewer)} from {ui/event_object_node(source, bindings[:container], viewer)}.</div>
+  return ui/event_template_body_node(source, viewer)
 end
 
 verb ui/event_body_for(source @ #event/drop<_>, viewer)
-  let bindings = event/bindings(source)
-  let actor = bindings[:actor]
-  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " drop ", " drops ")}{ui/event_object_node(source, bindings[:item], viewer)}.</div>
+  return ui/event_template_body_node(source, viewer)
 end
 
 verb ui/event_body_for(source @ #event/put<_>, viewer)
-  let bindings = event/bindings(source)
-  let actor = bindings[:actor]
-  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " put ", " puts ")}{ui/event_object_node(source, bindings[:item], viewer)} in {ui/event_object_node(source, bindings[:container], viewer)}.</div>
+  return ui/event_template_body_node(source, viewer)
 end
 
 verb ui/event_body_for(source @ #event/say<_>, viewer)
-  let bindings = event/bindings(source)
-  let actor = bindings[:actor]
-  return dom <div class="event-text">{ui/event_actor_node(actor, viewer)}{ui/event_verb(actor, viewer, " say, ", " says, ")}<span class="event-quote">{string_concat("\"", bindings[:message], "\"")}</span></div>
+  return ui/event_template_body_node(source, viewer)
 end
 
 verb ui/event_body_for(source @ #event/button<_>, viewer)
-  return dom <div class="event-text">{ui/event_object_node(source, #red_button, viewer)} gives one final cheerful ding.</div>
+  let bindings = event/bindings(source)
+  let target = bindings[:target]
+  if target == nothing
+    target = #red_button
+  end
+  return dom <div class="event-text">{ui/event_object_node(source, target, viewer)} gives one final cheerful ding.</div>
 end
 
 verb ui/event_class(source)
+  let class = event/metadata(source, :class, nothing)
+  if class != nothing
+    return class
+  end
+
   return "event-line"
 end
 
@@ -120,6 +262,11 @@ verb ui/event_class(source @ #event/button<_>)
 end
 
 verb ui/event_label(source)
+  let label = event/metadata(source, :label, nothing)
+  if label != nothing
+    return label
+  end
+
   return "system"
 end
 
@@ -190,14 +337,7 @@ end
 
 verb ui/event_node(event)
   let seq = event.event/seq
-  let text = event.event/text
   let source = event.event/source
-  if source == nothing
-    return dom <li data-sync-key={to_literal(event)} class="event-line">
-      {text}
-    </li>
-  end
-
   return dom <li data-sync-key={to_literal(event)} class={ui/event_class(source)}>
     <div class="event-line-main">
       <span class="event-kind">{ui/event_label(source)}</span>
@@ -223,18 +363,7 @@ verb ui/latest_event_node(actor @ #player, revision)
     </section>
   end
 
-  let text = latest.event/text
   let source = latest.event/source
-  if source == nothing
-    return dom <section id="latest-event" class="latest-event system">
-      <div class="latest-heading">
-        <strong>Latest</strong>
-        <span class="event-kind">system</span>
-      </div>
-      <div class="latest-body">{text}</div>
-    </section>
-  end
-
   return dom <section id="latest-event" class={string_concat("latest-event ", ui/event_label(source))}>
     <div class="latest-heading">
       <strong>Latest</strong>
