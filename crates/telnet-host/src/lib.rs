@@ -1048,7 +1048,7 @@ mod tests {
             let line = output.try_recv().unwrap();
             assert_eq!(line, "You say, \"hello\"");
             assert!(
-                !handle_command(&host, endpoint, "alice", "dance")
+                !handle_command(&host, endpoint, "alice", "flailwildly")
                     .await
                     .unwrap()
             );

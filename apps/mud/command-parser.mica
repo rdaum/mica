@@ -45,12 +45,12 @@ verb command/bind_pattern(actor @ #player, raw @ #string, tokens @ #list, patter
       position = position + 1
     elseif kind == :object_role
       if tokens[position] == nothing
-        return {:status -> :no_match}
+        return {:status -> :missing_argument}
       end
 
       let obj = command/match_object(actor, tokens[position])
       if obj == nothing
-        return {:status -> :not_visible}
+        return {:status -> :not_visible, :token -> tokens[position]}
       end
 
       roles[argument] = obj
@@ -58,7 +58,7 @@ verb command/bind_pattern(actor @ #player, raw @ #string, tokens @ #list, patter
     elseif kind == :message
       let message = trim(string_slice(raw, string_len(tokens[0]), string_len(raw)))
       if message == ""
-        return {:status -> :no_match}
+        return {:status -> :missing_argument}
       end
       roles[:message] = message
       consumes_rest = true
@@ -82,6 +82,22 @@ end
 
 verb command(actor @ #player, endpoint, line)
   let raw = trim(line)
+  for shortcut in command/PrefixShortcut(?prefix, ?selector)
+    let prefix = shortcut[:prefix]
+    if string_starts_with(raw, prefix)
+      let message = trim(string_slice(raw, string_len(prefix), string_len(raw)))
+      if message == ""
+        let missing = one command/MissingArgumentMessage(shortcut[:selector], ?message)
+        if missing == nothing
+          missing = "I need more information."
+        end
+        event/notify_to(actor, endpoint, missing)
+        return false
+      end
+      return invoke(shortcut[:selector], {:actor -> actor, :message -> message})
+    end
+  end
+
   let tokens = words(lower(raw))
 
   if tokens == []
@@ -96,17 +112,36 @@ verb command(actor @ #player, endpoint, line)
   end
 
   let saw_not_visible = false
+  let not_visible_token = nothing
+  let missing_message = nothing
   for found in command/Pattern(selector, ?dispatch_selector, ?pattern)
     let bound = command/bind_pattern(actor, raw, tokens, found[:pattern])
     if bound[:status] == :ok
       return invoke(found[:dispatch_selector], bound[:roles])
     elseif bound[:status] == :not_visible
       saw_not_visible = true
+      if not_visible_token == nothing
+        not_visible_token = bound[:token]
+      end
+    elseif bound[:status] == :missing_argument && missing_message == nothing
+      missing_message = one command/MissingArgumentMessage(found[:dispatch_selector], ?message)
+      if missing_message == nothing
+        missing_message = "I need more information."
+      end
     end
   end
 
   if saw_not_visible
-    event/notify_to(actor, endpoint, "I do not see that.")
+    if not_visible_token == nothing
+      event/notify_to(actor, endpoint, "I do not see that.")
+    else
+      event/notify_to(actor, endpoint, string_concat("I do not see \"", not_visible_token, "\" here."))
+    end
+    return false
+  end
+
+  if missing_message != nothing
+    event/notify_to(actor, endpoint, missing_message)
     return false
   end
 

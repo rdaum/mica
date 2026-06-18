@@ -341,6 +341,12 @@ verb ui/inspector_node(actor @ #player)
   if selected == #red_button
     actions = [@actions, ui/inspector_action_node("push button", "push", "mini-button danger")]
   end
+  if selected != actor && Delegates(selected, #player, ?player_depth)
+    actions = [@actions, ui/inspector_action_node(string_concat("wave to ", name), "wave", "mini-button")]
+    actions = [@actions, ui/inspector_action_node(string_concat("bow to ", name), "bow", "mini-button")]
+    actions = [@actions, ui/inspector_action_node(string_concat("smile at ", name), "smile", "mini-button")]
+    actions = [@actions, ui/inspector_action_node(string_concat("bonk ", name), "bonk", "mini-button")]
+  end
   if ui/can_program(actor)
     actions = [@actions, ui/mica_inspect_action_node(selected, "Mica inspect", "mini-button mica-button")]
   end
@@ -386,6 +392,12 @@ verb ui/command_chips_node(actor @ #player)
     end
     if selected == #red_button
       chips = [@chips, ui/command_form_node("", "push button", "push button", "chip danger")]
+    end
+    if selected != actor && Delegates(selected, #player, ?player_depth)
+      chips = [@chips, ui/command_form_node("", string_concat("wave to ", name), string_concat("wave to ", name), "chip")]
+      chips = [@chips, ui/command_form_node("", string_concat("bow to ", name), string_concat("bow to ", name), "chip")]
+      chips = [@chips, ui/command_form_node("", string_concat("smile at ", name), string_concat("smile at ", name), "chip")]
+      chips = [@chips, ui/command_form_node("", string_concat("bonk ", name), string_concat("bonk ", name), "chip")]
     end
     return dom <div class="command-chips" aria-label="Available actions">{@chips}</div>
   end

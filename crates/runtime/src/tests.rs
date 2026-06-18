@@ -1274,7 +1274,7 @@ fn runner_mud_command_parser_runs_in_mica() {
     assert_eq!(emissions[1].value, Value::string("Alice drops the coin."));
 
     let report = runner
-        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"dance\")")
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"flailwildly\")")
         .unwrap();
 
     assert!(matches!(
@@ -1291,6 +1291,16 @@ fn runner_mud_command_parser_runs_in_mica() {
 
     let report = runner
         .run_source("return test/command_parser_records_structured_utility_events()")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+    runner.drain_emissions();
+
+    let report = runner
+        .run_source("return test/social_commands_emit_perspective_events()")
         .unwrap();
     assert!(
         matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
@@ -1459,6 +1469,9 @@ fn runner_mud_narrative_renders_recent_event_window() {
         .run_filein(include_str!("../../../apps/shared/events.mica"))
         .unwrap();
     runner
+        .run_filein(include_str!("../../../apps/shared/retrieval.mica"))
+        .unwrap();
+    runner
         .run_filein(include_str!("../../../apps/mud/core.mica"))
         .unwrap();
     runner
@@ -1469,7 +1482,13 @@ fn runner_mud_narrative_renders_recent_event_window() {
         .run_filein(include_str!("../../../apps/mud/ui-session.mica"))
         .unwrap();
     runner
+        .run_filein(include_str!("../../../apps/mud/ui-mica-inspect.mica"))
+        .unwrap();
+    runner
         .run_filein(include_str!("../../../apps/mud/ui-compose.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/ui-retrieval.mica"))
         .unwrap();
     runner
         .run_filein(include_str!("../../../apps/mud/ui-narrative.mica"))

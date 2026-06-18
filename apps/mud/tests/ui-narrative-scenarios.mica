@@ -79,5 +79,28 @@ verb test/ui_narrative_renders_structured_events()
   test/assert_true(string_contains(literal, "Alice inspects") == false, "replacement DOM keeps structured nodes")
   test/assert_true(string_contains(literal, "coin"), "replacement DOM object text")
 
+  source = social_directed_event(#alice, #bob, "to", "wave", "waves")
+  literal = to_literal(ui/event_body_for(source, #bob))
+  test/assert_true(string_contains(literal, "actor-entity"), "social DOM actor entity")
+  test/assert_true(string_contains(literal, "event-entity"), "social DOM target entity")
+  test/assert_true(string_contains(literal, "waves"), "social DOM action text")
+  test/assert_true(string_contains(literal, "to"), "social DOM preposition text")
+  test/assert_true(string_contains(literal, "Alice waves to you") == false, "social DOM avoids flat text")
+
+  endpoint().session/inspect = #bob
+  literal = to_literal(ui/inspector_node(#alice))
+  test/assert_true(string_contains(literal, "wave to Bob"), "player inspector wave action")
+  test/assert_true(string_contains(literal, "bow to Bob"), "player inspector bow action")
+  test/assert_true(string_contains(literal, "smile at Bob"), "player inspector smile action")
+  test/assert_true(string_contains(literal, "bonk Bob"), "player inspector bonk action")
+
+  literal = to_literal(ui/command_chips_node(#alice))
+  test/assert_true(string_contains(literal, "wave to Bob"), "player chips wave action")
+  test/assert_true(string_contains(literal, "bonk Bob"), "player chips bonk action")
+
+  endpoint().session/inspect = #alice
+  literal = to_literal(ui/inspector_node(#alice))
+  test/assert_true(string_contains(literal, "bonk Alice") == false, "self inspector omits bonk action")
+
   return true
 end

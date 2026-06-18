@@ -104,11 +104,119 @@ verb test/command_parser_records_structured_utility_events()
   test/assert_equal(event/metadata(source, :class, nothing), "event-line utility", "blocked command utility class")
   test/assert_equal(event/bindings(source)[:message], "You cannot go that way.", "blocked command utility message")
 
-  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "dance"), false, "unknown command")
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "flailwildly"), false, "unknown command")
   source = test/latest_event_source(#alice)
   test/assert_equal(frob_delegate(source), #event/utility, "unknown command utility delegate")
   test/assert_equal(event/metadata(source, :label, nothing), "utility", "unknown command utility label")
   test/assert_equal(event/bindings(source)[:message], "I do not understand that.", "unknown command utility message")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "\"hello from shortcut"), true, "say shortcut command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/say, "say shortcut delegate")
+  test/assert_equal(event/render(source, #alice), "You say, \"hello from shortcut\"", "say shortcut actor render")
+  test/assert_equal(event/render(source, #bob), "Alice says, \"hello from shortcut\"", "say shortcut observer render")
+
+  return true
+end
+
+verb test/social_commands_emit_perspective_events()
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "dance"), true, "dance command")
+  let source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/social, "dance social delegate")
+  test/assert_equal(event/metadata(source, :label, nothing), "social", "dance social label")
+  test/assert_equal(event/render(source, #alice), "You dance.", "dance actor render")
+  test/assert_equal(event/render(source, #bob), "Alice dances.", "dance observer render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "wave to bob"), true, "wave to command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(event/render(source, #alice), "You wave to Bob.", "wave actor render")
+  test/assert_equal(event/render(source, #bob), "Alice waves to you.", "wave target render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "bonk bob"), true, "bonk command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(event/render(source, #alice), "You bonk Bob.", "bonk actor render")
+  test/assert_equal(event/render(source, #bob), "Alice bonks you.", "bonk target render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "bonk alice"), true, "self bonk command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(event/render(source, #alice), "You bonk yourself.", "self bonk actor render")
+  test/assert_equal(event/render(source, #bob), "Alice bonks herself.", "self bonk observer render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "bonk"), false, "bonk missing target command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/utility, "bonk missing target utility delegate")
+  test/assert_equal(event/bindings(source)[:message], "Bonk who?", "bonk missing target utility")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "shrug"), true, "shrug command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(event/render(source, #alice), "You shrug your shoulders.", "shrug actor render")
+  test/assert_equal(event/render(source, #bob), "Alice shrugs her shoulders.", "shrug observer render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "applaud"), true, "applaud command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(event/render(source, #alice), "You clap your hands.", "applaud actor render")
+  test/assert_equal(event/render(source, #bob), "Alice claps her hands.", "applaud observer render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "a"), true, "applaud abbreviation command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(event/render(source, #alice), "You clap your hands.", "applaud abbreviation actor render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "cl"), true, "clap abbreviation command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(event/render(source, #alice), "You clap your hands.", "clap abbreviation actor render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "think I wonder about the button"), true, "think command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(event/render(source, #alice), "You . o O ( I wonder about the button )", "think actor render")
+  test/assert_equal(event/render(source, #bob), "Alice . o O ( I wonder about the button )", "think observer render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "emote waves hello"), true, "emote command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/emote, "emote delegate")
+  test/assert_equal(event/render(source, #alice), "Alice waves hello", "emote actor render")
+  test/assert_equal(event/render(source, #bob), "Alice waves hello", "emote observer render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: ":laughs quietly"), true, "emote shortcut command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/emote, "emote shortcut delegate")
+  test/assert_equal(event/render(source, #alice), "Alice laughs quietly", "emote shortcut actor render")
+  test/assert_equal(event/render(source, #bob), "Alice laughs quietly", "emote shortcut observer render")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "emote"), false, "emote missing message command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/utility, "emote missing message utility delegate")
+  test/assert_equal(event/bindings(source)[:message], "Emote what?", "emote missing message utility")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: ":"), false, "emote shortcut missing message command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/utility, "emote shortcut missing message utility delegate")
+  test/assert_equal(event/bindings(source)[:message], "Emote what?", "emote shortcut missing message utility")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "think"), false, "think missing message command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/utility, "think missing message utility delegate")
+  test/assert_equal(event/bindings(source)[:message], "Think what?", "think missing message utility")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "oif"), true, "oif command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/say, "oif say delegate")
+  test/assert_equal(event/render(source, #bob), "Alice says, \"Oif!\"", "oif render")
+
+  for line in ["nod", "nod at bob", "bow", "bow to bob", "smile", "smile at bob", "frown", "laugh", "ponder", "clap", "cheer", "sigh", "yawn", "stretch"]
+    test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: line), true, string_concat("social command: ", line))
+    source = test/latest_event_source(#alice)
+    test/assert_equal(frob_delegate(source), #event/social, string_concat("social delegate: ", line))
+  end
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "wave at nobody"), false, "missing social target command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/utility, "missing social target utility delegate")
+  test/assert_equal(event/bindings(source)[:message], "I do not see \"nobody\" here.", "missing social target utility")
+
+  test/assert_equal(:command(actor: #alice, endpoint: endpoint(), line: "wave at"), false, "wave missing target command")
+  source = test/latest_event_source(#alice)
+  test/assert_equal(frob_delegate(source), #event/utility, "wave missing target utility delegate")
+  test/assert_equal(event/bindings(source)[:message], "Wave at who?", "wave missing target utility")
 
   return true
 end

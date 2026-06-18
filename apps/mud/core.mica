@@ -17,6 +17,8 @@ make_identity(:event/take_from)
 make_identity(:event/drop)
 make_identity(:event/put)
 make_identity(:event/say)
+make_identity(:event/emote)
+make_identity(:event/social)
 make_identity(:event/look)
 make_identity(:event/examine)
 make_identity(:event/utility)
@@ -45,6 +47,12 @@ make_identity(:command/pattern/drop)
 make_identity(:command/pattern/put)
 make_identity(:command/pattern/push)
 make_identity(:command/pattern/say)
+make_identity(:command/pattern/emote)
+make_identity(:command/pattern/social_target)
+make_identity(:command/pattern/social_at)
+make_identity(:command/pattern/social_to)
+make_identity(:command/pattern/social_none)
+make_identity(:command/pattern/think)
 
 make_relation(:Delegates, 3)
 
@@ -76,11 +84,13 @@ make_relation(:ButtonArmed, 1)
 // Parser-facing state is separate from display state. A thing can be visible
 // without being allowed to pollute the command parser.
 make_relation(:command/VerbAlias, 2)
+make_relation(:command/PrefixShortcut, 2)
 make_relation(:command/Form, 1)
 make_relation(:command/Pattern, 3)
 make_relation(:command/PatternPart, 4)
 make_relation(:command/Role, 3)
 make_relation(:command/Preposition, 2)
+make_functional_relation(:command/MissingArgumentMessage, 2, [0])
 make_relation(:command/Noun, 2)
 make_relation(:command/NounAlias, 2)
 make_relation(:command/Name, 2)
@@ -115,6 +125,8 @@ assert Delegates(#event/take_from, #event, 0)
 assert Delegates(#event/drop, #event, 0)
 assert Delegates(#event/put, #event, 0)
 assert Delegates(#event/say, #event, 0)
+assert Delegates(#event/emote, #event, 0)
+assert Delegates(#event/social, #event, 0)
 assert Delegates(#event/look, #event, 0)
 assert Delegates(#event/examine, #event, 0)
 assert Delegates(#event/utility, #event, 0)
@@ -187,6 +199,36 @@ assert command/VerbAlias("put", :put)
 assert command/VerbAlias("push", :push)
 assert command/VerbAlias("press", :push)
 assert command/VerbAlias("say", :say)
+assert command/VerbAlias("emote", :emote)
+assert command/PrefixShortcut("\"", :say)
+assert command/PrefixShortcut(":", :emote)
+assert command/VerbAlias("nod", :nod)
+assert command/VerbAlias("wave", :wave)
+assert command/VerbAlias("bow", :bow)
+assert command/VerbAlias("bonk", :bonk)
+assert command/VerbAlias("oif", :oif)
+assert command/VerbAlias("smile", :smile)
+assert command/VerbAlias("frown", :frown)
+assert command/VerbAlias("laugh", :laugh)
+assert command/VerbAlias("dance", :dance)
+assert command/VerbAlias("shrug", :shrug)
+assert command/VerbAlias("think", :think)
+assert command/VerbAlias("ponder", :ponder)
+assert command/VerbAlias("a", :clap)
+assert command/VerbAlias("ap", :clap)
+assert command/VerbAlias("app", :clap)
+assert command/VerbAlias("appl", :clap)
+assert command/VerbAlias("appla", :clap)
+assert command/VerbAlias("applau", :clap)
+assert command/VerbAlias("applaud", :clap)
+assert command/VerbAlias("c", :clap)
+assert command/VerbAlias("cl", :clap)
+assert command/VerbAlias("cla", :clap)
+assert command/VerbAlias("clap", :clap)
+assert command/VerbAlias("cheer", :cheer)
+assert command/VerbAlias("sigh", :sigh)
+assert command/VerbAlias("yawn", :yawn)
+assert command/VerbAlias("stretch", :stretch)
 
 assert command/Form(:look)
 assert command/Form(:north)
@@ -198,6 +240,24 @@ assert command/Form(:drop)
 assert command/Form(:put)
 assert command/Form(:push)
 assert command/Form(:say)
+assert command/Form(:emote)
+assert command/Form(:nod)
+assert command/Form(:wave)
+assert command/Form(:bow)
+assert command/Form(:bonk)
+assert command/Form(:oif)
+assert command/Form(:smile)
+assert command/Form(:frown)
+assert command/Form(:laugh)
+assert command/Form(:dance)
+assert command/Form(:shrug)
+assert command/Form(:think)
+assert command/Form(:ponder)
+assert command/Form(:clap)
+assert command/Form(:cheer)
+assert command/Form(:sigh)
+assert command/Form(:yawn)
+assert command/Form(:stretch)
 
 assert command/Pattern(:look, :look, #command/pattern/look_room)
 assert command/PatternPart(#command/pattern/look_room, 0, :eol, nothing)
@@ -244,11 +304,69 @@ assert command/PatternPart(#command/pattern/push, 0, :object_role, :target)
 assert command/Pattern(:say, :say, #command/pattern/say)
 assert command/PatternPart(#command/pattern/say, 0, :message, nothing)
 
+assert command/Pattern(:emote, :emote, #command/pattern/emote)
+assert command/PatternPart(#command/pattern/emote, 0, :message, nothing)
+
+assert command/Pattern(:nod, :nod, #command/pattern/social_none)
+assert command/Pattern(:nod, :nod_at, #command/pattern/social_at)
+assert command/Pattern(:nod, :nod_to, #command/pattern/social_to)
+assert command/Pattern(:wave, :wave, #command/pattern/social_none)
+assert command/Pattern(:wave, :wave_at, #command/pattern/social_at)
+assert command/Pattern(:wave, :wave_to, #command/pattern/social_to)
+assert command/Pattern(:bow, :bow, #command/pattern/social_none)
+assert command/Pattern(:bow, :bow_at, #command/pattern/social_at)
+assert command/Pattern(:bow, :bow_to, #command/pattern/social_to)
+assert command/Pattern(:bonk, :bonk, #command/pattern/social_target)
+assert command/Pattern(:oif, :oif, #command/pattern/social_none)
+assert command/Pattern(:smile, :smile, #command/pattern/social_none)
+assert command/Pattern(:smile, :smile_at, #command/pattern/social_at)
+assert command/Pattern(:smile, :smile_to, #command/pattern/social_to)
+assert command/Pattern(:frown, :frown, #command/pattern/social_none)
+assert command/Pattern(:laugh, :laugh, #command/pattern/social_none)
+assert command/Pattern(:dance, :dance, #command/pattern/social_none)
+assert command/Pattern(:shrug, :shrug, #command/pattern/social_none)
+assert command/Pattern(:think, :think, #command/pattern/think)
+assert command/Pattern(:ponder, :ponder, #command/pattern/social_none)
+assert command/Pattern(:clap, :clap, #command/pattern/social_none)
+assert command/Pattern(:cheer, :cheer, #command/pattern/social_none)
+assert command/Pattern(:sigh, :sigh, #command/pattern/social_none)
+assert command/Pattern(:yawn, :yawn, #command/pattern/social_none)
+assert command/Pattern(:stretch, :stretch, #command/pattern/social_none)
+
+assert command/PatternPart(#command/pattern/social_target, 0, :object_role, :target)
+assert command/PatternPart(#command/pattern/social_at, 0, :prep, :at)
+assert command/PatternPart(#command/pattern/social_at, 1, :object_role, :target)
+assert command/PatternPart(#command/pattern/social_to, 0, :prep, :to)
+assert command/PatternPart(#command/pattern/social_to, 1, :object_role, :target)
+assert command/PatternPart(#command/pattern/social_none, 0, :eol, nothing)
+assert command/PatternPart(#command/pattern/think, 0, :message, nothing)
+
 assert command/Preposition(:at, "at")
 assert command/Preposition(:inside, "in")
 assert command/Preposition(:inside, "inside")
 assert command/Preposition(:inside, "into")
 assert command/Preposition(:from, "from")
+assert command/Preposition(:to, "to")
+
+assert command/MissingArgumentMessage(:examine, "Look at what?")
+assert command/MissingArgumentMessage(:look_in, "Look in what?")
+assert command/MissingArgumentMessage(:get, "Take what?")
+assert command/MissingArgumentMessage(:get_from, "Take what?")
+assert command/MissingArgumentMessage(:drop, "Drop what?")
+assert command/MissingArgumentMessage(:put, "Put what?")
+assert command/MissingArgumentMessage(:push, "Push what?")
+assert command/MissingArgumentMessage(:say, "Say what?")
+assert command/MissingArgumentMessage(:emote, "Emote what?")
+assert command/MissingArgumentMessage(:nod_at, "Nod at who?")
+assert command/MissingArgumentMessage(:nod_to, "Nod to who?")
+assert command/MissingArgumentMessage(:wave_at, "Wave at who?")
+assert command/MissingArgumentMessage(:wave_to, "Wave to who?")
+assert command/MissingArgumentMessage(:bow_at, "Bow at who?")
+assert command/MissingArgumentMessage(:bow_to, "Bow to who?")
+assert command/MissingArgumentMessage(:bonk, "Bonk who?")
+assert command/MissingArgumentMessage(:smile_at, "Smile at who?")
+assert command/MissingArgumentMessage(:smile_to, "Smile to who?")
+assert command/MissingArgumentMessage(:think, "Think what?")
 
 assert command/Role(:look, :actor, :identity)
 assert command/Role(:examine, :actor, :identity)
@@ -273,6 +391,43 @@ assert command/Role(:push, :actor, :identity)
 assert command/Role(:push, :target, :thing)
 assert command/Role(:say, :actor, :identity)
 assert command/Role(:say, :message, :string)
+assert command/Role(:emote, :actor, :identity)
+assert command/Role(:emote, :message, :string)
+assert command/Role(:nod, :actor, :identity)
+assert command/Role(:nod_at, :actor, :identity)
+assert command/Role(:nod_at, :target, :thing)
+assert command/Role(:nod_to, :actor, :identity)
+assert command/Role(:nod_to, :target, :thing)
+assert command/Role(:wave, :actor, :identity)
+assert command/Role(:wave_at, :actor, :identity)
+assert command/Role(:wave_at, :target, :thing)
+assert command/Role(:wave_to, :actor, :identity)
+assert command/Role(:wave_to, :target, :thing)
+assert command/Role(:bow, :actor, :identity)
+assert command/Role(:bow_at, :actor, :identity)
+assert command/Role(:bow_at, :target, :thing)
+assert command/Role(:bow_to, :actor, :identity)
+assert command/Role(:bow_to, :target, :thing)
+assert command/Role(:bonk, :actor, :identity)
+assert command/Role(:bonk, :target, :thing)
+assert command/Role(:oif, :actor, :identity)
+assert command/Role(:smile, :actor, :identity)
+assert command/Role(:smile_at, :actor, :identity)
+assert command/Role(:smile_at, :target, :thing)
+assert command/Role(:smile_to, :actor, :identity)
+assert command/Role(:smile_to, :target, :thing)
+assert command/Role(:frown, :actor, :identity)
+assert command/Role(:laugh, :actor, :identity)
+assert command/Role(:dance, :actor, :identity)
+assert command/Role(:shrug, :actor, :identity)
+assert command/Role(:think, :actor, :identity)
+assert command/Role(:think, :message, :string)
+assert command/Role(:ponder, :actor, :identity)
+assert command/Role(:clap, :actor, :identity)
+assert command/Role(:cheer, :actor, :identity)
+assert command/Role(:sigh, :actor, :identity)
+assert command/Role(:yawn, :actor, :identity)
+assert command/Role(:stretch, :actor, :identity)
 
 assert command/Noun(#coin, "coin")
 assert command/NounAlias(#coin, "brass coin")
@@ -315,11 +470,13 @@ assert RoleCanRead(#player, :CanSee)
 assert RoleCanRead(#player, :PresentActor)
 assert RoleCanRead(#player, :ButtonArmed)
 assert RoleCanRead(#player, :command/VerbAlias)
+assert RoleCanRead(#player, :command/PrefixShortcut)
 assert RoleCanRead(#player, :command/Form)
 assert RoleCanRead(#player, :command/Pattern)
 assert RoleCanRead(#player, :command/PatternPart)
 assert RoleCanRead(#player, :command/Role)
 assert RoleCanRead(#player, :command/Preposition)
+assert RoleCanRead(#player, :command/MissingArgumentMessage)
 assert RoleCanRead(#player, :command/Noun)
 assert RoleCanRead(#player, :command/NounAlias)
 assert RoleCanRead(#player, :command/Name)
@@ -383,6 +540,35 @@ assert RoleCanInvoke(#player, :put)
 assert RoleCanInvoke(#player, :push)
 assert RoleCanInvoke(#player, :button_resolves)
 assert RoleCanInvoke(#player, :say)
+assert RoleCanInvoke(#player, :emote)
+assert RoleCanInvoke(#player, :social_event)
+assert RoleCanInvoke(#player, :social_directed_event)
+assert RoleCanInvoke(#player, :social_emit)
+assert RoleCanInvoke(#player, :nod)
+assert RoleCanInvoke(#player, :nod_at)
+assert RoleCanInvoke(#player, :nod_to)
+assert RoleCanInvoke(#player, :wave)
+assert RoleCanInvoke(#player, :wave_at)
+assert RoleCanInvoke(#player, :wave_to)
+assert RoleCanInvoke(#player, :bow)
+assert RoleCanInvoke(#player, :bow_at)
+assert RoleCanInvoke(#player, :bow_to)
+assert RoleCanInvoke(#player, :bonk)
+assert RoleCanInvoke(#player, :oif)
+assert RoleCanInvoke(#player, :smile)
+assert RoleCanInvoke(#player, :smile_at)
+assert RoleCanInvoke(#player, :smile_to)
+assert RoleCanInvoke(#player, :frown)
+assert RoleCanInvoke(#player, :laugh)
+assert RoleCanInvoke(#player, :dance)
+assert RoleCanInvoke(#player, :shrug)
+assert RoleCanInvoke(#player, :think)
+assert RoleCanInvoke(#player, :ponder)
+assert RoleCanInvoke(#player, :clap)
+assert RoleCanInvoke(#player, :cheer)
+assert RoleCanInvoke(#player, :sigh)
+assert RoleCanInvoke(#player, :yawn)
+assert RoleCanInvoke(#player, :stretch)
 assert RoleCanInvoke(#player, :template/error)
 assert RoleCanInvoke(#player, :template/capitalize)
 assert RoleCanInvoke(#player, :template/phrase)
@@ -793,4 +979,137 @@ verb say(actor @ #player, message)
   let event = event/with_presentation(event/scene(#event/say, "speech", "event-line speech", "{Actor} {say|says}, \"{message}\"", {:actor -> actor, :message -> message}), :speech)
   :emit_room_event(room: room, event: event)
   return true
+end
+
+verb emote(actor @ #player, message)
+  let room = actor.locatedIn
+  let template = template/from_parts([template/name(:emote_actor, true), " ", message])
+  let event = event/with_presentation(event/scene_from_template(#event/emote, "emote", "event-line social", template, {:actor -> actor, :emote_actor -> actor.name}), :social)
+  :emit_room_event(room: room, event: event)
+  return true
+end
+
+verb social_event(actor @ #player, template @ #string, bindings @ #map)
+  return event/with_presentation(event/scene(#event/social, "social", "event-line social", template, bindings), :social)
+end
+
+verb social_emit(actor @ #player, template @ #string, bindings @ #map)
+  :emit_room_event(room: actor.locatedIn, event: social_event(actor, template, bindings))
+  return true
+end
+
+verb social_directed_event(actor @ #player, target @ #thing, prep @ #string, verb_self @ #string, verb_other @ #string)
+  return social_event(actor, string_concat("{Actor} {", verb_self, "|", verb_other, "} ", prep, " {the iobj}."), {:actor -> actor, :iobj -> target})
+end
+
+verb nod(actor @ #player)
+  return social_emit(actor, "{Actor} {nod|nods}.", {:actor -> actor})
+end
+
+verb nod_at(actor @ #player, target @ #thing)
+  :emit_room_event(room: actor.locatedIn, event: social_directed_event(actor, target, "at", "nod", "nods"))
+  return true
+end
+
+verb nod_to(actor @ #player, target @ #thing)
+  :emit_room_event(room: actor.locatedIn, event: social_directed_event(actor, target, "to", "nod", "nods"))
+  return true
+end
+
+verb wave(actor @ #player)
+  return social_emit(actor, "{Actor} {wave|waves}.", {:actor -> actor})
+end
+
+verb wave_at(actor @ #player, target @ #thing)
+  :emit_room_event(room: actor.locatedIn, event: social_directed_event(actor, target, "at", "wave", "waves"))
+  return true
+end
+
+verb wave_to(actor @ #player, target @ #thing)
+  :emit_room_event(room: actor.locatedIn, event: social_directed_event(actor, target, "to", "wave", "waves"))
+  return true
+end
+
+verb bow(actor @ #player)
+  return social_emit(actor, "{Actor} {bow|bows}.", {:actor -> actor})
+end
+
+verb bow_at(actor @ #player, target @ #thing)
+  :emit_room_event(room: actor.locatedIn, event: social_directed_event(actor, target, "at", "bow", "bows"))
+  return true
+end
+
+verb bow_to(actor @ #player, target @ #thing)
+  :emit_room_event(room: actor.locatedIn, event: social_directed_event(actor, target, "to", "bow", "bows"))
+  return true
+end
+
+verb bonk(actor @ #player, target @ #thing)
+  if target == actor
+    return social_emit(actor, "{Actor} {bonk|bonks} {r}.", {:actor -> actor})
+  end
+
+  return social_emit(actor, "{Actor} {bonk|bonks} {the target}.", {:actor -> actor, :target -> target})
+end
+
+verb oif(actor @ #player)
+  return say(actor, "Oif!")
+end
+
+verb smile(actor @ #player)
+  return social_emit(actor, "{Actor} {smile|smiles}.", {:actor -> actor})
+end
+
+verb smile_at(actor @ #player, target @ #thing)
+  :emit_room_event(room: actor.locatedIn, event: social_directed_event(actor, target, "at", "smile", "smiles"))
+  return true
+end
+
+verb smile_to(actor @ #player, target @ #thing)
+  :emit_room_event(room: actor.locatedIn, event: social_directed_event(actor, target, "to", "smile", "smiles"))
+  return true
+end
+
+verb frown(actor @ #player)
+  return social_emit(actor, "{Actor} {frown|frowns}.", {:actor -> actor})
+end
+
+verb laugh(actor @ #player)
+  return social_emit(actor, "{Actor} {laugh|laughs}.", {:actor -> actor})
+end
+
+verb dance(actor @ #player)
+  return social_emit(actor, "{Actor} {dance|dances}.", {:actor -> actor})
+end
+
+verb shrug(actor @ #player)
+  return social_emit(actor, "{Actor} {shrug|shrugs} {p} shoulders.", {:actor -> actor})
+end
+
+verb think(actor @ #player, message)
+  return social_emit(actor, "{Actor} . o O ( {message} )", {:actor -> actor, :message -> message})
+end
+
+verb ponder(actor @ #player)
+  return social_emit(actor, "{Actor} {ponder|ponders}.", {:actor -> actor})
+end
+
+verb clap(actor @ #player)
+  return social_emit(actor, "{Actor} {clap|claps} {p} hands.", {:actor -> actor})
+end
+
+verb cheer(actor @ #player)
+  return social_emit(actor, "{Actor} {cheer|cheers}.", {:actor -> actor})
+end
+
+verb sigh(actor @ #player)
+  return social_emit(actor, "{Actor} {sigh|sighs}.", {:actor -> actor})
+end
+
+verb yawn(actor @ #player)
+  return social_emit(actor, "{Actor} {yawn|yawns}.", {:actor -> actor})
+end
+
+verb stretch(actor @ #player)
+  return social_emit(actor, "{Actor} {stretch|stretches}.", {:actor -> actor})
 end
