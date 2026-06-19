@@ -98,6 +98,7 @@ make_relation(:command/Pattern, 3)
 make_relation(:command/PatternPart, 4)
 make_relation(:command/Role, 3)
 make_relation(:command/Preposition, 2)
+make_functional_relation(:command/Summary, 2, [0])
 make_functional_relation(:command/MissingArgumentMessage, 2, [0])
 make_relation(:command/Noun, 2)
 make_relation(:command/NounAlias, 2)
@@ -273,6 +274,34 @@ assert command/VerbAlias("cheer", :cheer)
 assert command/VerbAlias("sigh", :sigh)
 assert command/VerbAlias("yawn", :yawn)
 assert command/VerbAlias("stretch", :stretch)
+
+assert command/Summary(:look, "inspect the room or a visible thing")
+assert command/Summary(:build_room_command, "create a room")
+assert command/Summary(:create_passage_command, "connect rooms with a passage")
+assert command/Summary(:remove_passage_command, "remove a passage")
+assert command/Summary(:set_passage_description_command, "describe a passage")
+assert command/Summary(:get, "take a visible thing")
+assert command/Summary(:drop, "drop something you carry")
+assert command/Summary(:put, "put an item in a container")
+assert command/Summary(:push, "use a visible control")
+assert command/Summary(:say, "speak to the room")
+assert command/Summary(:emote, "pose an action")
+assert command/Summary(:think, "record a thought")
+assert command/Summary(:nod, "make a social gesture")
+assert command/Summary(:wave, "make a social gesture")
+assert command/Summary(:bow, "make a social gesture")
+assert command/Summary(:bonk, "targeted social action")
+assert command/Summary(:smile, "make a social gesture")
+assert command/Summary(:frown, "make a social gesture")
+assert command/Summary(:laugh, "make a social gesture")
+assert command/Summary(:dance, "make a social gesture")
+assert command/Summary(:shrug, "make a social gesture")
+assert command/Summary(:ponder, "make a social gesture")
+assert command/Summary(:clap, "make a social gesture")
+assert command/Summary(:cheer, "make a social gesture")
+assert command/Summary(:sigh, "make a social gesture")
+assert command/Summary(:yawn, "make a social gesture")
+assert command/Summary(:stretch, "make a social gesture")
 
 assert command/Form(:look)
 assert command/Form(:build_room_command)
@@ -534,6 +563,7 @@ grant role #player
     :command/PatternPart
     :command/Role
     :command/Preposition
+    :command/Summary
     :command/MissingArgumentMessage
     :command/Noun
     :command/NounAlias

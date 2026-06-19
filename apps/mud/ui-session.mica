@@ -7,6 +7,7 @@ make_functional_relation(:session/Inspect, 2, [0])
 make_functional_relation(:session/InspectPulse, 2, [0])
 make_functional_relation(:session/NarrativeLimit, 2, [0])
 make_functional_relation(:session/Revision, 2, [0])
+make_functional_relation(:session/CommandDraft, 2, [0])
 
 make_identity(:ui/sync_action)
 make_identity(:ui/inspect_action)
@@ -39,6 +40,7 @@ grant #web
     :session/InspectPulse
     :session/NarrativeLimit
     :session/Revision
+    :session/CommandDraft
     :Delegates
     :Name
     :event/Delivery
@@ -54,6 +56,7 @@ grant #web
     :session/InspectPulse
     :session/NarrativeLimit
     :session/Revision
+    :session/CommandDraft
   invoke:
     :sync_event
     :sync_view_revision
@@ -90,6 +93,7 @@ grant role #player
     :event/Source
     :session/NarrativeLimit
     :session/Revision
+    :session/CommandDraft
     :ui/View
     :ui/SyncAction
     :Builder
@@ -106,6 +110,7 @@ grant role #player
     :session/InspectPulse
     :session/NarrativeLimit
     :session/Revision
+    :session/CommandDraft
   invoke:
     :sync_event
     :sync_snapshot
@@ -176,6 +181,19 @@ grant role #player
     :ui/narrative_node
     :ui/latest_event_node
     :ui/command_bar_node
+    :ui/command_suggestions_node
+    :ui/command_suggestions
+    :ui/add_command_suggestion
+    :ui/suggestion_suffix
+    :ui/command_summary
+    :ui/merge_command_suggestions
+    :ui/suggest_command_aliases
+    :ui/suggest_exit_commands
+    :ui/suggest_visible_targets
+    :ui/suggest_prepositions
+    :ui/selector_accepts_direct_target
+    :ui/selector_accepts_preposition_target
+    :ui/suggestion_matches
     :ui/command_chips_node
     :ui/event_node
     :ui/event_label

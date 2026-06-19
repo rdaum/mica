@@ -98,6 +98,45 @@ verb test/ui_narrative_renders_structured_events()
   test/assert_true(string_contains(literal, "wave to Bob"), "player chips wave action")
   test/assert_true(string_contains(literal, "bonk Bob"), "player chips bonk action")
 
+  endpoint().session/commandDraft = ""
+  literal = to_literal(ui/command_bar_node(#alice))
+  test/assert_true(string_contains(literal, "data-command-suggestion") == false, "command suggestions stay hidden before typing")
+
+  endpoint().session/commandDraft = "n"
+  literal = to_literal(ui/command_suggestions(#alice, "n"))
+  test/assert_true(string_contains(literal, "north"), "command suggestion data includes matching exit")
+  test/assert_true(string_contains(literal, "go to North Room"), "exit suggestions hint at the destination")
+
+  endpoint().session/commandDraft = "bo"
+  literal = to_literal(ui/command_suggestions(#alice, "bo"))
+  test/assert_true(string_contains(literal, "bonk"), "command suggestion data includes matching verb")
+  test/assert_true(string_contains(literal, "targeted social action"), "verb suggestions include command summaries")
+
+  endpoint().session/commandDraft = "loo"
+  test/assert_equal(ui/suggestion_suffix("loo", "look"), "k", "command completion suffix only includes missing text")
+  literal = to_literal(ui/command_suggestions_node(#alice, "loo"))
+  test/assert_true(string_contains(literal, "data-command-suggestion"), "command completion node exposes a completion value")
+  test/assert_true(string_contains(literal, "inspect the room or a visible thing"), "command completion node renders the command hint")
+
+  endpoint().session/commandDraft = "bonk "
+  literal = to_literal(ui/command_suggestions(#alice, "bonk "))
+  test/assert_true(string_contains(literal, "bob"), "command suggestion data includes visible targets")
+  test/assert_true(string_contains(literal, "target: Bob"), "target suggestions hint at the visible target")
+
+  literal = to_literal(ui/command_suggestions(#alice, "dance "))
+  test/assert_true(string_contains(literal, "dance bob") == false, "command suggestions do not invent targets for intransitive verbs")
+
+  endpoint().session/commandDraft = "wave t"
+  literal = to_literal(ui/command_suggestions(#alice, "wave t"))
+  test/assert_true(string_contains(literal, "wave to"), "command suggestion data includes matching prepositions")
+
+  endpoint().session/commandDraft = "@d"
+  literal = to_literal(ui/command_suggestions(#alice, "@d"))
+  test/assert_true(string_contains(literal, "@dig"), "builder command suggestion data includes at-prefixed commands for builders")
+  test/assert_true(string_contains(literal, "connect rooms with a passage"), "builder command suggestions include command summaries")
+  literal = to_literal(ui/command_suggestions(#bob, "@d"))
+  test/assert_true(string_contains(literal, "@dig") == false, "builder command suggestions hide at-prefixed commands for non-builders")
+
   endpoint().session/inspect = #alice
   literal = to_literal(ui/inspector_node(#alice))
   test/assert_true(string_contains(literal, "bonk Alice") == false, "self inspector omits bonk action")

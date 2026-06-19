@@ -1100,6 +1100,70 @@ input {
 .command-chips .mud-action {
   flex: 0 0 auto;
 }
+.command-input-box {
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  border: 1px solid #5b534a;
+  background: #101114;
+  color: #fff;
+  border-radius: 8px;
+  padding: 6px;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background 140ms ease;
+}
+.command-input-box:focus-within {
+  border-color: #d6ad68;
+  background: #141217;
+  box-shadow:
+    0 0 0 3px #d6ad6826,
+    0 0 24px #d6ad681a;
+}
+.command-input-box input {
+  flex: 1 1 220px;
+  min-width: 140px;
+  position: relative;
+  z-index: 1;
+  border: 0;
+  background: transparent;
+  padding: 6px;
+  box-shadow: none;
+}
+.command-input-box input:focus-visible {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.command-suggestions {
+  display: none;
+}
+.command-ghost {
+  position: absolute;
+  z-index: 0;
+  left: 12px;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #9e968c;
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre;
+}
+.command-ghost-prefix {
+  visibility: hidden;
+}
+.command-ghost-suffix {
+  color: #9e968c;
+}
+.command-ghost-hint {
+  color: #756f68;
+  margin-left: 10px;
+}
 @media (prefers-reduced-motion: reduce) {
   .login-form input,
   .command-form input,

@@ -84,7 +84,7 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
 end
 
 verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, view, event, target, fields)
-  if ui/View(view) == false || event != "submit"
+  if ui/View(view) == false || (event != "submit" && event != "input")
     return false
   end
 
@@ -94,11 +94,20 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
   end
 
   let line = ui/form_text(fields, :text)
+  endpoint().session/commandDraft = line
+  endpoint.session/commandDraft = line
+  if event == "input"
+    ui/bump_revision(endpoint())
+    return true
+  end
+
   if line == ""
     return false
   end
 
   if ui/try_mica_inspect_command(current, endpoint, line)
+    endpoint().session/commandDraft = ""
+    endpoint.session/commandDraft = ""
     return true
   end
 
@@ -116,6 +125,8 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
     endpoint.session/inspectPulse = pulse
   end
   let handled = command(current, endpoint, line)
+  endpoint().session/commandDraft = ""
+  endpoint.session/commandDraft = ""
   ui/bump_revision(endpoint())
   return handled
 end

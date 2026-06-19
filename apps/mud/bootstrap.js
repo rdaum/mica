@@ -447,4 +447,53 @@ function installToolWindows(mount) {
   });
 }
 
+function installCommandSuggestions(mount) {
+  function commandInput() {
+    return mount.querySelector("#command");
+  }
+
+  function suggestions() {
+    return Array.from(mount.querySelectorAll("[data-command-suggestion]"));
+  }
+
+  function acceptSuggestion(button) {
+    const input = commandInput();
+    const command = button?.dataset?.commandSuggestion;
+    if (!input || !command) {
+      return false;
+    }
+
+    input.value = command;
+    input.focus();
+    input.setSelectionRange(command.length, command.length);
+    input.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertReplacementText",
+        data: command,
+      }),
+    );
+    return true;
+  }
+
+  mount.addEventListener("keydown", (event) => {
+    if (event.target !== commandInput()) {
+      return;
+    }
+
+    const items = suggestions();
+    if (items.length === 0) {
+      return;
+    }
+
+    if (event.key === "Tab") {
+      const accepted = acceptSuggestion(items[0]);
+      if (accepted) {
+        event.preventDefault();
+      }
+    }
+  });
+}
+
 installToolWindows(document.getElementById("mount"));
+installCommandSuggestions(document.getElementById("mount"));

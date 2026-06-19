@@ -13,6 +13,7 @@ import {
   boundEventFields,
   endEventLoading,
   endSubmitLoading,
+  clearCommandInputAfterSubmit,
   focusAfterSubmit,
   submitKeyMatches,
 } from "./sync-client.js";
@@ -212,6 +213,15 @@ assert.equal(fallbackFocused, false);
 localFocused = false;
 focusAfterSubmit({ querySelector: () => null });
 assert.equal(fallbackFocused, true);
+
+const commandInput = {
+  value: "look",
+  defaultValue: "look",
+};
+globalThis.document.getElementById = (id) => (id === "command" ? commandInput : null);
+clearCommandInputAfterSubmit({ querySelector: () => null });
+assert.equal(commandInput.value, "");
+assert.equal(commandInput.defaultValue, "");
 
 assert.equal(
   submitKeyMatches({ key: "Enter", ctrlKey: true }, "ctrl+enter"),

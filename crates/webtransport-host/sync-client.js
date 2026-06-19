@@ -853,6 +853,19 @@ export function focusAfterSubmit(form) {
   preferred?.focus();
 }
 
+export function clearCommandInputAfterSubmit(form) {
+  const input =
+    document.getElementById("command") ??
+    form.querySelector("input[name='text']:not([type='hidden'])");
+  if (!input) {
+    return;
+  }
+  input.value = "";
+  if ("defaultValue" in input) {
+    input.defaultValue = "";
+  }
+}
+
 function addCssClass(element, name) {
   if (!element) {
     return;
@@ -1924,6 +1937,9 @@ export function bootstrapServerRenderedSync(mount, status) {
       afterAck: () => {
         if (form.dataset.syncReset !== "false") {
           form.reset();
+        }
+        if (action === "mud_command") {
+          clearCommandInputAfterSubmit(form);
         }
         focusAfterSubmit(form);
       },

@@ -656,14 +656,240 @@ verb ui/inspector_node(actor @ #player)
 end
 
 verb ui/command_bar_node(actor @ #player)
+  let draft = endpoint().session/commandDraft
+  if draft == nothing
+    draft = ""
+  end
   let composer = dom <form id="mud-command" class="command-form" data-sync-event="submit" data-sync-action="mud_command" data-sync-submit-key="ctrl+enter">
-    <input id="command" name="text" autocomplete="off" placeholder="Try: look, north, get coin, say hello" aria-label="Command" />
+    <div class="command-input-box">
+      <input id="command" name="text" value={draft} autocomplete="off" placeholder="Try: look, north, get coin, say hello" aria-label="Command" aria-controls="command-suggestions" data-sync-event="input" data-sync-action="mud_command" data-sync-debounce="90" />
+      {ui/command_suggestions_node(actor, draft)}
+    </div>
     <button id="send-command" type="submit">{ui/icon_label_node("send", "Send")}</button>
   </form>
   return dom <section class="command-deck">
     {ui/command_chips_node(actor)}
     {composer}
   </section>
+end
+
+verb ui/suggestion_matches(candidate @ #string, prefix @ #string)
+  if prefix == ""
+    return true
+  end
+  return string_starts_with(lower(candidate), lower(prefix))
+end
+
+verb ui/add_command_suggestion(suggestions @ #list, command @ #string, label @ #string, kind @ #string, hint @ #string)
+  return [@suggestions, {:command -> command, :label -> label, :kind -> kind, :hint -> hint}]
+end
+
+verb ui/suggestion_suffix(draft @ #string, command @ #string)
+  let draft_text = trim(draft)
+  if draft_text == ""
+    return ""
+  end
+  if string_starts_with(lower(command), lower(draft_text))
+    return string_slice(command, string_len(draft_text), string_len(command))
+  end
+  return command
+end
+
+verb ui/command_summary(selector)
+  let summary = one command/Summary(selector, ?summary)
+  if summary == nothing
+    return "command"
+  end
+  return summary
+end
+
+verb ui/merge_command_suggestions(left @ #list, right @ #list)
+  let merged = left
+  for suggestion in right
+    merged = [@merged, suggestion]
+  end
+  return merged
+end
+
+verb ui/suggest_command_aliases(actor @ #player, prefix @ #string)
+  let suggestions = []
+  let count = 0
+  for found in command/VerbAlias(?alias, ?selector)
+    let alias = found[:alias]
+    if count < 8 && ui/suggestion_matches(alias, prefix)
+      if string_starts_with(alias, "@") == false || ui/can_build(actor)
+        suggestions = ui/add_command_suggestion(suggestions, alias, alias, "command", ui/command_summary(found[:selector]))
+        count = count + 1
+      end
+    end
+  end
+  return suggestions
+end
+
+verb ui/suggest_exit_commands(actor @ #player, prefix @ #string)
+  let suggestions = []
+  let room = actor.locatedIn
+  let count = 0
+  for found in PassageSide(?passage, room, ?destination)
+    let passage = found[:passage]
+    let label = passage/label_for(passage, room)
+    if count < 6 && ui/suggestion_matches(label, prefix)
+      let hint = string_concat("go to ", ui/actor_name(found[:destination]))
+      suggestions = ui/add_command_suggestion(suggestions, label, label, "exit", hint)
+      count = count + 1
+    end
+  end
+  return suggestions
+end
+
+verb ui/suggest_visible_targets(actor @ #player, stem @ #string, prefix @ #string)
+  let suggestions = []
+  let count = 0
+  for found in command/Name(?obj, ?name)
+    let obj = found[:obj]
+    let name = found[:name]
+    if count < 8 && command/NameMatchable(actor, obj) && ui/suggestion_matches(name, prefix)
+      let command = string_concat(stem, name)
+      let hint = string_concat("target: ", ui/actor_name(obj))
+      suggestions = ui/add_command_suggestion(suggestions, command, name, "target", hint)
+      count = count + 1
+    end
+  end
+  return suggestions
+end
+
+verb ui/suggest_prepositions(actor @ #player, command_word @ #string, prefix @ #string)
+  let suggestions = []
+  let selector = one command/VerbAlias(command_word, ?selector)
+  if selector == nothing
+    return suggestions
+  end
+
+  let count = 0
+  for found in command/Pattern(selector, ?dispatch_selector, ?pattern)
+    let part = one command/PatternPart(found[:pattern], 0, ?kind, ?argument)
+    if part != nothing && (part[:kind] == :prep || part[:kind] == :optional_prep)
+      for prep in command/Preposition(part[:argument], ?word)
+        let word = prep[:word]
+        if count < 6 && ui/suggestion_matches(word, prefix)
+          suggestions = ui/add_command_suggestion(suggestions, string_concat(string_concat(command_word, " "), word), word, "preposition", "choose a target relation")
+          count = count + 1
+        end
+      end
+    end
+  end
+  return suggestions
+end
+
+verb ui/selector_accepts_direct_target(selector)
+  for found in command/Pattern(selector, ?dispatch_selector, ?pattern)
+    let first_part = one command/PatternPart(found[:pattern], 0, ?kind, ?argument)
+    if first_part != nothing
+      if first_part[:kind] == :object_role
+        return true
+      end
+      if first_part[:kind] == :optional_prep
+        let second_part = one command/PatternPart(found[:pattern], 1, ?second_kind, ?second_argument)
+        if second_part != nothing && second_part[:kind] == :object_role
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+verb ui/selector_accepts_preposition_target(selector, word @ #string)
+  for found in command/Pattern(selector, ?dispatch_selector, ?pattern)
+    let first_part = one command/PatternPart(found[:pattern], 0, ?kind, ?argument)
+    if first_part != nothing && (first_part[:kind] == :prep || first_part[:kind] == :optional_prep)
+      if command/Preposition(first_part[:argument], word)
+        let second_part = one command/PatternPart(found[:pattern], 1, ?second_kind, ?second_argument)
+        if second_part != nothing && second_part[:kind] == :object_role
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+verb ui/command_suggestions(actor @ #player, draft @ #string)
+  let raw = trim(draft)
+  let tokens = words(lower(raw))
+  let first = tokens[0]
+  let second = tokens[1]
+  let third = tokens[2]
+  let ends_space = false
+  if draft != ""
+    ends_space = string_slice(draft, string_len(draft) - 1, string_len(draft)) == " "
+  end
+
+  if first == nothing
+    return []
+  end
+
+  if second == nothing && ends_space == false
+    let suggestions = ui/suggest_exit_commands(actor, first)
+    return ui/merge_command_suggestions(suggestions, ui/suggest_command_aliases(actor, first))
+  end
+
+  if first == "go"
+    let prefix = ""
+    if ends_space == false && second != nothing
+      prefix = second
+    end
+    return ui/suggest_exit_commands(actor, prefix)
+  end
+
+  let selector = one command/VerbAlias(first, ?selector)
+  if selector == nothing
+    return []
+  end
+
+  let stem = string_concat(first, " ")
+  if second == nothing
+    let suggestions = ui/suggest_prepositions(actor, first, "")
+    if ui/selector_accepts_direct_target(selector)
+      return ui/merge_command_suggestions(suggestions, ui/suggest_visible_targets(actor, stem, ""))
+    end
+    return suggestions
+  end
+
+  let matched_prep = nothing
+  for found in command/Preposition(?prep, second)
+    matched_prep = second
+  end
+  if matched_prep != nothing && ui/selector_accepts_preposition_target(selector, second)
+    let prefix = ""
+    if ends_space == false && third != nothing
+      prefix = third
+    end
+    return ui/suggest_visible_targets(actor, string_concat(string_concat(first, " "), string_concat(second, " ")), prefix)
+  end
+
+  let suggestions = ui/suggest_prepositions(actor, first, second)
+  if ui/selector_accepts_direct_target(selector)
+    return ui/merge_command_suggestions(suggestions, ui/suggest_visible_targets(actor, stem, second))
+  end
+  return suggestions
+end
+
+verb ui/command_suggestions_node(actor @ #player, draft @ #string)
+  let suggestions = ui/command_suggestions(actor, draft)
+  if suggestions == []
+    return dom <div id="command-suggestions" class="command-suggestions empty" hidden="hidden"></div>
+  end
+
+  let suggestion = suggestions[0]
+  let suffix = ui/suggestion_suffix(draft, suggestion[:command])
+  if suffix == ""
+    return dom <div id="command-suggestions" class="command-suggestions empty" hidden="hidden"></div>
+  end
+
+  return dom <span id="command-suggestions" class="command-ghost" data-command-suggestion={suggestion[:command]} aria-hidden="true">
+    <span class="command-ghost-prefix">{trim(draft)}</span><span class="command-ghost-suffix">{suffix}</span><span class="command-ghost-hint">{string_concat(" - ", suggestion[:hint])}</span>
+  </span>
 end
 
 verb ui/command_chips_node(actor @ #player)
