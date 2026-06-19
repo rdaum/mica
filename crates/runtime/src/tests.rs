@@ -1843,6 +1843,36 @@ fn runner_mud_auth_sync_view_tree_renders() {
     let request = runner
         .source_request_for_endpoint(
             endpoint,
+            "let ok = sync_event(endpoint(), nothing, 21, \"input\", \"\", \"mud_command\", {:text -> \"get \", :suggest -> \"true\", :suggest_index -> \"0\"})\n\
+             return ok && endpoint().session/commandDraft == \"get \"",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(endpoint, "return to_literal(ui/command_bar_node(#alice))")
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value
+                    .with_str(|text| text.contains("get coin"))
+                    .unwrap_or(false)
+        ),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
             "ui/mica_inspect_set_selected(endpoint(), #alice)\n\
              return to_literal(ui/mica_inspect_panel_node(#alice))",
         )

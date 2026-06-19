@@ -456,6 +456,14 @@ function installCommandSuggestions(mount) {
     return Array.from(mount.querySelectorAll("[data-command-suggestion]"));
   }
 
+  function suggestInput() {
+    return mount.querySelector("#command-suggest");
+  }
+
+  function suggestIndexInput() {
+    return mount.querySelector("#command-suggest-index");
+  }
+
   function acceptSuggestion(button) {
     const input = commandInput();
     const command = button?.dataset?.commandSuggestion;
@@ -476,23 +484,64 @@ function installCommandSuggestions(mount) {
     return true;
   }
 
+  function currentSuggestionIndex() {
+    const value = Number.parseInt(suggestIndexInput()?.value ?? "0", 10);
+    return Number.isFinite(value) && value >= 0 ? value : 0;
+  }
+
+  function suggestionCount() {
+    const count = Number.parseInt(suggestions()[0]?.dataset?.suggestionCount ?? "0", 10);
+    return Number.isFinite(count) && count > 0 ? count : 0;
+  }
+
+  function requestSuggestion(input, index) {
+    const suggest = suggestInput();
+    const suggestIndex = suggestIndexInput();
+    if (!suggest || !suggestIndex) {
+      return false;
+    }
+    suggest.value = "true";
+    suggestIndex.value = String(Math.max(0, index));
+    input.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertReplacementText",
+        data: "",
+      }),
+    );
+    return true;
+  }
+
   mount.addEventListener("keydown", (event) => {
-    if (event.target !== commandInput()) {
-      return;
-    }
-
-    const items = suggestions();
-    if (items.length === 0) {
-      return;
-    }
-
-    if (event.key === "Tab") {
-      const accepted = acceptSuggestion(items[0]);
-      if (accepted) {
+    if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      const items = suggestions();
+      if (items.length > 0 && acceptSuggestion(items[0])) {
         event.preventDefault();
       }
+      return;
     }
-  });
+
+    if (event.key !== "Tab" || event.shiftKey) {
+      return;
+    }
+
+    const current = commandInput();
+    const input =
+      event.target?.id === "command"
+        ? event.target
+        : document.activeElement === current
+          ? current
+          : null;
+    if (!input || !mount.contains(input)) {
+      return;
+    }
+
+    const count = suggestionCount();
+    const nextIndex = count > 0 ? (currentSuggestionIndex() + 1) % count : 0;
+    if (requestSuggestion(input, nextIndex)) {
+      event.preventDefault();
+    }
+  }, true);
 }
 
 installToolWindows(document.getElementById("mount"));

@@ -660,10 +660,28 @@ verb ui/command_bar_node(actor @ #player)
   if draft == nothing
     draft = ""
   end
+  let suggest = endpoint().session/commandSuggest
+  if suggest == nothing
+    suggest = false
+  end
+  let suggest_index = endpoint().session/commandSuggestIndex
+  if suggest_index == nothing
+    suggest_index = 0
+  end
+  let suggest_value = "false"
+  if suggest
+    suggest_value = "true"
+  end
+  let placeholder = "Try: look, north, get coin, say hello"
+  if suggest
+    placeholder = ""
+  end
   let composer = dom <form id="mud-command" class="command-form" data-sync-event="submit" data-sync-action="mud_command" data-sync-submit-key="ctrl+enter">
     <div class="command-input-box">
-      <input id="command" name="text" value={draft} autocomplete="off" placeholder="Try: look, north, get coin, say hello" aria-label="Command" aria-controls="command-suggestions" data-sync-event="input" data-sync-action="mud_command" data-sync-debounce="90" />
-      {ui/command_suggestions_node(actor, draft)}
+      <input id="command-suggest" type="hidden" name="suggest" value={suggest_value} />
+      <input id="command-suggest-index" type="hidden" name="suggest_index" value={to_literal(suggest_index)} />
+      <input id="command" name="text" value={draft} autocomplete="off" placeholder={placeholder} aria-label="Command" aria-controls="command-suggestions" data-sync-event="input" data-sync-action="mud_command" data-sync-debounce="90" />
+      {ui/command_suggestions_node(actor, draft, suggest, suggest_index)}
     </div>
     <button id="send-command" type="submit">{ui/icon_label_node("send", "Send")}</button>
   </form>
@@ -701,6 +719,26 @@ verb ui/command_summary(selector)
     return "command"
   end
   return summary
+end
+
+verb ui/suggestion_count(suggestions @ #list)
+  let count = 0
+  for suggestion in suggestions
+    count = count + 1
+  end
+  return count
+end
+
+verb ui/selected_command_suggestion(suggestions @ #list, index)
+  let count = ui/suggestion_count(suggestions)
+  if count == 0
+    return nothing
+  end
+  let selected_index = index
+  while selected_index >= count
+    selected_index = selected_index - count
+  end
+  return suggestions[selected_index]
 end
 
 verb ui/merge_command_suggestions(left @ #list, right @ #list)
@@ -814,7 +852,7 @@ verb ui/selector_accepts_preposition_target(selector, word @ #string)
   return false
 end
 
-verb ui/command_suggestions(actor @ #player, draft @ #string)
+verb ui/command_suggestions(actor @ #player, draft @ #string, show_empty @ #bool)
   let raw = trim(draft)
   let tokens = words(lower(raw))
   let first = tokens[0]
@@ -826,6 +864,10 @@ verb ui/command_suggestions(actor @ #player, draft @ #string)
   end
 
   if first == nothing
+    if show_empty
+      let suggestions = ui/suggest_exit_commands(actor, "")
+      return ui/merge_command_suggestions(suggestions, ui/suggest_command_aliases(actor, ""))
+    end
     return []
   end
 
@@ -875,19 +917,23 @@ verb ui/command_suggestions(actor @ #player, draft @ #string)
   return suggestions
 end
 
-verb ui/command_suggestions_node(actor @ #player, draft @ #string)
-  let suggestions = ui/command_suggestions(actor, draft)
-  if suggestions == []
+verb ui/command_suggestions_node(actor @ #player, draft @ #string, show_empty @ #bool, index)
+  let suggestions = ui/command_suggestions(actor, draft, show_empty)
+  let count = ui/suggestion_count(suggestions)
+  if count == 0
     return dom <div id="command-suggestions" class="command-suggestions empty" hidden="hidden"></div>
   end
 
-  let suggestion = suggestions[0]
+  let suggestion = ui/selected_command_suggestion(suggestions, index)
   let suffix = ui/suggestion_suffix(draft, suggestion[:command])
+  if suffix == "" && trim(draft) == "" && show_empty
+    suffix = suggestion[:command]
+  end
   if suffix == ""
     return dom <div id="command-suggestions" class="command-suggestions empty" hidden="hidden"></div>
   end
 
-  return dom <span id="command-suggestions" class="command-ghost" data-command-suggestion={suggestion[:command]} aria-hidden="true">
+  return dom <span id="command-suggestions" class="command-ghost" data-command-suggestion={suggestion[:command]} data-suggestion-count={to_literal(count)} aria-hidden="true">
     <span class="command-ghost-prefix">{trim(draft)}</span><span class="command-ghost-suffix">{suffix}</span><span class="command-ghost-hint">{string_concat(" - ", suggestion[:hint])}</span>
   </span>
 end

@@ -101,40 +101,48 @@ verb test/ui_narrative_renders_structured_events()
   endpoint().session/commandDraft = ""
   literal = to_literal(ui/command_bar_node(#alice))
   test/assert_true(string_contains(literal, "data-command-suggestion") == false, "command suggestions stay hidden before typing")
+  literal = to_literal(ui/command_suggestions(#alice, "", true))
+  test/assert_true(string_contains(literal, "north"), "tab can reveal suggestions before typing")
+  literal = to_literal(ui/command_suggestions_node(#alice, "", true, 0))
+  test/assert_true(string_contains(literal, "data-command-suggestion"), "tab reveal renders an empty-field completion")
+  literal = to_literal(ui/command_suggestions_node(#alice, "", true, 1))
+  test/assert_true(string_contains(literal, "data-suggestion-count"), "tab cycling exposes the suggestion count")
 
   endpoint().session/commandDraft = "n"
-  literal = to_literal(ui/command_suggestions(#alice, "n"))
+  literal = to_literal(ui/command_suggestions(#alice, "n", false))
   test/assert_true(string_contains(literal, "north"), "command suggestion data includes matching exit")
   test/assert_true(string_contains(literal, "go to North Room"), "exit suggestions hint at the destination")
 
   endpoint().session/commandDraft = "bo"
-  literal = to_literal(ui/command_suggestions(#alice, "bo"))
+  literal = to_literal(ui/command_suggestions(#alice, "bo", false))
   test/assert_true(string_contains(literal, "bonk"), "command suggestion data includes matching verb")
   test/assert_true(string_contains(literal, "targeted social action"), "verb suggestions include command summaries")
 
   endpoint().session/commandDraft = "loo"
   test/assert_equal(ui/suggestion_suffix("loo", "look"), "k", "command completion suffix only includes missing text")
-  literal = to_literal(ui/command_suggestions_node(#alice, "loo"))
+  literal = to_literal(ui/command_suggestions_node(#alice, "loo", false, 0))
   test/assert_true(string_contains(literal, "data-command-suggestion"), "command completion node exposes a completion value")
   test/assert_true(string_contains(literal, "inspect the room or a visible thing"), "command completion node renders the command hint")
 
   endpoint().session/commandDraft = "bonk "
-  literal = to_literal(ui/command_suggestions(#alice, "bonk "))
+  literal = to_literal(ui/command_suggestions(#alice, "bonk ", false))
   test/assert_true(string_contains(literal, "bob"), "command suggestion data includes visible targets")
   test/assert_true(string_contains(literal, "target: Bob"), "target suggestions hint at the visible target")
+  literal = to_literal(ui/command_suggestions(#alice, "get ", false))
+  test/assert_true(string_contains(literal, "get coin"), "object command suggestions preserve the target-selection space")
 
-  literal = to_literal(ui/command_suggestions(#alice, "dance "))
+  literal = to_literal(ui/command_suggestions(#alice, "dance ", false))
   test/assert_true(string_contains(literal, "dance bob") == false, "command suggestions do not invent targets for intransitive verbs")
 
   endpoint().session/commandDraft = "wave t"
-  literal = to_literal(ui/command_suggestions(#alice, "wave t"))
+  literal = to_literal(ui/command_suggestions(#alice, "wave t", false))
   test/assert_true(string_contains(literal, "wave to"), "command suggestion data includes matching prepositions")
 
   endpoint().session/commandDraft = "@d"
-  literal = to_literal(ui/command_suggestions(#alice, "@d"))
+  literal = to_literal(ui/command_suggestions(#alice, "@d", false))
   test/assert_true(string_contains(literal, "@dig"), "builder command suggestion data includes at-prefixed commands for builders")
   test/assert_true(string_contains(literal, "connect rooms with a passage"), "builder command suggestions include command summaries")
-  literal = to_literal(ui/command_suggestions(#bob, "@d"))
+  literal = to_literal(ui/command_suggestions(#bob, "@d", false))
   test/assert_true(string_contains(literal, "@dig") == false, "builder command suggestions hide at-prefixed commands for non-builders")
 
   endpoint().session/inspect = #alice

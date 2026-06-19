@@ -8,6 +8,8 @@ make_functional_relation(:session/InspectPulse, 2, [0])
 make_functional_relation(:session/NarrativeLimit, 2, [0])
 make_functional_relation(:session/Revision, 2, [0])
 make_functional_relation(:session/CommandDraft, 2, [0])
+make_functional_relation(:session/CommandSuggest, 2, [0])
+make_functional_relation(:session/CommandSuggestIndex, 2, [0])
 
 make_identity(:ui/sync_action)
 make_identity(:ui/inspect_action)
@@ -41,6 +43,8 @@ grant #web
     :session/NarrativeLimit
     :session/Revision
     :session/CommandDraft
+    :session/CommandSuggest
+    :session/CommandSuggestIndex
     :Delegates
     :Name
     :event/Delivery
@@ -57,6 +61,8 @@ grant #web
     :session/NarrativeLimit
     :session/Revision
     :session/CommandDraft
+    :session/CommandSuggest
+    :session/CommandSuggestIndex
   invoke:
     :sync_event
     :sync_view_revision
@@ -94,6 +100,8 @@ grant role #player
     :session/NarrativeLimit
     :session/Revision
     :session/CommandDraft
+    :session/CommandSuggest
+    :session/CommandSuggestIndex
     :ui/View
     :ui/SyncAction
     :Builder
@@ -111,6 +119,8 @@ grant role #player
     :session/NarrativeLimit
     :session/Revision
     :session/CommandDraft
+    :session/CommandSuggest
+    :session/CommandSuggestIndex
   invoke:
     :sync_event
     :sync_snapshot
@@ -186,6 +196,8 @@ grant role #player
     :ui/add_command_suggestion
     :ui/suggestion_suffix
     :ui/command_summary
+    :ui/suggestion_count
+    :ui/selected_command_suggestion
     :ui/merge_command_suggestions
     :ui/suggest_command_aliases
     :ui/suggest_exit_commands
@@ -225,6 +237,8 @@ grant role #player
     :frob_delegate
     :ui/sync_action_source
     :ui/form_text
+    :ui/form_raw_text
+    :ui/form_index
     :ui/handle_sync_action
     :build_room
     :create_passage

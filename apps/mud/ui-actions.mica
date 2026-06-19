@@ -35,6 +35,23 @@ verb ui/form_text(fields, key)
   return trim(value)
 end
 
+verb ui/form_raw_text(fields, key)
+  let value = fields[key]
+  if value == nothing
+    return ""
+  end
+
+  return value
+end
+
+verb ui/form_index(fields, key)
+  let value = parse_ordinal(ui/form_text(fields, key))
+  if value == nothing || value < 0
+    return 0
+  end
+  return value
+end
+
 verb ui/handle_sync_action(source @ #ui/sync_action<_>, endpoint, session, view, event, target, fields)
   return false
 end
@@ -93,21 +110,31 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
     return false
   end
 
-  let line = ui/form_text(fields, :text)
+  let line = ui/form_raw_text(fields, :text)
   endpoint().session/commandDraft = line
   endpoint.session/commandDraft = line
+  let suggest = ui/form_text(fields, :suggest)
+  endpoint().session/commandSuggest = suggest == "true"
+  endpoint.session/commandSuggest = suggest == "true"
+  let suggest_index = ui/form_index(fields, :suggest_index)
+  endpoint().session/commandSuggestIndex = suggest_index
+  endpoint.session/commandSuggestIndex = suggest_index
   if event == "input"
     ui/bump_revision(endpoint())
     return true
   end
 
-  if line == ""
+  if trim(line) == ""
     return false
   end
 
   if ui/try_mica_inspect_command(current, endpoint, line)
     endpoint().session/commandDraft = ""
     endpoint.session/commandDraft = ""
+    endpoint().session/commandSuggest = false
+    endpoint.session/commandSuggest = false
+    endpoint().session/commandSuggestIndex = 0
+    endpoint.session/commandSuggestIndex = 0
     return true
   end
 
@@ -127,6 +154,10 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
   let handled = command(current, endpoint, line)
   endpoint().session/commandDraft = ""
   endpoint.session/commandDraft = ""
+  endpoint().session/commandSuggest = false
+  endpoint.session/commandSuggest = false
+  endpoint().session/commandSuggestIndex = 0
+  endpoint.session/commandSuggestIndex = 0
   ui/bump_revision(endpoint())
   return handled
 end
