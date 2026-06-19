@@ -229,15 +229,13 @@ assert PassageOpen(#passage<[#north_room, #attic, "up"]>, true)
 
 assert command/VerbAlias("l", :look)
 assert command/VerbAlias("look", :look)
-assert command/VerbAlias("build", :build_room_command)
 assert command/VerbAlias("@build", :build_room_command)
-assert command/VerbAlias("dig", :create_passage_command)
 assert command/VerbAlias("@dig", :create_passage_command)
-assert command/VerbAlias("tunnel", :create_passage_command)
 assert command/VerbAlias("@tunnel", :create_passage_command)
-assert command/VerbAlias("undig", :remove_passage_command)
 assert command/VerbAlias("@undig", :remove_passage_command)
-assert command/VerbAlias("describe-exit", :set_passage_description_command)
+assert command/VerbAlias("@remove-exit", :remove_passage_command)
+assert command/VerbAlias("@delete-passage", :remove_passage_command)
+assert command/VerbAlias("@describe", :set_passage_description_command)
 assert command/VerbAlias("get", :get)
 assert command/VerbAlias("take", :get)
 assert command/VerbAlias("drop", :drop)
@@ -400,7 +398,7 @@ assert command/MissingArgumentMessage(:emote, "Emote what?")
 assert command/MissingArgumentMessage(:build_room_command, "Build what?")
 assert command/MissingArgumentMessage(:create_passage_command, "Dig where?")
 assert command/MissingArgumentMessage(:remove_passage_command, "Remove which passage?")
-assert command/MissingArgumentMessage(:set_passage_description_command, "Describe which exit?")
+assert command/MissingArgumentMessage(:set_passage_description_command, "Describe what?")
 assert command/MissingArgumentMessage(:nod_at, "Nod at who?")
 assert command/MissingArgumentMessage(:nod_to, "Nod to who?")
 assert command/MissingArgumentMessage(:wave_at, "Wave at who?")
@@ -724,7 +722,7 @@ grant role #player
     :builder/passage_from
     :builder/opposite_direction
     :builder/parse_dig
-    :builder/parse_describe_exit
+    :builder/parse_describe
 end
 
 grant role #player
@@ -1201,7 +1199,7 @@ end
 verb create_passage_command(actor @ #player, message @ #string)
   let parsed = builder/parse_dig(message)
   if parsed[:ok] == false
-    event/notify(actor, "Usage: dig <direction> to <room name>.")
+    event/notify(actor, "Usage: @dig <direction> to <room name>.")
     return false
   end
 
@@ -1291,27 +1289,31 @@ verb set_passage_side(actor @ #player, passage, room @ #room, label @ #string, d
   return true
 end
 
-verb builder/parse_describe_exit(spec @ #string)
-  let lowered = lower(spec)
-  let tokens = words(lowered)
-  if tokens[0] == nothing || tokens[1] == nothing
+verb builder/parse_describe(spec @ #string)
+  let tokens = words(spec)
+  if tokens[0] == nothing
     return {:ok -> false}
   end
 
-  let direction = tokens[0]
-  let offset = string_len(direction)
-  let description = trim(string_slice(spec, offset, string_len(spec)))
-  return {:ok -> description != "", :direction -> direction, :description -> description}
+  let target = lower(tokens[0])
+  let offset = string_len(tokens[0])
+  let rest = trim(string_slice(spec, offset, string_len(spec)))
+  let rest_tokens = words(lower(rest))
+  if rest_tokens[0] == "as"
+    rest = trim(string_slice(rest, 2, string_len(rest)))
+  end
+
+  return {:ok -> rest != "", :target -> target, :description -> rest}
 end
 
 verb set_passage_description_command(actor @ #player, message @ #string)
-  let parsed = builder/parse_describe_exit(message)
+  let parsed = builder/parse_describe(message)
   if parsed[:ok] == false
-    event/notify(actor, "Usage: describe-exit <direction> <description>.")
+    event/notify(actor, "Usage: @describe <direction> as <description>.")
     return false
   end
 
-  let passage = builder/passage_from(actor.locatedIn, parsed[:direction])
+  let passage = builder/passage_from(actor.locatedIn, parsed[:target])
   if passage == nothing
     event/notify(actor, "No passage matches that direction.")
     return false

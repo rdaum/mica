@@ -1337,6 +1337,9 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
     runner
         .run_filein(include_str!("../../../apps/mud/event-substitutions.mica"))
         .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/command-parser.mica"))
+        .unwrap();
     let first_room = runner.named_identity(Symbol::intern("first_room")).unwrap();
     let north_room = runner.named_identity(Symbol::intern("north_room")).unwrap();
     let attic = runner.named_identity(Symbol::intern("attic")).unwrap();
@@ -1562,6 +1565,86 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
         .unwrap();
     assert!(
         matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == library),
+        "{}",
+        report.render()
+    );
+
+    let plain_build = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"build Shed\")")
+        .unwrap();
+    assert!(
+        matches!(plain_build.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(false)),
+        "{}",
+        plain_build.render()
+    );
+    let report = runner
+        .run_source("return builder/room_named_in_area(#hotel_area, \"Shed\")")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::nothing()),
+        "{}",
+        report.render()
+    );
+
+    let built = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"@build Studio\")")
+        .unwrap();
+    let studio = match built.outcome {
+        TaskOutcome::Complete { ref value, .. } if value.frob_delegate().is_some() => value.clone(),
+        _ => panic!("unexpected @build outcome: {}", built.render()),
+    };
+    let dug = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@dig portal to Studio\")",
+        )
+        .unwrap();
+    let _passage = match dug.outcome {
+        TaskOutcome::Complete { ref value, .. } if value.frob_delegate().is_some() => value.clone(),
+        _ => panic!("unexpected @dig outcome: {}", dug.render()),
+    };
+    let report = runner
+        .run_source("return one Exit(#first_room, \"portal\", ?destination)")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == studio),
+        "{}",
+        report.render()
+    );
+    let described = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@describe portal as A shimmering arch hums here.\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(described.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        described.render()
+    );
+    let report = runner
+        .run_source("return one PassageDescription(builder/passage_from(#first_room, \"portal\"), #first_room, ?description)")
+        .unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value.with_str(|text| text == "A shimmering arch hums here.").unwrap_or(false)
+        ),
+        "{}",
+        report.render()
+    );
+    let removed = runner
+        .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"@undig portal\")")
+        .unwrap();
+    assert!(
+        matches!(removed.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        removed.render()
+    );
+    let report = runner
+        .run_source("return one Exit(#first_room, \"portal\", ?destination)")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::nothing()),
         "{}",
         report.render()
     );
