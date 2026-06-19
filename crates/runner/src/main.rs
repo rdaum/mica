@@ -95,7 +95,8 @@ enum Command {
         unit: Option<String>,
         #[arg(long)]
         replace: bool,
-        file: PathBuf,
+        #[arg(required = true, value_name = "FILE")]
+        files: Vec<PathBuf>,
     },
     Fileout {
         unit: String,
@@ -148,14 +149,17 @@ async fn run() -> Result<(), String> {
         Command::Filein {
             unit,
             replace,
-            file,
+            files,
         } => {
             reject_actor(&cli)?;
-            let source = fs::read_to_string(file)
-                .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
-            let include_base = file.parent().unwrap_or_else(|| std::path::Path::new("."));
             let mut runner = open_runner(&cli)?;
             if let Some(unit) = unit {
+                let [file] = files.as_slice() else {
+                    return Err("--unit can only be used with one filein file".to_owned());
+                };
+                let source = fs::read_to_string(file)
+                    .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+                let include_base = file.parent().unwrap_or_else(|| std::path::Path::new("."));
                 let mode = if *replace {
                     FileinMode::Replace
                 } else {
@@ -173,13 +177,18 @@ async fn run() -> Result<(), String> {
                     print_report(report);
                 }
             } else {
-                for report in runner
-                    .run_filein_with_include_loader(&source, |path| {
-                        read_filein_include(include_base, path)
-                    })
-                    .map_err(|error| format_source_error_with_source(error, file, &source))?
-                {
-                    print_report(report);
+                for file in files {
+                    let source = fs::read_to_string(file)
+                        .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+                    let include_base = file.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    for report in runner
+                        .run_filein_with_include_loader(&source, |path| {
+                            read_filein_include(include_base, path)
+                        })
+                        .map_err(|error| format_source_error_with_source(error, file, &source))?
+                    {
+                        print_report(report);
+                    }
                 }
             }
             Ok(())
