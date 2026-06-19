@@ -102,5 +102,13 @@ verb test/ui_narrative_renders_structured_events()
   literal = to_literal(ui/inspector_node(#alice))
   test/assert_true(string_contains(literal, "bonk Alice") == false, "self inspector omits bonk action")
 
+  endpoint().session/inspect = #passage<[#first_room, #north_room, "north"]>
+  literal = to_literal(ui/inspector_node(#bob))
+  test/assert_true(string_contains(literal, "state"), "passage inspector shows state label")
+  test/assert_true(string_contains(literal, "Open"), "passage inspector shows capitalized open state")
+  test/assert_true(string_contains(literal, "entity-kind") == false, "non-builder inspector hides kind fact")
+  test/assert_true(string_contains(literal, "entity-id") == false, "non-builder inspector hides identity fact")
+  test/assert_true(string_contains(literal, "entity-ambient") == false, "non-builder inspector hides ambient fact")
+
   return true
 end

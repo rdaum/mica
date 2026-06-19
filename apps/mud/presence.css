@@ -1,25 +1,16 @@
-.mud-grid {
-  grid-template-rows: auto minmax(0, 1fr);
-}
 .room-panel {
-  grid-column: 1 / -1;
-  grid-row: 1;
   padding: 12px;
   position: sticky;
   top: 12px;
   z-index: 1;
 }
 .mud-sidebar {
-  grid-column: 2;
-  grid-row: 2;
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
 }
 .narrative {
-  grid-column: 1;
-  grid-row: 2;
   min-height: 0;
 }
 .room-description {
@@ -63,12 +54,4 @@
 .presence-name {
   font-size: 16px;
   color: #f3d38a;
-}
-@media (max-width: 820px) {
-  .room-panel,
-  .mud-sidebar,
-  .narrative {
-    grid-column: 1;
-    grid-row: auto;
-  }
 }

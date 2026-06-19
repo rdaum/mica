@@ -1331,7 +1331,7 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
     let coin = runner.named_identity(Symbol::intern("coin")).unwrap();
 
     let report = runner
-        .run_source("return one Exit(#north_room, :south, ?destination)")
+        .run_source("return one Exit(#north_room, \"south\", ?destination)")
         .unwrap();
     assert!(matches!(
         report.outcome,
@@ -1367,7 +1367,9 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
         TaskOutcome::Complete { value, .. } if value == Value::bool(true)
     ));
 
-    let north = runner.run_source("return :north(actor: #alice)").unwrap();
+    let north = runner
+        .run_source("return :go(actor: #alice, direction: \"north\")")
+        .unwrap();
     assert!(matches!(
         north.outcome,
         TaskOutcome::Complete { value, .. } if value == Value::bool(true)
@@ -1391,7 +1393,9 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
         report.render()
     );
 
-    let north = runner.run_source("return :north(actor: #alice)").unwrap();
+    let north = runner
+        .run_source("return :go(actor: #alice, direction: \"north\")")
+        .unwrap();
     assert!(matches!(
         north.outcome,
         TaskOutcome::Complete { value, .. } if value == Value::bool(false)
@@ -1419,7 +1423,9 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
         TaskOutcome::Complete { value, .. } if value == Value::identity(north_room)
     ));
 
-    let up = runner.run_source("return :up(actor: #alice)").unwrap();
+    let up = runner
+        .run_source("return :go(actor: #alice, direction: \"up\")")
+        .unwrap();
     assert!(matches!(
         up.outcome,
         TaskOutcome::Complete { value, .. } if value == Value::bool(true)
@@ -1432,7 +1438,9 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
         TaskOutcome::Complete { value, .. } if value == Value::identity(attic)
     ));
 
-    let down = runner.run_source("return :down(actor: #alice)").unwrap();
+    let down = runner
+        .run_source("return :go(actor: #alice, direction: \"down\")")
+        .unwrap();
     assert!(matches!(
         down.outcome,
         TaskOutcome::Complete { value, .. } if value == Value::bool(true)
@@ -1445,7 +1453,9 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
         TaskOutcome::Complete { value, .. } if value == Value::identity(north_room)
     ));
 
-    let south = runner.run_source("return :south(actor: #alice)").unwrap();
+    let south = runner
+        .run_source("return :go(actor: #alice, direction: \"south\")")
+        .unwrap();
     assert!(matches!(
         south.outcome,
         TaskOutcome::Complete { value, .. } if value == Value::bool(true)
@@ -1457,6 +1467,92 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
         report.outcome,
         TaskOutcome::Complete { value, .. } if value == Value::identity(first_room)
     ));
+
+    let denied = runner
+        .run_source("return :build_room(actor: #bob, name: \"Library\")")
+        .unwrap();
+    assert!(
+        matches!(denied.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(false)),
+        "{}",
+        denied.render()
+    );
+    let report = runner
+        .run_source("return builder/room_named_in_area(#hotel_area, \"Library\")")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::nothing()),
+        "{}",
+        report.render()
+    );
+
+    let built = runner
+        .run_source("return :build_room(actor: #alice, name: \"Library\")")
+        .unwrap();
+    let library = match built.outcome {
+        TaskOutcome::Complete { ref value, .. } if value.frob_delegate().is_some() => value.clone(),
+        _ => panic!("unexpected build outcome: {}", built.render()),
+    };
+    let report = runner
+        .run_source("return builder/room_named_in_area(#hotel_area, \"Library\")")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == library),
+        "{}",
+        report.render()
+    );
+
+    let built = runner
+        .run_source("return :build_room(actor: #alice, name: \"Balcony\")")
+        .unwrap();
+    let balcony = match built.outcome {
+        TaskOutcome::Complete { ref value, .. } if value.frob_delegate().is_some() => value.clone(),
+        _ => panic!("unexpected build outcome: {}", built.render()),
+    };
+    let dug = runner
+        .run_source(
+            "return :create_passage(actor: #alice, from: #first_room, to: builder/room_named_in_area(#hotel_area, \"Balcony\"), label: \"out\", return_label: nothing)",
+        )
+        .unwrap();
+    assert!(
+        matches!(dug.outcome, TaskOutcome::Complete { ref value, .. } if value.frob_delegate().is_some()),
+        "{}",
+        dug.render()
+    );
+    let report = runner
+        .run_source("return one Exit(#first_room, \"out\", ?destination)")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == balcony),
+        "{}",
+        report.render()
+    );
+    let report = runner
+        .run_source("return one Exit(builder/room_named_in_area(#hotel_area, \"Balcony\"), \"in\", ?destination)")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::nothing()),
+        "{}",
+        report.render()
+    );
+
+    let dug = runner
+        .run_source(
+            "return :create_passage(actor: #alice, from: #first_room, to: builder/room_named_in_area(#hotel_area, \"Library\"), label: \"east\", return_label: \"west\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(dug.outcome, TaskOutcome::Complete { ref value, .. } if value.frob_delegate().is_some()),
+        "{}",
+        dug.render()
+    );
+    let report = runner
+        .run_source("return one Exit(#first_room, \"east\", ?destination)")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == library),
+        "{}",
+        report.render()
+    );
 }
 
 #[test]
@@ -1581,6 +1677,45 @@ fn runner_mud_auth_sync_view_tree_renders() {
         TaskOutcome::Complete { value, .. }
             if value.with_str(|text| text.contains("mud-login")).unwrap_or(false)
     ));
+
+    let web = runner.actor_identity(Symbol::intern("web")).unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0021).unwrap();
+    runner
+        .open_endpoint_with_context(endpoint, Some(web), Some(alice), Symbol::intern("http"))
+        .unwrap();
+    let request = runner
+        .source_request_for_endpoint(endpoint, "return to_literal(sync_view_tree(21, 0))")
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value
+                    .with_str(|text| {
+                        text.contains("world-tools")
+                            && text.contains("inspect-current-room")
+                            && text.contains("mud_create_passage")
+                    })
+                    .unwrap_or(false)
+        ),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "return sync_event(endpoint(), nothing, 21, \"submit\", \"\", \"mud_command\", {})",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(false)),
+        "{:?}",
+        report.outcome
+    );
 }
 
 #[test]

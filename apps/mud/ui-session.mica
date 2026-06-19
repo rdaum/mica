@@ -12,14 +12,23 @@ make_identity(:ui/sync_action)
 make_identity(:ui/inspect_action)
 make_identity(:ui/command_action)
 make_identity(:ui/load_older_events_action)
+make_identity(:ui/build_room_action)
+make_identity(:ui/create_passage_action)
+make_identity(:ui/describe_passage_action)
 
 assert ui/View(21)
 assert Delegates(#ui/inspect_action, #ui/sync_action, 0)
 assert Delegates(#ui/command_action, #ui/sync_action, 0)
 assert Delegates(#ui/load_older_events_action, #ui/sync_action, 0)
+assert Delegates(#ui/build_room_action, #ui/sync_action, 0)
+assert Delegates(#ui/create_passage_action, #ui/sync_action, 0)
+assert Delegates(#ui/describe_passage_action, #ui/sync_action, 0)
 "mud_inspect".ui/syncAction = #ui/inspect_action
 "mud_command".ui/syncAction = #ui/command_action
 "mud_load_older_events".ui/syncAction = #ui/load_older_events_action
+"mud_build_room".ui/syncAction = #ui/build_room_action
+"mud_create_passage".ui/syncAction = #ui/create_passage_action
+"mud_describe_passage".ui/syncAction = #ui/describe_passage_action
 
 assert CanInvoke(#web, :sync_event)
 assert CanInvoke(#web, :sync_view_revision)
@@ -82,13 +91,30 @@ assert RoleCanInvoke(#player, :ui/bump_revision)
 assert RoleCanInvoke(#player, :ui/current_actor)
 assert RoleCanInvoke(#player, :ui/ensure_actor_location)
 assert RoleCanInvoke(#player, :ui/entity_from_literal)
+assert RoleCanInvoke(#player, :ui/can_inspect_entity)
+assert RoleCanInvoke(#player, :ui/passage_visible_from)
+assert RoleCanInvoke(#player, :ui/passage_room_for)
+assert RoleCanInvoke(#player, :ui/passage_name)
+assert RoleCanInvoke(#player, :ui/description_text)
 assert RoleCanInvoke(#player, :ui/actor_name)
 assert RoleCanInvoke(#player, :ui/direction_text)
+assert RoleCanInvoke(#player, :ui/can_build)
 assert RoleCanInvoke(#player, :ui/auth_required_node)
 assert RoleCanInvoke(#player, :ui/command_form_node)
 assert RoleCanInvoke(#player, :ui/entity_action_node)
+assert RoleCanInvoke(#player, :ui/passage_action_node)
+assert RoleCanInvoke(#player, :ui/exit_form_node)
 assert RoleCanInvoke(#player, :ui/world_view_node)
 assert RoleCanInvoke(#player, :ui/room_panel_node)
+assert RoleCanInvoke(#player, :ui/world_tools_node)
+assert RoleCanInvoke(#player, :ui/build_controls_node)
+assert RoleCanInvoke(#player, :ui/area_panel_node)
+assert RoleCanInvoke(#player, :ui/area_room_row_node)
+assert RoleCanInvoke(#player, :ui/room_option_nodes)
+assert RoleCanInvoke(#player, :ui/direction_options_node)
+assert RoleCanInvoke(#player, :ui/passage_builder_form_node)
+assert RoleCanInvoke(#player, :ui/passage_editor_node)
+assert RoleCanInvoke(#player, :ui/room_builder_node)
 assert RoleCanInvoke(#player, :ui/scene_summary_node)
 assert RoleCanInvoke(#player, :ui/summary_metric_node)
 assert RoleCanInvoke(#player, :ui/room_object_count)
@@ -144,8 +170,17 @@ assert RoleCanInvoke(#player, :lower)
 assert RoleCanInvoke(#player, :trim)
 assert RoleCanInvoke(#player, :actor)
 assert RoleCanInvoke(#player, :frob)
+assert RoleCanInvoke(#player, :frob_delegate)
 assert RoleCanInvoke(#player, :ui/sync_action_source)
+assert RoleCanInvoke(#player, :ui/form_text)
 assert RoleCanInvoke(#player, :ui/handle_sync_action)
+assert RoleCanInvoke(#player, :build_room)
+assert RoleCanInvoke(#player, :create_passage)
+assert RoleCanInvoke(#player, :set_passage_description)
+assert RoleCanInvoke(#player, :set_passage_side)
+assert RoleCanInvoke(#player, :builder/current_area)
+assert RoleCanInvoke(#player, :builder/room_named_in_area)
+assert RoleCanInvoke(#player, :builder/passage_from)
 assert RoleCanInvoke(#player, :http_request)
 assert RoleCanInvoke(#player, :http/document)
 assert RoleCanInvoke(#player, :http_response)
@@ -162,6 +197,7 @@ assert RoleCanRead(#player, :session/NarrativeLimit)
 assert RoleCanRead(#player, :session/Revision)
 assert RoleCanRead(#player, :ui/View)
 assert RoleCanRead(#player, :ui/SyncAction)
+assert RoleCanRead(#player, :Builder)
 assert RoleCanRead(#player, :HttpRequest)
 assert RoleCanRead(#player, :RequestMethod)
 assert RoleCanRead(#player, :RequestPath)
@@ -176,6 +212,14 @@ assert RoleCanWrite(#player, :session/NarrativeLimit)
 assert RoleCanWrite(#player, :session/Revision)
 
 verb ui/actor_name(obj)
+  if frob_delegate(obj) == #passage
+    let current = ui/current_actor()
+    if current != nothing
+      return ui/passage_name(current, obj)
+    end
+    return "passage"
+  end
+
   let name = obj.name
   if name == nothing
     return to_literal(obj)
@@ -185,6 +229,20 @@ verb ui/actor_name(obj)
 end
 
 verb ui/direction_text(direction)
+  if direction == nothing
+    return ""
+  end
+
+  if direction == "north"
+    return "north"
+  elseif direction == "south"
+    return "south"
+  elseif direction == "up"
+    return "up"
+  elseif direction == "down"
+    return "down"
+  end
+
   if direction == :north
     return "north"
   elseif direction == :south
@@ -195,7 +253,11 @@ verb ui/direction_text(direction)
     return "down"
   end
 
-  return to_literal(direction)
+  return direction
+end
+
+verb ui/can_build(actor @ #player)
+  return Builder(actor) || Delegates(actor, #builder, ?builder_depth)
 end
 
 verb ui/current_actor()
@@ -223,6 +285,61 @@ verb ui/entity_from_literal(text)
   end
 
   return from_literal(text)
+end
+
+verb ui/passage_visible_from(actor @ #player, passage)
+  let room = actor.locatedIn
+  if room == nothing
+    return false
+  end
+
+  return PassageSide(passage, room, ?destination)
+end
+
+verb ui/passage_room_for(actor @ #player, passage)
+  let room = actor.locatedIn
+  if room != nothing && PassageSide(passage, room, ?destination)
+    return room
+  end
+
+  return nothing
+end
+
+verb ui/passage_name(actor @ #player, passage)
+  let room = ui/passage_room_for(actor, passage)
+  if room == nothing
+    return "passage"
+  end
+
+  return passage/label_for(passage, room)
+end
+
+verb ui/description_text(actor @ #player, entity)
+  if frob_delegate(entity) == #passage
+    let room = ui/passage_room_for(actor, entity)
+    if room == nothing
+      return ""
+    end
+    return passage/describe_from(entity, room)
+  end
+
+  return entity.description
+end
+
+verb ui/can_inspect_entity(actor @ #player, entity)
+  if entity == nothing
+    return false
+  end
+
+  if CanSee(actor, entity)
+    return true
+  end
+
+  if ui/can_build(actor) && Delegates(entity, #room, 0) && entity.roomInArea == builder/current_area(actor)
+    return true
+  end
+
+  return frob_delegate(entity) == #passage && ui/passage_visible_from(actor, entity)
 end
 
 verb ui/can_program(actor @ #player)

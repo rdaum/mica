@@ -26,6 +26,15 @@ verb ui/sync_action_source(action)
   return frob(delegate, action)
 end
 
+verb ui/form_text(fields, key)
+  let value = fields[key]
+  if value == nothing
+    return ""
+  end
+
+  return trim(value)
+end
+
 verb ui/handle_sync_action(source @ #ui/sync_action<_>, endpoint, session, view, event, target, fields)
   return false
 end
@@ -56,7 +65,7 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
   end
 
   let selected = ui/entity_from_literal(fields[:entity])
-  if selected == nothing || CanSee(current, selected) == false
+  if ui/can_inspect_entity(current, selected) == false
     return false
   end
 
@@ -84,7 +93,7 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
     return false
   end
 
-  let line = trim(fields[:text])
+  let line = ui/form_text(fields, :text)
   if line == ""
     return false
   end
@@ -109,6 +118,134 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
   let handled = command(current, endpoint, line)
   ui/bump_revision(endpoint())
   return handled
+end
+
+verb ui/handle_sync_action(source @ #ui/build_room_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
+    return false
+  end
+
+  let current = ui/current_actor()
+  if current == nothing || ui/can_build(current) == false
+    return false
+  end
+
+  let name = ui/form_text(fields, :name)
+  if name == ""
+    return false
+  end
+
+  let built = build_room(current, name)
+  if built != false
+    let direction = ui/form_text(fields, :direction)
+    if direction != ""
+      let source_room = current.locatedIn
+      let source_literal = fields[:source]
+      if source_literal != nothing && ui/form_text(fields, :source) != ""
+        let parsed_source = ui/entity_from_literal(source_literal)
+        if Delegates(parsed_source, #room, 0)
+          source_room = parsed_source
+        end
+      end
+      let return_direction = ui/form_text(fields, :return_direction)
+      if fields[:one_way] == "true"
+        return_direction = nothing
+      end
+      create_passage(current, source_room, built, direction, return_direction)
+    end
+  end
+  ui/bump_revision(endpoint())
+  return built != false
+end
+
+verb ui/handle_sync_action(source @ #ui/create_passage_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
+    return false
+  end
+
+  let current = ui/current_actor()
+  if current == nothing || ui/can_build(current) == false
+    return false
+  end
+
+  let direction = ui/form_text(fields, :direction)
+  let source_name = ui/form_text(fields, :source)
+  let target_name = ui/form_text(fields, :target)
+  if direction == "" || target_name == ""
+    return false
+  end
+
+  let area = builder/current_area(current)
+  if area == nothing
+    return false
+  end
+
+  let source_room = current.locatedIn
+  if source_name != ""
+    source_room = builder/room_named_in_area(area, source_name)
+    if source_room == nothing
+      event/notify(current, "No source room by that name exists in this area.")
+      ui/bump_revision(endpoint())
+      return false
+    end
+  end
+
+  let target_room = builder/room_named_in_area(area, target_name)
+  if target_room == nothing
+    event/notify(current, "No room by that name exists in this area.")
+    ui/bump_revision(endpoint())
+    return false
+  end
+
+  let return_direction = ui/form_text(fields, :return_direction)
+  if fields[:one_way] == "true"
+    return_direction = nothing
+  end
+
+  let passage = create_passage(current, source_room, target_room, direction, return_direction)
+  ui/bump_revision(endpoint())
+  return passage != false
+end
+
+verb ui/handle_sync_action(source @ #ui/describe_passage_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
+    return false
+  end
+
+  let current = ui/current_actor()
+  if current == nothing || ui/can_build(current) == false
+    return false
+  end
+
+  let direction = ui/form_text(fields, :direction)
+  let description = ui/form_text(fields, :description)
+  if direction == "" || description == ""
+    return false
+  end
+
+  let room = current.locatedIn
+  let room_literal = fields[:room]
+  if room_literal != nothing && ui/form_text(fields, :room) != ""
+    let parsed_room = ui/entity_from_literal(room_literal)
+    if Delegates(parsed_room, #room, 0)
+      room = parsed_room
+    end
+  end
+
+  let passage = ui/entity_from_literal(fields[:passage])
+  if passage == nothing
+    passage = builder/passage_from(room, direction)
+  end
+  if passage == nothing
+    event/notify(current, "No passage matches that direction.")
+    ui/bump_revision(endpoint())
+    return false
+  end
+
+  let ambient = fields[:ambient] == "true"
+  let updated = set_passage_side(current, passage, room, direction, description, ambient)
+  ui/bump_revision(endpoint())
+  return updated
 end
 
 verb sync_event(endpoint, session, view, event, target, action, fields)

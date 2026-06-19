@@ -6,10 +6,13 @@
 
 make_identity(:player)
 make_identity(:programmer)
+make_identity(:builder)
 make_identity(:thing)
 make_identity(:portable)
 make_identity(:container)
 make_identity(:room)
+make_identity(:area)
+make_identity(:passage)
 make_identity(:event/movement)
 make_identity(:event/arrival)
 make_identity(:event/take)
@@ -32,15 +35,13 @@ make_identity(:red_button)
 make_identity(:first_room)
 make_identity(:north_room)
 make_identity(:attic)
+make_identity(:hotel_area)
 make_identity(:bob)
 
 make_identity(:command/pattern/look_room)
 make_identity(:command/pattern/look_target)
 make_identity(:command/pattern/look_inside)
-make_identity(:command/pattern/north)
-make_identity(:command/pattern/south)
-make_identity(:command/pattern/up)
-make_identity(:command/pattern/down)
+make_identity(:command/pattern/message_command)
 make_identity(:command/pattern/get)
 make_identity(:command/pattern/get_from)
 make_identity(:command/pattern/drop)
@@ -60,6 +61,7 @@ make_relation(:Portable, 1)
 make_functional_relation(:Name, 2, [0])
 make_functional_relation(:Description, 2, [0])
 make_functional_relation(:LocatedIn, 2, [0])
+make_functional_relation(:RoomInArea, 2, [0])
 make_relation(:ProperNoun, 1)
 make_relation(:Plural, 1)
 make_functional_relation(:PronounSubject, 2, [0])
@@ -68,10 +70,16 @@ make_functional_relation(:PronounPossessiveAdjective, 2, [0])
 make_functional_relation(:PronounPossessiveNoun, 2, [0])
 make_functional_relation(:PronounReflexive, 2, [0])
 
-// A durable bidirectional-exit fact records one author-facing connection. The
-// derived Exit relation exposes both directions for command handling and query.
-make_relation(:BidirectionalExit, 4)
+make_relation(:PassageInArea, 2)
+make_relation(:PassageSide, 3)
+make_functional_relation(:PassageLabel, 3, [0, 1])
+make_relation(:PassageAlias, 3)
+make_functional_relation(:PassageDescription, 3, [0, 1])
+make_functional_relation(:PassageAmbient, 3, [0, 1])
+make_functional_relation(:PassageOpen, 2, [0])
 make_relation(:Exit, 3)
+make_relation(:ReachableRoom, 3)
+make_relation(:Builder, 1)
 
 // Recursive containment/location views.
 make_relation(:Within, 2)
@@ -118,6 +126,7 @@ assert Delegates(#portable, #thing, 0)
 assert Delegates(#container, #thing, 0)
 assert Delegates(#player, #thing, 0)
 assert Delegates(#alice, #programmer, 0)
+assert Delegates(#alice, #builder, 0)
 assert Delegates(#event/movement, #event, 0)
 assert Delegates(#event/arrival, #event, 0)
 assert Delegates(#event/take, #event, 0)
@@ -140,6 +149,7 @@ assert Delegates(#red_button, #thing, 0)
 assert Delegates(#first_room, #room, 0)
 assert Delegates(#north_room, #room, 0)
 assert Delegates(#attic, #room, 0)
+assert Delegates(#hotel_area, #area, 0)
 
 assert Portable(#coin)
 
@@ -151,6 +161,7 @@ assert Portable(#coin)
 #first_room.name = "First Room"
 #north_room.name = "North Room"
 #attic.name = "Dusty Attic"
+#hotel_area.name = "Timbran Hotel"
 assert ProperNoun(#alice)
 assert ProperNoun(#bob)
 assert PronounSubject(#alice, "she")
@@ -172,6 +183,7 @@ assert PronounReflexive(#bob, "himself")
 #first_room.description = "First Room. You are standing in a plain stone room."
 #north_room.description = "North Room. It is quieter here, and the ceiling slopes upward."
 #attic.description = "Dusty Attic. Old beams vanish into shadow."
+#hotel_area.description = "A development and demonstration area for the Timbran Hotel."
 
 #alice.locatedIn = #first_room
 #bob.locatedIn = #first_room
@@ -179,19 +191,53 @@ assert PronounReflexive(#bob, "himself")
 #box.locatedIn = #first_room
 #red_button.locatedIn = #first_room
 
-assert BidirectionalExit(#first_room, :north, :south, #north_room)
-assert BidirectionalExit(#north_room, :up, :down, #attic)
+#first_room.roomInArea = #hotel_area
+#north_room.roomInArea = #hotel_area
+#attic.roomInArea = #hotel_area
+
+assert Builder(#alice)
+
+assert PassageInArea(#passage<[#first_room, #north_room, "north"]>, #hotel_area)
+assert PassageSide(#passage<[#first_room, #north_room, "north"]>, #first_room, #north_room)
+assert PassageSide(#passage<[#first_room, #north_room, "north"]>, #north_room, #first_room)
+assert PassageLabel(#passage<[#first_room, #north_room, "north"]>, #first_room, "north")
+assert PassageLabel(#passage<[#first_room, #north_room, "north"]>, #north_room, "south")
+assert PassageAlias(#passage<[#first_room, #north_room, "north"]>, #first_room, "north")
+assert PassageAlias(#passage<[#first_room, #north_room, "north"]>, #first_room, "n")
+assert PassageAlias(#passage<[#first_room, #north_room, "north"]>, #north_room, "south")
+assert PassageAlias(#passage<[#first_room, #north_room, "north"]>, #north_room, "s")
+assert PassageDescription(#passage<[#first_room, #north_room, "north"]>, #first_room, "A northern archway leads deeper into the hotel.")
+assert PassageDescription(#passage<[#first_room, #north_room, "north"]>, #north_room, "The way south returns to the first room.")
+assert PassageAmbient(#passage<[#first_room, #north_room, "north"]>, #first_room, true)
+assert PassageAmbient(#passage<[#first_room, #north_room, "north"]>, #north_room, false)
+assert PassageOpen(#passage<[#first_room, #north_room, "north"]>, true)
+
+assert PassageInArea(#passage<[#north_room, #attic, "up"]>, #hotel_area)
+assert PassageSide(#passage<[#north_room, #attic, "up"]>, #north_room, #attic)
+assert PassageSide(#passage<[#north_room, #attic, "up"]>, #attic, #north_room)
+assert PassageLabel(#passage<[#north_room, #attic, "up"]>, #north_room, "up")
+assert PassageLabel(#passage<[#north_room, #attic, "up"]>, #attic, "down")
+assert PassageAlias(#passage<[#north_room, #attic, "up"]>, #north_room, "up")
+assert PassageAlias(#passage<[#north_room, #attic, "up"]>, #north_room, "u")
+assert PassageAlias(#passage<[#north_room, #attic, "up"]>, #attic, "down")
+assert PassageAlias(#passage<[#north_room, #attic, "up"]>, #attic, "d")
+assert PassageDescription(#passage<[#north_room, #attic, "up"]>, #north_room, "A narrow stair climbs into the attic.")
+assert PassageDescription(#passage<[#north_room, #attic, "up"]>, #attic, "The stair descends to the north room.")
+assert PassageAmbient(#passage<[#north_room, #attic, "up"]>, #north_room, true)
+assert PassageAmbient(#passage<[#north_room, #attic, "up"]>, #attic, false)
+assert PassageOpen(#passage<[#north_room, #attic, "up"]>, true)
 
 assert command/VerbAlias("l", :look)
 assert command/VerbAlias("look", :look)
-assert command/VerbAlias("n", :north)
-assert command/VerbAlias("north", :north)
-assert command/VerbAlias("s", :south)
-assert command/VerbAlias("south", :south)
-assert command/VerbAlias("u", :up)
-assert command/VerbAlias("up", :up)
-assert command/VerbAlias("d", :down)
-assert command/VerbAlias("down", :down)
+assert command/VerbAlias("build", :build_room_command)
+assert command/VerbAlias("@build", :build_room_command)
+assert command/VerbAlias("dig", :create_passage_command)
+assert command/VerbAlias("@dig", :create_passage_command)
+assert command/VerbAlias("tunnel", :create_passage_command)
+assert command/VerbAlias("@tunnel", :create_passage_command)
+assert command/VerbAlias("undig", :remove_passage_command)
+assert command/VerbAlias("@undig", :remove_passage_command)
+assert command/VerbAlias("describe-exit", :set_passage_description_command)
 assert command/VerbAlias("get", :get)
 assert command/VerbAlias("take", :get)
 assert command/VerbAlias("drop", :drop)
@@ -231,10 +277,10 @@ assert command/VerbAlias("yawn", :yawn)
 assert command/VerbAlias("stretch", :stretch)
 
 assert command/Form(:look)
-assert command/Form(:north)
-assert command/Form(:south)
-assert command/Form(:up)
-assert command/Form(:down)
+assert command/Form(:build_room_command)
+assert command/Form(:create_passage_command)
+assert command/Form(:remove_passage_command)
+assert command/Form(:set_passage_description_command)
 assert command/Form(:get)
 assert command/Form(:drop)
 assert command/Form(:put)
@@ -270,17 +316,11 @@ assert command/Pattern(:look, :look_in, #command/pattern/look_inside)
 assert command/PatternPart(#command/pattern/look_inside, 0, :prep, :inside)
 assert command/PatternPart(#command/pattern/look_inside, 1, :object_role, :target)
 
-assert command/Pattern(:north, :north, #command/pattern/north)
-assert command/PatternPart(#command/pattern/north, 0, :eol, nothing)
-
-assert command/Pattern(:south, :south, #command/pattern/south)
-assert command/PatternPart(#command/pattern/south, 0, :eol, nothing)
-
-assert command/Pattern(:up, :up, #command/pattern/up)
-assert command/PatternPart(#command/pattern/up, 0, :eol, nothing)
-
-assert command/Pattern(:down, :down, #command/pattern/down)
-assert command/PatternPart(#command/pattern/down, 0, :eol, nothing)
+assert command/Pattern(:build_room_command, :build_room_command, #command/pattern/message_command)
+assert command/Pattern(:create_passage_command, :create_passage_command, #command/pattern/message_command)
+assert command/Pattern(:remove_passage_command, :remove_passage_command, #command/pattern/message_command)
+assert command/Pattern(:set_passage_description_command, :set_passage_description_command, #command/pattern/message_command)
+assert command/PatternPart(#command/pattern/message_command, 0, :message, nothing)
 
 assert command/Pattern(:get, :get, #command/pattern/get)
 assert command/PatternPart(#command/pattern/get, 0, :object_role, :item)
@@ -357,6 +397,10 @@ assert command/MissingArgumentMessage(:put, "Put what?")
 assert command/MissingArgumentMessage(:push, "Push what?")
 assert command/MissingArgumentMessage(:say, "Say what?")
 assert command/MissingArgumentMessage(:emote, "Emote what?")
+assert command/MissingArgumentMessage(:build_room_command, "Build what?")
+assert command/MissingArgumentMessage(:create_passage_command, "Dig where?")
+assert command/MissingArgumentMessage(:remove_passage_command, "Remove which passage?")
+assert command/MissingArgumentMessage(:set_passage_description_command, "Describe which exit?")
 assert command/MissingArgumentMessage(:nod_at, "Nod at who?")
 assert command/MissingArgumentMessage(:nod_to, "Nod to who?")
 assert command/MissingArgumentMessage(:wave_at, "Wave at who?")
@@ -373,10 +417,14 @@ assert command/Role(:examine, :actor, :identity)
 assert command/Role(:examine, :target, :thing)
 assert command/Role(:look_in, :actor, :identity)
 assert command/Role(:look_in, :target, :container)
-assert command/Role(:north, :actor, :identity)
-assert command/Role(:south, :actor, :identity)
-assert command/Role(:up, :actor, :identity)
-assert command/Role(:down, :actor, :identity)
+assert command/Role(:build_room_command, :actor, :identity)
+assert command/Role(:build_room_command, :message, :string)
+assert command/Role(:create_passage_command, :actor, :identity)
+assert command/Role(:create_passage_command, :message, :string)
+assert command/Role(:remove_passage_command, :actor, :identity)
+assert command/Role(:remove_passage_command, :message, :string)
+assert command/Role(:set_passage_description_command, :actor, :identity)
+assert command/Role(:set_passage_description_command, :message, :string)
 assert command/Role(:get, :actor, :identity)
 assert command/Role(:get, :item, :thing)
 assert command/Role(:get_from, :actor, :identity)
@@ -448,11 +496,13 @@ assert command/TrustedForGrammar(#player, #bob)
 assert command/TrustedForGrammar(#player, #first_room)
 assert command/TrustedForGrammar(#player, #north_room)
 assert command/TrustedForGrammar(#player, #attic)
+assert command/TrustedForGrammar(#player, #builder)
 
 assert RoleCanRead(#player, :Name)
 assert RoleCanRead(#player, :Delegates)
 assert RoleCanRead(#player, :Description)
 assert RoleCanRead(#player, :LocatedIn)
+assert RoleCanRead(#player, :RoomInArea)
 assert RoleCanRead(#player, :ProperNoun)
 assert RoleCanRead(#player, :Plural)
 assert RoleCanRead(#player, :PronounSubject)
@@ -461,8 +511,16 @@ assert RoleCanRead(#player, :PronounPossessiveAdjective)
 assert RoleCanRead(#player, :PronounPossessiveNoun)
 assert RoleCanRead(#player, :PronounReflexive)
 assert RoleCanRead(#player, :Portable)
-assert RoleCanRead(#player, :BidirectionalExit)
+assert RoleCanRead(#player, :PassageInArea)
+assert RoleCanRead(#player, :PassageSide)
+assert RoleCanRead(#player, :PassageLabel)
+assert RoleCanRead(#player, :PassageAlias)
+assert RoleCanRead(#player, :PassageDescription)
+assert RoleCanRead(#player, :PassageAmbient)
+assert RoleCanRead(#player, :PassageOpen)
 assert RoleCanRead(#player, :Exit)
+assert RoleCanRead(#player, :ReachableRoom)
+assert RoleCanRead(#player, :Builder)
 assert RoleCanRead(#player, :Within)
 assert RoleCanRead(#player, :Contents)
 assert RoleCanRead(#player, :Carrying)
@@ -497,6 +555,20 @@ assert RoleCanWrite(#player, :event/Delivery)
 assert RoleCanWrite(#player, :event/Seq)
 assert RoleCanWrite(#player, :event/Text)
 assert RoleCanWrite(#player, :event/Source)
+assert RoleCanWrite(#player, :Name)
+assert RoleCanWrite(#player, :Description)
+assert RoleCanWrite(#player, :RoomInArea)
+assert RoleCanWrite(#player, :PassageInArea)
+assert RoleCanWrite(#player, :PassageSide)
+assert RoleCanWrite(#player, :PassageLabel)
+assert RoleCanWrite(#player, :PassageAlias)
+assert RoleCanWrite(#player, :PassageDescription)
+assert RoleCanWrite(#player, :PassageAmbient)
+assert RoleCanWrite(#player, :PassageOpen)
+assert RoleCanWrite(#player, :command/Noun)
+assert RoleCanWrite(#player, :command/NounAlias)
+assert RoleCanWrite(#player, :command/TrustedForName)
+assert RoleCanWrite(#player, :command/TrustedForGrammar)
 
 assert RoleCanInvoke(#player, :command)
 assert RoleCanInvoke(#player, :command/match_object)
@@ -505,10 +577,8 @@ assert RoleCanInvoke(#player, :look)
 assert RoleCanInvoke(#player, :examine)
 assert RoleCanInvoke(#player, :look_in)
 assert RoleCanInvoke(#player, :go)
-assert RoleCanInvoke(#player, :north)
-assert RoleCanInvoke(#player, :south)
-assert RoleCanInvoke(#player, :up)
-assert RoleCanInvoke(#player, :down)
+assert RoleCanInvoke(#player, :passage/label_for)
+assert RoleCanInvoke(#player, :passage/describe_from)
 assert RoleCanInvoke(#player, :event/from_template)
 assert RoleCanInvoke(#player, :event/narrative)
 assert RoleCanInvoke(#player, :event/bindings)
@@ -627,6 +697,26 @@ assert RoleCanInvoke(#player, :string_starts_with)
 assert RoleCanInvoke(#player, :string_contains)
 assert RoleCanInvoke(#player, :parse_ordinal)
 assert RoleCanInvoke(#player, :edit_distance)
+assert RoleCanInvoke(#player, :ui/can_build)
+assert RoleCanInvoke(#player, :build_room)
+assert RoleCanInvoke(#player, :build_room_command)
+assert RoleCanInvoke(#player, :create_passage)
+assert RoleCanInvoke(#player, :create_passage_command)
+assert RoleCanInvoke(#player, :remove_passage)
+assert RoleCanInvoke(#player, :remove_passage_command)
+assert RoleCanInvoke(#player, :set_passage_description)
+assert RoleCanInvoke(#player, :set_passage_side)
+assert RoleCanInvoke(#player, :set_passage_description_command)
+assert RoleCanInvoke(#player, :builder/can_modify)
+assert RoleCanInvoke(#player, :builder/current_area)
+assert RoleCanInvoke(#player, :builder/room_value)
+assert RoleCanInvoke(#player, :builder/room_named_in_area)
+assert RoleCanInvoke(#player, :builder/passage_value)
+assert RoleCanInvoke(#player, :builder/passage_between)
+assert RoleCanInvoke(#player, :builder/passage_from)
+assert RoleCanInvoke(#player, :builder/opposite_direction)
+assert RoleCanInvoke(#player, :builder/parse_dig)
+assert RoleCanInvoke(#player, :builder/parse_describe_exit)
 
 assert RoleCanEffect(#player)
 
@@ -638,11 +728,21 @@ command/TrustedForGrammar(actor, provider) :-
   Delegates(actor, #player, ?distance),
   command/TrustedForGrammar(#player, provider)
 
-Exit(from, direction, to) :-
-  BidirectionalExit(from, direction, reverse, to)
+Exit(from, command, to) :-
+  PassageSide(passage, from, to),
+  PassageAlias(passage, from, command),
+  PassageOpen(passage, true)
 
-Exit(to, reverse, from) :-
-  BidirectionalExit(from, direction, reverse, to)
+ReachableRoom(area, from, to) :-
+  RoomInArea(from, area),
+  RoomInArea(to, area),
+  Exit(from, command, to)
+
+ReachableRoom(area, from, to) :-
+  RoomInArea(from, area),
+  RoomInArea(to, area),
+  Exit(from, command, middle),
+  ReachableRoom(area, middle, to)
 
 Within(item, place) :-
   LocatedIn(item, place)
@@ -849,37 +949,364 @@ verb look_in(actor @ #player, target @ #container)
   return true
 end
 
-verb north(actor @ #player)
-  return :go(actor: actor, direction: :north, leave: "{Actor} {walk|walks} north.", arrive: "{Actor} {arrive|arrives} from the south.")
+verb passage/label_for(passage, room)
+  let label = one PassageLabel(passage, room, ?label)
+  if label == nothing
+    label = one PassageAlias(passage, room, ?alias)
+  end
+  if label == nothing
+    label = "somewhere"
+  end
+
+  return label
 end
 
-verb south(actor @ #player)
-  return :go(actor: actor, direction: :south, leave: "{Actor} {walk|walks} south.", arrive: "{Actor} {arrive|arrives} from the north.")
+verb passage/describe_from(passage, room)
+  let description = one PassageDescription(passage, room, ?description)
+  if description != nothing
+    return description
+  end
+
+  return passage/label_for(passage, room)
 end
 
-verb up(actor @ #player)
-  return :go(actor: actor, direction: :up, leave: "{Actor} {climb|climbs} up.", arrive: "{Actor} {arrive|arrives} from below.")
-end
-
-verb down(actor @ #player)
-  return :go(actor: actor, direction: :down, leave: "{Actor} {climb|climbs} down.", arrive: "{Actor} {arrive|arrives} from above.")
-end
-
-verb go(actor @ #player, direction, leave, arrive)
+verb go(actor @ #player, direction)
   let room = actor.locatedIn
-  let destination = one Exit(room, direction, ?destination)
+  let passage_id = nothing
+  let destination = nothing
+  for found in PassageSide(?passage, room, ?candidate)
+    let candidate_passage = found[:passage]
+    if passage_id == nothing && PassageAlias(candidate_passage, room, direction) && PassageOpen(candidate_passage, true)
+      passage_id = candidate_passage
+      destination = found[:candidate]
+    end
+  end
 
   if destination == nothing
     event/notify(actor, "You cannot go that way.")
     return false
   end
 
-  let bindings = {:actor -> actor}
-  :emit_room_event(room: room, event: event/scene(#event/movement, "movement", "event-line movement", leave, bindings))
+  let from_label = passage/label_for(passage_id, room)
+  let to_label = passage/label_for(passage_id, destination)
+  let from_description = passage/describe_from(passage_id, room)
+  let to_description = passage/describe_from(passage_id, destination)
+  let bindings = {:actor -> actor, :message -> from_label, :passage -> passage_id}
+  :emit_room_event(room: room, event: event/scene(#event/movement, "movement", "event-line movement", "{Actor} {go|goes} {message}.", bindings))
   actor.locatedIn = destination
-  :emit_room_event_except(room: destination, skipped: actor, event: event/scene(#event/arrival, "movement", "event-line movement", arrive, bindings))
+  bindings[:message] = to_label
+  :emit_room_event_except(room: destination, skipped: actor, event: event/scene(#event/arrival, "movement", "event-line movement", "{Actor} {arrive|arrives} from {message}.", bindings))
   event/notify(actor, destination.description)
   return true
+end
+
+verb builder/can_modify(actor @ #player)
+  if Builder(actor) || Delegates(actor, #builder, ?builder_depth)
+    return true
+  end
+
+  event/notify(actor, "You need builder permission to do that.")
+  return false
+end
+
+verb builder/current_area(actor @ #player)
+  let room = actor.locatedIn
+  let area = room.roomInArea
+  if area == nothing
+    event/notify(actor, "This room is not in an area.")
+  end
+
+  return area
+end
+
+verb builder/room_value(actor @ #player, name @ #string)
+  return frob(#room, [actor, lower(trim(name))])
+end
+
+verb builder/passage_value(from @ #room, to @ #room, label @ #string)
+  return frob(#passage, [from, to, lower(trim(label))])
+end
+
+verb builder/room_named_in_area(area @ #area, name @ #string)
+  let wanted = lower(trim(name))
+  for found in RoomInArea(?room, area)
+    let room = found[:room]
+    let room_name = room.name
+    if room_name != nothing && lower(room_name) == wanted
+      return room
+    end
+  end
+
+  return nothing
+end
+
+verb builder/passage_between(from @ #room, to @ #room)
+  for found in PassageSide(?passage, from, to)
+    return found[:passage]
+  end
+
+  return nothing
+end
+
+verb builder/passage_from(from @ #room, command @ #string)
+  let direction = lower(trim(command))
+  for found in PassageAlias(?passage, from, direction)
+    if PassageSide(found[:passage], from, ?destination)
+      return found[:passage]
+    end
+  end
+
+  return nothing
+end
+
+verb builder/opposite_direction(direction @ #string)
+  let dir = lower(trim(direction))
+  if dir == "north" || dir == "n"
+    return "south"
+  elseif dir == "south" || dir == "s"
+    return "north"
+  elseif dir == "east" || dir == "e"
+    return "west"
+  elseif dir == "west" || dir == "w"
+    return "east"
+  elseif dir == "up" || dir == "u"
+    return "down"
+  elseif dir == "down" || dir == "d"
+    return "up"
+  elseif dir == "in" || dir == "i"
+    return "out"
+  elseif dir == "out" || dir == "o"
+    return "in"
+  end
+
+  return ""
+end
+
+verb build_room(actor @ #player, name @ #string)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  let area = builder/current_area(actor)
+  if area == nothing
+    return false
+  end
+
+  let trimmed = trim(name)
+  if trimmed == ""
+    event/notify(actor, "Build what?")
+    return false
+  end
+
+  let existing = builder/room_named_in_area(area, trimmed)
+  if existing != nothing
+    event/notify(actor, "That room already exists in this area.")
+    return false
+  end
+
+  let room = builder/room_value(actor, trimmed)
+  room.name = trimmed
+  room.description = string_concat(trimmed, ". An empty room awaiting a description.")
+  room.roomInArea = area
+  assert command/Noun(room, lower(trimmed))
+  assert command/TrustedForName(#player, room)
+  assert command/TrustedForGrammar(#player, room)
+  event/notify(actor, string_concat("Built ", trimmed, "."))
+  return room
+end
+
+verb build_room_command(actor @ #player, message @ #string)
+  return build_room(actor, message)
+end
+
+verb builder/parse_dig(spec @ #string)
+  let tokens = words(lower(spec))
+  if tokens[0] == nothing || tokens[1] != "to"
+    return {:ok -> false}
+  end
+
+  let direction = tokens[0]
+  let target_words = []
+  let index = 2
+  while tokens[index] != nothing
+    target_words = [@target_words, tokens[index]]
+    index = index + 1
+  end
+
+  return {:ok -> true, :direction -> direction, :target -> string_join(target_words, " ")}
+end
+
+verb create_passage(actor @ #player, from @ #room, to @ #room, label @ #string, return_label)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  let from_area = from.roomInArea
+  let to_area = to.roomInArea
+  if from_area == nothing || to_area == nothing || from_area != to_area
+    event/notify(actor, "Passages can only connect rooms in the same area.")
+    return false
+  end
+
+  let existing = builder/passage_between(from, to)
+  if existing != nothing
+    event/notify(actor, "Those rooms already have a passage.")
+    return false
+  end
+
+  let direction = lower(trim(label))
+  if direction == ""
+    event/notify(actor, "Dig where?")
+    return false
+  end
+
+  let reverse = ""
+  if return_label != nothing
+    reverse = lower(trim(return_label))
+    if reverse == ""
+      reverse = builder/opposite_direction(direction)
+    end
+  end
+
+  let passage = builder/passage_value(from, to, direction)
+  assert PassageInArea(passage, from_area)
+  assert PassageSide(passage, from, to)
+  assert PassageLabel(passage, from, direction)
+  assert PassageAlias(passage, from, direction)
+  assert PassageDescription(passage, from, string_concat("A passage leads ", direction, "."))
+  assert PassageAmbient(passage, from, true)
+  if reverse != ""
+    assert PassageSide(passage, to, from)
+    assert PassageLabel(passage, to, reverse)
+    assert PassageAlias(passage, to, reverse)
+    assert PassageDescription(passage, to, string_concat("A passage leads ", reverse, "."))
+    assert PassageAmbient(passage, to, false)
+  end
+  assert PassageOpen(passage, true)
+  event/notify(actor, "Passage created.")
+  return passage
+end
+
+verb create_passage_command(actor @ #player, message @ #string)
+  let parsed = builder/parse_dig(message)
+  if parsed[:ok] == false
+    event/notify(actor, "Usage: dig <direction> to <room name>.")
+    return false
+  end
+
+  let area = builder/current_area(actor)
+  if area == nothing
+    return false
+  end
+
+  let target = builder/room_named_in_area(area, parsed[:target])
+  if target == nothing
+    event/notify(actor, "No room by that name exists in this area.")
+    return false
+  end
+
+  return create_passage(actor, actor.locatedIn, target, parsed[:direction], "")
+end
+
+verb remove_passage(actor @ #player, passage)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  retract PassageInArea(passage, _)
+  retract PassageSide(passage, _, _)
+  retract PassageLabel(passage, _, _)
+  retract PassageAlias(passage, _, _)
+  retract PassageDescription(passage, _, _)
+  retract PassageAmbient(passage, _, _)
+  retract PassageOpen(passage, _)
+  event/notify(actor, "Passage removed.")
+  return true
+end
+
+verb remove_passage_command(actor @ #player, message @ #string)
+  let passage = builder/passage_from(actor.locatedIn, message)
+  if passage == nothing
+    event/notify(actor, "No passage matches that direction.")
+    return false
+  end
+
+  return remove_passage(actor, passage)
+end
+
+verb set_passage_description(actor @ #player, passage, room @ #room, description @ #string, ambient)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  if PassageSide(passage, room, ?destination) == false
+    event/notify(actor, "That passage is not connected to this room.")
+    return false
+  end
+
+  retract PassageDescription(passage, room, _)
+  retract PassageAmbient(passage, room, _)
+  assert PassageDescription(passage, room, description)
+  assert PassageAmbient(passage, room, ambient)
+  event/notify(actor, "Passage description updated.")
+  return true
+end
+
+verb set_passage_side(actor @ #player, passage, room @ #room, label @ #string, description @ #string, ambient)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  if PassageSide(passage, room, ?destination) == false
+    event/notify(actor, "That passage is not connected to this room.")
+    return false
+  end
+
+  let direction = lower(trim(label))
+  if direction == ""
+    event/notify(actor, "Direction is required.")
+    return false
+  end
+
+  retract PassageLabel(passage, room, _)
+  retract PassageAlias(passage, room, _)
+  retract PassageDescription(passage, room, _)
+  retract PassageAmbient(passage, room, _)
+  assert PassageLabel(passage, room, direction)
+  assert PassageAlias(passage, room, direction)
+  assert PassageDescription(passage, room, description)
+  assert PassageAmbient(passage, room, ambient)
+  event/notify(actor, "Passage updated.")
+  return true
+end
+
+verb builder/parse_describe_exit(spec @ #string)
+  let lowered = lower(spec)
+  let tokens = words(lowered)
+  if tokens[0] == nothing || tokens[1] == nothing
+    return {:ok -> false}
+  end
+
+  let direction = tokens[0]
+  let offset = string_len(direction)
+  let description = trim(string_slice(spec, offset, string_len(spec)))
+  return {:ok -> description != "", :direction -> direction, :description -> description}
+end
+
+verb set_passage_description_command(actor @ #player, message @ #string)
+  let parsed = builder/parse_describe_exit(message)
+  if parsed[:ok] == false
+    event/notify(actor, "Usage: describe-exit <direction> <description>.")
+    return false
+  end
+
+  let passage = builder/passage_from(actor.locatedIn, parsed[:direction])
+  if passage == nothing
+    event/notify(actor, "No passage matches that direction.")
+    return false
+  end
+
+  return set_passage_description(actor, passage, actor.locatedIn, parsed[:description], true)
 end
 
 verb get(actor @ #player, item @ #thing)

@@ -105,6 +105,26 @@ verb command(actor @ #player, endpoint, line)
     return false
   end
 
+  if tokens[0] == "go"
+    if tokens[1] == nothing
+      event/notify_to(actor, endpoint, "Go where?")
+      return false
+    end
+    return :go(actor: actor, direction: tokens[1])
+  end
+
+  if one Exit(actor.locatedIn, tokens[0], ?destination) != nothing
+    return :go(actor: actor, direction: tokens[0])
+  end
+
+  let known_direction = false
+  for found in PassageAlias(?passage, ?room, tokens[0])
+    known_direction = true
+  end
+  if known_direction
+    return :go(actor: actor, direction: tokens[0])
+  end
+
   let selector = one command/VerbAlias(tokens[0], ?selector)
   if selector == nothing
     event/notify_to(actor, endpoint, "I do not understand that.")
