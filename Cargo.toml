@@ -71,6 +71,7 @@ rusty_paseto = { version = "0.10", default-features = false, features = ["batter
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+signal-hook = "0.4"
 time = "0.3"
 tokio = "1.49"
 tracing = "0.1"

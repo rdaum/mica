@@ -11,13 +11,14 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use compio::net::TcpListener;
-use compio::runtime::Runtime;
+use compio::runtime::{JoinHandle, Runtime};
 use fast_telemetry_export::dogstatsd::DogStatsDConfig;
 use mica_auth::{AuthConfig, AuthConfigError, MicaSessionStore};
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
+use mica_relation_kernel::FjallDurabilityMode;
 use mica_runtime::{EmbeddingProviderKind, SourceRunner, TaskOutcome};
 use mica_telnet_host::{
     ActorBinding as TelnetActorBinding, InProcessTelnetHost, serve_in_process as serve_telnet,
@@ -29,6 +30,10 @@ use mica_webtransport_host::{
     bind_server_endpoint as bind_webtransport, serve_in_process as serve_webtransport,
 };
 use serde_json::Value as JsonValue;
+use signal_hook::{
+    consts::signal::{SIGINT, SIGTERM},
+    iterator::{Handle as SignalHandle, Signals},
+};
 use std::env;
 use std::fs;
 use std::future;
@@ -36,7 +41,11 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicI32, Ordering},
+};
+use std::thread::{self, JoinHandle as ThreadJoinHandle};
 use std::time::{Duration, Instant};
 use tracing_subscriber::EnvFilter;
 
@@ -51,6 +60,12 @@ mod rpc;
     about = "Run a Mica daemon with optional host endpoints"
 )]
 struct Cli {
+    #[arg(long, value_enum, default_value_t = StorageMode::Memory)]
+    storage: StorageMode,
+    #[arg(long)]
+    store: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = DurabilityMode::Relaxed)]
+    durability: DurabilityMode,
     #[arg(long = "filein", value_name = "FILE")]
     fileins: Vec<PathBuf>,
     #[arg(long = "startup-source", value_name = "SOURCE")]
@@ -87,7 +102,28 @@ struct Cli {
     no_log_ansi: bool,
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageMode {
+    Memory,
+    Fjall,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+enum DurabilityMode {
+    Relaxed,
+    Strict,
+}
+
+impl From<DurabilityMode> for FjallDurabilityMode {
+    fn from(value: DurabilityMode) -> Self {
+        match value {
+            DurabilityMode::Relaxed => Self::Relaxed,
+            DurabilityMode::Strict => Self::Strict,
+        }
+    }
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
 enum EmbeddingProviderMode {
     Deterministic,
     Disabled,
@@ -101,6 +137,78 @@ impl From<EmbeddingProviderMode> for EmbeddingProviderKind {
             EmbeddingProviderMode::Disabled => Self::Disabled,
             EmbeddingProviderMode::Vllm => Self::Vllm,
         }
+    }
+}
+
+struct ShutdownSignals {
+    requested: Arc<AtomicBool>,
+    signal: Arc<AtomicI32>,
+    handle: SignalHandle,
+    thread: Option<ThreadJoinHandle<()>>,
+}
+
+impl ShutdownSignals {
+    fn install() -> Result<Self, String> {
+        let mut signals = Signals::new([SIGINT, SIGTERM])
+            .map_err(|error| format!("failed to register shutdown signals: {error}"))?;
+        let handle = signals.handle();
+        let requested = Arc::new(AtomicBool::new(false));
+        let signal = Arc::new(AtomicI32::new(0));
+        let thread_requested = requested.clone();
+        let thread_signal = signal.clone();
+        let thread = thread::Builder::new()
+            .name("mica-daemon-signal-listener".to_owned())
+            .spawn(move || {
+                for signal in signals.forever() {
+                    if thread_requested.swap(true, Ordering::AcqRel) {
+                        eprintln!(
+                            "mica-daemon received {signal} during shutdown; exiting immediately"
+                        );
+                        std::process::exit(128 + signal);
+                    }
+                    thread_signal.store(signal, Ordering::Release);
+                }
+            })
+            .map_err(|error| format!("failed to start shutdown signal listener: {error}"))?;
+
+        Ok(Self {
+            requested,
+            signal,
+            handle,
+            thread: Some(thread),
+        })
+    }
+
+    fn requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    fn signal_name(&self) -> &'static str {
+        match self.signal.load(Ordering::Acquire) {
+            SIGINT => "SIGINT",
+            SIGTERM => "SIGTERM",
+            _ => "shutdown",
+        }
+    }
+}
+
+impl Drop for ShutdownSignals {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+struct ServerTask {
+    name: &'static str,
+    handle: JoinHandle<Result<(), String>>,
+}
+
+impl ServerTask {
+    fn new(name: &'static str, handle: JoinHandle<Result<(), String>>) -> Self {
+        Self { name, handle }
     }
 }
 
@@ -168,9 +276,10 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         } else {
             None
         };
+    let shutdown_signals = ShutdownSignals::install()?;
     let dogstatsd_endpoint = cli.dogstatsd_endpoint.clone();
     let dogstatsd_interval = Duration::from_secs(cli.dogstatsd_interval_secs.max(1));
-    let mut runner = SourceRunner::new_empty_with_embedding_provider(cli.embedding_provider.into());
+    let mut runner = open_runner(&cli)?;
     for filein in &cli.fileins {
         let source = fs::read_to_string(filein)
             .map_err(|error| format!("failed to read {}: {error}", filein.display()))?;
@@ -223,14 +332,14 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     )
     .map_err(format_driver_error)?;
     metrics::metrics().drivers_started.inc();
-    if let Some(endpoint) = dogstatsd_endpoint {
-        start_dogstatsd_export(endpoint, dogstatsd_interval);
-    }
+    let dogstatsd_task =
+        dogstatsd_endpoint.map(|endpoint| start_dogstatsd_export(endpoint, dogstatsd_interval));
     for source in &cli.startup_sources {
         run_startup_source(&driver, source).await?;
     }
+    let mut server_tasks = Vec::new();
     if let Some(rpc_bind) = cli.rpc_bind {
-        start_rpc_server(driver.clone(), rpc_bind)?;
+        server_tasks.push(start_rpc_server(driver.clone(), rpc_bind)?);
     }
     let (auth_enabled, auth_config) = match AuthConfig::from_env() {
         Ok(config) => (true, Some(config)),
@@ -264,12 +373,8 @@ async fn run_async(cli: Cli) -> Result<(), String> {
             tracing::info!("authentication subsystem enabled");
         }
 
-        compio::runtime::spawn(async move {
-            if let Err(error) = serve_web(listener, host, binding, None).await {
-                tracing::error!(error = %error, "web host stopped");
-            }
-        })
-        .detach();
+        let handle = compio::runtime::spawn(serve_web(listener, host, binding, None));
+        server_tasks.push(ServerTask::new("web", handle));
     }
     if let Some(webtransport_bind) = cli.webtransport_bind {
         if auth_enabled {
@@ -294,16 +399,8 @@ async fn run_async(cli: Cli) -> Result<(), String> {
                 .endpoints_started
                 .inc(metrics::DaemonEndpoint::WebTransport);
             let host = InProcessWebTransportHost::new(driver.clone());
-            if cli.telnet_bind.is_some() {
-                compio::runtime::spawn(async move {
-                    if let Err(error) = serve_webtransport(endpoint, host, binding, None).await {
-                        tracing::error!(error = %error, "WebTransport host stopped");
-                    }
-                })
-                .detach();
-            } else {
-                return serve_webtransport(endpoint, host, binding, None).await;
-            }
+            let handle = compio::runtime::spawn(serve_webtransport(endpoint, host, binding, None));
+            server_tasks.push(ServerTask::new("webtransport", handle));
         }
     }
     if let Some(telnet_bind) = cli.telnet_bind {
@@ -320,10 +417,72 @@ async fn run_async(cli: Cli) -> Result<(), String> {
         metrics::metrics()
             .endpoints_started
             .inc(metrics::DaemonEndpoint::Telnet);
-        return serve_telnet(listener, InProcessTelnetHost::new(driver), actor, None).await;
+        let handle = compio::runtime::spawn(serve_telnet(
+            listener,
+            InProcessTelnetHost::new(driver.clone()),
+            actor,
+            None,
+        ));
+        server_tasks.push(ServerTask::new("telnet", handle));
     }
-    future::pending::<()>().await;
+    wait_for_shutdown_signal(&shutdown_signals).await;
+    tracing::info!(
+        signal = shutdown_signals.signal_name(),
+        server_tasks = server_tasks.len(),
+        "daemon shutdown requested"
+    );
+    cancel_server_tasks(server_tasks).await;
+    if let Some(dogstatsd_task) = dogstatsd_task {
+        tracing::info!("stopping DogStatsD exporter");
+        let _ = dogstatsd_task.cancel().await;
+    }
+    tracing::info!("dropping task driver and relation store");
+    drop(driver);
+    tracing::info!("daemon shutdown complete");
     Ok(())
+}
+
+fn open_runner(cli: &Cli) -> Result<SourceRunner, String> {
+    let use_fjall = cli.storage == StorageMode::Fjall || cli.store.is_some();
+    if !use_fjall {
+        return Ok(SourceRunner::new_empty_with_embedding_provider(
+            cli.embedding_provider.into(),
+        ));
+    }
+    let store = cli
+        .store
+        .as_ref()
+        .ok_or_else(|| "--store is required with --storage fjall".to_owned())?;
+    tracing::info!(
+        store = %store.display(),
+        durability = ?cli.durability,
+        "opening fjall relation store"
+    );
+    SourceRunner::open_fjall_with_embedding_provider(
+        store,
+        cli.durability.into(),
+        cli.embedding_provider.into(),
+    )
+    .map_err(|error| format!("failed to open fjall store {}: {error}", store.display()))
+}
+
+async fn wait_for_shutdown_signal(signals: &ShutdownSignals) {
+    while !signals.requested() {
+        compio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn cancel_server_tasks(server_tasks: Vec<ServerTask>) {
+    for task in server_tasks {
+        tracing::info!(endpoint = task.name, "stopping endpoint server");
+        match task.handle.cancel().await {
+            Some(Ok(())) => tracing::info!(endpoint = task.name, "endpoint server stopped"),
+            Some(Err(error)) => {
+                tracing::warn!(endpoint = task.name, error = %error, "endpoint server stopped with error");
+            }
+            None => tracing::info!(endpoint = task.name, "endpoint server cancelled"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -455,7 +614,7 @@ fn required_json_string(
     Ok(value.to_owned())
 }
 
-fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), String> {
+fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<ServerTask, String> {
     let context = zmq::Context::new();
     let socket = ZmqHostSocket::bind(
         &context,
@@ -468,18 +627,17 @@ fn start_rpc_server(driver: CompioTaskDriver, endpoint: String) -> Result<(), St
     metrics::metrics()
         .endpoints_started
         .inc(metrics::DaemonEndpoint::Rpc);
-    compio::runtime::spawn(async move {
+    let handle = compio::runtime::spawn(async move {
         let _context = context;
         let mut handler = rpc::RpcHandler::new(driver);
-        if let Err(error) = rpc::serve_zmq_rpc_forever(&socket, &mut handler).await {
-            tracing::error!(error = %error, "RPC server stopped");
-        }
-    })
-    .detach();
-    Ok(())
+        rpc::serve_zmq_rpc_forever(&socket, &mut handler)
+            .await
+            .map_err(|error| error.to_string())
+    });
+    Ok(ServerTask::new("rpc", handle))
 }
 
-fn start_dogstatsd_export(endpoint: String, interval: Duration) {
+fn start_dogstatsd_export(endpoint: String, interval: Duration) -> JoinHandle<()> {
     metrics::metrics().dogstatsd_configured.set(1);
     metrics::metrics().dogstatsd_exporters_started.inc();
     let config = DogStatsDConfig::new(endpoint).with_interval(interval);
@@ -527,7 +685,6 @@ fn start_dogstatsd_export(endpoint: String, interval: Duration) {
         )
         .await;
     })
-    .detach();
 }
 
 fn read_filein_include(base: &Path, path: &str) -> Result<String, String> {

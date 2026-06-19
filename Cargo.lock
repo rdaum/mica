@@ -3257,6 +3257,7 @@ dependencies = [
  "mica-web-host",
  "mica-webtransport-host",
  "serde_json",
+ "signal-hook",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
