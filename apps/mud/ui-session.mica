@@ -10,6 +10,7 @@ make_functional_relation(:session/Revision, 2, [0])
 make_functional_relation(:session/CommandDraft, 2, [0])
 make_functional_relation(:session/CommandSuggest, 2, [0])
 make_functional_relation(:session/CommandSuggestIndex, 2, [0])
+make_functional_relation(:session/ObjectBrowserQuery, 2, [0])
 
 make_identity(:ui/sync_action)
 make_identity(:ui/inspect_action)
@@ -18,6 +19,8 @@ make_identity(:ui/load_older_events_action)
 make_identity(:ui/build_room_action)
 make_identity(:ui/create_passage_action)
 make_identity(:ui/describe_passage_action)
+make_identity(:ui/edit_entity_action)
+make_identity(:ui/object_browser_search_action)
 
 assert ui/View(21)
 assert Delegates(#ui/inspect_action, #ui/sync_action, 0)
@@ -26,12 +29,16 @@ assert Delegates(#ui/load_older_events_action, #ui/sync_action, 0)
 assert Delegates(#ui/build_room_action, #ui/sync_action, 0)
 assert Delegates(#ui/create_passage_action, #ui/sync_action, 0)
 assert Delegates(#ui/describe_passage_action, #ui/sync_action, 0)
+assert Delegates(#ui/edit_entity_action, #ui/sync_action, 0)
+assert Delegates(#ui/object_browser_search_action, #ui/sync_action, 0)
 "mud_inspect".ui/syncAction = #ui/inspect_action
 "mud_command".ui/syncAction = #ui/command_action
 "mud_load_older_events".ui/syncAction = #ui/load_older_events_action
 "mud_build_room".ui/syncAction = #ui/build_room_action
 "mud_create_passage".ui/syncAction = #ui/create_passage_action
 "mud_describe_passage".ui/syncAction = #ui/describe_passage_action
+"mud_edit_entity".ui/syncAction = #ui/edit_entity_action
+"mud_object_browser_search".ui/syncAction = #ui/object_browser_search_action
 
 grant #web
   read:
@@ -45,6 +52,7 @@ grant #web
     :session/CommandDraft
     :session/CommandSuggest
     :session/CommandSuggestIndex
+    :session/ObjectBrowserQuery
     :Delegates
     :Name
     :event/Delivery
@@ -63,6 +71,7 @@ grant #web
     :session/CommandDraft
     :session/CommandSuggest
     :session/CommandSuggestIndex
+    :session/ObjectBrowserQuery
   invoke:
     :sync_event
     :sync_view_revision
@@ -102,6 +111,7 @@ grant role #player
     :session/CommandDraft
     :session/CommandSuggest
     :session/CommandSuggestIndex
+    :session/ObjectBrowserQuery
     :ui/View
     :ui/SyncAction
     :Builder
@@ -121,6 +131,7 @@ grant role #player
     :session/CommandDraft
     :session/CommandSuggest
     :session/CommandSuggestIndex
+    :session/ObjectBrowserQuery
   invoke:
     :sync_event
     :sync_snapshot
@@ -158,12 +169,21 @@ grant role #player
     :ui/build_controls_node
     :ui/area_panel_node
     :ui/mica_browser_panel_node
+    :ui/object_browser_panel_node
+    :ui/object_browser_description
+    :ui/object_browser_results_node
+    :ui/object_browser_row_node
+    :ui/object_browser_matches
     :ui/area_room_row_node
     :ui/room_option_nodes
     :ui/direction_options_node
     :ui/passage_builder_form_node
     :ui/passage_editor_node
-    :ui/room_builder_node
+    :ui/entity_alias_text
+    :ui/entity_edit_checkbox_node
+    :ui/entity_extra_editor_nodes
+    :ui/room_editor_tools_node
+    :ui/entity_editor_node
     :ui/scene_summary_node
     :ui/summary_metric_node
     :ui/room_object_count
@@ -228,6 +248,7 @@ grant role #player
     :to_xml
     :from_literal
     :string_concat
+    :string_join
     :string_len
     :string_slice
     :lower
@@ -244,7 +265,11 @@ grant role #player
     :create_passage
     :set_passage_description
     :set_passage_side
+    :set_entity_attributes
+    :set_entity_mobility
+    :set_entity_visibility
     :builder/current_area
+    :builder/entity_aliases
     :builder/room_named_in_area
     :builder/passage_from
     :http_request

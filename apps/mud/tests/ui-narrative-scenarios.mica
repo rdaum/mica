@@ -145,9 +145,31 @@ verb test/ui_narrative_renders_structured_events()
   literal = to_literal(ui/command_suggestions(#bob, "@d", false))
   test/assert_true(string_contains(literal, "@dig") == false, "builder command suggestions hide at-prefixed commands for non-builders")
 
+  endpoint().session/objectBrowserQuery = "wooden"
+  literal = to_literal(ui/object_browser_panel_node(#alice))
+  test/assert_true(string_contains(literal, "Objects"), "builder tool column exposes object browser")
+  test/assert_true(string_contains(literal, "wooden box"), "object browser searches parser aliases")
+  test/assert_true(string_contains(literal, "mud_edit_entity"), "object browser rows expose edit actions")
+
   endpoint().session/inspect = #alice
   literal = to_literal(ui/inspector_node(#alice))
   test/assert_true(string_contains(literal, "bonk Alice") == false, "self inspector omits bonk action")
+
+  endpoint().session/inspect = #coin
+  literal = to_literal(ui/inspector_node(#alice))
+  test/assert_true(string_contains(literal, "mud_edit_entity"), "builder inspector exposes entity edit sheet")
+  test/assert_true(string_contains(literal, "entity-edit-window"), "entity edit sheet renders as a floating window")
+  test/assert_true(string_contains(literal, "brass coin"), "entity edit sheet renders parser aliases")
+  test/assert_true(string_contains(literal, "A tarnished brass coin catches the light."), "entity edit sheet renders description")
+  test/assert_true(string_contains(literal, "Portable"), "entity edit sheet renders mobility control")
+  test/assert_true(string_contains(literal, "Visible here"), "entity edit sheet renders visibility control")
+
+  endpoint().session/inspect = #first_room
+  literal = to_literal(ui/inspector_node(#alice))
+  test/assert_true(string_contains(literal, "entity-edit-window"), "room edit sheet renders as a floating window")
+  test/assert_true(string_contains(literal, "Room tools"), "room edit sheet includes room-specific builder tools")
+  test/assert_true(string_contains(literal, "Build connected room"), "room edit sheet includes connected-room creation")
+  test/assert_true(string_contains(literal, "Edit room") == false, "room inspector does not render a duplicate inline room editor")
 
   endpoint().session/inspect = #passage<[#first_room, #north_room, "north"]>
   literal = to_literal(ui/inspector_node(#bob))

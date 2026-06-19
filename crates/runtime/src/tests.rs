@@ -1632,6 +1632,170 @@ fn runner_mud_core_derives_exits_and_recursive_location() {
         "{}",
         report.render()
     );
+    let described = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@describe here as The lobby has been rewritten.\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(described.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        described.render()
+    );
+    let report = runner.run_source("return #first_room.description").unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value.with_str(|text| text == "The lobby has been rewritten.").unwrap_or(false)
+        ),
+        "{}",
+        report.render()
+    );
+    let described = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@describe coin as The coin now gleams.\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(described.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        described.render()
+    );
+    let report = runner.run_source("return #coin.description").unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value.with_str(|text| text == "The coin now gleams.").unwrap_or(false)
+        ),
+        "{}",
+        report.render()
+    );
+    let renamed = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@name coin as doubloon\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(renamed.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        renamed.render()
+    );
+    let report = runner.run_source("return #coin.name").unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value.with_str(|text| text == "doubloon").unwrap_or(false)
+        ),
+        "{}",
+        report.render()
+    );
+    let aliased = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@alias doubloon as coin, shiny coin\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(aliased.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        aliased.render()
+    );
+    let report = runner
+        .run_source("return builder/resolve_edit_target(#alice, \"shiny coin\") == #coin")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+    let fixed = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@fixed shiny coin\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(fixed.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        fixed.render()
+    );
+    let report = runner.run_source("return Portable(#coin)").unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(false)),
+        "{}",
+        report.render()
+    );
+    let portable = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@portable shiny coin\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(portable.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        portable.render()
+    );
+    let report = runner.run_source("return Portable(#coin)").unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+    let shown = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@show shiny coin\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(shown.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        shown.render()
+    );
+    let report = runner
+        .run_source("return #coin.locatedIn == #first_room")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+    let hidden = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@hide shiny coin\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(hidden.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        hidden.render()
+    );
+    let report = runner
+        .run_source("return #coin.locatedIn == nothing")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+    let shown = runner
+        .run_source(
+            "return :command(actor: #alice, endpoint: endpoint(), line: \"@show shiny coin\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(shown.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        shown.render()
+    );
+    let report = runner
+        .run_source("return #coin.locatedIn == #first_room")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
     let removed = runner
         .run_source("return :command(actor: #alice, endpoint: endpoint(), line: \"@undig portal\")")
         .unwrap();
@@ -1819,6 +1983,7 @@ fn runner_mud_auth_sync_view_tree_renders() {
                         text.contains("world-tools")
                             && text.contains("inspect-current-room")
                             && text.contains("mud_create_passage")
+                            && text.contains("mud_object_browser_search")
                             && text.contains("mud_mica_browser_search")
                     })
                     .unwrap_or(false)
@@ -1864,6 +2029,56 @@ fn runner_mud_auth_sync_view_tree_renders() {
             TaskOutcome::Complete { ref value, .. }
                 if value
                     .with_str(|text| text.contains("get coin"))
+                    .unwrap_or(false)
+        ),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "let ok = sync_event(endpoint(), nothing, 21, \"submit\", \"\", \"mud_edit_entity\", {:entity -> to_literal(#coin), :name -> \"doubloon\", :aliases -> \"coin, shiny coin\", :description -> \"A direct-manipulation edit.\", :portable -> \"true\", :visible_here -> \"true\"})\n\
+             return ok && #coin.name == \"doubloon\" && #coin.description == \"A direct-manipulation edit.\" && Portable(#coin) && #coin.locatedIn == #first_room && command/match_object(#alice, \"shiny coin\") == #coin",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "return sync_event(endpoint(), nothing, 21, \"input\", \"\", \"mud_object_browser_search\", {:query -> \"wooden\"})",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "return to_literal(ui/object_browser_panel_node(#alice))",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value
+                    .with_str(|text| {
+                        text.contains("object-browser-row")
+                            && text.contains("wooden box")
+                            && text.contains("mud_edit_entity")
+                    })
                     .unwrap_or(false)
         ),
         "{:?}",

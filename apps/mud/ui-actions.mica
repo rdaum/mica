@@ -290,6 +290,56 @@ verb ui/handle_sync_action(source @ #ui/describe_passage_action<_>, endpoint, se
   return updated
 end
 
+verb ui/handle_sync_action(source @ #ui/edit_entity_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
+    return false
+  end
+
+  let current = ui/current_actor()
+  if current == nothing || ui/can_build(current) == false
+    return false
+  end
+
+  let entity = ui/entity_from_literal(fields[:entity])
+  if entity == nothing || frob_delegate(entity) == #passage
+    return false
+  end
+
+  let name = ui/form_text(fields, :name)
+  let aliases = ui/form_text(fields, :aliases)
+  let description = ui/form_text(fields, :description)
+  let portable = fields[:portable] == "true"
+  let visible_here = fields[:visible_here] == "true"
+  let updated = set_entity_attributes(current, entity, name, aliases, description, portable, visible_here)
+  if updated
+    endpoint().session/inspect = entity
+    endpoint.session/inspect = entity
+  end
+  ui/bump_revision(endpoint())
+  return updated
+end
+
+verb ui/handle_sync_action(source @ #ui/object_browser_search_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || (event != "submit" && event != "input")
+    return false
+  end
+
+  let current = ui/current_actor()
+  if current == nothing || ui/can_build(current) == false
+    return false
+  end
+
+  let query = ui/form_text(fields, :query)
+  retract session/ObjectBrowserQuery(endpoint(), _)
+  retract session/ObjectBrowserQuery(endpoint, _)
+  if query != ""
+    endpoint().session/objectBrowserQuery = query
+    endpoint.session/objectBrowserQuery = query
+  end
+  ui/bump_revision(endpoint())
+  return true
+end
+
 verb sync_event(endpoint, session, view, event, target, action, fields)
   let source = ui/sync_action_source(action)
   if source == nothing

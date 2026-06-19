@@ -237,6 +237,12 @@ assert command/VerbAlias("@undig", :remove_passage_command)
 assert command/VerbAlias("@remove-exit", :remove_passage_command)
 assert command/VerbAlias("@delete-passage", :remove_passage_command)
 assert command/VerbAlias("@describe", :set_passage_description_command)
+assert command/VerbAlias("@name", :set_entity_name_command)
+assert command/VerbAlias("@alias", :set_entity_aliases_command)
+assert command/VerbAlias("@portable", :set_entity_portable_command)
+assert command/VerbAlias("@fixed", :set_entity_fixed_command)
+assert command/VerbAlias("@show", :show_entity_here_command)
+assert command/VerbAlias("@hide", :hide_entity_here_command)
 assert command/VerbAlias("get", :get)
 assert command/VerbAlias("take", :get)
 assert command/VerbAlias("drop", :drop)
@@ -279,7 +285,13 @@ assert command/Summary(:look, "inspect the room or a visible thing")
 assert command/Summary(:build_room_command, "create a room")
 assert command/Summary(:create_passage_command, "connect rooms with a passage")
 assert command/Summary(:remove_passage_command, "remove a passage")
-assert command/Summary(:set_passage_description_command, "describe a passage")
+assert command/Summary(:set_passage_description_command, "describe rooms, things, and passages")
+assert command/Summary(:set_entity_name_command, "rename a room or thing")
+assert command/Summary(:set_entity_aliases_command, "set parser aliases for a room or thing")
+assert command/Summary(:set_entity_portable_command, "make a thing portable")
+assert command/Summary(:set_entity_fixed_command, "make a thing fixed")
+assert command/Summary(:show_entity_here_command, "place a thing in this room")
+assert command/Summary(:hide_entity_here_command, "unplace a thing from this room")
 assert command/Summary(:get, "take a visible thing")
 assert command/Summary(:drop, "drop something you carry")
 assert command/Summary(:put, "put an item in a container")
@@ -308,6 +320,12 @@ assert command/Form(:build_room_command)
 assert command/Form(:create_passage_command)
 assert command/Form(:remove_passage_command)
 assert command/Form(:set_passage_description_command)
+assert command/Form(:set_entity_name_command)
+assert command/Form(:set_entity_aliases_command)
+assert command/Form(:set_entity_portable_command)
+assert command/Form(:set_entity_fixed_command)
+assert command/Form(:show_entity_here_command)
+assert command/Form(:hide_entity_here_command)
 assert command/Form(:get)
 assert command/Form(:drop)
 assert command/Form(:put)
@@ -347,6 +365,12 @@ assert command/Pattern(:build_room_command, :build_room_command, #command/patter
 assert command/Pattern(:create_passage_command, :create_passage_command, #command/pattern/message_command)
 assert command/Pattern(:remove_passage_command, :remove_passage_command, #command/pattern/message_command)
 assert command/Pattern(:set_passage_description_command, :set_passage_description_command, #command/pattern/message_command)
+assert command/Pattern(:set_entity_name_command, :set_entity_name_command, #command/pattern/message_command)
+assert command/Pattern(:set_entity_aliases_command, :set_entity_aliases_command, #command/pattern/message_command)
+assert command/Pattern(:set_entity_portable_command, :set_entity_portable_command, #command/pattern/message_command)
+assert command/Pattern(:set_entity_fixed_command, :set_entity_fixed_command, #command/pattern/message_command)
+assert command/Pattern(:show_entity_here_command, :show_entity_here_command, #command/pattern/message_command)
+assert command/Pattern(:hide_entity_here_command, :hide_entity_here_command, #command/pattern/message_command)
 assert command/PatternPart(#command/pattern/message_command, 0, :message, nothing)
 
 assert command/Pattern(:get, :get, #command/pattern/get)
@@ -428,6 +452,12 @@ assert command/MissingArgumentMessage(:build_room_command, "Build what?")
 assert command/MissingArgumentMessage(:create_passage_command, "Dig where?")
 assert command/MissingArgumentMessage(:remove_passage_command, "Remove which passage?")
 assert command/MissingArgumentMessage(:set_passage_description_command, "Describe what?")
+assert command/MissingArgumentMessage(:set_entity_name_command, "Name what?")
+assert command/MissingArgumentMessage(:set_entity_aliases_command, "Alias what?")
+assert command/MissingArgumentMessage(:set_entity_portable_command, "Make what portable?")
+assert command/MissingArgumentMessage(:set_entity_fixed_command, "Make what fixed?")
+assert command/MissingArgumentMessage(:show_entity_here_command, "Show what here?")
+assert command/MissingArgumentMessage(:hide_entity_here_command, "Hide what?")
 assert command/MissingArgumentMessage(:nod_at, "Nod at who?")
 assert command/MissingArgumentMessage(:nod_to, "Nod to who?")
 assert command/MissingArgumentMessage(:wave_at, "Wave at who?")
@@ -452,6 +482,18 @@ assert command/Role(:remove_passage_command, :actor, :identity)
 assert command/Role(:remove_passage_command, :message, :string)
 assert command/Role(:set_passage_description_command, :actor, :identity)
 assert command/Role(:set_passage_description_command, :message, :string)
+assert command/Role(:set_entity_name_command, :actor, :identity)
+assert command/Role(:set_entity_name_command, :message, :string)
+assert command/Role(:set_entity_aliases_command, :actor, :identity)
+assert command/Role(:set_entity_aliases_command, :message, :string)
+assert command/Role(:set_entity_portable_command, :actor, :identity)
+assert command/Role(:set_entity_portable_command, :message, :string)
+assert command/Role(:set_entity_fixed_command, :actor, :identity)
+assert command/Role(:set_entity_fixed_command, :message, :string)
+assert command/Role(:show_entity_here_command, :actor, :identity)
+assert command/Role(:show_entity_here_command, :message, :string)
+assert command/Role(:hide_entity_here_command, :actor, :identity)
+assert command/Role(:hide_entity_here_command, :message, :string)
 assert command/Role(:get, :actor, :identity)
 assert command/Role(:get, :item, :thing)
 assert command/Role(:get_from, :actor, :identity)
@@ -591,6 +633,7 @@ grant role #player
     :Name
     :Description
     :RoomInArea
+    :Portable
     :PassageInArea
     :PassageSide
     :PassageLabel
@@ -743,8 +786,23 @@ grant role #player
     :set_passage_description
     :set_passage_side
     :set_passage_description_command
+    :set_entity_name
+    :set_entity_aliases
+    :set_entity_description
+    :set_entity_mobility
+    :set_entity_visibility
+    :set_entity_attributes
+    :set_entity_name_command
+    :set_entity_aliases_command
+    :set_entity_portable_command
+    :set_entity_fixed_command
+    :show_entity_here_command
+    :hide_entity_here_command
     :builder/can_modify
     :builder/current_area
+    :builder/entity_aliases
+    :builder/parse_aliases
+    :builder/resolve_edit_target
     :builder/room_value
     :builder/room_named_in_area
     :builder/passage_value
@@ -752,7 +810,7 @@ grant role #player
     :builder/passage_from
     :builder/opposite_direction
     :builder/parse_dig
-    :builder/parse_describe
+    :builder/parse_attribute_edit
 end
 
 grant role #player
@@ -1319,37 +1377,304 @@ verb set_passage_side(actor @ #player, passage, room @ #room, label @ #string, d
   return true
 end
 
-verb builder/parse_describe(spec @ #string)
-  let tokens = words(spec)
-  if tokens[0] == nothing
+verb builder/entity_aliases(entity)
+  let aliases = []
+  for found in command/NounAlias(entity, ?alias)
+    aliases = [@aliases, found[:alias]]
+  end
+
+  return aliases
+end
+
+verb builder/parse_aliases(text @ #string)
+  let aliases = []
+  let remaining = text
+  while true
+    let parts = template/split_once(remaining, ",")
+    let alias = remaining
+    if parts != []
+      alias = parts[0]
+      remaining = parts[1]
+    end
+
+    alias = lower(trim(alias))
+    if alias != ""
+      aliases = [@aliases, alias]
+    end
+
+    if parts == []
+      return aliases
+    end
+  end
+end
+
+verb builder/resolve_edit_target(actor @ #player, target @ #string)
+  let wanted = lower(trim(target))
+  if wanted == ""
+    return nothing
+  end
+
+  if wanted == "here" || wanted == "room" || wanted == "this room"
+    return actor.locatedIn
+  end
+
+  if wanted == "me" || wanted == "self"
+    return actor
+  end
+
+  let passage = builder/passage_from(actor.locatedIn, wanted)
+  if passage != nothing
+    return passage
+  end
+
+  let obj = command/match_object(actor, wanted)
+  if obj != nothing
+    return obj
+  end
+
+  for found in command/Name(?named, wanted)
+    let named = found[:named]
+    if command/TrustedForName(actor, named)
+      return named
+    end
+  end
+
+  let area = builder/current_area(actor)
+  if area != nothing
+    let room = builder/room_named_in_area(area, wanted)
+    if room != nothing
+      return room
+    end
+  end
+
+  return nothing
+end
+
+verb set_entity_description(actor @ #player, entity, description @ #string)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  if frob_delegate(entity) == #passage
+    event/notify(actor, "Use passage editing for exits.")
+    return false
+  end
+
+  let text = trim(description)
+  if text == ""
+    event/notify(actor, "Description is required.")
+    return false
+  end
+
+  entity.description = text
+  event/notify(actor, "Description updated.")
+  return true
+end
+
+verb set_entity_name(actor @ #player, entity, name @ #string)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  if frob_delegate(entity) == #passage
+    event/notify(actor, "Use passage editing for exits.")
+    return false
+  end
+
+  let label = trim(name)
+  if label == ""
+    event/notify(actor, "Name is required.")
+    return false
+  end
+
+  entity.name = label
+  retract command/Noun(entity, _)
+  assert command/Noun(entity, lower(label))
+  assert command/TrustedForName(#player, entity)
+  event/notify(actor, "Name updated.")
+  return true
+end
+
+verb set_entity_aliases(actor @ #player, entity, aliases_text @ #string)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  if frob_delegate(entity) == #passage
+    event/notify(actor, "Use passage editing for exits.")
+    return false
+  end
+
+  retract command/NounAlias(entity, _)
+  let primary = lower(trim(entity.name))
+  for alias in builder/parse_aliases(aliases_text)
+    if alias != primary
+      assert command/NounAlias(entity, alias)
+    end
+  end
+  assert command/TrustedForName(#player, entity)
+  event/notify(actor, "Aliases updated.")
+  return true
+end
+
+verb set_entity_mobility(actor @ #player, entity, portable)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  if Delegates(entity, #room, 0) || Delegates(entity, #player, 0) || frob_delegate(entity) == #passage
+    return true
+  end
+
+  retract Portable(entity)
+  if portable
+    assert Portable(entity)
+  end
+  return true
+end
+
+verb set_entity_visibility(actor @ #player, entity, visible_here)
+  if builder/can_modify(actor) == false
+    return false
+  end
+
+  if Delegates(entity, #room, 0) || Delegates(entity, #player, 0) || frob_delegate(entity) == #passage
+    return true
+  end
+
+  let room = actor.locatedIn
+  if room == nothing
+    return false
+  end
+
+  if visible_here
+    entity.locatedIn = room
+  elseif entity.locatedIn == room
+    retract LocatedIn(entity, _)
+  end
+  return true
+end
+
+verb set_entity_attributes(actor @ #player, entity, name @ #string, aliases @ #string, description @ #string, portable, visible_here)
+  if set_entity_name(actor, entity, name) == false
+    return false
+  end
+  if set_entity_aliases(actor, entity, aliases) == false
+    return false
+  end
+  if set_entity_description(actor, entity, description) == false
+    return false
+  end
+  if set_entity_mobility(actor, entity, portable) == false
+    return false
+  end
+  return set_entity_visibility(actor, entity, visible_here)
+end
+
+verb builder/parse_attribute_edit(spec @ #string)
+  let parts = template/split_once(spec, " as ")
+  if parts == []
+    parts = template/split_once(spec, " = ")
+  end
+  if parts == []
     return {:ok -> false}
   end
 
-  let target = lower(tokens[0])
-  let offset = string_len(tokens[0])
-  let rest = trim(string_slice(spec, offset, string_len(spec)))
-  let rest_tokens = words(lower(rest))
-  if rest_tokens[0] == "as"
-    rest = trim(string_slice(rest, 2, string_len(rest)))
-  end
-
-  return {:ok -> rest != "", :target -> target, :description -> rest}
+  let target = trim(parts[0])
+  let value = trim(parts[1])
+  return {:ok -> target != "" && value != "", :target -> target, :value -> value}
 end
 
 verb set_passage_description_command(actor @ #player, message @ #string)
-  let parsed = builder/parse_describe(message)
+  let parsed = builder/parse_attribute_edit(message)
   if parsed[:ok] == false
-    event/notify(actor, "Usage: @describe <direction> as <description>.")
+    event/notify(actor, "Usage: @describe <target> as <description>.")
     return false
   end
 
-  let passage = builder/passage_from(actor.locatedIn, parsed[:target])
-  if passage == nothing
-    event/notify(actor, "No passage matches that direction.")
+  let target = builder/resolve_edit_target(actor, parsed[:target])
+  if target == nothing
+    event/notify(actor, "No room, thing, or passage matches that target.")
     return false
   end
 
-  return set_passage_description(actor, passage, actor.locatedIn, parsed[:description], true)
+  if frob_delegate(target) == #passage
+    return set_passage_description(actor, target, actor.locatedIn, parsed[:value], true)
+  end
+
+  return set_entity_description(actor, target, parsed[:value])
+end
+
+verb set_entity_name_command(actor @ #player, message @ #string)
+  let parsed = builder/parse_attribute_edit(message)
+  if parsed[:ok] == false
+    event/notify(actor, "Usage: @name <target> as <name>.")
+    return false
+  end
+
+  let target = builder/resolve_edit_target(actor, parsed[:target])
+  if target == nothing || frob_delegate(target) == #passage
+    event/notify(actor, "No room or thing matches that target.")
+    return false
+  end
+
+  return set_entity_name(actor, target, parsed[:value])
+end
+
+verb set_entity_aliases_command(actor @ #player, message @ #string)
+  let parsed = builder/parse_attribute_edit(message)
+  if parsed[:ok] == false
+    event/notify(actor, "Usage: @alias <target> as <alias, alias>.")
+    return false
+  end
+
+  let target = builder/resolve_edit_target(actor, parsed[:target])
+  if target == nothing || frob_delegate(target) == #passage
+    event/notify(actor, "No room or thing matches that target.")
+    return false
+  end
+
+  return set_entity_aliases(actor, target, parsed[:value])
+end
+
+verb set_entity_portable_command(actor @ #player, message @ #string)
+  let target = builder/resolve_edit_target(actor, message)
+  if target == nothing || Delegates(target, #room, 0) || Delegates(target, #player, 0) || frob_delegate(target) == #passage
+    event/notify(actor, "No thing matches that target.")
+    return false
+  end
+
+  return set_entity_mobility(actor, target, true)
+end
+
+verb set_entity_fixed_command(actor @ #player, message @ #string)
+  let target = builder/resolve_edit_target(actor, message)
+  if target == nothing || Delegates(target, #room, 0) || Delegates(target, #player, 0) || frob_delegate(target) == #passage
+    event/notify(actor, "No thing matches that target.")
+    return false
+  end
+
+  return set_entity_mobility(actor, target, false)
+end
+
+verb show_entity_here_command(actor @ #player, message @ #string)
+  let target = builder/resolve_edit_target(actor, message)
+  if target == nothing || Delegates(target, #room, 0) || Delegates(target, #player, 0) || frob_delegate(target) == #passage
+    event/notify(actor, "No thing matches that target.")
+    return false
+  end
+
+  return set_entity_visibility(actor, target, true)
+end
+
+verb hide_entity_here_command(actor @ #player, message @ #string)
+  let target = builder/resolve_edit_target(actor, message)
+  if target == nothing || Delegates(target, #room, 0) || Delegates(target, #player, 0) || frob_delegate(target) == #passage
+    event/notify(actor, "No thing matches that target.")
+    return false
+  end
+
+  return set_entity_visibility(actor, target, false)
 end
 
 verb get(actor @ #player, item @ #thing)
