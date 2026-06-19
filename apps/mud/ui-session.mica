@@ -30,41 +30,46 @@ assert Delegates(#ui/describe_passage_action, #ui/sync_action, 0)
 "mud_create_passage".ui/syncAction = #ui/create_passage_action
 "mud_describe_passage".ui/syncAction = #ui/describe_passage_action
 
-assert CanInvoke(#web, :sync_event)
-assert CanInvoke(#web, :sync_view_revision)
-assert CanInvoke(#web, :sync_view_tree)
-assert CanInvoke(#web, :ui/auth_required_node)
-assert CanInvoke(#web, :ui/status_revision)
-assert CanInvoke(#web, :ui/current_actor)
-assert CanInvoke(#web, :ui/entity_from_literal)
-assert CanInvoke(#web, :ui/actor_name)
-assert CanInvoke(#web, :event/next_seq)
-assert CanInvoke(#web, :event/record_source)
-assert CanInvoke(#web, :actor)
-assert CanInvoke(#web, :string_concat)
-assert CanInvoke(#web, :lower)
-assert CanInvoke(#web, :trim)
-assert CanRead(#web, :ui/View)
-assert CanRead(#web, :ui/SyncAction)
-assert CanRead(#web, :session/Actor)
-assert CanRead(#web, :session/Inspect)
-assert CanRead(#web, :session/InspectPulse)
-assert CanRead(#web, :session/NarrativeLimit)
-assert CanRead(#web, :session/Revision)
-assert CanRead(#web, :Delegates)
-assert CanRead(#web, :Name)
-assert CanRead(#web, :event/Delivery)
-assert CanRead(#web, :event/Seq)
-assert CanRead(#web, :event/Source)
-assert CanWrite(#web, :event/Delivery)
-assert CanWrite(#web, :event/Seq)
-assert CanWrite(#web, :event/Text)
-assert CanWrite(#web, :event/Source)
-assert CanWrite(#web, :session/Actor)
-assert CanWrite(#web, :session/Inspect)
-assert CanWrite(#web, :session/InspectPulse)
-assert CanWrite(#web, :session/NarrativeLimit)
-assert CanWrite(#web, :session/Revision)
+grant #web
+  read:
+    :ui/View
+    :ui/SyncAction
+    :session/Actor
+    :session/Inspect
+    :session/InspectPulse
+    :session/NarrativeLimit
+    :session/Revision
+    :Delegates
+    :Name
+    :event/Delivery
+    :event/Seq
+    :event/Source
+  write:
+    :event/Delivery
+    :event/Seq
+    :event/Text
+    :event/Source
+    :session/Actor
+    :session/Inspect
+    :session/InspectPulse
+    :session/NarrativeLimit
+    :session/Revision
+  invoke:
+    :sync_event
+    :sync_view_revision
+    :sync_view_tree
+    :ui/auth_required_node
+    :ui/status_revision
+    :ui/current_actor
+    :ui/entity_from_literal
+    :ui/actor_name
+    :event/next_seq
+    :event/record_source
+    :actor
+    :string_concat
+    :lower
+    :trim
+end
 
 CanRead(#web, relation) :-
   RoleCanRead(#player, relation)
@@ -78,142 +83,147 @@ CanInvoke(#web, selector) :-
 CanEffect(#web) :-
   RoleCanEffect(#player)
 
-assert RoleCanInvoke(#player, :sync_event)
-assert RoleCanInvoke(#player, :sync_snapshot)
-assert RoleCanInvoke(#player, :sync_snapshot_payload)
-assert RoleCanInvoke(#player, :sync_snapshot_tree)
-assert RoleCanInvoke(#player, :sync_snapshot_signature)
-assert RoleCanInvoke(#player, :sync_mount_node)
-assert RoleCanInvoke(#player, :sync_view_revision)
-assert RoleCanInvoke(#player, :sync_view_tree)
-assert RoleCanInvoke(#player, :ui/status_revision)
-assert RoleCanInvoke(#player, :ui/bump_revision)
-assert RoleCanInvoke(#player, :ui/current_actor)
-assert RoleCanInvoke(#player, :ui/ensure_actor_location)
-assert RoleCanInvoke(#player, :ui/entity_from_literal)
-assert RoleCanInvoke(#player, :ui/can_inspect_entity)
-assert RoleCanInvoke(#player, :ui/passage_visible_from)
-assert RoleCanInvoke(#player, :ui/passage_room_for)
-assert RoleCanInvoke(#player, :ui/passage_name)
-assert RoleCanInvoke(#player, :ui/description_text)
-assert RoleCanInvoke(#player, :ui/actor_name)
-assert RoleCanInvoke(#player, :ui/direction_text)
-assert RoleCanInvoke(#player, :ui/can_build)
-assert RoleCanInvoke(#player, :ui/auth_required_node)
-assert RoleCanInvoke(#player, :ui/icon_node)
-assert RoleCanInvoke(#player, :ui/icon_label_node)
-assert RoleCanInvoke(#player, :ui/command_icon)
-assert RoleCanInvoke(#player, :ui/command_label_node)
-assert RoleCanInvoke(#player, :ui/command_form_node)
-assert RoleCanInvoke(#player, :ui/entity_action_node)
-assert RoleCanInvoke(#player, :ui/passage_action_node)
-assert RoleCanInvoke(#player, :ui/exit_form_node)
-assert RoleCanInvoke(#player, :ui/world_view_node)
-assert RoleCanInvoke(#player, :ui/room_panel_node)
-assert RoleCanInvoke(#player, :ui/world_tools_node)
-assert RoleCanInvoke(#player, :ui/build_controls_node)
-assert RoleCanInvoke(#player, :ui/area_panel_node)
-assert RoleCanInvoke(#player, :ui/area_room_row_node)
-assert RoleCanInvoke(#player, :ui/room_option_nodes)
-assert RoleCanInvoke(#player, :ui/direction_options_node)
-assert RoleCanInvoke(#player, :ui/passage_builder_form_node)
-assert RoleCanInvoke(#player, :ui/passage_editor_node)
-assert RoleCanInvoke(#player, :ui/room_builder_node)
-assert RoleCanInvoke(#player, :ui/scene_summary_node)
-assert RoleCanInvoke(#player, :ui/summary_metric_node)
-assert RoleCanInvoke(#player, :ui/room_object_count)
-assert RoleCanInvoke(#player, :ui/room_people_count)
-assert RoleCanInvoke(#player, :ui/room_exit_count)
-assert RoleCanInvoke(#player, :ui/inventory_count)
-assert RoleCanInvoke(#player, :ui/presence_node)
-assert RoleCanInvoke(#player, :ui/presence_card_node)
-assert RoleCanInvoke(#player, :ui/room_snapshot_node)
-assert RoleCanInvoke(#player, :ui/snapshot_row_node)
-assert RoleCanInvoke(#player, :ui/snapshot_exits_node)
-assert RoleCanInvoke(#player, :ui/snapshot_things_node)
-assert RoleCanInvoke(#player, :ui/snapshot_players_node)
-assert RoleCanInvoke(#player, :ui/exits_node)
-assert RoleCanInvoke(#player, :ui/room_objects_node)
-assert RoleCanInvoke(#player, :ui/inventory_node)
-assert RoleCanInvoke(#player, :ui/inspector_node)
-assert RoleCanInvoke(#player, :ui/entity_initial)
-assert RoleCanInvoke(#player, :ui/entity_kind)
-assert RoleCanInvoke(#player, :ui/entity_location_text)
-assert RoleCanInvoke(#player, :ui/entity_fact_node)
-assert RoleCanInvoke(#player, :ui/entity_facts_node)
-assert RoleCanInvoke(#player, :ui/inspector_action_node)
-assert RoleCanInvoke(#player, :ui/sync_selected_entity)
-assert RoleCanInvoke(#player, :ui/narrative_node)
-assert RoleCanInvoke(#player, :ui/latest_event_node)
-assert RoleCanInvoke(#player, :ui/command_bar_node)
-assert RoleCanInvoke(#player, :ui/command_chips_node)
-assert RoleCanInvoke(#player, :ui/event_node)
-assert RoleCanInvoke(#player, :ui/event_label)
-assert RoleCanInvoke(#player, :ui/event_meta_chip_node)
-assert RoleCanInvoke(#player, :ui/event_meta_node)
-assert RoleCanInvoke(#player, :ui/event_body_node)
-assert RoleCanInvoke(#player, :ui/event_body_for)
-assert RoleCanInvoke(#player, :ui/event_template_body_node)
-assert RoleCanInvoke(#player, :ui/event_template_value_nodes)
-assert RoleCanInvoke(#player, :ui/event_template_part_nodes)
-assert RoleCanInvoke(#player, :ui/event_class)
-assert RoleCanInvoke(#player, :ui/event_actor_node)
-assert RoleCanInvoke(#player, :ui/event_identity_node)
-assert RoleCanInvoke(#player, :ui/event_object_node)
-assert RoleCanInvoke(#player, :ui/event_verb)
-assert RoleCanInvoke(#player, :dom_text)
-assert RoleCanInvoke(#player, :dom_element)
-assert RoleCanInvoke(#player, :dom_raw)
-assert RoleCanInvoke(#player, :to_literal)
-assert RoleCanInvoke(#player, :to_xml)
-assert RoleCanInvoke(#player, :from_literal)
-assert RoleCanInvoke(#player, :string_concat)
-assert RoleCanInvoke(#player, :string_len)
-assert RoleCanInvoke(#player, :string_slice)
-assert RoleCanInvoke(#player, :lower)
-assert RoleCanInvoke(#player, :trim)
-assert RoleCanInvoke(#player, :actor)
-assert RoleCanInvoke(#player, :frob)
-assert RoleCanInvoke(#player, :frob_delegate)
-assert RoleCanInvoke(#player, :ui/sync_action_source)
-assert RoleCanInvoke(#player, :ui/form_text)
-assert RoleCanInvoke(#player, :ui/handle_sync_action)
-assert RoleCanInvoke(#player, :build_room)
-assert RoleCanInvoke(#player, :create_passage)
-assert RoleCanInvoke(#player, :set_passage_description)
-assert RoleCanInvoke(#player, :set_passage_side)
-assert RoleCanInvoke(#player, :builder/current_area)
-assert RoleCanInvoke(#player, :builder/room_named_in_area)
-assert RoleCanInvoke(#player, :builder/passage_from)
-assert RoleCanInvoke(#player, :http_request)
-assert RoleCanInvoke(#player, :http/document)
-assert RoleCanInvoke(#player, :http_response)
-assert RoleCanInvoke(#player, :http_html)
-assert RoleCanInvoke(#player, :http/base_style)
-assert RoleCanInvoke(#player, :http/login_style)
-assert RoleCanInvoke(#player, :http/presence_style)
-assert RoleCanInvoke(#player, :http/narrative_style)
-assert RoleCanInvoke(#player, :http/bootstrap_script)
-assert RoleCanRead(#player, :session/Inspect)
-assert RoleCanRead(#player, :session/InspectPulse)
-assert RoleCanRead(#player, :event/Source)
-assert RoleCanRead(#player, :session/NarrativeLimit)
-assert RoleCanRead(#player, :session/Revision)
-assert RoleCanRead(#player, :ui/View)
-assert RoleCanRead(#player, :ui/SyncAction)
-assert RoleCanRead(#player, :Builder)
-assert RoleCanRead(#player, :HttpRequest)
-assert RoleCanRead(#player, :RequestMethod)
-assert RoleCanRead(#player, :RequestPath)
-assert RoleCanRead(#player, :RequestVersion)
-assert RoleCanRead(#player, :RequestPrincipal)
-assert RoleCanRead(#player, :RequestActor)
-assert RoleCanRead(#player, :RequestHeader)
-assert RoleCanRead(#player, :RequestBody)
-assert RoleCanWrite(#player, :session/Inspect)
-assert RoleCanWrite(#player, :session/InspectPulse)
-assert RoleCanWrite(#player, :session/NarrativeLimit)
-assert RoleCanWrite(#player, :session/Revision)
+grant role #player
+  read:
+    :session/Inspect
+    :session/InspectPulse
+    :event/Source
+    :session/NarrativeLimit
+    :session/Revision
+    :ui/View
+    :ui/SyncAction
+    :Builder
+    :HttpRequest
+    :RequestMethod
+    :RequestPath
+    :RequestVersion
+    :RequestPrincipal
+    :RequestActor
+    :RequestHeader
+    :RequestBody
+  write:
+    :session/Inspect
+    :session/InspectPulse
+    :session/NarrativeLimit
+    :session/Revision
+  invoke:
+    :sync_event
+    :sync_snapshot
+    :sync_snapshot_payload
+    :sync_snapshot_tree
+    :sync_snapshot_signature
+    :sync_mount_node
+    :sync_view_revision
+    :sync_view_tree
+    :ui/status_revision
+    :ui/bump_revision
+    :ui/current_actor
+    :ui/ensure_actor_location
+    :ui/entity_from_literal
+    :ui/can_inspect_entity
+    :ui/passage_visible_from
+    :ui/passage_room_for
+    :ui/passage_name
+    :ui/description_text
+    :ui/actor_name
+    :ui/direction_text
+    :ui/can_build
+    :ui/auth_required_node
+    :ui/icon_node
+    :ui/icon_label_node
+    :ui/command_icon
+    :ui/command_label_node
+    :ui/command_form_node
+    :ui/entity_action_node
+    :ui/passage_action_node
+    :ui/exit_form_node
+    :ui/world_view_node
+    :ui/room_panel_node
+    :ui/world_tools_node
+    :ui/build_controls_node
+    :ui/area_panel_node
+    :ui/area_room_row_node
+    :ui/room_option_nodes
+    :ui/direction_options_node
+    :ui/passage_builder_form_node
+    :ui/passage_editor_node
+    :ui/room_builder_node
+    :ui/scene_summary_node
+    :ui/summary_metric_node
+    :ui/room_object_count
+    :ui/room_people_count
+    :ui/room_exit_count
+    :ui/inventory_count
+    :ui/presence_node
+    :ui/presence_card_node
+    :ui/room_snapshot_node
+    :ui/snapshot_row_node
+    :ui/snapshot_exits_node
+    :ui/snapshot_things_node
+    :ui/snapshot_players_node
+    :ui/exits_node
+    :ui/room_objects_node
+    :ui/inventory_node
+    :ui/inspector_node
+    :ui/entity_initial
+    :ui/entity_kind
+    :ui/entity_location_text
+    :ui/entity_fact_node
+    :ui/entity_facts_node
+    :ui/inspector_action_node
+    :ui/sync_selected_entity
+    :ui/narrative_node
+    :ui/latest_event_node
+    :ui/command_bar_node
+    :ui/command_chips_node
+    :ui/event_node
+    :ui/event_label
+    :ui/event_meta_chip_node
+    :ui/event_meta_node
+    :ui/event_body_node
+    :ui/event_body_for
+    :ui/event_template_body_node
+    :ui/event_template_value_nodes
+    :ui/event_template_part_nodes
+    :ui/event_class
+    :ui/event_actor_node
+    :ui/event_identity_node
+    :ui/event_object_node
+    :ui/event_verb
+    :dom_text
+    :dom_element
+    :dom_raw
+    :to_literal
+    :to_xml
+    :from_literal
+    :string_concat
+    :string_len
+    :string_slice
+    :lower
+    :trim
+    :actor
+    :frob
+    :frob_delegate
+    :ui/sync_action_source
+    :ui/form_text
+    :ui/handle_sync_action
+    :build_room
+    :create_passage
+    :set_passage_description
+    :set_passage_side
+    :builder/current_area
+    :builder/room_named_in_area
+    :builder/passage_from
+    :http_request
+    :http/document
+    :http_response
+    :http_html
+    :http/base_style
+    :http/login_style
+    :http/presence_style
+    :http/narrative_style
+    :http/bootstrap_script
+end
 
 verb ui/actor_name(obj)
   if frob_delegate(obj) == #passage

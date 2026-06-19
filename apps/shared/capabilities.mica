@@ -73,11 +73,19 @@ assert SelectorInSurface(:maintenance, :polish)
 
 // Builders can inspect and edit names, invoke maintenance verbs, and emit
 // effects. Visitors can inspect names only.
-assert RoleCanRead(#builder, :inspection)
-assert RoleCanWrite(#builder, :editing)
-assert RoleCanInvoke(#builder, :maintenance)
-assert RoleCanEffect(#builder)
-assert RoleCanRead(#visitor, :inspection)
+grant role #builder
+  read:
+    :inspection
+  write:
+    :editing
+  invoke:
+    :maintenance
+  effect
+end
+grant role #visitor
+  read:
+    :inspection
+end
 
 CanRead(actor, relation) :-
   HasRole(actor, role),

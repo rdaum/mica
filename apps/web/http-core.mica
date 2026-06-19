@@ -18,18 +18,22 @@ make_relation(:CanInvoke, 2)
 
 make_identity(:web)
 
-assert CanRead(#web, :HttpRequest)
-assert CanRead(#web, :RequestMethod)
-assert CanRead(#web, :RequestPath)
-assert CanRead(#web, :RequestVersion)
-assert CanRead(#web, :RequestPrincipal)
-assert CanRead(#web, :RequestActor)
-assert CanRead(#web, :RequestHeader)
-assert CanRead(#web, :RequestBody)
-assert CanInvoke(#web, :http_request)
-assert CanInvoke(#web, :http_response)
-assert CanInvoke(#web, :http_text)
-assert CanInvoke(#web, :http_html)
+grant #web
+  read:
+    :HttpRequest
+    :RequestMethod
+    :RequestPath
+    :RequestVersion
+    :RequestPrincipal
+    :RequestActor
+    :RequestHeader
+    :RequestBody
+  invoke:
+    :http_request
+    :http_response
+    :http_text
+    :http_html
+end
 
 verb http_response(status, content_type, body)
   return {:status -> status, :headers -> [["content-type", content_type]], :body -> body}

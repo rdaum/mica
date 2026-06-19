@@ -8,6 +8,18 @@ use super::{relation_name_relation, subject_fact_relation};
 use mica_var::{Identity, Symbol, Value};
 use std::sync::Arc;
 
+fn assert_relation_query_is_true(report: &super::RunReport) {
+    let TaskOutcome::Complete { value, .. } = &report.outcome else {
+        panic!("expected query to complete");
+    };
+    assert_eq!(
+        *value,
+        Value::bool(true),
+        "unexpected query result: {}",
+        report.render()
+    );
+}
+
 #[test]
 fn runner_executes_source_against_empty_kernel() {
     let mut runner = SourceRunner::new_empty();
@@ -3212,6 +3224,75 @@ fn runner_fileout_preserves_slash_qualified_names() {
         .unwrap();
     assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
     assert!(dispatch.render().contains("\"brass lamp\""));
+}
+
+#[test]
+fn runner_filein_grant_blocks_fileout_as_grant_blocks() {
+    let mut runner = SourceRunner::new_empty();
+    let unit = Symbol::intern("policy");
+    runner
+        .run_filein_with_unit(
+            unit,
+            "make_identity(:web)\n\
+                 make_identity(:player)\n\
+                 make_relation(:CanRead, 2)\n\
+                 make_relation(:CanWrite, 2)\n\
+                 make_relation(:CanInvoke, 2)\n\
+                 make_relation(:CanEffect, 1)\n\
+                 make_relation(:RoleCanRead, 2)\n\
+                 make_relation(:RoleCanInvoke, 2)\n\
+                 make_relation(:RoleCanEffect, 1)\n\
+\n\
+                 grant #web\n\
+                   read:\n\
+                     :HttpRequest\n\
+                     :source/RuntimeConfig\n\
+                   write :source/RuntimeConfig\n\
+                   invoke:\n\
+                     :http_request\n\
+                     :source/http_document\n\
+                   effect\n\
+                 end\n\
+\n\
+                 grant role #player\n\
+                   read :Name, :Description\n\
+                   invoke:\n\
+                     :look\n\
+                   effect\n\
+                 end\n",
+            FileinMode::Add,
+        )
+        .unwrap();
+
+    let read = runner
+        .run_source("return CanRead(#web, :source/RuntimeConfig)")
+        .unwrap();
+    let invoke = runner
+        .run_source("return RoleCanInvoke(#player, :look)")
+        .unwrap();
+    assert_relation_query_is_true(&read);
+    assert_relation_query_is_true(&invoke);
+
+    let source = runner.fileout_unit(unit).unwrap();
+    assert!(source.contains("grant #web"));
+    assert!(source.contains("  read:\n    :HttpRequest\n    :source/RuntimeConfig"));
+    assert!(source.contains("  write:\n    :source/RuntimeConfig"));
+    assert!(source.contains("  invoke:\n    :http_request\n    :source/http_document"));
+    assert!(source.contains("  effect"));
+    assert!(source.contains("grant role #player"));
+    assert!(!source.contains("assert CanRead(#web"));
+    assert!(!source.contains("assert RoleCanInvoke(#player"));
+
+    let mut imported = SourceRunner::new_empty();
+    imported
+        .run_filein_with_unit(unit, &source, FileinMode::Add)
+        .unwrap();
+    let read = imported
+        .run_source("return CanRead(#web, :HttpRequest)")
+        .unwrap();
+    let effect = imported.run_source("return CanEffect(#web)").unwrap();
+    assert_relation_query_is_true(&read);
+    assert_relation_query_is_true(&effect);
 }
 
 #[test]

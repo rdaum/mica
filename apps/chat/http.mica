@@ -1,9 +1,12 @@
 // HTTP document route for the chat sync example.
 
-assert CanInvoke(#web, :http_request)
-assert CanInvoke(#web, :chat_document)
-assert CanInvoke(#web, :chat_style)
-assert CanInvoke(#web, :chat_bootstrap_script)
+grant #web
+  invoke:
+    :http_request
+    :chat_document
+    :chat_style
+    :chat_bootstrap_script
+end
 
 verb http_request(request)
   let http_method = one RequestMethod(request, ?m)

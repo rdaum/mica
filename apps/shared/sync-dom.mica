@@ -1,11 +1,14 @@
 // Generic DOM snapshot helpers. WebTransport session state, snapshots, and
 // patches are owned by the host.
 
-assert CanInvoke(#web, :sync_snapshot)
-assert CanInvoke(#web, :sync_snapshot_payload)
-assert CanInvoke(#web, :sync_snapshot_tree)
-assert CanInvoke(#web, :sync_snapshot_signature)
-assert CanInvoke(#web, :sync_mount_node)
+grant #web
+  invoke:
+    :sync_snapshot
+    :sync_snapshot_payload
+    :sync_snapshot_tree
+    :sync_snapshot_signature
+    :sync_mount_node
+end
 
 verb sync_snapshot(view)
   return {:view -> view, :revision -> sync_view_revision(view)}

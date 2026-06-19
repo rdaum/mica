@@ -1,25 +1,29 @@
 // HTTP document route for the DOM-synced MUD app.
 
-assert CanInvoke(#web, :http_request)
-assert CanRead(#web, :mud/RuntimeConfig)
-assert CanInvoke(#web, :http/document)
-assert CanInvoke(#web, :http_login_icon_node)
-assert CanInvoke(#web, :http_login_icon_label_node)
-assert CanInvoke(#web, :http_login_document)
-assert CanInvoke(#web, :http_login_style)
-assert CanInvoke(#web, :http/base_style)
-assert CanInvoke(#web, :http/login_style)
-assert CanInvoke(#web, :http/presence_style)
-assert CanInvoke(#web, :http/narrative_style)
-assert CanInvoke(#web, :http/bootstrap_script)
-assert CanInvoke(#web, :dom_text)
-assert CanInvoke(#web, :dom_element)
-assert CanInvoke(#web, :dom_raw)
-assert CanInvoke(#web, :to_xml)
-assert CanInvoke(#web, :string_contains)
-assert CanInvoke(#web, :string_len)
-assert CanInvoke(#web, :string_slice)
-assert CanInvoke(#web, :string_starts_with)
+grant #web
+  read:
+    :mud/RuntimeConfig
+  invoke:
+    :http_request
+    :http/document
+    :http_login_icon_node
+    :http_login_icon_label_node
+    :http_login_document
+    :http_login_style
+    :http/base_style
+    :http/login_style
+    :http/presence_style
+    :http/narrative_style
+    :http/bootstrap_script
+    :dom_text
+    :dom_element
+    :dom_raw
+    :to_xml
+    :string_contains
+    :string_len
+    :string_slice
+    :string_starts_with
+end
 
 verb http_login_icon_node(name)
   name == "login" && return dom <svg class="login-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><path d="m10 17 5-5-5-5"></path><path d="M15 12H3"></path></svg>

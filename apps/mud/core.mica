@@ -498,227 +498,238 @@ assert command/TrustedForGrammar(#player, #north_room)
 assert command/TrustedForGrammar(#player, #attic)
 assert command/TrustedForGrammar(#player, #builder)
 
-assert RoleCanRead(#player, :Name)
-assert RoleCanRead(#player, :Delegates)
-assert RoleCanRead(#player, :Description)
-assert RoleCanRead(#player, :LocatedIn)
-assert RoleCanRead(#player, :RoomInArea)
-assert RoleCanRead(#player, :ProperNoun)
-assert RoleCanRead(#player, :Plural)
-assert RoleCanRead(#player, :PronounSubject)
-assert RoleCanRead(#player, :PronounObject)
-assert RoleCanRead(#player, :PronounPossessiveAdjective)
-assert RoleCanRead(#player, :PronounPossessiveNoun)
-assert RoleCanRead(#player, :PronounReflexive)
-assert RoleCanRead(#player, :Portable)
-assert RoleCanRead(#player, :PassageInArea)
-assert RoleCanRead(#player, :PassageSide)
-assert RoleCanRead(#player, :PassageLabel)
-assert RoleCanRead(#player, :PassageAlias)
-assert RoleCanRead(#player, :PassageDescription)
-assert RoleCanRead(#player, :PassageAmbient)
-assert RoleCanRead(#player, :PassageOpen)
-assert RoleCanRead(#player, :Exit)
-assert RoleCanRead(#player, :ReachableRoom)
-assert RoleCanRead(#player, :Builder)
-assert RoleCanRead(#player, :Within)
-assert RoleCanRead(#player, :Contents)
-assert RoleCanRead(#player, :Carrying)
-assert RoleCanRead(#player, :CanSee)
-assert RoleCanRead(#player, :PresentActor)
-assert RoleCanRead(#player, :ButtonArmed)
-assert RoleCanRead(#player, :command/VerbAlias)
-assert RoleCanRead(#player, :command/PrefixShortcut)
-assert RoleCanRead(#player, :command/Form)
-assert RoleCanRead(#player, :command/Pattern)
-assert RoleCanRead(#player, :command/PatternPart)
-assert RoleCanRead(#player, :command/Role)
-assert RoleCanRead(#player, :command/Preposition)
-assert RoleCanRead(#player, :command/MissingArgumentMessage)
-assert RoleCanRead(#player, :command/Noun)
-assert RoleCanRead(#player, :command/NounAlias)
-assert RoleCanRead(#player, :command/Name)
-assert RoleCanRead(#player, :VisibleTo)
-assert RoleCanRead(#player, :event/Delivery)
-assert RoleCanRead(#player, :event/Seq)
-assert RoleCanRead(#player, :event/Text)
-assert RoleCanRead(#player, :event/Source)
-assert RoleCanRead(#player, :command/TrustedForName)
-assert RoleCanRead(#player, :command/NameMatchable)
-assert RoleCanRead(#player, :command/TrustedForGrammar)
-assert RoleCanRead(#player, :command/GrammarSource)
-assert RoleCanRead(#player, :command/HandlerScope)
+grant role #player
+  read:
+    :Name
+    :Delegates
+    :Description
+    :LocatedIn
+    :RoomInArea
+    :ProperNoun
+    :Plural
+    :PronounSubject
+    :PronounObject
+    :PronounPossessiveAdjective
+    :PronounPossessiveNoun
+    :PronounReflexive
+    :Portable
+    :PassageInArea
+    :PassageSide
+    :PassageLabel
+    :PassageAlias
+    :PassageDescription
+    :PassageAmbient
+    :PassageOpen
+    :Exit
+    :ReachableRoom
+    :Builder
+    :Within
+    :Contents
+    :Carrying
+    :CanSee
+    :PresentActor
+    :ButtonArmed
+    :command/VerbAlias
+    :command/PrefixShortcut
+    :command/Form
+    :command/Pattern
+    :command/PatternPart
+    :command/Role
+    :command/Preposition
+    :command/MissingArgumentMessage
+    :command/Noun
+    :command/NounAlias
+    :command/Name
+    :VisibleTo
+    :event/Delivery
+    :event/Seq
+    :event/Text
+    :event/Source
+    :command/TrustedForName
+    :command/NameMatchable
+    :command/TrustedForGrammar
+    :command/GrammarSource
+    :command/HandlerScope
+end
 
-assert RoleCanWrite(#player, :LocatedIn)
-assert RoleCanWrite(#player, :ButtonArmed)
-assert RoleCanWrite(#player, :event/Delivery)
-assert RoleCanWrite(#player, :event/Seq)
-assert RoleCanWrite(#player, :event/Text)
-assert RoleCanWrite(#player, :event/Source)
-assert RoleCanWrite(#player, :Name)
-assert RoleCanWrite(#player, :Description)
-assert RoleCanWrite(#player, :RoomInArea)
-assert RoleCanWrite(#player, :PassageInArea)
-assert RoleCanWrite(#player, :PassageSide)
-assert RoleCanWrite(#player, :PassageLabel)
-assert RoleCanWrite(#player, :PassageAlias)
-assert RoleCanWrite(#player, :PassageDescription)
-assert RoleCanWrite(#player, :PassageAmbient)
-assert RoleCanWrite(#player, :PassageOpen)
-assert RoleCanWrite(#player, :command/Noun)
-assert RoleCanWrite(#player, :command/NounAlias)
-assert RoleCanWrite(#player, :command/TrustedForName)
-assert RoleCanWrite(#player, :command/TrustedForGrammar)
+grant role #player
+  write:
+    :LocatedIn
+    :ButtonArmed
+    :event/Delivery
+    :event/Seq
+    :event/Text
+    :event/Source
+    :Name
+    :Description
+    :RoomInArea
+    :PassageInArea
+    :PassageSide
+    :PassageLabel
+    :PassageAlias
+    :PassageDescription
+    :PassageAmbient
+    :PassageOpen
+    :command/Noun
+    :command/NounAlias
+    :command/TrustedForName
+    :command/TrustedForGrammar
+end
 
-assert RoleCanInvoke(#player, :command)
-assert RoleCanInvoke(#player, :command/match_object)
-assert RoleCanInvoke(#player, :command/bind_pattern)
-assert RoleCanInvoke(#player, :look)
-assert RoleCanInvoke(#player, :examine)
-assert RoleCanInvoke(#player, :look_in)
-assert RoleCanInvoke(#player, :go)
-assert RoleCanInvoke(#player, :passage/label_for)
-assert RoleCanInvoke(#player, :passage/describe_from)
-assert RoleCanInvoke(#player, :event/from_template)
-assert RoleCanInvoke(#player, :event/narrative)
-assert RoleCanInvoke(#player, :event/bindings)
-assert RoleCanInvoke(#player, :event/template)
-assert RoleCanInvoke(#player, :event/render)
-assert RoleCanInvoke(#player, :event/literal)
-assert RoleCanInvoke(#player, :event/metadata)
-assert RoleCanInvoke(#player, :event/with_metadata)
-assert RoleCanInvoke(#player, :event/with_label)
-assert RoleCanInvoke(#player, :event/with_class)
-assert RoleCanInvoke(#player, :event/with_audience)
-assert RoleCanInvoke(#player, :event/with_presentation)
-assert RoleCanInvoke(#player, :event/with_group)
-assert RoleCanInvoke(#player, :event/replacing_group)
-assert RoleCanInvoke(#player, :event/with_location)
-assert RoleCanInvoke(#player, :event/scene)
-assert RoleCanInvoke(#player, :event/scene_from_template)
-assert RoleCanInvoke(#player, :event/scene_at)
-assert RoleCanInvoke(#player, :emit_room_event)
-assert RoleCanInvoke(#player, :emit_room_event_except)
-assert RoleCanInvoke(#player, :event/next_seq)
-assert RoleCanInvoke(#player, :event/record_source)
-assert RoleCanInvoke(#player, :event/notify)
-assert RoleCanInvoke(#player, :event/notify_to)
-assert RoleCanInvoke(#player, :get)
-assert RoleCanInvoke(#player, :get_from)
-assert RoleCanInvoke(#player, :drop)
-assert RoleCanInvoke(#player, :put)
-assert RoleCanInvoke(#player, :push)
-assert RoleCanInvoke(#player, :button_resolves)
-assert RoleCanInvoke(#player, :say)
-assert RoleCanInvoke(#player, :emote)
-assert RoleCanInvoke(#player, :social_event)
-assert RoleCanInvoke(#player, :social_directed_event)
-assert RoleCanInvoke(#player, :social_emit)
-assert RoleCanInvoke(#player, :nod)
-assert RoleCanInvoke(#player, :nod_at)
-assert RoleCanInvoke(#player, :nod_to)
-assert RoleCanInvoke(#player, :wave)
-assert RoleCanInvoke(#player, :wave_at)
-assert RoleCanInvoke(#player, :wave_to)
-assert RoleCanInvoke(#player, :bow)
-assert RoleCanInvoke(#player, :bow_at)
-assert RoleCanInvoke(#player, :bow_to)
-assert RoleCanInvoke(#player, :bonk)
-assert RoleCanInvoke(#player, :oif)
-assert RoleCanInvoke(#player, :smile)
-assert RoleCanInvoke(#player, :smile_at)
-assert RoleCanInvoke(#player, :smile_to)
-assert RoleCanInvoke(#player, :frown)
-assert RoleCanInvoke(#player, :laugh)
-assert RoleCanInvoke(#player, :dance)
-assert RoleCanInvoke(#player, :shrug)
-assert RoleCanInvoke(#player, :think)
-assert RoleCanInvoke(#player, :ponder)
-assert RoleCanInvoke(#player, :clap)
-assert RoleCanInvoke(#player, :cheer)
-assert RoleCanInvoke(#player, :sigh)
-assert RoleCanInvoke(#player, :yawn)
-assert RoleCanInvoke(#player, :stretch)
-assert RoleCanInvoke(#player, :template/error)
-assert RoleCanInvoke(#player, :template/capitalize)
-assert RoleCanInvoke(#player, :template/phrase)
-assert RoleCanInvoke(#player, :template/symbol_from_token)
-assert RoleCanInvoke(#player, :template/binding_token)
-assert RoleCanInvoke(#player, :template/compact_binding_token)
-assert RoleCanInvoke(#player, :template/pronoun_type)
-assert RoleCanInvoke(#player, :template/parse_binding_suffix)
-assert RoleCanInvoke(#player, :template/pronoun_token)
-assert RoleCanInvoke(#player, :template/verb_token)
-assert RoleCanInvoke(#player, :template/split_once)
-assert RoleCanInvoke(#player, :template/article_for)
-assert RoleCanInvoke(#player, :template/parse_token)
-assert RoleCanInvoke(#player, :template/compile)
-assert RoleCanInvoke(#player, :template/from_parts)
-assert RoleCanInvoke(#player, :template/name)
-assert RoleCanInvoke(#player, :template/reference)
-assert RoleCanInvoke(#player, :template/self_alt)
-assert RoleCanInvoke(#player, :template/article)
-assert RoleCanInvoke(#player, :template/pronoun)
-assert RoleCanInvoke(#player, :template/conjugation)
-assert RoleCanInvoke(#player, :template/binding_name)
-assert RoleCanInvoke(#player, :template/binding_value_text)
-assert RoleCanInvoke(#player, :template/binding_value)
-assert RoleCanInvoke(#player, :template/reference_text)
-assert RoleCanInvoke(#player, :template/pronoun_default)
-assert RoleCanInvoke(#player, :template/self_pronoun)
-assert RoleCanInvoke(#player, :template/pronoun_for)
-assert RoleCanInvoke(#player, :template/conjugate)
-assert RoleCanInvoke(#player, :template/render_part)
-assert RoleCanInvoke(#player, :template/render_value)
-assert RoleCanInvoke(#player, :template/render)
-assert RoleCanInvoke(#player, :template/literal)
-assert RoleCanInvoke(#player, :template/decompile_part)
-assert RoleCanInvoke(#player, :template/decompile)
-assert RoleCanInvoke(#player, :message_bag/make)
-assert RoleCanInvoke(#player, :message_bag/is_message_bag)
-assert RoleCanInvoke(#player, :message_bag/entries)
-assert RoleCanInvoke(#player, :message_bag/pick)
-assert RoleCanInvoke(#player, :message_bag/add)
-assert RoleCanInvoke(#player, :message_bag/remove)
-assert RoleCanInvoke(#player, :message_bag/set_entry)
-assert RoleCanInvoke(#player, :frob)
-assert RoleCanInvoke(#player, :frob_delegate)
-assert RoleCanInvoke(#player, :frob_value)
-assert RoleCanInvoke(#player, :to_literal)
-assert RoleCanInvoke(#player, :trim)
-assert RoleCanInvoke(#player, :split)
-assert RoleCanInvoke(#player, :string_chars)
-assert RoleCanInvoke(#player, :string_from_chars)
-assert RoleCanInvoke(#player, :string_concat)
-assert RoleCanInvoke(#player, :string_join)
-assert RoleCanInvoke(#player, :words)
-assert RoleCanInvoke(#player, :string_equal_fold)
-assert RoleCanInvoke(#player, :string_starts_with)
-assert RoleCanInvoke(#player, :string_contains)
-assert RoleCanInvoke(#player, :parse_ordinal)
-assert RoleCanInvoke(#player, :edit_distance)
-assert RoleCanInvoke(#player, :ui/can_build)
-assert RoleCanInvoke(#player, :build_room)
-assert RoleCanInvoke(#player, :build_room_command)
-assert RoleCanInvoke(#player, :create_passage)
-assert RoleCanInvoke(#player, :create_passage_command)
-assert RoleCanInvoke(#player, :remove_passage)
-assert RoleCanInvoke(#player, :remove_passage_command)
-assert RoleCanInvoke(#player, :set_passage_description)
-assert RoleCanInvoke(#player, :set_passage_side)
-assert RoleCanInvoke(#player, :set_passage_description_command)
-assert RoleCanInvoke(#player, :builder/can_modify)
-assert RoleCanInvoke(#player, :builder/current_area)
-assert RoleCanInvoke(#player, :builder/room_value)
-assert RoleCanInvoke(#player, :builder/room_named_in_area)
-assert RoleCanInvoke(#player, :builder/passage_value)
-assert RoleCanInvoke(#player, :builder/passage_between)
-assert RoleCanInvoke(#player, :builder/passage_from)
-assert RoleCanInvoke(#player, :builder/opposite_direction)
-assert RoleCanInvoke(#player, :builder/parse_dig)
-assert RoleCanInvoke(#player, :builder/parse_describe_exit)
+grant role #player
+  invoke:
+    :command
+    :command/match_object
+    :command/bind_pattern
+    :look
+    :examine
+    :look_in
+    :go
+    :passage/label_for
+    :passage/describe_from
+    :event/from_template
+    :event/narrative
+    :event/bindings
+    :event/template
+    :event/render
+    :event/literal
+    :event/metadata
+    :event/with_metadata
+    :event/with_label
+    :event/with_class
+    :event/with_audience
+    :event/with_presentation
+    :event/with_group
+    :event/replacing_group
+    :event/with_location
+    :event/scene
+    :event/scene_from_template
+    :event/scene_at
+    :emit_room_event
+    :emit_room_event_except
+    :event/next_seq
+    :event/record_source
+    :event/notify
+    :event/notify_to
+    :get
+    :get_from
+    :drop
+    :put
+    :push
+    :button_resolves
+    :say
+    :emote
+    :social_event
+    :social_directed_event
+    :social_emit
+    :nod
+    :nod_at
+    :nod_to
+    :wave
+    :wave_at
+    :wave_to
+    :bow
+    :bow_at
+    :bow_to
+    :bonk
+    :oif
+    :smile
+    :smile_at
+    :smile_to
+    :frown
+    :laugh
+    :dance
+    :shrug
+    :think
+    :ponder
+    :clap
+    :cheer
+    :sigh
+    :yawn
+    :stretch
+    :template/error
+    :template/capitalize
+    :template/phrase
+    :template/symbol_from_token
+    :template/binding_token
+    :template/compact_binding_token
+    :template/pronoun_type
+    :template/parse_binding_suffix
+    :template/pronoun_token
+    :template/verb_token
+    :template/split_once
+    :template/article_for
+    :template/parse_token
+    :template/compile
+    :template/from_parts
+    :template/name
+    :template/reference
+    :template/self_alt
+    :template/article
+    :template/pronoun
+    :template/conjugation
+    :template/binding_name
+    :template/binding_value_text
+    :template/binding_value
+    :template/reference_text
+    :template/pronoun_default
+    :template/self_pronoun
+    :template/pronoun_for
+    :template/conjugate
+    :template/render_part
+    :template/render_value
+    :template/render
+    :template/literal
+    :template/decompile_part
+    :template/decompile
+    :message_bag/make
+    :message_bag/is_message_bag
+    :message_bag/entries
+    :message_bag/pick
+    :message_bag/add
+    :message_bag/remove
+    :message_bag/set_entry
+    :frob
+    :frob_delegate
+    :frob_value
+    :to_literal
+    :trim
+    :split
+    :string_chars
+    :string_from_chars
+    :string_concat
+    :string_join
+    :words
+    :string_equal_fold
+    :string_starts_with
+    :string_contains
+    :parse_ordinal
+    :edit_distance
+    :ui/can_build
+    :build_room
+    :build_room_command
+    :create_passage
+    :create_passage_command
+    :remove_passage
+    :remove_passage_command
+    :set_passage_description
+    :set_passage_side
+    :set_passage_description_command
+    :builder/can_modify
+    :builder/current_area
+    :builder/room_value
+    :builder/room_named_in_area
+    :builder/passage_value
+    :builder/passage_between
+    :builder/passage_from
+    :builder/opposite_direction
+    :builder/parse_dig
+    :builder/parse_describe_exit
+end
 
-assert RoleCanEffect(#player)
+grant role #player
+  effect
+end
 
 command/TrustedForName(actor, obj) :-
   Delegates(actor, #player, ?distance),

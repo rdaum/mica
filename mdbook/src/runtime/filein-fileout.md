@@ -48,3 +48,34 @@ end
 Fileout preserves the `include_text(...)` call in stored verb source rather than
 emitting the included text inline. Filing the output back in therefore requires
 the referenced asset file to be present beside the fileout source.
+
+Filein also has a grant block surface for durable authorization policy facts.
+It is source sugar over the ordinary policy relations, so the stored world still
+contains `CanRead`, `CanWrite`, `CanInvoke`, `CanEffect`, and their `RoleCan*`
+counterparts:
+
+```mica
+grant #web
+  read:
+    :HttpRequest
+    :RequestPath
+  write:
+    :RequestBody
+  invoke:
+    :http_request
+    :http_response
+  effect
+end
+
+grant role #player
+  read:
+    :Name
+    :Description
+  invoke:
+    :look
+end
+```
+
+The first block expands to `Can*` assertions for `#web`; the second expands to
+`RoleCan*` assertions for `#player`. Fileout recognizes owned policy facts and
+emits grant blocks instead of long runs of repeated assertions.

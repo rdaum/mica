@@ -915,8 +915,9 @@ impl SourceRunner {
     }
 
     pub fn run_filein(&mut self, source: &str) -> Result<Vec<RunReport>, SourceTaskError> {
+        let source = expand_filein_grant_blocks(source)?;
         let mut reports = Vec::new();
-        for chunk in source_chunks_with_offsets(source) {
+        for chunk in source_chunks_with_offsets(&source) {
             reports.push(
                 self.run_source(&chunk.text)
                     .map_err(|error| shift_source_task_error(error, chunk.start))?,
@@ -930,8 +931,9 @@ impl SourceRunner {
         source: &str,
         mut load_include: impl FnMut(&str) -> Result<String, String>,
     ) -> Result<Vec<RunReport>, SourceTaskError> {
+        let source = expand_filein_grant_blocks(source)?;
         let mut reports = Vec::new();
-        for chunk in source_chunks_with_offsets(source) {
+        for chunk in source_chunks_with_offsets(&source) {
             let expanded = expand_filein_text_includes(&chunk.text, &mut load_include)?;
             reports.push(
                 self.run_source_with_stored_source(&expanded, &chunk.text)
@@ -946,9 +948,10 @@ impl SourceRunner {
         source: &str,
         mut load_include: impl FnMut(&str) -> Result<String, String>,
     ) -> Result<Vec<RunReport>, SourceTaskError> {
+        let source = expand_filein_grant_blocks(source)?;
         let mut reports = Vec::new();
         let mut errors = Vec::new();
-        for chunk in source_chunks_with_offsets(source) {
+        for chunk in source_chunks_with_offsets(&source) {
             let expanded = expand_filein_text_includes(&chunk.text, &mut load_include)?;
             match self.run_source_with_stored_source(&expanded, &chunk.text) {
                 Ok(report) => reports.push(report),
@@ -1988,6 +1991,185 @@ fn return_compile_errors(errors: Vec<CompileError>) -> Result<(), SourceTaskErro
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum GrantKind {
+    Actor,
+    Role,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum GrantOp {
+    Read,
+    Write,
+    Invoke,
+    Effect,
+}
+
+impl GrantOp {
+    fn from_section(text: &str) -> Option<Self> {
+        match text {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            "invoke" => Some(Self::Invoke),
+            "effect" => Some(Self::Effect),
+            _ => None,
+        }
+    }
+
+    fn relation_name(self, kind: GrantKind) -> &'static str {
+        match (kind, self) {
+            (GrantKind::Actor, Self::Read) => "CanRead",
+            (GrantKind::Actor, Self::Write) => "CanWrite",
+            (GrantKind::Actor, Self::Invoke) => "CanInvoke",
+            (GrantKind::Actor, Self::Effect) => "CanEffect",
+            (GrantKind::Role, Self::Read) => "RoleCanRead",
+            (GrantKind::Role, Self::Write) => "RoleCanWrite",
+            (GrantKind::Role, Self::Invoke) => "RoleCanInvoke",
+            (GrantKind::Role, Self::Effect) => "RoleCanEffect",
+        }
+    }
+
+    fn source_name(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Invoke => "invoke",
+            Self::Effect => "effect",
+        }
+    }
+}
+
+struct GrantHeader<'a> {
+    kind: GrantKind,
+    subject: &'a str,
+}
+
+fn expand_filein_grant_blocks(source: &str) -> Result<String, SourceTaskError> {
+    let mut output = String::new();
+    let mut lines = source.lines();
+
+    while let Some(line) = lines.next() {
+        let Some(header) = parse_grant_header(line) else {
+            output.push_str(line);
+            output.push('\n');
+            continue;
+        };
+
+        let mut current_op = None;
+        let mut closed = false;
+        for body_line in lines.by_ref() {
+            let trimmed = body_line.trim();
+            if trimmed == "end" {
+                closed = true;
+                break;
+            }
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                output.push_str(body_line);
+                output.push('\n');
+                continue;
+            }
+
+            if let Some((op, rest)) = parse_grant_op_line(trimmed) {
+                current_op = Some(op);
+                emit_grant_assertions(&mut output, header.kind, header.subject, op, rest)?;
+                continue;
+            }
+
+            if let Some(op) = current_op {
+                emit_grant_assertions(&mut output, header.kind, header.subject, op, trimmed)?;
+                continue;
+            }
+
+            return Err(grant_parse_error(format!(
+                "expected read:, write:, invoke:, effect, or end in grant block, got {trimmed:?}"
+            )));
+        }
+
+        if !closed {
+            return Err(grant_parse_error("unterminated grant block"));
+        }
+    }
+
+    Ok(output)
+}
+
+fn parse_grant_header(line: &str) -> Option<GrantHeader<'_>> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("grant ")?;
+    let (kind, subject) = if let Some(subject) = rest.strip_prefix("role ") {
+        (GrantKind::Role, subject.trim())
+    } else {
+        (GrantKind::Actor, rest.trim())
+    };
+    (!subject.is_empty()).then_some(GrantHeader { kind, subject })
+}
+
+fn parse_grant_op_line(line: &str) -> Option<(GrantOp, &str)> {
+    for name in ["read", "write", "invoke", "effect"] {
+        let op = GrantOp::from_section(name).expect("static grant op is valid");
+        if line == name {
+            return Some((op, ""));
+        }
+        if let Some(rest) = line.strip_prefix(&format!("{name}:")) {
+            return Some((op, rest.trim()));
+        }
+        if let Some(rest) = line.strip_prefix(name)
+            && rest
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_whitespace())
+        {
+            return Some((op, rest.trim()));
+        }
+    }
+    None
+}
+
+fn emit_grant_assertions(
+    output: &mut String,
+    kind: GrantKind,
+    subject: &str,
+    op: GrantOp,
+    rest: &str,
+) -> Result<(), SourceTaskError> {
+    let relation = op.relation_name(kind);
+    if op == GrantOp::Effect {
+        if !rest.trim().is_empty() {
+            return Err(grant_parse_error("effect grants do not take targets"));
+        }
+        output.push_str(&format!("assert {relation}({subject})\n"));
+        return Ok(());
+    }
+
+    let targets = parse_grant_targets(rest)?;
+    for target in targets {
+        output.push_str(&format!("assert {relation}({subject}, {target})\n"));
+    }
+    Ok(())
+}
+
+fn parse_grant_targets(rest: &str) -> Result<Vec<&str>, SourceTaskError> {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Ok(Vec::new());
+    }
+    let targets = rest
+        .split(',')
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err(grant_parse_error(
+            "grant operation requires at least one target",
+        ));
+    }
+    Ok(targets)
+}
+
+fn grant_parse_error(message: impl Into<String>) -> SourceTaskError {
+    unsupported_runner_error(NodeId(0), None, message.into())
+}
+
 fn shift_compile_error(error: CompileError, offset: usize) -> CompileError {
     match error {
         CompileError::Diagnostics { errors } => CompileError::Diagnostics {
@@ -2317,8 +2499,9 @@ fn predeclare_source_names_in_kernel(
 }
 
 fn collect_source_declarations(source: &str) -> Result<SourceDeclarations, SourceTaskError> {
+    let source = expand_filein_grant_blocks(source)?;
     let mut declarations = SourceDeclarations::default();
-    for chunk in source_chunks(source) {
+    for chunk in source_chunks(&source) {
         let semantic = parse_semantic(&chunk);
         if !semantic.parse_errors.is_empty() {
             return Err(CompileError::ParseErrors {
@@ -2478,6 +2661,86 @@ fn owned_fact_tuple(ownership: &Tuple) -> Option<(Identity, Tuple)> {
     Some((relation, tuple))
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct GrantBlockKey {
+    kind: GrantKind,
+    subject: String,
+}
+
+type GrantBlocks = BTreeMap<GrantBlockKey, BTreeMap<GrantOp, BTreeSet<String>>>;
+
+fn grant_fact_source(
+    relation_name: &str,
+    tuple: &Tuple,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> Option<(GrantBlockKey, GrantOp, Option<String>)> {
+    let (kind, op) = match relation_name {
+        "CanRead" => (GrantKind::Actor, GrantOp::Read),
+        "CanWrite" => (GrantKind::Actor, GrantOp::Write),
+        "CanInvoke" => (GrantKind::Actor, GrantOp::Invoke),
+        "CanEffect" => (GrantKind::Actor, GrantOp::Effect),
+        "RoleCanRead" => (GrantKind::Role, GrantOp::Read),
+        "RoleCanWrite" => (GrantKind::Role, GrantOp::Write),
+        "RoleCanInvoke" => (GrantKind::Role, GrantOp::Invoke),
+        "RoleCanEffect" => (GrantKind::Role, GrantOp::Effect),
+        _ => return None,
+    };
+    let values = tuple.values();
+    let subject = values.first()?;
+    let key = GrantBlockKey {
+        kind,
+        subject: source_literal(subject, identity_names, relation_names),
+    };
+    if op == GrantOp::Effect {
+        return (values.len() == 1).then_some((key, op, None));
+    }
+    let target = values.get(1)?;
+    (values.len() == 2).then_some((
+        key,
+        op,
+        Some(source_literal(target, identity_names, relation_names)),
+    ))
+}
+
+fn render_grant_blocks(grants: GrantBlocks) -> String {
+    grants
+        .into_iter()
+        .map(|(key, ops)| {
+            let mut out = match key.kind {
+                GrantKind::Actor => format!("grant {}", key.subject),
+                GrantKind::Role => format!("grant role {}", key.subject),
+            };
+            out.push('\n');
+            for op in [
+                GrantOp::Read,
+                GrantOp::Write,
+                GrantOp::Invoke,
+                GrantOp::Effect,
+            ] {
+                let Some(targets) = ops.get(&op) else {
+                    continue;
+                };
+                if op == GrantOp::Effect {
+                    out.push_str("  effect\n");
+                    continue;
+                }
+                out.push_str("  ");
+                out.push_str(op.source_name());
+                out.push_str(":\n");
+                for target in targets {
+                    out.push_str("    ");
+                    out.push_str(target);
+                    out.push('\n');
+                }
+            }
+            out.push_str("end");
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, KernelError> {
     let snapshot = kernel.snapshot();
     let identity_names = identity_name_map(snapshot.as_ref())?;
@@ -2485,6 +2748,7 @@ fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, 
     let mut relation_declarations = BTreeSet::new();
     let mut identity_declarations = BTreeSet::new();
     let mut facts = BTreeSet::new();
+    let mut grants: GrantBlocks = BTreeMap::new();
     let mut rule_sources = BTreeSet::new();
     let mut method_sources = BTreeSet::new();
 
@@ -2531,6 +2795,16 @@ fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, 
             continue;
         }
         if is_exported_fact_relation(relation) {
+            if let Some(relation_name) = relation_names.get(&relation)
+                && let Some((key, op, target)) =
+                    grant_fact_source(relation_name, &tuple, &identity_names, &relation_names)
+            {
+                let targets = grants.entry(key).or_default().entry(op).or_default();
+                if let Some(target) = target {
+                    targets.insert(target);
+                }
+                continue;
+            }
             facts.insert((relation, tuple));
         }
     }
@@ -2588,6 +2862,9 @@ fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, 
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
+    }
+    if !grants.is_empty() {
+        sections.push(render_grant_blocks(grants));
     }
     if !rule_sources.is_empty() {
         sections.push(rule_sources.into_iter().collect::<Vec<_>>().join("\n\n"));

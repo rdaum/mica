@@ -8,109 +8,122 @@ make_functional_relation(:session/RetrievalPlan, 2, [0])
 assert Delegates(#ui/retrieval_action, #ui/sync_action, 0)
 "mud_retrieve_related".ui/syncAction = #ui/retrieval_action
 
-assert RoleCanRead(#player, :session/RetrievalPlan)
-assert RoleCanWrite(#player, :session/RetrievalPlan)
+grant role #player
+  read:
+    :session/RetrievalPlan
+  write:
+    :session/RetrievalPlan
+end
 
-assert RoleCanInvoke(#player, :ui/retrieval_model)
-assert RoleCanInvoke(#player, :ui/retrieval_index)
-assert RoleCanInvoke(#player, :ui/retrieval_seed_world)
-assert RoleCanInvoke(#player, :ui/retrieval_text)
-assert RoleCanInvoke(#player, :ui/icon_label_node)
-assert RoleCanInvoke(#player, :ui/retrieval_action_node)
-assert RoleCanInvoke(#player, :ui/retrieval_result_row_node)
-assert RoleCanInvoke(#player, :ui/retrieval_panel_node)
-assert RoleCanInvoke(#player, :ui/retrieval_query_selected)
-assert RoleCanInvoke(#player, :retrieval/question_value)
-assert RoleCanInvoke(#player, :retrieval/plan_value)
-assert RoleCanInvoke(#player, :retrieval/context_value)
-assert RoleCanInvoke(#player, :retrieval/answer_value)
-assert RoleCanInvoke(#player, :answer_refresh_status)
-assert RoleCanInvoke(#player, :retrieve_context)
-assert RoleCanInvoke(#player, :answer_question)
-assert RoleCanInvoke(#player, :index_text_unit)
-assert RoleCanInvoke(#player, :ensure_subject_embedding)
-assert RoleCanInvoke(#player, :retrieval/index_entry_status)
-assert RoleCanInvoke(#player, :retrieval/text_unit_status)
+grant role #player
+  invoke:
+    :ui/retrieval_model
+    :ui/retrieval_index
+    :ui/retrieval_seed_world
+    :ui/retrieval_text
+    :ui/icon_label_node
+    :ui/retrieval_action_node
+    :ui/retrieval_result_row_node
+    :ui/retrieval_panel_node
+    :ui/retrieval_query_selected
+    :retrieval/question_value
+    :retrieval/plan_value
+    :retrieval/context_value
+    :retrieval/answer_value
+    :answer_refresh_status
+    :retrieve_context
+    :answer_question
+    :index_text_unit
+    :ensure_subject_embedding
+    :retrieval/index_entry_status
+    :retrieval/text_unit_status
+end
 
-assert RoleCanRead(#player, :TextUnit)
-assert RoleCanRead(#player, :TextUnitText)
-assert RoleCanRead(#player, :CanRetrieveSubject)
-assert RoleCanRead(#player, :Embedding)
-assert RoleCanRead(#player, :EmbeddingOf)
-assert RoleCanRead(#player, :EmbeddingVector)
-assert RoleCanRead(#player, :EmbeddingModel)
-assert RoleCanRead(#player, :EmbeddingSourceText)
-assert RoleCanRead(#player, :EmbeddingStatus)
-assert RoleCanRead(#player, :VectorIndex)
-assert RoleCanRead(#player, :VectorIndexContains)
-assert RoleCanRead(#player, :VectorIndexMetric)
-assert RoleCanRead(#player, :NearestEmbedding)
-assert RoleCanRead(#player, :IndexEntryEmbedding)
-assert RoleCanRead(#player, :IndexEntrySourceText)
-assert RoleCanRead(#player, :IndexEntryStatus)
-assert RoleCanRead(#player, :EmbeddingRefreshNeeded)
-assert RoleCanRead(#player, :Question)
-assert RoleCanRead(#player, :QuestionText)
-assert RoleCanRead(#player, :AskedBy)
-assert RoleCanRead(#player, :RetrievalPlan)
-assert RoleCanRead(#player, :PlanForQuestion)
-assert RoleCanRead(#player, :PlanKind)
-assert RoleCanRead(#player, :PlanModel)
-assert RoleCanRead(#player, :RetrievedContext)
-assert RoleCanRead(#player, :ContextForPlan)
-assert RoleCanRead(#player, :ContextSubject)
-assert RoleCanRead(#player, :ContextScore)
-assert RoleCanRead(#player, :ContextReason)
-assert RoleCanRead(#player, :ContextSnapshotVersion)
-assert RoleCanRead(#player, :Answer)
-assert RoleCanRead(#player, :AnswerForQuestion)
-assert RoleCanRead(#player, :AnswerText)
-assert RoleCanRead(#player, :AnswerPromptText)
-assert RoleCanRead(#player, :AnswerContextText)
-assert RoleCanRead(#player, :AnswerStatus)
-assert RoleCanRead(#player, :AnswerCitation)
-assert RoleCanRead(#player, :AnswerCitationText)
-assert RoleCanRead(#player, :AnswerNeedsReview)
-assert RoleCanRead(#player, :AnswerRefreshNeeded)
+grant role #player
+  read:
+    :TextUnit
+    :TextUnitText
+    :CanRetrieveSubject
+    :Embedding
+    :EmbeddingOf
+    :EmbeddingVector
+    :EmbeddingModel
+    :EmbeddingSourceText
+    :EmbeddingStatus
+    :VectorIndex
+    :VectorIndexContains
+    :VectorIndexMetric
+    :NearestEmbedding
+    :IndexEntryEmbedding
+    :IndexEntrySourceText
+    :IndexEntryStatus
+    :EmbeddingRefreshNeeded
+    :Question
+    :QuestionText
+    :AskedBy
+    :RetrievalPlan
+    :PlanForQuestion
+    :PlanKind
+    :PlanModel
+    :RetrievedContext
+    :ContextForPlan
+    :ContextSubject
+    :ContextScore
+    :ContextReason
+    :ContextSnapshotVersion
+    :Answer
+    :AnswerForQuestion
+    :AnswerText
+    :AnswerPromptText
+    :AnswerContextText
+    :AnswerStatus
+    :AnswerCitation
+    :AnswerCitationText
+    :AnswerNeedsReview
+    :AnswerRefreshNeeded
+end
 
-assert RoleCanWrite(#player, :TextUnit)
-assert RoleCanWrite(#player, :TextUnitText)
-assert RoleCanWrite(#player, :Embedding)
-assert RoleCanWrite(#player, :EmbeddingOf)
-assert RoleCanWrite(#player, :EmbeddingVector)
-assert RoleCanWrite(#player, :EmbeddingModel)
-assert RoleCanWrite(#player, :EmbeddingSourceText)
-assert RoleCanWrite(#player, :EmbeddingStatus)
-assert RoleCanWrite(#player, :VectorIndex)
-assert RoleCanWrite(#player, :VectorIndexContains)
-assert RoleCanWrite(#player, :VectorIndexMetric)
-assert RoleCanWrite(#player, :IndexEntryEmbedding)
-assert RoleCanWrite(#player, :IndexEntrySourceText)
-assert RoleCanWrite(#player, :IndexEntryStatus)
-assert RoleCanWrite(#player, :EmbeddingRefreshNeeded)
-assert RoleCanWrite(#player, :Question)
-assert RoleCanWrite(#player, :QuestionText)
-assert RoleCanWrite(#player, :AskedBy)
-assert RoleCanWrite(#player, :RetrievalPlan)
-assert RoleCanWrite(#player, :PlanForQuestion)
-assert RoleCanWrite(#player, :PlanKind)
-assert RoleCanWrite(#player, :PlanModel)
-assert RoleCanWrite(#player, :RetrievedContext)
-assert RoleCanWrite(#player, :ContextForPlan)
-assert RoleCanWrite(#player, :ContextSubject)
-assert RoleCanWrite(#player, :ContextScore)
-assert RoleCanWrite(#player, :ContextReason)
-assert RoleCanWrite(#player, :ContextSnapshotVersion)
-assert RoleCanWrite(#player, :Answer)
-assert RoleCanWrite(#player, :AnswerForQuestion)
-assert RoleCanWrite(#player, :AnswerText)
-assert RoleCanWrite(#player, :AnswerPromptText)
-assert RoleCanWrite(#player, :AnswerContextText)
-assert RoleCanWrite(#player, :AnswerStatus)
-assert RoleCanWrite(#player, :AnswerCitation)
-assert RoleCanWrite(#player, :AnswerCitationText)
-assert RoleCanWrite(#player, :AnswerNeedsReview)
-assert RoleCanWrite(#player, :AnswerRefreshNeeded)
+grant role #player
+  write:
+    :TextUnit
+    :TextUnitText
+    :Embedding
+    :EmbeddingOf
+    :EmbeddingVector
+    :EmbeddingModel
+    :EmbeddingSourceText
+    :EmbeddingStatus
+    :VectorIndex
+    :VectorIndexContains
+    :VectorIndexMetric
+    :IndexEntryEmbedding
+    :IndexEntrySourceText
+    :IndexEntryStatus
+    :EmbeddingRefreshNeeded
+    :Question
+    :QuestionText
+    :AskedBy
+    :RetrievalPlan
+    :PlanForQuestion
+    :PlanKind
+    :PlanModel
+    :RetrievedContext
+    :ContextForPlan
+    :ContextSubject
+    :ContextScore
+    :ContextReason
+    :ContextSnapshotVersion
+    :Answer
+    :AnswerForQuestion
+    :AnswerText
+    :AnswerPromptText
+    :AnswerContextText
+    :AnswerStatus
+    :AnswerCitation
+    :AnswerCitationText
+    :AnswerNeedsReview
+    :AnswerRefreshNeeded
+end
 
 CanRetrieveSubject(actor, subject) :-
   CanSee(actor, subject)

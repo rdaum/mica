@@ -50,29 +50,33 @@ Description(person, description) :-
 ProperNoun(person) :-
   mud/Person(person)
 
-assert CanRead(#mud/auth_guest, :HttpRequest)
-assert CanRead(#mud/auth_guest, :RequestMethod)
-assert CanRead(#mud/auth_guest, :RequestPath)
-assert CanRead(#mud/auth_guest, :RequestVersion)
-assert CanRead(#mud/auth_guest, :RequestPrincipal)
-assert CanRead(#mud/auth_guest, :RequestActor)
-assert CanRead(#mud/auth_guest, :RequestHeader)
-assert CanRead(#mud/auth_guest, :RequestBody)
-assert CanRead(#mud/auth_guest, :mud/RuntimeConfig)
-assert CanInvoke(#mud/auth_guest, :http_request)
-assert CanInvoke(#mud/auth_guest, :http_login_icon_node)
-assert CanInvoke(#mud/auth_guest, :http_login_icon_label_node)
-assert CanInvoke(#mud/auth_guest, :http_login_document)
-assert CanInvoke(#mud/auth_guest, :http_login_style)
-assert CanInvoke(#mud/auth_guest, :http_response)
-assert CanInvoke(#mud/auth_guest, :http_html)
-assert CanInvoke(#mud/auth_guest, :http_text)
-assert CanInvoke(#mud/auth_guest, :dom_text)
-assert CanInvoke(#mud/auth_guest, :dom_element)
-assert CanInvoke(#mud/auth_guest, :dom_raw)
-assert CanInvoke(#mud/auth_guest, :to_xml)
-assert CanInvoke(#mud/auth_guest, :string_concat)
-assert CanInvoke(#mud/auth_guest, :string_len)
-assert CanInvoke(#mud/auth_guest, :string_slice)
-assert CanInvoke(#mud/auth_guest, :string_contains)
-assert CanInvoke(#mud/auth_guest, :string_starts_with)
+grant #mud/auth_guest
+  read:
+    :HttpRequest
+    :RequestMethod
+    :RequestPath
+    :RequestVersion
+    :RequestPrincipal
+    :RequestActor
+    :RequestHeader
+    :RequestBody
+    :mud/RuntimeConfig
+  invoke:
+    :http_request
+    :http_login_icon_node
+    :http_login_icon_label_node
+    :http_login_document
+    :http_login_style
+    :http_response
+    :http_html
+    :http_text
+    :dom_text
+    :dom_element
+    :dom_raw
+    :to_xml
+    :string_concat
+    :string_len
+    :string_slice
+    :string_contains
+    :string_starts_with
+end

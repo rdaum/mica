@@ -23,75 +23,83 @@ assert Delegates(#ui/mica_method_mode_action, #ui/sync_action, 0)
 "mud_mica_inspect_layout".ui/syncAction = #ui/mica_inspect_layout_action
 "mud_mica_method_mode".ui/syncAction = #ui/mica_method_mode_action
 
-assert RoleCanInvoke(#player, :ui/can_program)
-assert RoleCanInvoke(#player, :ui/try_mica_inspect_command)
+grant role #player
+  invoke:
+    :ui/can_program
+    :ui/try_mica_inspect_command
+end
 
-assert RoleCanRead(#programmer, :ui/MicaInspect)
-assert RoleCanRead(#programmer, :ui/MicaInspectBack)
-assert RoleCanRead(#programmer, :ui/MicaInspectLayout)
-assert RoleCanRead(#programmer, :ui/MicaMethodMode)
-assert RoleCanRead(#programmer, :session/Revision)
-assert RoleCanRead(#programmer, :ui/MicaPrototype)
-assert RoleCanRead(#programmer, :Relation)
-assert RoleCanRead(#programmer, :RelationName)
-assert RoleCanRead(#programmer, :Arity)
-assert RoleCanRead(#programmer, :ArgumentName)
-assert RoleCanRead(#programmer, :ConflictPolicy)
-assert RoleCanRead(#programmer, :FunctionalKey)
-assert RoleCanRead(#programmer, :Index)
-assert RoleCanRead(#programmer, :IndexPosition)
-assert RoleCanRead(#programmer, :IndexStorageKind)
-assert RoleCanRead(#programmer, :Rule)
-assert RoleCanRead(#programmer, :RuleHead)
-assert RoleCanRead(#programmer, :RuleSource)
-assert RoleCanRead(#programmer, :ActiveRule)
-assert RoleCanRead(#programmer, :SubjectFact)
-assert RoleCanRead(#programmer, :MentionedFact)
-assert RoleCanRead(#programmer, :ExtensionalMentionedFact)
-assert RoleCanRead(#programmer, :MethodSelector)
-assert RoleCanRead(#programmer, :Param)
-assert RoleCanRead(#programmer, :MethodSource)
-assert RoleCanRead(#programmer, :MethodProgram)
-assert RoleCanRead(#programmer, :CanRead)
-assert RoleCanRead(#programmer, :CanWrite)
-assert RoleCanRead(#programmer, :CanInvoke)
-assert RoleCanRead(#programmer, :CanEffect)
-assert RoleCanRead(#programmer, :RoleCanRead)
-assert RoleCanRead(#programmer, :RoleCanWrite)
-assert RoleCanRead(#programmer, :RoleCanInvoke)
-assert RoleCanRead(#programmer, :RoleCanEffect)
-assert RoleCanWrite(#programmer, :ui/MicaInspect)
-assert RoleCanWrite(#programmer, :ui/MicaInspectBack)
-assert RoleCanWrite(#programmer, :ui/MicaInspectLayout)
-assert RoleCanWrite(#programmer, :ui/MicaMethodMode)
-assert RoleCanWrite(#programmer, :session/Revision)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_selected)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_expanded)
-assert RoleCanInvoke(#programmer, :ui/icon_node)
-assert RoleCanInvoke(#programmer, :ui/icon_label_node)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_action_node)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_entity_node)
-assert RoleCanInvoke(#programmer, :ui/mica_method_mode_node)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_layout_node)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_close_node)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_back_node)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_panel_node)
-assert RoleCanInvoke(#programmer, :ui/mica_section_node)
-assert RoleCanInvoke(#programmer, :ui/mica_empty_node)
-assert RoleCanInvoke(#programmer, :ui/mica_can_link)
-assert RoleCanInvoke(#programmer, :ui/mica_value_node)
-assert RoleCanInvoke(#programmer, :ui/mica_tuple_node)
-assert RoleCanInvoke(#programmer, :ui/relation_label)
-assert RoleCanInvoke(#programmer, :ui/mica_fact_row_node)
-assert RoleCanInvoke(#programmer, :ui/mica_subject_facts_node)
-assert RoleCanInvoke(#programmer, :ui/mica_mentioned_facts_node)
-assert RoleCanInvoke(#programmer, :ui/mica_delegates_header_node)
-assert RoleCanInvoke(#programmer, :ui/mica_method_source_excerpt)
-assert RoleCanInvoke(#programmer, :ui/mica_method_source_full)
-assert RoleCanInvoke(#programmer, :ui/mica_method_row_node)
-assert RoleCanInvoke(#programmer, :ui/mica_method_catalog_node)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_set_selected)
-assert RoleCanInvoke(#programmer, :ui/mica_inspect_bump_revision)
+grant role #programmer
+  read:
+    :ui/MicaInspect
+    :ui/MicaInspectBack
+    :ui/MicaInspectLayout
+    :ui/MicaMethodMode
+    :session/Revision
+    :ui/MicaPrototype
+    :Relation
+    :RelationName
+    :Arity
+    :ArgumentName
+    :ConflictPolicy
+    :FunctionalKey
+    :Index
+    :IndexPosition
+    :IndexStorageKind
+    :Rule
+    :RuleHead
+    :RuleSource
+    :ActiveRule
+    :SubjectFact
+    :MentionedFact
+    :ExtensionalMentionedFact
+    :MethodSelector
+    :Param
+    :MethodSource
+    :MethodProgram
+    :CanRead
+    :CanWrite
+    :CanInvoke
+    :CanEffect
+    :RoleCanRead
+    :RoleCanWrite
+    :RoleCanInvoke
+    :RoleCanEffect
+  write:
+    :ui/MicaInspect
+    :ui/MicaInspectBack
+    :ui/MicaInspectLayout
+    :ui/MicaMethodMode
+    :session/Revision
+  invoke:
+    :ui/mica_inspect_selected
+    :ui/mica_inspect_expanded
+    :ui/icon_node
+    :ui/icon_label_node
+    :ui/mica_inspect_action_node
+    :ui/mica_inspect_entity_node
+    :ui/mica_method_mode_node
+    :ui/mica_inspect_layout_node
+    :ui/mica_inspect_close_node
+    :ui/mica_inspect_back_node
+    :ui/mica_inspect_panel_node
+    :ui/mica_section_node
+    :ui/mica_empty_node
+    :ui/mica_can_link
+    :ui/mica_value_node
+    :ui/mica_tuple_node
+    :ui/relation_label
+    :ui/mica_fact_row_node
+    :ui/mica_subject_facts_node
+    :ui/mica_mentioned_facts_node
+    :ui/mica_delegates_header_node
+    :ui/mica_method_source_excerpt
+    :ui/mica_method_source_full
+    :ui/mica_method_row_node
+    :ui/mica_method_catalog_node
+    :ui/mica_inspect_set_selected
+    :ui/mica_inspect_bump_revision
+end
 
 ui/MicaPrototype(obj, proto) :-
   Delegates(obj, proto, ?distance)

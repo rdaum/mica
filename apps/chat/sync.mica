@@ -10,23 +10,28 @@ make_relation(:ChatView, 2)
 make_identity(:msg_1)
 make_identity(:chat_message)
 
-assert CanRead(#web, :ChatRoom)
-assert CanRead(#web, :ChatMessage)
-assert CanRead(#web, :MessageSeq)
-assert CanRead(#web, :MessageAuthor)
-assert CanRead(#web, :MessageText)
-assert CanRead(#web, :ChatView)
-assert CanWrite(#web, :ChatMessage)
-assert CanWrite(#web, :MessageSeq)
-assert CanWrite(#web, :MessageAuthor)
-assert CanWrite(#web, :MessageText)
-assert CanInvoke(#web, :sync_view_revision)
-assert CanInvoke(#web, :sync_view_tree)
-assert CanInvoke(#web, :chat_message_node)
-assert CanInvoke(#web, :chat_composer_node)
-assert CanInvoke(#web, :chat_room_revision)
-assert CanInvoke(#web, :chat_post)
-assert CanInvoke(#web, :sync_event)
+grant #web
+  read:
+    :ChatRoom
+    :ChatMessage
+    :MessageSeq
+    :MessageAuthor
+    :MessageText
+    :ChatView
+  write:
+    :ChatMessage
+    :MessageSeq
+    :MessageAuthor
+    :MessageText
+  invoke:
+    :sync_view_revision
+    :sync_view_tree
+    :chat_message_node
+    :chat_composer_node
+    :chat_room_revision
+    :chat_post
+    :sync_event
+end
 
 assert ChatRoom(1)
 assert ChatView(11, 1)

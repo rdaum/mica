@@ -15,18 +15,22 @@ make_relation(:RequestActor, 2)
 make_relation(:RequestHeader, 3)
 make_relation(:RequestBody, 2)
 
-assert CanRead(#web, :HttpRequest)
-assert CanRead(#web, :RequestMethod)
-assert CanRead(#web, :RequestPath)
-assert CanRead(#web, :RequestVersion)
-assert CanRead(#web, :RequestPrincipal)
-assert CanRead(#web, :RequestActor)
-assert CanRead(#web, :RequestHeader)
-assert CanRead(#web, :RequestBody)
-assert CanInvoke(#web, :http_response)
-assert CanInvoke(#web, :http_html)
-assert CanInvoke(#web, :http_text)
-assert CanEffect(#web)
+grant #web
+  read:
+    :HttpRequest
+    :RequestMethod
+    :RequestPath
+    :RequestVersion
+    :RequestPrincipal
+    :RequestActor
+    :RequestHeader
+    :RequestBody
+  invoke:
+    :http_response
+    :http_html
+    :http_text
+  effect
+end
 
 verb http_response(status, content_type, body)
   return {:status -> status, :headers -> [["content-type", content_type], ["cache-control", "no-store"]], :body -> body}
