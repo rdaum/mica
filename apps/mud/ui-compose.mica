@@ -1,16 +1,68 @@
 // DOM composition for the server-owned MUD view.
 
+verb ui/icon_node(name)
+  name == "arrow-left" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg>
+  name == "clock" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
+  name == "code" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 18 6-6-6-6"></path><path d="m8 6-6 6 6 6"></path></svg>
+  name == "eye" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+  name == "hand" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-4 0v4"></path><path d="M14 10V4a2 2 0 0 0-4 0v8"></path><path d="M10 12V6a2 2 0 0 0-4 0v8"></path><path d="M6 14v-2a2 2 0 0 0-4 0v3a7 7 0 0 0 7 7h4a7 7 0 0 0 7-7v-4a2 2 0 0 0-4 0"></path></svg>
+  name == "login" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><path d="m10 17 5-5-5-5"></path><path d="M15 12H3"></path></svg>
+  name == "maximize" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3"></path><path d="M21 8V5a2 2 0 0 0-2-2h-3"></path><path d="M3 16v3a2 2 0 0 0 2 2h3"></path><path d="M16 21h3a2 2 0 0 0 2-2v-3"></path></svg>
+  name == "minimize" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3"></path><path d="M21 8h-3a2 2 0 0 1-2-2V3"></path><path d="M3 16h3a2 2 0 0 1 2 2v3"></path><path d="M16 21v-3a2 2 0 0 1 2-2h3"></path></svg>
+  name == "open" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"></path></svg>
+  name == "package" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 8-9-5-9 5 9 5 9-5Z"></path><path d="M3 8v8l9 5 9-5V8"></path><path d="M12 13v8"></path></svg>
+  name == "plus" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+  name == "route" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"></circle><circle cx="18" cy="5" r="3"></circle><path d="M12 19h2a4 4 0 0 0 0-8h-4a4 4 0 0 1 0-8h2"></path></svg>
+  name == "save" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"></path><path d="M17 21v-8H7v8"></path><path d="M7 3v5h8"></path></svg>
+  name == "search" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+  name == "send" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"></path><path d="M22 2 11 13"></path></svg>
+  name == "trash" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v5"></path><path d="M14 11v5"></path></svg>
+  name == "wrench" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0 5 5L11 20H6v-5Z"></path><path d="m13 7 4 4"></path></svg>
+  name == "x" && return dom <svg class="mud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+
+  return dom <span class="mud-icon-fallback"></span>
+end
+
+verb ui/icon_label_node(icon, label)
+  return dom <span class="mud-icon-label">{ui/icon_node(icon)}<span>{label}</span></span>
+end
+
+verb ui/command_icon(command)
+  if string_starts_with(command, "look") || string_starts_with(command, "examine")
+    return "eye"
+  elseif string_starts_with(command, "get") || string_starts_with(command, "take") || string_starts_with(command, "push") || string_starts_with(command, "press")
+    return "hand"
+  elseif string_starts_with(command, "drop")
+    return "package"
+  elseif string_starts_with(command, "undig") || string_starts_with(command, "remove")
+    return "trash"
+  elseif command == "north" || command == "south" || command == "east" || command == "west" || command == "up" || command == "down" || command == "in" || command == "out"
+    return "route"
+  end
+
+  return ""
+end
+
+verb ui/command_label_node(command, label)
+  let icon = ui/command_icon(command)
+  if icon == ""
+    return label
+  end
+
+  return ui/icon_label_node(icon, label)
+end
+
 verb ui/command_form_node(id, text, label, class)
   if id != ""
     return dom <form id={id} class="mud-action" data-sync-event="submit" data-sync-action="mud_command">
       <input type="hidden" name="text" value={text} />
-      <button type="submit" class={class} data-command={text}>{label}</button>
+      <button type="submit" class={class} data-command={text}>{ui/command_label_node(text, label)}</button>
     </form>
   end
 
   return dom <form class="mud-action" data-sync-event="submit" data-sync-action="mud_command">
     <input type="hidden" name="text" value={text} />
-    <button type="submit" class={class} data-command={text}>{label}</button>
+    <button type="submit" class={class} data-command={text}>{ui/command_label_node(text, label)}</button>
   </form>
 end
 
@@ -37,7 +89,7 @@ verb ui/exit_form_node(id, passage, command, label, class)
   let passage_label = to_literal(passage)
   return dom <form id={id} class="mud-action exit-action" data-sync-event="submit" data-sync-action="mud_command">
     <input type="hidden" name="text" value={command} />
-    <button type="submit" class={class} data-command={command} data-hold-entity={passage_label} aria-label={string_concat(label, ". Hold to examine.")}>{label}</button>
+    <button type="submit" class={class} data-command={command} data-hold-entity={passage_label} aria-label={string_concat(label, ". Hold to examine.")}>{ui/icon_label_node("route", label)}</button>
   </form>
 end
 
@@ -46,7 +98,7 @@ verb ui/auth_required_node()
     <section class="login-card">
       <h1>Mica MUD</h1>
       <p class="lede">Sign in to enter the world.</p>
-      <a class="login-link" href="/auth/login?return=%2Fmud">Open sign-in</a>
+      <a class="login-link" href="/auth/login?return=%2Fmud">{ui/icon_label_node("login", "Open sign-in")}</a>
     </section>
   </main>
 end
@@ -123,7 +175,7 @@ verb ui/area_panel_node(actor @ #player, room @ #room)
   end
 
   return dom <details class="area-panel" aria-label="Area map">
-    <summary>{string_concat("Area: ", ui/actor_name(area))}</summary>
+    <summary>{ui/icon_label_node("route", string_concat("Area: ", ui/actor_name(area)))}</summary>
     <ul class="area-room-list">{@rows}</ul>
   </details>
 end
@@ -140,24 +192,24 @@ verb ui/build_controls_node(actor @ #player, room @ #room)
   end
 
   return dom <details class="builder-tools tool-sheet" aria-label="Builder tools">
-    <summary>Build</summary>
-    <div class="builder-window" data-window-key="build-tools">
+    <summary>{ui/icon_label_node("wrench", "Build")}</summary>
+    <div class="tool-window builder-window" data-window-key="build-tools">
       <div class="window-titlebar" data-window-drag="build-tools">
         <strong>Build</strong>
-        <button type="button" class="window-close" data-close-details="builder-tools" aria-label="Close build tools">Close</button>
+        <button type="button" class="window-close" data-close-details="builder-tools" aria-label="Close build tools">{ui/icon_label_node("x", "Close")}</button>
       </div>
       <div class="builder-palette window-body">
         <datalist id="mud-room-options">{@room_options}</datalist>
         {ui/direction_options_node()}
         <details class="builder-sheet">
-          <summary>New room</summary>
+          <summary>{ui/icon_label_node("plus", "New room")}</summary>
           <form class="builder-form" data-sync-event="submit" data-sync-action="mud_build_room">
             <input name="name" autocomplete="off" placeholder="Room name" aria-label="Room name" />
-            <button type="submit">Create</button>
+            <button type="submit">{ui/icon_label_node("plus", "Create")}</button>
           </form>
         </details>
         <details class="builder-sheet">
-          <summary>Passage</summary>
+          <summary>{ui/icon_label_node("route", "Passage")}</summary>
           {ui/passage_builder_form_node(actor, room, "Create passage")}
         </details>
       </div>
@@ -174,7 +226,7 @@ verb ui/passage_builder_form_node(actor @ #player, source @ #room, submit_label 
     <label><span>To</span><input name="target" list="mud-room-options" autocomplete="off" placeholder="Destination room" aria-label="Destination room" /></label>
     <label><span>Return</span><input name="return_direction" list="mud-direction-options" autocomplete="off" placeholder="auto" aria-label="Return direction" /></label>
     <label class="checkbox-field"><input type="checkbox" name="one_way" value="true" /> One-way</label>
-    <button type="submit">{submit_label}</button>
+    <button type="submit">{ui/icon_label_node("route", submit_label)}</button>
   </form>
 end
 
@@ -192,14 +244,14 @@ verb ui/passage_editor_node(actor @ #player, passage)
   let description = passage/describe_from(passage, room)
 
   return dom <details class="builder-sheet inspector-builder-sheet">
-    <summary>Edit passage</summary>
+    <summary>{ui/icon_label_node("route", "Edit passage")}</summary>
     <form class="builder-form passage-edit-form" data-sync-event="submit" data-sync-action="mud_describe_passage">
       <input type="hidden" name="passage" value={to_literal(passage)} />
       <input type="hidden" name="room" value={to_literal(room)} />
       <label><span>Direction</span><input name="direction" list="mud-direction-options" value={label} autocomplete="off" aria-label="Passage direction" /></label>
       <label><span>Description</span><textarea name="description" aria-label="Passage description">{description}</textarea></label>
       <label class="checkbox-field"><input type="checkbox" name="ambient" value="true" /> Ambient</label>
-      <button type="submit">Save passage</button>
+      <button type="submit">{ui/icon_label_node("save", "Save passage")}</button>
     </form>
   </details>
 end
@@ -210,7 +262,7 @@ verb ui/room_builder_node(actor @ #player, room @ #room)
   end
 
   return dom <details class="builder-sheet inspector-builder-sheet">
-    <summary>Edit room</summary>
+    <summary>{ui/icon_label_node("wrench", "Edit room")}</summary>
     <div class="builder-palette">
       <form class="builder-form" data-sync-event="submit" data-sync-action="mud_build_room">
         <input type="hidden" name="source" value={to_literal(room)} />
@@ -218,7 +270,7 @@ verb ui/room_builder_node(actor @ #player, room @ #room)
         <label><span>Direction</span><input name="direction" list="mud-direction-options" autocomplete="off" placeholder="north" aria-label="Passage direction" /></label>
         <label><span>Return</span><input name="return_direction" list="mud-direction-options" autocomplete="off" placeholder="auto" aria-label="Return direction" /></label>
         <label class="checkbox-field"><input type="checkbox" name="one_way" value="true" /> One-way</label>
-        <button type="submit">Build connected room</button>
+        <button type="submit">{ui/icon_label_node("plus", "Build connected room")}</button>
       </form>
       {ui/passage_builder_form_node(actor, room, "Create passage")}
     </div>
@@ -576,7 +628,7 @@ verb ui/inspector_node(actor @ #player)
     actions = [@actions, ui/inspector_action_node(string_concat("bonk ", name), "bonk", "mini-button")]
   end
   if ui/can_program(actor)
-    actions = [@actions, ui/mica_inspect_action_node(selected, "Mica inspect", "mini-button mica-button")]
+    actions = [@actions, ui/mica_inspect_action_node(selected, ui/icon_label_node("code", "Mica inspect"), "mini-button mica-button")]
   end
   let builder_panels = []
   if Delegates(selected, #room, 0)
@@ -605,7 +657,7 @@ end
 verb ui/command_bar_node(actor @ #player)
   let composer = dom <form id="mud-command" class="command-form" data-sync-event="submit" data-sync-action="mud_command" data-sync-submit-key="ctrl+enter">
     <input id="command" name="text" autocomplete="off" placeholder="Try: look, north, get coin, say hello" aria-label="Command" />
-    <button id="send-command" type="submit">Send</button>
+    <button id="send-command" type="submit">{ui/icon_label_node("send", "Send")}</button>
   </form>
   return dom <section class="command-deck">
     {ui/command_chips_node(actor)}

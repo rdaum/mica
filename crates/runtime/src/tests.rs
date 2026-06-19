@@ -1665,6 +1665,31 @@ fn runner_mud_auth_sync_view_tree_renders() {
     runner
         .run_filein(include_str!("../../../apps/mud/ui-actions.mica"))
         .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/mud/http.mica"))
+        .unwrap();
+
+    let report = runner
+        .run_source_as(
+            Symbol::intern("web"),
+            "return http_login_document(\"/auth/login?return=%2Fmud\")",
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value
+                    .with_str(|text| {
+                        text.contains("login-icon-label")
+                            && text.contains("Sign In")
+                            && text.contains("Create Player")
+                    })
+                    .unwrap_or(false)
+        ),
+        "{:?}",
+        report.outcome
+    );
 
     let report = runner
         .run_source_as(
@@ -1675,7 +1700,9 @@ fn runner_mud_auth_sync_view_tree_renders() {
     assert!(matches!(
         report.outcome,
         TaskOutcome::Complete { value, .. }
-            if value.with_str(|text| text.contains("mud-login")).unwrap_or(false)
+            if value
+                .with_str(|text| text.contains("mud-login") && text.contains("mud-icon-label"))
+                .unwrap_or(false)
     ));
 
     let web = runner.actor_identity(Symbol::intern("web")).unwrap();
@@ -1713,6 +1740,30 @@ fn runner_mud_auth_sync_view_tree_renders() {
     let report = runner.submit_source(request).unwrap();
     assert!(
         matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(false)),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "ui/mica_inspect_set_selected(endpoint(), #alice)\n\
+             return to_literal(ui/mica_inspect_panel_node(#alice))",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value
+                    .with_str(|text| {
+                        text.contains("source-popout")
+                            && text.contains("mica-source-full")
+                            && text.contains("Open source")
+                    })
+                    .unwrap_or(false)
+        ),
         "{:?}",
         report.outcome
     );

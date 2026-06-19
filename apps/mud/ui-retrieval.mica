@@ -15,6 +15,7 @@ assert RoleCanInvoke(#player, :ui/retrieval_model)
 assert RoleCanInvoke(#player, :ui/retrieval_index)
 assert RoleCanInvoke(#player, :ui/retrieval_seed_world)
 assert RoleCanInvoke(#player, :ui/retrieval_text)
+assert RoleCanInvoke(#player, :ui/icon_label_node)
 assert RoleCanInvoke(#player, :ui/retrieval_action_node)
 assert RoleCanInvoke(#player, :ui/retrieval_result_row_node)
 assert RoleCanInvoke(#player, :ui/retrieval_panel_node)
@@ -157,7 +158,7 @@ end
 
 verb ui/retrieval_action_node()
   return dom <form class="mud-action retrieval-action" data-sync-event="submit" data-sync-action="mud_retrieve_related">
-    <button class="mini-button retrieval-button" type="submit">Related context</button>
+    <button class="mini-button retrieval-button" type="submit">{ui/icon_label_node("search", "Related context")}</button>
   </form>
 end
 

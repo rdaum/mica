@@ -3,11 +3,54 @@ window.micaMud = bootstrapServerRenderedSync(document.getElementById("mount"));
 
 const HOLD_TO_EXAMINE_MS = 520;
 const RIGHT_COLUMN_WIDTH_KEY = "micaMudRightColumnWidth";
-const BUILD_WINDOW_STATE_KEY = "micaMudBuildWindow";
+const TOOL_WINDOW_STATE_PREFIX = "micaMudToolWindow:";
 const MIN_RIGHT_COLUMN_WIDTH = 280;
 const MIN_LEFT_COLUMN_WIDTH = 420;
 const MIN_WINDOW_WIDTH = 320;
 const MIN_WINDOW_HEIGHT = 240;
+
+function cssEscape(value) {
+  return window.CSS?.escape ? CSS.escape(value) : String(value).replaceAll('"', '\\"');
+}
+
+function createIcon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("mud-icon");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+
+  function addPath(d) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+  }
+
+  if (name === "x") {
+    addPath("M18 6 6 18");
+    addPath("m6 6 12 12");
+    return svg;
+  }
+
+  const fallback = document.createElement("span");
+  fallback.className = "mud-icon-fallback";
+  return fallback;
+}
+
+function createIconLabel(icon, label) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "mud-icon-label";
+  wrapper.append(createIcon(icon));
+
+  const text = document.createElement("span");
+  text.textContent = label;
+  wrapper.append(text);
+  return wrapper;
+}
 
 function applySavedColumnWidth() {
   const saved = window.localStorage?.getItem(RIGHT_COLUMN_WIDTH_KEY);
@@ -191,11 +234,15 @@ function windowState(windowEl) {
   };
 }
 
-function saveBuildWindowState(windowEl) {
-  window.localStorage?.setItem(BUILD_WINDOW_STATE_KEY, JSON.stringify(windowState(windowEl)));
+function toolWindowStateKey(windowEl) {
+  return `${TOOL_WINDOW_STATE_PREFIX}${windowEl.dataset.windowKey || "window"}`;
 }
 
-function applyBuildWindowState(windowEl, state) {
+function saveToolWindowState(windowEl) {
+  window.localStorage?.setItem(toolWindowStateKey(windowEl), JSON.stringify(windowState(windowEl)));
+}
+
+function applyToolWindowState(windowEl, state) {
   if (!state) {
     return;
   }
@@ -212,12 +259,64 @@ function applyBuildWindowState(windowEl, state) {
   windowEl.style.height = `${height}px`;
 }
 
-function restoreBuildWindowState(windowEl) {
+function restoreToolWindowState(windowEl) {
   try {
-    applyBuildWindowState(windowEl, JSON.parse(window.localStorage?.getItem(BUILD_WINDOW_STATE_KEY) ?? "null"));
+    applyToolWindowState(windowEl, JSON.parse(window.localStorage?.getItem(toolWindowStateKey(windowEl)) ?? "null"));
   } catch {
-    window.localStorage?.removeItem(BUILD_WINDOW_STATE_KEY);
+    window.localStorage?.removeItem(toolWindowStateKey(windowEl));
   }
+}
+
+function createSourceWindow(mount, key, title, source) {
+  const existing = mount.querySelector(`.source-window[data-window-key="${cssEscape(key)}"]`);
+  if (existing) {
+    existing.removeAttribute("hidden");
+    existing.style.zIndex = "20";
+    return existing;
+  }
+
+  const windowEl = document.createElement("div");
+  windowEl.className = "tool-window source-window";
+  windowEl.dataset.windowKey = key;
+
+  const titlebar = document.createElement("div");
+  titlebar.className = "window-titlebar";
+  titlebar.dataset.windowDrag = key;
+
+  const titleEl = document.createElement("strong");
+  titleEl.textContent = title;
+  titlebar.append(titleEl);
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "window-close";
+  close.dataset.closeWindow = "true";
+  close.setAttribute("aria-label", "Close source window");
+  close.append(createIconLabel("x", "Close"));
+  titlebar.append(close);
+
+  const body = document.createElement("div");
+  body.className = "window-body source-window-body";
+  const pre = document.createElement("pre");
+  pre.className = "mica-source mica-source-popout";
+  pre.textContent = source;
+  body.append(pre);
+
+  const resize = document.createElement("div");
+  resize.className = "window-resize-handle";
+  resize.dataset.windowResize = key;
+  resize.setAttribute("aria-hidden", "true");
+
+  windowEl.append(titlebar, body, resize);
+  mount.append(windowEl);
+  restoreToolWindowState(windowEl);
+  if (!windowEl.style.left) {
+    windowEl.style.left = `${Math.max(16, window.innerWidth - 620)}px`;
+    windowEl.style.top = "96px";
+    windowEl.style.width = "600px";
+    windowEl.style.height = "520px";
+  }
+  return windowEl;
 }
 
 function installToolWindows(mount) {
@@ -228,13 +327,32 @@ function installToolWindows(mount) {
     if (!details || event.target !== details || !details.open) {
       return;
     }
-    const windowEl = details.querySelector(".builder-window");
+    const windowEl = details.querySelector(".tool-window");
     if (windowEl) {
-      restoreBuildWindowState(windowEl);
+      restoreToolWindowState(windowEl);
     }
   }, true);
 
   mount.addEventListener("click", (event) => {
+    const sourcePopout = event.target?.closest?.(".source-popout");
+    if (sourcePopout && mount.contains(sourcePopout)) {
+      const row = sourcePopout.closest(".mica-method-row");
+      const source = row?.querySelector(`.mica-source-full[data-source-key="${cssEscape(sourcePopout.dataset.sourceKey)}"]`);
+      if (source) {
+        createSourceWindow(mount, `source:${sourcePopout.dataset.sourceKey}`, sourcePopout.dataset.sourceTitle || "Method source", source.textContent || "");
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    const closeWindow = event.target?.closest?.("[data-close-window]");
+    if (closeWindow && mount.contains(closeWindow)) {
+      closeWindow.closest(".tool-window")?.remove();
+      event.preventDefault();
+      return;
+    }
+
     const close = event.target?.closest?.("[data-close-details]");
     if (close && mount.contains(close)) {
       closeDetails(close.closest("details"));
@@ -243,7 +361,7 @@ function installToolWindows(mount) {
   });
 
   mount.addEventListener("pointerdown", (event) => {
-    if (event.target?.closest?.("[data-close-details]")) {
+    if (event.target?.closest?.("[data-close-details], [data-close-window]")) {
       return;
     }
 
@@ -254,7 +372,7 @@ function installToolWindows(mount) {
       return;
     }
 
-    const windowEl = handle.closest(".builder-window");
+    const windowEl = handle.closest(".tool-window");
     if (!windowEl) {
       return;
     }
@@ -302,7 +420,7 @@ function installToolWindows(mount) {
       return;
     }
     drag.windowEl.classList.remove("is-dragging", "is-resizing");
-    saveBuildWindowState(drag.windowEl);
+    saveToolWindowState(drag.windowEl);
     event.target?.releasePointerCapture?.(event.pointerId);
     drag = null;
   }
@@ -315,6 +433,10 @@ function installToolWindows(mount) {
       return;
     }
     let closed = false;
+    for (const windowEl of mount.querySelectorAll(".source-window")) {
+      windowEl.remove();
+      closed = true;
+    }
     for (const details of mount.querySelectorAll("details.tool-sheet[open]")) {
       closeDetails(details);
       closed = true;

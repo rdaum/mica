@@ -414,7 +414,7 @@ verb ui/narrative_node(actor @ #player, revision, limit)
   let children = []
   if count > limit
     children = [dom <form class="narrative-older-form" data-sync-event="submit" data-sync-action="mud_load_older_events">
-      <button class="mini-button">{string_concat("Load older (", to_literal(count - limit), " more)")}</button>
+      <button class="mini-button">{ui/icon_label_node("clock", string_concat("Load older (", to_literal(count - limit), " more)"))}</button>
     </form>]
   end
 

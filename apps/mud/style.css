@@ -136,6 +136,28 @@ input {
     0 0 0 3px #f3d38a33,
     0 0 24px #f3d38a2e;
 }
+.mud-icon {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  stroke-width: 2;
+}
+.mud-icon-label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.mud-icon-label > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mud-icon-fallback {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+}
 .mud-shell {
   height: 100dvh;
   min-height: 100dvh;
@@ -338,20 +360,14 @@ input {
 .builder-tools summary::-webkit-details-marker {
   display: none;
 }
-.builder-tools summary::before {
-  content: "+";
-  margin-right: 7px;
-}
-.builder-tools[open] summary::before {
-  content: "-";
-}
 .builder-palette {
   margin-top: 10px;
 }
-.tool-sheet > .builder-window {
+.tool-sheet > .tool-window {
   display: none;
 }
-.tool-sheet[open] > .builder-window {
+.tool-sheet[open] > .tool-window,
+.source-window {
   position: fixed;
   left: var(--build-window-left, auto);
   right: var(--build-window-right, 18px);
@@ -367,6 +383,9 @@ input {
   background: #202126;
   box-shadow: 0 16px 48px #0009;
   overflow: hidden;
+}
+.source-window {
+  z-index: 20;
 }
 .window-titlebar {
   display: flex;
@@ -412,8 +431,8 @@ input {
   cursor: nwse-resize;
   background: linear-gradient(135deg, transparent 0 48%, #62584f 49% 54%, transparent 55% 64%, #62584f 65% 70%, transparent 71%);
 }
-.builder-window.is-dragging,
-.builder-window.is-resizing {
+.tool-window.is-dragging,
+.tool-window.is-resizing {
   opacity: 0.96;
 }
 .builder-sheet {
@@ -845,6 +864,9 @@ input {
   border-radius: 6px;
   padding: 8px;
 }
+.mica-method-row {
+  position: relative;
+}
 .mica-row {
   overflow: hidden;
 }
@@ -920,9 +942,25 @@ input {
 }
 .mica-method-head {
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding-right: 122px;
+}
+.mica-method-title {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.mica-source-open {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 4px 8px;
 }
 .mica-method-row[open] .mica-method-head {
   margin-bottom: 6px;
@@ -932,6 +970,11 @@ input {
   color: #d8eee9;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
+}
+.mica-source-popout {
+  height: 100%;
+  overflow: auto;
+  white-space: pre;
 }
 .mica-empty {
   margin: 0;
@@ -1060,7 +1103,7 @@ input {
   .column-splitter {
     display: none;
   }
-  .tool-sheet[open] > .builder-window {
+  .tool-sheet[open] > .tool-window {
     position: static;
     width: auto;
     height: auto;

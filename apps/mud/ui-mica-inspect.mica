@@ -67,6 +67,8 @@ assert RoleCanWrite(#programmer, :ui/MicaMethodMode)
 assert RoleCanWrite(#programmer, :session/Revision)
 assert RoleCanInvoke(#programmer, :ui/mica_inspect_selected)
 assert RoleCanInvoke(#programmer, :ui/mica_inspect_expanded)
+assert RoleCanInvoke(#programmer, :ui/icon_node)
+assert RoleCanInvoke(#programmer, :ui/icon_label_node)
 assert RoleCanInvoke(#programmer, :ui/mica_inspect_action_node)
 assert RoleCanInvoke(#programmer, :ui/mica_inspect_entity_node)
 assert RoleCanInvoke(#programmer, :ui/mica_method_mode_node)
@@ -85,6 +87,7 @@ assert RoleCanInvoke(#programmer, :ui/mica_subject_facts_node)
 assert RoleCanInvoke(#programmer, :ui/mica_mentioned_facts_node)
 assert RoleCanInvoke(#programmer, :ui/mica_delegates_header_node)
 assert RoleCanInvoke(#programmer, :ui/mica_method_source_excerpt)
+assert RoleCanInvoke(#programmer, :ui/mica_method_source_full)
 assert RoleCanInvoke(#programmer, :ui/mica_method_row_node)
 assert RoleCanInvoke(#programmer, :ui/mica_method_catalog_node)
 assert RoleCanInvoke(#programmer, :ui/mica_inspect_set_selected)
@@ -114,20 +117,25 @@ end
 
 verb ui/mica_inspect_close_node()
   return dom <form class="mud-action mica-close-action" data-sync-event="submit" data-sync-action="mud_mica_inspect_close">
-    <button type="submit" class="mini-button mica-close">Close</button>
+    <button type="submit" class="mini-button mica-close">{ui/icon_label_node("x", "Close")}</button>
   </form>
 end
 
 verb ui/mica_inspect_back_node(previous)
   return dom <form class="mud-action mica-back-action" data-sync-event="submit" data-sync-action="mud_mica_inspect_back">
-    <button type="submit" class="mini-button">{string_concat("Back to ", ui/actor_name(previous))}</button>
+    <button type="submit" class="mini-button">{ui/icon_label_node("arrow-left", string_concat("Back to ", ui/actor_name(previous)))}</button>
   </form>
 end
 
 verb ui/mica_inspect_layout_node(mode, label)
+  let icon = "maximize"
+  if mode == "normal"
+    icon = "minimize"
+  end
+
   return dom <form class="mud-action mica-layout-action" data-sync-event="submit" data-sync-action="mud_mica_inspect_layout">
     <input type="hidden" name="mode" value={mode} />
-    <button type="submit" class="mini-button mica-layout-toggle">{label}</button>
+    <button type="submit" class="mini-button mica-layout-toggle">{ui/icon_label_node(icon, label)}</button>
   </form>
 end
 
@@ -305,13 +313,28 @@ verb ui/mica_method_source_excerpt(method_id)
   return source
 end
 
+verb ui/mica_method_source_full(method_id)
+  let source = one MethodSource(method_id, ?source)
+  if source == nothing
+    return ""
+  end
+
+  return source
+end
+
 verb ui/mica_method_row_node(method_id, selector, role, restriction, position)
   let meta = string_concat(to_literal(role), string_concat(" @ ", to_literal(position)))
   let label = dom <div class="mica-method-label"><code>{to_literal(selector)}</code> via {ui/mica_value_node(restriction)}</div>
-  let summary = dom <summary class="mica-method-head">{label}<span class="muted">{meta}</span></summary>
+  let method_key = to_literal(method_id)
+  let method_title = string_concat("Method ", to_literal(selector))
+  let summary = dom <summary class="mica-method-head">
+    <span class="mica-method-title">{label}<span class="muted">{meta}</span></span>
+  </summary>
   return dom <details class="mica-method-row">
     {summary}
+    <button type="button" class="mini-button source-popout mica-source-open" data-source-key={method_key} data-source-title={method_title}>{ui/icon_label_node("open", "Open source")}</button>
     <pre class="mica-source">{ui/mica_method_source_excerpt(method_id)}</pre>
+    <pre class="mica-source-full" hidden="hidden" data-source-key={method_key}>{ui/mica_method_source_full(method_id)}</pre>
   </details>
 end
 
