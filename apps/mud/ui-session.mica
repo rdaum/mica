@@ -142,6 +142,7 @@ grant role #player
     :ui/world_tools_node
     :ui/build_controls_node
     :ui/area_panel_node
+    :ui/mica_browser_panel_node
     :ui/area_room_row_node
     :ui/room_option_nodes
     :ui/direction_options_node

@@ -1736,6 +1736,7 @@ fn runner_mud_auth_sync_view_tree_renders() {
                         text.contains("world-tools")
                             && text.contains("inspect-current-room")
                             && text.contains("mud_create_passage")
+                            && text.contains("mud_mica_browser_search")
                     })
                     .unwrap_or(false)
         ),
@@ -1773,6 +1774,94 @@ fn runner_mud_auth_sync_view_tree_renders() {
                         text.contains("source-popout")
                             && text.contains("mica-source-full")
                             && text.contains("Open source")
+                    })
+                    .unwrap_or(false)
+        ),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "ui/mica_inspect_set_selected(endpoint(), #room)\n\
+             return to_literal(ui/mica_method_catalog_node(#room))",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value
+                    .with_str(|text| text.contains("Showing 8 of") && text.contains("Show all"))
+                    .unwrap_or(false)
+        ),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "return sync_event(endpoint(), nothing, 21, \"submit\", \"\", \"mud_mica_method_limit\", {:mode -> \"all\"})",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "return to_literal(ui/mica_method_catalog_node(#room))",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value.with_str(|text| text.contains("Show fewer")).unwrap_or(false)
+        ),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "return sync_event(endpoint(), nothing, 21, \"input\", \"\", \"mud_mica_browser_search\", {:query -> \"room\"})",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{:?}",
+        report.outcome
+    );
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "return to_literal(ui/mica_browser_panel_node(#alice))",
+        )
+        .unwrap();
+    let report = runner.submit_source(request).unwrap();
+    assert!(
+        matches!(
+            report.outcome,
+            TaskOutcome::Complete { ref value, .. }
+                if value
+                    .with_str(|text| {
+                        text.contains("mica-browser-results")
+                            && text.contains("Relations")
+                            && text.contains("Methods")
+                            && text.contains("Rules")
+                            && text.contains("source-popout")
                     })
                     .unwrap_or(false)
         ),

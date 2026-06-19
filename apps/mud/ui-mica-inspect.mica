@@ -4,6 +4,8 @@ make_functional_relation(:ui/MicaInspect, 2, [0])
 make_functional_relation(:ui/MicaInspectBack, 2, [0])
 make_functional_relation(:ui/MicaInspectLayout, 2, [0])
 make_functional_relation(:ui/MicaMethodMode, 2, [0])
+make_functional_relation(:ui/MicaMethodLimit, 2, [0])
+make_functional_relation(:ui/MicaBrowserQuery, 2, [0])
 make_relation(:ui/MicaPrototype, 2)
 
 make_identity(:ui/mica_inspect_action)
@@ -11,17 +13,23 @@ make_identity(:ui/mica_inspect_close_action)
 make_identity(:ui/mica_inspect_back_action)
 make_identity(:ui/mica_inspect_layout_action)
 make_identity(:ui/mica_method_mode_action)
+make_identity(:ui/mica_method_limit_action)
+make_identity(:ui/mica_browser_search_action)
 
 assert Delegates(#ui/mica_inspect_action, #ui/sync_action, 0)
 assert Delegates(#ui/mica_inspect_close_action, #ui/sync_action, 0)
 assert Delegates(#ui/mica_inspect_back_action, #ui/sync_action, 0)
 assert Delegates(#ui/mica_inspect_layout_action, #ui/sync_action, 0)
 assert Delegates(#ui/mica_method_mode_action, #ui/sync_action, 0)
+assert Delegates(#ui/mica_method_limit_action, #ui/sync_action, 0)
+assert Delegates(#ui/mica_browser_search_action, #ui/sync_action, 0)
 "mud_mica_inspect".ui/syncAction = #ui/mica_inspect_action
 "mud_mica_inspect_close".ui/syncAction = #ui/mica_inspect_close_action
 "mud_mica_inspect_back".ui/syncAction = #ui/mica_inspect_back_action
 "mud_mica_inspect_layout".ui/syncAction = #ui/mica_inspect_layout_action
 "mud_mica_method_mode".ui/syncAction = #ui/mica_method_mode_action
+"mud_mica_method_limit".ui/syncAction = #ui/mica_method_limit_action
+"mud_mica_browser_search".ui/syncAction = #ui/mica_browser_search_action
 
 grant role #player
   invoke:
@@ -35,6 +43,8 @@ grant role #programmer
     :ui/MicaInspectBack
     :ui/MicaInspectLayout
     :ui/MicaMethodMode
+    :ui/MicaMethodLimit
+    :ui/MicaBrowserQuery
     :session/Revision
     :ui/MicaPrototype
     :Relation
@@ -70,6 +80,8 @@ grant role #programmer
     :ui/MicaInspectBack
     :ui/MicaInspectLayout
     :ui/MicaMethodMode
+    :ui/MicaMethodLimit
+    :ui/MicaBrowserQuery
     :session/Revision
   invoke:
     :ui/mica_inspect_selected
@@ -79,6 +91,7 @@ grant role #programmer
     :ui/mica_inspect_action_node
     :ui/mica_inspect_entity_node
     :ui/mica_method_mode_node
+    :ui/mica_method_limit_node
     :ui/mica_inspect_layout_node
     :ui/mica_inspect_close_node
     :ui/mica_inspect_back_node
@@ -97,6 +110,11 @@ grant role #programmer
     :ui/mica_method_source_full
     :ui/mica_method_row_node
     :ui/mica_method_catalog_node
+    :ui/mica_browser_panel_node
+    :ui/mica_browser_results_node
+    :ui/mica_browser_relation_row_node
+    :ui/mica_browser_method_row_node
+    :ui/mica_browser_rule_row_node
     :ui/mica_inspect_set_selected
     :ui/mica_inspect_bump_revision
 end
@@ -159,6 +177,13 @@ verb ui/mica_method_mode_node(mode, label, selected)
   </form>
 end
 
+verb ui/mica_method_limit_node(mode, label)
+  return dom <form class="mud-action method-limit-action" data-sync-event="submit" data-sync-action="mud_mica_method_limit">
+    <input type="hidden" name="mode" value={mode} />
+    <button type="submit" class="mini-button">{label}</button>
+  </form>
+end
+
 verb ui/relation_label(relation)
   let name = one RelationName(relation, ?name)
   if name == nothing
@@ -191,6 +216,8 @@ verb ui/mica_can_link(value)
   elseif one Delegates(value, ?delegate, ?distance) != nothing
     return true
   elseif one MethodSelector(value, ?selector) != nothing
+    return true
+  elseif one RuleSource(value, ?rule_source) != nothing
     return true
   end
 
@@ -338,7 +365,7 @@ verb ui/mica_method_row_node(method_id, selector, role, restriction, position)
   let summary = dom <summary class="mica-method-head">
     <span class="mica-method-title">{label}<span class="muted">{meta}</span></span>
   </summary>
-  return dom <details class="mica-method-row">
+  return dom <details class="mica-method-row source-host">
     {summary}
     <button type="button" class="mini-button source-popout mica-source-open" data-source-key={method_key} data-source-title={method_title}>{ui/icon_label_node("open", "Open source")}</button>
     <pre class="mica-source">{ui/mica_method_source_excerpt(method_id)}</pre>
@@ -346,9 +373,156 @@ verb ui/mica_method_row_node(method_id, selector, role, restriction, position)
   </details>
 end
 
+verb ui/mica_browser_relation_row_node(relation)
+  let arity = one Arity(relation, ?arity)
+  if arity == nothing
+    arity = "?"
+  end
+  return dom <li class="mica-browser-row">
+    {ui/mica_inspect_entity_node(relation, "mica-relation-link")}
+    <span class="muted">{string_concat("arity ", to_literal(arity))}</span>
+  </li>
+end
+
+verb ui/mica_browser_method_row_node(method_id, selector)
+  let method_key = to_literal(method_id)
+  let method_title = string_concat("Method ", to_literal(selector))
+  return dom <li class="mica-browser-row source-host">
+    {ui/mica_inspect_entity_node(method_id, "mica-relation-link")}
+    <code>{to_literal(selector)}</code>
+    <button type="button" class="mini-button source-popout browser-source-open" data-source-key={method_key} data-source-title={method_title}>{ui/icon_label_node("open", "Open source")}</button>
+    <pre class="mica-source-full" hidden="hidden" data-source-key={method_key}>{ui/mica_method_source_full(method_id)}</pre>
+  </li>
+end
+
+verb ui/mica_browser_rule_row_node(rule, source)
+  let rule_key = to_literal(rule)
+  let title = string_concat("Rule ", to_literal(rule))
+  let preview = source
+  if string_len(preview) > 96
+    preview = string_concat(string_slice(preview, 0, 96), " ...")
+  end
+  return dom <li class="mica-browser-row source-host">
+    {ui/mica_inspect_entity_node(rule, "mica-relation-link")}
+    <code>{preview}</code>
+    <button type="button" class="mini-button source-popout browser-source-open" data-source-key={rule_key} data-source-title={title}>{ui/icon_label_node("open", "Open source")}</button>
+    <pre class="mica-source-full" hidden="hidden" data-source-key={rule_key}>{source}</pre>
+  </li>
+end
+
+verb ui/mica_browser_results_node(query)
+  let trimmed = trim(query)
+  if trimmed == ""
+    return dom <p class="muted mica-empty">Search relation names, method selectors, and rule source.</p>
+  end
+
+  let needle = lower(trimmed)
+  let relation_rows = []
+  let relation_count = 0
+  for found in RelationName(?relation, ?name)
+    if string_contains(lower(to_literal(found[:name])), needle)
+      if relation_count < 8
+        relation_rows = [@relation_rows, ui/mica_browser_relation_row_node(found[:relation])]
+      end
+      relation_count = relation_count + 1
+    end
+  end
+
+  let method_rows = []
+  let method_count = 0
+  for found in MethodSelector(?method_id, ?selector)
+    let selector_text = to_literal(found[:selector])
+    let source = one MethodSource(found[:method_id], ?source)
+    let source_matches = false
+    if source != nothing
+      source_matches = string_contains(lower(source), needle)
+    end
+    if string_contains(lower(selector_text), needle) || source_matches
+      if method_count < 8
+        method_rows = [@method_rows, ui/mica_browser_method_row_node(found[:method_id], found[:selector])]
+      end
+      method_count = method_count + 1
+    end
+  end
+
+  let rule_rows = []
+  let rule_count = 0
+  for found in RuleSource(?rule, ?source)
+    if string_contains(lower(found[:source]), needle) || string_contains(lower(to_literal(found[:rule])), needle)
+      if rule_count < 8
+        rule_rows = [@rule_rows, ui/mica_browser_rule_row_node(found[:rule], found[:source])]
+      end
+      rule_count = rule_count + 1
+    end
+  end
+
+  if relation_rows == []
+    relation_rows = [dom <li class="muted">No relations.</li>]
+  end
+  if method_rows == []
+    method_rows = [dom <li class="muted">No methods.</li>]
+  end
+  if rule_rows == []
+    rule_rows = [dom <li class="muted">No rules.</li>]
+  end
+
+  let relation_label = string_concat("Relations", string_concat(" (", string_concat(to_literal(relation_count), ")")))
+  let method_label = string_concat("Methods", string_concat(" (", string_concat(to_literal(method_count), ")")))
+  let rule_label = string_concat("Rules", string_concat(" (", string_concat(to_literal(rule_count), ")")))
+
+  return dom <div class="mica-browser-results">
+    <section>
+      <h4>{relation_label}</h4>
+      <ul class="mica-browser-list">{@relation_rows}</ul>
+    </section>
+    <section>
+      <h4>{method_label}</h4>
+      <ul class="mica-browser-list">{@method_rows}</ul>
+    </section>
+    <section>
+      <h4>{rule_label}</h4>
+      <ul class="mica-browser-list">{@rule_rows}</ul>
+    </section>
+  </div>
+end
+
+verb ui/mica_browser_panel_node(actor @ #player)
+  if ui/can_program(actor) == false
+    return dom <span></span>
+  end
+
+  let query = endpoint().ui/micaBrowserQuery
+  if query == nothing
+    query = ""
+  end
+
+  return dom <details class="mica-browser-panel tool-sheet" aria-label="Mica browser">
+    <summary>{ui/icon_label_node("search", "Mica browser")}</summary>
+    <div class="tool-window mica-browser-window" data-window-key="mica-browser">
+      <div class="window-titlebar" data-window-drag="mica-browser">
+        <strong>Mica browser</strong>
+        <button type="button" class="window-close" data-close-details="mica-browser" aria-label="Close Mica browser">{ui/icon_label_node("x", "Close")}</button>
+      </div>
+      <div class="window-body">
+        <form class="mica-browser-form" data-sync-event="submit" data-sync-action="mud_mica_browser_search" data-sync-reset="false">
+          <input name="query" value={query} autocomplete="off" placeholder="relation, verb, rule" aria-label="Mica browser search" data-sync-event="input" data-sync-action="mud_mica_browser_search" data-sync-debounce="180" />
+          <button type="submit" class="mini-button">{ui/icon_label_node("search", "Search")}</button>
+        </form>
+        {ui/mica_browser_results_node(query)}
+      </div>
+      <div class="window-resize-handle" data-window-resize="mica-browser" aria-hidden="true"></div>
+    </div>
+  </details>
+end
+
 verb ui/mica_method_catalog_node(entity)
   let rows = []
   let count = 0
+  let row_limit = 8
+  let limit_mode = endpoint().ui/micaMethodLimit
+  if limit_mode == "all"
+    row_limit = 9999
+  end
   let mode = endpoint().ui/micaMethodMode
   if mode == nothing
     mode = "all"
@@ -363,7 +537,7 @@ verb ui/mica_method_catalog_node(entity)
       let method_id = found[:m]
       let role = found[:role]
       let position = found[:position]
-      if count < 8
+      if count < row_limit
         let selector = one MethodSelector(method_id, ?sel)
         rows = [@rows, ui/mica_method_row_node(method_id, selector, role, entity, position)]
       end
@@ -377,7 +551,7 @@ verb ui/mica_method_catalog_node(entity)
         let method_id = found[:m]
         let role = found[:role]
         let position = found[:position]
-        if count < 8
+        if count < row_limit
           let selector = one MethodSelector(method_id, ?sel)
           rows = [@rows, ui/mica_method_row_node(method_id, selector, role, prototype, position)]
         end
@@ -390,7 +564,15 @@ verb ui/mica_method_catalog_node(entity)
     rows = [ui/mica_empty_node("No method parameter restrictions mention this identity or its delegates.")]
   end
   if count > 8
-    rows = [@rows, ui/mica_empty_node(string_concat("Showing 8 of ", to_literal(count)))]
+    let label = string_concat("Show all ", to_literal(count))
+    let mode_value = "all"
+    if limit_mode == "all"
+      label = "Show fewer"
+      mode_value = "compact"
+    else
+      rows = [@rows, ui/mica_empty_node(string_concat("Showing 8 of ", to_literal(count)))]
+    end
+    rows = [@rows, ui/mica_method_limit_node(mode_value, label)]
   end
 
   let children = [controls]
@@ -575,6 +757,52 @@ verb ui/handle_sync_action(source @ #ui/mica_method_mode_action<_>, endpoint, se
 
   endpoint().ui/micaMethodMode = mode
   endpoint.ui/micaMethodMode = mode
+  ui/mica_inspect_bump_revision(endpoint)
+  return true
+end
+
+verb ui/handle_sync_action(source @ #ui/mica_method_limit_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
+    return false
+  end
+
+  let current = ui/current_actor()
+  if current == nothing || ui/can_program(current) == false
+    return false
+  end
+
+  let mode = fields[:mode]
+  if mode != "all" && mode != "compact"
+    return false
+  end
+
+  retract ui/MicaMethodLimit(endpoint(), _)
+  retract ui/MicaMethodLimit(endpoint, _)
+  if mode == "all"
+    endpoint().ui/micaMethodLimit = mode
+    endpoint.ui/micaMethodLimit = mode
+  end
+  ui/mica_inspect_bump_revision(endpoint)
+  return true
+end
+
+verb ui/handle_sync_action(source @ #ui/mica_browser_search_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || (event != "submit" && event != "input")
+    return false
+  end
+
+  let current = ui/current_actor()
+  if current == nothing || ui/can_program(current) == false
+    return false
+  end
+
+  let query = ui/form_text(fields, :query)
+  retract ui/MicaBrowserQuery(endpoint(), _)
+  retract ui/MicaBrowserQuery(endpoint, _)
+  if query != ""
+    endpoint().ui/micaBrowserQuery = query
+    endpoint.ui/micaBrowserQuery = query
+  end
   ui/mica_inspect_bump_revision(endpoint)
   return true
 end

@@ -775,7 +775,12 @@ function applySingleAttribute(element, name, value) {
   if (element.getAttribute(name) !== text) {
     element.setAttribute(name, text);
   }
-  if (name === "value" && "value" in element && element.value !== text) {
+  if (
+    name === "value" &&
+    "value" in element &&
+    element.value !== text &&
+    !isFocusedLiveInput(element)
+  ) {
     element.value = text;
   }
 }
@@ -783,9 +788,16 @@ function applySingleAttribute(element, name, value) {
 function removeSingleAttribute(element, name) {
   validateAttributeName(name);
   element.removeAttribute(name);
-  if (name === "value" && "value" in element) {
+  if (name === "value" && "value" in element && !isFocusedLiveInput(element)) {
     element.value = "";
   }
+}
+
+function isFocusedLiveInput(element) {
+  return (
+    element?.ownerDocument?.activeElement === element &&
+    element?.getAttribute?.("data-sync-event") === "input"
+  );
 }
 
 function validateAttributeName(name) {
@@ -962,7 +974,10 @@ export function endSubmitLoading(token) {
   removeCssClass(token.submit, SYNC_SUBMIT_LOADING_CLASS);
 }
 
-export function beginEventLoading(element) {
+export function beginEventLoading(element, options = {}) {
+  if (options.passive) {
+    return { passive: true };
+  }
   const token = {
     element,
     disabled: false,
@@ -989,6 +1004,9 @@ export function beginEventLoading(element) {
 
 export function endEventLoading(token) {
   if (!token) {
+    return;
+  }
+  if (token.passive) {
     return;
   }
   if (token.disabled) {
@@ -1581,6 +1599,18 @@ export function bootstrapServerRenderedSync(mount, status) {
   }
 
   function enqueueDomEvent(event) {
+    if (event.coalescePending) {
+      for (let index = pendingDomEvents.length - 1; index >= 0; index -= 1) {
+        const pending = pendingDomEvents[index];
+        if (
+          pending.kind === event.kind &&
+          pending.action === event.action &&
+          pending.target === event.target
+        ) {
+          pendingDomEvents.splice(index, 1);
+        }
+      }
+    }
     pendingDomEvents.push(event);
     drainDomEvents();
   }
@@ -1655,11 +1685,13 @@ export function bootstrapServerRenderedSync(mount, status) {
 
   async function sendBoundEvent(element, eventName) {
     const action = element.dataset.syncAction ?? "";
+    const passive = eventName === "input" && isReadonlyControl(element);
     enqueueDomEvent({
       kind: eventName,
       target: element,
       action,
-      begin: () => beginEventLoading(element),
+      coalescePending: eventName === "input",
+      begin: () => beginEventLoading(element, { passive }),
       end: endEventLoading,
       payload: {
         session: state.session,

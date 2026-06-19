@@ -281,6 +281,7 @@ verb ui/world_tools_node(actor @ #player, room @ #room)
   return dom <aside id="world-tools" class="panel world-tools">
     {ui/area_panel_node(actor, room)}
     {ui/build_controls_node(actor, room)}
+    {ui/mica_browser_panel_node(actor)}
   </aside>
 end
 

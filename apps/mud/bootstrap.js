@@ -336,8 +336,8 @@ function installToolWindows(mount) {
   mount.addEventListener("click", (event) => {
     const sourcePopout = event.target?.closest?.(".source-popout");
     if (sourcePopout && mount.contains(sourcePopout)) {
-      const row = sourcePopout.closest(".mica-method-row");
-      const source = row?.querySelector(`.mica-source-full[data-source-key="${cssEscape(sourcePopout.dataset.sourceKey)}"]`);
+      const sourceHost = sourcePopout.closest(".source-host");
+      const source = sourceHost?.querySelector(`.mica-source-full[data-source-key="${cssEscape(sourcePopout.dataset.sourceKey)}"]`);
       if (source) {
         createSourceWindow(mount, `source:${sourcePopout.dataset.sourceKey}`, sourcePopout.dataset.sourceTitle || "Method source", source.textContent || "");
       }

@@ -261,6 +261,9 @@ input {
 .world-tools .builder-tools {
   margin-top: 12px;
 }
+.world-tools .mica-browser-panel {
+  margin-top: 12px;
+}
 .world-tools .builder-form,
 .world-tools .passage-builder-form {
   grid-template-columns: 1fr;
@@ -832,6 +835,9 @@ input {
   background: linear-gradient(180deg, #2f4e4a 0%, #203635 100%);
   color: #dffcf5;
 }
+.method-limit-action {
+  display: inline-flex;
+}
 .mica-close {
   border-color: #8d4e46;
 }
@@ -975,6 +981,78 @@ input {
   height: 100%;
   overflow: auto;
   white-space: pre;
+}
+.mica-browser-panel {
+  min-width: 0;
+  border-top: 1px solid #333238;
+  padding-top: 10px;
+}
+.mica-browser-panel > summary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #48434a;
+  border-radius: 8px;
+  background: #18191d;
+  color: #f3d38a;
+  font-weight: 800;
+  list-style: none;
+  padding: 7px 10px;
+}
+.mica-browser-panel > summary::-webkit-details-marker {
+  display: none;
+}
+.mica-browser-window {
+  --build-window-width: 560px;
+  --build-window-height: 520px;
+}
+.mica-browser-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 10px;
+}
+.mica-browser-form input {
+  min-width: 0;
+}
+.mica-browser-results {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.mica-browser-results h4 {
+  margin: 0 0 4px;
+  color: #91d8c7;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mica-browser-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mica-browser-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+  border: 1px solid #26383a;
+  background: #0f1418;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.mica-browser-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #d8eee9;
+}
+.browser-source-open {
+  margin-left: auto;
+  padding: 4px 8px;
 }
 .mica-empty {
   margin: 0;

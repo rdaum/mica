@@ -339,6 +339,28 @@ assert.equal(clickButton.disabled, false);
 assert.equal(clickButton.textContent, "References");
 assert.equal(clickButton.children.length, 0);
 
+const passiveInput = {
+  className: "",
+  readOnly: false,
+  type: "text",
+  attributes: new Map(),
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  },
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  },
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  },
+};
+const passiveToken = beginEventLoading(passiveInput, { passive: true });
+assert.equal(passiveInput.className, "");
+assert.equal(passiveInput.readOnly, false);
+assert.equal(passiveInput.attributes.has("aria-busy"), false);
+endEventLoading(passiveToken);
+assert.equal(passiveInput.readOnly, false);
+
 class FakeText {
   nodeType = Node.TEXT_NODE;
   parentNode = null;
@@ -355,9 +377,11 @@ class FakeElement {
   attributes = new Map();
   id = "";
   className = "";
+  value = "";
   scrollTop = 0;
   scrollHeight = 0;
   clientHeight = 0;
+  ownerDocument = null;
 
   constructor(tag) {
     this.localName = tag;
@@ -468,11 +492,14 @@ globalThis.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3 };
 const elementsById = new Map();
 globalThis.document = {
   createElement(tag) {
-    return new FakeElement(tag);
+    const element = new FakeElement(tag);
+    element.ownerDocument = this;
+    return element;
   },
   createElementNS(namespace, tag) {
     const element = new FakeElement(tag);
     element.namespaceURI = namespace;
+    element.ownerDocument = this;
     return element;
   },
   createTextNode(text) {
@@ -481,6 +508,7 @@ globalThis.document = {
   getElementById(id) {
     return elementsById.get(id) ?? null;
   },
+  activeElement: null,
 };
 
 const svgMount = new FakeElement("div");
@@ -508,6 +536,44 @@ assert.equal(renderedSvg.namespaceURI, "http://www.w3.org/2000/svg");
 assert.equal(renderedSvg.localName, "svg");
 assert.equal(renderedSvg.childNodes[0].namespaceURI, "http://www.w3.org/2000/svg");
 assert.equal(renderedSvg.getAttribute("viewBox"), "0 0 24 24");
+
+const inputMount = new FakeElement("div");
+const inputRoot = new FakeElement("main");
+const liveInput = new FakeElement("input");
+inputMount.append(inputRoot);
+inputRoot.append(liveInput);
+liveInput.ownerDocument = globalThis.document;
+liveInput.setAttribute("data-sync-event", "input");
+liveInput.setAttribute("value", "server");
+liveInput.value = "server plus local typing";
+globalThis.document.activeElement = liveInput;
+applyDelta(inputMount, {
+  type: "dom_patch",
+  patches: [
+    {
+      op: "set_attr",
+      path: [0],
+      name: "value",
+      value: "server",
+    },
+  ],
+});
+assert.equal(liveInput.getAttribute("value"), "server");
+assert.equal(liveInput.value, "server plus local typing");
+
+applyDelta(inputMount, {
+  type: "dom_patch",
+  patches: [
+    {
+      op: "remove_attr",
+      path: [0],
+      name: "value",
+    },
+  ],
+});
+assert.equal(liveInput.hasAttribute("value"), false);
+assert.equal(liveInput.value, "server plus local typing");
+globalThis.document.activeElement = null;
 
 const mount = new FakeElement("div");
 const root = new FakeElement("main");
