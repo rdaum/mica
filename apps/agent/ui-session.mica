@@ -37,6 +37,7 @@ grant #web
     :session/Revision
     :session/CommandDraft
     :session/ObjectBrowserQuery
+    :session/IsStreaming
     :Delegates
     :Name
     :Description
@@ -67,6 +68,10 @@ grant #web
     :session/Revision
     :session/CommandDraft
     :session/ObjectBrowserQuery
+    :session/IsStreaming
+    :Transcript
+    :TranscriptAgent
+    :TranscriptWorkspace
     :Message
     :MessageTranscript
     :MessageSeq
@@ -107,6 +112,7 @@ grant role #operator
     :session/Revision
     :session/CommandDraft
     :session/ObjectBrowserQuery
+    :session/IsStreaming
     :ui/View
     :ui/SyncAction
     :Agent
@@ -178,6 +184,10 @@ grant role #operator
     :session/Revision
     :session/CommandDraft
     :session/ObjectBrowserQuery
+    :session/IsStreaming
+    :Transcript
+    :TranscriptAgent
+    :TranscriptWorkspace
     :Message
     :MessageTranscript
     :MessageSeq
@@ -220,6 +230,7 @@ grant role #operator
     :ui/world_view_node
     :ui/world_tools_node
     :ui/workspace_panel_node
+    :ui/workspace_row_node
     :ui/object_browser_panel_node
     :ui/object_browser_results_node
     :ui/object_browser_row_node
@@ -228,6 +239,7 @@ grant role #operator
     :ui/inspector_node
     :ui/entity_fact_node
     :ui/entity_facts_node
+    :ui/entity_initial
     :ui/inspector_action_node
     :ui/transcript_node
     :ui/latest_message_node
@@ -263,6 +275,7 @@ grant role #operator
     :agent/tool_calls
     :agent/execute_tool_calls
     :agent/chat_with_tools
+    :agent/run_loop
     :tool/read
     :tool/grep
     :tool/find
@@ -278,6 +291,7 @@ grant role #operator
     :message/role_label
     :message/class
     :message/role_delegate
+    :list_size_lt
     :transcript/empty_prompt
     :target/kind_label
     :target/empty
@@ -301,6 +315,7 @@ grant role #operator
     :trim
     :os_getenv
     :llm/chat
+    :llm/ensure_stream
     :llm/system_message
     :llm/user_message
     :llm/assistant_message

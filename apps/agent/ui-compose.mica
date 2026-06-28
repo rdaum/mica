@@ -290,10 +290,16 @@ verb ui/command_bar_node(agent @ #agent)
   if draft == nothing
     draft = ""
   end
+  let streaming = endpoint().session/isStreaming
+  let indicator = dom <span class="command-streaming-indicator"></span>
+  if streaming == true
+    indicator = dom <span class="command-streaming-indicator active" aria-label="Agent is working">…</span>
+  end
   let placeholder = "Ask the agent, run a command, or open a file..."
   let composer = dom <form id="agent-command" class="command-form" data-sync-event="submit" data-sync-action="agent_command" data-sync-submit-key="ctrl+enter">
     <div class="command-input-box">
       <input id="command" name="text" value={draft} autocomplete="off" placeholder={placeholder} aria-label="Command" />
+      {indicator}
     </div>
     <button id="send-command" type="submit">{ui/icon_label_node("send", "Send")}</button>
   </form>

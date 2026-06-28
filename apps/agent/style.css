@@ -558,6 +558,21 @@ details:not([open]).tool-result-block > summary::before {
   background: transparent;
   box-shadow: none;
 }
+.command-streaming-indicator {
+  flex: 0 0 auto;
+  color: #91d8c7;
+  font-size: 12px;
+  padding: 0 6px;
+  opacity: 0;
+}
+.command-streaming-indicator.active {
+  opacity: 1;
+  animation: command-streaming-pulse 1.4s ease-in-out infinite;
+}
+@keyframes command-streaming-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
 .inspector {
   flex: 0 0 auto;
 }

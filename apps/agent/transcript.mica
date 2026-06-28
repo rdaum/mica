@@ -139,7 +139,7 @@ verb ui/transcript_node(agent @ #agent, revision, limit)
   let count = 0
 
   if transcript != nothing
-    for message in agent/messages(transcript)
+    for message in agent/messages_ordered(transcript)
       count = count + 1
     end
   end
@@ -156,7 +156,7 @@ verb ui/transcript_node(agent @ #agent, revision, limit)
     let rendered = 0
     let index = 0
     if transcript != nothing
-      for message in agent/messages(transcript)
+      for message in agent/messages_ordered(transcript)
         if index >= first_rendered
           messages = [@messages, ui/message_node(message)]
           rendered = rendered + 1

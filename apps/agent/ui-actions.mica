@@ -114,42 +114,7 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
 
   let transcript = agent/transcript(current)
   if transcript != nothing
-    let max_rounds = agent/max_tool_rounds(current)
-    let round = 0
-    while round < max_rounds
-      round = round + 1
-
-      let response
-      try
-        response = agent/chat_with_tools(current, transcript)
-      catch err
-        agent/append_message(current, "assistant", string_concat("(LLM error: ", to_literal(err), ")"))
-        response = nothing
-      end
-
-      if response == nothing
-        round = max_rounds
-      else
-        let text = llm/assistant_text(response)
-        if text == nothing
-          text = ""
-        end
-        let calls = agent/tool_calls(response)
-        if calls == []
-          if text != ""
-            agent/append_message(current, "assistant", text)
-          end
-          round = max_rounds
-        else
-          let assistant_message = agent/append_message(current, "assistant", text)
-          let results = agent/execute_tool_calls(current, assistant_message, calls)
-          for result in results
-            let tool_content = to_literal({:tool_call_id -> result[:tool_call_id], :content -> result[:content]})
-            agent/append_message(current, "tool", tool_content)
-          end
-        end
-      end
-    end
+    agent/run_loop(current, transcript)
   end
 
   ui/bump_revision(endpoint())

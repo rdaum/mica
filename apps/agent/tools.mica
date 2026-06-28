@@ -1,5 +1,8 @@
 // Agent tools: read-only source tools + tool-call execution.
 
+// Streaming flag set by agent/run_loop while the loop is in progress.
+make_functional_relation(:session/IsStreaming, 2, [0])
+
 // Tool relations.
 make_identity(:tool)
 make_relation(:Tool, 1)
@@ -267,9 +270,12 @@ verb agent/tool_calls(response @ #map)
   return calls
 end
 
-// Stage 3 placeholder: cap on tool-call rounds per user message. Stage 4
-// (steering/follow-up) replaces this with a needs-follow-up loop driven by
-// session/SteeringQueue and session/FollowUpQueue.
+verb agent/tool_calls(response)
+  return []
+end
+
+// Cap on tool-call rounds per user message. Stage 4 replaces this with a
+// needs-follow-up loop driven by session/SteeringQueue and session/FollowUpQueue.
 verb agent/max_tool_rounds(agent @ #agent)
   let n = agent.agentMaxToolRounds
   if n == nothing
@@ -383,4 +389,60 @@ verb agent/chat_with_tools(agent @ #agent, transcript)
   let messages = agent/llm_messages_with_tools(transcript)
   let tools = agent/build_tools(agent)
   return llm/chat(model, messages, {:stream -> true}, tools)
+end
+
+// Stage 3: the agent loop. Submits to the LLM with the current transcript and
+// tool surface, executes any tool calls, appends results, and recurses until
+// the LLM stops calling tools. session/IsStreaming marks the loop as in
+// progress so the command bar can show a streaming indicator. Steering and
+// follow-up queues are stubbed (empty); Stage 4 replaces the
+// max_tool_rounds cap with a needs-follow-up loop driven by those queues.
+verb agent/run_loop(agent @ #agent, transcript)
+  endpoint().session/isStreaming = true
+  ui/bump_revision(endpoint())
+
+  let max_rounds = agent/max_tool_rounds(agent)
+  let round = 0
+  while round < max_rounds
+    round = round + 1
+
+    let response
+    try
+      response = agent/chat_with_tools(agent, transcript)
+    catch err
+      agent/append_message(agent, "assistant", string_concat("(LLM error: ", to_literal(err), ")"))
+      ui/bump_revision(endpoint())
+      response = nothing
+    end
+
+    if response == nothing
+      round = max_rounds
+    else
+      let text = llm/assistant_text(response)
+      if text == nothing
+        text = ""
+      end
+      let calls = agent/tool_calls(response)
+      if calls == []
+        if text == ""
+          text = "(no response)"
+        end
+        agent/append_message(agent, "assistant", text)
+        ui/bump_revision(endpoint())
+        round = max_rounds
+      else
+        let assistant_message = agent/append_message(agent, "assistant", text)
+        ui/bump_revision(endpoint())
+        let results = agent/execute_tool_calls(agent, assistant_message, calls)
+        for result in results
+          let tool_content = to_literal({:tool_call_id -> result[:tool_call_id], :content -> result[:content]})
+          agent/append_message(agent, "tool", tool_content)
+        end
+        ui/bump_revision(endpoint())
+      end
+    end
+  end
+
+  endpoint().session/isStreaming = false
+  ui/bump_revision(endpoint())
 end
