@@ -17,7 +17,7 @@ end
 
 verb ui/message_role_icon(role @ #string)
   if role == "user"
-    return dom <span class="message-glyph user-glyph" aria-hidden="true">&gt;</span>
+    return dom <span class="message-glyph user-glyph" aria-hidden="true">></span>
   end
   if role == "assistant"
     return dom <span class="message-glyph assistant-glyph" aria-hidden="true">*</span>
@@ -163,6 +163,11 @@ verb ui/transcript_node(agent @ #agent, revision, limit)
         end
         index = index + 1
       end
+    end
+
+    let streaming = endpoint().session/isStreaming
+    if streaming == true
+      messages = [@messages, dom <li class="message-line assistant typing-indicator"><div class="message-line-main"><span class="message-role"><span class="message-glyph assistant-glyph">*</span><span>Agent</span></span><span class="typing-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></span></div></li>]
     end
   end
 
