@@ -38,6 +38,12 @@ pub struct CompioTaskDriver {
     inner: Arc<PoolInner>,
 }
 
+impl CompioTaskDriver {
+    pub fn inner_runner(&self) -> Arc<SharedSourceRunner> {
+        Arc::clone(&self.inner.runner)
+    }
+}
+
 struct PoolInner {
     runner: Arc<SharedSourceRunner>,
     dispatcher: Dispatcher,
@@ -51,7 +57,7 @@ struct PoolState {
     input_waiters: BTreeMap<Identity, Vec<TaskId>>,
     mailbox_waiters: BTreeMap<u64, VecDeque<MailboxWaiter>>,
     events: Vec<DriverEvent>,
-    event_waker: Option<Waker>,
+    event_wakers: Vec<Waker>,
 }
 
 #[derive(Clone, Debug)]
@@ -541,7 +547,7 @@ impl CompioTaskDriver {
             let mut spawn = None;
             let mut mailbox_recv = None;
             let mut external_request = None;
-            let event_waker;
+            let event_wakers;
             {
                 let mut state = self.inner.state.lock().unwrap();
                 state.drain_effects_into_events(&self.inner.runner);
@@ -550,10 +556,9 @@ impl CompioTaskDriver {
                         tracing::debug!(
                             target: "mica_driver::pool",
                             task_id,
-                            principal = ?context.principal,
-                            actor = ?context.actor,
-                            endpoint = ?context.endpoint,
-                            value = ?value,
+                            principal = %context.principal.map_or("none".to_owned(), |id| self.inner.runner.render_identity(id)),
+                            actor = %context.actor.map_or("none".to_owned(), |id| self.inner.runner.render_identity(id)),
+                            endpoint = %self.inner.runner.render_identity(context.endpoint),
                             "driver task completed"
                         );
                         state
@@ -564,10 +569,10 @@ impl CompioTaskDriver {
                         tracing::error!(
                             target: "mica_driver::pool",
                             task_id,
-                            principal = ?context.principal,
-                            actor = ?context.actor,
-                            endpoint = ?context.endpoint,
-                            error = ?error,
+                            principal = %context.principal.map_or("none".to_owned(), |id| self.inner.runner.render_identity(id)),
+                            actor = %context.actor.map_or("none".to_owned(), |id| self.inner.runner.render_identity(id)),
+                            endpoint = %self.inner.runner.render_identity(context.endpoint),
+                            error = %self.inner.runner.render_task_value(&error),
                             "driver task aborted"
                         );
                         state
@@ -578,9 +583,9 @@ impl CompioTaskDriver {
                         tracing::debug!(
                             target: "mica_driver::pool",
                             task_id,
-                            principal = ?context.principal,
-                            actor = ?context.actor,
-                            endpoint = ?context.endpoint,
+                            principal = %context.principal.map_or("none".to_owned(), |id| self.inner.runner.render_identity(id)),
+                            actor = %context.actor.map_or("none".to_owned(), |id| self.inner.runner.render_identity(id)),
+                            endpoint = %self.inner.runner.render_identity(context.endpoint),
                             kind = ?kind,
                             "driver task suspended"
                         );
@@ -616,9 +621,9 @@ impl CompioTaskDriver {
                     }
                 }
                 state.record_metrics();
-                event_waker = state.event_waker.take();
+                event_wakers = std::mem::take(&mut state.event_wakers);
             }
-            if let Some(waker) = event_waker {
+            for waker in event_wakers {
                 waker.wake();
             }
             if let Some(duration) = timer {
@@ -1141,16 +1146,16 @@ impl CompioTaskDriver {
 
     fn record_task_failure(&self, task_id: TaskId, error: DriverError) {
         tracing::error!(task_id, error = %error, "driver task failed");
-        let event_waker = {
+        let event_wakers = {
             let mut state = self.inner.state.lock().unwrap();
             state.events.push(DriverEvent::TaskFailed {
                 task_id,
                 error: error.to_string(),
             });
             state.record_metrics();
-            state.event_waker.take()
+            std::mem::take(&mut state.event_wakers)
         };
-        if let Some(waker) = event_waker {
+        for waker in event_wakers {
             waker.wake();
         }
     }
@@ -1167,7 +1172,10 @@ impl Future for DriverEvents<'_> {
             state.record_metrics();
             return Poll::Ready(events);
         }
-        state.event_waker = Some(cx.waker().clone());
+        let waker = cx.waker().clone();
+        if !state.event_wakers.iter().any(|w| w.will_wake(&waker)) {
+            state.event_wakers.push(waker);
+        }
         state.record_metrics();
         Poll::Pending
     }

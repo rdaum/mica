@@ -171,7 +171,7 @@ pub(crate) async fn handle_in_process_request(
         effective_actor,
         Symbol::intern("http-request"),
     ) {
-        return internal_error_response(format_driver_error(error), close);
+        return internal_error_response(format_driver_error(&host.driver, error), close);
     }
 
     let request_facts = request_facts(request_id, binding.principal, effective_actor, request);
@@ -184,7 +184,7 @@ pub(crate) async fn handle_in_process_request(
         .assert_transient_tuples_named(request_endpoint, transient_tuples)
     {
         host.driver.close_endpoint(request_endpoint);
-        return internal_error_response(format_driver_error(error), close);
+        return internal_error_response(format_driver_error(&host.driver, error), close);
     }
 
     let submitted = host
@@ -199,7 +199,7 @@ pub(crate) async fn handle_in_process_request(
 
     match submitted {
         Ok(submitted) => response_from_submitted(submitted, close),
-        Err(error) => internal_error_response(format_driver_error(error), close),
+        Err(error) => internal_error_response(format_driver_error(&host.driver, error), close),
     }
 }
 

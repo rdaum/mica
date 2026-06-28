@@ -486,6 +486,18 @@ fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
                 Value::string("synthetic assistant reply"),
             ])
         ));
+
+        let streaming_query = driver
+            .submit_source(
+                ep,
+                root_source("return endpoint().session/isStreaming"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            streaming_query.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+        ));
     });
 }
 

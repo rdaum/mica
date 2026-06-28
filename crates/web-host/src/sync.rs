@@ -528,7 +528,7 @@ fn ensure_session(
             effective_actor,
             Symbol::intern("http-sync"),
         )
-        .map_err(format_driver_error)?;
+        .map_err(|error| format_driver_error(&host.driver, error))?;
 
     let session = SyncSession::new(session_id, endpoint, effective_actor);
     let mut sessions = host.sync.sessions.lock().unwrap();
@@ -564,7 +564,7 @@ async fn submit_optional_sync_lifecycle(
         Err(error) => {
             tracing::debug!(
                 selector = %selector,
-                error = %format_driver_error(error),
+                error = %format_driver_error(&host.driver, error),
                 "optional sync lifecycle hook failed to submit"
             );
             return Ok(());
@@ -1205,7 +1205,7 @@ async fn route_sync_envelope(
             )
             .await
             .map(|_| ())
-            .map_err(format_driver_error),
+            .map_err(|error| format_driver_error(&host.driver, error)),
     }
 }
 

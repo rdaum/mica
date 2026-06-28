@@ -14,6 +14,7 @@
 use mica_runtime::ExternalRequest;
 use mica_runtime::SourceTaskError;
 use mica_runtime::TaskRequest;
+use mica_runtime::format_source_task_error;
 use mica_runtime::{AuthorityContext, Effect, SuspendKind, TaskId};
 use mica_var::{Identity, Value};
 use std::fmt::{Display, Formatter};
@@ -72,7 +73,7 @@ impl DriverError {
 impl Display for DriverError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Source(error) => write!(f, "{error:?}"),
+            Self::Source(error) => write!(f, "{}", format_source_task_error(error)),
             Self::Join(error) => write!(f, "driver task failed: {error}"),
             Self::MissingTaskContext(task_id) => {
                 write!(f, "missing task context for task {task_id}")

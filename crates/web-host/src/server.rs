@@ -131,7 +131,7 @@ async fn handle_in_process_connection(
         Symbol::intern("http"),
     ) {
         host.driver.close_endpoint(connection_endpoint);
-        return Err(format_driver_error(error));
+        return Err(format_driver_error(&host.driver, error));
     }
     let _connection_scope = EndpointScope::new(host.clone(), connection_endpoint);
     let mut codec = HttpCodec::new();

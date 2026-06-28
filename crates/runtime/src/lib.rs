@@ -743,6 +743,10 @@ impl SourceRunner {
         render_value(value, &self.identity_names(), &self.relation_names())
     }
 
+    pub fn render_identity(&self, identity: Identity) -> String {
+        render_identity(identity, &self.identity_names(), &self.relation_names())
+    }
+
     pub fn render_source_task_error_with_source(
         &self,
         error: &SourceTaskError,
@@ -1732,6 +1736,10 @@ impl SharedSourceRunner {
         render_value(value, &self.identity_names(), &self.relation_names())
     }
 
+    pub fn render_identity(&self, identity: Identity) -> String {
+        render_identity(identity, &self.identity_names(), &self.relation_names())
+    }
+
     pub fn render_source_task_error_with_source(
         &self,
         error: &SourceTaskError,
@@ -1912,6 +1920,18 @@ impl SharedSourceRunner {
             .relation_metadata()
             .filter_map(|metadata| Some((metadata.id(), metadata.name().name()?.to_owned())))
             .collect()
+    }
+
+    pub fn define_named_identity(&self, name: &str, identity: Identity) -> Result<(), String> {
+        let symbol = Symbol::intern(name);
+        let mut tx = self.task_manager.kernel().begin();
+        tx.assert(
+            named_identity_relation(),
+            Tuple::from([Value::symbol(symbol), Value::identity(identity)]),
+        )
+        .map_err(|e| format!("assert failed: {e:?}"))?;
+        tx.commit().map_err(|e| format!("commit failed: {e:?}"))?;
+        Ok(())
     }
 }
 
@@ -2925,8 +2945,10 @@ fn source_literal(
             let identity = value.as_identity().unwrap();
             match identity_names.get(&identity) {
                 Some(name) => format!("#{name}"),
-                None if relation_names.contains_key(&identity) => format!("#{}", identity.raw()),
-                None => format!("#{}", identity.raw()),
+                None => match relation_names.get(&identity) {
+                    Some(name) => format!(":{name}"),
+                    None => format!("#{}", identity.raw()),
+                },
             }
         }
         ValueKind::Symbol => render_symbol(value.as_symbol().unwrap(), ":"),
@@ -6600,6 +6622,26 @@ fn render_effects(
             identity_names,
             relation_names,
         ));
+    }
+}
+
+fn render_identity(
+    identity: Identity,
+    identity_names: &BTreeMap<Identity, String>,
+    relation_names: &BTreeMap<Identity, String>,
+) -> String {
+    match identity_names.get(&identity) {
+        Some(name) => format!("#{name}"),
+        None => match relation_names.get(&identity) {
+            Some(name) => format!(":{name}"),
+            None => {
+                if identity == SYSTEM_ENDPOINT {
+                    "system-endpoint".to_owned()
+                } else {
+                    format!("#{}", identity.raw())
+                }
+            }
+        },
     }
 }
 

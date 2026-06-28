@@ -64,7 +64,14 @@ impl InProcessWebHost {
 
     pub(crate) fn allocate_endpoint(&self) -> Result<Identity, String> {
         let raw = self.next_endpoint.fetch_add(1, Ordering::Relaxed);
-        Identity::new(raw).ok_or_else(|| "endpoint identity space is exhausted".to_owned())
+        let identity =
+            Identity::new(raw).ok_or_else(|| "endpoint identity space is exhausted".to_owned())?;
+        let name = format!("endpoint:{}", raw - DAEMON_ENDPOINT_ID_START);
+        self.driver
+            .inner_runner()
+            .define_named_identity(&name, identity)
+            .map_err(|e| format!("failed to name endpoint: {e}"))?;
+        Ok(identity)
     }
 
     pub(crate) fn allocate_request(&self) -> Result<Identity, String> {
@@ -73,6 +80,9 @@ impl InProcessWebHost {
     }
 }
 
-pub(crate) fn format_driver_error(error: mica_driver::DriverError) -> String {
-    format!("error: {error}")
+pub(crate) fn format_driver_error(
+    driver: &mica_driver::CompioTaskDriver,
+    error: mica_driver::DriverError,
+) -> String {
+    format!("error: {}", driver.format_error(&error))
 }

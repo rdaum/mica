@@ -694,7 +694,7 @@ fn runner_agent_core_resolves_default_model_with_env_override() {
             .run_source("return agent/resolve_model(#agent/default)")
             .unwrap()
             .outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::string("deepseek/deepseek-chat-v3.1:free")
+        TaskOutcome::Complete { value, .. } if value == Value::string("deepseek/deepseek-v4-pro")
     ));
 
     assert!(matches!(
