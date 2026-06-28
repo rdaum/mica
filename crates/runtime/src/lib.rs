@@ -171,6 +171,8 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "mica_query",
     "openai_chat_completion",
     "openai_chat_completion_with_options",
+    "llm_chat_stream",
+    "map_pairs",
 ];
 
 impl SourceRunner {
@@ -3622,6 +3624,7 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
         .with_builtin("to_literal", to_literal_builtin)
         .with_builtin("from_literal", from_literal_builtin)
         .with_builtin("to_symbol", to_symbol_builtin)
+        .with_builtin("map_pairs", map_pairs_builtin)
         .with_builtin("json_encode", json_encode_builtin)
         .with_builtin("json_decode", json_decode_builtin)
         .with_builtin("dom_text", dom_text_builtin)
@@ -3902,6 +3905,24 @@ fn to_symbol_builtin(
         ));
     };
     Ok(Value::symbol(Symbol::intern(&name)))
+}
+
+fn map_pairs_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call("map_pairs", "expected map_pairs(map)"));
+    }
+    let Some(pairs) = args[0].with_map(|entries| {
+        entries
+            .iter()
+            .map(|(key, value)| Value::list([key.clone(), value.clone()]))
+            .collect::<Vec<_>>()
+    }) else {
+        return Err(invalid_builtin_call("map_pairs", "expected a map argument"));
+    };
+    Ok(Value::list(pairs))
 }
 
 fn value_from_literal_expr(

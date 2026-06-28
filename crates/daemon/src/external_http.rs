@@ -123,11 +123,19 @@ struct OpenaiRequestSpec {
     response_mode: OpenaiResponseMode,
     model: String,
     message_count: Option<usize>,
+    provider: String,
 }
 
 enum OpenaiResponseMode {
     Http,
     Json,
+    Stream,
+}
+
+struct ToolCallAccumulator {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 struct HttpResponseData {
@@ -183,17 +191,37 @@ impl OpenaiRequestSpec {
         {
             headers.push(("X-OpenRouter-Title".to_owned(), title));
         }
+        let is_streaming = map_get(payload, "options")
+            .and_then(|options| options.map_get(&Value::symbol(Symbol::intern("stream"))))
+            .and_then(|stream| stream.as_bool())
+            .unwrap_or(false);
+
         let (body, response_mode) =
             if map_get(payload, "body").is_some() || map_get(payload, "json").is_some() {
                 (request_body(payload)?, OpenaiResponseMode::Http)
+            } else if is_streaming {
+                (
+                    serde_json::to_vec(&openai_chat_completion_json(payload, true)?).map_err(
+                        |error| format!("failed to encode LLM chat stream request: {error}"),
+                    )?,
+                    OpenaiResponseMode::Stream,
+                )
             } else {
                 (
-                    serde_json::to_vec(&openai_chat_completion_json(payload)?).map_err(
+                    serde_json::to_vec(&openai_chat_completion_json(payload, false)?).map_err(
                         |error| format!("failed to encode OpenAI chat completion request: {error}"),
                     )?,
                     OpenaiResponseMode::Json,
                 )
             };
+        let provider = if base_url.contains("openrouter") {
+            "openrouter"
+        } else if base_url.contains("api.openai.com") {
+            "openai"
+        } else {
+            "api"
+        }
+        .to_owned();
         Ok(Self {
             request: HttpRequestSpec {
                 method: "POST".to_owned(),
@@ -204,6 +232,7 @@ impl OpenaiRequestSpec {
             response_mode,
             model,
             message_count,
+            provider,
         })
     }
 }
@@ -281,6 +310,7 @@ async fn perform_openai_request(spec: OpenaiRequestSpec) -> Result<Value, String
         response_mode = match spec.response_mode {
             OpenaiResponseMode::Http => "http",
             OpenaiResponseMode::Json => "json",
+            OpenaiResponseMode::Stream => "stream",
         },
         "OpenAI request prepared"
     );
@@ -316,6 +346,24 @@ async fn perform_openai_request(spec: OpenaiRequestSpec) -> Result<Value, String
                 .map_err(|error| format!("invalid OpenAI chat completion response: {error}"))?;
             normalize_openai_tool_call_response(&mut json);
             value_from_json(&json)
+        }
+        OpenaiResponseMode::Stream => {
+            let response = perform_http_bytes(spec.request).await?;
+            tracing::info!(
+                model = %model,
+                status = response.status,
+                response_bytes = response.body.len(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "LLM chat stream response received"
+            );
+            if !(200..300).contains(&response.status) {
+                let message = String::from_utf8_lossy(&response.body);
+                return Err(format!(
+                    "LLM chat stream failed with HTTP {}: {message}",
+                    response.status
+                ));
+            }
+            parse_sse_stream(&response.body, &spec.provider)
         }
     }
 }
@@ -538,6 +586,133 @@ async fn perform_http_bytes(spec: HttpRequestSpec) -> Result<HttpResponseData, S
     })
 }
 
+fn parse_sse_stream(body: &[u8], provider: &str) -> Result<Value, String> {
+    let mut text = String::new();
+    let mut tool_calls: Vec<ToolCallAccumulator> = Vec::new();
+    let mut finish_reason: Option<String> = None;
+    let mut usage: Option<serde_json::Value> = None;
+    let mut model: Option<String> = None;
+
+    let text_body = String::from_utf8_lossy(body);
+    for segment in text_body.split("\n\n") {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        for line in segment.lines() {
+            let line = line.trim();
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if data.trim() == "[DONE]" {
+                continue;
+            }
+            let json: serde_json::Value =
+                serde_json::from_str(data).map_err(|error| format!("invalid SSE data: {error}"))?;
+
+            if let Some(m) = json.get("model").and_then(|v| v.as_str()) {
+                model = Some(m.to_owned());
+            }
+
+            if let Some(u) = json.get("usage") {
+                usage = Some(u.clone());
+            }
+
+            let Some(choices) = json.get("choices").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for choice in choices {
+                if let Some(reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {
+                    finish_reason = Some(reason.to_owned());
+                }
+                let Some(delta) = choice.get("delta") else {
+                    continue;
+                };
+                if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+                    text.push_str(content);
+                }
+                let Some(tc) = delta.get("tool_calls").and_then(|v| v.as_array()) else {
+                    continue;
+                };
+                for tc_item in tc {
+                    let index = tc_item.get("index").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
+                    let id = tc_item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let func = tc_item.get("function");
+                    let name = func
+                        .and_then(|f| f.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let arguments = func
+                        .and_then(|f| f.get("arguments"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    while tool_calls.len() <= index {
+                        tool_calls.push(ToolCallAccumulator {
+                            id: String::new(),
+                            name: String::new(),
+                            arguments: String::new(),
+                        });
+                    }
+                    let acc = &mut tool_calls[index];
+                    if !id.is_empty() {
+                        acc.id = id.to_owned();
+                    }
+                    if !name.is_empty() {
+                        acc.name = name.to_owned();
+                    }
+                    acc.arguments.push_str(arguments);
+                }
+            }
+        }
+    }
+
+    let assembled_tool_calls: Vec<Value> = tool_calls
+        .iter()
+        .map(|tc| {
+            Value::map([
+                (Value::symbol(Symbol::intern("id")), Value::string(&tc.id)),
+                (
+                    Value::symbol(Symbol::intern("name")),
+                    Value::string(&tc.name),
+                ),
+                (
+                    Value::symbol(Symbol::intern("arguments")),
+                    Value::string(&tc.arguments),
+                ),
+            ])
+        })
+        .collect();
+
+    let mut result_fields = vec![
+        (Value::symbol(Symbol::intern("text")), Value::string(&text)),
+        (
+            Value::symbol(Symbol::intern("tool_calls")),
+            Value::list(assembled_tool_calls),
+        ),
+        (
+            Value::symbol(Symbol::intern("stop_reason")),
+            Value::string(finish_reason.as_deref().unwrap_or("stop")),
+        ),
+        (
+            Value::symbol(Symbol::intern("model")),
+            Value::string(model.as_deref().unwrap_or("")),
+        ),
+        (
+            Value::symbol(Symbol::intern("provider")),
+            Value::string(provider),
+        ),
+    ];
+
+    if let Some(usage) = usage
+        && let Ok(usage_value) = value_from_json(&usage)
+    {
+        result_fields.push((Value::symbol(Symbol::intern("usage")), usage_value));
+    }
+
+    Ok(Value::map(result_fields))
+}
+
 fn request_body(payload: &Value) -> Result<Vec<u8>, String> {
     if let Some(body) = optional_map_string(payload, "body")? {
         return Ok(body.into_bytes());
@@ -549,7 +724,7 @@ fn request_body(payload: &Value) -> Result<Vec<u8>, String> {
     Ok(Vec::new())
 }
 
-fn openai_chat_completion_json(payload: &Value) -> Result<serde_json::Value, String> {
+fn openai_chat_completion_json(payload: &Value, stream: bool) -> Result<serde_json::Value, String> {
     let model = map_string(payload, "model")?;
     let messages = map_get(payload, "messages").ok_or_else(|| "missing \"messages\"".to_owned())?;
     let mut object = match map_get(payload, "options") {
@@ -561,9 +736,10 @@ fn openai_chat_completion_json(payload: &Value) -> Result<serde_json::Value, Str
     };
     object.insert("model".to_owned(), serde_json::Value::String(model));
     object.insert("messages".to_owned(), json_from_value(&messages)?);
-    object
-        .entry("stream")
-        .or_insert(serde_json::Value::Bool(false));
+    if let Some(tools) = map_get(payload, "tools") {
+        object.insert("tools".to_owned(), json_from_value(&tools)?);
+    }
+    object.insert("stream".to_owned(), serde_json::Value::Bool(stream));
     Ok(serde_json::Value::Object(object))
 }
 
@@ -1181,5 +1357,284 @@ mod tests {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or_default();
         bytes.len() >= header_end + 4 + content_length
+    }
+
+    fn sse_response_data(text: &str) -> Vec<u8> {
+        text.as_bytes().to_vec()
+    }
+
+    #[test]
+    fn parse_sse_stream_assembles_plain_text() {
+        let sse = sse_response_data(concat!(
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}],\"model\":\"test-model\"}\n",
+            "\n",
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n",
+            "\n",
+            "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n",
+            "\n",
+            "data: [DONE]\n",
+        ));
+
+        let result = parse_sse_stream(&sse, "test-provider").unwrap();
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("text"))),
+            Some(Value::string("Hello world"))
+        );
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("stop_reason"))),
+            Some(Value::string("stop"))
+        );
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("model"))),
+            Some(Value::string("test-model"))
+        );
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("provider"))),
+            Some(Value::string("test-provider"))
+        );
+        let tool_calls = result.map_get(&Value::symbol(Symbol::intern("tool_calls")));
+        assert!(tool_calls.is_none_or(|tc| tc == Value::list([])));
+        let usage = result.map_get(&Value::symbol(Symbol::intern("usage")));
+        assert!(usage.is_some());
+    }
+
+    #[test]
+    fn parse_sse_stream_assembles_tool_calls() {
+        let sse = sse_response_data(concat!(
+            "data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read\",\"arguments\":\"\"}}]}}],\"model\":\"test-tools\"}\n",
+            "\n",
+            "data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"function\":{\"name\":\"\",\"arguments\":\"hello\"}}]}}]}\n",
+            "\n",
+            "data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n",
+            "\n",
+            "data: [DONE]\n",
+        ));
+
+        let result = parse_sse_stream(&sse, "test-provider").unwrap();
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("stop_reason"))),
+            Some(Value::string("tool_calls"))
+        );
+        let tool_calls = result
+            .map_get(&Value::symbol(Symbol::intern("tool_calls")))
+            .unwrap();
+        let calls: Vec<Value> = tool_calls.with_list(<[Value]>::to_vec).unwrap_or_default();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].map_get(&Value::symbol(Symbol::intern("id"))),
+            Some(Value::string("call_1"))
+        );
+        assert_eq!(
+            calls[0].map_get(&Value::symbol(Symbol::intern("name"))),
+            Some(Value::string("read"))
+        );
+        assert_eq!(
+            calls[0].map_get(&Value::symbol(Symbol::intern("arguments"))),
+            Some(Value::string("hello"))
+        );
+    }
+
+    #[test]
+    fn parse_sse_stream_handles_empty_response() {
+        let sse = sse_response_data("data: [DONE]\n");
+        let result = parse_sse_stream(&sse, "test-provider").unwrap();
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("text"))),
+            Some(Value::string(""))
+        );
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("stop_reason"))),
+            Some(Value::string("stop"))
+        );
+    }
+
+    #[test]
+    fn parse_sse_stream_rejects_non_json_data() {
+        let sse = sse_response_data(concat!("data: {\"id\":\"ok\"}\n", "\n", "data: not-json\n",));
+        let result = parse_sse_stream(&sse, "test-provider");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_sse_stream_ignores_non_data_lines() {
+        let sse = sse_response_data(concat!(
+            ": comment line\n",
+            "data: {\"id\":\"chatcmpl-3\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}],\"model\":\"skip-comment\"}\n",
+            "\n",
+            "data: [DONE]\n",
+        ));
+        let result = parse_sse_stream(&sse, "test-provider").unwrap();
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("text"))),
+            Some(Value::string("Hi"))
+        );
+    }
+
+    #[test]
+    fn parse_sse_stream_handles_whitespace_between_chunks() {
+        let sse = sse_response_data(concat!(
+            "data: {\"id\":\"chatcmpl-4\",\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n",
+            "\n",
+            "\n",
+            "\n",
+            "data: {\"id\":\"chatcmpl-4\",\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n",
+            "\n",
+            "data: [DONE]\n",
+        ));
+        let result = parse_sse_stream(&sse, "test-provider").unwrap();
+        assert_eq!(
+            result.map_get(&Value::symbol(Symbol::intern("text"))),
+            Some(Value::string("onetwo"))
+        );
+    }
+
+    #[test]
+    fn llm_chat_stream_round_trips_through_external_handler() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            compio::runtime::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request_bytes = Vec::new();
+                loop {
+                    let (result, buffer) = stream.read([0u8; 4096]).await.into();
+                    let count = result.unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    request_bytes.extend_from_slice(&buffer[..count]);
+                    if complete_http_request(&request_bytes) {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request_bytes);
+                assert!(request.contains("\"stream\":true"));
+                assert!(request.contains(r#""model":"test-stream-model""#));
+                let response_body = concat!(
+                    "data: {\"id\":\"mock-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}],\"model\":\"test-stream-model\"}\n",
+                    "\n",
+                    "data: {\"id\":\"mock-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":5}}\n",
+                    "\n",
+                    "data: [DONE]\n",
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len(),
+                );
+                let (result, _) = stream.write_all(response.into_bytes()).await.into();
+                result.unwrap();
+            })
+            .detach();
+
+            let request = ExternalRequest {
+                service: Symbol::intern("openai"),
+                payload: Value::map([
+                    (
+                        Value::symbol(Symbol::intern("base_url")),
+                        Value::string(format!("http://{addr}/api/v1")),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("api_key")),
+                        Value::string("test-key"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("test-stream-model"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("messages")),
+                        Value::list([Value::map([
+                            (
+                                Value::symbol(Symbol::intern("role")),
+                                Value::string("user"),
+                            ),
+                            (
+                                Value::symbol(Symbol::intern("content")),
+                                Value::string("hi"),
+                            ),
+                        ])]),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("options")),
+                        Value::map([(
+                            Value::symbol(Symbol::intern("stream")),
+                            Value::bool(true),
+                        )]),
+                    ),
+                ]),
+                timeout_millis: None,
+            };
+            let response = handle_external_request(request, &ExternalHttpConfig::default()).await;
+            assert_eq!(
+                response.map_get(&Value::symbol(Symbol::intern("text"))),
+                Some(Value::string("hello"))
+            );
+            assert_eq!(
+                response.map_get(&Value::symbol(Symbol::intern("stop_reason"))),
+                Some(Value::string("stop"))
+            );
+            assert!(response
+                .map_get(&Value::symbol(Symbol::intern("usage")))
+                .is_some());
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn llm_chat_stream_with_real_openrouter_api() {
+        let api_key = std::env::var("OPENROUTER_API_KEY").ok();
+        if api_key.is_none() {
+            eprintln!("skipping: OPENROUTER_API_KEY not set");
+            return;
+        }
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let request = ExternalRequest {
+                service: Symbol::intern("openai"),
+                payload: Value::map([
+                    (
+                        Value::symbol(Symbol::intern("model")),
+                        Value::string("deepseek/deepseek-chat-v3.1"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("messages")),
+                        Value::list([Value::map([
+                            (Value::symbol(Symbol::intern("role")), Value::string("user")),
+                            (
+                                Value::symbol(Symbol::intern("content")),
+                                Value::string("Say hello in exactly one word."),
+                            ),
+                        ])]),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("options")),
+                        Value::map([
+                            (Value::symbol(Symbol::intern("stream")), Value::bool(true)),
+                            (
+                                Value::symbol(Symbol::intern("max_tokens")),
+                                Value::int(20).unwrap(),
+                            ),
+                        ]),
+                    ),
+                ]),
+                timeout_millis: Some(30_000),
+            };
+            let response = handle_external_request(request, &ExternalHttpConfig::default()).await;
+            let text = response
+                .map_get(&Value::symbol(Symbol::intern("text")))
+                .and_then(|v| v.with_str(str::to_owned));
+            assert!(
+                text.is_some_and(|t| !t.is_empty()),
+                "expected non-empty text, got: {response:?}"
+            );
+            assert_eq!(
+                response.map_get(&Value::symbol(Symbol::intern("provider"))),
+                Some(Value::string("openrouter"))
+            );
+            assert!(
+                response
+                    .map_get(&Value::symbol(Symbol::intern("usage")))
+                    .is_some()
+            );
+        });
     }
 }

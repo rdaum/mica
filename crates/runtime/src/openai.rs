@@ -32,6 +32,19 @@ pub fn host_request_functions() -> Vec<(String, HostRequestFunction)> {
                     Symbol::intern("messages"),
                     Symbol::intern("options"),
                 ],
+                timeout: timeout.clone(),
+            },
+        ),
+        (
+            "llm_chat_stream".to_owned(),
+            HostRequestFunction {
+                service: Symbol::intern("openai"),
+                payload_fields: vec![
+                    Symbol::intern("model"),
+                    Symbol::intern("messages"),
+                    Symbol::intern("options"),
+                    Symbol::intern("tools"),
+                ],
                 timeout,
             },
         ),
@@ -45,12 +58,15 @@ mod tests {
     #[test]
     fn registers_openai_chat_completion_host_requests() {
         let functions = host_request_functions();
-        assert_eq!(functions.len(), 2);
+        assert_eq!(functions.len(), 3);
         assert_eq!(functions[0].0, "openai_chat_completion");
         assert_eq!(functions[0].1.service.name(), Some("openai"));
         assert_eq!(functions[0].1.payload_fields[0].name(), Some("model"));
         assert_eq!(functions[0].1.payload_fields[1].name(), Some("messages"));
         assert_eq!(functions[1].0, "openai_chat_completion_with_options");
         assert_eq!(functions[1].1.payload_fields[2].name(), Some("options"));
+        assert_eq!(functions[2].0, "llm_chat_stream");
+        assert_eq!(functions[2].1.service.name(), Some("openai"));
+        assert_eq!(functions[2].1.payload_fields[3].name(), Some("tools"));
     }
 }

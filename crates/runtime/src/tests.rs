@@ -646,6 +646,73 @@ fn runner_openai_filein_installs_chat_helpers() {
 }
 
 #[test]
+fn runner_llm_filein_installs_chat_helpers() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/llm.mica"))
+        .unwrap();
+
+    assert!(matches!(
+        runner
+            .run_source("return llm/user_message(\"hello\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+        if value
+                .map_get(&Value::symbol(Symbol::intern("role")))
+                == Some(Value::string("user"))
+                && value
+                    .map_get(&Value::symbol(Symbol::intern("content")))
+                    == Some(Value::string("hello"))
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return llm/system_message(\"be helpful\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+        if value
+                .map_get(&Value::symbol(Symbol::intern("role")))
+                == Some(Value::string("system"))
+                && value
+                    .map_get(&Value::symbol(Symbol::intern("content")))
+                    == Some(Value::string("be helpful"))
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return llm/tool_message(\"call_1\", \"result\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+        if value
+                .map_get(&Value::symbol(Symbol::intern("role")))
+                == Some(Value::string("tool"))
+                && value
+                    .map_get(&Value::symbol(Symbol::intern("tool_call_id")))
+                    == Some(Value::string("call_1"))
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return map_pairs({:a -> 1, :b -> 2})")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+        if value
+                .with_list(|items| {
+                    items.len() == 2
+                        && items.iter().all(|pair| pair.with_list(|pair| {
+                            pair.len() == 2
+                                && (pair[0] == Value::symbol(Symbol::intern("a"))
+                                    && pair[1] == Value::int(1).unwrap()
+                                    || pair[0] == Value::symbol(Symbol::intern("b"))
+                                        && pair[1] == Value::int(2).unwrap())
+                        }).unwrap_or(false))
+                })
+                .unwrap_or(false)
+    ));
+}
+
+#[test]
 fn runner_event_substitution_filein_renders_per_viewer() {
     let mut runner = SourceRunner::new_empty();
     runner
