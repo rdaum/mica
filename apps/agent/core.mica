@@ -38,6 +38,7 @@ make_functional_relation(:WorkspaceRevision, 2, [0])
 make_relation(:Agent, 1)
 make_functional_relation(:AgentWorkspace, 2, [0])
 make_functional_relation(:AgentModel, 2, [0])
+make_functional_relation(:AgentMaxToolRounds, 2, [0])
 
 make_relation(:Transcript, 1)
 make_functional_relation(:TranscriptAgent, 2, [0])
@@ -80,6 +81,7 @@ assert Delegates(#target/task, #InspectorTarget, 0)
 assert Agent(#agent/default)
 assert Description(#agent/default, "default")
 assert AgentModel(#agent/default, "deepseek/deepseek-chat-v3.1:free")
+assert AgentMaxToolRounds(#agent/default, 4)
 assert Delegates(#agent/default, #agent, 0)
 assert Delegates(#operator, #agent, 0)
 
@@ -174,13 +176,27 @@ verb agent/append_message(agent @ #agent, role @ #string, content @ #string)
     end
   end
 
-  let message = frob(#message, [transcript, seq])
+  let delegate = message/role_delegate(role)
+  let message = frob(delegate, [transcript, seq])
   assert Message(message)
   assert MessageTranscript(message, transcript)
   assert MessageSeq(message, seq)
   assert MessageRole(message, role)
   assert MessageContent(message, content)
   return message
+end
+
+verb message/role_delegate(role @ #string)
+  if role == "user"
+    return #event/user_message
+  elseif role == "assistant"
+    return #event/assistant_message
+  elseif role == "tool"
+    return #event/tool_message
+  elseif role == "system"
+    return #event/system_message
+  end
+  return #message
 end
 
 verb agent/messages(transcript)
@@ -247,28 +263,6 @@ end
 
 verb agent/system_prompt(agent @ #agent)
   return "You are a helpful coding assistant. Be concise and accurate. Use markdown for code."
-end
-
-verb agent/llm_messages(transcript)
-  let system = agent/system_prompt(#agent/default)
-  let messages = [llm/system_message(system)]
-
-  for message in agent/messages_ordered(transcript)
-    let role = message.messageRole
-    let content = message.messageContent
-    if content == nothing
-      content = ""
-    end
-    if role == "user"
-      messages = [@messages, llm/user_message(content)]
-    elseif role == "assistant"
-      messages = [@messages, llm/assistant_message(content)]
-    elseif role == "system"
-      messages = [@messages, llm/system_message(content)]
-    end
-  end
-
-  return messages
 end
 
 verb transcript/empty_prompt(transcript)

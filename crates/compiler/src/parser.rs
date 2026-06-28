@@ -1289,6 +1289,13 @@ mod tests {
     }
 
     #[test]
+    fn parses_empty_brace_map() {
+        let parse = parse("let empty = {}");
+        assert_eq!(parse.errors, vec![]);
+        assert!(contains(&parse.root, SyntaxKind::MapExpr));
+    }
+
+    #[test]
     fn parses_underscore_as_range_endpoint_hole() {
         let parse = parse("items[2.._]");
         assert_eq!(parse.errors, vec![]);

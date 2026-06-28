@@ -454,6 +454,58 @@ input {
 .message-seq {
   display: none;
 }
+.assistant-with-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tool-call-block,
+.tool-result-block {
+  border: 1px solid #39383d;
+  border-radius: 6px;
+  background: #11171a99;
+  padding: 6px 10px;
+  margin: 4px 0;
+}
+.tool-call-block > summary,
+.tool-result-block > summary {
+  cursor: pointer;
+  color: #91d8c7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  list-style: none;
+}
+.tool-call-block > summary::-webkit-details-marker,
+.tool-result-block > summary::-webkit-details-marker {
+  display: none;
+}
+.tool-call-block > summary::before {
+  content: "▸ ";
+}
+.tool-result-block > summary::before {
+  content: "▾ ";
+}
+details[open].tool-call-block > summary::before {
+  content: "▾ ";
+}
+details:not([open]).tool-result-block > summary::before {
+  content: "▸ ";
+}
+.tool-call-arguments,
+.tool-result-content {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: #0a0d10;
+  border: 1px solid #2a2a30;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #c9c5bd;
+  max-height: 320px;
+  overflow: auto;
+}
 .command-deck {
   border-top: 1px solid #39383d;
   padding-top: 12px;

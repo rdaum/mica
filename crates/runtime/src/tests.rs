@@ -6,7 +6,15 @@ use super::{
 use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
 use super::{relation_name_relation, subject_fact_relation};
 use mica_var::{Identity, Symbol, Value};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+
+// Tests that mutate process-global environment variables (MICA_SOURCE_ROOT)
+// must serialize against each other because workspaces.mica reads the value
+// at filein time, and parallel test threads can race on the env var.
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn assert_relation_query_is_true(report: &super::RunReport) {
     let TaskOutcome::Complete { value, .. } = &report.outcome else {
@@ -672,6 +680,7 @@ fn runner_openai_filein_installs_chat_helpers() {
 
 #[test]
 fn runner_agent_core_resolves_default_model_with_env_override() {
+    let _env_guard = env_lock().lock().unwrap();
     let mut runner = SourceRunner::new_empty();
     runner
         .run_filein(include_str!("../../../apps/shared/llm.mica"))
@@ -721,7 +730,8 @@ fn runner_agent_core_resolves_default_model_with_env_override() {
 }
 
 #[test]
-fn runner_agent_llm_messages_maps_transcript_to_llm_format() {
+fn runner_agent_llm_messages_with_tools_maps_transcript_with_tool_calls() {
+    let _env_guard = env_lock().lock().unwrap();
     let mut runner = SourceRunner::new_empty();
     runner
         .run_filein(include_str!("../../../apps/shared/llm.mica"))
@@ -729,24 +739,57 @@ fn runner_agent_llm_messages_maps_transcript_to_llm_format() {
     runner
         .run_filein(include_str!("../../../apps/agent/core.mica"))
         .unwrap();
+    let prior_root = std::env::var_os("MICA_SOURCE_ROOT");
+    unsafe {
+        std::env::set_var("MICA_SOURCE_ROOT", "/tmp/agent-llm-messages-test");
+    }
+    runner
+        .run_filein(include_str!("../../../apps/agent/workspaces.mica"))
+        .unwrap();
+    match prior_root {
+        Some(value) => unsafe { std::env::set_var("MICA_SOURCE_ROOT", value) },
+        None => unsafe { std::env::remove_var("MICA_SOURCE_ROOT") },
+    }
+    runner
+        .run_filein(include_str!("../../../apps/agent/tools.mica"))
+        .unwrap();
 
     let result = runner
         .run_source(
             "let ws = frob(#workspace, [\"test-workspace\"])\n\
              let t = agent/ensure_transcript(#agent/default, ws)\n\
-             let m1 = frob(#message, [t, 0])\n\
+             let m1 = frob(#event/user_message, [t, 0])\n\
              assert Message(m1)\n\
              assert MessageTranscript(m1, t)\n\
              assert MessageSeq(m1, 0)\n\
              assert MessageRole(m1, \"user\")\n\
              assert MessageContent(m1, \"hello there\")\n\
-             let m2 = frob(#message, [t, 1])\n\
+             let m2 = frob(#event/assistant_message, [t, 1])\n\
              assert Message(m2)\n\
              assert MessageTranscript(m2, t)\n\
              assert MessageSeq(m2, 1)\n\
              assert MessageRole(m2, \"assistant\")\n\
-             assert MessageContent(m2, \"hi back\")\n\
-             return agent/llm_messages(t)",
+             assert MessageContent(m2, \"\")\n\
+             let call = frob(#tool_call, [m2, \"call_1\"])\n\
+             assert ToolCall(call)\n\
+             assert ToolCallMessage(call, m2)\n\
+             assert ToolCallId(call, \"call_1\")\n\
+             assert ToolCallName(call, \"read\")\n\
+             assert ToolCallArguments(call, \"{\\\"path\\\":\\\"foo\\\"}\")\n\
+             assert ToolCallStatus(call, \"complete\")\n\
+             let m3 = frob(#event/tool_message, [t, 2])\n\
+             assert Message(m3)\n\
+             assert MessageTranscript(m3, t)\n\
+             assert MessageSeq(m3, 2)\n\
+             assert MessageRole(m3, \"tool\")\n\
+             assert MessageContent(m3, \"{:tool_call_id -> \\\"call_1\\\", :content -> \\\"file contents\\\"}\")\n\
+             let m4 = frob(#event/assistant_message, [t, 3])\n\
+             assert Message(m4)\n\
+             assert MessageTranscript(m4, t)\n\
+             assert MessageSeq(m4, 3)\n\
+             assert MessageRole(m4, \"assistant\")\n\
+             assert MessageContent(m4, \"done\")\n\
+             return agent/llm_messages_with_tools(t)",
         )
         .unwrap();
     let value = match result.outcome {
@@ -755,27 +798,85 @@ fn runner_agent_llm_messages_maps_transcript_to_llm_format() {
     };
     let items = value
         .with_list(|items| items.to_vec())
-        .expect("llm_messages should return a list");
-    assert_eq!(items.len(), 3, "system + user + assistant");
+        .expect("llm_messages_with_tools should return a list");
+    assert_eq!(
+        items.len(),
+        5,
+        "system + user + assistant+tool_calls + tool + assistant"
+    );
     let system = items[0]
         .map_get(&Value::symbol(Symbol::intern("role")))
-        .and_then(|v| v.with_str(str::to_owned).map(Some).unwrap_or(None))
+        .and_then(|v| v.with_str(str::to_owned))
         .unwrap_or_default();
     assert_eq!(system, "system");
-    let user_content = items[1]
-        .map_get(&Value::symbol(Symbol::intern("content")))
-        .and_then(|v| v.with_str(str::to_owned).map(Some).unwrap_or(None))
-        .unwrap_or_default();
-    assert_eq!(user_content, "hello there");
-    let assistant_content = items[2]
-        .map_get(&Value::symbol(Symbol::intern("content")))
-        .and_then(|v| v.with_str(str::to_owned).map(Some).unwrap_or(None))
-        .unwrap_or_default();
-    assert_eq!(assistant_content, "hi back");
+    let assistant_with_calls = &items[2];
+    let calls = assistant_with_calls
+        .map_get(&Value::symbol(Symbol::intern("tool_calls")))
+        .and_then(|v| v.with_list(<[Value]>::to_vec))
+        .expect("assistant with tool calls should have :tool_calls");
+    assert_eq!(calls.len(), 1);
+    let tool_message = &items[3];
+    assert_eq!(
+        tool_message
+            .map_get(&Value::symbol(Symbol::intern("role")))
+            .and_then(|v| v.with_str(str::to_owned))
+            .unwrap_or_default(),
+        "tool"
+    );
+    assert_eq!(
+        tool_message
+            .map_get(&Value::symbol(Symbol::intern("tool_call_id")))
+            .and_then(|v| v.with_str(str::to_owned))
+            .unwrap_or_default(),
+        "call_1"
+    );
+    assert_eq!(
+        tool_message
+            .map_get(&Value::symbol(Symbol::intern("content")))
+            .and_then(|v| v.with_str(str::to_owned))
+            .unwrap_or_default(),
+        "file contents"
+    );
+}
+
+#[test]
+fn runner_agent_max_tool_rounds_reads_agent_relation() {
+    let _env_guard = env_lock().lock().unwrap();
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/agent/core.mica"))
+        .unwrap();
+    let prior_root = std::env::var_os("MICA_SOURCE_ROOT");
+    unsafe {
+        std::env::set_var("MICA_SOURCE_ROOT", "/tmp/agent-max-rounds-test");
+    }
+    runner
+        .run_filein(include_str!("../../../apps/agent/workspaces.mica"))
+        .unwrap();
+    match prior_root {
+        Some(value) => unsafe { std::env::set_var("MICA_SOURCE_ROOT", value) },
+        None => unsafe { std::env::remove_var("MICA_SOURCE_ROOT") },
+    }
+    runner
+        .run_filein(include_str!("../../../apps/agent/tools.mica"))
+        .unwrap();
+
+    let result = runner
+        .run_source("return agent/max_tool_rounds(#agent/default)")
+        .unwrap();
+    let value = match result.outcome {
+        TaskOutcome::Complete { value, .. } => value,
+        other => panic!("expected complete, got {other:?}"),
+    };
+    let rounds = value
+        .as_int()
+        .expect("max_tool_rounds should return an int");
+    assert_eq!(rounds, 4);
 }
 
 #[test]
 fn runner_agent_workspaces_binds_default_agent_to_source_root() {
+    let _env_guard = env_lock().lock().unwrap();
     let mut runner = SourceRunner::new_empty();
     runner
         .run_filein(include_str!("../../../apps/agent/core.mica"))

@@ -2,9 +2,10 @@
 //
 // Messages are durable relation facts. This file renders them into DOM nodes
 // the same way ui-narrative.mica renders MUD events: a bounded recent window
-// with an opt-in "load older" sync event. For now, message bodies are plain
-// text; richer rendering (tool calls, source fragments, diffs) will layer in
-// through per-role body verbs dispatched on the message's event delegate.
+// with an opt-in "load older" sync event. Per-role body rendering dispatches
+// on the message's event delegate (#event/user_message, #event/assistant_message,
+// #event/tool_message, #event/system_message) so tool messages and tool-call
+// attachments get structured DOM instead of raw text dumps.
 
 verb ui/message_role_label(role @ #string)
   return message/role_label(role)
@@ -27,11 +28,95 @@ verb ui/message_role_icon(role @ #string)
   return dom <span class="message-glyph system-glyph" aria-hidden="true">!</span>
 end
 
+verb ui/tool_status_glyph(status @ #string)
+  if status == "complete"
+    return "OK"
+  elseif status == "error"
+    return "ERR"
+  elseif status == "executing"
+    return "..."
+  elseif status == "pending"
+    return "..."
+  end
+  return "?"
+end
+
+verb ui/tool_call_node(call)
+  let name = "unknown"
+  let arguments = ""
+  let status = ""
+  if call.toolCallName != nothing
+    name = call.toolCallName
+  end
+  if call.toolCallArguments != nothing
+    arguments = call.toolCallArguments
+  end
+  if call.toolCallStatus != nothing
+    status = call.toolCallStatus
+  end
+  let glyph = ui/tool_status_glyph(status)
+  let label = string_concat("[", glyph, "] ", name)
+  if status != ""
+    label = string_concat(label, " (", status, ")")
+  end
+  return dom <details class="tool-call-block" data-sync-key={to_literal(call)}>
+    <summary>{label}</summary>
+    <pre class="tool-call-arguments">{arguments}</pre>
+  </details>
+end
+
+verb ui/tool_message_body_node(message)
+  let content = message.messageContent
+  let parsed = from_literal(content)
+  let tool_call_id = "unknown"
+  let result_content = content
+  if parsed != nothing
+    let maybe_id = parsed[:tool_call_id]
+    if maybe_id != nothing
+      tool_call_id = maybe_id
+    end
+    let maybe_content = parsed[:content]
+    if maybe_content != nothing
+      result_content = maybe_content
+    end
+  end
+  let header = string_concat("<- result (", tool_call_id, ")")
+  return dom <details class="tool-result-block" open>
+    <summary>{header}</summary>
+    <pre class="tool-result-content">{result_content}</pre>
+  </details>
+end
+
+verb ui/assistant_body_with_tool_calls(content, tool_calls)
+  let blocks = []
+  if content != ""
+    blocks = [@blocks, dom <div class="message-content">{content}</div>]
+  end
+  for call in tool_calls
+    blocks = [@blocks, ui/tool_call_node(call)]
+  end
+  return dom <div class="assistant-with-tools">{@blocks}</div>
+end
+
 verb ui/message_body_node(message)
+  let delegate = frob_delegate(message)
+  if delegate == #event/tool_message
+    return ui/tool_message_body_node(message)
+  end
+
   let content = message.messageContent
   if content == nothing
     content = ""
   end
+
+  let tool_calls = []
+  for found in ToolCallMessage(?call, message)
+    tool_calls = [@tool_calls, found[:call]]
+  end
+  if tool_calls != []
+    return ui/assistant_body_with_tool_calls(content, tool_calls)
+  end
+
   return dom <span class="message-content">{content}</span>
 end
 

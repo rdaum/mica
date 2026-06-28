@@ -112,6 +112,7 @@ grant role #operator
     :Agent
     :AgentWorkspace
     :AgentModel
+    :AgentMaxToolRounds
     :Workspace
     :WorkspaceRoot
     :WorkspaceProvider
@@ -124,6 +125,38 @@ grant role #operator
     :MessageSeq
     :MessageRole
     :MessageContent
+    :Tool
+    :ToolName
+    :ToolDescription
+    :ToolParameters
+    :ToolEnabled
+    :ToolCall
+    :ToolCallMessage
+    :ToolCallId
+    :ToolCallName
+    :ToolCallArguments
+    :ToolCallStatus
+    :ToolResult
+    :ToolResultCall
+    :ToolResultContent
+    :ToolResultIsError
+    :ToolResultDetails
+    :source/Repository
+    :source/RepositoryName
+    :source/RepositoryRoot
+    :source/RepositoryProvider
+    :source/Revision
+    :source/RevisionOf
+    :source/RevisionKind
+    :source/RevisionLabel
+    :source/SourceFile
+    :source/FileRevision
+    :source/FilePath
+    :source/FileText
+    :source/FileLines
+    :source/FileLineCount
+    :source/RepositoryEntry
+    :source/TextSearch
     :InspectorTarget
     :InspectorKind
     :InspectorLabel
@@ -150,6 +183,17 @@ grant role #operator
     :MessageSeq
     :MessageRole
     :MessageContent
+    :ToolCall
+    :ToolCallMessage
+    :ToolCallId
+    :ToolCallName
+    :ToolCallArguments
+    :ToolCallStatus
+    :ToolResult
+    :ToolResultCall
+    :ToolResultContent
+    :ToolResultIsError
+    :ToolResultDetails
   invoke:
     :sync_event
     :sync_snapshot
@@ -192,6 +236,10 @@ grant role #operator
     :ui/message_role_icon
     :ui/message_body_node
     :ui/message_node
+    :ui/tool_status_glyph
+    :ui/tool_call_node
+    :ui/tool_message_body_node
+    :ui/assistant_body_with_tool_calls
     :ui/command_bar_node
     :ui/command_chips_node
     :ui/sync_action_source
@@ -209,9 +257,27 @@ grant role #operator
     :agent/messages_ordered
     :agent/resolve_model
     :agent/system_prompt
-    :agent/llm_messages
+    :agent/max_tool_rounds
+    :agent/llm_messages_with_tools
+    :agent/build_tools
+    :agent/tool_calls
+    :agent/execute_tool_calls
+    :agent/chat_with_tools
+    :tool/read
+    :tool/grep
+    :tool/find
+    :tool/ls
+    :tool/invoke
+    :tool/source_repository
+    :tool/source_revision
+    :tool/workspace_bound
+    :tool/args_string
+    :tool/args_int
+    :parse_ordinal
+    :string_contains
     :message/role_label
     :message/class
+    :message/role_delegate
     :transcript/empty_prompt
     :target/kind_label
     :target/empty

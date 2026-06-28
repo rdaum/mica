@@ -378,6 +378,7 @@ fn load_agent_app(runner: &mut SourceRunner) {
         include_str!("../../../apps/shared/llm.mica"),
         include_str!("../../../apps/agent/core.mica"),
         include_str!("../../../apps/agent/workspaces.mica"),
+        include_str!("../../../apps/agent/tools.mica"),
         include_str!("../../../apps/shared/sync-dom.mica"),
         include_str!("../../../apps/agent/ui-session.mica"),
         include_str!("../../../apps/agent/transcript.mica"),

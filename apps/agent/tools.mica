@@ -1,0 +1,386 @@
+// Agent tools: read-only source tools + tool-call execution.
+
+// Tool relations.
+make_identity(:tool)
+make_relation(:Tool, 1)
+make_functional_relation(:ToolName, 2, [0])
+make_functional_relation(:ToolDescription, 2, [0])
+make_functional_relation(:ToolParameters, 2, [0])
+make_relation(:ToolEnabled, 2)
+
+make_identity(:tool_call)
+make_identity(:tool_result)
+make_relation(:ToolCall, 1)
+make_functional_relation(:ToolCallMessage, 2, [0])
+make_functional_relation(:ToolCallId, 2, [0])
+make_functional_relation(:ToolCallName, 2, [0])
+make_functional_relation(:ToolCallArguments, 2, [0])
+make_functional_relation(:ToolCallStatus, 2, [0])
+make_relation(:ToolResult, 1)
+make_functional_relation(:ToolResultCall, 2, [0])
+make_functional_relation(:ToolResultContent, 2, [0])
+make_functional_relation(:ToolResultIsError, 2, [0])
+make_functional_relation(:ToolResultDetails, 2, [0])
+
+// Built-in read-only tools.
+make_identity(:tool/read)
+make_identity(:tool/grep)
+make_identity(:tool/find)
+make_identity(:tool/ls)
+
+assert Tool(#tool/read)
+assert ToolName(#tool/read, "read")
+assert ToolDescription(#tool/read, "Read the full text of a file at a given path.")
+assert ToolParameters(#tool/read, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path relative to the workspace root\"}},\"required\":[\"path\"]}")
+
+assert Tool(#tool/grep)
+assert ToolName(#tool/grep, "grep")
+assert ToolDescription(#tool/grep, "Search file contents for a text pattern.")
+assert ToolParameters(#tool/grep, "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Text pattern to search for\"},\"limit\":{\"type\":\"integer\",\"description\":\"Maximum number of results (default 16)\"}},\"required\":[\"pattern\"]}")
+
+assert Tool(#tool/find)
+assert ToolName(#tool/find, "find")
+assert ToolDescription(#tool/find, "Find files whose paths contain a substring.")
+assert ToolParameters(#tool/find, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Substring to match in the file path\"},\"path\":{\"type\":\"string\",\"description\":\"Directory prefix to restrict the search (default empty)\"}},\"required\":[\"name\"]}")
+
+assert Tool(#tool/ls)
+assert ToolName(#tool/ls, "ls")
+assert ToolDescription(#tool/ls, "List files and directories under a path.")
+assert ToolParameters(#tool/ls, "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Directory path relative to the workspace root (default empty)\"}},\"required\":[]}")
+
+// Enable the default set for the default workspace.
+assert ToolEnabled(#workspace/default, #tool/read)
+assert ToolEnabled(#workspace/default, #tool/grep)
+assert ToolEnabled(#workspace/default, #tool/find)
+assert ToolEnabled(#workspace/default, #tool/ls)
+
+// Helpers
+verb tool/source_repository(workspace)
+  let revision = one WorkspaceRevision(workspace, ?revision)
+  if revision == nothing
+    return nothing
+  end
+  return one source/RevisionOf(revision, ?repository)
+end
+
+verb tool/source_revision(workspace)
+  return one WorkspaceRevision(workspace, ?revision)
+end
+
+verb tool/workspace_bound(workspace)
+  return tool/source_repository(workspace) != nothing
+end
+
+verb tool/args_string(arguments, key)
+  let value = arguments[key]
+  if value == nothing
+    return ""
+  end
+  return trim(to_literal(value))
+end
+
+verb tool/args_int(arguments, key)
+  let value = arguments[key]
+  if value == nothing
+    return 0
+  end
+  let parsed = parse_ordinal(to_literal(value))
+  if parsed == nothing
+    return 0
+  end
+  return parsed
+end
+
+// Individual tools.
+
+verb tool/read(agent @ #agent, arguments @ #map)
+  let workspace = workspace/active(agent)
+  if workspace == nothing || tool/workspace_bound(workspace) == false
+    return {:status -> "error", :error -> "workspace not bound to a source repository", :value -> nothing}
+  end
+  let repository = tool/source_repository(workspace)
+  let revision = tool/source_revision(workspace)
+
+  let path = tool/args_string(arguments, :path)
+  if path == ""
+    return {:status -> "error", :error -> "missing path argument", :value -> nothing}
+  end
+
+  let text = one source/FileText(repository, revision, path, ?text, ?hash)
+  if text == nothing
+    return {:status -> "error", :error -> string_concat("file not found: ", path), :value -> nothing}
+  end
+
+  let line_count = one source/FileLineCount(repository, revision, path, ?line_count)
+  if line_count == nothing
+    line_count = 0
+  end
+
+  return {:status -> "complete", :path -> path, :lines -> line_count, :content -> text, :rendered -> string_concat(path, " (", to_literal(line_count), " lines)\n", text)}
+end
+
+verb tool/grep(agent @ #agent, arguments @ #map)
+  let workspace = workspace/active(agent)
+  if workspace == nothing || tool/workspace_bound(workspace) == false
+    return {:status -> "error", :error -> "workspace not bound to a source repository", :value -> nothing}
+  end
+
+  let pattern = tool/args_string(arguments, :pattern)
+  if pattern == ""
+    return {:status -> "error", :error -> "missing pattern argument", :value -> nothing}
+  end
+
+  let limit = tool/args_int(arguments, :limit)
+  if limit <= 0
+    limit = 16
+  end
+
+  let matches = []
+  let count = 0
+  for found in source/TextSearch(pattern, limit, "all", ?subject, ?score, ?path, ?start_line, ?end_line, ?kind, ?title, ?snippet)
+    matches = [@matches, {:path -> found[:path], :start_line -> found[:start_line], :end_line -> found[:end_line], :snippet -> found[:snippet]}]
+    count = count + 1
+  end
+
+  if count == 0
+    return {:status -> "complete", :pattern -> pattern, :matches -> matches, :rendered -> string_concat("No matches for ", pattern), :value -> matches}
+  end
+
+  let rendered_lines = []
+  for match in matches
+    rendered_lines = [@rendered_lines, string_concat(match[:path], ":", to_literal(match[:start_line]), "\n", match[:snippet])]
+  end
+  return {:status -> "complete", :pattern -> pattern, :matches -> matches, :rendered -> string_join(rendered_lines, "\n\n"), :value -> matches}
+end
+
+verb tool/find(agent @ #agent, arguments @ #map)
+  let workspace = workspace/active(agent)
+  if workspace == nothing || tool/workspace_bound(workspace) == false
+    return {:status -> "error", :error -> "workspace not bound to a source repository", :value -> nothing}
+  end
+  let repository = tool/source_repository(workspace)
+  let revision = tool/source_revision(workspace)
+
+  let name = tool/args_string(arguments, :name)
+  if name == ""
+    return {:status -> "error", :error -> "missing name argument", :value -> nothing}
+  end
+  let path_prefix = tool/args_string(arguments, :path)
+
+  let matches = []
+  let count = 0
+  for entry in source/RepositoryEntry(repository, revision, path_prefix, ?child_path, ?kind, ?entry_name)
+    if string_contains(entry[:child_path], name) || string_contains(entry[:entry_name], name)
+      matches = [@matches, {:path -> entry[:child_path], :kind -> entry[:kind], :name -> entry[:entry_name]}]
+      count = count + 1
+    end
+  end
+
+  if count == 0
+    return {:status -> "complete", :pattern -> name, :matches -> matches, :rendered -> string_concat("No files matching ", name), :value -> matches}
+  end
+
+  let rendered_lines = []
+  for match in matches
+    rendered_lines = [@rendered_lines, string_concat(match[:path], " (", match[:kind], ")")]
+  end
+  return {:status -> "complete", :pattern -> name, :matches -> matches, :rendered -> string_join(rendered_lines, "\n"), :value -> matches}
+end
+
+verb tool/ls(agent @ #agent, arguments @ #map)
+  let workspace = workspace/active(agent)
+  if workspace == nothing || tool/workspace_bound(workspace) == false
+    return {:status -> "error", :error -> "workspace not bound to a source repository", :value -> nothing}
+  end
+  let repository = tool/source_repository(workspace)
+  let revision = tool/source_revision(workspace)
+
+  let path = tool/args_string(arguments, :path)
+
+  let entries = []
+  let count = 0
+  for entry in source/RepositoryEntry(repository, revision, path, ?child_path, ?kind, ?entry_name)
+    if entry[:entry_name] != "." && entry[:entry_name] != ".."
+      entries = [@entries, {:path -> entry[:child_path], :kind -> entry[:kind], :name -> entry[:entry_name]}]
+      count = count + 1
+    end
+  end
+
+  if count == 0
+    return {:status -> "complete", :path -> path, :entries -> entries, :rendered -> "No entries.", :value -> entries}
+  end
+
+  let rendered_lines = []
+  for entry in entries
+    let prefix = "?"
+    if entry[:kind] == "directory"
+      prefix = "dir"
+    elseif entry[:kind] == "file"
+      prefix = "file"
+    end
+    rendered_lines = [@rendered_lines, string_concat(prefix, "  ", entry[:path])]
+  end
+  return {:status -> "complete", :path -> path, :entries -> entries, :rendered -> string_join(rendered_lines, "\n"), :value -> entries}
+end
+
+verb tool/invoke(agent @ #agent, tool_name @ #string, arguments @ #map)
+  if tool_name == "read"
+    return tool/read(agent, arguments)
+  elseif tool_name == "grep"
+    return tool/grep(agent, arguments)
+  elseif tool_name == "find"
+    return tool/find(agent, arguments)
+  elseif tool_name == "ls"
+    return tool/ls(agent, arguments)
+  else
+    return {:status -> "error", :error -> string_concat("unknown tool: ", tool_name), :value -> nothing}
+  end
+end
+
+// LLM-facing helpers.
+
+verb agent/build_tools(agent @ #agent)
+  let workspace = workspace/active(agent)
+  if workspace == nothing
+    return []
+  end
+
+  let tools = []
+  for found in ToolEnabled(workspace, ?tool)
+    let tool = found[:tool]
+    let name = one ToolName(tool, ?name)
+    let description = one ToolDescription(tool, ?description)
+    let parameters = one ToolParameters(tool, ?parameters)
+    if name != nothing && description != nothing && parameters != nothing
+      let spec = {:type -> "function", :function -> {:name -> name, :description -> description, :parameters -> from_literal(parameters)}}
+      tools = [@tools, spec]
+    end
+  end
+  return tools
+end
+
+verb agent/tool_calls(response @ #map)
+  let calls = response[:tool_calls]
+  if calls == nothing
+    return []
+  end
+  return calls
+end
+
+// Stage 3 placeholder: cap on tool-call rounds per user message. Stage 4
+// (steering/follow-up) replaces this with a needs-follow-up loop driven by
+// session/SteeringQueue and session/FollowUpQueue.
+verb agent/max_tool_rounds(agent @ #agent)
+  let n = agent.agentMaxToolRounds
+  if n == nothing
+    return 4
+  end
+  return n
+end
+
+verb agent/execute_tool_calls(agent @ #agent, assistant_message, calls)
+  let executed = []
+  for call in calls
+    let call_id = call[:id]
+    let tool_name = call[:name]
+    let args_text = call[:arguments]
+    if call_id == nothing || tool_name == nothing || args_text == nothing
+      executed = [@executed, {:tool_call_id -> call_id, :content -> "(malformed tool call)"}]
+    else
+      let args = from_literal(args_text)
+      if args == nothing
+        args = {}
+      end
+
+      let tool_call = frob(#tool_call, {:assistant_message -> assistant_message, :call_id -> call_id})
+      assert ToolCall(tool_call)
+      assert ToolCallMessage(tool_call, assistant_message)
+      assert ToolCallId(tool_call, call_id)
+      assert ToolCallName(tool_call, tool_name)
+      assert ToolCallArguments(tool_call, args_text)
+      tool_call.toolCallStatus = "pending"
+      ui/bump_revision(endpoint())
+
+      let result = tool/invoke(agent, tool_name, args)
+      tool_call.toolCallStatus = result[:status]
+
+      let content = result[:rendered]
+      if content == nothing
+        content = result[:error]
+      end
+      if content == nothing
+        content = ""
+      end
+
+      let tool_result = frob(#tool_result, {:tool_call -> tool_call})
+      assert ToolResult(tool_result)
+      assert ToolResultCall(tool_result, tool_call)
+      assert ToolResultContent(tool_result, content)
+      assert ToolResultIsError(tool_result, result[:status] == "error")
+      assert ToolResultDetails(tool_result, to_literal(result))
+
+      executed = [@executed, {:tool_call_id -> call_id, :content -> content}]
+      ui/bump_revision(endpoint())
+    end
+  end
+  return executed
+end
+
+verb agent/llm_messages_with_tools(transcript)
+  // TODO(Stage 7): assemble per-agent/per-workspace system prompt from
+  // Skill/ContextFile relations instead of using the constant default.
+  let system = agent/system_prompt(#agent/default)
+  let messages = [llm/system_message(system)]
+
+  for message in agent/messages_ordered(transcript)
+    let role = message.messageRole
+    let content = message.messageContent
+    if content == nothing
+      content = ""
+    end
+    if role == "user"
+      messages = [@messages, llm/user_message(content)]
+    elseif role == "assistant"
+      let calls = []
+      for found in ToolCallMessage(?call, message)
+        let call_id = one ToolCallId(found[:call], ?id)
+        let call_name = one ToolCallName(found[:call], ?name)
+        let call_args = one ToolCallArguments(found[:call], ?args)
+        if call_id != nothing && call_name != nothing && call_args != nothing
+          calls = [@calls, {:id -> call_id, :type -> "function", :function -> {:name -> call_name, :arguments -> call_args}}]
+        end
+      end
+      if calls == []
+        messages = [@messages, llm/assistant_message(content)]
+      else
+        messages = [@messages, {:role -> "assistant", :content -> content, :tool_calls -> calls}]
+      end
+    elseif role == "tool"
+      let parsed = from_literal(content)
+      if parsed == nothing
+        messages = [@messages, llm/tool_message("unknown", string_concat("(malformed tool result: ", content, ")"))]
+      else
+        let tool_call_id = parsed[:tool_call_id]
+        if tool_call_id == nothing
+          tool_call_id = "unknown"
+        end
+        let tool_content = parsed[:content]
+        if tool_content == nothing
+          tool_content = "(missing content)"
+        end
+        messages = [@messages, llm/tool_message(tool_call_id, tool_content)]
+      end
+    elseif role == "system"
+      messages = [@messages, llm/system_message(content)]
+    end
+  end
+
+  return messages
+end
+
+verb agent/chat_with_tools(agent @ #agent, transcript)
+  let model = agent/resolve_model(agent)
+  let messages = agent/llm_messages_with_tools(transcript)
+  let tools = agent/build_tools(agent)
+  return llm/chat(model, messages, {:stream -> true}, tools)
+end

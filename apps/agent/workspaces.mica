@@ -4,11 +4,39 @@
 // reads it to scope file access; here we mirror the first root as the default
 // agent workspace so chat transcripts have a workspace context. Facts asserted
 // in this filein run with implicit filein authority.
+//
+// Note: only the first entry of MICA_SOURCE_ROOTS becomes a workspace today.
+// Multi-root binding (one Workspace + source/Repository per root) is left for
+// a future increment; the UI already iterates all Workspace facts so it will
+// pick up additional workspaces automatically once they exist.
+
+// Source-provider relations needed by read-only tools.
+make_identity(:source/repo_default)
+make_identity(:source/rev_worktree)
+
+make_relation(:source/Repository, 1)
+make_functional_relation(:source/RepositoryName, 2, [0])
+make_functional_relation(:source/RepositoryRoot, 2, [0])
+make_functional_relation(:source/RepositoryProvider, 2, [0])
+
+make_relation(:source/Revision, 1)
+make_functional_relation(:source/RevisionOf, 2, [0])
+make_functional_relation(:source/RevisionKind, 2, [0])
+make_functional_relation(:source/RevisionLabel, 2, [0])
+
+make_relation(:source/SourceFile, 1)
+make_functional_relation(:source/FileRevision, 2, [0])
+make_functional_relation(:source/FilePath, 2, [0])
+make_relation(:source/FileText, 5)
+make_relation(:source/FileLines, 7)
+make_relation(:source/FileLineCount, 4)
+make_relation(:source/RepositoryEntry, 6)
+make_relation(:source/TextSearch, 11)
 
 make_identity(:workspace/default)
 assert Workspace(#workspace/default)
 
-verb workspaces/first_source_root()
+verb workspaces/default_source_root()
   let roots = os_getenv("MICA_SOURCE_ROOTS")
   if roots == nothing
     roots = os_getenv("MICA_SOURCE_ROOT")
@@ -37,6 +65,17 @@ verb workspaces/first_source_root()
   return root
 end
 
-assert WorkspaceRoot(#workspace/default, workspaces/first_source_root())
+assert source/Repository(#source/repo_default)
+assert source/RepositoryName(#source/repo_default, "default")
+assert source/RepositoryRoot(#source/repo_default, workspaces/default_source_root())
+assert source/RepositoryProvider(#source/repo_default, "local-source")
+
+assert source/Revision(#source/rev_worktree)
+assert source/RevisionOf(#source/rev_worktree, #source/repo_default)
+assert source/RevisionKind(#source/rev_worktree, "worktree")
+assert source/RevisionLabel(#source/rev_worktree, "local worktree")
+
+assert WorkspaceRoot(#workspace/default, workspaces/default_source_root())
 assert WorkspaceProvider(#workspace/default, "local-source")
+assert WorkspaceRevision(#workspace/default, #source/rev_worktree)
 assert AgentWorkspace(#agent/default, #workspace/default)
