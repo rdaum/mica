@@ -1,0 +1,219 @@
+// Domain core for the agent workspace app.
+//
+// The agent app is a relation-first LLM coding agent shell. Workspaces bind to
+// on-disk repositories, agents carry transcript state, and inspector targets
+// point at file/symbol/diff/task objects. This file defines the durable
+// identities and relations; session state lives in ui-session.mica.
+
+make_identity(:workspace)
+make_identity(:agent)
+make_identity(:operator)
+make_identity(:transcript)
+make_identity(:message)
+make_identity(:event/message)
+make_identity(:InspectorTarget)
+make_identity(:event/user_message)
+make_identity(:event/assistant_message)
+make_identity(:event/tool_message)
+make_identity(:event/system_message)
+
+make_identity(:target/file)
+make_identity(:target/symbol)
+make_identity(:target/diff)
+make_identity(:target/task)
+
+make_identity(:agent/default)
+
+make_relation(:Delegates, 3)
+
+make_functional_relation(:Name, 2, [0])
+make_functional_relation(:Description, 2, [0])
+make_relation(:ProperNoun, 1)
+
+make_relation(:Workspace, 1)
+make_functional_relation(:WorkspaceRoot, 2, [0])
+make_functional_relation(:WorkspaceProvider, 2, [0])
+make_functional_relation(:WorkspaceRevision, 2, [0])
+
+make_relation(:Agent, 1)
+make_functional_relation(:AgentWorkspace, 2, [0])
+make_functional_relation(:AgentModel, 2, [0])
+
+make_relation(:Transcript, 1)
+make_functional_relation(:TranscriptAgent, 2, [0])
+make_functional_relation(:TranscriptWorkspace, 2, [0])
+make_functional_relation(:TranscriptCreatedAt, 2, [0])
+
+make_relation(:Message, 1)
+make_functional_relation(:MessageTranscript, 2, [0])
+make_functional_relation(:MessageSeq, 2, [0])
+make_functional_relation(:MessageRole, 2, [0])
+make_functional_relation(:MessageContent, 2, [0])
+make_functional_relation(:MessageCreatedAt, 2, [0])
+make_functional_relation(:MessageSource, 2, [0])
+
+make_relation(:InspectorTarget, 1)
+make_functional_relation(:InspectorKind, 2, [0])
+make_functional_relation(:InspectorLabel, 2, [0])
+make_functional_relation(:InspectorLocation, 2, [0])
+
+make_relation(:Builder, 1)
+
+make_relation(:CanRead, 2)
+make_relation(:CanWrite, 2)
+make_relation(:CanInvoke, 2)
+make_relation(:CanEffect, 1)
+make_relation(:RoleCanRead, 2)
+make_relation(:RoleCanWrite, 2)
+make_relation(:RoleCanInvoke, 2)
+make_relation(:RoleCanEffect, 1)
+
+assert Delegates(#event/user_message, #event/message, 0)
+assert Delegates(#event/assistant_message, #event/message, 0)
+assert Delegates(#event/tool_message, #event/message, 0)
+assert Delegates(#event/system_message, #event/message, 0)
+assert Delegates(#target/file, #InspectorTarget, 0)
+assert Delegates(#target/symbol, #InspectorTarget, 0)
+assert Delegates(#target/diff, #InspectorTarget, 0)
+assert Delegates(#target/task, #InspectorTarget, 0)
+
+assert Agent(#agent/default)
+assert Description(#agent/default, "default")
+assert Delegates(#agent/default, #agent, 0)
+assert Delegates(#operator, #agent, 0)
+
+verb workspace/active(agent @ #agent)
+  let workspace = agent.agentWorkspace
+  if workspace != nothing
+    return workspace
+  end
+
+  for found in Workspace(?w)
+    return found[:w]
+  end
+
+  return nothing
+end
+
+verb workspace/name(workspace)
+  let name = workspace.name
+  if name == nothing
+    return to_literal(workspace)
+  end
+  return name
+end
+
+verb agent/name(agent @ #agent)
+  let name = agent.description
+  if name == nothing
+    return to_literal(agent)
+  end
+  return name
+end
+
+verb message/role_label(role @ #string)
+  if role == "user"
+    return "You"
+  elseif role == "assistant"
+    return "Agent"
+  elseif role == "tool"
+    return "Tool"
+  elseif role == "system"
+    return "System"
+  end
+  return role
+end
+
+verb message/class(role @ #string)
+  if role == "user"
+    return "message-line user"
+  elseif role == "assistant"
+    return "message-line assistant"
+  elseif role == "tool"
+    return "message-line tool"
+  elseif role == "system"
+    return "message-line system"
+  end
+  return "message-line"
+end
+
+verb agent/ensure_transcript(agent @ #agent, workspace)
+  let existing = one TranscriptAgent(?t, agent)
+  if existing != nothing
+    return existing
+  end
+
+  let transcript = frob(#transcript, [agent, workspace])
+  assert Transcript(transcript)
+  assert TranscriptAgent(transcript, agent)
+  assert TranscriptWorkspace(transcript, workspace)
+  return transcript
+end
+
+verb agent/transcript(agent @ #agent)
+  let workspace = workspace/active(agent)
+  if workspace == nothing
+    return nothing
+  end
+  return agent/ensure_transcript(agent, workspace)
+end
+
+verb agent/append_message(agent @ #agent, role @ #string, content @ #string)
+  let workspace = workspace/active(agent)
+  if workspace == nothing
+    return false
+  end
+
+  let transcript = agent/ensure_transcript(agent, workspace)
+  let seq = 0
+  for found in MessageTranscript(?m, transcript)
+    let existing = found[:m].messageSeq
+    if existing >= seq
+      seq = existing + 1
+    end
+  end
+
+  let message = frob(#message, [transcript, seq])
+  assert Message(message)
+  assert MessageTranscript(message, transcript)
+  assert MessageSeq(message, seq)
+  assert MessageRole(message, role)
+  assert MessageContent(message, content)
+  return message
+end
+
+verb agent/messages(transcript)
+  let messages = []
+  for found in MessageTranscript(?m, transcript)
+    messages = [@messages, found[:m]]
+  end
+  return messages
+end
+
+verb transcript/empty_prompt(transcript)
+  let count = 0
+  for found in MessageTranscript(?m, transcript)
+    count = count + 1
+  end
+  if count == 0
+    return "No messages yet. Ask the agent to do something."
+  end
+  return ""
+end
+
+verb target/kind_label(kind @ #string)
+  if kind == "file"
+    return "File"
+  elseif kind == "symbol"
+    return "Symbol"
+  elseif kind == "diff"
+    return "Diff"
+  elseif kind == "task"
+    return "Task"
+  end
+  return kind
+end
+
+verb target/empty()
+  return dom <span></span>
+end

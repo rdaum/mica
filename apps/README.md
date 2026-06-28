@@ -11,6 +11,9 @@ integration.
 - `mud/`: a compact multi-user room/object world. It is the broadest example in
   this directory: world state, command parsing, event delivery, HTTP documents,
   and browser UI authored mostly in Mica with live WebTransport DOM sync.
+- `agent/`: a relation-first LLM coding agent shell. It reuses the MUD's sync
+  contract and tool-window patterns for a transcript, workspace, inspector, and
+  command bar, and is intended to drive the source-provider computed relations.
 - `chat/`: a smaller WebTransport DOM sync chat example.
 - `web/`: HTTP host handlers and relational route fileins.
 
@@ -33,6 +36,19 @@ auth with seeded Alice and Bob users; after sign-in, DOM sync renders the
 server-owned room view and command input.
 
 The MUD app is described in more detail in [`mud/README.md`](./mud/README.md).
+
+## Agent Web App
+
+The agent web app is a coding agent shell that reuses the MUD's sync and
+tool-window patterns for a transcript, workspace, inspector, and command bar.
+Run it with:
+
+```sh
+scripts/agent.sh
+```
+
+Open the printed `/agent` URL in a browser. The shell is described in more
+detail in [`agent/README.md`](./agent/README.md).
 
 ## MUD Telnet
 

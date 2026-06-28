@@ -1,0 +1,342 @@
+// Server-owned UI session state and sync action selectors for the agent app.
+
+make_relation(:ui/View, 1)
+make_functional_relation(:ui/SyncAction, 2, [0])
+make_functional_relation(:session/Actor, 2, [0])
+make_functional_relation(:session/Inspect, 2, [0])
+make_functional_relation(:session/InspectPulse, 2, [0])
+make_functional_relation(:session/TranscriptLimit, 2, [0])
+make_functional_relation(:session/Revision, 2, [0])
+make_functional_relation(:session/CommandDraft, 2, [0])
+make_functional_relation(:session/ObjectBrowserQuery, 2, [0])
+
+make_identity(:ui/sync_action)
+make_identity(:ui/inspect_action)
+make_identity(:ui/command_action)
+make_identity(:ui/load_older_messages_action)
+make_identity(:ui/object_browser_search_action)
+
+assert ui/View(31)
+assert Delegates(#ui/inspect_action, #ui/sync_action, 0)
+assert Delegates(#ui/command_action, #ui/sync_action, 0)
+assert Delegates(#ui/load_older_messages_action, #ui/sync_action, 0)
+assert Delegates(#ui/object_browser_search_action, #ui/sync_action, 0)
+"agent_inspect".ui/syncAction = #ui/inspect_action
+"agent_command".ui/syncAction = #ui/command_action
+"agent_load_older_messages".ui/syncAction = #ui/load_older_messages_action
+"agent_object_browser_search".ui/syncAction = #ui/object_browser_search_action
+
+grant #web
+  read:
+    :ui/View
+    :ui/SyncAction
+    :session/Actor
+    :session/Inspect
+    :session/InspectPulse
+    :session/TranscriptLimit
+    :session/Revision
+    :session/CommandDraft
+    :session/ObjectBrowserQuery
+    :Delegates
+    :Name
+    :Description
+    :Agent
+    :AgentWorkspace
+    :AgentModel
+    :Workspace
+    :WorkspaceRoot
+    :WorkspaceProvider
+    :WorkspaceRevision
+    :Transcript
+    :TranscriptAgent
+    :TranscriptWorkspace
+    :Message
+    :MessageTranscript
+    :MessageSeq
+    :MessageRole
+    :MessageContent
+    :InspectorTarget
+    :InspectorKind
+    :InspectorLabel
+    :InspectorLocation
+  write:
+    :session/Actor
+    :session/Inspect
+    :session/InspectPulse
+    :session/TranscriptLimit
+    :session/Revision
+    :session/CommandDraft
+    :session/ObjectBrowserQuery
+    :Message
+    :MessageTranscript
+    :MessageSeq
+    :MessageRole
+    :MessageContent
+  invoke:
+    :sync_event
+    :sync_view_revision
+    :sync_view_tree
+    :ui/auth_required_node
+    :ui/status_revision
+    :ui/current_agent
+    :ui/entity_from_literal
+    :agent/name
+    :workspace/name
+    :string_concat
+    :lower
+    :trim
+end
+
+CanRead(#web, relation) :-
+  RoleCanRead(#operator, relation)
+
+CanWrite(#web, relation) :-
+  RoleCanWrite(#operator, relation)
+
+CanInvoke(#web, selector) :-
+  RoleCanInvoke(#operator, selector)
+
+CanEffect(#web) :-
+  RoleCanEffect(#operator)
+
+grant role #operator
+  read:
+    :session/Inspect
+    :session/InspectPulse
+    :session/TranscriptLimit
+    :session/Revision
+    :session/CommandDraft
+    :session/ObjectBrowserQuery
+    :ui/View
+    :ui/SyncAction
+    :Agent
+    :AgentWorkspace
+    :AgentModel
+    :Workspace
+    :WorkspaceRoot
+    :WorkspaceProvider
+    :WorkspaceRevision
+    :Transcript
+    :TranscriptAgent
+    :TranscriptWorkspace
+    :Message
+    :MessageTranscript
+    :MessageSeq
+    :MessageRole
+    :MessageContent
+    :InspectorTarget
+    :InspectorKind
+    :InspectorLabel
+    :InspectorLocation
+    :Description
+    :Builder
+    :HttpRequest
+    :RequestMethod
+    :RequestPath
+    :RequestVersion
+    :RequestPrincipal
+    :RequestActor
+    :RequestHeader
+    :RequestBody
+  write:
+    :session/Inspect
+    :session/InspectPulse
+    :session/TranscriptLimit
+    :session/Revision
+    :session/CommandDraft
+    :session/ObjectBrowserQuery
+    :Message
+    :MessageTranscript
+    :MessageSeq
+    :MessageRole
+    :MessageContent
+  invoke:
+    :sync_event
+    :sync_snapshot
+    :sync_snapshot_payload
+    :sync_snapshot_tree
+    :sync_snapshot_signature
+    :sync_mount_node
+    :sync_view_revision
+    :sync_view_tree
+    :ui/status_revision
+    :ui/bump_revision
+    :ui/current_agent
+    :ui/entity_from_literal
+    :ui/can_inspect_entity
+    :ui/agent_name
+    :ui/workspace_name
+    :ui/workspace_root_text
+    :ui/target_kind_label
+    :ui/auth_required_node
+    :ui/icon_node
+    :ui/icon_label_node
+    :ui/command_form_node
+    :ui/entity_action_node
+    :ui/world_view_node
+    :ui/world_tools_node
+    :ui/workspace_panel_node
+    :ui/object_browser_panel_node
+    :ui/object_browser_results_node
+    :ui/object_browser_row_node
+    :ui/object_browser_matches
+    :ui/object_browser_description
+    :ui/inspector_node
+    :ui/entity_fact_node
+    :ui/entity_facts_node
+    :ui/inspector_action_node
+    :ui/transcript_node
+    :ui/latest_message_node
+    :ui/message_role_label
+    :ui/message_class
+    :ui/message_role_icon
+    :ui/message_body_node
+    :ui/message_node
+    :ui/command_bar_node
+    :ui/command_chips_node
+    :ui/sync_action_source
+    :ui/form_text
+    :ui/form_raw_text
+    :ui/form_index
+    :ui/handle_sync_action
+    :agent/name
+    :workspace/name
+    :workspace/active
+    :agent/transcript
+    :agent/ensure_transcript
+    :agent/append_message
+    :agent/messages
+    :message/role_label
+    :message/class
+    :transcript/empty_prompt
+    :target/kind_label
+    :target/empty
+    :http_request
+    :http/document
+    :http_response
+    :http_html
+    :http/base_style
+    :http/bootstrap_script
+    :dom_text
+    :dom_element
+    :dom_raw
+    :to_literal
+    :to_xml
+    :from_literal
+    :string_concat
+    :string_join
+    :string_len
+    :string_slice
+    :lower
+    :trim
+    :frob
+    :frob_delegate
+    :actor
+end
+
+verb ui/current_agent()
+  let current = actor()
+  if current != nothing && Delegates(current, #agent, 0)
+    return current
+  end
+  return #agent/default
+end
+
+verb ui/agent_name(agent @ #agent)
+  return agent/name(agent)
+end
+
+verb ui/workspace_name(workspace)
+  return workspace/name(workspace)
+end
+
+verb ui/workspace_root_text(workspace)
+  let root = workspace.workspaceRoot
+  if root == nothing
+    return ""
+  end
+  return root
+end
+
+verb ui/target_kind_label(kind @ #string)
+  return target/kind_label(kind)
+end
+
+verb ui/entity_from_literal(text)
+  if text == nothing
+    return nothing
+  end
+  return from_literal(text)
+end
+
+verb ui/can_inspect_entity(agent @ #agent, entity)
+  if entity == nothing
+    return false
+  end
+  return true
+end
+
+verb ui/status_revision()
+  let current = ui/current_agent()
+  let revision = 1
+  let transcript = agent/transcript(current)
+  if transcript != nothing
+    for message in agent/messages(transcript)
+      let seq = message.messageSeq
+      if seq > revision || seq == revision
+        revision = seq + 1
+      end
+    end
+  end
+  revision = revision * 2
+
+  let ui_revision = endpoint().session/revision
+  if ui_revision != nothing && ui_revision > revision
+    revision = ui_revision
+  end
+
+  return revision
+end
+
+verb ui/bump_revision(endpoint)
+  let current = ui/current_agent()
+  let revision = 1
+  let transcript = agent/transcript(current)
+  if transcript != nothing
+    for message in agent/messages(transcript)
+      let seq = message.messageSeq
+      if seq > revision || seq == revision
+        revision = seq + 1
+      end
+    end
+  end
+  revision = revision * 2
+
+  let ui_revision = endpoint.session/revision
+  if ui_revision != nothing && ui_revision > revision
+    revision = ui_revision
+  end
+  revision = revision + 1
+
+  endpoint.session/revision = revision
+  return revision
+end
+
+verb sync_view_revision(view)
+  if ui/View(view) == false
+    return 0
+  end
+  return ui/status_revision()
+end
+
+verb sync_view_tree(view, revision)
+  let current = ui/current_agent()
+  if ui/View(view) == false || current == nothing
+    return ui/auth_required_node()
+  end
+  let limit = endpoint().session/transcriptLimit
+  if limit == nothing
+    limit = 40
+  end
+  return ui/world_view_node(current, revision, limit)
+end

@@ -1,0 +1,148 @@
+// Browser-originated UI action routing for the server-owned agent view.
+
+verb ui/sync_action_source(action)
+  let delegate = action.ui/syncAction
+  if delegate == nothing
+    return nothing
+  end
+  return frob(delegate, action)
+end
+
+verb ui/form_text(fields, key)
+  let value = fields[key]
+  if value == nothing
+    return ""
+  end
+  return trim(value)
+end
+
+verb ui/form_raw_text(fields, key)
+  let value = fields[key]
+  if value == nothing
+    return ""
+  end
+  return value
+end
+
+verb ui/form_index(fields, key)
+  let value = parse_ordinal(ui/form_text(fields, key))
+  if value == nothing || value < 0
+    return 0
+  end
+  return value
+end
+
+verb ui/handle_sync_action(source @ #ui/sync_action<_>, endpoint, session, view, event, target, fields)
+  return false
+end
+
+verb ui/handle_sync_action(source @ #ui/load_older_messages_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false
+    return false
+  end
+
+  let current_limit = endpoint.session/transcriptLimit
+  if current_limit == nothing
+    current_limit = 40
+  end
+  let new_limit = current_limit + 40
+  endpoint.session/transcriptLimit = new_limit
+  ui/bump_revision(endpoint())
+  return true
+end
+
+verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
+    return false
+  end
+
+  let current = ui/current_agent()
+  if current == nothing
+    return false
+  end
+
+  let selected = ui/entity_from_literal(fields[:entity])
+  if ui/can_inspect_entity(current, selected) == false
+    return false
+  end
+
+  endpoint().session/inspect = selected
+  endpoint.session/inspect = selected
+  let pulse = endpoint.session/inspectPulse
+  if pulse == "odd"
+    pulse = "even"
+  else
+    pulse = "odd"
+  end
+  endpoint().session/inspectPulse = pulse
+  endpoint.session/inspectPulse = pulse
+  ui/bump_revision(endpoint())
+  return true
+end
+
+verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || (event != "submit" && event != "input")
+    return false
+  end
+
+  let current = ui/current_agent()
+  if current == nothing
+    return false
+  end
+
+  let line = ui/form_raw_text(fields, :text)
+  endpoint().session/commandDraft = line
+  endpoint.session/commandDraft = line
+  if event == "input"
+    ui/bump_revision(endpoint())
+    return true
+  end
+
+  if trim(line) == ""
+    return false
+  end
+
+  let echo = agent/append_message(current, "user", line)
+  if echo != false
+    let acknowledgement = agent/append_message(current, "assistant", string_concat("(shell does not yet drive an LLM: received \x22", line, "\x22)"))
+  end
+
+  let selected = ui/entity_from_literal(fields[:entity])
+  if selected != nothing && ui/can_inspect_entity(current, selected)
+    endpoint().session/inspect = selected
+    endpoint.session/inspect = selected
+  end
+  endpoint().session/commandDraft = ""
+  endpoint.session/commandDraft = ""
+  ui/bump_revision(endpoint())
+  return echo != false
+end
+
+verb ui/handle_sync_action(source @ #ui/object_browser_search_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || (event != "submit" && event != "input")
+    return false
+  end
+
+  let current = ui/current_agent()
+  if current == nothing
+    return false
+  end
+
+  let query = ui/form_text(fields, :query)
+  retract session/ObjectBrowserQuery(endpoint(), _)
+  retract session/ObjectBrowserQuery(endpoint, _)
+  if query != ""
+    endpoint().session/objectBrowserQuery = query
+    endpoint.session/objectBrowserQuery = query
+  end
+  ui/bump_revision(endpoint())
+  return true
+end
+
+verb sync_event(endpoint, session, view, event, target, action, fields)
+  let source = ui/sync_action_source(action)
+  if source == nothing
+    return false
+  end
+  return ui/handle_sync_action(source, endpoint, session, view, event, target, fields)
+end

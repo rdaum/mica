@@ -1,0 +1,139 @@
+// Transcript composition for the server-owned agent view.
+//
+// Messages are durable relation facts. This file renders them into DOM nodes
+// the same way ui-narrative.mica renders MUD events: a bounded recent window
+// with an opt-in "load older" sync event. For now, message bodies are plain
+// text; richer rendering (tool calls, source fragments, diffs) will layer in
+// through per-role body verbs dispatched on the message's event delegate.
+
+verb ui/message_role_label(role @ #string)
+  return message/role_label(role)
+end
+
+verb ui/message_class(role @ #string)
+  return message/class(role)
+end
+
+verb ui/message_role_icon(role @ #string)
+  if role == "user"
+    return dom <span class="message-glyph user-glyph" aria-hidden="true">&gt;</span>
+  end
+  if role == "assistant"
+    return dom <span class="message-glyph assistant-glyph" aria-hidden="true">*</span>
+  end
+  if role == "tool"
+    return dom <span class="message-glyph tool-glyph" aria-hidden="true">+</span>
+  end
+  return dom <span class="message-glyph system-glyph" aria-hidden="true">!</span>
+end
+
+verb ui/message_body_node(message)
+  let content = message.messageContent
+  if content == nothing
+    content = ""
+  end
+  return dom <span class="message-content">{content}</span>
+end
+
+verb ui/message_node(message)
+  let role = message.messageRole
+  let seq = message.messageSeq
+  let label = ui/message_role_label(role)
+  return dom <li data-sync-key={to_literal(message)} class={ui/message_class(role)}>
+    <div class="message-line-main">
+      <span class="message-role">{ui/message_role_icon(role)}<span>{label}</span></span>
+      {ui/message_body_node(message)}
+    </div>
+    <span class="message-seq" aria-hidden="true">{to_literal(seq)}</span>
+  </li>
+end
+
+verb ui/transcript_node(agent @ #agent, revision, limit)
+  let transcript = agent/transcript(agent)
+  let messages = []
+  let count = 0
+
+  if transcript != nothing
+    for message in agent/messages(transcript)
+      count = count + 1
+    end
+  end
+
+  if count == 0
+    let prompt = transcript/empty_prompt(transcript)
+    messages = [dom <li class="muted">{prompt}</li>]
+  else
+    let first_rendered = 0
+    if count > limit
+      first_rendered = count - limit
+    end
+
+    let rendered = 0
+    let index = 0
+    if transcript != nothing
+      for message in agent/messages(transcript)
+        if index >= first_rendered
+          messages = [@messages, ui/message_node(message)]
+          rendered = rendered + 1
+        end
+        index = index + 1
+      end
+    end
+  end
+
+  let heading = dom <div class="transcript-heading">
+    <h2>Transcript</h2>
+  </div>
+
+  let children = []
+  if count > limit
+    children = [dom <form class="transcript-older-form" data-sync-event="submit" data-sync-action="agent_load_older_messages">
+      <button class="mini-button">{ui/icon_label_node("clock", string_concat("Load older (", to_literal(count - limit), " more)"))}</button>
+    </form>]
+  end
+
+  if count > limit
+    children = [@children, dom <ul class="message-list" data-sync-on-viewport-top="agent_load_older_messages" data-sync-viewport-threshold="24">{@messages}</ul>]
+  else
+    children = [@children, dom <ul class="message-list">{@messages}</ul>]
+  end
+
+  return dom <section id="transcript" class="panel transcript" aria-live="polite" data-sync-follow="bottom" data-sync-stable-top="true">
+    {heading}
+    {@children}
+  </section>
+end
+
+verb ui/latest_message_node(agent @ #agent, revision)
+  let transcript = agent/transcript(agent)
+  if transcript == nothing
+    return dom <section id="latest-message" class="latest-message empty">
+      <span class="muted">No transcript yet.</span>
+    </section>
+  end
+
+  let latest = nothing
+  let latest_seq = -1
+  for message in agent/messages(transcript)
+    let seq = message.messageSeq
+    if seq < revision && seq > latest_seq
+      latest = message
+      latest_seq = seq
+    end
+  end
+
+  if latest == nothing
+    return dom <section id="latest-message" class="latest-message empty">
+      <span class="muted">No messages yet.</span>
+    </section>
+  end
+
+  let role = latest.messageRole
+  return dom <section id="latest-message" class={string_concat("latest-message ", role)}>
+    <div class="latest-heading">
+      <strong>Latest</strong>
+      <span class="message-role">{ui/message_role_label(role)}</span>
+    </div>
+    <div class="latest-body">{ui/message_body_node(latest)}</div>
+  </section>
+end
