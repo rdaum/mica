@@ -173,6 +173,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "openai_chat_completion_with_options",
     "llm_chat_stream",
     "map_pairs",
+    "os_getenv",
 ];
 
 impl SourceRunner {
@@ -6166,6 +6167,7 @@ fn is_safe_read_only_builtin(name: &str) -> bool {
             | "edit_distance"
             | "parse_ordinal"
             | "lower"
+            | "os_getenv"
     )
 }
 

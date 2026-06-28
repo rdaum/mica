@@ -256,6 +256,239 @@ fn openai_chat_completion_suspends_as_openai_external_request() {
 }
 
 #[test]
+fn llm_chat_stream_suspends_as_openai_external_request() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("openai"));
+                assert_eq!(
+                    request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("model"))),
+                    Some(Value::string("test-stream-model"))
+                );
+                assert_eq!(request.timeout_millis, Some(60_000));
+                Value::map([
+                    (
+                        Value::symbol(Symbol::intern("text")),
+                        Value::string("streamed reply"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("tool_calls")),
+                        Value::list([]),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("stop_reason")),
+                        Value::string("stop"),
+                    ),
+                    (
+                        Value::symbol(Symbol::intern("provider")),
+                        Value::string("test"),
+                    ),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let runner = SourceRunner::new_empty();
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(34),
+                root_source(
+                    "return llm_chat_stream(\"test-stream-model\", [{:role -> \"user\", :content -> \"ping\"}], {:stream -> true}, [])",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == submitted.task_id
+                    && value
+                        .map_get(&Value::symbol(Symbol::intern("text")))
+                        == Some(Value::string("streamed reply"))
+                    && value
+                        .map_get(&Value::symbol(Symbol::intern("stop_reason")))
+                        == Some(Value::string("stop"))
+        )));
+    });
+}
+
+#[test]
+fn llm_filein_wrapper_verbs_dispatch_to_llm_chat_stream() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_filein(include_str!("../../../apps/shared/llm.mica"))
+            .unwrap();
+        let handler = Arc::new(|_request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                Value::map([
+                    (
+                        Value::symbol(Symbol::intern("text")),
+                        Value::string("hi from wrapper"),
+                    ),
+                    (Value::symbol(Symbol::intern("tool_calls")), Value::list([])),
+                    (
+                        Value::symbol(Symbol::intern("stop_reason")),
+                        Value::string("stop"),
+                    ),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(35),
+                root_source(
+                    "let r = llm/chat(\"test-model\", [llm/user_message(\"hello\")], {:stream -> true}, [])\n\
+                     return llm/assistant_text(r)",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == submitted.task_id && *value == Value::string("hi from wrapper")
+        )));
+    });
+}
+
+fn load_agent_app(runner: &mut SourceRunner) {
+    for filein in [
+        include_str!("../../../apps/shared/sync-host.mica"),
+        include_str!("../../../apps/shared/string.mica"),
+        include_str!("../../../apps/shared/events.mica"),
+        include_str!("../../../apps/shared/llm.mica"),
+        include_str!("../../../apps/agent/core.mica"),
+        include_str!("../../../apps/agent/workspaces.mica"),
+        include_str!("../../../apps/shared/sync-dom.mica"),
+        include_str!("../../../apps/agent/ui-session.mica"),
+        include_str!("../../../apps/agent/transcript.mica"),
+        include_str!("../../../apps/agent/ui-compose.mica"),
+        include_str!("../../../apps/agent/ui-actions.mica"),
+        include_str!("../../../apps/agent/http.mica"),
+    ] {
+        runner.run_filein(filein).unwrap();
+    }
+}
+
+#[test]
+fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
+            Box::pin(async move {
+                assert_eq!(request.service, Symbol::intern("openai"));
+                Value::map([
+                    (
+                        Value::symbol(Symbol::intern("text")),
+                        Value::string("synthetic assistant reply"),
+                    ),
+                    (Value::symbol(Symbol::intern("tool_calls")), Value::list([])),
+                    (
+                        Value::symbol(Symbol::intern("stop_reason")),
+                        Value::string("stop"),
+                    ),
+                ])
+            }) as crate::types::ExternalRequestFuture
+        });
+
+        let prior = std::env::var_os("MICA_SOURCE_ROOT");
+        unsafe {
+            std::env::set_var("MICA_SOURCE_ROOT", "/tmp/agent-driver-test-root");
+        }
+        let mut runner = SourceRunner::new_empty();
+        load_agent_app(&mut runner);
+        match prior {
+            Some(value) => unsafe { std::env::set_var("MICA_SOURCE_ROOT", value) },
+            None => unsafe { std::env::remove_var("MICA_SOURCE_ROOT") },
+        }
+
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let ep = endpoint(40);
+        runner.open_endpoint(ep, Some(web), Symbol::intern("web")).unwrap();
+
+        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+
+        let submitted = driver
+            .submit_source(
+                ep,
+                root_source(
+                    "return sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"agent_command\", {:text -> \"hello from test\"})",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            submitted.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::ExternalRequest(_),
+                ..
+            }
+        ));
+
+        let mut completed = None;
+        for _ in 0..50 {
+            for event in driver.drain_events() {
+                if let DriverEvent::TaskCompleted { task_id, value } = event
+                    && task_id == submitted.task_id
+                {
+                    completed = Some(value);
+                    break;
+                }
+            }
+            if completed.is_some() {
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let value = completed.expect("agent_command task did not complete");
+        assert_eq!(value, Value::bool(true));
+
+        let query = driver
+            .submit_source(
+                ep,
+                root_source(
+                    "let t = agent/transcript(#agent/default)\n\
+                     let role = nothing\n\
+                     let content = nothing\n\
+                     for message in agent/messages_ordered(t)\n\
+                       role = message.messageRole\n\
+                       content = message.messageContent\n\
+                     end\n\
+                     return [role, content]",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            query.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::list([
+                Value::string("assistant"),
+                Value::string("synthetic assistant reply"),
+            ])
+        ));
+    });
+}
+
+#[test]
 fn mica_query_host_request_runs_read_only_query_and_resumes_task() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let mut runner = SourceRunner::new_empty();

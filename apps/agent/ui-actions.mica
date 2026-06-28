@@ -102,10 +102,7 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
     return false
   end
 
-  let echo = agent/append_message(current, "user", line)
-  if echo != false
-    let acknowledgement = agent/append_message(current, "assistant", string_concat("(shell does not yet drive an LLM: received \x22", line, "\x22)"))
-  end
+  agent/append_message(current, "user", line)
 
   let selected = ui/entity_from_literal(fields[:entity])
   if selected != nothing && ui/can_inspect_entity(current, selected)
@@ -114,8 +111,26 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
   end
   endpoint().session/commandDraft = ""
   endpoint.session/commandDraft = ""
+
+  let transcript = agent/transcript(current)
+  if transcript != nothing
+    let model = agent/resolve_model(current)
+    let messages = agent/llm_messages(transcript)
+    try
+      let response = llm/chat(model, messages)
+      let text = llm/assistant_text(response)
+      if text != nothing
+        agent/append_message(current, "assistant", text)
+      else
+        agent/append_message(current, "assistant", "(LLM returned an empty response)")
+      end
+    catch err
+      agent/append_message(current, "assistant", string_concat("(LLM error: ", to_literal(err), ")"))
+    end
+  end
+
   ui/bump_revision(endpoint())
-  return echo != false
+  return true
 end
 
 verb ui/handle_sync_action(source @ #ui/object_browser_search_action<_>, endpoint, session, view, event, target, fields)

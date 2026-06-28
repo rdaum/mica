@@ -196,6 +196,24 @@ fn runner_string_primitives_support_character_level_munging() {
         runner.run_source("return lower(\"North\")").unwrap().outcome,
         TaskOutcome::Complete { value, .. } if value == Value::string("north")
     ));
+    assert!(matches!(
+        runner
+            .run_source("try\n  return 1 / 0\ncatch E_DIV as err\n  return 42\nend")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(42).unwrap()
+    ));
+    assert!(matches!(
+        runner.run_source("return os_getenv(\"PATH\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value.with_str(|s| !s.is_empty()).unwrap_or(false)
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return os_getenv(\"MICA_DEFINITELY_NOT_SET_xyzzy\")")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::nothing()
+    ));
 }
 
 #[test]
@@ -534,10 +552,17 @@ fn runner_from_literal_parses_to_literal_output() {
     ));
     assert!(matches!(
         runner
-            .run_source("return from_literal(\"#missing_identity\")")
+            .run_source("try\n  return 1 / 0\ncatch E_DIV as err\n  return 42\nend")
             .unwrap()
             .outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::nothing()
+        TaskOutcome::Complete { value, .. } if value == Value::int(42).unwrap()
+    ));
+    assert!(matches!(
+        runner
+            .run_source("try\n  return 1 / 0\ncatch any_err\n  return 7\nend")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(7).unwrap()
     ));
 }
 
@@ -642,6 +667,148 @@ fn runner_openai_filein_installs_chat_helpers() {
             .unwrap()
             .outcome,
         TaskOutcome::Complete { value, .. } if value == Value::string("pong")
+    ));
+}
+
+#[test]
+fn runner_agent_core_resolves_default_model_with_env_override() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/llm.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/agent/core.mica"))
+        .unwrap();
+
+    assert!(matches!(
+        runner
+            .run_source("return agent/resolve_model(#agent/default)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("deepseek/deepseek-chat-v3.1:free")
+    ));
+
+    assert!(matches!(
+        runner
+            .run_source(
+                "let a = frob(#agent, [\"override-agent\"])\n\
+                 a.agentModel = \"anthropic/claude-test\"\n\
+                 return agent/resolve_model(a)"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("anthropic/claude-test")
+    ));
+
+    let prior = std::env::var_os("MICA_AGENT_MODEL");
+    unsafe {
+        std::env::set_var("MICA_AGENT_MODEL", "google/gemini-env-override");
+    }
+    let result = runner
+        .run_source(
+            "let a = frob(#agent, [\"no-override\"])\n\
+             return agent/resolve_model(a)",
+        )
+        .unwrap();
+    match prior {
+        Some(value) => unsafe { std::env::set_var("MICA_AGENT_MODEL", value) },
+        None => unsafe { std::env::remove_var("MICA_AGENT_MODEL") },
+    }
+    assert!(matches!(
+        result.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("google/gemini-env-override")
+    ));
+}
+
+#[test]
+fn runner_agent_llm_messages_maps_transcript_to_llm_format() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/llm.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/agent/core.mica"))
+        .unwrap();
+
+    let result = runner
+        .run_source(
+            "let ws = frob(#workspace, [\"test-workspace\"])\n\
+             let t = agent/ensure_transcript(#agent/default, ws)\n\
+             let m1 = frob(#message, [t, 0])\n\
+             assert Message(m1)\n\
+             assert MessageTranscript(m1, t)\n\
+             assert MessageSeq(m1, 0)\n\
+             assert MessageRole(m1, \"user\")\n\
+             assert MessageContent(m1, \"hello there\")\n\
+             let m2 = frob(#message, [t, 1])\n\
+             assert Message(m2)\n\
+             assert MessageTranscript(m2, t)\n\
+             assert MessageSeq(m2, 1)\n\
+             assert MessageRole(m2, \"assistant\")\n\
+             assert MessageContent(m2, \"hi back\")\n\
+             return agent/llm_messages(t)",
+        )
+        .unwrap();
+    let value = match result.outcome {
+        TaskOutcome::Complete { value, .. } => value,
+        other => panic!("expected complete, got {other:?}"),
+    };
+    let items = value
+        .with_list(|items| items.to_vec())
+        .expect("llm_messages should return a list");
+    assert_eq!(items.len(), 3, "system + user + assistant");
+    let system = items[0]
+        .map_get(&Value::symbol(Symbol::intern("role")))
+        .and_then(|v| v.with_str(str::to_owned).map(Some).unwrap_or(None))
+        .unwrap_or_default();
+    assert_eq!(system, "system");
+    let user_content = items[1]
+        .map_get(&Value::symbol(Symbol::intern("content")))
+        .and_then(|v| v.with_str(str::to_owned).map(Some).unwrap_or(None))
+        .unwrap_or_default();
+    assert_eq!(user_content, "hello there");
+    let assistant_content = items[2]
+        .map_get(&Value::symbol(Symbol::intern("content")))
+        .and_then(|v| v.with_str(str::to_owned).map(Some).unwrap_or(None))
+        .unwrap_or_default();
+    assert_eq!(assistant_content, "hi back");
+}
+
+#[test]
+fn runner_agent_workspaces_binds_default_agent_to_source_root() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/agent/core.mica"))
+        .unwrap();
+
+    let prior = std::env::var_os("MICA_SOURCE_ROOT");
+    unsafe {
+        std::env::set_var("MICA_SOURCE_ROOT", "/tmp/agent-test-root");
+    }
+    runner
+        .run_filein(include_str!("../../../apps/agent/workspaces.mica"))
+        .unwrap();
+    match prior {
+        Some(value) => unsafe { std::env::set_var("MICA_SOURCE_ROOT", value) },
+        None => unsafe { std::env::remove_var("MICA_SOURCE_ROOT") },
+    }
+
+    let workspace = runner
+        .named_identity(Symbol::intern("workspace/default"))
+        .expect("workspace/default identity should exist");
+    assert!(matches!(
+        runner
+            .run_source("return workspace/active(#agent/default)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(workspace)
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return one WorkspaceRoot(workspace/active(#agent/default), ?root)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("/tmp/agent-test-root")
     ));
 }
 

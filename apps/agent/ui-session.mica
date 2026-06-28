@@ -206,6 +206,10 @@ grant role #operator
     :agent/ensure_transcript
     :agent/append_message
     :agent/messages
+    :agent/messages_ordered
+    :agent/resolve_model
+    :agent/system_prompt
+    :agent/llm_messages
     :message/role_label
     :message/class
     :transcript/empty_prompt
@@ -229,6 +233,13 @@ grant role #operator
     :string_slice
     :lower
     :trim
+    :os_getenv
+    :llm/chat
+    :llm/system_message
+    :llm/user_message
+    :llm/assistant_message
+    :llm/tool_message
+    :llm/assistant_text
     :frob
     :frob_delegate
     :actor

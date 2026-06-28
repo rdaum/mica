@@ -22,6 +22,7 @@ pub(crate) fn install(registry: BuiltinRegistry) -> BuiltinRegistry {
         .with_builtin("edit_distance", edit_distance_builtin)
         .with_builtin("parse_ordinal", parse_ordinal_builtin)
         .with_builtin("lower", lower_builtin)
+        .with_builtin("os_getenv", os_getenv_builtin)
 }
 
 fn string_len_builtin(
@@ -320,6 +321,23 @@ fn lower_builtin(
     Ok(Value::string(
         builtin_string_arg("lower", args, 0)?.to_lowercase(),
     ))
+}
+
+fn os_getenv_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "os_getenv",
+            "expected os_getenv(name)",
+        ));
+    }
+    let name = builtin_string_arg("os_getenv", args, 0)?;
+    match std::env::var(&name) {
+        Ok(value) => Ok(Value::string(value)),
+        Err(_) => Ok(Value::nothing()),
+    }
 }
 
 fn parse_words(value: &str) -> Vec<String> {

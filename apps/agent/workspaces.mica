@@ -1,0 +1,42 @@
+// Agent workspace bootstrap.
+//
+// MICA_SOURCE_ROOTS is managed by scripts/agent.sh. The source-provider crate
+// reads it to scope file access; here we mirror the first root as the default
+// agent workspace so chat transcripts have a workspace context. Facts asserted
+// in this filein run with implicit filein authority.
+
+make_identity(:workspace/default)
+assert Workspace(#workspace/default)
+
+verb workspaces/first_source_root()
+  let roots = os_getenv("MICA_SOURCE_ROOTS")
+  if roots == nothing
+    roots = os_getenv("MICA_SOURCE_ROOT")
+  end
+  if roots == nothing
+    roots = "."
+  end
+
+  let chars = string_chars(roots)
+  let root = ""
+  let index = 0
+  let length = string_len(roots)
+  while index < length
+    let ch = chars[index]
+    if ch == ":"
+      index = length
+    else
+      root = string_concat(root, ch)
+      index = index + 1
+    end
+  end
+
+  if root == ""
+    root = "."
+  end
+  return root
+end
+
+assert WorkspaceRoot(#workspace/default, workspaces/first_source_root())
+assert WorkspaceProvider(#workspace/default, "local-source")
+assert AgentWorkspace(#agent/default, #workspace/default)
