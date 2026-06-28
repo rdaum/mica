@@ -225,7 +225,9 @@ impl SessionOutput {
             matches!(
                 message,
                 SessionOutputMessage::SyncEnvelope(envelope)
-                    if envelope.session_id == session_id && envelope.view_id == view_id
+                    if envelope.session_id == session_id
+                        && envelope.view_id == view_id
+                        && envelope.kind == SyncMessageKind::ViewSnapshot
             )
         })
     }
