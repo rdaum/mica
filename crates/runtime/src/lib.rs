@@ -350,9 +350,7 @@ impl SourceRunner {
             endpoint,
         );
         self.run_read_only_source_query(
-            runtime_context.principal(),
-            runtime_context.actor(),
-            endpoint,
+            runtime_context,
             authority,
             &context,
             source.into(),
@@ -818,9 +816,7 @@ impl SourceRunner {
 
     fn run_read_only_source_query(
         &mut self,
-        principal: Option<Identity>,
-        actor: Option<Identity>,
-        endpoint: Identity,
+        runtime_context: RuntimeContext,
         authority: AuthorityContext,
         context: &CompileContext,
         source: String,
@@ -837,7 +833,6 @@ impl SourceRunner {
             Ok(compiled) => compiled,
             Err(error) => return Ok(self.rejected_read_only_query_report(error, options)),
         };
-        let runtime_context = runtime_context(principal, actor, endpoint);
         let (task_id, outcome) = self.task_manager.submit_with_context_and_limits(
             Arc::new(compiled.program),
             authority,
@@ -1364,9 +1359,7 @@ impl SharedSourceRunner {
             endpoint,
         );
         self.run_read_only_source_query(
-            runtime_context.principal(),
-            runtime_context.actor(),
-            endpoint,
+            runtime_context,
             authority,
             &context,
             source.into(),
@@ -1820,9 +1813,7 @@ impl SharedSourceRunner {
 
     fn run_read_only_source_query(
         &self,
-        principal: Option<Identity>,
-        actor: Option<Identity>,
-        endpoint: Identity,
+        runtime_context: RuntimeContext,
         authority: AuthorityContext,
         context: &CompileContext,
         source: String,
@@ -1839,7 +1830,6 @@ impl SharedSourceRunner {
             Ok(compiled) => compiled,
             Err(error) => return Ok(self.rejected_read_only_query_report(error, options)),
         };
-        let runtime_context = runtime_context(principal, actor, endpoint);
         let (task_id, outcome) = self.task_manager.submit_with_context_and_limits(
             Arc::new(compiled.program),
             authority,

@@ -7,7 +7,7 @@ use crate::receive::GitReceiveRecorder;
 use crate::rust_analyzer::RustAnalyzerProvider;
 use crate::syntax::{SourceLanguage, SyntaxDocument, syntax_lines};
 use crate::util::*;
-use crate::vcs::VcsProvider;
+use crate::vcs::{BlameRow, VcsProvider};
 use jj_lib::object_id::ObjectId;
 use mica_relation_kernel::{
     ComputedRelation, ComputedRelationRead, KernelError, RelationId, RelationMetadata, Tuple,
@@ -2917,7 +2917,7 @@ fn first_line(msg: &str) -> String {
 }
 
 fn merge_adjacent_blame_lines(
-    lines: Vec<(u64, jj_lib::backend::CommitId, String, String, i64, String)>,
+    lines: Vec<BlameRow>,
     repository: &Value,
     commit_hex: &str,
     path: &str,
@@ -2929,27 +2929,20 @@ fn merge_adjacent_blame_lines(
     let mut tuples = Vec::new();
     let mut hunk_start = lines[0].0;
     let mut hunk_end = lines[0].0;
-    let mut current = (
-        lines[0].1.clone(),
-        lines[0].2.clone(),
-        lines[0].3.clone(),
-        lines[0].4,
-        lines[0].5.clone(),
-    );
+    let mut current = BlameHunkEntry::from_line(&lines[0]);
     for (line, origin, name, email, ts, msg) in lines.iter().skip(1) {
-        let next = (
-            origin.clone(),
-            name.clone(),
-            email.clone(),
-            *ts,
-            msg.clone(),
-        );
+        let next = BlameHunkEntry {
+            origin: origin.clone(),
+            name: name.clone(),
+            email: email.clone(),
+            ts: *ts,
+            msg: msg.clone(),
+        };
         if next == current && *line == hunk_end + 1 {
             hunk_end = *line;
         } else {
             tuples.push(blame_hunk_tuple(
-                repository, commit_hex, path, hunk_start, hunk_end, &current.0, &current.1,
-                &current.2, current.3, &current.4, relation,
+                repository, commit_hex, path, hunk_start, hunk_end, &current, relation,
             )?);
             hunk_start = *line;
             hunk_end = *line;
@@ -2957,11 +2950,42 @@ fn merge_adjacent_blame_lines(
         }
     }
     tuples.push(blame_hunk_tuple(
-        repository, commit_hex, path, hunk_start, hunk_end, &current.0, &current.1, &current.2,
-        current.3, &current.4, relation,
+        repository, commit_hex, path, hunk_start, hunk_end, &current, relation,
     )?);
     Ok(tuples)
 }
+
+struct BlameHunkEntry {
+    origin: jj_lib::backend::CommitId,
+    name: String,
+    email: String,
+    ts: i64,
+    msg: String,
+}
+
+impl BlameHunkEntry {
+    fn from_line(line: &(u64, jj_lib::backend::CommitId, String, String, i64, String)) -> Self {
+        Self {
+            origin: line.1.clone(),
+            name: line.2.clone(),
+            email: line.3.clone(),
+            ts: line.4,
+            msg: line.5.clone(),
+        }
+    }
+}
+
+impl PartialEq for BlameHunkEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.origin == other.origin
+            && self.name == other.name
+            && self.email == other.email
+            && self.ts == other.ts
+            && self.msg == other.msg
+    }
+}
+
+impl Eq for BlameHunkEntry {}
 
 fn blame_hunk_tuple(
     repository: &Value,
@@ -2969,11 +2993,7 @@ fn blame_hunk_tuple(
     path: &str,
     start_line: u64,
     end_line: u64,
-    origin: &jj_lib::backend::CommitId,
-    name: &str,
-    email: &str,
-    ts: i64,
-    msg: &str,
+    entry: &BlameHunkEntry,
     relation: RelationId,
 ) -> Result<Tuple, KernelError> {
     Ok(Tuple::from([
@@ -2982,11 +3002,11 @@ fn blame_hunk_tuple(
         Value::string(path),
         int_value(relation, start_line as i64)?,
         int_value(relation, end_line as i64)?,
-        Value::string(origin.hex()),
-        Value::string(name),
-        Value::string(email),
-        int_value(relation, ts)?,
-        Value::string(first_line(msg)),
+        Value::string(entry.origin.hex()),
+        Value::string(&entry.name),
+        Value::string(&entry.email),
+        int_value(relation, entry.ts)?,
+        Value::string(first_line(&entry.msg)),
     ]))
 }
 

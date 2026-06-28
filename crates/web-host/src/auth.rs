@@ -310,18 +310,19 @@ impl AuthSubsystem {
             .github_admin_logins
             .iter()
             .any(|login| login.eq_ignore_ascii_case(&user_info.login))
-            && let Err(e) = self.session_store.grant_user_role(&user_id, "admin").await {
-                tracing::error!(
-                    login = %user_info.login,
-                    error = %e,
-                    "failed to grant GitHub admin user role"
-                );
-                return Some(HttpResponse::new(
-                    500,
-                    "Internal Server Error",
-                    b"Failed to grant admin role".to_vec(),
-                ));
-            }
+            && let Err(e) = self.session_store.grant_user_role(&user_id, "admin").await
+        {
+            tracing::error!(
+                login = %user_info.login,
+                error = %e,
+                "failed to grant GitHub admin user role"
+            );
+            return Some(HttpResponse::new(
+                500,
+                "Internal Server Error",
+                b"Failed to grant admin role".to_vec(),
+            ));
+        }
         let display_name = user_info
             .name
             .as_deref()
@@ -656,9 +657,10 @@ impl AuthSubsystem {
         if let Some(token) =
             cookie_header.and_then(|h| extract_session_cookie_named(h, &self.config.cookie_name))
             && let Ok(claims) = decode_session_token(&self.config.keyring, &token)
-                && let Err(e) = self.session_store.revoke_session(&claims.sid).await {
-                    tracing::warn!(session_id = %claims.sid, error = %e, "failed to revoke session");
-                }
+            && let Err(e) = self.session_store.revoke_session(&claims.sid).await
+        {
+            tracing::warn!(session_id = %claims.sid, error = %e, "failed to revoke session");
+        }
 
         let clear_cookie = build_clear_session_cookie_with_options(
             &self.config.cookie_name,

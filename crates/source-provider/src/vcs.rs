@@ -16,6 +16,12 @@ use tokio::io::AsyncReadExt;
 const MAX_COMMIT_WALK: usize = 512;
 const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
+/// A commit row produced by commit log, search, and file-history walks.
+pub(crate) type CommitRow = (CommitId, Vec<CommitId>, String, String, i64, String);
+
+/// A blame row: line number, originating commit, author name, email, timestamp, message.
+pub(crate) type BlameRow = (u64, CommitId, String, String, i64, String);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChangeKind {
     Added,
@@ -343,10 +349,9 @@ impl VcsProvider {
             match (from_files.get(name), to_files.get(name)) {
                 (None, Some(_)) => result.push((name.clone(), ChangeKind::Added)),
                 (Some(_), None) => result.push((name.clone(), ChangeKind::Removed)),
-                (Some(from_id), Some(to_id))
-                    if from_id != to_id => {
-                        result.push((name.clone(), ChangeKind::Modified));
-                    }
+                (Some(from_id), Some(to_id)) if from_id != to_id => {
+                    result.push((name.clone(), ChangeKind::Modified));
+                }
                 _ => {}
             }
         }
@@ -395,10 +400,7 @@ impl VcsProvider {
 
     // -- commit log --------------------------------------------------------
 
-    pub(crate) fn commit_log(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<(CommitId, Vec<CommitId>, String, String, i64, String)>, String> {
+    pub(crate) fn commit_log(&self, limit: usize) -> Result<Vec<CommitRow>, String> {
         let effective_limit = limit.min(MAX_COMMIT_WALK);
         let head = self.resolve_head()?;
         let mut results = Vec::new();
@@ -430,7 +432,7 @@ impl VcsProvider {
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<(CommitId, Vec<CommitId>, String, String, i64, String)>, String> {
+    ) -> Result<Vec<CommitRow>, String> {
         let effective_limit = limit.min(MAX_COMMIT_WALK);
         let query_lower = query.to_lowercase();
         let head = self.resolve_head()?;
@@ -469,11 +471,7 @@ impl VcsProvider {
 
     // -- file history ------------------------------------------------------
 
-    pub(crate) fn file_history(
-        &self,
-        path: &str,
-        limit: usize,
-    ) -> Result<Vec<(CommitId, Vec<CommitId>, String, String, i64, String)>, String> {
+    pub(crate) fn file_history(&self, path: &str, limit: usize) -> Result<Vec<CommitRow>, String> {
         let effective_limit = limit.min(MAX_COMMIT_WALK);
         let head = self.resolve_head()?;
         let mut results = Vec::new();
@@ -520,11 +518,7 @@ impl VcsProvider {
 
     // -- blame -------------------------------------------------------------
 
-    pub(crate) fn blame(
-        &self,
-        commit_id: &CommitId,
-        path: &str,
-    ) -> Result<Vec<(u64, CommitId, String, String, i64, String)>, String> {
+    pub(crate) fn blame(&self, commit_id: &CommitId, path: &str) -> Result<Vec<BlameRow>, String> {
         let tree_id = self.commit_tree(commit_id)?;
         let file_id = match self.tree_file_id_at_path(&tree_id, path)? {
             Some(fid) => fid,
@@ -537,7 +531,7 @@ impl VcsProvider {
         }
 
         let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
-        let mut result: Vec<(u64, CommitId, String, String, i64, String)> = Vec::new();
+        let mut result: Vec<BlameRow> = Vec::new();
         let mut visited: HashSet<CommitId> = HashSet::new();
         let mut queue: Vec<CommitId> = vec![commit_id.clone()];
         let mut remaining: Vec<(usize, usize)> = vec![(0, lines.len())];

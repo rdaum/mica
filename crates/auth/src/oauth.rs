@@ -44,7 +44,7 @@ pub fn build_authorization_url_with_pkce(
         ));
     }
     if let Some(org) = &config.org {
-        url.push_str(&"&allow_signup=false".to_string());
+        url.push_str("&allow_signup=false");
         let _ = org;
     }
     url
