@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use compio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use compio::net::{OwnedReadHalf, OwnedWriteHalf, TcpListener, TcpStream};
+use compio::net::{TcpListener, TcpStream};
 use compio::runtime::ResumeUnwind;
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_protocol::{HostMessage, PROTOCOL_VERSION};
@@ -362,7 +362,7 @@ async fn handle_zmq_connection(
 }
 
 async fn read_socket_loop(
-    mut stream: OwnedReadHalf<TcpStream>,
+    mut stream: TcpStream,
     host: &InProcessTelnetHost,
     endpoint: Identity,
     actor_name: &str,
@@ -392,7 +392,7 @@ async fn read_socket_loop(
 }
 
 async fn read_zmq_socket_loop(
-    mut stream: OwnedReadHalf<TcpStream>,
+    mut stream: TcpStream,
     session: &mut ZmqSession,
     output: Arc<EndpointOutput>,
     actor_name: &str,
@@ -417,7 +417,7 @@ async fn read_zmq_socket_loop(
 }
 
 async fn read_telnet_line(
-    stream: &mut OwnedReadHalf<TcpStream>,
+    stream: &mut TcpStream,
     codec: &mut TelnetCodec,
     pending: &mut VecDeque<TelnetItem>,
 ) -> Result<Option<String>, String> {
@@ -768,7 +768,7 @@ fn drop_socket_writer(host: &InProcessTelnetHost, endpoint: Identity) {
 }
 
 async fn write_socket_loop(
-    mut stream: OwnedWriteHalf<TcpStream>,
+    mut stream: TcpStream,
     output: Arc<EndpointOutput>,
 ) -> Result<(), String> {
     while let EndpointOutputReady::Ready { .. } | EndpointOutputReady::HighWater { .. } =
@@ -786,7 +786,7 @@ async fn write_socket_loop(
     shutdown_socket_writer(stream).await
 }
 
-async fn shutdown_socket_writer(mut stream: OwnedWriteHalf<TcpStream>) -> Result<(), String> {
+async fn shutdown_socket_writer(mut stream: TcpStream) -> Result<(), String> {
     match stream.shutdown().await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotConnected => Ok(()),

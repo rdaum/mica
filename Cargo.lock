@@ -511,16 +511,16 @@ checksum = "ea0095f6103c2a8b44acd6fd15960c801dafebf02e21940360833e0673f48ba7"
 
 [[package]]
 name = "compio"
-version = "0.19.0-rc.2"
+version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e2dc4aaf309e18c4a375ad7af8b8c2c11ff39e2598f0e83dd8700118c7e5973"
+checksum = "e5cf9e29d3c2d2a37078198795631b61d2b5c9cab68191e31526fe342d742135"
 dependencies = [
  "compio-buf",
  "compio-dispatcher",
  "compio-driver",
  "compio-fs",
  "compio-io",
- "compio-log 0.1.0",
+ "compio-log",
  "compio-net",
  "compio-runtime",
  "compio-tls",
@@ -559,7 +559,7 @@ dependencies = [
  "bitflags 2.13.0",
  "cfg_aliases",
  "compio-buf",
- "compio-log 0.2.0",
+ "compio-log",
  "compio-send-wrapper",
  "crossbeam-queue",
  "flume",
@@ -585,7 +585,7 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "809fc31e0180a97ea760300b9aa97d99fbb19c9831cc49cebfd5a98f44a8371b"
 dependencies = [
- "compio-log 0.2.0",
+ "compio-log",
  "compio-send-wrapper",
  "crossbeam-queue",
  "loom",
@@ -630,15 +630,6 @@ dependencies = [
 
 [[package]]
 name = "compio-log"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc4e560213c1996b618da369b7c9109564b41af9033802ae534465c4ee4e132f"
-dependencies = [
- "tracing",
-]
-
-[[package]]
-name = "compio-log"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef39fff6341af7ab6c27fae9a3887e1ec618320d43f3b9c924c7a644f693a859"
@@ -669,14 +660,14 @@ dependencies = [
 
 [[package]]
 name = "compio-quic"
-version = "0.8.0-rc.2"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a544e3eb2796be816230da1d1582ff4f5056e04f73d915c422bba8f4b89691e7"
+checksum = "edd50cb1b2c2c8276728871bc3bf3c12618c551cdd550123d564aa49b059aea5"
 dependencies = [
  "cfg_aliases",
  "compio-buf",
  "compio-io",
- "compio-log 0.1.0",
+ "compio-log",
  "compio-net",
  "compio-runtime",
  "flume",
@@ -702,7 +693,7 @@ dependencies = [
  "compio-driver",
  "compio-executor",
  "compio-io",
- "compio-log 0.2.0",
+ "compio-log",
  "compio-send-wrapper",
  "core_affinity",
  "futures-util",
@@ -745,7 +736,7 @@ dependencies = [
  "async-tungstenite",
  "compio-buf",
  "compio-io",
- "compio-log 0.2.0",
+ "compio-log",
  "compio-net",
  "compio-tls",
  "futures-util",
