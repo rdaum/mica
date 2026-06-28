@@ -44,7 +44,7 @@ pub fn build_authorization_url_with_pkce(
         ));
     }
     if let Some(org) = &config.org {
-        url.push_str(&format!("&allow_signup=false"));
+        url.push_str(&"&allow_signup=false".to_string());
         let _ = org;
     }
     url
@@ -191,7 +191,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn base64url_encode_no_pad(bytes: &[u8]) -> String {
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };

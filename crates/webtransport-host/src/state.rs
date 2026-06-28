@@ -83,6 +83,7 @@ pub(crate) struct SessionOutputState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SessionOutputMessage {
     Datagram(Bytes),
+    SyncEnvelope(SyncEnvelope),
 }
 
 pub(crate) struct SessionOutputRecv<'a> {
@@ -306,6 +307,41 @@ impl SessionOutput {
         self.send_message(SessionOutputMessage::Datagram(datagram))
     }
 
+    pub(crate) fn send_sync_envelope(&self, envelope: SyncEnvelope) -> Result<(), String> {
+        if envelope.kind == SyncMessageKind::ViewSnapshot {
+            self.send_message_replacing_view_sync(envelope)
+        } else {
+            self.send_message(SessionOutputMessage::SyncEnvelope(envelope))
+        }
+    }
+
+    fn send_message_replacing_view_sync(&self, envelope: SyncEnvelope) -> Result<(), String> {
+        let waker = {
+            let mut state = self.state.lock().unwrap();
+            if state.closed {
+                crate::metrics::metrics().output_send_after_close.inc();
+                return Err("session writer is closed".to_owned());
+            }
+            state.messages.retain(|message| match message {
+                SessionOutputMessage::SyncEnvelope(queued) => {
+                    queued.session_id != envelope.session_id || queued.view_id != envelope.view_id
+                }
+                SessionOutputMessage::Datagram(_) => true,
+            });
+            state
+                .messages
+                .push_back(SessionOutputMessage::SyncEnvelope(envelope));
+            crate::metrics::metrics()
+                .queued_outgoing_datagrams
+                .set(state.messages.len() as i64);
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        Ok(())
+    }
+
     pub(crate) fn send_message(&self, message: SessionOutputMessage) -> Result<(), String> {
         let waker = {
             let mut state = self.state.lock().unwrap();
@@ -356,10 +392,23 @@ impl SessionOutput {
         messages
     }
 
+    pub(crate) fn has_pending_view_sync(&self, session_id: u64, view_id: u64) -> bool {
+        self.state.lock().unwrap().messages.iter().any(|message| {
+            matches!(
+                message,
+                SessionOutputMessage::SyncEnvelope(envelope)
+                    if envelope.session_id == session_id && envelope.view_id == view_id
+            )
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn try_recv(&self) -> Option<Bytes> {
         match self.state.lock().unwrap().messages.pop_front()? {
             SessionOutputMessage::Datagram(datagram) => Some(datagram),
+            SessionOutputMessage::SyncEnvelope(envelope) => Some(Bytes::from(
+                mica_host_protocol::encoded_sync_envelope(envelope.as_ref()),
+            )),
         }
     }
 }

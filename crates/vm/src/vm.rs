@@ -203,7 +203,7 @@ impl BudgetProfiler {
     }
 
     fn sample(&mut self, instruction: usize, vm: &RegisterVm) {
-        if instruction % BUDGET_PROFILE_SAMPLE_INTERVAL != 0 {
+        if !instruction.is_multiple_of(BUDGET_PROFILE_SAMPLE_INTERVAL) {
             return;
         }
 

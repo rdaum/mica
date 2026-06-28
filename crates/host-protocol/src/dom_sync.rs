@@ -149,10 +149,17 @@ pub const SUPPORTED_DOM_ATTRIBUTES: &[&str] = &[
     "data-command",
     "data-entity",
     "data-sync-action",
+    "data-sync-coalesce",
+    "data-sync-debounce",
     "data-sync-event",
+    "data-sync-fire-and-forget",
     "data-sync-follow",
     "data-sync-key",
+    "data-sync-poll-ms",
+    "data-sync-preserve-focus",
+    "data-sync-reset",
     "data-sync-submit-key",
+    "data-sync-throttle",
     "data-sync-on-viewport-top",
     "data-sync-stable-top",
     "data-sync-viewport-threshold",
@@ -293,6 +300,7 @@ pub struct DomEventPayload {
     pub view_id: u64,
     pub revision: u64,
     pub signature: u64,
+    pub refresh: bool,
     pub event: String,
     pub target: String,
     pub action: String,
@@ -525,6 +533,7 @@ pub fn dom_event_payload_json(event: &DomEventPayload) -> Vec<u8> {
         "view": event.view_id,
         "revision": event.revision,
         "signature": event.signature,
+        "refresh": event.refresh,
         "event": event.event,
         "target": event.target,
         "action": event.action,
@@ -562,6 +571,10 @@ pub fn decode_dom_event_payload(bytes: &[u8]) -> Result<Option<DomEventPayload>,
         view_id: required_u64(object, "view")?,
         revision: required_u64(object, "revision")?,
         signature: required_u64(object, "signature")?,
+        refresh: object
+            .get("refresh")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(true),
         event: required_string(object, "event")?,
         target: required_string(object, "target")?,
         action: object
@@ -1160,6 +1173,7 @@ mod tests {
             view_id: 11,
             revision: 13,
             signature: 17,
+            refresh: false,
             event: "submit".to_owned(),
             target: "chat-composer".to_owned(),
             action: "chat_post".to_owned(),
@@ -1171,6 +1185,12 @@ mod tests {
         let payload = dom_event_payload_json(&event);
 
         assert_eq!(decode_dom_event_payload(&payload).unwrap(), Some(event));
+        let default_refresh = decode_dom_event_payload(
+            br#"{"type":"dom_event","session":7,"view":11,"revision":13,"signature":17,"event":"submit","target":"chat-composer","action":"chat_post","fields":{"text":"hello"}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(default_refresh.refresh);
         assert_eq!(
             decode_dom_event_payload(br#"{"type":"other","fields":{}}"#).unwrap(),
             None

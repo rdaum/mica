@@ -532,13 +532,13 @@ return actor_symbol
         provider_sub: &str,
     ) -> Result<LocalAuthenticatedUser, String> {
         let user_id = self
-            .ensure_user_exists(login, "local", &provider_sub)
+            .ensure_user_exists(login, "local", provider_sub)
             .await?;
         let password_hash =
             hash_password(password).map_err(|error| format!("failed to hash password: {error}"))?;
         self.set_local_password_hash(&user_id, &password_hash)
             .await?;
-        self.ensure_user_person(&user_id, "local", &provider_sub, display_name)
+        self.ensure_user_person(&user_id, "local", provider_sub, display_name)
             .await?;
         Ok(LocalAuthenticatedUser {
             user_id,

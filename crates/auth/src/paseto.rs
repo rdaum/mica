@@ -156,7 +156,7 @@ fn try_parse_token(
     footer: &Footer,
 ) -> Result<serde_json::Value, PasetoError> {
     PasetoParser::<V4, Local>::default()
-        .set_footer(footer.clone())
+        .set_footer(*footer)
         .parse(token, key)
         .map_err(|e| {
             let msg = format!("{e}");
@@ -239,7 +239,7 @@ pub fn decode_session_token(
 }
 
 fn hex_decode(hex: &str) -> Result<Vec<u8>, ()> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(());
     }
     (0..hex.len())

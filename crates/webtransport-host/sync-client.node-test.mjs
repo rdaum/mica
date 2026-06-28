@@ -214,6 +214,14 @@ localFocused = false;
 focusAfterSubmit({ querySelector: () => null });
 assert.equal(fallbackFocused, true);
 
+fallbackFocused = false;
+focusAfterSubmit({
+  dataset: { syncPreserveFocus: "true" },
+  querySelector: () => ({ focus: () => (localFocused = true) }),
+});
+assert.equal(localFocused, false);
+assert.equal(fallbackFocused, false);
+
 const commandInput = {
   value: "look",
   defaultValue: "look",

@@ -447,11 +447,10 @@ fn dsml_parameter_json_value(raw_value: &str, is_string: bool) -> serde_json::Va
     if let Ok(value) = trimmed.parse::<i64>() {
         return serde_json::Value::Number(value.into());
     }
-    if let Ok(value) = trimmed.parse::<f64>() {
-        if let Some(number) = serde_json::Number::from_f64(value) {
+    if let Ok(value) = trimmed.parse::<f64>()
+        && let Some(number) = serde_json::Number::from_f64(value) {
             return serde_json::Value::Number(number);
         }
-    }
     serde_json::Value::String(raw_value.to_owned())
 }
 

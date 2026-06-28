@@ -148,11 +148,16 @@ const SUPPORTED_ATTRIBUTES = new Set([
   "data-command",
   "data-entity",
   "data-sync-action",
+  "data-sync-coalesce",
   "data-sync-debounce",
   "data-sync-disable-with",
   "data-sync-event",
+  "data-sync-fire-and-forget",
   "data-sync-follow",
   "data-sync-key",
+  "data-sync-poll-ms",
+  "data-sync-preserve-focus",
+  "data-sync-reset",
   "data-sync-submit-key",
   "data-sync-throttle",
   "data-sync-on-viewport-top",
@@ -846,6 +851,9 @@ function reconcileChildren(parent, nodes) {
 }
 
 export function focusAfterSubmit(form) {
+  if (form?.dataset?.syncPreserveFocus === "true") {
+    return;
+  }
   const preferred =
     document.getElementById("command") ??
     form.querySelector("input[name='text']:not([type='hidden'])") ??
@@ -1269,6 +1277,7 @@ export class MicaWebTransportSyncClient {
         view: view.toString(),
         revision: revision.toString(),
         signature: signature.toString(),
+        refresh: event.refresh !== false,
         event: String(event.event),
         target: String(event.target ?? ""),
         action: String(event.action ?? ""),
@@ -1444,6 +1453,7 @@ export class MicaSseSyncClient {
         view: view.toString(),
         revision: revision.toString(),
         signature: signature.toString(),
+        refresh: event.refresh !== false,
         event: String(event.event),
         target: String(event.target ?? ""),
         action: String(event.action ?? ""),
@@ -1493,7 +1503,7 @@ export function bootstrapServerRenderedSync(mount, status) {
     view: BigInt(mount.dataset.view),
     revision: BigInt(mount.dataset.revision),
     signature: BigInt(mount.dataset.signature),
-    pollMs: parseInt(params.get("pollMs") ?? "1000", 10),
+    pollMs: parseInt(params.get("pollMs") ?? mount.dataset.syncPollMs ?? "0", 10),
   };
   let connected = false;
   let client;
@@ -1618,7 +1628,9 @@ export function bootstrapServerRenderedSync(mount, status) {
         if (
           pending.kind === event.kind &&
           pending.action === event.action &&
-          pending.target === event.target
+          (event.coalesceKey
+            ? pending.coalesceKey === event.coalesceKey
+            : pending.target === event.target)
         ) {
           pendingDomEvents.splice(index, 1);
         }
@@ -1626,6 +1638,18 @@ export function bootstrapServerRenderedSync(mount, status) {
     }
     pendingDomEvents.push(event);
     drainDomEvents();
+  }
+
+  function sendDomEventFireAndForget(event) {
+    if (!connected || !initialSynced) {
+      enqueueDomEvent(event);
+      return;
+    }
+    event.payload.revision = state.revision;
+    event.payload.signature = state.signature;
+    client.sendDomEvent(event.payload).catch((error) => {
+      setStatus(`Event failed: ${String(error)}`);
+    });
   }
 
   async function drainDomEvents() {
@@ -1928,10 +1952,13 @@ export function bootstrapServerRenderedSync(mount, status) {
       return;
     }
     const action = form.dataset.syncAction ?? "";
-    enqueueDomEvent({
+    const coalescePending = form.dataset.syncCoalesce === "true";
+    const syncEvent = {
       kind: "submit",
       target: form,
       action,
+      coalescePending,
+      coalesceKey: coalescePending ? `${action}:${form.id || form.dataset.syncAction || ""}` : "",
       begin: () => beginSubmitLoading(form, submit),
       end: endSubmitLoading,
       afterAck: () => {
@@ -1948,12 +1975,18 @@ export function bootstrapServerRenderedSync(mount, status) {
         view: state.view,
         revision: state.revision,
         signature: state.signature,
+        refresh: form.dataset.syncFireAndForget !== "true",
         event: "submit",
         target: form.id,
         action,
         fields,
       },
-    });
+    };
+    if (form.dataset.syncFireAndForget === "true") {
+      sendDomEventFireAndForget(syncEvent);
+      return;
+    }
+    enqueueDomEvent(syncEvent);
   }
 
   mount.addEventListener("submit", async (event) => {

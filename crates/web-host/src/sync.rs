@@ -23,14 +23,13 @@ use mica_host_protocol::{
     decode_sync_envelope, diff_dom_nodes, dom_patch_payload_json, sync_envelope_from_value,
     sync_payload_signature, sync_u64_from_value, sync_u64_value,
 };
-use mica_runtime::{TaskId, TaskOutcome};
+use mica_runtime::{SuspendKind, TaskId, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
-use tracing;
 
 const ENDPOINT_OUTPUT_HIGH_WATER_MESSAGES: usize = 128;
 const ENDPOINT_OUTPUT_DRAIN_MESSAGES: usize = 64;
@@ -202,6 +201,14 @@ impl SessionOutput {
             if state.closed {
                 return Err("session writer is closed".to_owned());
             }
+            if envelope.kind == SyncMessageKind::ViewSnapshot {
+                state.messages.retain(|message| match message {
+                    SessionOutputMessage::SyncEnvelope(queued) => {
+                        queued.session_id != envelope.session_id
+                            || queued.view_id != envelope.view_id
+                    }
+                });
+            }
             state
                 .messages
                 .push_back(SessionOutputMessage::SyncEnvelope(envelope));
@@ -211,6 +218,16 @@ impl SessionOutput {
             waker.wake();
         }
         Ok(())
+    }
+
+    fn has_pending_view_sync(&self, session_id: u64, view_id: u64) -> bool {
+        self.state.lock().unwrap().messages.iter().any(|message| {
+            matches!(
+                message,
+                SessionOutputMessage::SyncEnvelope(envelope)
+                    if envelope.session_id == session_id && envelope.view_id == view_id
+            )
+        })
     }
 
     fn close(&self) {
@@ -571,7 +588,9 @@ async fn route_dom_event(
         return send_recovery_snapshot(host, session, &event).await;
     };
     trace.mark("active_view");
-    if active.server_revision != event.revision || active.server_signature != event.signature {
+    if event.refresh
+        && (active.server_revision != event.revision || active.server_signature != event.signature)
+    {
         let rendered = render_sync_view(host, session.endpoint, event.view_id).await?;
         trace.mark("stale_render");
         if event.revision > rendered.revision {
@@ -583,6 +602,8 @@ async fn route_dom_event(
     let event_name = event.event.clone();
     let action = event.action.clone();
     let target = event.target.clone();
+    let route_start = Instant::now();
+    let sync_event_start = Instant::now();
     let submitted = host
         .driver
         .submit_invocation_for_endpoint(
@@ -599,6 +620,7 @@ async fn route_dom_event(
         )
         .await
         .map_err(|error| host.driver.format_error(&error))?;
+    let sync_event_us = sync_event_start.elapsed().as_micros();
     trace.mark("sync_event");
     match submitted.outcome {
         TaskOutcome::Complete { .. } => {}
@@ -626,8 +648,42 @@ async fn route_dom_event(
             return Err(message);
         }
     }
-    let result =
-        refresh_active_sync_views_after_dom_event(host, session.session_id, event.view_id).await;
+    if !event.refresh {
+        tracing::debug!(
+            target: "mica_web_host::sync",
+            endpoint = ?session.endpoint,
+            session_id = event.session_id,
+            view_id = event.view_id,
+            event = %event_name,
+            action = %action,
+            target = %target,
+            sync_event_us,
+            total_us = route_start.elapsed().as_micros(),
+            "sync DOM event routed without refresh"
+        );
+        return Ok(());
+    }
+    let refresh_start = Instant::now();
+    let result = refresh_active_sync_views_after_dom_event(
+        host,
+        session.session_id,
+        event.view_id,
+        action.as_str(),
+    )
+    .await;
+    let refresh_us = refresh_start.elapsed().as_micros();
+    tracing::debug!(
+        target: "mica_web_host::sync",
+        endpoint = ?session.endpoint,
+        session_id = event.session_id,
+        view_id = event.view_id,
+        event = %event_name,
+        action = %action,
+        sync_event_us,
+        refresh_us,
+        total_us = route_start.elapsed().as_micros(),
+        "sync DOM event routed"
+    );
     trace.mark("refresh");
     result
 }
@@ -663,7 +719,7 @@ async fn refresh_active_sync_views_for(
     sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
 ) -> Result<(), String> {
     for active in active_sync_views(sessions) {
-        refresh_active_sync_view_for(driver, sessions, active, false).await?;
+        refresh_active_sync_view_for(driver, sessions, active, false, None).await?;
     }
     Ok(())
 }
@@ -672,10 +728,18 @@ async fn refresh_active_sync_views_after_dom_event(
     host: &InProcessWebHost,
     source_session_id: u64,
     source_view_id: u64,
+    action: &str,
 ) -> Result<(), String> {
     for active in active_sync_views(&host.sync.sessions) {
         let force_ack = active.session_id == source_session_id && active.view_id == source_view_id;
-        refresh_active_sync_view_for(&host.driver, &host.sync.sessions, active, force_ack).await?;
+        refresh_active_sync_view_for(
+            &host.driver,
+            &host.sync.sessions,
+            active,
+            force_ack,
+            Some(action),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -685,18 +749,26 @@ async fn refresh_active_sync_view_for(
     sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
     active: ActiveSyncView,
     force_ack: bool,
+    action: Option<&str>,
 ) -> Result<(), String> {
     let _refresh_timer = crate::metrics::start_sync_phase(SyncRenderPhase::Refresh);
+    let refresh_start = Instant::now();
+    let revision_start = Instant::now();
     let revision = render_sync_revision(driver, active.endpoint, active.view_id).await?;
+    let revision_us = revision_start.elapsed().as_micros();
     if revision == active.server_revision && active.last_tree.is_some() {
         if force_ack {
+            let payload_start = Instant::now();
             let payload = {
                 let _payload_timer =
                     crate::metrics::start_sync_phase(SyncRenderPhase::DeltaPayload);
                 dom_patch_payload_json(active.view_id, active.server_revision, &[])
             };
+            let payload_us = payload_start.elapsed().as_micros();
             crate::metrics::record_sync_patch_count(0);
             crate::metrics::record_sync_envelope(SyncEnvelopeKind::Ack, payload.len());
+            let payload_len = payload.len();
+            let send_start = Instant::now();
             send_sync_envelope_to(
                 sessions,
                 active.session_id,
@@ -711,25 +783,75 @@ async fn refresh_active_sync_view_for(
                     payload,
                 },
             )?;
+            tracing::debug!(
+                target: "mica_web_host::sync",
+                endpoint = ?active.endpoint,
+                session_id = active.session_id,
+                view_id = active.view_id,
+                action = ?action,
+                force_ack,
+                changed = false,
+                revision_us,
+                payload_us,
+                send_us = send_start.elapsed().as_micros(),
+                total_us = refresh_start.elapsed().as_micros(),
+                payload_bytes = payload_len,
+                patches = 0usize,
+                "sync refresh view"
+            );
         }
         return Ok(());
     }
 
-    let rendered = render_sync_view_for(driver, active.endpoint, active.view_id).await?;
-    let envelope = if let Some(last_tree) = &active.last_tree {
+    let render_start = Instant::now();
+    let rendered =
+        render_sync_view_for_revision(driver, active.endpoint, active.view_id, revision).await?;
+    let render_us = render_start.elapsed().as_micros();
+    let has_queued_view_update = has_pending_sync_view(sessions, active.session_id, active.view_id);
+    let envelope = if has_queued_view_update {
+        crate::metrics::record_sync_envelope(SyncEnvelopeKind::Snapshot, rendered.payload.len());
+        tracing::debug!(
+            target: "mica_web_host::sync",
+            endpoint = ?active.endpoint,
+            session_id = active.session_id,
+            view_id = active.view_id,
+            action = ?action,
+            force_ack,
+            changed = true,
+            coalesced = true,
+            revision_us,
+            render_us,
+            total_us = refresh_start.elapsed().as_micros(),
+            payload_bytes = rendered.payload.len(),
+            "sync refresh view"
+        );
+        snapshot_envelope(
+            active.session_id,
+            active.view_id,
+            active.client_revision,
+            active.client_signature,
+            &rendered,
+        )
+    } else if let Some(last_tree) = &active.last_tree {
+        let diff_start = Instant::now();
         let patches = {
             let _diff_timer = crate::metrics::start_sync_phase(SyncRenderPhase::Diff);
             diff_dom_nodes(last_tree, &rendered.tree)
         };
+        let diff_us = diff_start.elapsed().as_micros();
         crate::metrics::record_sync_patch_count(patches.len());
         if patches.is_empty() {
             if force_ack {
+                let payload_start = Instant::now();
                 let payload = {
                     let _payload_timer =
                         crate::metrics::start_sync_phase(SyncRenderPhase::DeltaPayload);
                     dom_patch_payload_json(active.view_id, rendered.revision, &[])
                 };
+                let payload_us = payload_start.elapsed().as_micros();
                 crate::metrics::record_sync_envelope(SyncEnvelopeKind::Ack, payload.len());
+                let payload_len = payload.len();
+                let send_start = Instant::now();
                 send_sync_envelope_to(
                     sessions,
                     active.session_id,
@@ -744,15 +866,53 @@ async fn refresh_active_sync_view_for(
                         payload,
                     },
                 )?;
+                tracing::debug!(
+                    target: "mica_web_host::sync",
+                    endpoint = ?active.endpoint,
+                    session_id = active.session_id,
+                    view_id = active.view_id,
+                    action = ?action,
+                    force_ack,
+                    changed = true,
+                    revision_us,
+                    render_us,
+                    diff_us,
+                    payload_us,
+                    send_us = send_start.elapsed().as_micros(),
+                    total_us = refresh_start.elapsed().as_micros(),
+                    payload_bytes = payload_len,
+                    patches = 0usize,
+                    "sync refresh view"
+                );
             }
             store_rendered_sync_view_in(sessions, active.session_id, active.view_id, &rendered);
             return Ok(());
         }
+        let patch_count = patches.len();
+        let payload_start = Instant::now();
         let payload = {
             let _payload_timer = crate::metrics::start_sync_phase(SyncRenderPhase::DeltaPayload);
             dom_patch_payload_json(active.view_id, rendered.revision, &patches)
         };
+        let payload_us = payload_start.elapsed().as_micros();
         crate::metrics::record_sync_envelope(SyncEnvelopeKind::Delta, payload.len());
+        tracing::debug!(
+            target: "mica_web_host::sync",
+            endpoint = ?active.endpoint,
+            session_id = active.session_id,
+            view_id = active.view_id,
+            action = ?action,
+            force_ack,
+            changed = true,
+            revision_us,
+            render_us,
+            diff_us,
+            payload_us,
+            total_us = refresh_start.elapsed().as_micros(),
+            payload_bytes = payload.len(),
+            patches = patch_count,
+            "sync refresh view"
+        );
         SyncEnvelope {
             kind: SyncMessageKind::ViewDelta,
             session_id: active.session_id,
@@ -811,6 +971,16 @@ async fn render_sync_view_for(
     let trace = SyncTrace::new("render");
     let revision = render_sync_revision(driver, endpoint, view_id).await?;
     trace.mark("revision");
+    render_sync_view_for_revision(driver, endpoint, view_id, revision).await
+}
+
+async fn render_sync_view_for_revision(
+    driver: &CompioTaskDriver,
+    endpoint: Identity,
+    view_id: u64,
+    revision: u64,
+) -> Result<RenderedSyncView, String> {
+    let trace = SyncTrace::new("render");
     let tree_value = {
         let _tree_timer = crate::metrics::start_sync_phase(SyncRenderPhase::Tree);
         submit_sync_invocation_for(
@@ -904,8 +1074,19 @@ fn send_sync_envelope_to(
         return Ok(());
     };
     let _send_timer = crate::metrics::start_sync_phase(SyncRenderPhase::SendEnvelope);
-    let result = session.output.send_sync_envelope(envelope);
-    result
+    session.output.send_sync_envelope(envelope)
+}
+
+fn has_pending_sync_view(
+    sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
+    session_id: u64,
+    view_id: u64,
+) -> bool {
+    sessions
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .is_some_and(|session| session.output.has_pending_view_sync(session_id, view_id))
 }
 
 fn sync_u64_from_task_value(selector: &str, value: Value) -> Result<u64, String> {
@@ -1099,14 +1280,17 @@ fn start_event_pump(
     compio::runtime::spawn(async move {
         while !stop_events.load(Ordering::Relaxed) {
             let events = driver.wait_events().await;
-            let mut refresh_views = false;
-            for event in events {
-                refresh_views |= route_driver_event(&sessions, event);
-            }
-            if refresh_views
-                && let Err(error) = refresh_active_sync_views_for(&driver, &sessions).await
-            {
-                tracing::warn!(error = %error, "failed to refresh active HTTP sync views");
+            if route_driver_events(&sessions, events) {
+                loop {
+                    if let Err(error) = refresh_active_sync_views_for(&driver, &sessions).await {
+                        tracing::warn!(error = %error, "failed to refresh active HTTP sync views");
+                    }
+                    let pending = driver.drain_events();
+                    let refresh_again = route_driver_events(&sessions, pending);
+                    if !refresh_again {
+                        break;
+                    }
+                }
             }
         }
     })
@@ -1157,15 +1341,23 @@ fn route_driver_event(
             }
             true
         }
-        DriverEvent::TaskCompleted { task_id, .. } => {
-            let _ = complete_pending_sync_task(sessions, task_id);
-            true
-        }
+        DriverEvent::TaskCompleted { task_id, .. } => complete_pending_sync_task(sessions, task_id),
         DriverEvent::TaskAborted { task_id, .. } | DriverEvent::TaskFailed { task_id, .. } => {
             complete_pending_sync_task(sessions, task_id)
         }
-        DriverEvent::TaskSuspended { .. } => false,
+        DriverEvent::TaskSuspended { kind, .. } => matches!(kind, SuspendKind::Commit),
     }
+}
+
+fn route_driver_events(
+    sessions: &Arc<Mutex<HashMap<u64, Arc<SyncSession>>>>,
+    events: Vec<DriverEvent>,
+) -> bool {
+    let mut refresh = false;
+    for event in events {
+        refresh = route_driver_event(sessions, event) || refresh;
+    }
+    refresh
 }
 
 fn complete_pending_sync_task(
@@ -1260,6 +1452,39 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn sse_output_snapshot_replaces_queued_updates_for_same_view() {
+        let output = SessionOutput::new();
+
+        output
+            .send_sync_envelope(test_envelope(SyncMessageKind::ViewDelta, 7, 21, 1))
+            .unwrap();
+        output
+            .send_sync_envelope(test_envelope(SyncMessageKind::ViewDelta, 7, 22, 1))
+            .unwrap();
+        output
+            .send_sync_envelope(test_envelope(SyncMessageKind::ViewSnapshot, 7, 21, 2))
+            .unwrap();
+
+        let messages = output.drain_batch(8);
+        let envelopes: Vec<_> = messages
+            .into_iter()
+            .map(|message| match message {
+                SessionOutputMessage::SyncEnvelope(envelope) => envelope,
+            })
+            .collect();
+
+        assert_eq!(
+            envelopes
+                .iter()
+                .map(|envelope| envelope.view_id)
+                .collect::<Vec<_>>(),
+            vec![22, 21]
+        );
+        assert_eq!(envelopes[1].kind, SyncMessageKind::ViewSnapshot);
+        assert_eq!(envelopes[1].server_revision, 2);
+    }
 
     #[test]
     fn sse_sync_session_persists_mud_actor_and_command() {
@@ -1357,6 +1582,46 @@ mod tests {
         assert!(session.sync.lock().unwrap().pending_tasks.is_empty());
     }
 
+    #[test]
+    fn sse_unrelated_completed_task_does_not_refresh_views() {
+        let endpoint = Identity::new(0x00ee_0000_0000_0100).unwrap();
+        let session = SyncSession::new(7, endpoint, None);
+        session.sync.lock().unwrap().pending_tasks.insert(11);
+        let sessions = Arc::new(Mutex::new(HashMap::from([(7u64, session.clone())])));
+
+        let routed = route_driver_event(
+            &sessions,
+            DriverEvent::TaskCompleted {
+                task_id: 12,
+                value: Value::int(22).unwrap(),
+            },
+        );
+
+        assert!(!routed);
+        assert_eq!(
+            session.sync.lock().unwrap().pending_tasks,
+            HashSet::from([11])
+        );
+    }
+
+    fn test_envelope(
+        kind: SyncMessageKind,
+        session_id: u64,
+        view_id: u64,
+        revision: u64,
+    ) -> SyncEnvelope {
+        SyncEnvelope {
+            kind,
+            session_id,
+            view_id,
+            client_revision: revision.saturating_sub(1),
+            client_signature: revision.saturating_sub(1),
+            server_revision: revision,
+            server_signature: revision,
+            payload: format!("payload-{revision}").into_bytes(),
+        }
+    }
+
     fn run_mud_sse_client(addr: SocketAddr) -> Result<(), String> {
         let session_id = 7u64;
         let mut stream = open_event_stream(addr, session_id)?;
@@ -1384,7 +1649,7 @@ mod tests {
         let snapshot_payload: serde_json::Value = serde_json::from_slice(&snapshot.payload)
             .map_err(|error| format!("failed to parse snapshot payload: {error}"))?;
         let snapshot_text = serde_json::to_string(&snapshot_payload).unwrap();
-        if !snapshot_text.contains("mud-shell") || !snapshot_text.contains("The Mica Rooms") {
+        if !snapshot_text.contains("mud-shell") || !snapshot_text.contains("Timbran Hotel") {
             return Err("snapshot did not contain the MUD world view".to_owned());
         }
 
@@ -1407,6 +1672,7 @@ mod tests {
                             view_id: 21,
                             revision: current.server_revision,
                             signature: current.server_signature,
+                            refresh: true,
                             event: "submit".to_owned(),
                             target: "mud-command".to_owned(),
                             action: "mud_command".to_owned(),
@@ -1488,6 +1754,7 @@ mod tests {
                             view_id: 21,
                             revision: current.server_revision,
                             signature: current.server_signature,
+                            refresh: true,
                             event: "submit".to_owned(),
                             target: "noop".to_owned(),
                             action: "does_not_exist".to_owned(),

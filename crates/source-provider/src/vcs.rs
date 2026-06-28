@@ -343,11 +343,10 @@ impl VcsProvider {
             match (from_files.get(name), to_files.get(name)) {
                 (None, Some(_)) => result.push((name.clone(), ChangeKind::Added)),
                 (Some(_), None) => result.push((name.clone(), ChangeKind::Removed)),
-                (Some(from_id), Some(to_id)) => {
-                    if from_id != to_id {
+                (Some(from_id), Some(to_id))
+                    if from_id != to_id => {
                         result.push((name.clone(), ChangeKind::Modified));
                     }
-                }
                 _ => {}
             }
         }

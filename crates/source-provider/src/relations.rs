@@ -825,7 +825,7 @@ impl ComputedRelation for SyntaxLineRelation {
                 .resolve_path(reader, metadata.id(), &repository, &revision, &path)?;
         let document = self.provider.source_document(metadata.id(), &file)?;
         let syntax = document.syntax(&path);
-        let rows = syntax_lines(metadata.id(), &syntax, start_line, line_count)?
+        let rows = syntax_lines(metadata.id(), syntax, start_line, line_count)?
             .into_iter()
             .map(|line| {
                 Ok(Tuple::from([

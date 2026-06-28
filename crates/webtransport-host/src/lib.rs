@@ -48,7 +48,7 @@ mod tests {
     };
     use mica_runtime::SourceRunner;
     use mica_var::{Identity, Symbol, Value};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, HashMap, HashSet};
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
@@ -56,6 +56,38 @@ mod tests {
     use tokio::io::AsyncReadExt;
 
     type TestChunkMap = HashMap<u32, (u32, u32, Vec<Option<Vec<u8>>>)>;
+
+    #[test]
+    fn webtransport_output_snapshot_replaces_queued_updates_for_same_view() {
+        let output = SessionOutput::new();
+
+        output
+            .send_sync_envelope(test_envelope(SyncMessageKind::ViewDelta, 7, 21, 1))
+            .unwrap();
+        output.send_datagram(Bytes::from_static(b"plain")).unwrap();
+        output
+            .send_sync_envelope(test_envelope(SyncMessageKind::ViewDelta, 7, 22, 1))
+            .unwrap();
+        output
+            .send_sync_envelope(test_envelope(SyncMessageKind::ViewSnapshot, 7, 21, 2))
+            .unwrap();
+
+        let messages = output.drain_batch(8);
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(messages[0], SessionOutputMessage::Datagram(_)));
+        assert!(matches!(
+            &messages[1],
+            SessionOutputMessage::SyncEnvelope(envelope)
+                if envelope.view_id == 22 && envelope.kind == SyncMessageKind::ViewDelta
+        ));
+        assert!(matches!(
+            &messages[2],
+            SessionOutputMessage::SyncEnvelope(envelope)
+                if envelope.view_id == 21
+                    && envelope.kind == SyncMessageKind::ViewSnapshot
+                    && envelope.server_revision == 2
+        ));
+    }
 
     #[test]
     fn sync_client_accepts_protocol_tags() {
@@ -92,6 +124,24 @@ mod tests {
             effect_datagram(endpoint, &Value::string("hello")).as_ref(),
             b"hello"
         );
+    }
+
+    fn test_envelope(
+        kind: SyncMessageKind,
+        session_id: u64,
+        view_id: u64,
+        revision: u64,
+    ) -> SyncEnvelope {
+        SyncEnvelope {
+            kind,
+            session_id,
+            view_id,
+            client_revision: revision.saturating_sub(1),
+            client_signature: revision.saturating_sub(1),
+            server_revision: revision,
+            server_signature: revision,
+            payload: format!("payload-{revision}").into_bytes(),
+        }
     }
 
     #[test]
@@ -249,6 +299,40 @@ mod tests {
         );
 
         assert_eq!(output.try_recv().unwrap().as_ref(), b"hello");
+    }
+
+    #[test]
+    fn unrelated_completed_task_does_not_refresh_views() {
+        let endpoint = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
+        let output = SessionOutput::new();
+        let sync = Mutex::new(SessionSyncState::default());
+        sync.lock().unwrap().pending_tasks.insert(11);
+        let sessions = Arc::new(Mutex::new(HashMap::from([(
+            endpoint,
+            Arc::new(SessionState { output, sync }),
+        )])));
+
+        let routed = route_driver_event(
+            &sessions,
+            DriverEvent::TaskCompleted {
+                task_id: 12,
+                value: Value::int(22).unwrap(),
+            },
+        );
+
+        assert!(!routed);
+        assert_eq!(
+            sessions
+                .lock()
+                .unwrap()
+                .get(&endpoint)
+                .unwrap()
+                .sync
+                .lock()
+                .unwrap()
+                .pending_tasks,
+            HashSet::from([11])
+        );
     }
 
     #[test]
@@ -639,6 +723,7 @@ mod tests {
                                 view_id: 11,
                                 revision: snapshot.server_revision,
                                 signature: snapshot.server_signature,
+                                refresh: true,
                                 event: "submit".to_owned(),
                                 target: "chat-composer".to_owned(),
                                 action: "chat_post".to_owned(),
@@ -707,6 +792,7 @@ mod tests {
                                 view_id: 11,
                                 revision: snapshot.server_revision,
                                 signature: snapshot.server_signature,
+                                refresh: true,
                                 event: "submit".to_owned(),
                                 target: "chat-composer".to_owned(),
                                 action: "does_not_exist".to_owned(),
@@ -773,6 +859,7 @@ mod tests {
                                 view_id: 11,
                                 revision: snapshot.server_revision,
                                 signature: 999,
+                                refresh: true,
                                 event: "submit".to_owned(),
                                 target: "chat-composer".to_owned(),
                                 action: "chat_post".to_owned(),
@@ -836,6 +923,7 @@ mod tests {
                                 view_id: 11,
                                 revision: snapshot.server_revision,
                                 signature: snapshot.server_signature,
+                                refresh: true,
                                 event: "submit".to_owned(),
                                 target: "chat-composer".to_owned(),
                                 action: "chat_post".to_owned(),

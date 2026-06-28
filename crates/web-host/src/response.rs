@@ -68,8 +68,8 @@ fn url_decode(input: &str) -> String {
     let mut bytes = input.bytes();
     while let Some(b) = bytes.next() {
         if b == b'%' {
-            let hi = bytes.next().and_then(|b| hex_val(b));
-            let lo = bytes.next().and_then(|b| hex_val(b));
+            let hi = bytes.next().and_then(hex_val);
+            let lo = bytes.next().and_then(hex_val);
             if let (Some(hi), Some(lo)) = (hi, lo) {
                 result.push((hi << 4 | lo) as char);
             } else {

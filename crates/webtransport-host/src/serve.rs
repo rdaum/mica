@@ -297,6 +297,24 @@ async fn write_datagram_loop(
                     })?;
                     compio::time::sleep(Duration::from_millis(2)).await;
                 }
+                SessionOutputMessage::SyncEnvelope(envelope) => {
+                    let datagrams = crate::sync::sync_envelope_datagrams(envelope.as_ref());
+                    for _ in 0..crate::SYNC_ENVELOPE_SEND_ATTEMPTS {
+                        for datagram in &datagrams {
+                            crate::metrics::metrics().outgoing_datagrams.inc();
+                            crate::metrics::metrics()
+                                .outgoing_bytes
+                                .add(datagram.len() as isize);
+                            sender.send_datagram(datagram.clone()).map_err(|error| {
+                                crate::metrics::metrics()
+                                    .connection_errors
+                                    .inc(ConnectionErrorKind::DatagramWrite);
+                                format!("failed to send WebTransport datagram: {error}")
+                            })?;
+                            compio::time::sleep(Duration::from_millis(2)).await;
+                        }
+                    }
+                }
             }
         }
     }
