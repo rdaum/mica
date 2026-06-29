@@ -53,8 +53,12 @@ Supporting material:
 ## Engineering Policy
 
 - Keep changes narrow, explicit, and grounded in the current architecture.
-- Prefer cohesive APIs over compatibility layers. If an API shape is wrong,
+- **Prefer cohesive APIs over compatibility layers**. If an API shape is wrong,
   change it cleanly rather than preserving stale call paths.
+**- If working on apps/ type code and you identify a mishaped API, missing feature,
+  missing language syntax or a bug in the underlying Mica runtime it is imperative
+  that you stop development and alert the user with your observations
+  and recommendations.**
 - Do not design for hypothetical downstream customers unless the maintainer
   asks for that constraint. This repo is still taking shape.
 - Names must describe what code does now, not its history or implementation
