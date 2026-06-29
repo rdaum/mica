@@ -15,16 +15,19 @@ make_identity(:ui/inspect_action)
 make_identity(:ui/command_action)
 make_identity(:ui/load_older_messages_action)
 make_identity(:ui/object_browser_search_action)
+make_identity(:ui/select_workspace_action)
 
 assert ui/View(31)
 assert Delegates(#ui/inspect_action, #ui/sync_action, 0)
 assert Delegates(#ui/command_action, #ui/sync_action, 0)
 assert Delegates(#ui/load_older_messages_action, #ui/sync_action, 0)
 assert Delegates(#ui/object_browser_search_action, #ui/sync_action, 0)
+assert Delegates(#ui/select_workspace_action, #ui/sync_action, 0)
 "agent_inspect".ui/syncAction = #ui/inspect_action
 "agent_command".ui/syncAction = #ui/command_action
 "agent_load_older_messages".ui/syncAction = #ui/load_older_messages_action
 "agent_object_browser_search".ui/syncAction = #ui/object_browser_search_action
+"agent_select_workspace".ui/syncAction = #ui/select_workspace_action
 
 grant #web
   read:
@@ -198,6 +201,7 @@ grant role #operator
     :session/LoopPhase
     :session/SteeringQueue
     :session/FollowUpQueue
+    :AgentWorkspace
     :Transcript
     :TranscriptAgent
     :TranscriptWorkspace
@@ -248,11 +252,13 @@ grant role #operator
     :ui/truncate
     :ui/workspace_panel_node
     :ui/workspace_row_node
+    :ui/workspace_select_node
     :ui/object_browser_panel_node
     :ui/object_browser_results_node
     :ui/object_browser_row_node
     :ui/object_browser_matches
     :ui/object_browser_description
+    :ui/entity_kind
     :ui/inspector_node
     :ui/entity_fact_node
     :ui/entity_facts_node
@@ -351,6 +357,8 @@ grant role #operator
     :llm/assistant_text
     :frob
     :frob_delegate
+    :frob_value
+    :is_frob
     :actor
 end
 
@@ -366,8 +374,15 @@ verb ui/agent_name(agent @ #agent)
   return agent/name(agent)
 end
 
-verb ui/workspace_name(workspace)
-  return workspace/name(workspace)
+verb ui/workspace_name(entity)
+  if is_frob(entity)
+    let delegate = frob_delegate(entity)
+    if delegate == #target/file
+      return frob_value(entity)
+    end
+    return to_literal(entity)
+  end
+  return workspace/name(entity)
 end
 
 verb ui/workspace_root_text(workspace)

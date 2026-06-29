@@ -200,6 +200,11 @@ input {
 .entity-action {
   display: inline;
 }
+.mini-button.disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
 .workspace-panel {
   flex: 0 0 auto;
 }

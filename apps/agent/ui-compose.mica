@@ -58,6 +58,40 @@ verb ui/auth_required_node()
   </main>
 end
 
+verb ui/entity_kind(entity)
+  if is_frob(entity)
+    let delegate = frob_delegate(entity)
+    if delegate == #target/file
+      return "file"
+    end
+    if delegate == #target/symbol
+      return "symbol"
+    end
+    if delegate == #target/diff
+      return "diff"
+    end
+    if delegate == #target/task
+      return "task"
+    end
+    return "object"
+  end
+  if Delegates(entity, #workspace, 0)
+    return "workspace"
+  end
+  if Delegates(entity, #agent, 0)
+    return "agent"
+  end
+  return "object"
+end
+
+verb ui/workspace_select_node(workspace)
+  let entity_label = to_literal(workspace)
+  return dom <form class="agent-action entity-action" data-sync-event="submit" data-sync-action="agent_select_workspace">
+    <input type="hidden" name="entity" value={entity_label} />
+    <button type="submit" class="mini-button" data-entity={entity_label}>{ui/icon_label_node("folder", "Select")}</button>
+  </form>
+end
+
 verb ui/workspace_row_node(agent @ #agent, workspace)
   let name = ui/workspace_name(workspace)
   let root = ui/workspace_root_text(workspace)
@@ -65,13 +99,21 @@ verb ui/workspace_row_node(agent @ #agent, workspace)
   if root == ""
     root_text = "no root bound"
   end
+  let active = workspace/active(agent)
+  let select_node = ""
+  if active == workspace
+    select_node = dom <span class="mini-button disabled">{ui/icon_label_node("folder", "Active")}</span>
+  else
+    select_node = ui/workspace_select_node(workspace)
+  end
   return dom <li class="workspace-row" data-sync-key={to_literal(workspace)}>
     <div class="workspace-main">
       <strong>{name}</strong>
       <span class="workspace-root">{root_text}</span>
     </div>
     <div class="workspace-actions">
-      {ui/entity_action_node("", workspace, "", ui/icon_label_node("folder", "Open"), "mini-button")}
+      {ui/entity_action_node("", workspace, "", ui/icon_label_node("eye", "Inspect"), "mini-button")}
+      {select_node}
     </div>
   </li>
 end
@@ -123,6 +165,10 @@ verb ui/object_browser_matches(actor @ #agent, entity, needle @ #string)
     return true
   end
 
+  if is_frob(entity)
+    return false
+  end
+
   let description = entity.description
   if description != nothing && string_contains(lower(description), needle)
     return true
@@ -134,13 +180,17 @@ end
 verb ui/object_browser_row_node(actor @ #agent, entity)
   let name = ui/workspace_name(entity)
   let description = ui/object_browser_description(entity)
+  let icon = "eye"
+  if is_frob(entity) && frob_delegate(entity) == #target/file
+    icon = "code"
+  end
   return dom <li class="object-browser-row" data-sync-key={to_literal(entity)}>
     <div class="object-browser-main">
       <strong>{name}</strong>
       <p>{description}</p>
     </div>
     <div class="object-browser-actions">
-      {ui/entity_action_node("", entity, "", ui/icon_label_node("eye", "Inspect"), "mini-button")}
+      {ui/entity_action_node("", entity, "", ui/icon_label_node(icon, "Inspect"), "mini-button")}
     </div>
   </li>
 end
@@ -148,7 +198,7 @@ end
 verb ui/object_browser_results_node(actor @ #agent, query @ #string)
   let needle = lower(trim(query))
   if needle == ""
-    return dom <p class="muted mica-empty">Search workspaces, files, and symbols by name or description.</p>
+    return dom <p class="muted mica-empty">Search workspaces, files, and symbols by name or path.</p>
   end
 
   let rows = []
@@ -161,8 +211,16 @@ verb ui/object_browser_results_node(actor @ #agent, query @ #string)
     end
   end
 
+  for found in source/IndexedFile(?idx, ?repo, ?filepath, ?filetitle, ?lang, ?model)
+    if count < 16 && string_contains(lower(found[:filepath]), needle)
+      let file_entity = frob(#target/file, found[:filepath])
+      rows = [@rows, ui/object_browser_row_node(actor, file_entity)]
+      count = count + 1
+    end
+  end
+
   if rows == []
-    rows = [dom <li class="muted">No workspaces matched.</li>]
+    rows = [dom <li class="muted">No workspaces or files matched.</li>]
   elseif count == 16
     rows = [@rows, dom <li class="muted">Showing first 16 matches.</li>]
   end
@@ -331,14 +389,14 @@ end
 
 verb ui/entity_facts_node(agent @ #agent, entity)
   let facts = []
-  let kind = "object"
-  if Delegates(entity, #workspace, 0)
-    kind = "workspace"
-  elseif Delegates(entity, #agent, 0)
-    kind = "agent"
-  end
+  let kind = ui/entity_kind(entity)
   facts = [@facts, ui/entity_fact_node("kind", kind, "entity-kind")]
   facts = [@facts, ui/entity_fact_node("identity", to_literal(entity), "entity-id")]
+
+  if is_frob(entity) && frob_delegate(entity) == #target/file
+    let path = frob_value(entity)
+    facts = [@facts, ui/entity_fact_node("path", path, "entity-path")]
+  end
 
   if Delegates(entity, #workspace, 0)
     let root = ui/workspace_root_text(entity)
@@ -375,10 +433,6 @@ verb ui/inspector_node(agent @ #agent)
   if description == nothing
     description = ""
   end
-  let actions = []
-  if Delegates(selected, #workspace, 0)
-    actions = [@actions, ui/inspector_action_node("open workspace", ui/icon_label_node("folder", "Open"), "mini-button")]
-  end
 
   return dom <aside id="inspector" class={pulse_class} data-entity={to_literal(selected)}>
     <h2>Inspect</h2>
@@ -390,7 +444,6 @@ verb ui/inspector_node(agent @ #agent)
     </div>
     <p class="inspector-description">{description}</p>
     {ui/entity_facts_node(agent, selected)}
-    <div class="object-actions inspector-actions">{@actions}</div>
   </aside>
 end
 

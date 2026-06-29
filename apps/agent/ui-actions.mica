@@ -80,6 +80,26 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
   return true
 end
 
+verb ui/handle_sync_action(source @ #ui/select_workspace_action<_>, endpoint, session, view, event, target, fields)
+  if ui/View(view) == false || event != "submit"
+    return false
+  end
+
+  let current = ui/current_agent()
+  if current == nothing
+    return false
+  end
+
+  let workspace = ui/entity_from_literal(fields[:entity])
+  if workspace == nothing || Delegates(workspace, #workspace, 0) == false
+    return false
+  end
+
+  current.agentWorkspace = workspace
+  ui/bump_revision(endpoint())
+  return true
+end
+
 verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, view, event, target, fields)
   if ui/View(view) == false || (event != "submit" && event != "input")
     return false
