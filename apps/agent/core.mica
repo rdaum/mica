@@ -242,6 +242,14 @@ verb list_size_lt(items, target)
   return count < target
 end
 
+verb list_count(items)
+  let count = 0
+  for m in items
+    count = count + 1
+  end
+  return count
+end
+
 verb agent/resolve_model(agent @ #agent)
   let configured = agent.agentModel
   if configured != nothing

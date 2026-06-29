@@ -1361,10 +1361,10 @@ impl RegisterVm {
                 let relation = program.relation(*relation);
                 require_read(host.authority(), relation)?;
                 let bindings = self.resolve_bindings(program, program.bindings(*bindings));
-                let exists = !host
-                    .scan_relation(relation, &bindings)
-                    .map_err(RuntimeError::Kernel)?
-                    .is_empty();
+                let exists = match host.scan_relation(relation, &bindings) {
+                    Ok(rows) => !rows.is_empty(),
+                    Err(error) => return self.raise_kernel_error(error),
+                };
                 self.write_register_unchecked(*dst, Value::bool(exists));
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
@@ -1378,9 +1378,10 @@ impl RegisterVm {
                 let relation = program.relation(*relation);
                 require_read(host.authority(), relation)?;
                 let bindings = self.resolve_bindings(program, program.bindings(*bindings));
-                let rows = host
-                    .scan_relation(relation, &bindings)
-                    .map_err(RuntimeError::Kernel)?;
+                let rows = match host.scan_relation(relation, &bindings) {
+                    Ok(rows) => rows,
+                    Err(error) => return self.raise_kernel_error(error),
+                };
                 let outputs = program.query_bindings(*outputs);
                 let mut result = Vec::with_capacity(rows.len());
                 'row: for row in rows {
@@ -1409,8 +1410,11 @@ impl RegisterVm {
                 let relation = program.relation(*relation);
                 require_read(host.authority(), relation)?;
                 let key = self.resolve_operand_ref(program, *key);
-                let value = host
-                    .scan_relation(relation, &[Some(key), None])?
+                let rows = match host.scan_relation(relation, &[Some(key), None]) {
+                    Ok(rows) => rows,
+                    Err(error) => return self.raise_kernel_error(error),
+                };
+                let value = rows
                     .first()
                     .map(|row| row.values()[1].clone())
                     .unwrap_or_else(Value::nothing);
@@ -1456,9 +1460,10 @@ impl RegisterVm {
                 require_read(host.authority(), relation)?;
                 let (bindings, outputs) =
                     self.resolve_relation_bindings(program, program.relation_args(*args))?;
-                let rows = host
-                    .scan_relation(relation, &bindings)
-                    .map_err(RuntimeError::Kernel)?;
+                let rows = match host.scan_relation(relation, &bindings) {
+                    Ok(rows) => rows,
+                    Err(error) => return self.raise_kernel_error(error),
+                };
                 let value = if outputs.is_empty() {
                     Value::bool(!rows.is_empty())
                 } else {
@@ -2146,6 +2151,19 @@ impl RegisterVm {
 
     fn advance_ip_unchecked(&mut self) {
         self.current_frame_mut_unchecked().ip += 1;
+    }
+
+    /// Convert a KernelError into a raised Mica error value so that
+    /// `try/catch` can handle it. Without this, scan errors from
+    /// computed relations propagate as RuntimeErrors that crash the
+    /// task instead of being catchable.
+    fn raise_kernel_error(
+        &mut self,
+        error: mica_relation_kernel::KernelError,
+    ) -> Result<VmHostResponse, RuntimeError> {
+        let message = format!("{error:?}");
+        let error_value = Value::error(Symbol::intern("E_DB"), Some(message), None);
+        self.begin_raise(error_value)
     }
 
     fn intern_program(&mut self, program: Arc<Program>) -> usize {

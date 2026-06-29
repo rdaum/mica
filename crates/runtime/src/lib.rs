@@ -60,7 +60,7 @@ use mica_host_protocol::{
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
-    RelationKernel, RelationMetadata, RelationId, RelationRead,
+    RelationId, RelationKernel, RelationMetadata, RelationRead,
 };
 use mica_var::{Identity, PRIMITIVE_PROTOTYPES, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -6586,11 +6586,12 @@ fn render_runtime_error(
             format!("unknown builtin {}", render_symbol(*name, ":"))
         }
         RuntimeError::InvalidBuiltinCall { name, message } => {
-            format!("invalid builtin call {}: {message}", render_symbol(*name, ":"))
+            format!(
+                "invalid builtin call {}: {message}",
+                render_symbol(*name, ":")
+            )
         }
-        RuntimeError::Kernel(error) => {
-            render_kernel_error(error, identity_names, relation_names)
-        }
+        RuntimeError::Kernel(error) => render_kernel_error(error, identity_names, relation_names),
         _ => format!("{error:?}"),
     }
 }
@@ -6600,9 +6601,8 @@ fn render_kernel_error(
     identity_names: &BTreeMap<Identity, String>,
     relation_names: &BTreeMap<Identity, String>,
 ) -> String {
-    let render_relation = |relation: &RelationId| {
-        render_identity(*relation, identity_names, relation_names)
-    };
+    let render_relation =
+        |relation: &RelationId| render_identity(*relation, identity_names, relation_names);
     match error {
         KernelError::UnknownRelation(relation) => {
             format!("unknown relation {}", render_relation(relation))
@@ -6614,7 +6614,10 @@ fn render_kernel_error(
         KernelError::ReadOnlyRelation(relation) => {
             format!("relation {} is read-only", render_relation(relation))
         }
-        KernelError::MissingRequiredBindings { relation, positions } => {
+        KernelError::MissingRequiredBindings {
+            relation,
+            positions,
+        } => {
             format!(
                 "relation {} requires bindings at positions {:?}",
                 render_relation(relation),
@@ -6630,13 +6633,20 @@ fn render_kernel_error(
             render_relation(relation)
         ),
         KernelError::InvalidComputedRelation { relation, message } => {
-            format!("invalid computed relation {}: {message}", render_relation(relation))
+            format!(
+                "invalid computed relation {}: {message}",
+                render_relation(relation)
+            )
         }
         KernelError::NonPersistentValue { relation, tuple } => {
             format!(
                 "relation {} cannot store non-persistent value {}",
                 render_relation(relation),
-                render_value(&Value::list(tuple.values().to_vec()), identity_names, relation_names)
+                render_value(
+                    &Value::list(tuple.values().to_vec()),
+                    identity_names,
+                    relation_names
+                )
             )
         }
         KernelError::InvalidIndex {

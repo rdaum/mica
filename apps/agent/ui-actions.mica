@@ -102,6 +102,23 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
     return false
   end
 
+  // When the agent is streaming, route the message to the steering or
+  // follow-up queue instead of starting a new loop. The mode field is
+  // set by the client: default (empty/absent) = steer, "follow_up" = queue.
+  let streaming = endpoint.session/isStreaming
+  if streaming == true
+    let mode = ui/form_text(fields, :mode)
+    if mode == "follow_up"
+      session/followup_push(endpoint, line)
+    else
+      session/steering_push(endpoint, line)
+    end
+    endpoint().session/commandDraft = ""
+    endpoint.session/commandDraft = ""
+    ui/bump_revision(endpoint())
+    return true
+  end
+
   agent/append_message(current, "user", line)
 
   let selected = ui/entity_from_literal(fields[:entity])

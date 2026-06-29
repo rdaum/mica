@@ -3,6 +3,17 @@
 // Streaming flag set by agent/run_loop while the loop is in progress.
 make_functional_relation(:session/IsStreaming, 2, [0])
 
+// Loop phase: "thinking" (LLM call in progress), "executing" (tool
+// execution), "idle" (not running). Drives the activity panel.
+make_functional_relation(:session/LoopPhase, 2, [0])
+
+// Stage 4: steering and follow-up queues, keyed by endpoint.
+// Steering messages interrupt the loop mid-turn; follow-up messages
+// extend it after it would otherwise stop. Stored as list-valued
+// functional relations.
+make_functional_relation(:session/SteeringQueue, 2, [0])
+make_functional_relation(:session/FollowUpQueue, 2, [0])
+
 // Tool relations.
 make_identity(:tool)
 make_relation(:Tool, 1)
@@ -162,56 +173,61 @@ end
 
 // Glob matching: supports * (any sequence except /), ** (any sequence
 // including /), and ? (single character). The pattern is matched against
-// the full relative path.
+// the full relative path. Implemented iteratively with backtracking to
+// avoid exceeding the VM call-depth limit on long paths.
 verb glob/match(pattern @ #string, path @ #string)
   let p = string_chars(pattern)
   let s = string_chars(path)
-  return glob/match_at(p, s, 0, 0, string_len(pattern), string_len(path))
-end
+  let plen = string_len(pattern)
+  let slen = string_len(path)
+  let pi = 0
+  let si = 0
+  let star_pi = 0
+  let star_si = 0
+  let has_star = false
+  let is_globstar = false
 
-verb glob/match_at(p, s, pi, si, plen, slen)
-  if pi >= plen
-    return si >= slen
-  end
-
-  let pc = p[pi]
-  // Check for ** (matches across path separators)
-  if pc == "*" && pi + 1 < plen && p[pi + 1] == "*"
-    let next_pi = pi + 2
-    // ** matches zero or more characters (including /)
-    if glob/match_at(p, s, next_pi, si, plen, slen)
-      return true
+  while si < slen
+    let pc = ""
+    if pi < plen
+      pc = p[pi]
     end
-    if si < slen
-      return glob/match_at(p, s, pi, si + 1, plen, slen)
+
+    if pc == "*"
+      // check for ** (matches across path separators)
+      if pi + 1 < plen && p[pi + 1] == "*"
+        is_globstar = true
+        star_pi = pi + 2
+      else
+        is_globstar = false
+        star_pi = pi + 1
+      end
+      star_si = si
+      has_star = true
+      pi = star_pi
+    elseif pc == "?" || (pi < plen && pc == s[si])
+      pi = pi + 1
+      si = si + 1
+    elseif has_star
+      // backtrack: star matches one more character
+      star_si = star_si + 1
+      si = star_si
+      pi = star_pi
+      // single * cannot match past a path separator
+      if !is_globstar && star_si > 0 && s[star_si - 1] == "/"
+        return false
+      end
+    else
+      return false
     end
-    return false
   end
 
-  if pc == "*"
-    // * matches zero or more characters except /
-    if glob/match_at(p, s, pi + 1, si, plen, slen)
-      return true
-    end
-    if si < slen && s[si] != "/"
-      return glob/match_at(p, s, pi, si + 1, plen, slen)
-    end
-    return false
+  // skip trailing * and ** in pattern
+  while pi < plen && p[pi] == "*"
+    pi = pi + 1
   end
 
-  if si >= slen
-    return false
-  end
-
-  if pc == "?"
-    return glob/match_at(p, s, pi + 1, si + 1, plen, slen)
-  end
-
-  if pc == s[si]
-    return glob/match_at(p, s, pi + 1, si + 1, plen, slen)
-  end
-
-  return false
+  return pi >= plen
 end
 
 verb tool/glob(agent @ #agent, arguments @ #map)
@@ -372,7 +388,7 @@ verb agent/execute_tool_calls(agent @ #agent, assistant_message, calls)
       assert ToolCallName(tool_call, tool_name)
       assert ToolCallArguments(tool_call, args_text)
       tool_call.toolCallStatus = "pending"
-      ui/bump_revision(endpoint())
+      ui/flush(endpoint())
 
       let result
       try
@@ -398,7 +414,7 @@ verb agent/execute_tool_calls(agent @ #agent, assistant_message, calls)
       assert ToolResultDetails(tool_result, to_literal(result))
 
       executed = [@executed, {:tool_call_id -> call_id, :content -> content}]
-      ui/bump_revision(endpoint())
+      ui/flush(endpoint())
     end
   end
   return executed
@@ -463,25 +479,83 @@ verb agent/chat_with_tools(agent @ #agent, transcript)
   return llm/chat(model, messages, {:stream -> true}, tools)
 end
 
-// Stage 3: the agent loop. Submits to the LLM with the current transcript and
-// tool surface, executes any tool calls, appends results, and recurses until
-// the LLM stops calling tools. session/IsStreaming marks the loop as in
-// progress so the command bar can show a streaming indicator. Steering and
-// follow-up queues are stubbed (empty); Stage 4 replaces the
-// max_tool_rounds cap with a needs-follow-up loop driven by those queues.
+// Stage 4: steering and follow-up queue helpers.
+// The loop task and the sync event task share these relations. Conflicts
+// are retried by the runtime, so concurrent push/drain is safe.
+verb session/steering_push(endpoint, message @ #string)
+  let current = endpoint.session/SteeringQueue
+  if current == nothing
+    current = []
+  end
+  endpoint().session/SteeringQueue = [@current, message]
+  endpoint.session/SteeringQueue = [@current, message]
+end
+
+verb session/steering_drain(endpoint)
+  let current = endpoint.session/SteeringQueue
+  if current == nothing
+    current = []
+  end
+  endpoint().session/SteeringQueue = []
+  endpoint.session/SteeringQueue = []
+  return current
+end
+
+verb session/followup_push(endpoint, message @ #string)
+  let current = endpoint.session/FollowUpQueue
+  if current == nothing
+    current = []
+  end
+  endpoint().session/FollowUpQueue = [@current, message]
+  endpoint.session/FollowUpQueue = [@current, message]
+end
+
+verb session/followup_drain(endpoint)
+  let current = endpoint.session/FollowUpQueue
+  if current == nothing
+    current = []
+  end
+  endpoint().session/FollowUpQueue = []
+  endpoint.session/FollowUpQueue = []
+  return current
+end
+
+verb session/steering_count(endpoint)
+  let current = endpoint.session/SteeringQueue
+  if current == nothing
+    return 0
+  end
+  return list_count(current)
+end
+
+verb session/followup_count(endpoint)
+  let current = endpoint.session/FollowUpQueue
+  if current == nothing
+    return 0
+  end
+  return list_count(current)
+end
+
+// Stage 3+4: the agent loop. Submits to the LLM with the current transcript
+// and tool surface, executes any tool calls, appends results, and recurses
+// until the LLM stops calling tools. Steering messages are drained at the
+// top of each iteration and injected as user messages. Follow-up messages
+// extend the loop when it would otherwise stop.
 verb agent/run_loop(agent @ #agent, transcript)
   endpoint().session/isStreaming = true
-  ui/bump_revision(endpoint())
+  endpoint().session/loopPhase = "thinking"
+  ui/flush(endpoint())
 
   try
     agent/run_loop_body(agent, transcript)
   catch err
     agent/append_message(agent, "assistant", string_concat("(agent error: ", to_literal(err), ")"))
-    ui/bump_revision(endpoint())
+    ui/flush(endpoint())
   end
 
   endpoint().session/isStreaming = false
-  ui/bump_revision(endpoint())
+  endpoint().session/loopPhase = "idle"
+  ui/flush(endpoint())
 end
 
 verb agent/run_loop_body(agent @ #agent, transcript)
@@ -490,12 +564,25 @@ verb agent/run_loop_body(agent @ #agent, transcript)
   while round < max_rounds
     round = round + 1
 
+    // Drain steering messages at the top of each iteration.
+    // These arrive as user messages while the loop was suspended on the
+    // previous LLM call or tool execution.
+    let steering = session/steering_drain(endpoint())
+    if steering != []
+      for msg in steering
+        agent/append_message(agent, "user", msg)
+      end
+      ui/flush(endpoint())
+    end
+
     let response
     try
+      endpoint().session/loopPhase = "thinking"
+      ui/flush(endpoint())
       response = agent/chat_with_tools(agent, transcript)
     catch err
       agent/append_message(agent, "assistant", string_concat("(LLM error: ", to_literal(err), ")"))
-      ui/bump_revision(endpoint())
+      ui/flush(endpoint())
       response = nothing
     end
 
@@ -512,17 +599,28 @@ verb agent/run_loop_body(agent @ #agent, transcript)
           text = "(no response)"
         end
         agent/append_message(agent, "assistant", text)
-        ui/bump_revision(endpoint())
-        round = max_rounds
+        ui/flush(endpoint())
+
+        // The LLM stopped. Drain follow-up messages and continue if any.
+        let follow_up = session/followup_drain(endpoint())
+        if follow_up != []
+          for msg in follow_up
+            agent/append_message(agent, "user", msg)
+          end
+          ui/flush(endpoint())
+        else
+          round = max_rounds
+        end
       else
         let assistant_message = agent/append_message(agent, "assistant", text)
-        ui/bump_revision(endpoint())
+        endpoint().session/loopPhase = "executing"
+        ui/flush(endpoint())
         let results = agent/execute_tool_calls(agent, assistant_message, calls)
         for result in results
           let tool_content = to_literal({:tool_call_id -> result[:tool_call_id], :content -> result[:content]})
           agent/append_message(agent, "tool", tool_content)
         end
-        ui/bump_revision(endpoint())
+        ui/flush(endpoint())
       end
     end
   end

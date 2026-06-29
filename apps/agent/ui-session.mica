@@ -38,6 +38,9 @@ grant #web
     :session/CommandDraft
     :session/ObjectBrowserQuery
     :session/IsStreaming
+    :session/LoopPhase
+    :session/SteeringQueue
+    :session/FollowUpQueue
     :Delegates
     :Name
     :Description
@@ -69,6 +72,9 @@ grant #web
     :session/CommandDraft
     :session/ObjectBrowserQuery
     :session/IsStreaming
+    :session/LoopPhase
+    :session/SteeringQueue
+    :session/FollowUpQueue
     :Transcript
     :TranscriptAgent
     :TranscriptWorkspace
@@ -113,6 +119,9 @@ grant role #operator
     :session/CommandDraft
     :session/ObjectBrowserQuery
     :session/IsStreaming
+    :session/LoopPhase
+    :session/SteeringQueue
+    :session/FollowUpQueue
     :ui/View
     :ui/SyncAction
     :Agent
@@ -186,6 +195,9 @@ grant role #operator
     :session/CommandDraft
     :session/ObjectBrowserQuery
     :session/IsStreaming
+    :session/LoopPhase
+    :session/SteeringQueue
+    :session/FollowUpQueue
     :Transcript
     :TranscriptAgent
     :TranscriptWorkspace
@@ -216,6 +228,7 @@ grant role #operator
     :sync_view_tree
     :ui/status_revision
     :ui/bump_revision
+    :ui/flush
     :ui/current_agent
     :ui/entity_from_literal
     :ui/can_inspect_entity
@@ -230,6 +243,9 @@ grant role #operator
     :ui/entity_action_node
     :ui/world_view_node
     :ui/world_tools_node
+    :ui/tool_activity_node
+    :ui/tool_activity_item_node
+    :ui/truncate
     :ui/workspace_panel_node
     :ui/workspace_row_node
     :ui/object_browser_panel_node
@@ -278,13 +294,18 @@ grant role #operator
     :agent/chat_with_tools
     :agent/run_loop
     :agent/run_loop_body
+    :session/steering_push
+    :session/steering_drain
+    :session/steering_count
+    :session/followup_push
+    :session/followup_drain
+    :session/followup_count
     :tool/read
     :tool/grep
     :tool/glob
     :tool/ls
     :tool/invoke
     :glob/match
-    :glob/match_at
     :tool/source_repository
     :tool/source_revision
     :tool/workspace_bound
@@ -297,6 +318,7 @@ grant role #operator
     :message/class
     :message/role_delegate
     :list_size_lt
+    :list_count
     :transcript/empty_prompt
     :target/kind_label
     :target/empty
@@ -418,6 +440,15 @@ verb ui/bump_revision(endpoint)
 
   endpoint.session/revision = revision
   return revision
+end
+
+// Bump revision and commit the transaction so the sync host pushes a
+// view delta to the client. Without the commit, the client sees no
+// updates until the entire sync_event task completes.
+verb ui/flush(endpoint)
+  ui/bump_revision(endpoint)
+  commit()
+  return nothing
 end
 
 verb sync_view_revision(view)

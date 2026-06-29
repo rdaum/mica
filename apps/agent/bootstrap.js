@@ -73,6 +73,30 @@ function installColumnSplitter(mount) {
 
 applySavedColumnWidth();
 installColumnSplitter(document.getElementById("mount"));
+installQueueModeToggle(document.getElementById("mount"));
+
+// Before the sync-client's submit handler runs, set the hidden "mode"
+// field based on whether shift was held. Shift+Enter during streaming
+// queues the message as a follow-up instead of steering.
+function installQueueModeToggle(mount) {
+  mount.addEventListener("submit", (event) => {
+    const form = event.target?.closest?.("form");
+    if (!form || !mount.contains(form)) {
+      return;
+    }
+    if (form.dataset.syncAction !== "agent_command") {
+      return;
+    }
+    let modeInput = form.querySelector('input[name="mode"]');
+    if (!modeInput) {
+      modeInput = document.createElement("input");
+      modeInput.type = "hidden";
+      modeInput.name = "mode";
+      form.appendChild(modeInput);
+    }
+    modeInput.value = event.shiftKey ? "follow_up" : "";
+  }, true);
+}
 
 function closeDetails(details) {
   if (details) {

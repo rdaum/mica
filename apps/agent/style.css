@@ -569,6 +569,27 @@ details:not([open]).tool-result-block > summary::before {
   opacity: 1;
   animation: command-streaming-pulse 1.4s ease-in-out infinite;
 }
+.command-queue-badge {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  display: none;
+}
+.command-queue-badge.steering {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 165, 0, 0.15);
+  color: #e8a838;
+}
+.command-queue-badge.followup {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(100, 149, 237, 0.15);
+  color: #6495ed;
+}
 @keyframes command-streaming-pulse {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 1; }
@@ -743,4 +764,98 @@ details:not([open]).tool-result-block > summary::before {
   .transcript {
     min-height: 360px;
   }
+}
+
+.tool-activity {
+  border-bottom: 1px solid var(--border-color, #333);
+}
+.tool-activity.active h2 {
+  color: #91d8c7;
+}
+.activity-status {
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+.activity-status.idle {
+  color: #888;
+}
+.activity-status.thinking {
+  background: rgba(145, 216, 199, 0.1);
+  color: #91d8c7;
+}
+.activity-status.thinking .agent-icon {
+  animation: command-streaming-pulse 1.4s ease-in-out infinite;
+}
+.activity-status.executing {
+  background: rgba(255, 165, 0, 0.1);
+  color: #e8a838;
+}
+.tool-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.tool-activity-item {
+  border-bottom: 1px solid var(--border-color, #222);
+  font-size: 13px;
+}
+.tool-activity-item.status-pending,
+.tool-activity-item.status-executing {
+  background: rgba(255, 165, 0, 0.08);
+}
+.tool-activity-item.status-error {
+  background: rgba(255, 100, 100, 0.08);
+}
+.tool-activity-item > details > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.tool-activity-item > details > summary::marker {
+  content: "";
+}
+.tool-activity-item > details > summary::-webkit-details-marker {
+  display: none;
+}
+.tool-activity-item > details > summary::before {
+  content: "\25B6\FE0E";
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+.tool-activity-item > details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.tool-activity-summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-activity-detail {
+  padding: 4px 8px 6px 24px;
+}
+.tool-activity-args {
+  font-family: monospace;
+  font-size: 12px;
+  color: #aaa;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-bottom: 4px;
+}
+.tool-activity-result {
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
 }

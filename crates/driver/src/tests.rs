@@ -437,22 +437,23 @@ fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
             .await
             .unwrap();
 
+        // The loop calls ui/flush (which calls commit()) before the LLM
+        // request, so the first suspend may be a Commit. Wait for the
+        // task to complete (the external request handler returns a
+        // canned response).
         assert!(matches!(
             submitted.outcome,
-            TaskOutcome::Suspended {
-                kind: SuspendKind::ExternalRequest(_),
-                ..
-            }
+            TaskOutcome::Suspended { .. }
         ));
-
         let mut completed = None;
-        for _ in 0..50 {
+        for _ in 0..100 {
             for event in driver.drain_events() {
-                if let DriverEvent::TaskCompleted { task_id, value } = event
-                    && task_id == submitted.task_id
-                {
-                    completed = Some(value);
-                    break;
+                match event {
+                    DriverEvent::TaskCompleted { task_id, value } if task_id == submitted.task_id => {
+                        completed = Some(value);
+                        break;
+                    }
+                    _ => {}
                 }
             }
             if completed.is_some() {

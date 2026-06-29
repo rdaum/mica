@@ -262,10 +262,15 @@ mod tests {
         let mut runner = SourceRunner::new_empty();
         load_source_relations(&mut runner);
 
-        let error = runner
+        // Scan KernelErrors are now raised as Mica error values so
+        // try/catch can handle them; the task aborts with an error value.
+        let report = runner
             .run_source("return source/FileContentHash(#repo, #rev, \"../Cargo.toml\", ?hash)")
-            .unwrap_err();
-        assert!(format!("{error:?}").contains("parent components"));
+            .expect("task should abort, not fail");
+        let TaskOutcome::Aborted { error, .. } = report.outcome else {
+            panic!("expected aborted task, got {:?}", report.outcome);
+        };
+        assert!(format!("{error}").contains("parent components"));
     }
 
     #[test]
@@ -273,10 +278,13 @@ mod tests {
         let mut runner = SourceRunner::new_empty();
         load_source_relations(&mut runner);
 
-        let error = runner
+        let report = runner
             .run_source("return source/FileText(#repo, #rev, ?path, ?text, ?hash)")
-            .unwrap_err();
-        assert!(format!("{error:?}").contains("MissingRequiredBindings"));
+            .expect("task should abort, not fail");
+        let TaskOutcome::Aborted { error, .. } = report.outcome else {
+            panic!("expected aborted task, got {:?}", report.outcome);
+        };
+        assert!(format!("{error}").contains("MissingRequiredBindings"));
     }
 
     #[test]
@@ -284,19 +292,25 @@ mod tests {
         let mut runner = SourceRunner::new_empty();
         load_source_relations(&mut runner);
 
-        let error = runner
+        let report = runner
             .run_source(
                 "return source/SyntaxOutline(#repo, #rev, ?path, ?node, ?kind, ?name, ?start_line, ?end_line, ?start_byte, ?end_byte)",
             )
-            .unwrap_err();
-        assert!(format!("{error:?}").contains("MissingRequiredBindings"));
+            .expect("task should abort, not fail");
+        let TaskOutcome::Aborted { error, .. } = report.outcome else {
+            panic!("expected aborted task, got {:?}", report.outcome);
+        };
+        assert!(format!("{error}").contains("MissingRequiredBindings"));
 
-        let error = runner
+        let report = runner
             .run_source(
                 "return source/SyntaxNodeAt(#repo, #rev, \"src/lib.rs\", ?offset, ?node, ?kind, ?name, ?start_line, ?end_line, ?start_byte, ?end_byte)",
             )
-            .unwrap_err();
-        assert!(format!("{error:?}").contains("MissingRequiredBindings"));
+            .expect("task should abort, not fail");
+        let TaskOutcome::Aborted { error, .. } = report.outcome else {
+            panic!("expected aborted task, got {:?}", report.outcome);
+        };
+        assert!(format!("{error}").contains("MissingRequiredBindings"));
     }
 
     #[test]

@@ -197,9 +197,129 @@ end
 
 verb ui/world_tools_node(agent @ #agent)
   return dom <aside id="world-tools" class="panel world-tools">
+    {ui/tool_activity_node(agent)}
     {ui/workspace_panel_node(agent)}
     {ui/object_browser_panel_node(agent)}
   </aside>
+end
+
+verb ui/tool_activity_node(agent @ #agent)
+  let streaming = endpoint().session/isStreaming
+  let phase = endpoint().session/loopPhase
+  if phase == nothing
+    phase = "idle"
+  end
+
+  // Build a status banner showing what the agent is currently doing.
+  let banner = dom <div class="activity-status idle">Idle</div>
+  if streaming == true
+    if phase == "thinking"
+      banner = dom <div class="activity-status thinking">
+        {ui/icon_label_node("search", "Thinking...")}
+      </div>
+    elseif phase == "executing"
+      banner = dom <div class="activity-status executing">
+        {ui/icon_label_node("terminal", "Executing tools...")}
+      </div>
+    end
+  end
+
+  // Gather recent tool calls. Scanning ToolCall facts and their
+  // status/name/args/result relations.
+  let items = []
+  let count = 0
+  for found in ToolCall(?call)
+    let status = one ToolCallStatus(found[:call], ?status)
+    if status == nothing
+      status = "unknown"
+    end
+    let name = one ToolCallName(found[:call], ?name)
+    if name == nothing
+      name = "?"
+    end
+    let call_id = one ToolCallId(found[:call], ?id)
+    if call_id == nothing
+      call_id = ""
+    end
+    let args_text = one ToolCallArguments(found[:call], ?args)
+    if args_text == nothing
+      args_text = ""
+    end
+
+    let result_preview = ""
+    for r in ToolResultCall(?result, found[:call])
+      let content = one ToolResultContent(r[:result], ?content)
+      if content != nothing
+        result_preview = content
+      end
+    end
+
+    items = [@items, {:call -> found[:call], :status -> status, :name -> name, :id -> call_id, :args -> args_text, :result -> result_preview}]
+    count = count + 1
+  end
+
+  let class = "tool-activity panel"
+  if streaming == true
+    class = "tool-activity panel active"
+  end
+
+  if count == 0
+    return dom <section class={class} aria-label="Activity">
+      <h2>{ui/icon_label_node("terminal", "Activity")}</h2>
+      {banner}
+    </section>
+  end
+
+  // Show last 8 items.
+  let start = 0
+  if count > 8
+    start = count - 8
+  end
+  let nodes = []
+  let idx = 0
+  for item in items
+    if idx >= start
+      nodes = [@nodes, ui/tool_activity_item_node(item)]
+    end
+    idx = idx + 1
+  end
+
+  return dom <section class={class} aria-label="Activity">
+    <h2>{ui/icon_label_node("terminal", "Activity")}</h2>
+    {banner}
+    <ul class="tool-activity-list">{@nodes}</ul>
+  </section>
+end
+
+verb ui/truncate(text, max_len)
+  let len = string_len(text)
+  if len <= max_len
+    return text
+  end
+  return string_concat(string_slice(text, 0, max_len), "...")
+end
+
+verb ui/tool_activity_item_node(item)
+  let status = item[:status]
+  let glyph = ui/tool_status_glyph(status)
+  let name = item[:name]
+  let args_summary = ui/truncate(item[:args], 80)
+  let summary = string_concat("[", glyph, "] ", name, "(", args_summary, ")")
+  let class = string_concat("tool-activity-item status-", status)
+  let result = item[:result]
+
+  // Collapsed by default; expand to see the full result.
+  return dom <li class={class} data-sync-key={to_literal(item[:call])}>
+    <details>
+      <summary class="tool-activity-summary">{summary}</summary>
+      <div class="tool-activity-detail">
+        <div class="tool-activity-args">{item[:args]}</div>
+        if result != ""
+          <pre class="tool-activity-result">{result}</pre>
+        end
+      </div>
+    </details>
+  </li>
 end
 
 verb ui/entity_fact_node(label, value, class)
@@ -295,16 +415,37 @@ verb ui/command_bar_node(agent @ #agent)
   if streaming == true
     indicator = dom <span class="command-streaming-indicator active" aria-label="Agent is working">…</span>
   end
+
+  let steering_count = 0
+  let followup_count = 0
+  if streaming == true
+    steering_count = session/steering_count(endpoint())
+    followup_count = session/followup_count(endpoint())
+  end
+
+  let queue_badge = dom <span class="command-queue-badge"></span>
+  if steering_count > 0
+    queue_badge = dom <span class="command-queue-badge steering" title={string_concat(to_literal(steering_count), " steering message(s) queued")}>{ui/icon_label_node("terminal", string_concat("Interrupt (", to_literal(steering_count), ")"))}</span>
+  end
+  if followup_count > 0
+    queue_badge = dom <span class="command-queue-badge followup" title={string_concat(to_literal(followup_count), " follow-up message(s) queued")}>{ui/icon_label_node("clock", string_concat("Queued (", to_literal(followup_count), ")"))}</span>
+  end
+
   let placeholder = "Ask the agent, run a command, or open a file..."
+  if streaming == true
+    placeholder = "Send to interrupt, or Shift+Enter to queue for after..."
+  end
   let composer = dom <form id="agent-command" class="command-form" data-sync-event="submit" data-sync-action="agent_command" data-sync-submit-key="ctrl+enter">
     <div class="command-input-box">
       <input id="command" name="text" value={draft} autocomplete="off" placeholder={placeholder} aria-label="Command" />
+      <input type="hidden" name="mode" value="" />
       {indicator}
     </div>
     <button id="send-command" type="submit">{ui/icon_label_node("send", "Send")}</button>
   </form>
   return dom <section class="command-deck">
     {ui/command_chips_node(agent)}
+    {queue_badge}
     {composer}
   </section>
 end
