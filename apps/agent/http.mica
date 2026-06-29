@@ -6,6 +6,10 @@ grant #web
     :RequestMethod
     :RequestPath
     :source/IndexedFile
+    :Workspace
+    :WorkspaceRevision
+    :source/RevisionOf
+    :source/RepositoryEntry
   invoke:
     :http_request
     :http/document
@@ -23,10 +27,6 @@ grant #web
     :string_slice
     :lower
     :trim
-    :ui/current_agent
-    :workspace/active
-    :tool/source_repository
-    :tool/source_revision
     :agent/completions_payload
 end
 
@@ -74,14 +74,12 @@ verb agent/completions_payload(path)
       count = count + 1
     end
   end
-  let agent = ui/current_agent()
-  if agent != nothing
-    let workspace = workspace/active(agent)
-    if workspace != nothing
-      let repository = tool/source_repository(workspace)
-      let revision = tool/source_revision(workspace)
-      if repository != nothing && revision != nothing
-        for entry_row in source/RepositoryEntry(repository, revision, "", ?child_path, ?kind, ?entry_name)
+  for ws_row in Workspace(?ws)
+    let repo_row = one WorkspaceRevision(ws_row[:ws], ?revision)
+    if repo_row != nothing
+      let repository = one source/RevisionOf(repo_row, ?repository)
+      if repository != nothing
+        for entry_row in source/RepositoryEntry(repository, repo_row, "", ?child_path, ?kind, ?entry_name)
           if count < limit && entry_row[:kind] == "directory"
             let dir_path = entry_row[:child_path]
             if query == "" || string_contains(lower(dir_path), query)
