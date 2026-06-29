@@ -5,16 +5,27 @@ grant #web
     :HttpRequest
     :RequestMethod
     :RequestPath
+    :source/IndexedFile
   invoke:
     :http_request
     :http/document
     :http/base_style
     :http/bootstrap_script
+    :http_json
     :dom_text
     :dom_element
     :dom_raw
     :to_xml
+    :json_encode
     :string_starts_with
+    :string_contains
+    :string_len
+    :string_slice
+    :lower
+    :trim
+    :ui/current_agent
+    :workspace/active
+    :agent/completions_payload
 end
 
 verb http_request(request)
@@ -25,7 +36,43 @@ verb http_request(request)
     return http_html(200, http/document(31))
   end
 
+  if http_method == "GET" && string_starts_with(path, "/agent/api/completions")
+    return http_json(200, agent/completions_payload(path))
+  end
+
   return http_text(404, "not found")
+end
+
+verb agent/completions_payload(path)
+  let query = ""
+  let marker = "?q="
+  let marker_len = string_len(marker)
+  let path_len = string_len(path)
+  let pos = 0
+  let found_at = -1
+  while pos + marker_len <= path_len
+    let slice = string_slice(path, pos, pos + marker_len)
+    if slice == marker
+      found_at = pos
+      pos = path_len
+    else
+      pos = pos + 1
+    end
+  end
+  if found_at >= 0
+    query = lower(trim(string_slice(path, found_at + marker_len, path_len)))
+  end
+  let limit = 20
+  let items = []
+  let count = 0
+  for row in source/IndexedFile(?idx, ?repo, ?filepath, ?filetitle, ?lang, ?model)
+    if count < limit && (query == "" || string_contains(lower(row[:filepath]), query))
+      let item = {:path -> row[:filepath], :title -> row[:filetitle], :language -> row[:lang]}
+      items = [@items, item]
+      count = count + 1
+    end
+  end
+  return json_encode({:items -> items})
 end
 
 verb http/document(view)

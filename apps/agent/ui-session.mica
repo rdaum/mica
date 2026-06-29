@@ -275,6 +275,9 @@ grant role #operator
     :ui/tool_call_node
     :ui/tool_message_body_node
     :ui/assistant_body_with_tool_calls
+    :ui/render_content_with_mentions
+    :ui/is_path_char
+    :ui/mention_link
     :ui/command_bar_node
     :ui/command_chips_node
     :ui/sync_action_source

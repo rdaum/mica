@@ -43,3 +43,7 @@ end
 verb http_text(status, body)
   return http_response(status, "text/plain; charset=utf-8", body)
 end
+
+verb http_json(status, body)
+  return http_response(status, "application/json; charset=utf-8", body)
+end
