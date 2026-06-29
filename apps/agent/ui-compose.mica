@@ -211,6 +211,24 @@ verb ui/object_browser_results_node(actor @ #agent, query @ #string)
     end
   end
 
+  let workspace = workspace/active(actor)
+  if workspace != nothing
+    let repository = tool/source_repository(workspace)
+    let revision = tool/source_revision(workspace)
+    if repository != nothing && revision != nothing
+      for entry in source/RepositoryEntry(repository, revision, "", ?child_path, ?kind, ?entry_name)
+        if count < 16 && entry[:kind] == "directory"
+          let dir_path = entry[:child_path]
+          if string_contains(lower(dir_path), needle)
+            let dir_entity = frob(#target/file, dir_path)
+            rows = [@rows, ui/object_browser_row_node(actor, dir_entity)]
+            count = count + 1
+          end
+        end
+      end
+    end
+  end
+
   for found in source/IndexedFile(?idx, ?repo, ?filepath, ?filetitle, ?lang, ?model)
     if count < 16 && string_contains(lower(found[:filepath]), needle)
       let file_entity = frob(#target/file, found[:filepath])
@@ -220,7 +238,7 @@ verb ui/object_browser_results_node(actor @ #agent, query @ #string)
   end
 
   if rows == []
-    rows = [dom <li class="muted">No workspaces or files matched.</li>]
+    rows = [dom <li class="muted">No workspaces, directories, or files matched.</li>]
   elseif count == 16
     rows = [@rows, dom <li class="muted">Showing first 16 matches.</li>]
   end

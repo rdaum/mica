@@ -330,6 +330,19 @@ input {
   color: #91d8c7;
   outline: none;
 }
+.window-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 0 48%, #62584f 49% 54%, transparent 55% 64%, #62584f 65% 70%, transparent 71%);
+}
+.tool-window.is-dragging,
+.tool-window.is-resizing {
+  opacity: 0.96;
+}
 .agent-browser-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

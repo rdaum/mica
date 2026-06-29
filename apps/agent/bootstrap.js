@@ -6,6 +6,8 @@ window.micaAgent = bootstrapServerRenderedSync(document.getElementById("mount"))
 const RIGHT_COLUMN_WIDTH_KEY = "micaAgentRightColumnWidth";
 const MIN_RIGHT_COLUMN_WIDTH = 280;
 const MIN_LEFT_COLUMN_WIDTH = 420;
+const MIN_WINDOW_WIDTH = 320;
+const MIN_WINDOW_HEIGHT = 240;
 
 function cssEscape(value) {
   return window.CSS?.escape ? CSS.escape(value) : String(value).replaceAll('"', '\\"');
@@ -107,6 +109,38 @@ function closeDetails(details) {
 }
 
 function installToolWindows(mount) {
+  let drag = null;
+
+  mount.addEventListener("toggle", (event) => {
+    const details = event.target?.closest?.("details.tool-sheet");
+    if (!details || event.target !== details || !details.open) {
+      return;
+    }
+    const windowEl = details.querySelector(".tool-window");
+    if (windowEl) {
+      const saved = window.localStorage?.getItem(toolWindowStateKey(windowEl));
+      if (saved) {
+        restoreToolWindowState(windowEl);
+      } else {
+        const summary = details.querySelector("summary");
+        if (summary) {
+          const rect = summary.getBoundingClientRect();
+          const width = 520;
+          let left = rect.right - width;
+          if (left < 8) left = 8;
+          let top = rect.bottom + 4;
+          const height = 360;
+          if (top + height > window.innerHeight - 8) {
+            top = Math.max(8, rect.top - height - 4);
+          }
+          windowEl.style.left = `${Math.round(left)}px`;
+          windowEl.style.right = "auto";
+          windowEl.style.top = `${Math.round(top)}px`;
+        }
+      }
+    }
+  }, true);
+
   mount.addEventListener("click", (event) => {
     const close = event.target?.closest?.("[data-close-details]");
     if (close && mount.contains(close)) {
@@ -114,6 +148,74 @@ function installToolWindows(mount) {
       event.preventDefault();
     }
   });
+
+  mount.addEventListener("pointerdown", (event) => {
+    if (event.target?.closest?.("[data-close-details]")) {
+      return;
+    }
+
+    const dragHandle = event.target?.closest?.("[data-window-drag]");
+    const resizeHandle = event.target?.closest?.("[data-window-resize]");
+    const handle = resizeHandle || dragHandle;
+    if (!handle || !mount.contains(handle)) {
+      return;
+    }
+
+    const windowEl = handle.closest(".tool-window");
+    if (!windowEl) {
+      return;
+    }
+
+    const rect = windowEl.getBoundingClientRect();
+    drag = {
+      mode: resizeHandle ? "resize" : "move",
+      windowEl,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+    windowEl.classList.add(resizeHandle ? "is-resizing" : "is-dragging");
+    handle.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  });
+
+  mount.addEventListener("pointermove", (event) => {
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (drag.mode === "move") {
+      const width = drag.windowEl.offsetWidth;
+      const height = drag.windowEl.offsetHeight;
+      const left = Math.min(Math.max(drag.left + event.clientX - drag.startX, 8), window.innerWidth - width - 8);
+      const top = Math.min(Math.max(drag.top + event.clientY - drag.startY, 8), window.innerHeight - height - 8);
+      drag.windowEl.style.left = `${Math.round(left)}px`;
+      drag.windowEl.style.right = "auto";
+      drag.windowEl.style.top = `${Math.round(top)}px`;
+    } else {
+      const width = Math.min(Math.max(drag.width + event.clientX - drag.startX, MIN_WINDOW_WIDTH), window.innerWidth - drag.left - 8);
+      const height = Math.min(Math.max(drag.height + event.clientY - drag.startY, MIN_WINDOW_HEIGHT), window.innerHeight - drag.top - 8);
+      drag.windowEl.style.width = `${Math.round(width)}px`;
+      drag.windowEl.style.height = `${Math.round(height)}px`;
+    }
+  });
+
+  function finishWindowDrag(event) {
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    drag.windowEl.classList.remove("is-dragging", "is-resizing");
+    saveToolWindowState(drag.windowEl);
+    event.target?.releasePointerCapture?.(event.pointerId);
+    drag = null;
+  }
+
+  mount.addEventListener("pointerup", finishWindowDrag);
+  mount.addEventListener("pointercancel", finishWindowDrag);
 
   window.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") {
@@ -128,6 +230,50 @@ function installToolWindows(mount) {
       event.preventDefault();
     }
   });
+}
+
+function toolWindowStateKey(windowEl) {
+  const key = windowEl.dataset.windowKey || windowEl.id || "default";
+  return `micaAgentWindow:${key}`;
+}
+
+function windowState(windowEl) {
+  const style = windowEl.style;
+  return {
+    left: style.left || "",
+    top: style.top || "",
+    width: style.width || "",
+    height: style.height || "",
+  };
+}
+
+function saveToolWindowState(windowEl) {
+  window.localStorage?.setItem(toolWindowStateKey(windowEl), JSON.stringify(windowState(windowEl)));
+}
+
+function applyToolWindowState(windowEl, state) {
+  if (!state) {
+    return;
+  }
+  const maxLeft = Math.max(12, window.innerWidth - MIN_WINDOW_WIDTH - 12);
+  const maxTop = Math.max(12, window.innerHeight - MIN_WINDOW_HEIGHT - 12);
+  const left = Math.min(Math.max(Number(state.left) || 18, 12), maxLeft);
+  const top = Math.min(Math.max(Number(state.top) || 82, 12), maxTop);
+  const width = Math.min(Math.max(Number(state.width) || 520, MIN_WINDOW_WIDTH), window.innerWidth - 24);
+  const height = Math.min(Math.max(Number(state.height) || 360, MIN_WINDOW_HEIGHT), window.innerHeight - 24);
+  windowEl.style.left = `${left}px`;
+  windowEl.style.right = "auto";
+  windowEl.style.top = `${top}px`;
+  windowEl.style.width = `${width}px`;
+  windowEl.style.height = `${height}px`;
+}
+
+function restoreToolWindowState(windowEl) {
+  try {
+    applyToolWindowState(windowEl, JSON.parse(window.localStorage?.getItem(toolWindowStateKey(windowEl)) ?? "null"));
+  } catch {
+    window.localStorage?.removeItem(toolWindowStateKey(windowEl));
+  }
 }
 
 installToolWindows(document.getElementById("mount"));

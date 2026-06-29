@@ -67,13 +67,6 @@ verb agent/completions_payload(path)
   let limit = 20
   let items = []
   let count = 0
-  for row in source/IndexedFile(?idx, ?repo, ?filepath, ?filetitle, ?lang, ?model)
-    if count < limit && (query == "" || string_contains(lower(row[:filepath]), query))
-      let item = {:path -> row[:filepath], :title -> row[:filetitle], :language -> row[:lang], :kind -> "file"}
-      items = [@items, item]
-      count = count + 1
-    end
-  end
   for ws_row in Workspace(?ws)
     let repo_row = one WorkspaceRevision(ws_row[:ws], ?revision)
     if repo_row != nothing
@@ -90,6 +83,13 @@ verb agent/completions_payload(path)
           end
         end
       end
+    end
+  end
+  for row in source/IndexedFile(?idx, ?repo, ?filepath, ?filetitle, ?lang, ?model)
+    if count < limit && (query == "" || string_contains(lower(row[:filepath]), query))
+      let item = {:path -> row[:filepath], :title -> row[:filetitle], :language -> row[:lang], :kind -> "file"}
+      items = [@items, item]
+      count = count + 1
     end
   end
   return json_encode({:items -> items})
