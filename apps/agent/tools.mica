@@ -28,7 +28,7 @@ make_functional_relation(:ToolResultDetails, 2, [0])
 // Built-in read-only tools.
 make_identity(:tool/read)
 make_identity(:tool/grep)
-make_identity(:tool/find)
+make_identity(:tool/glob)
 make_identity(:tool/ls)
 
 assert Tool(#tool/read)
@@ -41,10 +41,10 @@ assert ToolName(#tool/grep, "grep")
 assert ToolDescription(#tool/grep, "Search file contents for a text pattern.")
 assert ToolParameters(#tool/grep, "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Text pattern to search for\"},\"limit\":{\"type\":\"integer\",\"description\":\"Maximum number of results (default 16)\"}},\"required\":[\"pattern\"]}")
 
-assert Tool(#tool/find)
-assert ToolName(#tool/find, "find")
-assert ToolDescription(#tool/find, "Find files whose paths contain a substring.")
-assert ToolParameters(#tool/find, "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Substring to match in the file path\"},\"path\":{\"type\":\"string\",\"description\":\"Directory prefix to restrict the search (default empty)\"}},\"required\":[\"name\"]}")
+assert Tool(#tool/glob)
+assert ToolName(#tool/glob, "glob")
+assert ToolDescription(#tool/glob, "Find files matching a glob pattern. Supports * (any sequence within a path segment), ** (any sequence across path segments), and ? (single character). The pattern is matched against the full relative path. Optional path prefix restricts the search directory.")
+assert ToolParameters(#tool/glob, "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Glob pattern, e.g. *.rs, src/**/*.rs, README*\"},\"path\":{\"type\":\"string\",\"description\":\"Directory prefix to restrict the search (default: root)\"}},\"required\":[\"pattern\"]}")
 
 assert Tool(#tool/ls)
 assert ToolName(#tool/ls, "ls")
@@ -54,7 +54,7 @@ assert ToolParameters(#tool/ls, "{\"type\":\"object\",\"properties\":{\"path\":{
 // Enable the default set for the default workspace.
 assert ToolEnabled(#workspace/default, #tool/read)
 assert ToolEnabled(#workspace/default, #tool/grep)
-assert ToolEnabled(#workspace/default, #tool/find)
+assert ToolEnabled(#workspace/default, #tool/glob)
 assert ToolEnabled(#workspace/default, #tool/ls)
 
 // Helpers
@@ -79,7 +79,7 @@ verb tool/args_string(arguments, key)
   if value == nothing
     return ""
   end
-  return trim(to_literal(value))
+  return trim(value)
 end
 
 verb tool/args_int(arguments, key)
@@ -87,7 +87,7 @@ verb tool/args_int(arguments, key)
   if value == nothing
     return 0
   end
-  let parsed = parse_ordinal(to_literal(value))
+  let parsed = parse_ordinal(value)
   if parsed == nothing
     return 0
   end
@@ -108,11 +108,15 @@ verb tool/read(agent @ #agent, arguments @ #map)
   if path == ""
     return {:status -> "error", :error -> "missing path argument", :value -> nothing}
   end
+  if path == "." || path == "./"
+    return {:status -> "error", :error -> "path must be a file path, not a directory", :value -> nothing}
+  end
 
-  let text = one source/FileText(repository, revision, path, ?text, ?hash)
-  if text == nothing
+  let file_row = one source/FileText(repository, revision, path, ?text, ?hash)
+  if file_row == nothing
     return {:status -> "error", :error -> string_concat("file not found: ", path), :value -> nothing}
   end
+  let text = file_row[:text]
 
   let line_count = one source/FileLineCount(repository, revision, path, ?line_count)
   if line_count == nothing
@@ -156,38 +160,98 @@ verb tool/grep(agent @ #agent, arguments @ #map)
   return {:status -> "complete", :pattern -> pattern, :matches -> matches, :rendered -> string_join(rendered_lines, "\n\n"), :value -> matches}
 end
 
-verb tool/find(agent @ #agent, arguments @ #map)
+// Glob matching: supports * (any sequence except /), ** (any sequence
+// including /), and ? (single character). The pattern is matched against
+// the full relative path.
+verb glob/match(pattern @ #string, path @ #string)
+  let p = string_chars(pattern)
+  let s = string_chars(path)
+  return glob/match_at(p, s, 0, 0, string_len(pattern), string_len(path))
+end
+
+verb glob/match_at(p, s, pi, si, plen, slen)
+  if pi >= plen
+    return si >= slen
+  end
+
+  let pc = p[pi]
+  // Check for ** (matches across path separators)
+  if pc == "*" && pi + 1 < plen && p[pi + 1] == "*"
+    let next_pi = pi + 2
+    // ** matches zero or more characters (including /)
+    if glob/match_at(p, s, next_pi, si, plen, slen)
+      return true
+    end
+    if si < slen
+      return glob/match_at(p, s, pi, si + 1, plen, slen)
+    end
+    return false
+  end
+
+  if pc == "*"
+    // * matches zero or more characters except /
+    if glob/match_at(p, s, pi + 1, si, plen, slen)
+      return true
+    end
+    if si < slen && s[si] != "/"
+      return glob/match_at(p, s, pi, si + 1, plen, slen)
+    end
+    return false
+  end
+
+  if si >= slen
+    return false
+  end
+
+  if pc == "?"
+    return glob/match_at(p, s, pi + 1, si + 1, plen, slen)
+  end
+
+  if pc == s[si]
+    return glob/match_at(p, s, pi + 1, si + 1, plen, slen)
+  end
+
+  return false
+end
+
+verb tool/glob(agent @ #agent, arguments @ #map)
   let workspace = workspace/active(agent)
   if workspace == nothing || tool/workspace_bound(workspace) == false
     return {:status -> "error", :error -> "workspace not bound to a source repository", :value -> nothing}
   end
-  let repository = tool/source_repository(workspace)
-  let revision = tool/source_revision(workspace)
 
-  let name = tool/args_string(arguments, :name)
-  if name == ""
-    return {:status -> "error", :error -> "missing name argument", :value -> nothing}
+  let pattern = tool/args_string(arguments, :pattern)
+  if pattern == ""
+    return {:status -> "error", :error -> "missing pattern argument", :value -> nothing}
   end
   let path_prefix = tool/args_string(arguments, :path)
+  if path_prefix == "." || path_prefix == "./"
+    path_prefix = ""
+  end
 
   let matches = []
   let count = 0
-  for entry in source/RepositoryEntry(repository, revision, path_prefix, ?child_path, ?kind, ?entry_name)
-    if string_contains(entry[:child_path], name) || string_contains(entry[:entry_name], name)
-      matches = [@matches, {:path -> entry[:child_path], :kind -> entry[:kind], :name -> entry[:entry_name]}]
-      count = count + 1
+  for found in source/IndexedFile(?idx, ?repo, ?filepath, ?filetitle, ?lang, ?model)
+    if glob/match(pattern, found[:filepath])
+      if path_prefix == "" || string_starts_with(found[:filepath], path_prefix)
+        matches = [@matches, {:path -> found[:filepath], :kind -> "file", :name -> found[:filetitle]}]
+        count = count + 1
+        if count >= 100
+          break
+        end
+      end
     end
   end
 
   if count == 0
-    return {:status -> "complete", :pattern -> name, :matches -> matches, :rendered -> string_concat("No files matching ", name), :value -> matches}
+    return {:status -> "complete", :pattern -> pattern, :matches -> matches, :rendered -> string_concat("No files matching ", pattern), :value -> matches}
   end
 
   let rendered_lines = []
   for match in matches
     rendered_lines = [@rendered_lines, string_concat(match[:path], " (", match[:kind], ")")]
   end
-  return {:status -> "complete", :pattern -> name, :matches -> matches, :rendered -> string_join(rendered_lines, "\n"), :value -> matches}
+  return {:status -> "complete", :pattern -> pattern, :matches -> matches, :rendered -> string_join(rendered_lines, "\n"), :value -> matches}
 end
 
 verb tool/ls(agent @ #agent, arguments @ #map)
@@ -199,6 +263,9 @@ verb tool/ls(agent @ #agent, arguments @ #map)
   let revision = tool/source_revision(workspace)
 
   let path = tool/args_string(arguments, :path)
+  if path == "." || path == "./"
+    path = ""
+  end
 
   let entries = []
   let count = 0
@@ -231,8 +298,8 @@ verb tool/invoke(agent @ #agent, tool_name @ #string, arguments @ #map)
     return tool/read(agent, arguments)
   elseif tool_name == "grep"
     return tool/grep(agent, arguments)
-  elseif tool_name == "find"
-    return tool/find(agent, arguments)
+  elseif tool_name == "glob"
+    return tool/glob(agent, arguments)
   elseif tool_name == "ls"
     return tool/ls(agent, arguments)
   else
@@ -255,7 +322,7 @@ verb agent/build_tools(agent @ #agent)
     let description = one ToolDescription(tool, ?description)
     let parameters = one ToolParameters(tool, ?parameters)
     if name != nothing && description != nothing && parameters != nothing
-      let spec = {:type -> "function", :function -> {:name -> name, :description -> description, :parameters -> from_literal(parameters)}}
+      let spec = {:type -> "function", :function -> {:name -> name, :description -> description, :parameters -> json_decode(parameters)}}
       tools = [@tools, spec]
     end
   end
@@ -293,7 +360,7 @@ verb agent/execute_tool_calls(agent @ #agent, assistant_message, calls)
     if call_id == nothing || tool_name == nothing || args_text == nothing
       executed = [@executed, {:tool_call_id -> call_id, :content -> "(malformed tool call)"}]
     else
-      let args = from_literal(args_text)
+      let args = json_decode(args_text)
       if args == nothing
         args = {}
       end
@@ -307,7 +374,12 @@ verb agent/execute_tool_calls(agent @ #agent, assistant_message, calls)
       tool_call.toolCallStatus = "pending"
       ui/bump_revision(endpoint())
 
-      let result = tool/invoke(agent, tool_name, args)
+      let result
+      try
+        result = tool/invoke(agent, tool_name, args)
+      catch err
+        result = {:status -> "error", :error -> string_concat("tool execution error: ", to_literal(err)), :rendered -> string_concat("tool execution error: ", to_literal(err))}
+      end
       tool_call.toolCallStatus = result[:status]
 
       let content = result[:rendered]
@@ -401,6 +473,18 @@ verb agent/run_loop(agent @ #agent, transcript)
   endpoint().session/isStreaming = true
   ui/bump_revision(endpoint())
 
+  try
+    agent/run_loop_body(agent, transcript)
+  catch err
+    agent/append_message(agent, "assistant", string_concat("(agent error: ", to_literal(err), ")"))
+    ui/bump_revision(endpoint())
+  end
+
+  endpoint().session/isStreaming = false
+  ui/bump_revision(endpoint())
+end
+
+verb agent/run_loop_body(agent @ #agent, transcript)
   let max_rounds = agent/max_tool_rounds(agent)
   let round = 0
   while round < max_rounds
@@ -442,7 +526,4 @@ verb agent/run_loop(agent @ #agent, transcript)
       end
     end
   end
-
-  endpoint().session/isStreaming = false
-  ui/bump_revision(endpoint())
 end

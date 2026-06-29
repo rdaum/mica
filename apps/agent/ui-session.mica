@@ -163,6 +163,7 @@ grant role #operator
     :source/FileLineCount
     :source/RepositoryEntry
     :source/TextSearch
+    :source/IndexedFile
     :InspectorTarget
     :InspectorKind
     :InspectorLabel
@@ -276,11 +277,14 @@ grant role #operator
     :agent/execute_tool_calls
     :agent/chat_with_tools
     :agent/run_loop
+    :agent/run_loop_body
     :tool/read
     :tool/grep
-    :tool/find
+    :tool/glob
     :tool/ls
     :tool/invoke
+    :glob/match
+    :glob/match_at
     :tool/source_repository
     :tool/source_revision
     :tool/workspace_bound
@@ -288,6 +292,7 @@ grant role #operator
     :tool/args_int
     :parse_ordinal
     :string_contains
+    :string_starts_with
     :message/role_label
     :message/class
     :message/role_delegate
@@ -307,6 +312,7 @@ grant role #operator
     :to_literal
     :to_xml
     :from_literal
+    :json_decode
     :string_concat
     :string_join
     :string_len

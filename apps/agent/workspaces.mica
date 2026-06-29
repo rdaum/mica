@@ -32,6 +32,7 @@ make_relation(:source/FileLines, 7)
 make_relation(:source/FileLineCount, 4)
 make_relation(:source/RepositoryEntry, 6)
 make_relation(:source/TextSearch, 11)
+make_relation(:source/IndexedFile, 6)
 
 make_identity(:workspace/default)
 assert Workspace(#workspace/default)

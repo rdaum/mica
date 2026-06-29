@@ -1145,12 +1145,13 @@ impl CompioTaskDriver {
     }
 
     fn record_task_failure(&self, task_id: TaskId, error: DriverError) {
-        tracing::error!(task_id, error = %error, "driver task failed");
+        let rendered = self.format_error(&error);
+        tracing::error!(task_id, error = %rendered, "driver task failed");
         let event_wakers = {
             let mut state = self.inner.state.lock().unwrap();
             state.events.push(DriverEvent::TaskFailed {
                 task_id,
-                error: error.to_string(),
+                error: rendered,
             });
             state.record_metrics();
             std::mem::take(&mut state.event_wakers)

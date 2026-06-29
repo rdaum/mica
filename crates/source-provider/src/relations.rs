@@ -361,7 +361,12 @@ impl LocalSourceProvider {
     ) -> Result<(PathBuf, PathBuf), KernelError> {
         validate_relative_path(relation, relative_path)?;
         let root = self.repository_root(reader, relation, repository, revision)?;
-        let candidate = root.join(relative_path);
+        let safe_path = if relative_path == "." || relative_path == "./" {
+            ""
+        } else {
+            relative_path
+        };
+        let candidate = root.join(safe_path);
         let absolute = candidate.canonicalize().map_err(|error| {
             invalid_relation(
                 relation,
