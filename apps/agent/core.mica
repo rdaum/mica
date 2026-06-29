@@ -270,7 +270,7 @@ verb agent/resolve_model(agent @ #agent)
 end
 
 verb agent/system_prompt(agent @ #agent)
-  return "You are a helpful coding assistant. Be concise and accurate. Use markdown for code."
+  return "You are a helpful coding assistant working in a Mica workspace. Be concise and accurate.\n\nUse markdown for all responses: headings for sections, fenced code blocks with language tags for code, bullet and numbered lists for steps, bold/italic for emphasis, and inline `code` spans for identifiers.\n\nReference files using @path syntax (e.g. @./src/main.rs or @./README.md). These become clickable links in the UI."
 end
 
 verb transcript/empty_prompt(transcript)

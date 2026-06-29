@@ -25,6 +25,8 @@ grant #web
     :trim
     :ui/current_agent
     :workspace/active
+    :tool/source_repository
+    :tool/source_revision
     :agent/completions_payload
 end
 
@@ -67,9 +69,29 @@ verb agent/completions_payload(path)
   let count = 0
   for row in source/IndexedFile(?idx, ?repo, ?filepath, ?filetitle, ?lang, ?model)
     if count < limit && (query == "" || string_contains(lower(row[:filepath]), query))
-      let item = {:path -> row[:filepath], :title -> row[:filetitle], :language -> row[:lang]}
+      let item = {:path -> row[:filepath], :title -> row[:filetitle], :language -> row[:lang], :kind -> "file"}
       items = [@items, item]
       count = count + 1
+    end
+  end
+  let agent = ui/current_agent()
+  if agent != nothing
+    let workspace = workspace/active(agent)
+    if workspace != nothing
+      let repository = tool/source_repository(workspace)
+      let revision = tool/source_revision(workspace)
+      if repository != nothing && revision != nothing
+        for entry_row in source/RepositoryEntry(repository, revision, "", ?child_path, ?kind, ?entry_name)
+          if count < limit && entry_row[:kind] == "directory"
+            let dir_path = entry_row[:child_path]
+            if query == "" || string_contains(lower(dir_path), query)
+              let item = {:path -> dir_path, :title -> entry_row[:entry_name], :language -> "", :kind -> "directory"}
+              items = [@items, item]
+              count = count + 1
+            end
+          end
+        end
+      end
     end
   end
   return json_encode({:items -> items})

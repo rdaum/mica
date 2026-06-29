@@ -454,7 +454,13 @@ input {
 }
 .message-content {
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.message-content > *:first-child {
+  margin-top: 0;
+}
+.message-content > *:last-child {
+  margin-bottom: 0;
 }
 .message-seq {
   display: none;
@@ -906,21 +912,4 @@ details:not([open]).tool-result-block > summary::before {
   padding: 8px 12px;
   color: #8aa6a0;
   font-size: 12px;
-}
-.mention-link {
-  display: inline;
-  background: none;
-  border: none;
-  padding: 0;
-  font-family: var(--mono-font, monospace);
-  font-size: inherit;
-  color: #91d8c7;
-  cursor: pointer;
-  text-decoration: none;
-}
-.mention-link:hover {
-  text-decoration: underline;
-}
-.mention-link-form {
-  display: inline;
 }

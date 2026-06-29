@@ -1,4 +1,6 @@
 import { bootstrapServerRenderedSync } from "/sync-client.js?surface=agent";
+import { marked } from "https://esm.sh/marked@13";
+
 window.micaAgent = bootstrapServerRenderedSync(document.getElementById("mount"));
 
 const RIGHT_COLUMN_WIDTH_KEY = "micaAgentRightColumnWidth";
@@ -130,6 +132,85 @@ function installToolWindows(mount) {
 
 installToolWindows(document.getElementById("mount"));
 installAtCompletion(document.getElementById("mount"));
+installMarkdownRendering(document.getElementById("mount"));
+installAutoScroll(document.getElementById("mount"));
+
+function linkifyMentions(html) {
+  return html.replace(/(^|[\s(>])@(\.\/[^\s`"'*<>\[\]\(\)\)]+)/g, (_, pre, path) => {
+    const entity = `#target/file<"${path}">`;
+    return `${pre}<button type="button" class="mention-link" data-entity="${entity}">@${path}</button>`;
+  });
+}
+
+function renderMessageContent(el) {
+  const raw = el.dataset.rawContent;
+  if (raw === undefined) return;
+  delete el.dataset.rawContent;
+  const html = marked.parse(raw);
+  const linked = linkifyMentions(html);
+  const shadow = el.shadowRoot || el.attachShadow({ mode: "open" });
+  shadow.innerHTML = `<style>
+    :host { all: inherit; }
+    .markdown-body { line-height: 1.5; }
+    .markdown-body > *:first-child { margin-top: 0; }
+    .markdown-body > *:last-child { margin-bottom: 0; }
+    .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { margin: 0.6em 0 0.3em; line-height: 1.3; }
+    .markdown-body h1 { font-size: 1.3em; }
+    .markdown-body h2 { font-size: 1.15em; }
+    .markdown-body h3 { font-size: 1.05em; }
+    .markdown-body p { margin: 0.4em 0; }
+    .markdown-body ul, .markdown-body ol { margin: 0.4em 0; padding-left: 1.5em; }
+    .markdown-body li { margin: 0.15em 0; }
+    .markdown-body code { font-family: var(--mono-font, monospace); font-size: 0.88em; background: #1a2422; padding: 1px 4px; border-radius: 3px; }
+    .markdown-body pre { margin: 0.6em 0; padding: 10px 14px; background: #0d1411; border: 1px solid #2a3a36; border-radius: 6px; overflow-x: auto; }
+    .markdown-body pre code { background: none; padding: 0; font-size: 0.85em; border-radius: 0; }
+    .markdown-body blockquote { margin: 0.4em 0; padding: 2px 12px; border-left: 3px solid #3a4540; color: #9ab0a8; }
+    .markdown-body table { border-collapse: collapse; margin: 0.6em 0; font-size: 0.9em; }
+    .markdown-body th, .markdown-body td { border: 1px solid #2a3a36; padding: 4px 8px; }
+    .markdown-body th { background: #1a2422; }
+    .markdown-body hr { border: none; border-top: 1px solid #2a3a36; margin: 0.8em 0; }
+    .markdown-body a { color: #91d8c7; }
+    .markdown-body strong { font-weight: 600; }
+    .mention-link { display: inline; background: none; border: none; padding: 0; font-family: var(--mono-font, monospace); font-size: inherit; color: #91d8c7; cursor: pointer; text-decoration: none; }
+    .mention-link:hover { text-decoration: underline; }
+  </style><div class="markdown-body">${linked}</div>`;
+  shadow.addEventListener("click", (event) => {
+    const btn = event.target?.closest?.("button.mention-link");
+    if (!btn) return;
+    event.preventDefault();
+    const form = document.createElement("form");
+    form.dataset.syncEvent = "submit";
+    form.dataset.syncAction = "agent_inspect";
+    const hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.name = "entity";
+    hidden.value = btn.dataset.entity;
+    form.appendChild(hidden);
+    mount.appendChild(form);
+    form.requestSubmit();
+    form.remove();
+  });
+}
+
+function installMarkdownRendering(mount) {
+  for (const el of mount.querySelectorAll("[data-raw-content]")) {
+    renderMessageContent(el);
+  }
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        if (node.dataset?.rawContent !== undefined) {
+          renderMessageContent(node);
+        }
+        for (const el of node.querySelectorAll?.("[data-raw-content]") || []) {
+          renderMessageContent(el);
+        }
+      }
+    }
+  });
+  observer.observe(mount, { childList: true, subtree: true });
+}
 
 function installAtCompletion(mount) {
   let dropdown = null;
@@ -170,9 +251,10 @@ function installAtCompletion(mount) {
     dropdown.innerHTML = items
       .map((item, i) => {
         const cls = i === selectedIndex ? "at-completion-item selected" : "at-completion-item";
+        const icon = item.kind === "directory" ? "📁" : "";
         const lang = item.language ? `<span class="at-completion-lang">${item.language}</span>` : "";
         return `<div class="${cls}" role="option" data-index="${i}">` +
-          `<span class="at-completion-path">${item.path}</span>${lang}</div>`;
+          `<span class="at-completion-path">${icon}${item.path}</span>${lang}</div>`;
       })
       .join("");
   }
@@ -233,7 +315,8 @@ function installAtCompletion(mount) {
     const after = input.value.slice(input.selectionEnd);
     const rawPath = item.path;
     const path = rawPath.startsWith("/") || rawPath.startsWith("./") ? rawPath : `./${rawPath}`;
-    const insert = `${path} `;
+    const suffix = item.kind === "directory" ? "/" : " ";
+    const insert = `${path}${suffix}`;
     input.value = before + insert + after;
     const cursorPos = before.length + insert.length;
     input.setSelectionRange(cursorPos, cursorPos);
@@ -328,4 +411,41 @@ function installAtCompletion(mount) {
       positionDropdown(activeInput);
     }
   }, true);
+}
+
+function installAutoScroll(mount) {
+  const tailKeys = new WeakMap();
+
+  function scrollToBottom(el) {
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+      setTimeout(() => {
+        el.scrollTop = el.scrollHeight;
+      }, 0);
+    });
+  }
+
+  function refreshTranscriptScroll() {
+    for (const el of mount.querySelectorAll("[data-sync-follow='bottom']")) {
+      const lastChild = el.lastElementChild;
+      const tailKey = lastChild
+        ? `${lastChild.getAttribute("data-sync-key") ?? ""}:${lastChild.textContent?.length ?? 0}`
+        : "";
+      const prevKey = tailKeys.get(el) ?? "";
+      if (tailKey && tailKey !== prevKey) {
+        const wasAtBottom =
+          el.scrollHeight <= el.clientHeight ||
+          el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+        if (wasAtBottom) {
+          scrollToBottom(el);
+        }
+      }
+      tailKeys.set(el, tailKey);
+    }
+  }
+
+  refreshTranscriptScroll();
+  new MutationObserver(() => {
+    refreshTranscriptScroll();
+  }).observe(mount, { childList: true, subtree: true });
 }
