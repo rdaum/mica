@@ -100,6 +100,10 @@ impl PackedRelation {
     pub fn rows(&self) -> &[Tuple] {
         &self.rows
     }
+
+    pub(crate) fn shared_rows(&self) -> Arc<[Tuple]> {
+        Arc::clone(&self.rows)
+    }
 }
 
 impl RelationCapabilities {
