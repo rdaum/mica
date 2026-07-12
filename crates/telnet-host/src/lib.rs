@@ -13,7 +13,6 @@
 
 use compio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use compio::net::{TcpListener, TcpStream};
-use compio::runtime::ResumeUnwind;
 use mica_driver::{CompioTaskDriver, DriverEvent};
 use mica_host_protocol::{HostMessage, PROTOCOL_VERSION};
 use mica_host_zmq::{ZmqHostSocket, ZmqSocketOptions};
@@ -336,7 +335,10 @@ async fn handle_connection(
     let result = read_socket_loop(read_half, &host, endpoint, &actor.name).await;
     let _ = host.driver.close_endpoint(endpoint);
     drop_socket_writer(&host, endpoint);
-    let _ = writer.await.resume_unwind();
+    let _ = match writer.await {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
     result
 }
 
@@ -357,12 +359,15 @@ async fn handle_zmq_connection(
     let result = read_zmq_socket_loop(read_half, &mut session, output.clone(), &actor_name).await;
     let _ = session.close_endpoint().await;
     output.close();
-    let _ = writer.await.resume_unwind();
+    let _ = match writer.await {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
     result
 }
 
-async fn read_socket_loop(
-    mut stream: TcpStream,
+async fn read_socket_loop<S: AsyncRead>(
+    mut stream: S,
     host: &InProcessTelnetHost,
     endpoint: Identity,
     actor_name: &str,
@@ -391,8 +396,8 @@ async fn read_socket_loop(
     }
 }
 
-async fn read_zmq_socket_loop(
-    mut stream: TcpStream,
+async fn read_zmq_socket_loop<S: AsyncRead>(
+    mut stream: S,
     session: &mut ZmqSession,
     output: Arc<EndpointOutput>,
     actor_name: &str,
@@ -416,8 +421,8 @@ async fn read_zmq_socket_loop(
     }
 }
 
-async fn read_telnet_line(
-    stream: &mut TcpStream,
+async fn read_telnet_line<S: AsyncRead>(
+    stream: &mut S,
     codec: &mut TelnetCodec,
     pending: &mut VecDeque<TelnetItem>,
 ) -> Result<Option<String>, String> {
@@ -767,8 +772,8 @@ fn drop_socket_writer(host: &InProcessTelnetHost, endpoint: Identity) {
     }
 }
 
-async fn write_socket_loop(
-    mut stream: TcpStream,
+async fn write_socket_loop<S: AsyncWrite>(
+    mut stream: S,
     output: Arc<EndpointOutput>,
 ) -> Result<(), String> {
     while let EndpointOutputReady::Ready { .. } | EndpointOutputReady::HighWater { .. } =
@@ -786,7 +791,7 @@ async fn write_socket_loop(
     shutdown_socket_writer(stream).await
 }
 
-async fn shutdown_socket_writer(mut stream: TcpStream) -> Result<(), String> {
+async fn shutdown_socket_writer<S: AsyncWrite>(mut stream: S) -> Result<(), String> {
     match stream.shutdown().await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotConnected => Ok(()),

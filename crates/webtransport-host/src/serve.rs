@@ -19,7 +19,6 @@ use crate::state::{
 };
 use crate::sync::route_incoming_datagram;
 use bytes::{Buf, Bytes};
-use compio::runtime::ResumeUnwind;
 use compio_quic::h3::quic::RecvStream as H3RecvStream;
 use compio_quic::{Endpoint, ServerBuilder};
 use h3_webtransport::server::WebTransportSession;
@@ -189,8 +188,14 @@ async fn handle_session(
     let result = read_datagram_loop(session, &host, endpoint).await;
     let _ = host.driver.close_endpoint(endpoint);
     drop_session_writer(&host, endpoint);
-    let _ = writer.await.resume_unwind();
-    let _ = stream_reader.await.resume_unwind();
+    let _ = match writer.await {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    let _ = match stream_reader.await {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
     result
 }
 

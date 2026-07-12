@@ -484,10 +484,11 @@ async fn cancel_server_tasks(server_tasks: Vec<ServerTask>) {
     for task in server_tasks {
         tracing::info!(endpoint = task.name, "stopping endpoint server");
         match task.handle.cancel().await {
-            Some(Ok(())) => tracing::info!(endpoint = task.name, "endpoint server stopped"),
-            Some(Err(error)) => {
+            Some(Ok(Ok(()))) => tracing::info!(endpoint = task.name, "endpoint server stopped"),
+            Some(Ok(Err(error))) => {
                 tracing::warn!(endpoint = task.name, error = %error, "endpoint server stopped with error");
             }
+            Some(Err(payload)) => std::panic::resume_unwind(payload),
             None => tracing::info!(endpoint = task.name, "endpoint server cancelled"),
         }
     }

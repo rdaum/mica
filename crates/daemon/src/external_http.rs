@@ -546,7 +546,7 @@ async fn perform_embedding_request(spec: HttpRequestSpec) -> Result<Value, Strin
 }
 
 async fn perform_http_bytes(spec: HttpRequestSpec) -> Result<HttpResponseData, String> {
-    let client = Client::new().map_err(|error| format!("failed to create HTTP client: {error}"))?;
+    let client = Client::new();
     let method = spec
         .method
         .parse::<Method>()

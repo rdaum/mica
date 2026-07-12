@@ -55,11 +55,11 @@ ariadne = "0.6"
 base64 = "0.22"
 bytes = "1.11"
 clap = { version = "4.6", features = ["derive"] }
-compio = { version = "=0.19.1", features = ["async-fd", "dispatcher", "net", "time"] }
-compio-quic = { version = "=0.8.0", features = ["h3"] }
-cyper = { version = "0.9.0-rc.3", default-features = false, features = ["native-tls"] }
-fast-telemetry = { git = "https://github.com/eden-dev-inc/fast-telemetry.git", branch = "rd/compio-exporter" }
-fast-telemetry-export = { git = "https://github.com/eden-dev-inc/fast-telemetry.git", branch = "rd/compio-exporter", default-features = false, features = ["compio"] }
+compio = { version = "=0.18.0", features = ["dispatcher", "net", "time"] }
+compio-quic = { version = "=0.7.0", features = ["h3"] }
+cyper = { version = "0.8.0", default-features = false, features = ["native-tls"] }
+fast-telemetry = "0.8"
+fast-telemetry-export = { version = "0.8", default-features = false, features = ["compio"] }
 fjall = "3.1"
 h3-webtransport = "0.1.2"
 http = "1.4"

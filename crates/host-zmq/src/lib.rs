@@ -13,7 +13,7 @@
 
 //! ZeroMQ carrier for Mica Host Protocol frames.
 
-use compio::runtime::fd::PollFd;
+use compio::net::PollFd;
 use mica_host_protocol::{HostMessage, HostProtocolError, decode_frame, encoded_frame};
 use std::fmt;
 
