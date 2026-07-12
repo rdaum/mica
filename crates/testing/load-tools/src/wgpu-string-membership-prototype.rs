@@ -62,7 +62,7 @@ fn main() -> Result<(), String> {
         accelerator.uses_shared_mappable_buffers(),
     );
     println!(
-        "rows,cardinality,hits,backend,residency,host_us,speedup_vs_serial,amortization_runs_vs_rayon"
+        "rows,cardinality,hits,backend,residency,dictionary_us,host_us,speedup_vs_serial,amortization_runs_vs_rayon"
     );
     for &rows in &args.rows {
         run_size(&args, rows, &accelerator)?;
@@ -85,9 +85,16 @@ fn run_size(args: &Args, rows: usize, accelerator: &WgpuAccelerator) -> Result<(
         &expected,
     );
 
+    let dictionary_before = mica_relation_wgpu::metrics()
+        .encoded_column_duration_us
+        .sum();
     let cold_started = Instant::now();
     let cold = execute_wgpu(accelerator, &left, &right)?;
     let cold_duration = cold_started.elapsed();
+    let dictionary_us = mica_relation_wgpu::metrics()
+        .encoded_column_duration_us
+        .sum()
+        .saturating_sub(dictionary_before);
     verify(&cold, &expected)?;
     for _ in 0..args.warmup_iterations {
         verify(&execute_wgpu(accelerator, &left, &right)?, &expected)?;
@@ -107,8 +114,8 @@ fn run_size(args: &Args, rows: usize, accelerator: &WgpuAccelerator) -> Result<(
         hits: expected.len(),
     };
 
-    print_result(shape, "cpu_serial", "resident", serial, serial, None);
-    print_result(shape, "cpu_rayon", "resident", parallel, serial, None);
+    print_result(shape, "cpu_serial", "resident", serial, serial, None, None);
+    print_result(shape, "cpu_rayon", "resident", parallel, serial, None, None);
     print_result(
         shape,
         "wgpu_dictionary",
@@ -116,6 +123,7 @@ fn run_size(args: &Args, rows: usize, accelerator: &WgpuAccelerator) -> Result<(
         cold_duration,
         serial,
         amortization_runs,
+        Some(dictionary_us),
     );
     print_result(
         shape,
@@ -124,6 +132,7 @@ fn run_size(args: &Args, rows: usize, accelerator: &WgpuAccelerator) -> Result<(
         warm,
         serial,
         amortization_runs,
+        None,
     );
     Ok(())
 }
@@ -241,12 +250,14 @@ fn print_result(
     duration: Duration,
     serial: Duration,
     amortization_runs: Option<u64>,
+    dictionary_us: Option<u64>,
 ) {
     println!(
-        "{},{},{},{backend},{residency},{:.3},{:.3},{}",
+        "{},{},{},{backend},{residency},{},{:.3},{:.3},{}",
         shape.rows,
         shape.cardinality,
         shape.hits,
+        dictionary_us.map_or_else(String::new, |duration| duration.to_string()),
         duration.as_secs_f64() * 1_000_000.0,
         serial.as_secs_f64() / duration.as_secs_f64(),
         amortization_runs.map_or_else(String::new, |runs| runs.to_string()),
