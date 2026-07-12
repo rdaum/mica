@@ -26,11 +26,16 @@ path = "src/parallel-operator-load-test.rs"
 name = "wgpu-membership-prototype"
 path = "src/wgpu-membership-prototype.rs"
 
+[[bin]]
+name = "relation-membership-benchmark"
+path = "src/relation-membership-benchmark.rs"
+
 [dependencies]
 clap.workspace = true
 compio.workspace = true
 mica-driver.workspace = true
 mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
+mica-relation-wgpu.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true
 pollster.workspace = true

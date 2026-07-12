@@ -27,7 +27,7 @@ use std::time::Instant;
 
 const PACKED_ROW_THRESHOLD: usize = 256;
 const ACCELERATOR_MEMBERSHIP_ROW_THRESHOLD: usize = 262_144;
-const PARALLEL_MEMBERSHIP_ROW_THRESHOLD: usize = 262_144;
+const PARALLEL_MEMBERSHIP_ROW_THRESHOLD: usize = 1_048_576;
 const PARALLEL_MEMBERSHIP_WORKERS: NonZeroUsize = NonZeroUsize::new(1).unwrap();
 const PARALLEL_UNION_ROW_THRESHOLD: usize = 2_097_152;
 const PARALLEL_UNION_WORKERS: NonZeroUsize = NonZeroUsize::new(2).unwrap();

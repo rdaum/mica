@@ -3430,6 +3430,7 @@ dependencies = [
  "compio",
  "mica-driver",
  "mica-relation-kernel",
+ "mica-relation-wgpu",
  "mica-runtime",
  "mica-var",
  "pollster",
