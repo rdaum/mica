@@ -410,6 +410,8 @@ struct CompiledRule {
     head_terms: Vec<CompiledTerm>,
     body: Vec<CompiledBodyItem>,
     slot_count: usize,
+    head_slots: BTreeSet<usize>,
+    body_slots: Vec<BTreeSet<usize>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1060,12 +1062,12 @@ fn compile_component(
 
 fn compile_rule(rule: &Rule) -> CompiledRule {
     let mut variables = HashMap::new();
-    let head_terms = rule
+    let head_terms: Vec<CompiledTerm> = rule
         .head_terms
         .iter()
         .map(|term| compile_term(term, &mut variables))
         .collect();
-    let body = rule
+    let body: Vec<CompiledBodyItem> = rule
         .body
         .iter()
         .map(|item| match item {
@@ -1085,11 +1087,32 @@ fn compile_rule(rule: &Rule) -> CompiledRule {
             }),
         })
         .collect();
+    let head_slots = head_terms.iter().filter_map(compiled_term_slot).collect();
+    let body_slots = body.iter().map(compiled_body_slots).collect();
     CompiledRule {
         head_relation: rule.head_relation,
         head_terms,
         body,
         slot_count: variables.len(),
+        head_slots,
+        body_slots,
+    }
+}
+
+fn compiled_body_slots(item: &CompiledBodyItem) -> BTreeSet<usize> {
+    match item {
+        CompiledBodyItem::Atom(atom) => atom.terms.iter().filter_map(compiled_term_slot).collect(),
+        CompiledBodyItem::Guard(guard) => [&guard.left, &guard.right]
+            .into_iter()
+            .filter_map(compiled_term_slot)
+            .collect(),
+    }
+}
+
+fn compiled_term_slot(term: &CompiledTerm) -> Option<usize> {
+    match term {
+        CompiledTerm::Var { slot, .. } => Some(*slot),
+        CompiledTerm::Value(_) => None,
     }
 }
 
@@ -1131,7 +1154,7 @@ fn evaluate_body_with_readers(
     let mut bindings = vec![vec![None; rule.slot_count]];
     let mut remaining = rule.body.iter().enumerate().collect::<Vec<_>>();
     while !remaining.is_empty() {
-        let next = select_next_item(full_reader, delta, &bindings, &remaining)?;
+        let next = select_next_item(full_reader, delta, rule, &bindings, &remaining)?;
         let (body_index, item) = remaining.remove(next);
         let reader = reader_for_body_item(full_reader, delta, body_index);
         bindings = match item {
@@ -1159,6 +1182,7 @@ fn reader_for_body_item<'a>(
 fn select_next_item(
     full_reader: &dyn RelationRead,
     delta: Option<(&dyn RelationRead, usize)>,
+    rule: &CompiledRule,
     bindings: &[Binding],
     items: &[(usize, &CompiledBodyItem)],
 ) -> Result<usize, RuleEvalError> {
@@ -1178,7 +1202,7 @@ fn select_next_item(
                 let estimate = atom_estimate(reader, atom, bindings)?;
                 let bound_terms = bindings
                     .iter()
-                    .map(|binding| bound_term_count(atom, binding))
+                    .map(|binding| bound_term_count(atom, &rule.body_slots[*body_index], binding))
                     .max()
                     .unwrap_or(0);
                 (
@@ -1234,14 +1258,17 @@ fn atom_estimate(
     Ok(total)
 }
 
-fn bound_term_count(atom: &CompiledAtom, binding: &Binding) -> usize {
-    atom.terms
-        .iter()
-        .filter(|term| match term {
-            CompiledTerm::Value(_) => true,
-            CompiledTerm::Var { slot, .. } => binding[*slot].is_some(),
-        })
-        .count()
+fn bound_term_count(
+    atom: &CompiledAtom,
+    referenced_slots: &BTreeSet<usize>,
+    binding: &Binding,
+) -> usize {
+    let constant_terms = atom.terms.len() - referenced_slots.len();
+    constant_terms
+        + referenced_slots
+            .iter()
+            .filter(|slot| binding[**slot].is_some())
+            .count()
 }
 
 fn negated_atom_is_safe(atom: &CompiledAtom, binding: &Binding) -> bool {
@@ -1388,6 +1415,15 @@ fn ensure_negation_safe(atom: &CompiledAtom, binding: &Binding) -> Result<(), Ru
 }
 
 fn instantiate_head(rule: &CompiledRule, binding: &Binding) -> Result<Tuple, RuleEvalError> {
+    if !rule.head_slots.iter().all(|slot| binding[*slot].is_some()) {
+        for term in &rule.head_terms {
+            if let CompiledTerm::Var { symbol, slot } = term
+                && binding[*slot].is_none()
+            {
+                return Err(RuleError::UnboundHeadVariable { variable: *symbol }.into());
+            }
+        }
+    }
     let mut values = Vec::with_capacity(rule.head_terms.len());
     for term in &rule.head_terms {
         values.push(match term {
