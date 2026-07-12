@@ -13,7 +13,7 @@
 
 use mica_relation_kernel::{
     Atom, KernelError, QueryPlan, RelationId, RelationKernel, RelationMetadata, RelationRead, Rule,
-    RuleSet, ScanControl, Snapshot, Term, Tuple,
+    RuleSet, ScanControl, Snapshot, Term, Tuple, metrics,
 };
 use mica_var::{Identity, Symbol, Value};
 use micromeasure::{
@@ -78,6 +78,31 @@ struct RecursiveRuleContext {
     extensional_target: RecursiveCase,
     within: RecursiveCase,
     reachable_room: RecursiveCase,
+}
+
+struct RuleMetricSnapshot {
+    fixpoint_evaluations: u64,
+    rounds: u64,
+    rule_evaluations: u64,
+    variant_evaluations: u64,
+    candidate_rows: u64,
+    novel_rows: u64,
+    frontier_rows: u64,
+}
+
+impl RuleMetricSnapshot {
+    fn capture() -> Self {
+        let metrics = metrics::metrics();
+        Self {
+            fixpoint_evaluations: metrics.rule_fixpoint_evaluations.sum() as u64,
+            rounds: metrics.rule_fixpoint_rounds.sum(),
+            rule_evaluations: metrics.rule_evaluations.sum(),
+            variant_evaluations: metrics.rule_variant_evaluations.sum(),
+            candidate_rows: metrics.rule_candidate_rows.sum(),
+            novel_rows: metrics.rule_novel_rows.sum(),
+            frontier_rows: metrics.rule_frontier_rows.sum(),
+        }
+    }
 }
 
 impl CountingReader {
@@ -413,10 +438,12 @@ fn rule_reachable_room(ctx: &mut RecursiveRuleContext, chunk_size: usize, _chunk
 
 fn recursive_case_diagnostics(case: &RecursiveCase) -> Result<DiagnosticResult, DiagnosticError> {
     case.reader.reset();
+    let before = RuleMetricSnapshot::capture();
     let derived = case
         .rules
         .evaluate_fixpoint(&case.reader)
         .map_err(|error| DiagnosticError::new(format!("recursive evaluation failed: {error:?}")))?;
+    let after = RuleMetricSnapshot::capture();
     let output_rows = derived.values().map(Vec::len).sum::<usize>() as i64;
     Ok(DiagnosticResult::new("rule work")
         .push_metric(MetricValue::integer(
@@ -442,6 +469,41 @@ fn recursive_case_diagnostics(case: &RecursiveCase) -> Result<DiagnosticResult, 
         .push_metric(MetricValue::integer(
             "derived_output_rows",
             output_rows,
+            "rows",
+        ))
+        .push_metric(MetricValue::integer(
+            "fixpoint_evaluations",
+            (after.fixpoint_evaluations - before.fixpoint_evaluations) as i64,
+            "evaluations",
+        ))
+        .push_metric(MetricValue::integer(
+            "fixpoint_rounds",
+            (after.rounds - before.rounds) as i64,
+            "rounds",
+        ))
+        .push_metric(MetricValue::integer(
+            "rule_evaluations",
+            (after.rule_evaluations - before.rule_evaluations) as i64,
+            "evaluations",
+        ))
+        .push_metric(MetricValue::integer(
+            "variant_evaluations",
+            (after.variant_evaluations - before.variant_evaluations) as i64,
+            "evaluations",
+        ))
+        .push_metric(MetricValue::integer(
+            "candidate_rows",
+            (after.candidate_rows - before.candidate_rows) as i64,
+            "rows",
+        ))
+        .push_metric(MetricValue::integer(
+            "novel_rows",
+            (after.novel_rows - before.novel_rows) as i64,
+            "rows",
+        ))
+        .push_metric(MetricValue::integer(
+            "frontier_rows",
+            (after.frontier_rows - before.frontier_rows) as i64,
             "rows",
         )))
 }

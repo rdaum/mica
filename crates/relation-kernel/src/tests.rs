@@ -1013,6 +1013,63 @@ fn composed_transaction_reader_derives_rules_from_transient_inputs() {
 }
 
 #[test]
+fn composed_transaction_reader_derives_recursive_rules_from_transient_inputs() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(rel(74), Symbol::intern("Edge"), 2))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(75),
+            Symbol::intern("Reachable"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(75),
+                [var("from"), var("to")],
+                [Atom::positive(rel(74), [var("from"), var("to")])],
+            ),
+            "Reachable(from, to) :- Edge(from, to)",
+        )
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(75),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(75), [var("from"), var("middle")]),
+                    Atom::positive(rel(74), [var("middle"), var("to")]),
+                ],
+            ),
+            "Reachable(from, to) :- Reachable(from, middle), Edge(middle, to)",
+        )
+        .unwrap();
+    let scope = rel(76);
+    let mut transient = TransientStore::new();
+    let edge = RelationMetadata::new(rel(74), Symbol::intern("Edge"), 2);
+    transient
+        .assert(scope, edge.clone(), Tuple::from([int(1), int(2)]))
+        .unwrap();
+    transient
+        .assert(scope, edge, Tuple::from([int(2), int(3)]))
+        .unwrap();
+    let tx = kernel.begin();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        reader
+            .scan_relation(rel(75), &[Some(int(1)), None])
+            .unwrap(),
+        vec![Tuple::from([int(1), int(2)]), Tuple::from([int(1), int(3)])]
+    );
+}
+
+#[test]
 fn composed_transaction_reader_skips_rules_for_non_derived_relation() {
     let kernel = RelationKernel::with_provider_and_computed_relations(
         Arc::new(InMemoryCommitProvider::new()),

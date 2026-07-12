@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::metrics::record_rule_fixpoint;
 use crate::{KernelError, RelationId, RelationRead, ScanControl, Tuple};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -241,27 +242,22 @@ impl RuleSet {
     ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
         let program = self.compile()?;
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
+        let mut stats = RuleEvaluationStats::default();
 
         for stratum in program.strata {
-            loop {
-                let overlay = DerivedReader {
-                    base: reader,
-                    derived: &derived,
-                };
-                let mut round = BTreeMap::new();
-                evaluate_rules_once(&overlay, &stratum.rules, &mut round)?;
-                let mut changed = false;
-                for (relation, tuples) in round {
-                    let relation_tuples = derived.entry(relation).or_default();
-                    for tuple in tuples {
-                        changed |= relation_tuples.insert(tuple);
-                    }
-                }
-                if !changed {
-                    break;
-                }
+            for component in &stratum.components {
+                evaluate_component(reader, &stratum.rules, component, &mut derived, &mut stats)?;
             }
         }
+
+        record_rule_fixpoint(
+            stats.rounds,
+            stats.rule_evaluations,
+            stats.variant_evaluations,
+            stats.candidate_rows,
+            stats.novel_rows,
+            &stats.frontier_rows,
+        );
 
         Ok(derived
             .into_iter()
@@ -396,6 +392,16 @@ struct CompiledRuleVariant {
     delta_body_index: usize,
 }
 
+#[derive(Default)]
+struct RuleEvaluationStats {
+    rounds: usize,
+    rule_evaluations: usize,
+    variant_evaluations: usize,
+    candidate_rows: usize,
+    novel_rows: usize,
+    frontier_rows: Vec<usize>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CompiledBodyItem {
     Atom(CompiledAtom),
@@ -425,6 +431,16 @@ enum CompiledTerm {
 struct DerivedReader<'a, R> {
     base: &'a R,
     derived: &'a BTreeMap<RelationId, BTreeSet<Tuple>>,
+}
+
+struct SccReader<'a, R> {
+    base: &'a R,
+    completed: &'a BTreeMap<RelationId, BTreeSet<Tuple>>,
+    full: &'a BTreeMap<RelationId, BTreeSet<Tuple>>,
+}
+
+struct TupleMapReader<'a> {
+    tuples: &'a BTreeMap<RelationId, BTreeSet<Tuple>>,
 }
 
 impl<R: RelationRead> RelationRead for DerivedReader<'_, R> {
@@ -493,6 +509,314 @@ impl<R: RelationRead> RelationRead for DerivedReader<'_, R> {
             .unwrap_or(0);
         Ok(base_estimate.map(|estimate| estimate + derived_estimate))
     }
+}
+
+impl<R: RelationRead> RelationRead for SccReader<'_, R> {
+    fn scan_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        let mut rows = match self.base.scan_relation(relation, bindings) {
+            Ok(rows) => rows.into_iter().collect::<BTreeSet<_>>(),
+            Err(KernelError::UnknownRelation(unknown)) if unknown == relation => BTreeSet::new(),
+            Err(error) => return Err(error),
+        };
+        extend_matching(&mut rows, self.completed.get(&relation), bindings);
+        extend_matching(&mut rows, self.full.get(&relation), bindings);
+        Ok(rows.into_iter().collect())
+    }
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        for tuple in self.scan_relation(relation, bindings)? {
+            if visitor(&tuple)? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        Ok(Some(self.scan_relation(relation, bindings)?.len()))
+    }
+}
+
+impl RelationRead for TupleMapReader<'_> {
+    fn scan_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        Ok(self
+            .tuples
+            .get(&relation)
+            .into_iter()
+            .flatten()
+            .filter(|tuple| tuple.matches_bindings(bindings))
+            .cloned()
+            .collect())
+    }
+
+    fn visit_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+        visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+    ) -> Result<(), KernelError> {
+        let Some(tuples) = self.tuples.get(&relation) else {
+            return Ok(());
+        };
+        for tuple in tuples {
+            if tuple.matches_bindings(bindings) && visitor(tuple)? == ScanControl::Stop {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        Ok(Some(
+            self.tuples
+                .get(&relation)
+                .into_iter()
+                .flatten()
+                .filter(|tuple| tuple.matches_bindings(bindings))
+                .count(),
+        ))
+    }
+}
+
+fn extend_matching(
+    rows: &mut BTreeSet<Tuple>,
+    tuples: Option<&BTreeSet<Tuple>>,
+    bindings: &[Option<Value>],
+) {
+    let Some(tuples) = tuples else {
+        return;
+    };
+    rows.extend(
+        tuples
+            .iter()
+            .filter(|tuple| tuple.matches_bindings(bindings))
+            .cloned(),
+    );
+}
+
+fn evaluate_component<R: RelationRead>(
+    reader: &R,
+    rules: &[CompiledRule],
+    component: &CompiledScc,
+    derived: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+    stats: &mut RuleEvaluationStats,
+) -> Result<(), RuleEvalError> {
+    if component.recursive_variants.is_empty() {
+        let overlay = DerivedReader {
+            base: reader,
+            derived,
+        };
+        let mut component_out = BTreeMap::new();
+        stats.rule_evaluations += component.seed_rule_indices.len();
+        evaluate_selected_rules(
+            &overlay,
+            rules,
+            &component.seed_rule_indices,
+            &mut component_out,
+        )?;
+        let output_rows = tuple_map_len(&component_out);
+        stats.candidate_rows += output_rows;
+        stats.novel_rows += output_rows;
+        merge_derived(derived, component_out);
+        return Ok(());
+    }
+
+    evaluate_recursive_component(reader, rules, component, derived, stats)
+}
+
+fn evaluate_recursive_component<R: RelationRead>(
+    reader: &R,
+    rules: &[CompiledRule],
+    component: &CompiledScc,
+    derived: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+    stats: &mut RuleEvaluationStats,
+) -> Result<(), RuleEvalError> {
+    let mut full = read_extensional_targets(reader, rules, component)?;
+    let mut delta = full.clone();
+    let mut accepted = BTreeMap::<RelationId, BTreeSet<Tuple>>::new();
+
+    let full_reader = SccReader {
+        base: reader,
+        completed: derived,
+        full: &full,
+    };
+    let mut seed_out = BTreeMap::new();
+    stats.rule_evaluations += component.seed_rule_indices.len();
+    evaluate_selected_rules(
+        &full_reader,
+        rules,
+        &component.seed_rule_indices,
+        &mut seed_out,
+    )?;
+    stats.candidate_rows += tuple_map_len(&seed_out);
+    for (relation, tuples) in seed_out {
+        accepted
+            .entry(relation)
+            .or_default()
+            .extend(tuples.iter().cloned());
+        let relation_full = full.entry(relation).or_default();
+        let relation_delta = delta.entry(relation).or_default();
+        for tuple in tuples {
+            if relation_full.insert(tuple.clone()) {
+                stats.novel_rows += 1;
+                relation_delta.insert(tuple);
+            }
+        }
+    }
+
+    while delta.values().any(|tuples| !tuples.is_empty()) {
+        stats.rounds += 1;
+        stats.frontier_rows.push(tuple_map_len(&delta));
+        let full_reader = SccReader {
+            base: reader,
+            completed: derived,
+            full: &full,
+        };
+        let delta_reader = TupleMapReader { tuples: &delta };
+        let mut candidates = BTreeMap::new();
+        stats.variant_evaluations += component.recursive_variants.len();
+        evaluate_recursive_variants(
+            &full_reader,
+            &delta_reader,
+            rules,
+            &component.recursive_variants,
+            &mut candidates,
+        )?;
+        stats.candidate_rows += tuple_map_len(&candidates);
+        for (relation, tuples) in &candidates {
+            accepted
+                .entry(*relation)
+                .or_default()
+                .extend(tuples.iter().cloned());
+        }
+        let newt = novel_candidates(candidates, &full);
+        stats.novel_rows += tuple_map_len(&newt);
+        if newt.values().all(BTreeSet::is_empty) {
+            break;
+        }
+        for (relation, tuples) in &newt {
+            full.entry(*relation)
+                .or_default()
+                .extend(tuples.iter().cloned());
+        }
+        delta = newt;
+    }
+
+    merge_derived(derived, accepted);
+    Ok(())
+}
+
+fn read_extensional_targets<R: RelationRead>(
+    reader: &R,
+    rules: &[CompiledRule],
+    component: &CompiledScc,
+) -> Result<BTreeMap<RelationId, BTreeSet<Tuple>>, RuleEvalError> {
+    let mut targets = BTreeMap::new();
+    for relation in &component.target_relations {
+        let arity = component
+            .rule_indices
+            .iter()
+            .map(|index| &rules[*index])
+            .find(|rule| rule.head_relation == *relation)
+            .map(|rule| rule.head_terms.len())
+            .unwrap();
+        let bindings = vec![None; arity];
+        let tuples = match reader.scan_relation(*relation, &bindings) {
+            Ok(tuples) => tuples.into_iter().collect(),
+            Err(KernelError::UnknownRelation(unknown)) if unknown == *relation => BTreeSet::new(),
+            Err(error) => return Err(error.into()),
+        };
+        targets.insert(*relation, tuples);
+    }
+    Ok(targets)
+}
+
+fn evaluate_selected_rules(
+    reader: &dyn RelationRead,
+    rules: &[CompiledRule],
+    rule_indices: &[usize],
+    out: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+) -> Result<(), RuleEvalError> {
+    for &rule_index in rule_indices {
+        let rule = &rules[rule_index];
+        for binding in evaluate_body(reader, rule)? {
+            out.entry(rule.head_relation)
+                .or_default()
+                .insert(instantiate_head(rule, &binding)?);
+        }
+    }
+    Ok(())
+}
+
+fn evaluate_recursive_variants(
+    full_reader: &dyn RelationRead,
+    delta_reader: &dyn RelationRead,
+    rules: &[CompiledRule],
+    variants: &[CompiledRuleVariant],
+    out: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+) -> Result<(), RuleEvalError> {
+    for variant in variants {
+        let rule = &rules[variant.rule_index];
+        for binding in
+            evaluate_body_variant(full_reader, delta_reader, variant.delta_body_index, rule)?
+        {
+            out.entry(rule.head_relation)
+                .or_default()
+                .insert(instantiate_head(rule, &binding)?);
+        }
+    }
+    Ok(())
+}
+
+fn novel_candidates(
+    candidates: BTreeMap<RelationId, BTreeSet<Tuple>>,
+    full: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+) -> BTreeMap<RelationId, BTreeSet<Tuple>> {
+    candidates
+        .into_iter()
+        .map(|(relation, tuples)| {
+            let existing = full.get(&relation);
+            let novel = tuples
+                .into_iter()
+                .filter(|tuple| existing.is_none_or(|existing| !existing.contains(tuple)))
+                .collect();
+            (relation, novel)
+        })
+        .collect()
+}
+
+fn merge_derived(
+    derived: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+    additional: BTreeMap<RelationId, BTreeSet<Tuple>>,
+) {
+    for (relation, tuples) in additional {
+        derived.entry(relation).or_default().extend(tuples);
+    }
+}
+
+fn tuple_map_len(tuples: &BTreeMap<RelationId, BTreeSet<Tuple>>) -> usize {
+    tuples.values().map(BTreeSet::len).sum()
 }
 
 fn evaluate_rules_once(
@@ -742,14 +1066,32 @@ fn compile_term(term: &Term, variables: &mut HashMap<Symbol, usize>) -> Compiled
 }
 
 fn evaluate_body(
-    reader: &impl RelationRead,
+    reader: &dyn RelationRead,
+    rule: &CompiledRule,
+) -> Result<Vec<Binding>, RuleEvalError> {
+    evaluate_body_with_readers(reader, None, rule)
+}
+
+fn evaluate_body_variant(
+    full_reader: &dyn RelationRead,
+    delta_reader: &dyn RelationRead,
+    delta_body_index: usize,
+    rule: &CompiledRule,
+) -> Result<Vec<Binding>, RuleEvalError> {
+    evaluate_body_with_readers(full_reader, Some((delta_reader, delta_body_index)), rule)
+}
+
+fn evaluate_body_with_readers(
+    full_reader: &dyn RelationRead,
+    delta: Option<(&dyn RelationRead, usize)>,
     rule: &CompiledRule,
 ) -> Result<Vec<Binding>, RuleEvalError> {
     let mut bindings = vec![vec![None; rule.slot_count]];
-    let mut remaining = rule.body.iter().collect::<Vec<_>>();
+    let mut remaining = rule.body.iter().enumerate().collect::<Vec<_>>();
     while !remaining.is_empty() {
-        let next = select_next_item(reader, &bindings, &remaining)?;
-        let item = remaining.remove(next);
+        let next = select_next_item(full_reader, delta, &bindings, &remaining)?;
+        let (body_index, item) = remaining.remove(next);
+        let reader = reader_for_body_item(full_reader, delta, body_index);
         bindings = match item {
             CompiledBodyItem::Atom(atom) if atom.negated => {
                 apply_negated_atom(reader, atom, bindings)?
@@ -761,13 +1103,26 @@ fn evaluate_body(
     Ok(bindings)
 }
 
+fn reader_for_body_item<'a>(
+    full_reader: &'a dyn RelationRead,
+    delta: Option<(&'a dyn RelationRead, usize)>,
+    body_index: usize,
+) -> &'a dyn RelationRead {
+    match delta {
+        Some((delta_reader, delta_body_index)) if delta_body_index == body_index => delta_reader,
+        _ => full_reader,
+    }
+}
+
 fn select_next_item(
-    reader: &impl RelationRead,
+    full_reader: &dyn RelationRead,
+    delta: Option<(&dyn RelationRead, usize)>,
     bindings: &[Binding],
-    items: &[&CompiledBodyItem],
+    items: &[(usize, &CompiledBodyItem)],
 ) -> Result<usize, RuleEvalError> {
     let mut best = None;
-    for (index, item) in items.iter().enumerate() {
+    for (index, (body_index, item)) in items.iter().enumerate() {
+        let reader = reader_for_body_item(full_reader, delta, *body_index);
         let rank = match item {
             CompiledBodyItem::Atom(atom)
                 if atom.negated
@@ -806,8 +1161,8 @@ fn select_next_item(
         .ok_or_else(|| first_unsafe_error(items))
 }
 
-fn first_unsafe_error(items: &[&CompiledBodyItem]) -> RuleEvalError {
-    for item in items {
+fn first_unsafe_error(items: &[(usize, &CompiledBodyItem)]) -> RuleEvalError {
+    for (_, item) in items {
         if let CompiledBodyItem::Atom(atom) = item
             && atom.negated
         {
@@ -821,7 +1176,7 @@ fn first_unsafe_error(items: &[&CompiledBodyItem]) -> RuleEvalError {
 }
 
 fn atom_estimate(
-    reader: &impl RelationRead,
+    reader: &dyn RelationRead,
     atom: &CompiledAtom,
     bindings: &[Binding],
 ) -> Result<usize, RuleEvalError> {
@@ -866,7 +1221,7 @@ fn term_is_bound(term: &CompiledTerm, binding: &Binding) -> bool {
 }
 
 fn apply_positive_atom(
-    reader: &impl RelationRead,
+    reader: &dyn RelationRead,
     atom: &CompiledAtom,
     bindings: Vec<Binding>,
 ) -> Result<Vec<Binding>, RuleEvalError> {
@@ -884,7 +1239,7 @@ fn apply_positive_atom(
 }
 
 fn apply_negated_atom(
-    reader: &impl RelationRead,
+    reader: &dyn RelationRead,
     atom: &CompiledAtom,
     bindings: Vec<Binding>,
 ) -> Result<Vec<Binding>, RuleEvalError> {
@@ -1406,6 +1761,391 @@ mod tests {
                     delta_body_index: 1,
                 },
             ]
+        );
+    }
+
+    fn evaluate_fixpoint_reference(
+        rules: &RuleSet,
+        reader: &impl RelationRead,
+    ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
+        let strata = rules.stratified_rules()?;
+        let mut derived = BTreeMap::<RelationId, BTreeSet<Tuple>>::new();
+        for rules in strata {
+            let rules = rules.into_iter().map(compile_rule).collect::<Vec<_>>();
+            loop {
+                let overlay = DerivedReader {
+                    base: reader,
+                    derived: &derived,
+                };
+                let mut round = BTreeMap::new();
+                evaluate_rules_once(&overlay, &rules, &mut round)?;
+                let mut changed = false;
+                for (relation, tuples) in round {
+                    let relation_tuples = derived.entry(relation).or_default();
+                    for tuple in tuples {
+                        changed |= relation_tuples.insert(tuple);
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+        }
+        Ok(derived
+            .into_iter()
+            .map(|(relation, tuples)| (relation, tuples.into_iter().collect()))
+            .collect())
+    }
+
+    fn assert_matches_reference(rules: &RuleSet, reader: &impl RelationRead) {
+        assert_eq!(
+            rules.evaluate_fixpoint(reader).unwrap(),
+            evaluate_fixpoint_reference(rules, reader).unwrap()
+        );
+    }
+
+    #[test]
+    fn semi_naive_evaluation_combines_overlapping_clauses_independently_of_order() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(120), Symbol::intern("Edge"), 2))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                rel(121),
+                Symbol::intern("Shortcut"),
+                2,
+            ))
+            .unwrap();
+        let mut tx = kernel.begin();
+        tx.assert(rel(120), Tuple::from([int(1), int(2)])).unwrap();
+        tx.assert(rel(120), Tuple::from([int(2), int(3)])).unwrap();
+        tx.assert(rel(121), Tuple::from([int(1), int(2)])).unwrap();
+
+        let edge = Rule::new(
+            rel(122),
+            [var("from"), var("to")],
+            [Atom::positive(rel(120), [var("from"), var("to")])],
+        );
+        let shortcut = Rule::new(
+            rel(122),
+            [var("from"), var("to")],
+            [Atom::positive(rel(121), [var("from"), var("to")])],
+        );
+        let step = Rule::new(
+            rel(122),
+            [var("from"), var("to")],
+            [
+                Atom::positive(rel(122), [var("from"), var("middle")]),
+                Atom::positive(rel(120), [var("middle"), var("to")]),
+            ],
+        );
+        let forward = RuleSet::new([edge.clone(), shortcut.clone(), step.clone()]);
+        let reversed = RuleSet::new([step, shortcut, edge]);
+
+        assert_matches_reference(&forward, &tx);
+        assert_eq!(
+            forward.evaluate_fixpoint(&tx).unwrap(),
+            reversed.evaluate_fixpoint(&tx).unwrap()
+        );
+    }
+
+    #[test]
+    fn semi_naive_evaluation_supports_multiple_recursive_atoms() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(130), Symbol::intern("Edge"), 2))
+            .unwrap();
+        let mut tx = kernel.begin();
+        for (from, to) in [(1, 2), (2, 3), (3, 4)] {
+            tx.assert(rel(130), Tuple::from([int(from), int(to)]))
+                .unwrap();
+        }
+        let rules = RuleSet::new([
+            Rule::new(
+                rel(131),
+                [var("from"), var("to")],
+                [Atom::positive(rel(130), [var("from"), var("to")])],
+            ),
+            Rule::new(
+                rel(131),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(131), [var("from"), var("middle")]),
+                    Atom::positive(rel(131), [var("middle"), var("to")]),
+                ],
+            ),
+        ]);
+
+        assert_matches_reference(&rules, &tx);
+        assert_eq!(rules.evaluate_fixpoint(&tx).unwrap()[&rel(131)].len(), 6);
+    }
+
+    #[test]
+    fn semi_naive_evaluation_supports_same_round_mutual_recursion() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(140), Symbol::intern("Seed"), 1))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(rel(141), Symbol::intern("Next"), 2))
+            .unwrap();
+        let mut tx = kernel.begin();
+        tx.assert(rel(140), Tuple::from([int(1)])).unwrap();
+        tx.assert(rel(141), Tuple::from([int(1), int(2)])).unwrap();
+        tx.assert(rel(141), Tuple::from([int(2), int(3)])).unwrap();
+        let rules = RuleSet::new([
+            Rule::new(rel(142), [var("x")], [Atom::positive(rel(140), [var("x")])]),
+            Rule::new(rel(143), [var("x")], [Atom::positive(rel(142), [var("x")])]),
+            Rule::new(
+                rel(142),
+                [var("next")],
+                [
+                    Atom::positive(rel(143), [var("x")]),
+                    Atom::positive(rel(141), [var("x"), var("next")]),
+                ],
+            ),
+        ]);
+
+        assert_matches_reference(&rules, &tx);
+        assert_eq!(rules.evaluate_fixpoint(&tx).unwrap()[&rel(142)].len(), 3);
+        assert_eq!(rules.evaluate_fixpoint(&tx).unwrap()[&rel(143)].len(), 3);
+    }
+
+    #[test]
+    fn semi_naive_evaluation_uses_extensional_recursive_targets_as_frontiers() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(150), Symbol::intern("Edge"), 2))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                rel(151),
+                Symbol::intern("Reachable"),
+                2,
+            ))
+            .unwrap();
+        let mut tx = kernel.begin();
+        tx.assert(rel(151), Tuple::from([int(1), int(2)])).unwrap();
+        tx.assert(rel(150), Tuple::from([int(2), int(3)])).unwrap();
+        tx.assert(rel(150), Tuple::from([int(3), int(4)])).unwrap();
+        let rules = RuleSet::new([Rule::new(
+            rel(151),
+            [var("from"), var("to")],
+            [
+                Atom::positive(rel(151), [var("from"), var("middle")]),
+                Atom::positive(rel(150), [var("middle"), var("to")]),
+            ],
+        )]);
+
+        assert_matches_reference(&rules, &tx);
+        assert_eq!(
+            rules.evaluate_fixpoint(&tx).unwrap()[&rel(151)],
+            vec![Tuple::from([int(1), int(3)]), Tuple::from([int(1), int(4)]),]
+        );
+    }
+
+    #[test]
+    fn semi_naive_evaluation_reads_negation_from_completed_lower_strata() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(160), Symbol::intern("Node"), 1))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                rel(161),
+                Symbol::intern("Blocked"),
+                1,
+            ))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(rel(162), Symbol::intern("Next"), 2))
+            .unwrap();
+        let mut tx = kernel.begin();
+        for node in 1..=3 {
+            tx.assert(rel(160), Tuple::from([int(node)])).unwrap();
+        }
+        tx.assert(rel(161), Tuple::from([int(2)])).unwrap();
+        tx.assert(rel(162), Tuple::from([int(1), int(2)])).unwrap();
+        tx.assert(rel(162), Tuple::from([int(2), int(3)])).unwrap();
+        let rules = RuleSet::new([
+            Rule::new(rel(163), [var("x")], [Atom::positive(rel(161), [var("x")])]),
+            Rule::new(
+                rel(164),
+                [var("x")],
+                [
+                    Atom::positive(rel(160), [var("x")]),
+                    Atom::negated(rel(163), [var("x")]),
+                ],
+            ),
+            Rule::new(rel(165), [var("x")], [Atom::positive(rel(164), [var("x")])]),
+            Rule::new(
+                rel(165),
+                [var("next")],
+                [
+                    Atom::positive(rel(165), [var("x")]),
+                    Atom::positive(rel(162), [var("x"), var("next")]),
+                ],
+            ),
+        ]);
+
+        assert_matches_reference(&rules, &tx);
+    }
+
+    #[test]
+    fn semi_naive_evaluation_matches_reference_for_generated_small_graphs() {
+        let possible_edges = [(1, 1), (1, 2), (1, 3), (2, 2), (2, 3), (3, 1), (3, 3)];
+        for mask in 0u16..(1 << possible_edges.len()) {
+            let kernel = RelationKernel::new();
+            kernel
+                .create_relation(RelationMetadata::new(rel(170), Symbol::intern("Edge"), 2))
+                .unwrap();
+            let mut tx = kernel.begin();
+            for (index, (from, to)) in possible_edges.iter().enumerate() {
+                if mask & (1 << index) != 0 {
+                    tx.assert(rel(170), Tuple::from([int(*from), int(*to)]))
+                        .unwrap();
+                }
+            }
+            let rules = RuleSet::new([
+                Rule::new(
+                    rel(171),
+                    [var("from"), var("to")],
+                    [Atom::positive(rel(170), [var("from"), var("to")])],
+                ),
+                Rule::new(
+                    rel(171),
+                    [var("from"), var("to")],
+                    [
+                        Atom::positive(rel(171), [var("from"), var("middle")]),
+                        Atom::positive(rel(170), [var("middle"), var("to")]),
+                    ],
+                ),
+            ]);
+            assert_matches_reference(&rules, &tx);
+        }
+    }
+
+    #[test]
+    fn semi_naive_evaluation_handles_empty_frontiers() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(180), Symbol::intern("Edge"), 2))
+            .unwrap();
+        let rules = RuleSet::new([
+            Rule::new(
+                rel(181),
+                [var("from"), var("to")],
+                [Atom::positive(rel(180), [var("from"), var("to")])],
+            ),
+            Rule::new(
+                rel(181),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(181), [var("from"), var("middle")]),
+                    Atom::positive(rel(180), [var("middle"), var("to")]),
+                ],
+            ),
+        ]);
+        let tx = kernel.begin();
+
+        assert_matches_reference(&rules, &tx);
+        assert!(
+            !rules
+                .evaluate_fixpoint(&tx)
+                .unwrap()
+                .contains_key(&rel(181))
+        );
+    }
+
+    #[test]
+    fn semi_naive_evaluation_reads_transaction_local_retractions() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(190), Symbol::intern("Edge"), 2))
+            .unwrap();
+        let mut seed = kernel.begin();
+        seed.assert(rel(190), Tuple::from([int(1), int(2)]))
+            .unwrap();
+        seed.assert(rel(190), Tuple::from([int(2), int(3)]))
+            .unwrap();
+        seed.commit().unwrap();
+
+        let mut tx = kernel.begin();
+        tx.retract(rel(190), Tuple::from([int(2), int(3)])).unwrap();
+        tx.assert(rel(190), Tuple::from([int(2), int(4)])).unwrap();
+        let rules = RuleSet::new([
+            Rule::new(
+                rel(191),
+                [var("from"), var("to")],
+                [Atom::positive(rel(190), [var("from"), var("to")])],
+            ),
+            Rule::new(
+                rel(191),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(191), [var("from"), var("middle")]),
+                    Atom::positive(rel(190), [var("middle"), var("to")]),
+                ],
+            ),
+        ]);
+
+        assert_matches_reference(&rules, &tx);
+        assert_eq!(
+            rules.evaluate_fixpoint(&tx).unwrap()[&rel(191)],
+            vec![
+                Tuple::from([int(1), int(2)]),
+                Tuple::from([int(1), int(4)]),
+                Tuple::from([int(2), int(4)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn semi_naive_evaluation_preserves_constants_repeated_variables_and_guards() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(200), Symbol::intern("Edge"), 2))
+            .unwrap();
+        let mut tx = kernel.begin();
+        for (from, to) in [(1, 1), (1, 2), (2, 3), (3, 4)] {
+            tx.assert(rel(200), Tuple::from([int(from), int(to)]))
+                .unwrap();
+        }
+        let rules = RuleSet::new([
+            Rule::new(
+                rel(201),
+                [var("node")],
+                [Atom::positive(rel(200), [val(int(1)), var("node")])],
+            ),
+            Rule::new(
+                rel(201),
+                [var("next")],
+                vec![
+                    RuleBodyItem::from(Atom::positive(rel(201), [var("node")])),
+                    RuleBodyItem::from(Atom::positive(rel(200), [var("node"), var("next")])),
+                    RuleGuard::new(RuleComparisonOp::Ne, var("next"), val(int(4))).into(),
+                ],
+            ),
+            Rule::new(
+                rel(202),
+                [var("node")],
+                [Atom::positive(rel(200), [var("node"), var("node")])],
+            ),
+        ]);
+
+        assert_matches_reference(&rules, &tx);
+        assert_eq!(
+            rules.evaluate_fixpoint(&tx).unwrap()[&rel(201)],
+            vec![
+                Tuple::from([int(1)]),
+                Tuple::from([int(2)]),
+                Tuple::from([int(3)])
+            ]
+        );
+        assert_eq!(
+            rules.evaluate_fixpoint(&tx).unwrap()[&rel(202)],
+            vec![Tuple::from([int(1)])]
         );
     }
 

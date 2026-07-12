@@ -108,6 +108,27 @@ pub struct RelationKernelMetrics {
     #[help = "Rows materialized by derived relation materialization"]
     pub derived_materialization_rows: Histogram,
 
+    #[help = "Successful rule fixpoint evaluations"]
+    pub rule_fixpoint_evaluations: Counter,
+
+    #[help = "Recursive rounds per rule fixpoint evaluation"]
+    pub rule_fixpoint_rounds: Histogram,
+
+    #[help = "Non-recursive rule evaluations per rule fixpoint evaluation"]
+    pub rule_evaluations: Histogram,
+
+    #[help = "Recursive rule variant evaluations per rule fixpoint evaluation"]
+    pub rule_variant_evaluations: Histogram,
+
+    #[help = "Candidate tuples produced per rule fixpoint evaluation"]
+    pub rule_candidate_rows: Histogram,
+
+    #[help = "Novel tuples accepted per rule fixpoint evaluation"]
+    pub rule_novel_rows: Histogram,
+
+    #[help = "Rows in each recursive frontier"]
+    pub rule_frontier_rows: Histogram,
+
     #[help = "Relations in the current snapshot"]
     pub snapshot_relations: Gauge,
 
@@ -140,6 +161,13 @@ impl RelationKernelMetrics {
             derived_materializations: Counter::new(shard_count),
             derived_materialization_duration_us: Histogram::with_latency_buckets(shard_count),
             derived_materialization_rows: Histogram::new(COUNT_BUCKETS, shard_count),
+            rule_fixpoint_evaluations: Counter::new(shard_count),
+            rule_fixpoint_rounds: Histogram::new(COUNT_BUCKETS, shard_count),
+            rule_evaluations: Histogram::new(COUNT_BUCKETS, shard_count),
+            rule_variant_evaluations: Histogram::new(COUNT_BUCKETS, shard_count),
+            rule_candidate_rows: Histogram::new(COUNT_BUCKETS, shard_count),
+            rule_novel_rows: Histogram::new(COUNT_BUCKETS, shard_count),
+            rule_frontier_rows: Histogram::new(COUNT_BUCKETS, shard_count),
             snapshot_relations: Gauge::new(),
             snapshot_rules: Gauge::new(),
             snapshot_version: Gauge::new(),
@@ -200,6 +228,28 @@ pub(crate) fn record_derived_materialization(
     metrics
         .derived_materialization_rows
         .record(total_rows.min(u64::MAX as usize) as u64);
+}
+
+pub(crate) fn record_rule_fixpoint(
+    rounds: usize,
+    rule_evaluations: usize,
+    variant_evaluations: usize,
+    candidate_rows: usize,
+    novel_rows: usize,
+    frontier_rows: &[usize],
+) {
+    let metrics = metrics();
+    metrics.rule_fixpoint_evaluations.inc();
+    metrics.rule_fixpoint_rounds.record(rounds as u64);
+    metrics.rule_evaluations.record(rule_evaluations as u64);
+    metrics
+        .rule_variant_evaluations
+        .record(variant_evaluations as u64);
+    metrics.rule_candidate_rows.record(candidate_rows as u64);
+    metrics.rule_novel_rows.record(novel_rows as u64);
+    for rows in frontier_rows {
+        metrics.rule_frontier_rows.record(*rows as u64);
+    }
 }
 
 pub fn derived_relation_summaries(limit: usize) -> Vec<DerivedRelationSummary> {
