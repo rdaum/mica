@@ -1420,7 +1420,7 @@ fn evaluate_two_atom_batch(
     full_reader: &dyn RelationRead,
     delta: Option<(&dyn RelationRead, usize)>,
     rule: &CompiledRule,
-    _execution_context: &ExecutionContext,
+    execution_context: &ExecutionContext,
 ) -> Result<Option<Vec<Binding>>, RuleEvalError> {
     let [CompiledBodyItem::Atom(left), CompiledBodyItem::Atom(right)] = rule.body.as_slice() else {
         return Ok(None);
@@ -1463,6 +1463,7 @@ fn evaluate_two_atom_batch(
         },
         left_positions,
         right_positions,
+        execution_context,
         |rows| {
             let mut output = Vec::with_capacity(rows.row_count());
             let empty = vec![None; rule.slot_count];

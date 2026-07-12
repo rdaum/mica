@@ -8,7 +8,8 @@
 
 use fast_telemetry::{Counter, ExportMetrics, Histogram};
 use mica_relation_kernel::{
-    AccelerationDecline, AccelerationOutcome, MembershipSelection, RelationAccelerator,
+    AccelerationDecline, AccelerationOutcome, EqualityJoin, EqualityJoinMatch, MembershipSelection,
+    RelationAccelerator,
 };
 use mica_var::{Identity, Value, ValueKind};
 use std::collections::{HashMap, HashSet};
@@ -68,6 +69,148 @@ fn membership(@builtin(global_invocation_id) invocation: vec3<u32>) {
         }
     }
     matches[row] = select(0u, 1u, lower < params.right_len && right_rows[lower] == probe);
+}
+"#;
+
+const EQUALITY_JOIN_COUNT_SHADER: &str = r#"
+struct Params {
+    left_len: u32,
+    right_len: u32,
+    key_columns: u32,
+    _padding: u32,
+}
+
+@group(0) @binding(0)
+var<storage, read> left_first: array<u64>;
+@group(0) @binding(1)
+var<storage, read> left_second: array<u64>;
+@group(0) @binding(2)
+var<storage, read> right_first: array<u64>;
+@group(0) @binding(3)
+var<storage, read> right_second: array<u64>;
+@group(0) @binding(4)
+var<storage, read_write> counts: array<u32>;
+@group(0) @binding(5)
+var<uniform> params: Params;
+
+fn right_less_than_left(right_row: u32, left_row: u32) -> bool {
+    if right_first[right_row] != left_first[left_row] {
+        return right_first[right_row] < left_first[left_row];
+    }
+    return params.key_columns == 2u && right_second[right_row] < left_second[left_row];
+}
+
+fn left_less_than_right(left_row: u32, right_row: u32) -> bool {
+    if left_first[left_row] != right_first[right_row] {
+        return left_first[left_row] < right_first[right_row];
+    }
+    return params.key_columns == 2u && left_second[left_row] < right_second[right_row];
+}
+
+fn lower_bound(left_row: u32) -> u32 {
+    var lower = 0u;
+    var upper = params.right_len;
+    loop {
+        if lower >= upper {
+            break;
+        }
+        let middle = lower + ((upper - lower) / 2u);
+        if right_less_than_left(middle, left_row) {
+            lower = middle + 1u;
+        } else {
+            upper = middle;
+        }
+    }
+    return lower;
+}
+
+fn upper_bound(left_row: u32) -> u32 {
+    var lower = 0u;
+    var upper = params.right_len;
+    loop {
+        if lower >= upper {
+            break;
+        }
+        let middle = lower + ((upper - lower) / 2u);
+        if left_less_than_right(left_row, middle) {
+            upper = middle;
+        } else {
+            lower = middle + 1u;
+        }
+    }
+    return lower;
+}
+
+@compute @workgroup_size(256)
+fn count_matches(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let left_row = invocation.x;
+    if left_row >= params.left_len {
+        return;
+    }
+    counts[left_row] = upper_bound(left_row) - lower_bound(left_row);
+}
+"#;
+
+const EQUALITY_JOIN_WRITE_SHADER: &str = r#"
+struct Params {
+    left_len: u32,
+    right_len: u32,
+    key_columns: u32,
+    _padding: u32,
+}
+
+@group(0) @binding(0)
+var<storage, read> left_first: array<u64>;
+@group(0) @binding(1)
+var<storage, read> left_second: array<u64>;
+@group(0) @binding(2)
+var<storage, read> right_first: array<u64>;
+@group(0) @binding(3)
+var<storage, read> right_second: array<u64>;
+@group(0) @binding(4)
+var<storage, read> right_rows: array<u32>;
+@group(0) @binding(5)
+var<storage, read> offsets: array<u32>;
+@group(0) @binding(6)
+var<storage, read_write> pairs: array<vec2<u32>>;
+@group(0) @binding(7)
+var<uniform> params: Params;
+
+fn right_less_than_left(right_row: u32, left_row: u32) -> bool {
+    if right_first[right_row] != left_first[left_row] {
+        return right_first[right_row] < left_first[left_row];
+    }
+    return params.key_columns == 2u && right_second[right_row] < left_second[left_row];
+}
+
+fn lower_bound(left_row: u32) -> u32 {
+    var lower = 0u;
+    var upper = params.right_len;
+    loop {
+        if lower >= upper {
+            break;
+        }
+        let middle = lower + ((upper - lower) / 2u);
+        if right_less_than_left(middle, left_row) {
+            lower = middle + 1u;
+        } else {
+            upper = middle;
+        }
+    }
+    return lower;
+}
+
+@compute @workgroup_size(256)
+fn write_matches(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let left_row = invocation.x;
+    if left_row >= params.left_len {
+        return;
+    }
+    let first = lower_bound(left_row);
+    let count = offsets[left_row + 1u] - offsets[left_row];
+    for (var index = 0u; index < count; index++) {
+        pairs[offsets[left_row] + index] = vec2<u32>(left_row, right_rows[first + index]);
+    }
 }
 "#;
 
@@ -144,6 +287,25 @@ struct CachedStringValues {
     unique: Arc<[Value]>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct JoinCacheKey {
+    sources: [usize; 4],
+    key_columns: u8,
+}
+
+struct EncodedJoin {
+    left: Vec<Arc<EncodedColumn>>,
+    right: Vec<Arc<EncodedColumn>>,
+    right_rows: wgpu::Buffer,
+    left_len: usize,
+    right_len: usize,
+}
+
+struct CachedJoin {
+    sources: Vec<Weak<[Value]>>,
+    encoded: Arc<EncodedJoin>,
+}
+
 struct OutputBuffers {
     output: wgpu::Buffer,
     readback: Option<wgpu::Buffer>,
@@ -162,6 +324,11 @@ struct GpuAvailability {
 
 struct GpuPermit<'a> {
     admission: &'a GpuAdmission,
+}
+
+enum EqualityJoinExecutionError {
+    UnsupportedInput,
+    Device(String),
 }
 
 impl GpuAdmission {
@@ -200,6 +367,12 @@ pub struct RelationWgpuMetrics {
     #[help = "GPU membership operations declined because the device was occupied"]
     pub membership_busy: Counter,
 
+    #[help = "GPU equality join execution duration in microseconds"]
+    pub equality_join_duration_us: Histogram,
+
+    #[help = "GPU equality joins declined because the device was occupied"]
+    pub equality_join_busy: Counter,
+
     #[help = "GPU device failures that disabled relation acceleration"]
     pub device_failures: Counter,
 }
@@ -213,6 +386,8 @@ impl RelationWgpuMetrics {
             encoded_column_duration_us: Histogram::with_latency_buckets(shard_count),
             membership_duration_us: Histogram::with_latency_buckets(shard_count),
             membership_busy: Counter::new(shard_count),
+            equality_join_duration_us: Histogram::with_latency_buckets(shard_count),
+            equality_join_busy: Counter::new(shard_count),
             device_failures: Counter::new(shard_count),
         }
     }
@@ -226,15 +401,19 @@ pub struct WgpuAccelerator {
     adapter_name: String,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: wgpu::ComputePipeline,
+    membership_pipeline: wgpu::ComputePipeline,
+    equality_join_count_pipeline: wgpu::ComputePipeline,
+    equality_join_write_pipeline: wgpu::ComputePipeline,
     buffer_mode: BufferMode,
     max_left_rows: usize,
     max_right_rows: usize,
+    max_join_output_rows: usize,
     admission: GpuAdmission,
     availability: GpuAvailability,
     column_cache: [Mutex<HashMap<(usize, ColumnLayout), CachedColumn>>; CACHE_SHARDS],
     string_values_cache: [Mutex<HashMap<usize, CachedStringValues>>; CACHE_SHARDS],
     dictionary_cache: [Mutex<HashMap<(usize, usize), CachedPair>>; CACHE_SHARDS],
+    join_cache: [Mutex<HashMap<JoinCacheKey, CachedJoin>>; CACHE_SHARDS],
     output_pool: Mutex<HashMap<u64, Vec<OutputBuffers>>>,
 }
 
@@ -286,18 +465,47 @@ impl WgpuAccelerator {
                 adapter_info.name
             ))
         })?;
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let membership_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mica-relation-membership-shader"),
             source: wgpu::ShaderSource::Wgsl(MEMBERSHIP_SHADER.into()),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("mica-relation-membership-pipeline"),
-            layout: None,
-            module: &shader,
-            entry_point: Some("membership"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let membership_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("mica-relation-membership-pipeline"),
+                layout: None,
+                module: &membership_shader,
+                entry_point: Some("membership"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let equality_join_count_shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("mica-relation-equality-join-count-shader"),
+                source: wgpu::ShaderSource::Wgsl(EQUALITY_JOIN_COUNT_SHADER.into()),
+            });
+        let equality_join_count_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("mica-relation-equality-join-count-pipeline"),
+                layout: None,
+                module: &equality_join_count_shader,
+                entry_point: Some("count_matches"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let equality_join_write_shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("mica-relation-equality-join-write-shader"),
+                source: wgpu::ShaderSource::Wgsl(EQUALITY_JOIN_WRITE_SHADER.into()),
+            });
+        let equality_join_write_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("mica-relation-equality-join-write-pipeline"),
+                layout: None,
+                module: &equality_join_write_shader,
+                entry_point: Some("write_matches"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
         let limits = device.limits();
         let max_storage_bytes = limits.max_storage_buffer_binding_size as usize;
         let max_dispatch_rows =
@@ -306,7 +514,9 @@ impl WgpuAccelerator {
             adapter_name: adapter_info.name,
             device,
             queue,
-            pipeline,
+            membership_pipeline,
+            equality_join_count_pipeline,
+            equality_join_write_pipeline,
             buffer_mode: if shared_mappable {
                 BufferMode::SharedMappable
             } else {
@@ -316,6 +526,8 @@ impl WgpuAccelerator {
                 .min(max_storage_bytes / size_of::<u64>())
                 .min(max_storage_bytes / size_of::<u32>()),
             max_right_rows: (max_storage_bytes / size_of::<u64>()).min(u32::MAX as usize),
+            max_join_output_rows: (max_storage_bytes / (2 * size_of::<u32>()))
+                .min(u32::MAX as usize),
             admission: GpuAdmission {
                 occupied: AtomicBool::new(false),
             },
@@ -325,6 +537,7 @@ impl WgpuAccelerator {
             column_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             string_values_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             dictionary_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+            join_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             output_pool: Mutex::new(HashMap::new()),
         })
     }
@@ -483,6 +696,122 @@ impl WgpuAccelerator {
         Some(unique)
     }
 
+    fn encoded_join(&self, join: &EqualityJoin<'_>) -> Option<Arc<EncodedJoin>> {
+        if join.left.len() != join.right.len() || !matches!(join.left.len(), 1 | 2) {
+            return None;
+        }
+        let left_len = join.left.first()?.len();
+        let right_len = join.right.first()?.len();
+        if join.left.iter().any(|column| column.len() != left_len)
+            || join.right.iter().any(|column| column.len() != right_len)
+        {
+            return None;
+        }
+
+        let mut source_pointers = [0usize; 4];
+        for (index, source) in join.left.iter().chain(join.right.iter()).enumerate() {
+            source_pointers[index] = source.as_ptr() as usize;
+        }
+        let key = JoinCacheKey {
+            sources: source_pointers,
+            key_columns: join.left.len() as u8,
+        };
+        let shard = source_pointers
+            .iter()
+            .fold(0usize, |hash, pointer| hash.rotate_left(11) ^ pointer)
+            % CACHE_SHARDS;
+        let sources = join
+            .left
+            .iter()
+            .chain(join.right.iter())
+            .collect::<Vec<_>>();
+        {
+            let mut cache = self.join_cache[shard].lock().unwrap();
+            cache.retain(|_, cached| {
+                cached
+                    .sources
+                    .iter()
+                    .all(|source| source.strong_count() != 0)
+            });
+            if let Some(cached) = cache.get(&key)
+                && cached
+                    .sources
+                    .iter()
+                    .zip(&sources)
+                    .all(|(cached, source)| Weak::ptr_eq(cached, &Arc::downgrade(source)))
+            {
+                metrics().encoded_column_cache_hits.inc();
+                return Some(Arc::clone(&cached.encoded));
+            }
+        }
+
+        metrics().encoded_column_cache_misses.inc();
+        let started = Instant::now();
+        let mut left_values = Vec::with_capacity(join.left.len());
+        let mut right_values = Vec::with_capacity(join.right.len());
+        let mut encodings = Vec::with_capacity(join.left.len());
+        for (left, right) in join.left.iter().zip(join.right) {
+            let encoding = detect_encoding(left, right)?;
+            left_values.push(encode_column(left, encoding)?);
+            right_values.push(encode_column(right, encoding)?);
+            encodings.push(encoding);
+        }
+        let mut right_order = (0..right_len).collect::<Vec<_>>();
+        right_order.sort_unstable_by(|left, right| {
+            right_values
+                .iter()
+                .map(|column| column[*left].cmp(&column[*right]))
+                .find(|ordering| !ordering.is_eq())
+                .unwrap_or_else(|| left.cmp(right))
+        });
+        let sorted_right = right_values
+            .iter()
+            .map(|column| {
+                right_order
+                    .iter()
+                    .map(|row| column[*row])
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let right_rows = right_order
+            .iter()
+            .map(|row| u32::try_from(*row).ok())
+            .collect::<Option<Vec<_>>>()?;
+        let left = left_values
+            .iter()
+            .zip(&encodings)
+            .map(|(values, encoding)| self.create_encoded_column(*encoding, values))
+            .collect();
+        let right = sorted_right
+            .iter()
+            .zip(&encodings)
+            .map(|(values, encoding)| self.create_encoded_column(*encoding, values))
+            .collect();
+        let encoded = Arc::new(EncodedJoin {
+            left,
+            right,
+            right_rows: create_u32_buffer(
+                &self.device,
+                "mica-relation-equality-join-right-rows",
+                &right_rows,
+                wgpu::BufferUsages::STORAGE,
+            ),
+            left_len,
+            right_len,
+        });
+        self.join_cache[shard].lock().unwrap().insert(
+            key,
+            CachedJoin {
+                sources: sources.into_iter().map(Arc::downgrade).collect(),
+                encoded: Arc::clone(&encoded),
+            },
+        );
+        metrics()
+            .encoded_column_duration_us
+            .record(duration_us(started.elapsed()));
+        Some(encoded)
+    }
+
     fn create_encoded_column(&self, encoding: ValueEncoding, values: &[u64]) -> Arc<EncodedColumn> {
         let input_usage = match self.buffer_mode {
             BufferMode::StagedReadback => wgpu::BufferUsages::STORAGE,
@@ -502,8 +831,8 @@ impl WgpuAccelerator {
         })
     }
 
-    fn acquire_output_buffers(&self, row_count: usize) -> OutputBuffers {
-        let required = (row_count * size_of::<u32>()) as u64;
+    fn acquire_output_buffers(&self, required: usize) -> OutputBuffers {
+        let required = required as u64;
         let size = required.next_power_of_two();
         if let Some(buffers) = self
             .output_pool
@@ -523,14 +852,14 @@ impl WgpuAccelerator {
             }
         };
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mica-relation-membership-output"),
+            label: Some("mica-relation-output"),
             size,
             usage: output_usage,
             mapped_at_creation: false,
         });
         let readback = (self.buffer_mode == BufferMode::StagedReadback).then(|| {
             self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("mica-relation-membership-readback"),
+                label: Some("mica-relation-readback"),
                 size,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -568,7 +897,7 @@ impl WgpuAccelerator {
                 (0..left.len).collect()
             });
         }
-        let output_buffers = self.acquire_output_buffers(left.len);
+        let output_buffers = self.acquire_output_buffers(left.len * size_of::<u32>());
         let output_size = (left.len * size_of::<u32>()) as u64;
         let params = [left.len as u32, right.len as u32, 0, 0];
         let params_buffer = self
@@ -578,7 +907,7 @@ impl WgpuAccelerator {
                 contents: u32_bytes(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-        let layout = self.pipeline.get_bind_group_layout(0);
+        let layout = self.membership_pipeline.get_bind_group_layout(0);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mica-relation-membership-bind-group"),
             layout: &layout,
@@ -611,7 +940,7 @@ impl WgpuAccelerator {
                 label: Some("mica-relation-membership-compute-pass"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&self.membership_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups((left.len as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
@@ -646,15 +975,275 @@ impl WgpuAccelerator {
         self.release_output_buffers(output_buffers);
         Ok(selected)
     }
+
+    fn execute_equality_join(
+        &self,
+        join: &EncodedJoin,
+    ) -> Result<Vec<EqualityJoinMatch>, EqualityJoinExecutionError> {
+        let key_columns = join.left.len();
+        let params = [
+            join.left_len as u32,
+            join.right_len as u32,
+            key_columns as u32,
+            0,
+        ];
+        let params_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mica-relation-equality-join-params"),
+                contents: u32_bytes(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let count_buffers = self.acquire_output_buffers(join.left_len * size_of::<u32>());
+        let count_size = (join.left_len * size_of::<u32>()) as u64;
+        let count_layout = self.equality_join_count_pipeline.get_bind_group_layout(0);
+        let count_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mica-relation-equality-join-count-bind-group"),
+            layout: &count_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: join.left[0].buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: join
+                        .left
+                        .get(1)
+                        .unwrap_or(&join.left[0])
+                        .buffer
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: join.right[0].buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: join
+                        .right
+                        .get(1)
+                        .unwrap_or(&join.right[0])
+                        .buffer
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: count_buffers.output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let mut count_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("mica-relation-equality-join-count-command-encoder"),
+                });
+        {
+            let mut pass = count_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("mica-relation-equality-join-count-compute-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.equality_join_count_pipeline);
+            pass.set_bind_group(0, &count_bind_group, &[]);
+            pass.dispatch_workgroups((join.left_len as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        let count_readback = count_buffers
+            .readback
+            .as_ref()
+            .unwrap_or(&count_buffers.output);
+        if let Some(readback) = &count_buffers.readback {
+            count_encoder.copy_buffer_to_buffer(&count_buffers.output, 0, readback, 0, count_size);
+        }
+        self.queue.submit([count_encoder.finish()]);
+        let count_slice = count_readback.slice(..count_size);
+        let count_result = map_for_read(&count_slice);
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|error| {
+                EqualityJoinExecutionError::Device(format!(
+                    "failed while waiting for equality join counts: {error}"
+                ))
+            })?;
+        count_result
+            .recv()
+            .map_err(|_| {
+                EqualityJoinExecutionError::Device(
+                    "equality join count mapping callback was dropped".to_owned(),
+                )
+            })?
+            .map_err(|error| {
+                EqualityJoinExecutionError::Device(format!(
+                    "failed to map equality join counts: {error}"
+                ))
+            })?;
+        let count_view = count_slice.get_mapped_range().map_err(|error| {
+            EqualityJoinExecutionError::Device(format!(
+                "failed to access equality join counts: {error}"
+            ))
+        })?;
+        let mut offsets = Vec::with_capacity(join.left_len + 1);
+        offsets.push(0u32);
+        let mut output_supported = true;
+        for count in count_view.chunks_exact(size_of::<u32>()) {
+            let Some(next) =
+                (*offsets.last().unwrap() as usize).checked_add(read_u32(count) as usize)
+            else {
+                output_supported = false;
+                break;
+            };
+            output_supported &= next <= self.max_join_output_rows;
+            offsets.push(next.min(u32::MAX as usize) as u32);
+        }
+        drop(count_view);
+        count_readback.unmap();
+        self.release_output_buffers(count_buffers);
+        if !output_supported {
+            return Err(EqualityJoinExecutionError::UnsupportedInput);
+        }
+
+        let output_rows = *offsets.last().unwrap() as usize;
+        if output_rows == 0 {
+            return Ok(Vec::new());
+        }
+        let offsets_buffer = create_u32_buffer(
+            &self.device,
+            "mica-relation-equality-join-offsets",
+            &offsets,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let pair_size = output_rows * 2 * size_of::<u32>();
+        let pair_buffers = self.acquire_output_buffers(pair_size);
+        let write_layout = self.equality_join_write_pipeline.get_bind_group_layout(0);
+        let write_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mica-relation-equality-join-write-bind-group"),
+            layout: &write_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: join.left[0].buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: join
+                        .left
+                        .get(1)
+                        .unwrap_or(&join.left[0])
+                        .buffer
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: join.right[0].buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: join
+                        .right
+                        .get(1)
+                        .unwrap_or(&join.right[0])
+                        .buffer
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: join.right_rows.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: offsets_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: pair_buffers.output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let mut write_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("mica-relation-equality-join-write-command-encoder"),
+                });
+        {
+            let mut pass = write_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("mica-relation-equality-join-write-compute-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.equality_join_write_pipeline);
+            pass.set_bind_group(0, &write_bind_group, &[]);
+            pass.dispatch_workgroups((join.left_len as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        let pair_readback = pair_buffers
+            .readback
+            .as_ref()
+            .unwrap_or(&pair_buffers.output);
+        if let Some(readback) = &pair_buffers.readback {
+            write_encoder.copy_buffer_to_buffer(
+                &pair_buffers.output,
+                0,
+                readback,
+                0,
+                pair_size as u64,
+            );
+        }
+        self.queue.submit([write_encoder.finish()]);
+        let pair_slice = pair_readback.slice(..pair_size as u64);
+        let pair_result = map_for_read(&pair_slice);
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|error| {
+                EqualityJoinExecutionError::Device(format!(
+                    "failed while waiting for equality join pairs: {error}"
+                ))
+            })?;
+        pair_result
+            .recv()
+            .map_err(|_| {
+                EqualityJoinExecutionError::Device(
+                    "equality join pair mapping callback was dropped".to_owned(),
+                )
+            })?
+            .map_err(|error| {
+                EqualityJoinExecutionError::Device(format!(
+                    "failed to map equality join pairs: {error}"
+                ))
+            })?;
+        let pair_view = pair_slice.get_mapped_range().map_err(|error| {
+            EqualityJoinExecutionError::Device(format!(
+                "failed to access equality join pairs: {error}"
+            ))
+        })?;
+        let matches = pair_view
+            .chunks_exact(2 * size_of::<u32>())
+            .map(|pair| EqualityJoinMatch {
+                left_row: read_u32(&pair[..size_of::<u32>()]) as usize,
+                right_row: read_u32(&pair[size_of::<u32>()..]) as usize,
+            })
+            .collect();
+        drop(pair_view);
+        pair_readback.unmap();
+        self.release_output_buffers(pair_buffers);
+        Ok(matches)
+    }
 }
 
 impl RelationAccelerator for WgpuAccelerator {
-    fn select_membership(&self, selection: MembershipSelection<'_>) -> AccelerationOutcome {
+    fn select_membership(
+        &self,
+        selection: MembershipSelection<'_>,
+    ) -> AccelerationOutcome<Vec<usize>> {
         if selection.left.is_empty() {
-            return AccelerationOutcome::Selected(Vec::new());
+            return AccelerationOutcome::Completed(Vec::new());
         }
         if selection.right.is_empty() {
-            return AccelerationOutcome::Selected(if selection.keep_matches {
+            return AccelerationOutcome::Completed(if selection.keep_matches {
                 Vec::new()
             } else {
                 (0..selection.left.len()).collect()
@@ -695,9 +1284,58 @@ impl RelationAccelerator for WgpuAccelerator {
                 metrics()
                     .membership_duration_us
                     .record(duration_us(started.elapsed()));
-                AccelerationOutcome::Selected(selected)
+                AccelerationOutcome::Completed(selected)
             }
             Err(_) => {
+                self.availability.enabled.store(false, Ordering::Release);
+                metrics().device_failures.inc();
+                AccelerationOutcome::Declined(AccelerationDecline::Failed)
+            }
+        }
+    }
+
+    fn join_equality(&self, join: EqualityJoin<'_>) -> AccelerationOutcome<Vec<EqualityJoinMatch>> {
+        if join.left.len() != join.right.len() || !matches!(join.left.len(), 1 | 2) {
+            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput);
+        }
+        let Some(left_rows) = join.left.first().map(|column| column.len()) else {
+            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput);
+        };
+        let Some(right_rows) = join.right.first().map(|column| column.len()) else {
+            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput);
+        };
+        if left_rows == 0 || right_rows == 0 {
+            return AccelerationOutcome::Completed(Vec::new());
+        }
+        if left_rows > self.max_left_rows
+            || right_rows > self.max_right_rows
+            || join.left.iter().any(|column| column.len() != left_rows)
+            || join.right.iter().any(|column| column.len() != right_rows)
+        {
+            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput);
+        }
+        if !self.availability.enabled.load(Ordering::Acquire) {
+            return AccelerationOutcome::Declined(AccelerationDecline::Unavailable);
+        }
+        let Some(_permit) = self.try_acquire() else {
+            metrics().equality_join_busy.inc();
+            return AccelerationOutcome::Declined(AccelerationDecline::Busy);
+        };
+        let Some(encoded) = self.encoded_join(&join) else {
+            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
+        };
+        let started = Instant::now();
+        match self.execute_equality_join(&encoded) {
+            Ok(matches) => {
+                metrics()
+                    .equality_join_duration_us
+                    .record(duration_us(started.elapsed()));
+                AccelerationOutcome::Completed(matches)
+            }
+            Err(EqualityJoinExecutionError::UnsupportedInput) => {
+                AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput)
+            }
+            Err(EqualityJoinExecutionError::Device(_error)) => {
                 self.availability.enabled.store(false, Ordering::Release);
                 metrics().device_failures.inc();
                 AccelerationOutcome::Declined(AccelerationDecline::Failed)
@@ -765,6 +1403,19 @@ fn create_u64_buffer(
         .copy_from_slice(u64_bytes(values));
     buffer.unmap();
     buffer
+}
+
+fn create_u32_buffer(
+    device: &wgpu::Device,
+    label: &str,
+    values: &[u32],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: u32_bytes(values),
+        usage,
+    })
 }
 
 fn map_for_read(
@@ -872,7 +1523,7 @@ mod tests {
                 right: &right,
                 keep_matches: true,
             }),
-            AccelerationOutcome::Selected(vec![1, 3])
+            AccelerationOutcome::Completed(vec![1, 3])
         );
         assert_eq!(
             accelerator.select_membership(MembershipSelection {
@@ -880,7 +1531,7 @@ mod tests {
                 right: &right,
                 keep_matches: false,
             }),
-            AccelerationOutcome::Selected(vec![0, 2])
+            AccelerationOutcome::Completed(vec![0, 2])
         );
         assert!(metrics().encoded_column_cache_hits.sum() >= cache_hits + 2);
         let string_left = Arc::from(
@@ -895,7 +1546,7 @@ mod tests {
                 right: &string_right,
                 keep_matches: true,
             }),
-            AccelerationOutcome::Selected(vec![1, 3])
+            AccelerationOutcome::Completed(vec![1, 3])
         );
         assert_eq!(
             accelerator
@@ -906,6 +1557,105 @@ mod tests {
                 .map(Vec::len)
                 .sum::<usize>(),
             1
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan adapter with shaderInt64"]
+    fn hardware_equality_join_emits_all_ordered_row_pairs() {
+        let accelerator = WgpuAccelerator::new(WgpuAcceleratorOptions::default()).unwrap();
+        let unary_left = Arc::from(
+            [3, 1, 2, 1]
+                .map(|value| Value::int(value).unwrap())
+                .to_vec(),
+        );
+        let unary_right = Arc::from([1, 2, 1].map(|value| Value::int(value).unwrap()).to_vec());
+        assert_eq!(
+            accelerator.join_equality(EqualityJoin {
+                left: &[unary_left],
+                right: &[unary_right],
+            }),
+            AccelerationOutcome::Completed(vec![
+                EqualityJoinMatch {
+                    left_row: 1,
+                    right_row: 0,
+                },
+                EqualityJoinMatch {
+                    left_row: 1,
+                    right_row: 2,
+                },
+                EqualityJoinMatch {
+                    left_row: 2,
+                    right_row: 1,
+                },
+                EqualityJoinMatch {
+                    left_row: 3,
+                    right_row: 0,
+                },
+                EqualityJoinMatch {
+                    left_row: 3,
+                    right_row: 2,
+                },
+            ])
+        );
+        let left_first = Arc::from(
+            [1, 1, 2, 2]
+                .map(|value| Value::int(value).unwrap())
+                .to_vec(),
+        );
+        let left_second = Arc::from(
+            [10, 20, 10, 10]
+                .map(|value| Value::int(value).unwrap())
+                .to_vec(),
+        );
+        let right_first = Arc::from(
+            [2, 1, 2, 2]
+                .map(|value| Value::int(value).unwrap())
+                .to_vec(),
+        );
+        let right_second = Arc::from(
+            [10, 20, 10, 30]
+                .map(|value| Value::int(value).unwrap())
+                .to_vec(),
+        );
+        let left = [left_first, left_second];
+        let right = [right_first, right_second];
+        let expected = vec![
+            EqualityJoinMatch {
+                left_row: 1,
+                right_row: 1,
+            },
+            EqualityJoinMatch {
+                left_row: 2,
+                right_row: 0,
+            },
+            EqualityJoinMatch {
+                left_row: 2,
+                right_row: 2,
+            },
+            EqualityJoinMatch {
+                left_row: 3,
+                right_row: 0,
+            },
+            EqualityJoinMatch {
+                left_row: 3,
+                right_row: 2,
+            },
+        ];
+
+        assert_eq!(
+            accelerator.join_equality(EqualityJoin {
+                left: &left,
+                right: &right,
+            }),
+            AccelerationOutcome::Completed(expected.clone())
+        );
+        assert_eq!(
+            accelerator.join_equality(EqualityJoin {
+                left: &left,
+                right: &right,
+            }),
+            AccelerationOutcome::Completed(expected)
         );
     }
 }

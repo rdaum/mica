@@ -96,6 +96,20 @@ pub enum MembershipAccelerationPlacement {
 
 #[derive(Copy, Clone, Debug, DeriveLabel)]
 #[label_name = "placement"]
+pub enum EqualityJoinAccelerationPlacement {
+    Accelerated,
+    BelowThreshold,
+    OwnedColumns,
+    Busy,
+    UnsupportedInput,
+    UnsupportedDomain,
+    Unavailable,
+    Failed,
+    InvalidResult,
+}
+
+#[derive(Copy, Clone, Debug, DeriveLabel)]
+#[label_name = "placement"]
 pub enum ParallelMembershipPlacement {
     Parallel,
     BelowThreshold,
@@ -193,6 +207,21 @@ pub struct RelationKernelMetrics {
     #[help = "Membership result materialization duration in microseconds"]
     pub membership_materialization_duration_us: Histogram,
 
+    #[help = "Packed equality join accelerator placement decisions"]
+    pub equality_join_acceleration_placements: LabeledCounter<EqualityJoinAccelerationPlacement>,
+
+    #[help = "Input rows considered for packed equality joins"]
+    pub equality_join_input_rows: Histogram,
+
+    #[help = "Matching row pairs produced by packed equality joins"]
+    pub equality_join_output_rows: Histogram,
+
+    #[help = "Accelerated equality join duration in microseconds"]
+    pub equality_join_acceleration_duration_us: Histogram,
+
+    #[help = "Equality join result materialization duration in microseconds"]
+    pub equality_join_materialization_duration_us: Histogram,
+
     #[help = "Relations in the current snapshot"]
     pub snapshot_relations: Gauge,
 
@@ -241,6 +270,11 @@ impl RelationKernelMetrics {
             membership_selected_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
             membership_acceleration_duration_us: Histogram::with_latency_buckets(shard_count),
             membership_materialization_duration_us: Histogram::with_latency_buckets(shard_count),
+            equality_join_acceleration_placements: LabeledCounter::new(shard_count),
+            equality_join_input_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
+            equality_join_output_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
+            equality_join_acceleration_duration_us: Histogram::with_latency_buckets(shard_count),
+            equality_join_materialization_duration_us: Histogram::with_latency_buckets(shard_count),
             snapshot_relations: Gauge::new(),
             snapshot_rules: Gauge::new(),
             snapshot_version: Gauge::new(),
@@ -300,6 +334,34 @@ pub(crate) fn record_membership_acceleration_duration(elapsed: Duration) {
 pub(crate) fn record_membership_materialization_duration(elapsed: Duration) {
     metrics()
         .membership_materialization_duration_us
+        .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
+}
+
+pub(crate) fn record_equality_join_acceleration_placement(
+    placement: EqualityJoinAccelerationPlacement,
+) {
+    metrics()
+        .equality_join_acceleration_placements
+        .inc(placement);
+}
+
+pub(crate) fn record_equality_join_input_rows(rows: usize) {
+    metrics().equality_join_input_rows.record(rows as u64);
+}
+
+pub(crate) fn record_equality_join_output_rows(rows: usize) {
+    metrics().equality_join_output_rows.record(rows as u64);
+}
+
+pub(crate) fn record_equality_join_acceleration_duration(elapsed: Duration) {
+    metrics()
+        .equality_join_acceleration_duration_us
+        .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
+}
+
+pub(crate) fn record_equality_join_materialization_duration(elapsed: Duration) {
+    metrics()
+        .equality_join_materialization_duration_us
         .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
 }
 

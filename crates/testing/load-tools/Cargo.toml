@@ -31,6 +31,10 @@ name = "relation-membership-benchmark"
 path = "src/relation-membership-benchmark.rs"
 
 [[bin]]
+name = "relation-equality-join-benchmark"
+path = "src/relation-equality-join-benchmark.rs"
+
+[[bin]]
 name = "wgpu-string-membership-prototype"
 path = "src/wgpu-string-membership-prototype.rs"
 

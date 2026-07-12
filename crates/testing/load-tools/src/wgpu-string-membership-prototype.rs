@@ -200,7 +200,7 @@ fn execute_wgpu(
         right,
         keep_matches: true,
     }) {
-        AccelerationOutcome::Selected(rows) => Ok(rows),
+        AccelerationOutcome::Completed(rows) => Ok(rows),
         AccelerationOutcome::Declined(reason) => {
             Err(format!("wgpu string membership was declined: {reason:?}"))
         }

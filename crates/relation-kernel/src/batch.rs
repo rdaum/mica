@@ -6,6 +6,11 @@
 
 use crate::execution::ParallelUnavailable;
 use crate::metrics::{
+    EqualityJoinAccelerationPlacement, record_equality_join_acceleration_duration,
+    record_equality_join_acceleration_placement, record_equality_join_input_rows,
+    record_equality_join_materialization_duration, record_equality_join_output_rows,
+};
+use crate::metrics::{
     MembershipAccelerationPlacement, ParallelMembershipPlacement, ParallelUnionPlacement,
     record_membership_acceleration_duration, record_membership_acceleration_placement,
     record_membership_input_rows, record_membership_materialization_duration,
@@ -14,8 +19,8 @@ use crate::metrics::{
 };
 use crate::query::PhysicalQueryPlan;
 use crate::{
-    AccelerationDecline, AccelerationOutcome, ExecutionContext, KernelError, MembershipSelection,
-    RelationRead, Tuple,
+    AccelerationDecline, AccelerationOutcome, EqualityJoin, EqualityJoinMatch, ExecutionContext,
+    KernelError, MembershipSelection, RelationRead, Tuple,
 };
 use mica_var::Value;
 use std::cell::RefCell;
@@ -26,6 +31,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const PACKED_ROW_THRESHOLD: usize = 256;
+const ACCELERATOR_EQUALITY_JOIN_ROW_THRESHOLD: usize = 262_144;
+const ACCELERATOR_EQUALITY_JOIN_UNBALANCED_ROW_THRESHOLD: usize = 2_097_152;
+const ACCELERATOR_EQUALITY_JOIN_MIN_SIDE_ROWS: usize = 4_096;
 const ACCELERATOR_MEMBERSHIP_ROW_THRESHOLD: usize = 262_144;
 const PARALLEL_MEMBERSHIP_ROW_THRESHOLD: usize = 1_048_576;
 const PARALLEL_MEMBERSHIP_WORKERS: NonZeroUsize = NonZeroUsize::new(1).unwrap();
@@ -50,6 +58,13 @@ struct MembershipPlacement {
     keep_matches: bool,
     accelerator_row_threshold: usize,
     row_threshold: usize,
+}
+
+#[derive(Clone, Copy)]
+struct EqualityJoinPlacement {
+    row_threshold: usize,
+    unbalanced_row_threshold: usize,
+    min_side_rows: usize,
 }
 
 struct SemiJoinSpec<'a> {
@@ -406,6 +421,7 @@ pub(crate) fn execute_packed_relation_join<T>(
     right: PackedJoinInput<'_>,
     left_positions: &[u16],
     right_positions: &[u16],
+    execution_context: &ExecutionContext,
     consume: impl FnOnce(PackedRows<'_>) -> T,
 ) -> Result<Option<T>, KernelError> {
     let left_capabilities = match left.reader.relation_capabilities(left.relation) {
@@ -442,7 +458,14 @@ pub(crate) fn execute_packed_relation_join<T>(
     with_batch_workspace(|workspace| {
         let left = NativeBatch::from_packed(&left);
         let right = NativeBatch::from_packed(&right);
-        let output = join(&left, &right, left_positions, right_positions, workspace);
+        let output = join(
+            &left,
+            &right,
+            left_positions,
+            right_positions,
+            execution_context,
+            workspace,
+        );
         workspace.recycle_batch(left);
         workspace.recycle_batch(right);
         let result = output.as_ref().map(|batch| consume(PackedRows { batch }));
@@ -798,7 +821,14 @@ fn execute_batch(
                 workspace.recycle_batch(left);
                 return Ok(None);
             };
-            let output = join(&left, &right, left_positions, right_positions, workspace);
+            let output = join(
+                &left,
+                &right,
+                left_positions,
+                right_positions,
+                execution_context,
+                workspace,
+            );
             workspace.recycle_batch(left);
             workspace.recycle_batch(right);
             Ok(output)
@@ -871,10 +901,26 @@ fn join(
     right: &NativeBatch,
     left_positions: &[u16],
     right_positions: &[u16],
+    execution_context: &ExecutionContext,
     workspace: &mut BatchWorkspace,
 ) -> Option<NativeBatch> {
     if left_positions.len() != right_positions.len() || !matches!(left_positions.len(), 1 | 2) {
         return None;
+    }
+    if let Some(output) = place_accelerated_equality_join(
+        left,
+        right,
+        left_positions,
+        right_positions,
+        execution_context,
+        workspace,
+        EqualityJoinPlacement {
+            row_threshold: ACCELERATOR_EQUALITY_JOIN_ROW_THRESHOLD,
+            unbalanced_row_threshold: ACCELERATOR_EQUALITY_JOIN_UNBALANCED_ROW_THRESHOLD,
+            min_side_rows: ACCELERATOR_EQUALITY_JOIN_MIN_SIDE_ROWS,
+        },
+    ) {
+        return Some(output);
     }
     if positions_are_natural_prefix(left_positions) && positions_are_natural_prefix(right_positions)
     {
@@ -903,6 +949,128 @@ fn join(
     }
     output.canonicalize(workspace);
     Some(output)
+}
+
+fn place_accelerated_equality_join(
+    left: &NativeBatch,
+    right: &NativeBatch,
+    left_positions: &[u16],
+    right_positions: &[u16],
+    execution_context: &ExecutionContext,
+    workspace: &mut BatchWorkspace,
+    placement: EqualityJoinPlacement,
+) -> Option<NativeBatch> {
+    let input_rows = left.row_count.saturating_add(right.row_count);
+    record_equality_join_input_rows(input_rows);
+    if !equality_join_acceleration_eligible(left.row_count, right.row_count, placement) {
+        record_equality_join_acceleration_placement(
+            EqualityJoinAccelerationPlacement::BelowThreshold,
+        );
+        return None;
+    }
+    if !execution_context.has_accelerator() {
+        record_equality_join_acceleration_placement(EqualityJoinAccelerationPlacement::Unavailable);
+        return None;
+    }
+    let Some(left_columns) = shared_columns(left, left_positions) else {
+        record_equality_join_acceleration_placement(
+            EqualityJoinAccelerationPlacement::OwnedColumns,
+        );
+        return None;
+    };
+    let Some(right_columns) = shared_columns(right, right_positions) else {
+        record_equality_join_acceleration_placement(
+            EqualityJoinAccelerationPlacement::OwnedColumns,
+        );
+        return None;
+    };
+
+    let started = Instant::now();
+    let matches = match execution_context.join_equality(EqualityJoin {
+        left: &left_columns,
+        right: &right_columns,
+    }) {
+        AccelerationOutcome::Completed(matches)
+            if equality_join_matches_are_valid(&matches, left.row_count, right.row_count) =>
+        {
+            record_equality_join_acceleration_placement(
+                EqualityJoinAccelerationPlacement::Accelerated,
+            );
+            record_equality_join_acceleration_duration(started.elapsed());
+            matches
+        }
+        AccelerationOutcome::Completed(_) => {
+            record_equality_join_acceleration_placement(
+                EqualityJoinAccelerationPlacement::InvalidResult,
+            );
+            return None;
+        }
+        AccelerationOutcome::Declined(decline) => {
+            record_equality_join_acceleration_placement(match decline {
+                AccelerationDecline::Busy => EqualityJoinAccelerationPlacement::Busy,
+                AccelerationDecline::UnsupportedInput => {
+                    EqualityJoinAccelerationPlacement::UnsupportedInput
+                }
+                AccelerationDecline::UnsupportedDomain => {
+                    EqualityJoinAccelerationPlacement::UnsupportedDomain
+                }
+                AccelerationDecline::Unavailable => EqualityJoinAccelerationPlacement::Unavailable,
+                AccelerationDecline::Failed => EqualityJoinAccelerationPlacement::Failed,
+            });
+            return None;
+        }
+    };
+    record_equality_join_output_rows(matches.len());
+    let materialization_started = Instant::now();
+    let output = materialize_equality_join(left, right, &matches, workspace);
+    record_equality_join_materialization_duration(materialization_started.elapsed());
+    Some(output)
+}
+
+fn equality_join_acceleration_eligible(
+    left_rows: usize,
+    right_rows: usize,
+    placement: EqualityJoinPlacement,
+) -> bool {
+    let input_rows = left_rows.saturating_add(right_rows);
+    if input_rows < placement.row_threshold {
+        return false;
+    }
+    left_rows.min(right_rows) >= placement.min_side_rows
+        || input_rows >= placement.unbalanced_row_threshold
+}
+
+fn shared_columns(batch: &NativeBatch, positions: &[u16]) -> Option<Vec<Arc<[Value]>>> {
+    positions
+        .iter()
+        .map(|position| batch.columns.get(*position as usize)?.shared().cloned())
+        .collect()
+}
+
+fn equality_join_matches_are_valid(
+    matches: &[EqualityJoinMatch],
+    left_rows: usize,
+    right_rows: usize,
+) -> bool {
+    matches
+        .iter()
+        .all(|pair| pair.left_row < left_rows && pair.right_row < right_rows)
+        && matches.windows(2).all(|window| {
+            (window[0].left_row, window[0].right_row) < (window[1].left_row, window[1].right_row)
+        })
+}
+
+fn materialize_equality_join(
+    left: &NativeBatch,
+    right: &NativeBatch,
+    matches: &[EqualityJoinMatch],
+    workspace: &mut BatchWorkspace,
+) -> NativeBatch {
+    let mut output = NativeBatch::empty(left.arity() + right.arity(), matches.len(), workspace);
+    for pair in matches {
+        left.concat_rows(pair.left_row, right, pair.right_row, &mut output);
+    }
+    output
 }
 
 fn positions_are_natural_prefix(positions: &[u16]) -> bool {
@@ -1090,7 +1258,7 @@ fn select_membership_rows_with_threshold(
             right,
             keep_matches: placement.keep_matches,
         }) {
-            AccelerationOutcome::Selected(selected)
+            AccelerationOutcome::Completed(selected)
                 if selected_rows_are_valid(&selected, left_values.len()) =>
             {
                 record_membership_acceleration_placement(
@@ -1099,7 +1267,7 @@ fn select_membership_rows_with_threshold(
                 record_membership_acceleration_duration(started.elapsed());
                 return Some(selected);
             }
-            AccelerationOutcome::Selected(_) => record_membership_acceleration_placement(
+            AccelerationOutcome::Completed(_) => record_membership_acceleration_placement(
                 MembershipAccelerationPlacement::InvalidResult,
             ),
             AccelerationOutcome::Declined(decline) => {
@@ -1315,14 +1483,27 @@ mod tests {
     }
 
     struct TestAccelerator {
-        calls: AtomicUsize,
+        membership_calls: AtomicUsize,
         selected: Vec<usize>,
+        join_calls: AtomicUsize,
+        join_matches: Vec<EqualityJoinMatch>,
     }
 
     impl RelationAccelerator for TestAccelerator {
-        fn select_membership(&self, _selection: MembershipSelection<'_>) -> AccelerationOutcome {
-            self.calls.fetch_add(1, AtomicOrdering::Relaxed);
-            AccelerationOutcome::Selected(self.selected.clone())
+        fn select_membership(
+            &self,
+            _selection: MembershipSelection<'_>,
+        ) -> AccelerationOutcome<Vec<usize>> {
+            self.membership_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            AccelerationOutcome::Completed(self.selected.clone())
+        }
+
+        fn join_equality(
+            &self,
+            _join: EqualityJoin<'_>,
+        ) -> AccelerationOutcome<Vec<EqualityJoinMatch>> {
+            self.join_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            AccelerationOutcome::Completed(self.join_matches.clone())
         }
     }
 
@@ -1535,8 +1716,10 @@ mod tests {
         let left = NativeBatch::from_packed(&left);
         let right = NativeBatch::from_packed(&right);
         let accelerator = Arc::new(TestAccelerator {
-            calls: AtomicUsize::new(0),
+            membership_calls: AtomicUsize::new(0),
             selected: vec![1, 3],
+            join_calls: AtomicUsize::new(0),
+            join_matches: Vec::new(),
         });
         let context = ExecutionContext::serial().with_accelerator(accelerator.clone());
         let mut workspace = BatchWorkspace::default();
@@ -1557,7 +1740,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected, vec![1, 3]);
-        assert_eq!(accelerator.calls.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(
+            accelerator.membership_calls.load(AtomicOrdering::Relaxed),
+            1
+        );
     }
 
     #[test]
@@ -1572,8 +1758,10 @@ mod tests {
         .unwrap();
         let right = NativeBatch::from_tuples(unary_rows([10, 20]), 1).unwrap();
         let accelerator = Arc::new(TestAccelerator {
-            calls: AtomicUsize::new(0),
+            membership_calls: AtomicUsize::new(0),
             selected: vec![1],
+            join_calls: AtomicUsize::new(0),
+            join_matches: Vec::new(),
         });
         let context = ExecutionContext::serial().with_accelerator(accelerator.clone());
         let mut workspace = BatchWorkspace::default();
@@ -1594,7 +1782,106 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected, vec![1]);
-        assert_eq!(accelerator.calls.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(
+            accelerator.membership_calls.load(AtomicOrdering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn equality_join_accelerator_materializes_duplicate_key_matches() {
+        let left = crate::PackedRelation::from_canonical_tuples(
+            vec![
+                Tuple::from([int(1), int(10)]),
+                Tuple::from([int(2), int(10)]),
+                Tuple::from([int(3), int(20)]),
+            ],
+            2,
+        )
+        .unwrap();
+        let right = crate::PackedRelation::from_canonical_tuples(
+            vec![
+                Tuple::from([int(10), int(100)]),
+                Tuple::from([int(10), int(200)]),
+                Tuple::from([int(20), int(300)]),
+            ],
+            2,
+        )
+        .unwrap();
+        let left = NativeBatch::from_packed(&left);
+        let right = NativeBatch::from_packed(&right);
+        let accelerator = Arc::new(TestAccelerator {
+            membership_calls: AtomicUsize::new(0),
+            selected: Vec::new(),
+            join_calls: AtomicUsize::new(0),
+            join_matches: vec![
+                EqualityJoinMatch {
+                    left_row: 0,
+                    right_row: 0,
+                },
+                EqualityJoinMatch {
+                    left_row: 0,
+                    right_row: 1,
+                },
+                EqualityJoinMatch {
+                    left_row: 1,
+                    right_row: 0,
+                },
+                EqualityJoinMatch {
+                    left_row: 1,
+                    right_row: 1,
+                },
+                EqualityJoinMatch {
+                    left_row: 2,
+                    right_row: 2,
+                },
+            ],
+        });
+        let context = ExecutionContext::serial().with_accelerator(accelerator.clone());
+        let mut workspace = BatchWorkspace::default();
+
+        let joined = place_accelerated_equality_join(
+            &left,
+            &right,
+            &[1],
+            &[0],
+            &context,
+            &mut workspace,
+            EqualityJoinPlacement {
+                row_threshold: 0,
+                unbalanced_row_threshold: 0,
+                min_side_rows: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            joined.into_tuples(&mut workspace),
+            vec![
+                Tuple::from([int(1), int(10), int(10), int(100)]),
+                Tuple::from([int(1), int(10), int(10), int(200)]),
+                Tuple::from([int(2), int(10), int(10), int(100)]),
+                Tuple::from([int(2), int(10), int(10), int(200)]),
+                Tuple::from([int(3), int(20), int(20), int(300)]),
+            ]
+        );
+        assert_eq!(accelerator.join_calls.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[test]
+    fn equality_join_placement_requires_scale_for_unbalanced_inputs() {
+        let placement = EqualityJoinPlacement {
+            row_threshold: 262_144,
+            unbalanced_row_threshold: 2_097_152,
+            min_side_rows: 4_096,
+        };
+
+        assert!(!equality_join_acceleration_eligible(131_072, 1, placement));
+        assert!(equality_join_acceleration_eligible(
+            131_072, 131_072, placement
+        ));
+        assert!(!equality_join_acceleration_eligible(524_288, 1, placement));
+        assert!(equality_join_acceleration_eligible(2_097_152, 1, placement));
     }
 
     #[test]
@@ -1616,7 +1903,15 @@ mod tests {
             2,
         )
         .unwrap();
-        let joined = join(&left, &right, &[1], &[0], &mut workspace).unwrap();
+        let joined = join(
+            &left,
+            &right,
+            &[1],
+            &[0],
+            &ExecutionContext::serial(),
+            &mut workspace,
+        )
+        .unwrap();
         assert_eq!(
             joined.into_tuples(&mut workspace),
             vec![Tuple::from([int(1), int(10), int(10), int(100)])]
@@ -1646,7 +1941,15 @@ mod tests {
         for _ in 0..2 {
             let left = NativeBatch::from_tuples(left_rows.clone(), 2).unwrap();
             let right = NativeBatch::from_tuples(right_rows.clone(), 2).unwrap();
-            let joined = join(&left, &right, &[1], &[0], &mut workspace).unwrap();
+            let joined = join(
+                &left,
+                &right,
+                &[1],
+                &[0],
+                &ExecutionContext::serial(),
+                &mut workspace,
+            )
+            .unwrap();
             assert_eq!(joined.into_tuples(&mut workspace).len(), 2);
             if let Some(retained_columns) = retained_columns {
                 assert_eq!(

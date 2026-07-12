@@ -39,6 +39,21 @@ pub struct MembershipSelection<'a> {
     pub keep_matches: bool,
 }
 
+/// Immutable key columns participating in one equality join.
+///
+/// Each side contains one or two columns with equal row counts. Accelerators
+/// return matching row pairs ordered by `left_row` and then `right_row`.
+pub struct EqualityJoin<'a> {
+    pub left: &'a [Arc<[Value]>],
+    pub right: &'a [Arc<[Value]>],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EqualityJoinMatch {
+    pub left_row: usize,
+    pub right_row: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccelerationDecline {
     Busy,
@@ -49,14 +64,19 @@ pub enum AccelerationDecline {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum AccelerationOutcome {
-    Selected(Vec<usize>),
+pub enum AccelerationOutcome<T> {
+    Completed(T),
     Declined(AccelerationDecline),
 }
 
 /// Optional executor for large packed relation operators.
 pub trait RelationAccelerator: Send + Sync {
-    fn select_membership(&self, selection: MembershipSelection<'_>) -> AccelerationOutcome;
+    fn select_membership(
+        &self,
+        selection: MembershipSelection<'_>,
+    ) -> AccelerationOutcome<Vec<usize>>;
+
+    fn join_equality(&self, join: EqualityJoin<'_>) -> AccelerationOutcome<Vec<EqualityJoinMatch>>;
 }
 
 #[derive(Clone)]
@@ -93,14 +113,28 @@ impl ExecutionContext {
         self
     }
 
+    pub(crate) fn has_accelerator(&self) -> bool {
+        self.accelerator.is_some()
+    }
+
     pub(crate) fn select_membership(
         &self,
         selection: MembershipSelection<'_>,
-    ) -> AccelerationOutcome {
+    ) -> AccelerationOutcome<Vec<usize>> {
         let Some(accelerator) = &self.accelerator else {
             return AccelerationOutcome::Declined(AccelerationDecline::Unavailable);
         };
         accelerator.select_membership(selection)
+    }
+
+    pub(crate) fn join_equality(
+        &self,
+        join: EqualityJoin<'_>,
+    ) -> AccelerationOutcome<Vec<EqualityJoinMatch>> {
+        let Some(accelerator) = &self.accelerator else {
+            return AccelerationOutcome::Declined(AccelerationDecline::Unavailable);
+        };
+        accelerator.join_equality(join)
     }
 
     pub(crate) fn try_join<A, B, RA, RB>(

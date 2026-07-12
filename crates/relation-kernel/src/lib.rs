@@ -67,8 +67,8 @@ pub use dispatch::{
 };
 pub use error::{Conflict, ConflictKind, KernelError};
 pub use execution::{
-    AccelerationDecline, AccelerationOutcome, ExecutionAdmission, ExecutionContext,
-    MembershipSelection, RelationAccelerator,
+    AccelerationDecline, AccelerationOutcome, EqualityJoin, EqualityJoinMatch, ExecutionAdmission,
+    ExecutionContext, MembershipSelection, RelationAccelerator,
 };
 pub use fact::Fact;
 pub use kernel::RelationKernel;
