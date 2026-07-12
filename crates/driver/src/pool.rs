@@ -35,17 +35,23 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-static RELATION_ACCELERATOR: OnceLock<Option<Arc<WgpuAccelerator>>> = OnceLock::new();
+static RELATION_ACCELERATOR: OnceLock<RelationAccelerator> = OnceLock::new();
 
-fn relation_accelerator() -> Option<Arc<WgpuAccelerator>> {
-    RELATION_ACCELERATOR
-        .get_or_init(|| {
-            WgpuAccelerator::new(WgpuAcceleratorOptions::default())
-                .map(Arc::new)
-                .map_err(|_| mica_relation_wgpu::metrics().initialization_failures.inc())
-                .ok()
-        })
-        .clone()
+enum RelationAccelerator {
+    Enabled(Arc<WgpuAccelerator>),
+    Unavailable(String),
+}
+
+fn relation_accelerator() -> &'static RelationAccelerator {
+    RELATION_ACCELERATOR.get_or_init(|| {
+        match WgpuAccelerator::new(WgpuAcceleratorOptions::default()) {
+            Ok(accelerator) => RelationAccelerator::Enabled(Arc::new(accelerator)),
+            Err(error) => {
+                mica_relation_wgpu::metrics().initialization_failures.inc();
+                RelationAccelerator::Unavailable(error.to_string())
+            }
+        }
+    })
 }
 
 #[derive(Clone)]
@@ -150,9 +156,43 @@ impl CompioTaskDriver {
         metrics::metrics()
             .dispatcher_workers_configured
             .set(placement.worker_count.get() as i64);
+        tracing::info!(
+            driver_workers = placement.worker_count.get(),
+            relation_parallel_workers = placement.worker_count.get().saturating_sub(1),
+            affinity = if placement.is_pinned() {
+                "performance cores"
+            } else {
+                "unrestricted"
+            },
+            pinned_logical_processors = placement.pinned_core_ids.as_ref().map_or(0, Vec::len),
+            "runtime task execution configured"
+        );
         let mut execution_context = ExecutionContext::parallel(cpu_admission.clone());
-        if let Some(accelerator) = relation_accelerator() {
-            execution_context = execution_context.with_accelerator(accelerator);
+        match relation_accelerator() {
+            RelationAccelerator::Enabled(accelerator) => {
+                tracing::info!(
+                    enabled = true,
+                    backend = "wgpu",
+                    graphics_api = "Vulkan",
+                    adapter = accelerator.adapter_name(),
+                    buffer_mode = if accelerator.uses_shared_mappable_buffers() {
+                        "shared-mappable"
+                    } else {
+                        "staged-readback"
+                    },
+                    "relation GPU backend configured"
+                );
+                execution_context = execution_context.with_accelerator(accelerator.clone());
+            }
+            RelationAccelerator::Unavailable(reason) => {
+                tracing::info!(
+                    enabled = false,
+                    backend = "wgpu",
+                    fallback = "CPU",
+                    reason,
+                    "relation GPU backend configured"
+                );
+            }
         }
         let runner = runner.with_execution_context(execution_context);
         Ok(Self {

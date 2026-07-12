@@ -252,6 +252,14 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     {
         return Err("daemon needs at least one endpoint: use --rpc-bind, --telnet-bind, --web-bind, or --webtransport-bind".to_owned());
     }
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        storage = ?cli.storage,
+        store = ?cli.store,
+        embedding_provider = ?cli.embedding_provider,
+        requested_driver_threads = ?cli.driver_threads.map(NonZeroUsize::get),
+        "initializing Mica runtime"
+    );
     let configured_endpoints = [
         cli.rpc_bind.is_some(),
         cli.telnet_bind.is_some(),
