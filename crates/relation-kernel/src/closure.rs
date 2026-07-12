@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{KernelError, QueryPlan, RelationId, RelationRead, ScanControl, Transaction, Tuple};
+use crate::{KernelError, RelationId, RelationRead, ScanControl, Transaction, Tuple};
 use mica_var::Value;
 use std::collections::BTreeSet;
 
@@ -19,7 +19,7 @@ pub fn delegates_star(
     reader: &impl RelationRead,
     delegates_relation: RelationId,
 ) -> Result<Vec<Tuple>, KernelError> {
-    let edges = QueryPlan::scan(delegates_relation, [None, None, None]).execute(reader)?;
+    let edges = reader.scan_relation(delegates_relation, &[None, None, None])?;
     let children = edges
         .iter()
         .map(|edge| edge.values()[0].clone())
@@ -43,9 +43,7 @@ pub fn delegates_star_from(
     let mut frontier = vec![child.clone()];
 
     while let Some(current) = frontier.pop() {
-        for edge in
-            QueryPlan::scan(delegates_relation, [Some(current), None, None]).execute(reader)?
-        {
+        for edge in reader.scan_relation(delegates_relation, &[Some(current), None, None])? {
             let proto = edge.values()[1].clone();
             if seen.insert(proto.clone()) {
                 frontier.push(proto);

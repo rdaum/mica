@@ -277,10 +277,7 @@ fn configure_load_dispatcher(
 }
 
 fn print_dispatcher_placement(placement: &DispatcherPlacement) {
-    let workers = placement
-        .worker_count
-        .map(|workers| workers.get().to_string())
-        .unwrap_or_else(|| "default".to_owned());
+    let workers = placement.worker_count.get().to_string();
     if let Some(core_ids) = &placement.pinned_core_ids {
         eprintln!(
             "dispatcher: workers={} affinity=performance cores={:?}",

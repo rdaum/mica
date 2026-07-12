@@ -12,9 +12,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_relation_kernel::{
-    Atom, KernelError, PackedRelation, PreparedQuery, QueryPlan, RelationCapabilities, RelationId,
-    RelationKernel, RelationMetadata, RelationRead, Rule, RuleSet, ScanControl, Snapshot, Term,
-    Tuple, metrics,
+    Atom, ExecutionContext, KernelError, PackedRelation, PreparedQuery, QueryPlan,
+    RelationCapabilities, RelationId, RelationKernel, RelationMetadata, RelationRead, Rule,
+    RuleSet, ScanControl, Snapshot, Term, Tuple, metrics,
 };
 use mica_var::{Identity, Symbol, Value};
 use micromeasure::{
@@ -451,7 +451,11 @@ impl BenchContext for RecursiveRuleContext {
 
 fn query_visible_items(ctx: &mut JoinRuleContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
-        black_box(ctx.query.execute(&*ctx.snapshot).unwrap());
+        black_box(
+            ctx.query
+                .execute(&*ctx.snapshot, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -461,7 +465,11 @@ fn query_natural_unary_intersection(
     _chunk_num: usize,
 ) {
     for _ in 0..chunk_size {
-        black_box(ctx.join_query.execute(&*ctx.snapshot).unwrap());
+        black_box(
+            ctx.join_query
+                .execute(&*ctx.snapshot, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -471,13 +479,21 @@ fn query_natural_unary_semi_intersection(
     _chunk_num: usize,
 ) {
     for _ in 0..chunk_size {
-        black_box(ctx.semi_query.execute(&*ctx.snapshot).unwrap());
+        black_box(
+            ctx.semi_query
+                .execute(&*ctx.snapshot, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
 fn query_natural_unary_union(ctx: &mut NaturalJoinContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
-        black_box(ctx.union_query.execute(&*ctx.snapshot).unwrap());
+        black_box(
+            ctx.union_query
+                .execute(&*ctx.snapshot, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -490,7 +506,11 @@ fn query_natural_unary_union_cold_packing(
         snapshot: ctx.snapshot.as_ref(),
     };
     for _ in 0..chunk_size {
-        black_box(ctx.union_query.execute(&reader).unwrap());
+        black_box(
+            ctx.union_query
+                .execute(&reader, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -505,7 +525,11 @@ fn query_natural_unary_union_amortized_packing_4(
             batches: RefCell::new(BTreeMap::new()),
         };
         for _ in 0..4 {
-            black_box(ctx.union_query.execute(&reader).unwrap());
+            black_box(
+                ctx.union_query
+                    .execute(&reader, &ExecutionContext::serial())
+                    .unwrap(),
+            );
         }
     }
 }
@@ -585,8 +609,11 @@ fn query_natural_unary_union_serial_concurrent(
         std::thread::scope(|scope| {
             let mut workers = Vec::with_capacity(16);
             for _ in 0..16 {
-                workers
-                    .push(scope.spawn(|| ctx.union_query.execute(ctx.snapshot.as_ref()).unwrap()));
+                workers.push(scope.spawn(|| {
+                    ctx.union_query
+                        .execute(ctx.snapshot.as_ref(), &ExecutionContext::serial())
+                        .unwrap()
+                }));
             }
             for worker in workers {
                 black_box(worker.join().unwrap());
@@ -621,7 +648,11 @@ fn query_natural_unary_difference(
     _chunk_num: usize,
 ) {
     for _ in 0..chunk_size {
-        black_box(ctx.difference_query.execute(&*ctx.snapshot).unwrap());
+        black_box(
+            ctx.difference_query
+                .execute(&*ctx.snapshot, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -634,7 +665,11 @@ fn query_natural_unary_difference_cold_packing(
         snapshot: ctx.snapshot.as_ref(),
     };
     for _ in 0..chunk_size {
-        black_box(ctx.difference_query.execute(&reader).unwrap());
+        black_box(
+            ctx.difference_query
+                .execute(&reader, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -649,7 +684,11 @@ fn query_natural_unary_difference_amortized_packing_4(
             batches: RefCell::new(BTreeMap::new()),
         };
         for _ in 0..4 {
-            black_box(ctx.difference_query.execute(&reader).unwrap());
+            black_box(
+                ctx.difference_query
+                    .execute(&reader, &ExecutionContext::serial())
+                    .unwrap(),
+            );
         }
     }
 }
@@ -660,7 +699,11 @@ fn query_temporary_projected_low_cardinality_join(
     _chunk_num: usize,
 ) {
     for _ in 0..chunk_size {
-        black_box(ctx.query.execute(&*ctx.snapshot).unwrap());
+        black_box(
+            ctx.query
+                .execute(&*ctx.snapshot, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -673,7 +716,11 @@ fn query_temporary_projected_low_cardinality_join_cold_packing(
         snapshot: ctx.snapshot.as_ref(),
     };
     for _ in 0..chunk_size {
-        black_box(ctx.query.execute(&reader).unwrap());
+        black_box(
+            ctx.query
+                .execute(&reader, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -688,20 +735,32 @@ fn query_temporary_projected_low_cardinality_join_amortized_packing_4(
             batches: RefCell::new(BTreeMap::new()),
         };
         for _ in 0..4 {
-            black_box(ctx.query.execute(&reader).unwrap());
+            black_box(
+                ctx.query
+                    .execute(&reader, &ExecutionContext::serial())
+                    .unwrap(),
+            );
         }
     }
 }
 
 fn rule_visible_items(ctx: &mut JoinRuleContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
-        black_box(ctx.rules.evaluate(&*ctx.snapshot).unwrap());
+        black_box(
+            ctx.rules
+                .evaluate(&*ctx.snapshot, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
 fn evaluate_recursive_case(case: &RecursiveCase, chunk_size: usize) {
     for _ in 0..chunk_size {
-        black_box(case.rules.evaluate_fixpoint(&case.reader).unwrap());
+        black_box(
+            case.rules
+                .evaluate_fixpoint(&case.reader, &ExecutionContext::serial())
+                .unwrap(),
+        );
     }
 }
 
@@ -770,7 +829,7 @@ fn recursive_case_diagnostics(case: &RecursiveCase) -> Result<DiagnosticResult, 
     let before = RuleMetricSnapshot::capture();
     let derived = case
         .rules
-        .evaluate_fixpoint(&case.reader)
+        .evaluate_fixpoint(&case.reader, &ExecutionContext::serial())
         .map_err(|error| DiagnosticError::new(format!("recursive evaluation failed: {error:?}")))?;
     let after = RuleMetricSnapshot::capture();
     let output_rows = derived.values().map(Vec::len).sum::<usize>() as i64;

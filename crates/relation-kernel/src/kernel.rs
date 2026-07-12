@@ -18,8 +18,8 @@ use crate::snapshot::{
 };
 use crate::{
     CatalogChange, Commit, CommitProvider, ComputedRelation, ComputedRelationRegistry,
-    FactChangeKind, KernelError, RelationMetadata, Rule, RuleDefinition, RuleSet, Snapshot,
-    Transaction,
+    ExecutionBudget, ExecutionContext, FactChangeKind, KernelError, RelationMetadata, Rule,
+    RuleDefinition, RuleSet, Snapshot, Transaction,
 };
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
@@ -31,6 +31,7 @@ pub struct RelationKernel {
     root: ArcSwap<Snapshot>,
     provider: Arc<dyn CommitProvider>,
     commit_lock: Mutex<()>,
+    execution_context: ExecutionContext,
 }
 
 impl RelationKernel {
@@ -63,6 +64,7 @@ impl RelationKernel {
             root: ArcSwap::new(snapshot),
             provider,
             commit_lock: Mutex::new(()),
+            execution_context: ExecutionContext::serial(),
         }
     }
 
@@ -137,6 +139,7 @@ impl RelationKernel {
             root: ArcSwap::new(snapshot),
             provider,
             commit_lock: Mutex::new(()),
+            execution_context: ExecutionContext::serial(),
         })
     }
 
@@ -212,6 +215,7 @@ impl RelationKernel {
             root: ArcSwap::new(snapshot),
             provider,
             commit_lock: Mutex::new(()),
+            execution_context: ExecutionContext::serial(),
         })
     }
 
@@ -270,7 +274,13 @@ impl RelationKernel {
             root: ArcSwap::new(snapshot),
             provider,
             commit_lock: Mutex::new(()),
+            execution_context: ExecutionContext::serial(),
         })
+    }
+
+    pub fn with_execution_budget(mut self, budget: Arc<dyn ExecutionBudget>) -> Self {
+        self.execution_context = ExecutionContext::with_budget(budget);
+        self
     }
 
     pub fn snapshot(&self) -> Arc<Snapshot> {
@@ -397,7 +407,7 @@ impl RelationKernel {
 
     pub fn begin(&self) -> Transaction<'_> {
         crate::metrics::metrics().transactions_started.inc();
-        Transaction::new(self, self.snapshot())
+        Transaction::new(self, self.snapshot(), self.execution_context.clone())
     }
 
     pub(crate) fn try_publish(&self, expected_version: u64, next: Arc<Snapshot>) -> bool {

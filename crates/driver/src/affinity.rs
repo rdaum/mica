@@ -45,7 +45,7 @@ impl Default for DispatcherConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DispatcherPlacement {
-    pub worker_count: Option<NonZeroUsize>,
+    pub worker_count: NonZeroUsize,
     pub pinned_core_ids: Option<Vec<usize>>,
 }
 
@@ -81,20 +81,21 @@ pub fn configure_dispatcher(
         return (
             builder,
             DispatcherPlacement {
-                worker_count: Some(worker_count),
+                worker_count,
                 pinned_core_ids: Some(core_ids),
             },
         );
     }
 
-    if let Some(workers) = config.workers {
-        builder = builder.worker_threads(workers);
-    }
+    let worker_count = config.workers.unwrap_or_else(|| {
+        std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
+    });
+    builder = builder.worker_threads(worker_count);
 
     (
         builder,
         DispatcherPlacement {
-            worker_count: config.workers,
+            worker_count,
             pinned_core_ids: None,
         },
     )

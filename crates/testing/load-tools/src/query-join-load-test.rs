@@ -13,8 +13,8 @@
 
 use clap::Parser;
 use mica_relation_kernel::{
-    Atom, KernelError, QueryPlan, RelationId, RelationKernel, RelationMetadata, RelationRead, Rule,
-    RuleSet, ScanControl, Snapshot, Term, Tuple,
+    Atom, ExecutionContext, KernelError, QueryPlan, RelationId, RelationKernel, RelationMetadata,
+    RelationRead, Rule, RuleSet, ScanControl, Snapshot, Term, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::hint::black_box;
@@ -64,10 +64,14 @@ fn main() -> Result<(), KernelError> {
         ],
     )]);
 
-    let binary_rows = binary.execute(snapshot.as_ref())?.len();
-    let multiway_rows = multiway.execute(snapshot.as_ref())?.len();
+    let binary_rows = binary
+        .execute(snapshot.as_ref(), &ExecutionContext::serial())?
+        .len();
+    let multiway_rows = multiway
+        .execute(snapshot.as_ref(), &ExecutionContext::serial())?
+        .len();
     let rule_rows = rule_set
-        .evaluate(snapshot.as_ref())
+        .evaluate(snapshot.as_ref(), &ExecutionContext::serial())
         .map_err(KernelError::from)?[&rel(13)]
         .len();
     println!(
@@ -116,13 +120,15 @@ fn run_case(
     reader: &impl RelationRead,
     iterations: usize,
 ) -> Result<(), KernelError> {
-    let warmup_rows = plan.execute(reader)?.len();
+    let warmup_rows = plan.execute(reader, &ExecutionContext::serial())?.len();
     black_box(warmup_rows);
 
     let started = Instant::now();
     let mut rows = 0usize;
     for _ in 0..iterations {
-        rows = rows.wrapping_add(black_box(plan.execute(reader)?.len()));
+        rows = rows.wrapping_add(black_box(
+            plan.execute(reader, &ExecutionContext::serial())?.len(),
+        ));
     }
     let elapsed = started.elapsed();
     println!(
@@ -140,14 +146,20 @@ fn run_rule_case(
     reader: &impl RelationRead,
     iterations: usize,
 ) -> Result<(), KernelError> {
-    let warmup_rows = rule_set.evaluate(reader).map_err(KernelError::from)?[&rel(13)].len();
+    let warmup_rows = rule_set
+        .evaluate(reader, &ExecutionContext::serial())
+        .map_err(KernelError::from)?[&rel(13)]
+        .len();
     black_box(warmup_rows);
 
     let started = Instant::now();
     let mut rows = 0usize;
     for _ in 0..iterations {
         rows = rows.wrapping_add(black_box(
-            rule_set.evaluate(reader).map_err(KernelError::from)?[&rel(13)].len(),
+            rule_set
+                .evaluate(reader, &ExecutionContext::serial())
+                .map_err(KernelError::from)?[&rel(13)]
+                .len(),
         ));
     }
     let elapsed = started.elapsed();

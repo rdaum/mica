@@ -14,8 +14,8 @@
 use crate::metrics::record_rule_fixpoint;
 use crate::query::PhysicalQueryPlan;
 use crate::{
-    KernelError, PackedRelation, RelationCapabilities, RelationId, RelationRead, RelationSource,
-    ScanControl, Tuple, ValueDomain,
+    ExecutionContext, KernelError, PackedRelation, RelationCapabilities, RelationId, RelationRead,
+    RelationSource, ScanControl, Tuple, ValueDomain,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -258,6 +258,7 @@ impl RuleSet {
     pub fn evaluate(
         &self,
         reader: &impl RelationRead,
+        execution_context: &ExecutionContext,
     ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
         let program = self.compile()?;
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
@@ -268,7 +269,12 @@ impl RuleSet {
                 derived: &derived,
             };
             let mut stratum_out: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
-            evaluate_rules_once(&overlay, &stratum.rules, &mut stratum_out)?;
+            evaluate_rules_once(
+                &overlay,
+                &stratum.rules,
+                &mut stratum_out,
+                execution_context,
+            )?;
             for (relation, tuples) in stratum_out {
                 derived.entry(relation).or_default().extend(tuples);
             }
@@ -283,6 +289,7 @@ impl RuleSet {
     pub fn evaluate_fixpoint(
         &self,
         reader: &impl RelationRead,
+        execution_context: &ExecutionContext,
     ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
         let program = self.compile()?;
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
@@ -290,7 +297,14 @@ impl RuleSet {
 
         for stratum in &program.strata {
             for component in &stratum.components {
-                evaluate_component(reader, &stratum.rules, component, &mut derived, &mut stats)?;
+                evaluate_component(
+                    reader,
+                    &stratum.rules,
+                    component,
+                    &mut derived,
+                    &mut stats,
+                    execution_context,
+                )?;
             }
         }
 
@@ -832,6 +846,7 @@ fn evaluate_component<R: RelationRead>(
     component: &CompiledScc,
     derived: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
     stats: &mut RuleEvaluationStats,
+    execution_context: &ExecutionContext,
 ) -> Result<(), RuleEvalError> {
     if component.recursive_variants.is_empty() {
         let overlay = DerivedReader {
@@ -845,6 +860,7 @@ fn evaluate_component<R: RelationRead>(
             rules,
             &component.seed_rule_indices,
             &mut component_out,
+            execution_context,
         )?;
         let output_rows = tuple_map_len(&component_out);
         stats.candidate_rows += output_rows;
@@ -853,7 +869,7 @@ fn evaluate_component<R: RelationRead>(
         return Ok(());
     }
 
-    evaluate_recursive_component(reader, rules, component, derived, stats)
+    evaluate_recursive_component(reader, rules, component, derived, stats, execution_context)
 }
 
 fn evaluate_recursive_component<R: RelationRead>(
@@ -862,6 +878,7 @@ fn evaluate_recursive_component<R: RelationRead>(
     component: &CompiledScc,
     derived: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
     stats: &mut RuleEvaluationStats,
+    execution_context: &ExecutionContext,
 ) -> Result<(), RuleEvalError> {
     let mut full = read_extensional_targets(reader, rules, component)?;
     let mut delta = full.clone();
@@ -879,6 +896,7 @@ fn evaluate_recursive_component<R: RelationRead>(
         rules,
         &component.seed_rule_indices,
         &mut seed_out,
+        execution_context,
     )?;
     stats.candidate_rows += tuple_map_len(&seed_out);
     for (relation, tuples) in seed_out {
@@ -913,6 +931,7 @@ fn evaluate_recursive_component<R: RelationRead>(
             rules,
             &component.recursive_variants,
             &mut candidates,
+            execution_context,
         )?;
         stats.candidate_rows += tuple_map_len(&candidates);
         for (relation, tuples) in &candidates {
@@ -968,10 +987,11 @@ fn evaluate_selected_rules(
     rules: &[CompiledRule],
     rule_indices: &[usize],
     out: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+    execution_context: &ExecutionContext,
 ) -> Result<(), RuleEvalError> {
     for &rule_index in rule_indices {
         let rule = &rules[rule_index];
-        for binding in evaluate_body(reader, rule)? {
+        for binding in evaluate_body(reader, rule, execution_context)? {
             out.entry(rule.head_relation)
                 .or_default()
                 .insert(instantiate_head(rule, &binding)?);
@@ -986,12 +1006,17 @@ fn evaluate_recursive_variants(
     rules: &[CompiledRule],
     variants: &[CompiledRuleVariant],
     out: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+    execution_context: &ExecutionContext,
 ) -> Result<(), RuleEvalError> {
     for variant in variants {
         let rule = &rules[variant.rule_index];
-        for binding in
-            evaluate_body_variant(full_reader, delta_reader, variant.delta_body_index, rule)?
-        {
+        for binding in evaluate_body_variant(
+            full_reader,
+            delta_reader,
+            variant.delta_body_index,
+            rule,
+            execution_context,
+        )? {
             out.entry(rule.head_relation)
                 .or_default()
                 .insert(instantiate_head(rule, &binding)?);
@@ -1034,9 +1059,10 @@ fn evaluate_rules_once(
     reader: &impl RelationRead,
     rules: &[CompiledRule],
     out: &mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+    execution_context: &ExecutionContext,
 ) -> Result<(), RuleEvalError> {
     for rule in rules {
-        for binding in evaluate_body(reader, rule)? {
+        for binding in evaluate_body(reader, rule, execution_context)? {
             out.entry(rule.head_relation)
                 .or_default()
                 .insert(instantiate_head(rule, &binding)?);
@@ -1344,8 +1370,9 @@ fn compile_term(term: &Term, variables: &mut HashMap<Symbol, usize>) -> Compiled
 fn evaluate_body(
     reader: &dyn RelationRead,
     rule: &CompiledRule,
+    execution_context: &ExecutionContext,
 ) -> Result<Vec<Binding>, RuleEvalError> {
-    evaluate_body_with_readers(reader, None, rule)
+    evaluate_body_with_readers(reader, None, rule, execution_context)
 }
 
 fn evaluate_body_variant(
@@ -1353,16 +1380,23 @@ fn evaluate_body_variant(
     delta_reader: &dyn RelationRead,
     delta_body_index: usize,
     rule: &CompiledRule,
+    execution_context: &ExecutionContext,
 ) -> Result<Vec<Binding>, RuleEvalError> {
-    evaluate_body_with_readers(full_reader, Some((delta_reader, delta_body_index)), rule)
+    evaluate_body_with_readers(
+        full_reader,
+        Some((delta_reader, delta_body_index)),
+        rule,
+        execution_context,
+    )
 }
 
 fn evaluate_body_with_readers(
     full_reader: &dyn RelationRead,
     delta: Option<(&dyn RelationRead, usize)>,
     rule: &CompiledRule,
+    execution_context: &ExecutionContext,
 ) -> Result<Vec<Binding>, RuleEvalError> {
-    if let Some(bindings) = evaluate_two_atom_batch(full_reader, delta, rule)? {
+    if let Some(bindings) = evaluate_two_atom_batch(full_reader, delta, rule, execution_context)? {
         return Ok(bindings);
     }
     let mut bindings = vec![vec![None; rule.slot_count]];
@@ -1386,6 +1420,7 @@ fn evaluate_two_atom_batch(
     full_reader: &dyn RelationRead,
     delta: Option<(&dyn RelationRead, usize)>,
     rule: &CompiledRule,
+    _execution_context: &ExecutionContext,
 ) -> Result<Option<Vec<Binding>>, RuleEvalError> {
     let [CompiledBodyItem::Atom(left), CompiledBodyItem::Atom(right)] = rule.body.as_slice() else {
         return Ok(None);
@@ -1825,7 +1860,9 @@ mod tests {
         );
 
         assert_eq!(
-            RuleSet::new([visible]).evaluate(&tx).unwrap()[&rel(53)],
+            RuleSet::new([visible])
+                .evaluate(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(53)],
             vec![Tuple::from([int(99), int(10)])]
         );
     }
@@ -1871,7 +1908,9 @@ mod tests {
         );
 
         assert_eq!(
-            RuleSet::new([stale]).evaluate(&tx).unwrap()[&rel(56)],
+            RuleSet::new([stale])
+                .evaluate(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(56)],
             vec![Tuple::from([int(99), int(2)])]
         );
     }
@@ -1890,7 +1929,7 @@ mod tests {
         )]);
 
         assert_eq!(
-            rules.evaluate(&kernel.begin()),
+            rules.evaluate(&kernel.begin(), &ExecutionContext::serial()),
             Err(RuleEvalError::Rule(RuleError::UnsafeGuard))
         );
     }
@@ -1934,7 +1973,9 @@ mod tests {
         );
 
         assert_eq!(
-            RuleSet::new([visible, hidden]).evaluate(&tx).unwrap()[&rel(63)],
+            RuleSet::new([visible, hidden])
+                .evaluate(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(63)],
             vec![Tuple::from([int(99), int(10)])]
         );
     }
@@ -1949,7 +1990,7 @@ mod tests {
         )]);
 
         assert_eq!(
-            rules.evaluate(&*kernel.snapshot()),
+            rules.evaluate(&*kernel.snapshot(), &ExecutionContext::serial()),
             Err(RuleEvalError::Rule(RuleError::UnsafeNegation {
                 relation: rel(52)
             }))
@@ -2008,7 +2049,7 @@ mod tests {
                 Atom::positive(rel(80), [var("x")]),
             ],
         ));
-        let bindings = evaluate_body(&reader, &rule).unwrap();
+        let bindings = evaluate_body(&reader, &rule, &ExecutionContext::serial()).unwrap();
 
         assert_eq!(reader.scanned.borrow().as_slice(), &[rel(80), rel(81)]);
         assert_eq!(
@@ -2034,7 +2075,9 @@ mod tests {
         );
 
         assert_eq!(
-            RuleSet::new([same]).evaluate(&tx).unwrap()[&rel(91)],
+            RuleSet::new([same])
+                .evaluate(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(91)],
             vec![Tuple::from([int(1)])]
         );
     }
@@ -2055,7 +2098,7 @@ mod tests {
         );
 
         assert_eq!(
-            RuleSet::new([invalid]).evaluate(&tx),
+            RuleSet::new([invalid]).evaluate(&tx, &ExecutionContext::serial()),
             Err(RuleEvalError::Rule(RuleError::UnboundHeadVariable {
                 variable: Symbol::intern("missing")
             }))
@@ -2091,7 +2134,9 @@ mod tests {
         let rule = Rule::new(rel(95), [var("x")], [Atom::positive(rel(94), [var("x")])]);
 
         assert_eq!(
-            RuleSet::new([rule]).evaluate(&VisitOnlyReader).unwrap()[&rel(95)],
+            RuleSet::new([rule])
+                .evaluate(&VisitOnlyReader, &ExecutionContext::serial())
+                .unwrap()[&rel(95)],
             vec![Tuple::from([int(1)])]
         );
     }
@@ -2274,7 +2319,9 @@ mod tests {
             ],
         )]);
 
-        let packed = rules.evaluate_fixpoint(&reader).unwrap();
+        let packed = rules
+            .evaluate_fixpoint(&reader, &ExecutionContext::serial())
+            .unwrap();
         assert_eq!(reader.exports.get(), 2);
         assert_eq!(
             packed[&rel(202)],
@@ -2324,7 +2371,9 @@ mod tests {
         let reversed = RuleSet::new([step, shortcut, edge]);
 
         assert_eq!(
-            forward.evaluate_fixpoint(&tx).unwrap()[&rel(122)],
+            forward
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(122)],
             vec![
                 Tuple::from([int(1), int(2)]),
                 Tuple::from([int(1), int(3)]),
@@ -2332,8 +2381,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            forward.evaluate_fixpoint(&tx).unwrap(),
-            reversed.evaluate_fixpoint(&tx).unwrap()
+            forward
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap(),
+            reversed
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap()
         );
     }
 
@@ -2365,7 +2418,9 @@ mod tests {
         ]);
 
         assert_eq!(
-            rules.evaluate_fixpoint(&tx).unwrap()[&rel(131)],
+            rules
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(131)],
             vec![
                 Tuple::from([int(1), int(2)]),
                 Tuple::from([int(1), int(3)]),
@@ -2403,7 +2458,9 @@ mod tests {
             ),
         ]);
 
-        let derived = rules.evaluate_fixpoint(&tx).unwrap();
+        let derived = rules
+            .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+            .unwrap();
         let expected = vec![
             Tuple::from([int(1)]),
             Tuple::from([int(2)]),
@@ -2440,7 +2497,9 @@ mod tests {
         )]);
 
         assert_eq!(
-            rules.evaluate_fixpoint(&tx).unwrap()[&rel(151)],
+            rules
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(151)],
             vec![Tuple::from([int(1), int(3)]), Tuple::from([int(1), int(4)]),]
         );
     }
@@ -2490,7 +2549,9 @@ mod tests {
         ]);
 
         assert_eq!(
-            rules.evaluate_fixpoint(&tx).unwrap()[&rel(165)],
+            rules
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(165)],
             vec![
                 Tuple::from([int(1)]),
                 Tuple::from([int(2)]),
@@ -2555,7 +2616,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(
                 rules
-                    .evaluate_fixpoint(&tx)
+                    .evaluate_fixpoint(&tx, &ExecutionContext::serial())
                     .unwrap()
                     .get(&rel(171))
                     .cloned()
@@ -2590,7 +2651,7 @@ mod tests {
 
         assert!(
             !rules
-                .evaluate_fixpoint(&tx)
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
                 .unwrap()
                 .contains_key(&rel(181))
         );
@@ -2629,7 +2690,9 @@ mod tests {
         ]);
 
         assert_eq!(
-            rules.evaluate_fixpoint(&tx).unwrap()[&rel(191)],
+            rules
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(191)],
             vec![
                 Tuple::from([int(1), int(2)]),
                 Tuple::from([int(1), int(4)]),
@@ -2672,7 +2735,9 @@ mod tests {
         ]);
 
         assert_eq!(
-            rules.evaluate_fixpoint(&tx).unwrap()[&rel(201)],
+            rules
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(201)],
             vec![
                 Tuple::from([int(1)]),
                 Tuple::from([int(2)]),
@@ -2680,7 +2745,9 @@ mod tests {
             ]
         );
         assert_eq!(
-            rules.evaluate_fixpoint(&tx).unwrap()[&rel(202)],
+            rules
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
+                .unwrap()[&rel(202)],
             vec![Tuple::from([int(1)])]
         );
     }
@@ -2712,7 +2779,7 @@ mod tests {
 
         assert_eq!(
             RuleSet::new([reachable_base, reachable_step])
-                .evaluate_fixpoint(&tx)
+                .evaluate_fixpoint(&tx, &ExecutionContext::serial())
                 .unwrap()[&rel(71)],
             vec![
                 Tuple::from([int(1), int(2)]),

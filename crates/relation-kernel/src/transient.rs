@@ -365,7 +365,7 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
                 scopes: self.scopes,
             };
             let derived = RuleSet::new(active_rules(self.tx.base.rules()))
-                .evaluate_fixpoint(&reader)
+                .evaluate_fixpoint(&reader, &crate::ExecutionContext::serial())
                 .map_err(KernelError::from)
                 .and_then(|derived| build_derived_relations(&self.tx.base.relations, derived))?;
             if let Some(rows) = derived.get(&relation) {

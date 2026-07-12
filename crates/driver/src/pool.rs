@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::execution::DispatcherExecutionBudget;
 use crate::{
     DispatcherConfig, DriverError, DriverEvent, ExternalRequestHandler, TaskContext,
     configure_dispatcher,
@@ -47,6 +48,7 @@ impl CompioTaskDriver {
 struct PoolInner {
     runner: Arc<SharedSourceRunner>,
     dispatcher: Dispatcher,
+    execution_budget: Arc<DispatcherExecutionBudget>,
     external_request_handler: Option<ExternalRequestHandler>,
     state: Mutex<PoolState>,
 }
@@ -125,6 +127,7 @@ impl CompioTaskDriver {
         external_request_handler: Option<ExternalRequestHandler>,
     ) -> Result<Self, DriverError> {
         let (builder, placement) = configure_dispatcher(Dispatcher::builder(), config);
+        let execution_budget = Arc::new(DispatcherExecutionBudget::new(placement.worker_count));
         let dispatcher = builder
             .thread_names(|index| format!("mica-driver-pool-{index}"))
             .build()
@@ -132,11 +135,13 @@ impl CompioTaskDriver {
         metrics::metrics().drivers_started.inc();
         metrics::metrics()
             .dispatcher_workers_configured
-            .set(placement.worker_count.map(NonZeroUsize::get).unwrap_or(0) as i64);
+            .set(placement.worker_count.get() as i64);
+        let runner = runner.with_execution_budget(execution_budget.clone());
         Ok(Self {
             inner: Arc::new(PoolInner {
                 runner: Arc::new(runner.into_shared()),
                 dispatcher,
+                execution_budget,
                 external_request_handler,
                 state: Mutex::new(PoolState::default()),
             }),
@@ -501,7 +506,11 @@ impl CompioTaskDriver {
     {
         let start = Instant::now();
         metrics::dispatch_started(operation);
-        let receiver = match self.inner.dispatcher.dispatch(f) {
+        let dispatch_permit = self.inner.execution_budget.enter_dispatch();
+        let receiver = match self.inner.dispatcher.dispatch(move || async move {
+            let _dispatch_permit = dispatch_permit;
+            f().await
+        }) {
             Ok(receiver) => receiver,
             Err(_) => {
                 let result = Err(DriverError::Join("dispatcher is stopped".to_owned()));

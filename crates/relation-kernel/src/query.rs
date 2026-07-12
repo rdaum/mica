@@ -13,7 +13,7 @@
 
 use crate::index::ProjectedTupleIndex;
 use crate::tuple::{TupleKey, difference_tuple_rows, finish_tuple_rows};
-use crate::{KernelError, RelationId, Tuple};
+use crate::{ExecutionContext, KernelError, RelationId, Tuple};
 use mica_var::Value;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -352,13 +352,21 @@ impl QueryPlan {
         }
     }
 
-    pub fn execute(&self, reader: &impl RelationRead) -> Result<Vec<Tuple>, KernelError> {
-        self.prepare().execute(reader)
+    pub fn execute(
+        &self,
+        reader: &impl RelationRead,
+        execution_context: &ExecutionContext,
+    ) -> Result<Vec<Tuple>, KernelError> {
+        self.prepare().execute(reader, execution_context)
     }
 }
 
 impl PreparedQuery {
-    pub fn execute(&self, reader: &impl RelationRead) -> Result<Vec<Tuple>, KernelError> {
+    pub fn execute(
+        &self,
+        reader: &impl RelationRead,
+        _execution_context: &ExecutionContext,
+    ) -> Result<Vec<Tuple>, KernelError> {
         if let Some(rows) = crate::batch::execute_packed_query(&self.root, reader)? {
             return Ok(rows);
         }
@@ -980,7 +988,7 @@ mod tests {
         .project([0, 3]);
 
         assert_eq!(
-            path2.execute(&tx).unwrap(),
+            path2.execute(&tx, &ExecutionContext::serial()).unwrap(),
             vec![Tuple::from([int(1), int(3)])]
         );
     }
@@ -1019,7 +1027,10 @@ mod tests {
         .project([0, 3]);
         let prepared = query.prepare();
 
-        assert_eq!(query.execute(&tx).unwrap(), prepared.execute(&tx).unwrap());
+        assert_eq!(
+            query.execute(&tx, &ExecutionContext::serial()).unwrap(),
+            prepared.execute(&tx, &ExecutionContext::serial()).unwrap()
+        );
     }
 
     #[test]
@@ -1098,7 +1109,9 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            overlay_query.execute(&overlay).unwrap(),
+            overlay_query
+                .execute(&overlay, &ExecutionContext::serial())
+                .unwrap(),
             execute_physical_query(&overlay_query.root, &overlay).unwrap()
         );
 
@@ -1155,7 +1168,8 @@ mod tests {
         .project([0, 3]);
 
         assert_eq!(
-            path.execute(&ProbeOnlyReader).unwrap(),
+            path.execute(&ProbeOnlyReader, &ExecutionContext::serial())
+                .unwrap(),
             vec![
                 Tuple::from([int(1), int(100)]),
                 Tuple::from([int(2), int(200)])
@@ -1172,7 +1186,12 @@ mod tests {
             [0],
         );
 
-        assert_eq!(path.execute(&IndexedProbeReader).unwrap().len(), 40);
+        assert_eq!(
+            path.execute(&IndexedProbeReader, &ExecutionContext::serial())
+                .unwrap()
+                .len(),
+            40
+        );
     }
 
     #[test]
@@ -1188,7 +1207,7 @@ mod tests {
         );
 
         assert_eq!(
-            path.execute(&reader).unwrap(),
+            path.execute(&reader, &ExecutionContext::serial()).unwrap(),
             vec![Tuple::from([int(1), int(1)])]
         );
         assert!(reader.called.get());
@@ -1229,7 +1248,7 @@ mod tests {
         .project([0, 3]);
 
         assert_eq!(
-            path.execute(&reader).unwrap(),
+            path.execute(&reader, &ExecutionContext::serial()).unwrap(),
             vec![Tuple::from([int(1), int(100)])]
         );
         assert!(reader.called.get());
@@ -1263,7 +1282,10 @@ mod tests {
         )
         .project([0]);
 
-        assert_eq!(path.execute(&reader).unwrap(), vec![Tuple::from([int(2)])]);
+        assert_eq!(
+            path.execute(&reader, &ExecutionContext::serial()).unwrap(),
+            vec![Tuple::from([int(2)])]
+        );
         assert!(reader.called.get());
     }
 
@@ -1283,12 +1305,14 @@ mod tests {
 
         assert_eq!(
             has_outgoing_from_target
-                .execute(&*kernel.snapshot())
+                .execute(&*kernel.snapshot(), &ExecutionContext::serial())
                 .unwrap(),
             vec![Tuple::from([int(1), int(2)])]
         );
         assert_eq!(
-            terminal_edges.execute(&*kernel.snapshot()).unwrap(),
+            terminal_edges
+                .execute(&*kernel.snapshot(), &ExecutionContext::serial())
+                .unwrap(),
             vec![Tuple::from([int(2), int(3)]), Tuple::from([int(4), int(5)])]
         );
     }

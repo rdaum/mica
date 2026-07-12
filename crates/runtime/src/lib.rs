@@ -24,7 +24,7 @@ mod types;
 mod vm_tests;
 
 pub use embedding::{EmbeddingProvider, EmbeddingProviderKind};
-pub use mica_relation_kernel::{Tuple, metrics as relation_kernel_metrics};
+pub use mica_relation_kernel::{ExecutionBudget, Tuple, metrics as relation_kernel_metrics};
 pub use mica_vm::metrics as vm_metrics;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
@@ -260,6 +260,11 @@ impl SourceRunner {
 
     pub fn with_task_limits(mut self, limits: TaskLimits) -> Self {
         self.task_manager = self.task_manager.with_limits(limits);
+        self
+    }
+
+    pub fn with_execution_budget(mut self, budget: Arc<dyn ExecutionBudget>) -> Self {
+        self.task_manager = self.task_manager.with_execution_budget(budget);
         self
     }
 

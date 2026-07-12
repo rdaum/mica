@@ -18,7 +18,8 @@ pub fn materialize_rule_set(
     tx: &mut Transaction<'_>,
     rules: &RuleSet,
 ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
-    let derived = rules.evaluate_fixpoint(tx)?;
+    let execution_context = tx.execution_context().clone();
+    let derived = rules.evaluate_fixpoint(tx, &execution_context)?;
     for (relation, tuples) in &derived {
         tx.reconcile_relation(*relation, tuples.iter().cloned())?;
     }

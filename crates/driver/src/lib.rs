@@ -18,6 +18,7 @@
 //! suspensions and endpoint input.
 
 mod affinity;
+mod execution;
 pub mod metrics;
 mod pool;
 mod types;

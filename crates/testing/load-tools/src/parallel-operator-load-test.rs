@@ -8,8 +8,8 @@
 
 use clap::Parser;
 use mica_relation_kernel::{
-    PackedRelation, QueryPlan, RelationId, RelationKernel, RelationMetadata, RelationRead,
-    Snapshot, Tuple,
+    ExecutionContext, PackedRelation, QueryPlan, RelationId, RelationKernel, RelationMetadata,
+    RelationRead, Snapshot, Tuple,
 };
 use mica_runtime::{AuthorityContext, SharedSourceRunner, SourceRunner, TaskInput, TaskRequest};
 use mica_var::{Identity, Symbol, Value};
@@ -73,7 +73,7 @@ fn main() -> Result<(), String> {
     black_box(
         union
             .query
-            .execute(union.snapshot.as_ref())
+            .execute(union.snapshot.as_ref(), &ExecutionContext::serial())
             .map_err(debug_error)?,
     );
     black_box(parallel_union_rows(union.left.rows(), union.right.rows()));
@@ -204,7 +204,11 @@ fn run_mode(
                     match mode {
                         OperatorMode::None => unreachable!(),
                         OperatorMode::Serial => {
-                            black_box(union.execute(snapshot).unwrap());
+                            black_box(
+                                union
+                                    .execute(snapshot, &ExecutionContext::serial())
+                                    .unwrap(),
+                            );
                         }
                         OperatorMode::Parallel => {
                             black_box(parallel_union_rows(left.rows(), right.rows()));

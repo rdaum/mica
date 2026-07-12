@@ -207,7 +207,10 @@ impl ProjectedStore {
     fn derived_relations(&self) -> Result<BTreeMap<RelationId, RelationState>, KernelError> {
         if self.derived_cache.borrow().is_none() {
             let derived = RuleSet::new(active_rules(&self.rules))
-                .evaluate_fixpoint(&ExtensionalProjectedReader { store: self })
+                .evaluate_fixpoint(
+                    &ExtensionalProjectedReader { store: self },
+                    &crate::ExecutionContext::serial(),
+                )
                 .map_err(KernelError::from)
                 .and_then(|derived| build_derived_relations(&self.relations, derived));
             *self.derived_cache.borrow_mut() = Some(derived);

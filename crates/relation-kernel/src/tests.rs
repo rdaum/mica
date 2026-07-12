@@ -14,10 +14,11 @@
 use crate::{
     Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider,
     ComposedRelationRead, ComposedTransactionRead, ComputedRelation, Conflict, ConflictKind,
-    ConflictPolicy, Fact, FactChange, FactChangeKind, InMemoryCommitProvider, KernelError,
-    MentionedFact, ProjectedStore, QueryPlan, RelationId, RelationKernel, RelationMetadata,
-    RelationRead, RelationSource, RelationWorkspace, Rule, RuleBodyItem, RuleComparisonOp,
-    RuleGuard, SubjectFact, Term, TransientStore, Tuple, ValueDomain, method_program_id,
+    ConflictPolicy, ExecutionContext, Fact, FactChange, FactChangeKind, InMemoryCommitProvider,
+    KernelError, MentionedFact, ProjectedStore, QueryPlan, RelationId, RelationKernel,
+    RelationMetadata, RelationRead, RelationSource, RelationWorkspace, Rule, RuleBodyItem,
+    RuleComparisonOp, RuleGuard, SubjectFact, Term, TransientStore, Tuple, ValueDomain,
+    method_program_id,
 };
 #[cfg(feature = "fjall-provider")]
 use crate::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
@@ -925,7 +926,7 @@ fn composed_reader_joins_durable_and_transient_tuples() {
         [0],
         [0],
     )
-    .execute(&reader)
+    .execute(&reader, &ExecutionContext::serial())
     .unwrap();
 
     assert_eq!(rows, vec![Tuple::from([int(1), int(1), int(99)])]);
@@ -961,7 +962,7 @@ fn composed_reader_joins_transient_scopes() {
         [0],
         [0],
     )
-    .execute(&reader)
+    .execute(&reader, &ExecutionContext::serial())
     .unwrap();
 
     assert_eq!(

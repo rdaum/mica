@@ -387,7 +387,10 @@ impl Snapshot {
             .get_or_init(|| {
                 let start = std::time::Instant::now();
                 let derived = RuleSet::new(active_rules(&self.rules))
-                    .evaluate_fixpoint(&ExtensionalSnapshotReader { snapshot: self })
+                    .evaluate_fixpoint(
+                        &ExtensionalSnapshotReader { snapshot: self },
+                        &crate::ExecutionContext::serial(),
+                    )
                     .map_err(KernelError::from)?;
                 let derived = build_derived_relations(&self.relations, derived)?;
                 crate::metrics::record_derived_materialization(

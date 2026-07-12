@@ -24,9 +24,9 @@ use crate::snapshot::{
 use crate::tuple::{difference_ordered_tuple_rows, union_ordered_tuple_rows};
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRead, DispatchRelations,
-    KernelError, PackedRelation, RelationCapabilities, RelationId, RelationKernel,
-    RelationMetadata, RelationRead, RelationSource, RelationWorkspace, RuleSet, ScanControl,
-    Snapshot, Tuple, ValueDomain, Version,
+    ExecutionContext, KernelError, PackedRelation, RelationCapabilities, RelationId,
+    RelationKernel, RelationMetadata, RelationRead, RelationSource, RelationWorkspace, RuleSet,
+    ScanControl, Snapshot, Tuple, ValueDomain, Version,
 };
 use mica_var::{Symbol, Value};
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
@@ -41,16 +41,22 @@ pub struct Transaction<'a> {
     writes: HashMap<RelationId, RelationWriteOverlay>,
     functional_visible: HashMap<RelationId, FunctionalVisibleMap>,
     derived_cache: RefCell<Option<Result<HashMap<RelationId, RelationState>, KernelError>>>,
+    execution_context: ExecutionContext,
 }
 
 impl<'a> Transaction<'a> {
-    pub(crate) fn new(kernel: &'a RelationKernel, base: Arc<Snapshot>) -> Self {
+    pub(crate) fn new(
+        kernel: &'a RelationKernel,
+        base: Arc<Snapshot>,
+        execution_context: ExecutionContext,
+    ) -> Self {
         Self {
             kernel,
             base,
             writes: HashMap::new(),
             functional_visible: HashMap::new(),
             derived_cache: RefCell::new(None),
+            execution_context,
         }
     }
 
@@ -60,6 +66,10 @@ impl<'a> Transaction<'a> {
 
     pub fn kernel(&self) -> &'a RelationKernel {
         self.kernel
+    }
+
+    pub fn execution_context(&self) -> &ExecutionContext {
+        &self.execution_context
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -231,7 +241,10 @@ impl<'a> Transaction<'a> {
     fn derived_relations(&self) -> Result<HashMap<RelationId, RelationState>, KernelError> {
         if self.derived_cache.borrow().is_none() {
             let derived = RuleSet::new(active_rules(self.base.rules()))
-                .evaluate_fixpoint(&ExtensionalTransactionReader { tx: self })
+                .evaluate_fixpoint(
+                    &ExtensionalTransactionReader { tx: self },
+                    &self.execution_context,
+                )
                 .map_err(KernelError::from)
                 .and_then(|derived| build_derived_relations(&self.base.relations, derived))
                 .map(|derived| derived.into_iter().collect());
