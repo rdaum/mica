@@ -139,6 +139,11 @@ struct CachedPair {
     encoded: Arc<EncodedPair>,
 }
 
+struct CachedStringValues {
+    source: Weak<[Value]>,
+    unique: Arc<[Value]>,
+}
+
 struct OutputBuffers {
     output: wgpu::Buffer,
     readback: Option<wgpu::Buffer>,
@@ -228,6 +233,7 @@ pub struct WgpuAccelerator {
     admission: GpuAdmission,
     availability: GpuAvailability,
     column_cache: [Mutex<HashMap<(usize, ColumnLayout), CachedColumn>>; CACHE_SHARDS],
+    string_values_cache: [Mutex<HashMap<usize, CachedStringValues>>; CACHE_SHARDS],
     dictionary_cache: [Mutex<HashMap<(usize, usize), CachedPair>>; CACHE_SHARDS],
     output_pool: Mutex<HashMap<u64, Vec<OutputBuffers>>>,
 }
@@ -317,6 +323,7 @@ impl WgpuAccelerator {
                 enabled: AtomicBool::new(true),
             },
             column_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+            string_values_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             dictionary_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             output_pool: Mutex::new(HashMap::new()),
         })
@@ -379,13 +386,6 @@ impl WgpuAccelerator {
         left: &Arc<[Value]>,
         right: &Arc<[Value]>,
     ) -> Option<Arc<EncodedPair>> {
-        if !left
-            .iter()
-            .chain(right.iter())
-            .all(|value| value.kind() == ValueKind::String)
-        {
-            return None;
-        }
         let key = (left.as_ptr() as usize, right.as_ptr() as usize);
         let shard = (key.0 ^ key.1.rotate_left(17)) % CACHE_SHARDS;
         {
@@ -404,9 +404,11 @@ impl WgpuAccelerator {
 
         metrics().encoded_column_cache_misses.inc();
         let started = Instant::now();
-        let mut dictionary = left
+        let left_unique = self.unique_string_values(left)?;
+        let right_unique = self.unique_string_values(right)?;
+        let mut dictionary = left_unique
             .iter()
-            .chain(right.iter())
+            .chain(right_unique.iter())
             .cloned()
             .collect::<HashSet<_>>()
             .into_iter()
@@ -444,6 +446,41 @@ impl WgpuAccelerator {
             .encoded_column_duration_us
             .record(duration_us(started.elapsed()));
         Some(encoded)
+    }
+
+    fn unique_string_values(&self, source: &Arc<[Value]>) -> Option<Arc<[Value]>> {
+        let key = source.as_ptr() as usize;
+        let shard = key % CACHE_SHARDS;
+        {
+            let mut cache = self.string_values_cache[shard].lock().unwrap();
+            cache.retain(|_, cached| cached.source.strong_count() != 0);
+            if let Some(cached) = cache.get(&key)
+                && Weak::ptr_eq(&cached.source, &Arc::downgrade(source))
+            {
+                metrics().encoded_column_cache_hits.inc();
+                return Some(Arc::clone(&cached.unique));
+            }
+        }
+        if !source.iter().all(|value| value.kind() == ValueKind::String) {
+            return None;
+        }
+        metrics().encoded_column_cache_misses.inc();
+        let mut unique = source
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        unique.sort_unstable();
+        let unique = Arc::<[Value]>::from(unique);
+        self.string_values_cache[shard].lock().unwrap().insert(
+            key,
+            CachedStringValues {
+                source: Arc::downgrade(source),
+                unique: Arc::clone(&unique),
+            },
+        );
+        Some(unique)
     }
 
     fn create_encoded_column(&self, encoding: ValueEncoding, values: &[u64]) -> Arc<EncodedColumn> {
