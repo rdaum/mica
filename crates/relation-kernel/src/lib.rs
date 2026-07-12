@@ -19,6 +19,7 @@
 //! pluggable commit provider boundary. It intentionally follows mooR's live
 //! transaction shape while keeping physical index storage narrow and replaceable.
 
+mod batch;
 mod catalog;
 mod closure;
 mod computed;
@@ -74,8 +75,8 @@ pub use provider::{CommitProvider, InMemoryCommitProvider, PersistedKernelState}
 #[cfg(feature = "fjall-provider")]
 pub use provider::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
 pub use query::{
-    PreparedQuery, QueryPlan, RelationCapabilities, RelationRead, RelationSource, ScanControl,
-    ValueDomain,
+    PackedRelation, PreparedQuery, QueryPlan, RelationCapabilities, RelationRead, RelationSource,
+    ScanControl, ValueDomain,
 };
 pub use rules::{
     Atom, Rule, RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleError, RuleEvalError,

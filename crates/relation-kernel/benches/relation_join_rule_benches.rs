@@ -215,8 +215,15 @@ impl BenchContext for NaturalJoinContext {
         }
         tx.commit().unwrap();
 
+        let snapshot = kernel.snapshot();
+        snapshot
+            .export_relation_batch(active_item(), &[None])
+            .unwrap();
+        snapshot
+            .export_relation_batch(visible_item(), &[None])
+            .unwrap();
         Self {
-            snapshot: kernel.snapshot(),
+            snapshot,
             join_query: QueryPlan::join_eq(
                 QueryPlan::scan(active_item(), [None]),
                 QueryPlan::scan(visible_item(), [None]),

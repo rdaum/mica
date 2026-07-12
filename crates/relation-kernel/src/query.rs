@@ -16,6 +16,7 @@ use crate::tuple::{TupleKey, difference_tuple_rows, finish_tuple_rows};
 use crate::{KernelError, RelationId, Tuple};
 use mica_var::Value;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 const PROBE_JOIN_LEFT_ROW_LIMIT: usize = 32;
 const SMALL_RIGHT_SEMI_JOIN_FACTOR: usize = 4;
@@ -48,6 +49,57 @@ pub struct RelationCapabilities {
     pub value_domains: Vec<ValueDomain>,
     pub supports_streaming: bool,
     pub supports_batch_export: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PackedRelation {
+    columns: Arc<[Arc<[Value]>]>,
+    rows: Arc<[Tuple]>,
+    row_count: usize,
+}
+
+impl PackedRelation {
+    pub fn from_tuples(rows: Vec<Tuple>, arity: usize) -> Option<Self> {
+        Self::from_canonical_tuples(finish_tuple_rows(rows), arity)
+    }
+
+    pub(crate) fn from_canonical_tuples(rows: Vec<Tuple>, arity: usize) -> Option<Self> {
+        if arity == 0 {
+            return None;
+        }
+        let mut columns = (0..arity)
+            .map(|_| Vec::with_capacity(rows.len()))
+            .collect::<Vec<_>>();
+        for tuple in &rows {
+            if tuple.arity() != arity || tuple.values().iter().any(|value| !value.is_immediate()) {
+                return None;
+            }
+            for (column, value) in columns.iter_mut().zip(tuple.values()) {
+                column.push(value.clone());
+            }
+        }
+        Some(Self {
+            row_count: rows.len(),
+            columns: columns
+                .into_iter()
+                .map(Arc::<[Value]>::from)
+                .collect::<Vec<_>>()
+                .into(),
+            rows: rows.into(),
+        })
+    }
+
+    pub fn columns(&self) -> &[Arc<[Value]>] {
+        &self.columns
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    pub fn rows(&self) -> &[Tuple] {
+        &self.rows
+    }
 }
 
 impl RelationCapabilities {
@@ -111,6 +163,14 @@ pub trait RelationRead {
         _relation: RelationId,
     ) -> Result<RelationCapabilities, KernelError> {
         Ok(RelationCapabilities::unknown())
+    }
+
+    fn export_relation_batch(
+        &self,
+        _relation: RelationId,
+        _bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        Ok(None)
     }
 
     fn has_exact_relation_index(
@@ -178,7 +238,7 @@ pub struct PreparedQuery {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum PhysicalQueryPlan {
+pub(crate) enum PhysicalQueryPlan {
     Scan {
         relation: RelationId,
         bindings: Vec<Option<Value>>,
@@ -299,6 +359,9 @@ impl QueryPlan {
 
 impl PreparedQuery {
     pub fn execute(&self, reader: &impl RelationRead) -> Result<Vec<Tuple>, KernelError> {
+        if let Some(rows) = crate::batch::execute_packed_query(&self.root, reader)? {
+            return Ok(rows);
+        }
         execute_physical_query(&self.root, reader)
     }
 }
@@ -725,6 +788,43 @@ mod tests {
         kernel
     }
 
+    fn kernel_with_large_immediate_relations() -> RelationKernel {
+        let kernel = RelationKernel::new();
+        for (relation, name, arity) in [
+            (rel(100), "LeftUnary", 1),
+            (rel(101), "RightUnary", 1),
+            (rel(102), "LeftBinary", 2),
+            (rel(103), "RightBinary", 2),
+        ] {
+            kernel
+                .create_relation(RelationMetadata::new(relation, Symbol::intern(name), arity))
+                .unwrap();
+        }
+
+        let mut tx = kernel.begin();
+        for row in 0..384 {
+            tx.assert(rel(100), Tuple::from([int(row)])).unwrap();
+            tx.assert(rel(102), Tuple::from([int(row), int(row % 31)]))
+                .unwrap();
+        }
+        for row in 192..576 {
+            tx.assert(rel(101), Tuple::from([int(row)])).unwrap();
+            tx.assert(rel(103), Tuple::from([int(row % 31), int(row)]))
+                .unwrap();
+        }
+        tx.commit().unwrap();
+        kernel
+    }
+
+    fn assert_packed_matches_tuple(query: QueryPlan, reader: &impl RelationRead) {
+        let prepared = query.prepare();
+        let packed = crate::batch::execute_packed_query(&prepared.root, reader)
+            .unwrap()
+            .expect("large immediate query should select the packed executor");
+        let tuples = execute_physical_query(&prepared.root, reader).unwrap();
+        assert_eq!(packed, tuples);
+    }
+
     struct ProbeOnlyReader;
 
     impl RelationRead for ProbeOnlyReader {
@@ -920,6 +1020,119 @@ mod tests {
         let prepared = query.prepare();
 
         assert_eq!(query.execute(&tx).unwrap(), prepared.execute(&tx).unwrap());
+    }
+
+    #[test]
+    fn packed_executor_matches_tuple_executor_for_supported_operators() {
+        let kernel = kernel_with_large_immediate_relations();
+        let snapshot = kernel.snapshot();
+
+        let left_unary = || QueryPlan::scan(rel(100), [None]);
+        let right_unary = || QueryPlan::scan(rel(101), [None]);
+        assert_packed_matches_tuple(
+            QueryPlan::join_eq(left_unary(), right_unary(), [0], [0]).project([0]),
+            snapshot.as_ref(),
+        );
+        assert_packed_matches_tuple(
+            QueryPlan::semi_join(left_unary(), right_unary(), [0], [0]),
+            snapshot.as_ref(),
+        );
+        assert_packed_matches_tuple(
+            QueryPlan::anti_join(left_unary(), right_unary(), [0], [0]),
+            snapshot.as_ref(),
+        );
+        assert_packed_matches_tuple(
+            QueryPlan::union(left_unary(), right_unary()),
+            snapshot.as_ref(),
+        );
+        assert_packed_matches_tuple(
+            QueryPlan::difference(left_unary(), right_unary()),
+            snapshot.as_ref(),
+        );
+        assert_packed_matches_tuple(
+            QueryPlan::join_eq(
+                QueryPlan::scan(rel(102), [None, None]),
+                QueryPlan::scan(rel(103), [None, None]),
+                [1],
+                [0],
+            )
+            .project([0, 3]),
+            snapshot.as_ref(),
+        );
+    }
+
+    #[test]
+    fn packed_executor_declines_heap_values_and_transaction_overlays() {
+        let heap_kernel = RelationKernel::new();
+        heap_kernel
+            .create_relation(RelationMetadata::new(
+                rel(110),
+                Symbol::intern("HeapValues"),
+                1,
+            ))
+            .unwrap();
+        let mut seed = heap_kernel.begin();
+        for row in 0..300 {
+            seed.assert(
+                rel(110),
+                Tuple::from([Value::string(format!("value-{row}"))]),
+            )
+            .unwrap();
+        }
+        seed.commit().unwrap();
+        let heap_query = QueryPlan::scan(rel(110), [None]).prepare();
+        let heap_snapshot = heap_kernel.snapshot();
+        assert!(
+            crate::batch::execute_packed_query(&heap_query.root, heap_snapshot.as_ref())
+                .unwrap()
+                .is_none()
+        );
+
+        let kernel = kernel_with_large_immediate_relations();
+        let mut overlay = kernel.begin();
+        overlay.assert(rel(100), Tuple::from([int(1_000)])).unwrap();
+        let overlay_query = QueryPlan::scan(rel(100), [None]).prepare();
+        assert!(
+            crate::batch::execute_packed_query(&overlay_query.root, &overlay)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            overlay_query.execute(&overlay).unwrap(),
+            execute_physical_query(&overlay_query.root, &overlay).unwrap()
+        );
+    }
+
+    #[test]
+    fn packed_exports_are_reused_within_a_snapshot_and_invalidated_on_commit() {
+        let kernel = kernel_with_large_immediate_relations();
+        let old_snapshot = kernel.snapshot();
+        let first = old_snapshot
+            .export_relation_batch(rel(100), &[None])
+            .unwrap()
+            .unwrap();
+        let second = old_snapshot
+            .export_relation_batch(rel(100), &[None])
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(100), Tuple::from([int(2_000)])).unwrap();
+        tx.commit().unwrap();
+        let new_snapshot = kernel.snapshot();
+        let new_batch = new_snapshot
+            .export_relation_batch(rel(100), &[None])
+            .unwrap()
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&first, &new_batch));
+        assert_eq!(first.row_count(), 384);
+        assert_eq!(new_batch.row_count(), 385);
+        assert_eq!(
+            old_snapshot.scan_relation(rel(100), &[None]).unwrap().len(),
+            384
+        );
     }
 
     #[test]

@@ -19,13 +19,14 @@ use crate::metrics::{CommitOutcome, TransactionReadOperation, TransactionWriteOp
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
     active_rules, build_derived_relations, empty_derived_cache, empty_dispatch_cache,
-    empty_method_program_cache, relation_has_active_rule_head,
+    empty_method_program_cache, empty_packed_cache, relation_has_active_rule_head,
 };
 use crate::tuple::{difference_ordered_tuple_rows, union_ordered_tuple_rows};
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRead, DispatchRelations,
-    KernelError, RelationCapabilities, RelationId, RelationKernel, RelationMetadata, RelationRead,
-    RelationSource, RelationWorkspace, RuleSet, ScanControl, Snapshot, Tuple, ValueDomain, Version,
+    KernelError, PackedRelation, RelationCapabilities, RelationId, RelationKernel,
+    RelationMetadata, RelationRead, RelationSource, RelationWorkspace, RuleSet, ScanControl,
+    Snapshot, Tuple, ValueDomain, Version,
 };
 use mica_var::{Symbol, Value};
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
@@ -702,6 +703,7 @@ impl<'a> Transaction<'a> {
 
         next.version = current.version() + 1;
         next.derived_cache = empty_derived_cache();
+        next.packed_cache = empty_packed_cache();
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
         let commit = Commit {
@@ -815,6 +817,17 @@ impl RelationRead for Transaction<'_> {
             vec![ValueDomain::Unknown; self.base.relation(relation)?.metadata().arity() as usize];
         capabilities.supports_batch_export = false;
         Ok(capabilities)
+    }
+
+    fn export_relation_batch(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        if self.has_local_writes(relation) {
+            return Ok(None);
+        }
+        self.base.export_relation_batch(relation, bindings)
     }
 
     fn has_exact_relation_index(

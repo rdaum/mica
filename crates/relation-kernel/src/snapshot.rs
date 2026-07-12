@@ -17,16 +17,18 @@ use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
 use crate::tuple::union_ordered_tuple_rows;
 use crate::{
-    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationCapabilities,
-    RelationId, RelationMetadata, RelationRead, RelationSource, RuleDefinition, RuleEvalError,
-    RuleSet, ScanControl, Tuple, ValueDomain, Version,
+    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, PackedRelation,
+    RelationCapabilities, RelationId, RelationMetadata, RelationRead, RelationSource,
+    RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple, ValueDomain, Version,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) type DerivedCache =
     Arc<OnceLock<Result<BTreeMap<RelationId, RelationState>, KernelError>>>;
+pub(crate) type PackedCache =
+    Arc<Mutex<BTreeMap<(RelationId, Vec<Option<Value>>), Arc<PackedRelation>>>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Commit {
@@ -150,6 +152,7 @@ pub struct Snapshot {
     pub(crate) rules: Vec<RuleDefinition>,
     pub(crate) computed_relations: Arc<ComputedRelationRegistry>,
     pub(crate) derived_cache: DerivedCache,
+    pub(crate) packed_cache: PackedCache,
     pub(crate) dispatch_cache: DispatchCache,
     pub(crate) method_program_cache: MethodProgramCache,
     pub(crate) commits: CommitHistory,
@@ -505,6 +508,10 @@ pub(crate) fn empty_derived_cache() -> DerivedCache {
     Arc::new(OnceLock::new())
 }
 
+pub(crate) fn empty_packed_cache() -> PackedCache {
+    Arc::new(Mutex::new(BTreeMap::new()))
+}
+
 pub(crate) fn empty_dispatch_cache() -> DispatchCache {
     DispatchCache::new()
 }
@@ -626,6 +633,30 @@ impl RelationRead for Snapshot {
             );
         }
         Ok(capabilities)
+    }
+
+    fn export_relation_batch(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        let capabilities = self.relation_capabilities(relation)?;
+        if !capabilities.supports_batch_export || !capabilities.immediate_only() {
+            return Ok(None);
+        }
+        let key = (relation, bindings.to_vec());
+        if let Some(batch) = self.packed_cache.lock().unwrap().get(&key).cloned() {
+            return Ok(Some(batch));
+        }
+        let rows = self.scan(relation, bindings)?;
+        let Some(batch) =
+            PackedRelation::from_canonical_tuples(rows, capabilities.value_domains.len())
+        else {
+            return Ok(None);
+        };
+        let batch = Arc::new(batch);
+        self.packed_cache.lock().unwrap().insert(key, batch.clone());
+        Ok(Some(batch))
     }
 
     fn has_exact_relation_index(
