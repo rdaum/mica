@@ -47,6 +47,8 @@ struct JoinRuleContext {
 
 struct NaturalJoinContext {
     snapshot: Arc<Snapshot>,
+    active_batch: Arc<PackedRelation>,
+    visible_batch: Arc<PackedRelation>,
     join_query: PreparedQuery,
     semi_query: PreparedQuery,
     union_query: PreparedQuery,
@@ -234,14 +236,18 @@ impl BenchContext for NaturalJoinContext {
         tx.commit().unwrap();
 
         let snapshot = kernel.snapshot();
-        snapshot
+        let active_batch = snapshot
             .export_relation_batch(active_item(), &[None])
+            .unwrap()
             .unwrap();
-        snapshot
+        let visible_batch = snapshot
             .export_relation_batch(visible_item(), &[None])
+            .unwrap()
             .unwrap();
         Self {
             snapshot,
+            active_batch,
+            visible_batch,
             join_query: QueryPlan::join_eq(
                 QueryPlan::scan(active_item(), [None]),
                 QueryPlan::scan(visible_item(), [None]),
@@ -379,6 +385,111 @@ fn query_natural_unary_semi_intersection(
 fn query_natural_unary_union(ctx: &mut NaturalJoinContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
         black_box(ctx.union_query.execute(&*ctx.snapshot).unwrap());
+    }
+}
+
+fn merge_tuple_slices(left: &[Tuple], right: &[Tuple]) -> Vec<Tuple> {
+    let mut output = Vec::with_capacity(left.len() + right.len());
+    let mut left_row = 0usize;
+    let mut right_row = 0usize;
+    while left_row < left.len() || right_row < right.len() {
+        match (left.get(left_row), right.get(right_row)) {
+            (Some(left), Some(right)) => match left.cmp(right) {
+                std::cmp::Ordering::Less => {
+                    output.push(left.clone());
+                    left_row += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    output.push(left.clone());
+                    left_row += 1;
+                    right_row += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    output.push(right.clone());
+                    right_row += 1;
+                }
+            },
+            (Some(left), None) => {
+                output.push(left.clone());
+                left_row += 1;
+            }
+            (None, Some(right)) => {
+                output.push(right.clone());
+                right_row += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    output
+}
+
+fn parallel_union_rows(left: &[Tuple], right: &[Tuple]) -> Vec<Tuple> {
+    let pivot = match (left.get(left.len() / 2), right.get(right.len() / 2)) {
+        (Some(left), Some(right)) => left.max(right),
+        (Some(left), None) => left,
+        (None, Some(right)) => right,
+        (None, None) => return Vec::new(),
+    };
+    let left_split = left.partition_point(|tuple| tuple < pivot);
+    let right_split = right.partition_point(|tuple| tuple < pivot);
+    std::thread::scope(|scope| {
+        let lower = scope.spawn(|| merge_tuple_slices(&left[..left_split], &right[..right_split]));
+        let upper = scope.spawn(|| merge_tuple_slices(&left[left_split..], &right[right_split..]));
+        let mut rows = lower.join().unwrap();
+        rows.extend(upper.join().unwrap());
+        rows
+    })
+}
+
+fn query_natural_unary_union_parallel_experiment(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        black_box(parallel_union_rows(
+            ctx.active_batch.rows(),
+            ctx.visible_batch.rows(),
+        ));
+    }
+}
+
+fn query_natural_unary_union_serial_concurrent(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        std::thread::scope(|scope| {
+            let mut workers = Vec::with_capacity(16);
+            for _ in 0..16 {
+                workers
+                    .push(scope.spawn(|| ctx.union_query.execute(ctx.snapshot.as_ref()).unwrap()));
+            }
+            for worker in workers {
+                black_box(worker.join().unwrap());
+            }
+        });
+    }
+}
+
+fn query_natural_unary_union_parallel_concurrent(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        std::thread::scope(|scope| {
+            let mut workers = Vec::with_capacity(16);
+            for _ in 0..16 {
+                workers.push(scope.spawn(|| {
+                    parallel_union_rows(ctx.active_batch.rows(), ctx.visible_batch.rows())
+                }));
+            }
+            for worker in workers {
+                black_box(worker.join().unwrap());
+            }
+        });
     }
 }
 
@@ -1139,6 +1250,18 @@ benchmark_main!(
             );
             g.throughput(Throughput::per_operation(1, "query"))
                 .bench("natural_unary_union", query_natural_unary_union);
+            g.throughput(Throughput::per_operation(1, "query")).bench(
+                "natural_unary_union_parallel_experiment",
+                query_natural_unary_union_parallel_experiment,
+            );
+            g.throughput(Throughput::per_operation(16, "query")).bench(
+                "natural_unary_union_serial_concurrent_16",
+                query_natural_unary_union_serial_concurrent,
+            );
+            g.throughput(Throughput::per_operation(16, "query")).bench(
+                "natural_unary_union_parallel_concurrent_16",
+                query_natural_unary_union_parallel_concurrent,
+            );
             g.throughput(Throughput::per_operation(1, "query"))
                 .bench("natural_unary_difference", query_natural_unary_difference);
         });
