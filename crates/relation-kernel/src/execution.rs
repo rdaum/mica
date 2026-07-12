@@ -42,6 +42,7 @@ pub struct MembershipSelection<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccelerationDecline {
     Busy,
+    UnsupportedInput,
     UnsupportedDomain,
     Unavailable,
     Failed,

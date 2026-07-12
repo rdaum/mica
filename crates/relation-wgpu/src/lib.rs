@@ -6,15 +6,24 @@
 
 //! Vulkan-backed execution for selected packed relation operators.
 
+use fast_telemetry::{Counter, ExportMetrics, Histogram};
 use mica_relation_kernel::{
     AccelerationDecline, AccelerationOutcome, MembershipSelection, RelationAccelerator,
 };
 use mica_var::{Identity, Value};
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, Weak, mpsc};
+use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
 const WORKGROUP_SIZE: u32 = 256;
+const CACHE_SHARDS: usize = 64;
+const METRIC_SHARDS: usize = 64;
+
+static METRICS: LazyLock<RelationWgpuMetrics> =
+    LazyLock::new(|| RelationWgpuMetrics::new(METRIC_SHARDS));
 
 const MEMBERSHIP_SHADER: &str = r#"
 struct Params {
@@ -88,7 +97,7 @@ impl fmt::Display for WgpuInitializationError {
 
 impl std::error::Error for WgpuInitializationError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum BufferMode {
     StagedReadback,
     SharedMappable,
@@ -101,12 +110,113 @@ enum ValueEncoding {
     Float,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ColumnLayout {
+    RowOrder,
+    SortedUnique,
+}
+
+struct EncodedColumn {
+    encoding: ValueEncoding,
+    buffer: wgpu::Buffer,
+    len: usize,
+}
+
+struct CachedColumn {
+    source: Weak<[Value]>,
+    encoded: Arc<EncodedColumn>,
+}
+
+struct OutputBuffers {
+    output: wgpu::Buffer,
+    readback: Option<wgpu::Buffer>,
+    size: u64,
+}
+
+#[repr(align(128))]
+struct GpuAdmission {
+    occupied: AtomicBool,
+}
+
+#[repr(align(128))]
+struct GpuAvailability {
+    enabled: AtomicBool,
+}
+
+struct GpuPermit<'a> {
+    admission: &'a GpuAdmission,
+}
+
+impl GpuAdmission {
+    fn try_acquire(&self) -> Option<GpuPermit<'_>> {
+        self.occupied
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| GpuPermit { admission: self })
+    }
+}
+
+impl Drop for GpuPermit<'_> {
+    fn drop(&mut self) {
+        self.admission.occupied.store(false, Ordering::Release);
+    }
+}
+
+#[derive(ExportMetrics)]
+#[metric_prefix = "mica_relation_wgpu"]
+pub struct RelationWgpuMetrics {
+    #[help = "GPU initialization failures that left relation acceleration unavailable"]
+    pub initialization_failures: Counter,
+
+    #[help = "Encoded column cache hits"]
+    pub encoded_column_cache_hits: Counter,
+
+    #[help = "Encoded column cache misses"]
+    pub encoded_column_cache_misses: Counter,
+
+    #[help = "Encoded column construction duration in microseconds"]
+    pub encoded_column_duration_us: Histogram,
+
+    #[help = "GPU membership execution duration in microseconds"]
+    pub membership_duration_us: Histogram,
+
+    #[help = "GPU membership operations declined because the device was occupied"]
+    pub membership_busy: Counter,
+
+    #[help = "GPU device failures that disabled relation acceleration"]
+    pub device_failures: Counter,
+}
+
+impl RelationWgpuMetrics {
+    pub fn new(shard_count: usize) -> Self {
+        Self {
+            initialization_failures: Counter::new(shard_count),
+            encoded_column_cache_hits: Counter::new(shard_count),
+            encoded_column_cache_misses: Counter::new(shard_count),
+            encoded_column_duration_us: Histogram::with_latency_buckets(shard_count),
+            membership_duration_us: Histogram::with_latency_buckets(shard_count),
+            membership_busy: Counter::new(shard_count),
+            device_failures: Counter::new(shard_count),
+        }
+    }
+}
+
+pub fn metrics() -> &'static RelationWgpuMetrics {
+    &METRICS
+}
+
 pub struct WgpuAccelerator {
     adapter_name: String,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     buffer_mode: BufferMode,
+    max_left_rows: usize,
+    max_right_rows: usize,
+    admission: GpuAdmission,
+    availability: GpuAvailability,
+    column_cache: [Mutex<HashMap<(usize, ColumnLayout), CachedColumn>>; CACHE_SHARDS],
+    output_pool: Mutex<HashMap<u64, Vec<OutputBuffers>>>,
 }
 
 impl WgpuAccelerator {
@@ -169,6 +279,10 @@ impl WgpuAccelerator {
             compilation_options: Default::default(),
             cache: None,
         });
+        let limits = device.limits();
+        let max_storage_bytes = limits.max_storage_buffer_binding_size as usize;
+        let max_dispatch_rows =
+            limits.max_compute_workgroups_per_dimension as usize * WORKGROUP_SIZE as usize;
         Ok(Self {
             adapter_name: adapter_info.name,
             device,
@@ -179,6 +293,18 @@ impl WgpuAccelerator {
             } else {
                 BufferMode::StagedReadback
             },
+            max_left_rows: max_dispatch_rows
+                .min(max_storage_bytes / size_of::<u64>())
+                .min(max_storage_bytes / size_of::<u32>()),
+            max_right_rows: (max_storage_bytes / size_of::<u64>()).min(u32::MAX as usize),
+            admission: GpuAdmission {
+                occupied: AtomicBool::new(false),
+            },
+            availability: GpuAvailability {
+                enabled: AtomicBool::new(true),
+            },
+            column_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+            output_pool: Mutex::new(HashMap::new()),
         })
     }
 
@@ -190,21 +316,35 @@ impl WgpuAccelerator {
         self.buffer_mode == BufferMode::SharedMappable
     }
 
-    fn execute_membership(
+    fn try_acquire(&self) -> Option<GpuPermit<'_>> {
+        self.admission.try_acquire()
+    }
+
+    fn encoded_column(
         &self,
-        left: &[u64],
-        right: &[u64],
-        keep_matches: bool,
-    ) -> Result<Vec<usize>, String> {
-        if left.is_empty() {
-            return Ok(Vec::new());
+        source: &Arc<[Value]>,
+        layout: ColumnLayout,
+    ) -> Option<Arc<EncodedColumn>> {
+        let key = (source.as_ptr() as usize, layout);
+        let shard = key.0 % CACHE_SHARDS;
+        {
+            let mut cache = self.column_cache[shard].lock().unwrap();
+            cache.retain(|_, cached| cached.source.strong_count() != 0);
+            if let Some(cached) = cache.get(&key)
+                && Weak::ptr_eq(&cached.source, &Arc::downgrade(source))
+            {
+                metrics().encoded_column_cache_hits.inc();
+                return Some(Arc::clone(&cached.encoded));
+            }
         }
-        if right.is_empty() {
-            return Ok(if keep_matches {
-                Vec::new()
-            } else {
-                (0..left.len()).collect()
-            });
+
+        metrics().encoded_column_cache_misses.inc();
+        let started = Instant::now();
+        let encoding = detect_encoding(source, &[])?;
+        let mut values = encode_column(source, encoding)?;
+        if layout == ColumnLayout::SortedUnique {
+            values.sort_unstable();
+            values.dedup();
         }
         let input_usage = match self.buffer_mode {
             BufferMode::StagedReadback => wgpu::BufferUsages::STORAGE,
@@ -212,10 +352,42 @@ impl WgpuAccelerator {
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::MAP_WRITE
             }
         };
-        let left_buffer = create_u64_buffer(&self.device, "mica-relation-left", left, input_usage);
-        let right_buffer =
-            create_u64_buffer(&self.device, "mica-relation-right", right, input_usage);
-        let output_size = (left.len() * size_of::<u32>()) as u64;
+        let buffer = create_u64_buffer(
+            &self.device,
+            "mica-relation-encoded-column",
+            &values,
+            input_usage,
+        );
+        let encoded = Arc::new(EncodedColumn {
+            encoding,
+            buffer,
+            len: values.len(),
+        });
+        self.column_cache[shard].lock().unwrap().insert(
+            key,
+            CachedColumn {
+                source: Arc::downgrade(source),
+                encoded: Arc::clone(&encoded),
+            },
+        );
+        metrics()
+            .encoded_column_duration_us
+            .record(duration_us(started.elapsed()));
+        Some(encoded)
+    }
+
+    fn acquire_output_buffers(&self, row_count: usize) -> OutputBuffers {
+        let required = (row_count * size_of::<u32>()) as u64;
+        let size = required.next_power_of_two();
+        if let Some(buffers) = self
+            .output_pool
+            .lock()
+            .unwrap()
+            .get_mut(&size)
+            .and_then(Vec::pop)
+        {
+            return buffers;
+        }
         let output_usage = match self.buffer_mode {
             BufferMode::StagedReadback => {
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC
@@ -226,19 +398,53 @@ impl WgpuAccelerator {
         };
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mica-relation-membership-output"),
-            size: output_size,
+            size,
             usage: output_usage,
             mapped_at_creation: false,
         });
         let readback = (self.buffer_mode == BufferMode::StagedReadback).then(|| {
             self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("mica-relation-membership-readback"),
-                size: output_size,
+                size,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
         });
-        let params = [left.len() as u32, right.len() as u32, 0, 0];
+        OutputBuffers {
+            output,
+            readback,
+            size,
+        }
+    }
+
+    fn release_output_buffers(&self, buffers: OutputBuffers) {
+        self.output_pool
+            .lock()
+            .unwrap()
+            .entry(buffers.size)
+            .or_default()
+            .push(buffers);
+    }
+
+    fn execute_membership(
+        &self,
+        left: &EncodedColumn,
+        right: &EncodedColumn,
+        keep_matches: bool,
+    ) -> Result<Vec<usize>, String> {
+        if left.len == 0 {
+            return Ok(Vec::new());
+        }
+        if right.len == 0 {
+            return Ok(if keep_matches {
+                Vec::new()
+            } else {
+                (0..left.len).collect()
+            });
+        }
+        let output_buffers = self.acquire_output_buffers(left.len);
+        let output_size = (left.len * size_of::<u32>()) as u64;
+        let params = [left.len as u32, right.len as u32, 0, 0];
         let params_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -253,15 +459,15 @@ impl WgpuAccelerator {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: left_buffer.as_entire_binding(),
+                    resource: left.buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: right_buffer.as_entire_binding(),
+                    resource: right.buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: output.as_entire_binding(),
+                    resource: output_buffers.output.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -281,15 +487,18 @@ impl WgpuAccelerator {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups((left.len() as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            pass.dispatch_workgroups((left.len as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
-        let output_readback = readback.as_ref().unwrap_or(&output);
-        if let Some(readback) = &readback {
-            encoder.copy_buffer_to_buffer(&output, 0, readback, 0, output_size);
+        let output_readback = output_buffers
+            .readback
+            .as_ref()
+            .unwrap_or(&output_buffers.output);
+        if let Some(readback) = &output_buffers.readback {
+            encoder.copy_buffer_to_buffer(&output_buffers.output, 0, readback, 0, output_size);
         }
         self.queue.submit([encoder.finish()]);
 
-        let output_slice = output_readback.slice(..);
+        let output_slice = output_readback.slice(..output_size);
         let output_result = map_for_read(&output_slice);
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
@@ -308,28 +517,62 @@ impl WgpuAccelerator {
             .collect();
         drop(output_view);
         output_readback.unmap();
+        self.release_output_buffers(output_buffers);
         Ok(selected)
     }
 }
 
 impl RelationAccelerator for WgpuAccelerator {
     fn select_membership(&self, selection: MembershipSelection<'_>) -> AccelerationOutcome {
-        let Some(encoding) = detect_encoding(selection.left, selection.right) else {
+        if selection.left.is_empty() {
+            return AccelerationOutcome::Selected(Vec::new());
+        }
+        if selection.right.is_empty() {
+            return AccelerationOutcome::Selected(if selection.keep_matches {
+                Vec::new()
+            } else {
+                (0..selection.left.len()).collect()
+            });
+        }
+        if selection.left.len() > self.max_left_rows || selection.right.len() > self.max_right_rows
+        {
+            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput);
+        }
+        if !self.availability.enabled.load(Ordering::Acquire) {
+            return AccelerationOutcome::Declined(AccelerationDecline::Unavailable);
+        }
+        let Some(_permit) = self.try_acquire() else {
+            metrics().membership_busy.inc();
+            return AccelerationOutcome::Declined(AccelerationDecline::Busy);
+        };
+        let Some(left) = self.encoded_column(selection.left, ColumnLayout::RowOrder) else {
             return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
         };
-        let Some(left) = encode_column(selection.left, encoding) else {
+        let Some(right) = self.encoded_column(selection.right, ColumnLayout::SortedUnique) else {
             return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
         };
-        let Some(mut right) = encode_column(selection.right, encoding) else {
+        if left.encoding != right.encoding {
             return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
-        };
-        right.sort_unstable();
-        right.dedup();
+        }
+        let started = Instant::now();
         match self.execute_membership(&left, &right, selection.keep_matches) {
-            Ok(selected) => AccelerationOutcome::Selected(selected),
-            Err(_) => AccelerationOutcome::Declined(AccelerationDecline::Failed),
+            Ok(selected) => {
+                metrics()
+                    .membership_duration_us
+                    .record(duration_us(started.elapsed()));
+                AccelerationOutcome::Selected(selected)
+            }
+            Err(_) => {
+                self.availability.enabled.store(false, Ordering::Release);
+                metrics().device_failures.inc();
+                AccelerationOutcome::Declined(AccelerationDecline::Failed)
+            }
         }
     }
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 fn detect_encoding(left: &[Value], right: &[Value]) -> Option<ValueEncoding> {
@@ -466,6 +709,17 @@ mod tests {
     }
 
     #[test]
+    fn gpu_admission_declines_instead_of_waiting() {
+        let admission = GpuAdmission {
+            occupied: AtomicBool::new(false),
+        };
+        let permit = admission.try_acquire().unwrap();
+        assert!(admission.try_acquire().is_none());
+        drop(permit);
+        assert!(admission.try_acquire().is_some());
+    }
+
+    #[test]
     #[ignore = "requires a Vulkan adapter with shaderInt64"]
     fn hardware_membership_selects_original_row_indexes() {
         let accelerator = WgpuAccelerator::new(WgpuAcceleratorOptions::default()).unwrap();
@@ -475,6 +729,7 @@ mod tests {
                 .to_vec(),
         );
         let right = Arc::from([10, 20].map(|value| Value::int(value).unwrap()).to_vec());
+        let cache_hits = metrics().encoded_column_cache_hits.sum();
         assert_eq!(
             accelerator.select_membership(MembershipSelection {
                 left: &left,
@@ -482,6 +737,25 @@ mod tests {
                 keep_matches: true,
             }),
             AccelerationOutcome::Selected(vec![1, 3])
+        );
+        assert_eq!(
+            accelerator.select_membership(MembershipSelection {
+                left: &left,
+                right: &right,
+                keep_matches: false,
+            }),
+            AccelerationOutcome::Selected(vec![0, 2])
+        );
+        assert!(metrics().encoded_column_cache_hits.sum() >= cache_hits + 2);
+        assert_eq!(
+            accelerator
+                .output_pool
+                .lock()
+                .unwrap()
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+            1
         );
     }
 }

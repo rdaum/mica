@@ -646,6 +646,7 @@ fn start_dogstatsd_export(endpoint: String, interval: Duration) -> JoinHandle<()
         let mut driver_state = mica_driver::metrics::DriverMetricsDogStatsDState::new();
         let mut relation_kernel_state =
             mica_relation_kernel::metrics::RelationKernelMetricsDogStatsDState::new();
+        let mut relation_wgpu_state = mica_relation_wgpu::RelationWgpuMetricsDogStatsDState::new();
         let mut runtime_state = mica_runtime::metrics::RuntimeMetricsDogStatsDState::new();
         let mut web_host_state = mica_web_host::metrics::WebHostMetricsDogStatsDState::new();
         let mut webtransport_host_state =
@@ -664,6 +665,11 @@ fn start_dogstatsd_export(endpoint: String, interval: Duration) -> JoinHandle<()
                     output,
                     &[],
                     &mut relation_kernel_state,
+                );
+                mica_relation_wgpu::metrics().export_dogstatsd_delta(
+                    output,
+                    &[],
+                    &mut relation_wgpu_state,
                 );
                 mica_runtime::metrics::metrics().export_dogstatsd_delta(
                     output,

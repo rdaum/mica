@@ -10,6 +10,7 @@ description = "Compio-driven task driver for Mica"
 compio.workspace = true
 fast-telemetry.workspace = true
 mica-compiler.workspace = true
+mica-relation-wgpu.workspace = true
 mica-runtime.workspace = true
 mica-var.workspace = true
 tracing.workspace = true

@@ -18,11 +18,12 @@ use crate::{
     metrics::{self, AsyncWorkerKind, DispatchOperation, WorkerOutcome},
 };
 use compio::dispatcher::Dispatcher;
+use mica_relation_wgpu::{WgpuAccelerator, WgpuAcceleratorOptions};
 use mica_runtime::{
-    AuthorityContext, MailboxRecvRequest, ReadOnlySourceQueryOptions, ReadOnlySourceQueryReport,
-    ReadOnlySourceQueryStatus, RunReport, RuntimeError, SYSTEM_ENDPOINT, SharedSourceRunner,
-    SourceRunner, SourceTaskError, SpawnRequest, SubmittedTask, SuspendKind, TaskError, TaskId,
-    TaskInput, TaskManagerError, TaskOutcome, TaskRequest, Tuple,
+    AuthorityContext, ExecutionContext, MailboxRecvRequest, ReadOnlySourceQueryOptions,
+    ReadOnlySourceQueryReport, ReadOnlySourceQueryStatus, RunReport, RuntimeError, SYSTEM_ENDPOINT,
+    SharedSourceRunner, SourceRunner, SourceTaskError, SpawnRequest, SubmittedTask, SuspendKind,
+    TaskError, TaskId, TaskInput, TaskManagerError, TaskOutcome, TaskRequest, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -30,9 +31,22 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
+
+static RELATION_ACCELERATOR: OnceLock<Option<Arc<WgpuAccelerator>>> = OnceLock::new();
+
+fn relation_accelerator() -> Option<Arc<WgpuAccelerator>> {
+    RELATION_ACCELERATOR
+        .get_or_init(|| {
+            WgpuAccelerator::new(WgpuAcceleratorOptions::default())
+                .map(Arc::new)
+                .map_err(|_| mica_relation_wgpu::metrics().initialization_failures.inc())
+                .ok()
+        })
+        .clone()
+}
 
 #[derive(Clone)]
 pub struct CompioTaskDriver {
@@ -136,7 +150,11 @@ impl CompioTaskDriver {
         metrics::metrics()
             .dispatcher_workers_configured
             .set(placement.worker_count.get() as i64);
-        let runner = runner.with_parallel_execution(cpu_admission.clone());
+        let mut execution_context = ExecutionContext::parallel(cpu_admission.clone());
+        if let Some(accelerator) = relation_accelerator() {
+            execution_context = execution_context.with_accelerator(accelerator);
+        }
+        let runner = runner.with_execution_context(execution_context);
         Ok(Self {
             inner: Arc::new(PoolInner {
                 runner: Arc::new(runner.into_shared()),

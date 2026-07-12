@@ -3365,6 +3365,7 @@ dependencies = [
  "mica-host-protocol",
  "mica-host-zmq",
  "mica-relation-kernel",
+ "mica-relation-wgpu",
  "mica-runtime",
  "mica-telnet-host",
  "mica-var",
@@ -3385,6 +3386,7 @@ dependencies = [
  "compio",
  "fast-telemetry",
  "mica-compiler",
+ "mica-relation-wgpu",
  "mica-runtime",
  "mica-var",
  "tracing",
@@ -3464,6 +3466,7 @@ dependencies = [
 name = "mica-relation-wgpu"
 version = "0.1.0"
 dependencies = [
+ "fast-telemetry",
  "mica-relation-kernel",
  "mica-var",
  "pollster",

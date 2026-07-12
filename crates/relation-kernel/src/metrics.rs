@@ -80,6 +80,29 @@ pub enum ParallelUnionPlacement {
     Capacity,
 }
 
+#[derive(Copy, Clone, Debug, DeriveLabel)]
+#[label_name = "placement"]
+pub enum MembershipAccelerationPlacement {
+    Accelerated,
+    BelowThreshold,
+    OwnedColumns,
+    Busy,
+    UnsupportedInput,
+    UnsupportedDomain,
+    Unavailable,
+    Failed,
+    InvalidResult,
+}
+
+#[derive(Copy, Clone, Debug, DeriveLabel)]
+#[label_name = "placement"]
+pub enum ParallelMembershipPlacement {
+    Parallel,
+    BelowThreshold,
+    NoExecutor,
+    Capacity,
+}
+
 #[derive(ExportMetrics)]
 #[metric_prefix = "mica_relation_kernel"]
 pub struct RelationKernelMetrics {
@@ -152,6 +175,24 @@ pub struct RelationKernelMetrics {
     #[help = "Parallel packed union duration in microseconds"]
     pub parallel_union_duration_us: Histogram,
 
+    #[help = "Packed membership accelerator placement decisions"]
+    pub membership_acceleration_placements: LabeledCounter<MembershipAccelerationPlacement>,
+
+    #[help = "Packed membership CPU placement decisions"]
+    pub parallel_membership_placements: LabeledCounter<ParallelMembershipPlacement>,
+
+    #[help = "Input rows considered for packed membership selection"]
+    pub membership_input_rows: Histogram,
+
+    #[help = "Rows selected by packed membership operations"]
+    pub membership_selected_rows: Histogram,
+
+    #[help = "Accelerated membership duration in microseconds"]
+    pub membership_acceleration_duration_us: Histogram,
+
+    #[help = "Membership result materialization duration in microseconds"]
+    pub membership_materialization_duration_us: Histogram,
+
     #[help = "Relations in the current snapshot"]
     pub snapshot_relations: Gauge,
 
@@ -194,6 +235,12 @@ impl RelationKernelMetrics {
             parallel_union_placements: LabeledCounter::new(shard_count),
             parallel_union_input_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
             parallel_union_duration_us: Histogram::with_latency_buckets(shard_count),
+            membership_acceleration_placements: LabeledCounter::new(shard_count),
+            parallel_membership_placements: LabeledCounter::new(shard_count),
+            membership_input_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
+            membership_selected_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
+            membership_acceleration_duration_us: Histogram::with_latency_buckets(shard_count),
+            membership_materialization_duration_us: Histogram::with_latency_buckets(shard_count),
             snapshot_relations: Gauge::new(),
             snapshot_rules: Gauge::new(),
             snapshot_version: Gauge::new(),
@@ -225,6 +272,34 @@ pub(crate) fn record_parallel_union_placement(
 pub(crate) fn record_parallel_union_duration(elapsed: Duration) {
     metrics()
         .parallel_union_duration_us
+        .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
+}
+
+pub(crate) fn record_membership_acceleration_placement(placement: MembershipAccelerationPlacement) {
+    metrics().membership_acceleration_placements.inc(placement);
+}
+
+pub(crate) fn record_parallel_membership_placement(placement: ParallelMembershipPlacement) {
+    metrics().parallel_membership_placements.inc(placement);
+}
+
+pub(crate) fn record_membership_input_rows(rows: usize) {
+    metrics().membership_input_rows.record(rows as u64);
+}
+
+pub(crate) fn record_membership_selected_rows(rows: usize) {
+    metrics().membership_selected_rows.record(rows as u64);
+}
+
+pub(crate) fn record_membership_acceleration_duration(elapsed: Duration) {
+    metrics()
+        .membership_acceleration_duration_us
+        .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
+}
+
+pub(crate) fn record_membership_materialization_duration(elapsed: Duration) {
+    metrics()
+        .membership_materialization_duration_us
         .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
 }
 

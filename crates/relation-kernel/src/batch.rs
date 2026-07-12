@@ -6,11 +6,16 @@
 
 use crate::execution::ParallelUnavailable;
 use crate::metrics::{
-    ParallelUnionPlacement, record_parallel_union_duration, record_parallel_union_placement,
+    MembershipAccelerationPlacement, ParallelMembershipPlacement, ParallelUnionPlacement,
+    record_membership_acceleration_duration, record_membership_acceleration_placement,
+    record_membership_input_rows, record_membership_materialization_duration,
+    record_membership_selected_rows, record_parallel_membership_placement,
+    record_parallel_union_duration, record_parallel_union_placement,
 };
 use crate::query::PhysicalQueryPlan;
 use crate::{
-    AccelerationOutcome, ExecutionContext, KernelError, MembershipSelection, RelationRead, Tuple,
+    AccelerationDecline, AccelerationOutcome, ExecutionContext, KernelError, MembershipSelection,
+    RelationRead, Tuple,
 };
 use mica_var::Value;
 use std::cell::RefCell;
@@ -1002,7 +1007,10 @@ fn execute_batch_semi_join(
             workspace.recycle_batch(right);
             return Ok(None);
         };
+        record_membership_selected_rows(selected.len());
+        let materialize_started = Instant::now();
         let output = left.select_rows(&selected, workspace);
+        record_membership_materialization_duration(materialize_started.elapsed());
         workspace.recycle_row_indexes(selected);
         Some(output)
     } else {
@@ -1072,17 +1080,46 @@ fn select_membership_rows_with_threshold(
     let left_values = left_column.as_slice();
     let right_values = right_column.as_slice();
     let input_rows = left_values.len() + right_values.len();
-    if input_rows >= placement.accelerator_row_threshold
-        && let (Some(left), Some(right)) = (left_column.shared(), right_column.shared())
-        && let AccelerationOutcome::Selected(selected) =
-            execution_context.select_membership(MembershipSelection {
-                left,
-                right,
-                keep_matches: placement.keep_matches,
-            })
-        && selected_rows_are_valid(&selected, left_values.len())
-    {
-        return Some(selected);
+    record_membership_input_rows(input_rows);
+    if input_rows < placement.accelerator_row_threshold {
+        record_membership_acceleration_placement(MembershipAccelerationPlacement::BelowThreshold);
+    } else if let (Some(left), Some(right)) = (left_column.shared(), right_column.shared()) {
+        let started = Instant::now();
+        match execution_context.select_membership(MembershipSelection {
+            left,
+            right,
+            keep_matches: placement.keep_matches,
+        }) {
+            AccelerationOutcome::Selected(selected)
+                if selected_rows_are_valid(&selected, left_values.len()) =>
+            {
+                record_membership_acceleration_placement(
+                    MembershipAccelerationPlacement::Accelerated,
+                );
+                record_membership_acceleration_duration(started.elapsed());
+                return Some(selected);
+            }
+            AccelerationOutcome::Selected(_) => record_membership_acceleration_placement(
+                MembershipAccelerationPlacement::InvalidResult,
+            ),
+            AccelerationOutcome::Declined(decline) => {
+                record_membership_acceleration_placement(match decline {
+                    AccelerationDecline::Busy => MembershipAccelerationPlacement::Busy,
+                    AccelerationDecline::UnsupportedInput => {
+                        MembershipAccelerationPlacement::UnsupportedInput
+                    }
+                    AccelerationDecline::UnsupportedDomain => {
+                        MembershipAccelerationPlacement::UnsupportedDomain
+                    }
+                    AccelerationDecline::Unavailable => {
+                        MembershipAccelerationPlacement::Unavailable
+                    }
+                    AccelerationDecline::Failed => MembershipAccelerationPlacement::Failed,
+                });
+            }
+        }
+    } else {
+        record_membership_acceleration_placement(MembershipAccelerationPlacement::OwnedColumns);
     }
     let mut right_keys = workspace.column(right_values.len());
     right_keys.extend_from_slice(right_values);
@@ -1111,14 +1148,21 @@ fn select_membership_rows_with_threshold(
             },
         ) {
             Ok((mut lower, upper)) => {
+                record_parallel_membership_placement(ParallelMembershipPlacement::Parallel);
                 lower.extend(upper);
                 lower
             }
-            Err(ParallelUnavailable::NoExecutor | ParallelUnavailable::Capacity) => {
+            Err(ParallelUnavailable::NoExecutor) => {
+                record_parallel_membership_placement(ParallelMembershipPlacement::NoExecutor);
+                select_membership_range(left_values, &right_keys, 0, placement.keep_matches)
+            }
+            Err(ParallelUnavailable::Capacity) => {
+                record_parallel_membership_placement(ParallelMembershipPlacement::Capacity);
                 select_membership_range(left_values, &right_keys, 0, placement.keep_matches)
             }
         }
     } else {
+        record_parallel_membership_placement(ParallelMembershipPlacement::BelowThreshold);
         select_membership_range(left_values, &right_keys, 0, placement.keep_matches)
     };
     right_keys.clear();
