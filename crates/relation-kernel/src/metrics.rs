@@ -27,6 +27,10 @@ const TIMER_SAMPLE_STRIDE: u64 = 64;
 const COUNT_BUCKETS: &[u64] = &[
     0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 50_000,
 ];
+const PARALLEL_INPUT_ROW_BUCKETS: &[u64] = &[
+    16_384, 32_768, 65_536, 131_072, 262_144, 524_288, 1_048_576, 2_097_152, 4_194_304, 8_388_608,
+    16_777_216,
+];
 
 static METRICS: LazyLock<RelationKernelMetrics> =
     LazyLock::new(|| RelationKernelMetrics::new(DEFAULT_SHARDS));
@@ -64,6 +68,16 @@ pub enum CatalogOperation {
     RelationCreated,
     RuleInstalled,
     RuleDisabled,
+}
+
+#[derive(Copy, Clone, Debug, DeriveLabel)]
+#[label_name = "placement"]
+pub enum ParallelUnionPlacement {
+    Parallel,
+    BelowThreshold,
+    Unbalanced,
+    NoExecutor,
+    Capacity,
 }
 
 #[derive(ExportMetrics)]
@@ -129,6 +143,15 @@ pub struct RelationKernelMetrics {
     #[help = "Rows in each recursive frontier"]
     pub rule_frontier_rows: Histogram,
 
+    #[help = "Packed union execution placement decisions"]
+    pub parallel_union_placements: LabeledCounter<ParallelUnionPlacement>,
+
+    #[help = "Input rows considered for packed parallel union"]
+    pub parallel_union_input_rows: Histogram,
+
+    #[help = "Parallel packed union duration in microseconds"]
+    pub parallel_union_duration_us: Histogram,
+
     #[help = "Relations in the current snapshot"]
     pub snapshot_relations: Gauge,
 
@@ -168,6 +191,9 @@ impl RelationKernelMetrics {
             rule_candidate_rows: Histogram::new(COUNT_BUCKETS, shard_count),
             rule_novel_rows: Histogram::new(COUNT_BUCKETS, shard_count),
             rule_frontier_rows: Histogram::new(COUNT_BUCKETS, shard_count),
+            parallel_union_placements: LabeledCounter::new(shard_count),
+            parallel_union_input_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
+            parallel_union_duration_us: Histogram::with_latency_buckets(shard_count),
             snapshot_relations: Gauge::new(),
             snapshot_rules: Gauge::new(),
             snapshot_version: Gauge::new(),
@@ -185,6 +211,21 @@ impl RelationKernelMetrics {
 
 pub fn metrics() -> &'static RelationKernelMetrics {
     &METRICS
+}
+
+pub(crate) fn record_parallel_union_placement(
+    placement: ParallelUnionPlacement,
+    input_rows: usize,
+) {
+    let metrics = metrics();
+    metrics.parallel_union_placements.inc(placement);
+    metrics.parallel_union_input_rows.record(input_rows as u64);
+}
+
+pub(crate) fn record_parallel_union_duration(elapsed: Duration) {
+    metrics()
+        .parallel_union_duration_us
+        .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]

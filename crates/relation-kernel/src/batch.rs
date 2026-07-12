@@ -4,15 +4,23 @@
 // the terms of the GNU Affero General Public License as published by the Free
 // Software Foundation, version 3.
 
+use crate::execution::ParallelUnavailable;
+use crate::metrics::{
+    ParallelUnionPlacement, record_parallel_union_duration, record_parallel_union_placement,
+};
 use crate::query::PhysicalQueryPlan;
-use crate::{KernelError, RelationRead, Tuple};
+use crate::{ExecutionContext, KernelError, RelationRead, Tuple};
 use mica_var::Value;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Instant;
 
 const PACKED_ROW_THRESHOLD: usize = 256;
+const PARALLEL_UNION_ROW_THRESHOLD: usize = 2_097_152;
+const PARALLEL_UNION_WORKERS: NonZeroUsize = NonZeroUsize::new(2).unwrap();
 type PackedPair = (Arc<crate::PackedRelation>, Arc<crate::PackedRelation>);
 
 pub(crate) struct PackedJoinInput<'a> {
@@ -331,11 +339,12 @@ impl NativeBatch {
 pub(crate) fn execute_packed_query(
     plan: &PhysicalQueryPlan,
     reader: &impl RelationRead,
+    execution_context: &ExecutionContext,
 ) -> Result<Option<Vec<Tuple>>, KernelError> {
     if !packed_plan_eligible(plan, reader)? {
         return Ok(None);
     }
-    if let Some(rows) = execute_cached_terminal_set(plan, reader)? {
+    if let Some(rows) = execute_cached_terminal_set(plan, reader, execution_context)? {
         return Ok(Some(rows));
     }
     with_batch_workspace(|workspace| {
@@ -407,6 +416,7 @@ fn batch_join_capabilities_eligible(capabilities: &crate::RelationCapabilities) 
 fn execute_cached_terminal_set(
     plan: &PhysicalQueryPlan,
     reader: &impl RelationRead,
+    execution_context: &ExecutionContext,
 ) -> Result<Option<Vec<Tuple>>, KernelError> {
     match plan {
         PhysicalQueryPlan::Project { input, positions } => {
@@ -437,7 +447,11 @@ fn execute_cached_terminal_set(
             let Some((left, right)) = cached_scan_pair(left, right, reader)? else {
                 return Ok(None);
             };
-            Ok(Some(merge_cached_union(left.rows(), right.rows())))
+            Ok(Some(place_cached_union(
+                left.rows(),
+                right.rows(),
+                execution_context,
+            )))
         }
         PhysicalQueryPlan::Difference { left, right } => {
             let Some((left, right)) = cached_scan_pair(left, right, reader)? else {
@@ -540,6 +554,68 @@ fn merge_cached_union(left: &[Tuple], right: &[Tuple]) -> Vec<Tuple> {
         }
     }
     output
+}
+
+fn place_cached_union(
+    left: &[Tuple],
+    right: &[Tuple],
+    execution_context: &ExecutionContext,
+) -> Vec<Tuple> {
+    place_cached_union_with_threshold(left, right, execution_context, PARALLEL_UNION_ROW_THRESHOLD)
+}
+
+fn place_cached_union_with_threshold(
+    left: &[Tuple],
+    right: &[Tuple],
+    execution_context: &ExecutionContext,
+    row_threshold: usize,
+) -> Vec<Tuple> {
+    let input_rows = left.len() + right.len();
+    if input_rows < row_threshold {
+        record_parallel_union_placement(ParallelUnionPlacement::BelowThreshold, input_rows);
+        return merge_cached_union(left, right);
+    }
+
+    let Some((left_split, right_split)) = balanced_union_split(left, right) else {
+        record_parallel_union_placement(ParallelUnionPlacement::Unbalanced, input_rows);
+        return merge_cached_union(left, right);
+    };
+    let started = Instant::now();
+    let result = execution_context.try_join(
+        PARALLEL_UNION_WORKERS,
+        || merge_cached_union(&left[..left_split], &right[..right_split]),
+        || merge_cached_union(&left[left_split..], &right[right_split..]),
+    );
+    let (mut lower, upper) = match result {
+        Ok(output) => output,
+        Err(ParallelUnavailable::NoExecutor) => {
+            record_parallel_union_placement(ParallelUnionPlacement::NoExecutor, input_rows);
+            return merge_cached_union(left, right);
+        }
+        Err(ParallelUnavailable::Capacity) => {
+            record_parallel_union_placement(ParallelUnionPlacement::Capacity, input_rows);
+            return merge_cached_union(left, right);
+        }
+    };
+    lower.extend(upper);
+    record_parallel_union_placement(ParallelUnionPlacement::Parallel, input_rows);
+    record_parallel_union_duration(started.elapsed());
+    lower
+}
+
+fn balanced_union_split(left: &[Tuple], right: &[Tuple]) -> Option<(usize, usize)> {
+    let pivot = match (left.get(left.len() / 2), right.get(right.len() / 2)) {
+        (Some(left), Some(right)) => left.max(right),
+        (Some(left), None) => left,
+        (None, Some(right)) => right,
+        (None, None) => return None,
+    };
+    let left_split = left.partition_point(|tuple| tuple < pivot);
+    let right_split = right.partition_point(|tuple| tuple < pivot);
+    let total = left.len() + right.len();
+    let lower = left_split + right_split;
+    let upper = total - lower;
+    (lower.min(upper) >= total.div_ceil(4)).then_some((left_split, right_split))
 }
 
 fn merge_cached_difference(left: &[Tuple], right: &[Tuple]) -> Vec<Tuple> {
@@ -1005,9 +1081,108 @@ fn difference(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExecutionAdmission;
+    use std::sync::Mutex;
+
+    struct TestAdmission {
+        available: Mutex<usize>,
+        attempts: Mutex<usize>,
+    }
+
+    impl ExecutionAdmission for TestAdmission {
+        fn capacity(&self) -> NonZeroUsize {
+            NonZeroUsize::new(3).unwrap()
+        }
+
+        fn try_reserve_parallel(&self, additional_workers: NonZeroUsize) -> bool {
+            *self.attempts.lock().unwrap() += 1;
+            let mut available = self.available.lock().unwrap();
+            let Some(remaining) = available.checked_sub(additional_workers.get()) else {
+                return false;
+            };
+            *available = remaining;
+            true
+        }
+
+        fn release_parallel(&self, additional_workers: NonZeroUsize) {
+            *self.available.lock().unwrap() += additional_workers.get();
+        }
+    }
+
+    fn parallel_context(available: usize) -> (ExecutionContext, Arc<TestAdmission>) {
+        let admission = Arc::new(TestAdmission {
+            available: Mutex::new(available),
+            attempts: Mutex::new(0),
+        });
+        let context = ExecutionContext::parallel(admission.clone());
+        (context, admission)
+    }
 
     fn int(value: i64) -> Value {
         Value::int(value).unwrap()
+    }
+
+    fn unary_rows(values: impl IntoIterator<Item = i64>) -> Vec<Tuple> {
+        values
+            .into_iter()
+            .map(|value| Tuple::from([int(value)]))
+            .collect()
+    }
+
+    #[test]
+    fn parallel_cached_union_matches_serial_and_releases_capacity() {
+        let left = unary_rows(0..16_384);
+        let right = unary_rows(8_192..24_576);
+        let expected = merge_cached_union(&left, &right);
+        let (context, admission) = parallel_context(2);
+
+        let actual = place_cached_union_with_threshold(&left, &right, &context, 32_768);
+
+        assert_eq!(actual, expected);
+        assert_eq!(*admission.attempts.lock().unwrap(), 1);
+        assert_eq!(*admission.available.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn cached_union_falls_back_when_parallel_capacity_is_unavailable() {
+        let left = unary_rows(0..16_384);
+        let right = unary_rows(8_192..24_576);
+        let expected = merge_cached_union(&left, &right);
+        let (context, admission) = parallel_context(1);
+
+        assert_eq!(
+            place_cached_union_with_threshold(&left, &right, &context, 32_768),
+            expected
+        );
+        assert_eq!(*admission.attempts.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn cached_union_does_not_request_workers_for_unbalanced_partitions() {
+        let left = unary_rows(0..32_767);
+        let right = unary_rows([1_000_000]);
+        let expected = merge_cached_union(&left, &right);
+        let (context, admission) = parallel_context(2);
+
+        assert_eq!(
+            place_cached_union_with_threshold(&left, &right, &context, 32_768),
+            expected
+        );
+        assert_eq!(*admission.attempts.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn cached_union_does_not_request_workers_below_threshold() {
+        let left = unary_rows(0..100);
+        let right = unary_rows(50..150);
+        let expected = merge_cached_union(&left, &right);
+        let (context, admission) = parallel_context(2);
+
+        assert_eq!(
+            place_cached_union_with_threshold(&left, &right, &context, 1_000),
+            expected
+        );
+        assert_eq!(*admission.attempts.lock().unwrap(), 0);
     }
 
     #[test]

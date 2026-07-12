@@ -365,9 +365,11 @@ impl PreparedQuery {
     pub fn execute(
         &self,
         reader: &impl RelationRead,
-        _execution_context: &ExecutionContext,
+        execution_context: &ExecutionContext,
     ) -> Result<Vec<Tuple>, KernelError> {
-        if let Some(rows) = crate::batch::execute_packed_query(&self.root, reader)? {
+        if let Some(rows) =
+            crate::batch::execute_packed_query(&self.root, reader, execution_context)?
+        {
             return Ok(rows);
         }
         execute_physical_query(&self.root, reader)
@@ -826,9 +828,10 @@ mod tests {
 
     fn assert_packed_matches_tuple(query: QueryPlan, reader: &impl RelationRead) {
         let prepared = query.prepare();
-        let packed = crate::batch::execute_packed_query(&prepared.root, reader)
-            .unwrap()
-            .expect("large immediate query should select the packed executor");
+        let packed =
+            crate::batch::execute_packed_query(&prepared.root, reader, &ExecutionContext::serial())
+                .unwrap()
+                .expect("large immediate query should select the packed executor");
         let tuples = execute_physical_query(&prepared.root, reader).unwrap();
         assert_eq!(packed, tuples);
     }
@@ -1094,9 +1097,13 @@ mod tests {
         let heap_query = QueryPlan::scan(rel(110), [None]).prepare();
         let heap_snapshot = heap_kernel.snapshot();
         assert!(
-            crate::batch::execute_packed_query(&heap_query.root, heap_snapshot.as_ref())
-                .unwrap()
-                .is_none()
+            crate::batch::execute_packed_query(
+                &heap_query.root,
+                heap_snapshot.as_ref(),
+                &ExecutionContext::serial(),
+            )
+            .unwrap()
+            .is_none()
         );
 
         let kernel = kernel_with_large_immediate_relations();
@@ -1104,9 +1111,13 @@ mod tests {
         overlay.assert(rel(100), Tuple::from([int(1_000)])).unwrap();
         let overlay_query = QueryPlan::scan(rel(100), [None]).prepare();
         assert!(
-            crate::batch::execute_packed_query(&overlay_query.root, &overlay)
-                .unwrap()
-                .is_none()
+            crate::batch::execute_packed_query(
+                &overlay_query.root,
+                &overlay,
+                &ExecutionContext::serial(),
+            )
+            .unwrap()
+            .is_none()
         );
         assert_eq!(
             overlay_query
@@ -1118,9 +1129,13 @@ mod tests {
         let snapshot = kernel.snapshot();
         let bound_query = QueryPlan::scan(rel(100), [Some(int(1))]).prepare();
         assert!(
-            crate::batch::execute_packed_query(&bound_query.root, snapshot.as_ref())
-                .unwrap()
-                .is_none(),
+            crate::batch::execute_packed_query(
+                &bound_query.root,
+                snapshot.as_ref(),
+                &ExecutionContext::serial(),
+            )
+            .unwrap()
+            .is_none(),
             "selective bound scans should retain the tuple/index path",
         );
     }

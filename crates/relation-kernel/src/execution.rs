@@ -11,46 +11,74 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::fmt;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-/// Admission control for relation operators that want additional CPU workers.
+/// Admission control shared by task execution and parallel relation operators.
 ///
-/// The executor implements this interface because it owns global worker
-/// capacity. Relation operators reserve capacity through [`ExecutionContext`]
-/// instead of inspecting executor-specific state.
-pub trait ExecutionBudget: Send + Sync {
-    fn try_reserve(&self, additional_workers: NonZeroUsize) -> bool;
+/// Implementations own the global CPU capacity policy. Relation operators never
+/// wait for capacity: a declined reservation means they execute serially.
+pub trait ExecutionAdmission: Send + Sync {
+    fn capacity(&self) -> NonZeroUsize;
 
-    fn release(&self, additional_workers: NonZeroUsize);
+    fn try_reserve_parallel(&self, additional_workers: NonZeroUsize) -> bool;
+
+    fn release_parallel(&self, additional_workers: NonZeroUsize);
 }
 
 #[derive(Clone)]
 pub struct ExecutionContext {
-    budget: Option<Arc<dyn ExecutionBudget>>,
+    parallel: Option<Arc<ParallelExecution>>,
 }
 
 impl ExecutionContext {
     pub fn serial() -> Self {
-        Self { budget: None }
+        Self { parallel: None }
     }
 
-    pub fn with_budget(budget: Arc<dyn ExecutionBudget>) -> Self {
+    pub fn parallel(admission: Arc<dyn ExecutionAdmission>) -> Self {
+        let rayon_workers = admission.capacity().get().saturating_sub(1);
+        if rayon_workers == 0 {
+            return Self::serial();
+        }
         Self {
-            budget: Some(budget),
+            parallel: Some(Arc::new(ParallelExecution {
+                admission,
+                rayon_workers,
+                pool: OnceLock::new(),
+            })),
         }
     }
 
-    pub fn try_acquire(&self, additional_workers: NonZeroUsize) -> Option<ExecutionPermit> {
-        let budget = self.budget.as_ref()?;
-        if !budget.try_reserve(additional_workers) {
-            return None;
-        }
-        Some(ExecutionPermit {
-            budget: Arc::clone(budget),
-            additional_workers,
-        })
+    pub(crate) fn try_join<A, B, RA, RB>(
+        &self,
+        additional_workers: NonZeroUsize,
+        left: A,
+        right: B,
+    ) -> Result<(RA, RB), ParallelUnavailable>
+    where
+        A: FnOnce() -> RA + Send,
+        B: FnOnce() -> RB + Send,
+        RA: Send,
+        RB: Send,
+    {
+        let parallel = self
+            .parallel
+            .as_ref()
+            .ok_or(ParallelUnavailable::NoExecutor)?;
+        let Some(_reservation) =
+            ParallelReservation::try_new(Arc::clone(&parallel.admission), additional_workers)
+        else {
+            return Err(ParallelUnavailable::Capacity);
+        };
+        let pool = parallel
+            .pool
+            .get_or_init(|| build_parallel_pool(parallel.rayon_workers))
+            .as_ref()
+            .map_err(|_| ParallelUnavailable::NoExecutor)?;
+        Ok(pool.join(left, right))
     }
 }
 
@@ -58,97 +86,151 @@ impl fmt::Debug for ExecutionContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ExecutionContext")
-            .field("has_budget", &self.budget.is_some())
+            .field(
+                "parallel_workers",
+                &self
+                    .parallel
+                    .as_ref()
+                    .map(|parallel| parallel.rayon_workers),
+            )
+            .field(
+                "pool_started",
+                &self
+                    .parallel
+                    .as_ref()
+                    .is_some_and(|parallel| parallel.pool.get().is_some()),
+            )
             .finish()
     }
 }
 
-pub struct ExecutionPermit {
-    budget: Arc<dyn ExecutionBudget>,
+struct ParallelExecution {
+    admission: Arc<dyn ExecutionAdmission>,
+    rayon_workers: usize,
+    pool: OnceLock<Result<ThreadPool, String>>,
+}
+
+fn build_parallel_pool(worker_count: usize) -> Result<ThreadPool, String> {
+    ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .thread_name(|index| format!("mica-relation-pool-{index}"))
+        .build()
+        .map_err(|error| format!("failed to start relation worker pool: {error}"))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ParallelUnavailable {
+    NoExecutor,
+    Capacity,
+}
+
+struct ParallelReservation {
+    admission: Arc<dyn ExecutionAdmission>,
     additional_workers: NonZeroUsize,
 }
 
-impl ExecutionPermit {
-    pub fn additional_workers(&self) -> NonZeroUsize {
-        self.additional_workers
+impl ParallelReservation {
+    fn try_new(
+        admission: Arc<dyn ExecutionAdmission>,
+        additional_workers: NonZeroUsize,
+    ) -> Option<Self> {
+        admission
+            .try_reserve_parallel(additional_workers)
+            .then(|| Self {
+                admission,
+                additional_workers,
+            })
     }
 }
 
-impl fmt::Debug for ExecutionPermit {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ExecutionPermit")
-            .field("additional_workers", &self.additional_workers)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for ExecutionPermit {
+impl Drop for ParallelReservation {
     fn drop(&mut self) {
-        self.budget.release(self.additional_workers);
+        self.admission.release_parallel(self.additional_workers);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
-    struct FixedBudget {
-        available: AtomicUsize,
+    struct FixedAdmission {
+        capacity: NonZeroUsize,
+        available: Mutex<usize>,
     }
 
-    impl ExecutionBudget for FixedBudget {
-        fn try_reserve(&self, additional_workers: NonZeroUsize) -> bool {
-            self.available
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
-                    available.checked_sub(additional_workers.get())
-                })
-                .is_ok()
+    impl ExecutionAdmission for FixedAdmission {
+        fn capacity(&self) -> NonZeroUsize {
+            self.capacity
         }
 
-        fn release(&self, additional_workers: NonZeroUsize) {
-            self.available
-                .fetch_add(additional_workers.get(), Ordering::Release);
+        fn try_reserve_parallel(&self, additional_workers: NonZeroUsize) -> bool {
+            let mut available = self.available.lock().unwrap();
+            let Some(remaining) = available.checked_sub(additional_workers.get()) else {
+                return false;
+            };
+            *available = remaining;
+            true
         }
+
+        fn release_parallel(&self, additional_workers: NonZeroUsize) {
+            *self.available.lock().unwrap() += additional_workers.get();
+        }
+    }
+
+    fn admission(capacity: usize, available: usize) -> Arc<FixedAdmission> {
+        Arc::new(FixedAdmission {
+            capacity: NonZeroUsize::new(capacity).unwrap(),
+            available: Mutex::new(available),
+        })
     }
 
     #[test]
     fn serial_context_declines_parallel_work() {
-        assert!(
-            ExecutionContext::serial()
-                .try_acquire(NonZeroUsize::new(1).unwrap())
-                .is_none()
+        assert_eq!(
+            ExecutionContext::serial().try_join(NonZeroUsize::new(2).unwrap(), || 1, || 2,),
+            Err(ParallelUnavailable::NoExecutor)
         );
     }
 
     #[test]
-    fn permit_reserves_and_releases_capacity() {
-        let budget = Arc::new(FixedBudget {
-            available: AtomicUsize::new(2),
-        });
-        let context = ExecutionContext::with_budget(budget.clone());
-        let permit = context.try_acquire(NonZeroUsize::new(2).unwrap()).unwrap();
+    fn parallel_context_reserves_executes_and_releases_capacity() {
+        let admission = admission(3, 2);
+        let context = ExecutionContext::parallel(admission.clone());
+        let result = context
+            .try_join(NonZeroUsize::new(2).unwrap(), || 1, || 2)
+            .unwrap();
 
-        assert!(context.try_acquire(NonZeroUsize::new(1).unwrap()).is_none());
-        drop(permit);
-        assert_eq!(budget.available.load(Ordering::Acquire), 2);
+        assert_eq!(result, (1, 2));
+        assert_eq!(*admission.available.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn parallel_context_declines_when_capacity_is_reserved() {
+        let admission = admission(3, 1);
+        let context = ExecutionContext::parallel(admission.clone());
+
+        assert_eq!(
+            context.try_join(NonZeroUsize::new(2).unwrap(), || 1, || 2),
+            Err(ParallelUnavailable::Capacity)
+        );
+        assert_eq!(*admission.available.lock().unwrap(), 1);
     }
 
     #[test]
     fn kernel_copies_execution_context_into_transactions() {
-        let budget = Arc::new(FixedBudget {
-            available: AtomicUsize::new(1),
-        });
-        let kernel = crate::RelationKernel::new().with_execution_budget(budget.clone());
+        let admission = admission(3, 2);
+        let execution_context = ExecutionContext::parallel(admission.clone());
+        let kernel = crate::RelationKernel::new().with_execution_context(execution_context);
         let transaction = kernel.begin();
-        let permit = transaction
-            .execution_context()
-            .try_acquire(NonZeroUsize::new(1).unwrap())
-            .unwrap();
 
-        assert_eq!(budget.available.load(Ordering::Acquire), 0);
-        drop(permit);
-        assert_eq!(budget.available.load(Ordering::Acquire), 1);
+        assert_eq!(
+            transaction
+                .execution_context()
+                .try_join(NonZeroUsize::new(2).unwrap(), || 1, || 2)
+                .unwrap(),
+            (1, 2)
+        );
+        assert_eq!(*admission.available.lock().unwrap(), 2);
     }
 }

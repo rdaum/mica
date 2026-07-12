@@ -3341,6 +3341,7 @@ dependencies = [
  "mica-var",
  "micromeasure",
  "rart",
+ "rayon",
 ]
 
 [[package]]

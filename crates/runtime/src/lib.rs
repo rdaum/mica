@@ -24,7 +24,7 @@ mod types;
 mod vm_tests;
 
 pub use embedding::{EmbeddingProvider, EmbeddingProviderKind};
-pub use mica_relation_kernel::{ExecutionBudget, Tuple, metrics as relation_kernel_metrics};
+pub use mica_relation_kernel::{ExecutionAdmission, Tuple, metrics as relation_kernel_metrics};
 pub use mica_vm::metrics as vm_metrics;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
@@ -59,8 +59,8 @@ use mica_host_protocol::{
     snapshot_payload_json, sync_payload_signature,
 };
 use mica_relation_kernel::{
-    ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
-    RelationId, RelationKernel, RelationMetadata, RelationRead,
+    ConflictPolicy, DispatchRelations, ExecutionContext, FjallDurabilityMode, FjallStateProvider,
+    KernelError, RelationId, RelationKernel, RelationMetadata, RelationRead,
 };
 use mica_var::{Identity, PRIMITIVE_PROTOTYPES, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -263,8 +263,9 @@ impl SourceRunner {
         self
     }
 
-    pub fn with_execution_budget(mut self, budget: Arc<dyn ExecutionBudget>) -> Self {
-        self.task_manager = self.task_manager.with_execution_budget(budget);
+    pub fn with_parallel_execution(mut self, admission: Arc<dyn ExecutionAdmission>) -> Self {
+        let execution_context = ExecutionContext::parallel(admission);
+        self.task_manager = self.task_manager.with_execution_context(execution_context);
         self
     }
 

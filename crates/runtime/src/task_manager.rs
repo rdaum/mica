@@ -17,7 +17,7 @@ use crate::{
     endpoint_relation, endpoint_relation_metadata,
 };
 use mica_relation_kernel::{
-    ExecutionBudget, KernelError, RelationId, RelationKernel, RelationMetadata, TransientStore,
+    ExecutionContext, KernelError, RelationId, RelationKernel, RelationMetadata, TransientStore,
     Tuple,
 };
 use mica_var::{CapabilityId, Identity, Symbol, Value};
@@ -332,8 +332,8 @@ impl TaskManager {
         self
     }
 
-    pub(crate) fn with_execution_budget(mut self, budget: Arc<dyn ExecutionBudget>) -> Self {
-        self.kernel = self.kernel.with_execution_budget(budget);
+    pub(crate) fn with_execution_context(mut self, execution_context: ExecutionContext) -> Self {
+        self.kernel = self.kernel.with_execution_context(execution_context);
         self
     }
 

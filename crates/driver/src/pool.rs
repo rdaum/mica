@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::execution::DispatcherExecutionBudget;
+use crate::execution::CpuAdmission;
 use crate::{
     DispatcherConfig, DriverError, DriverEvent, ExternalRequestHandler, TaskContext,
     configure_dispatcher,
@@ -48,7 +48,7 @@ impl CompioTaskDriver {
 struct PoolInner {
     runner: Arc<SharedSourceRunner>,
     dispatcher: Dispatcher,
-    execution_budget: Arc<DispatcherExecutionBudget>,
+    cpu_admission: Arc<CpuAdmission>,
     external_request_handler: Option<ExternalRequestHandler>,
     state: Mutex<PoolState>,
 }
@@ -127,7 +127,7 @@ impl CompioTaskDriver {
         external_request_handler: Option<ExternalRequestHandler>,
     ) -> Result<Self, DriverError> {
         let (builder, placement) = configure_dispatcher(Dispatcher::builder(), config);
-        let execution_budget = Arc::new(DispatcherExecutionBudget::new(placement.worker_count));
+        let cpu_admission = Arc::new(CpuAdmission::new(placement.worker_count));
         let dispatcher = builder
             .thread_names(|index| format!("mica-driver-pool-{index}"))
             .build()
@@ -136,12 +136,12 @@ impl CompioTaskDriver {
         metrics::metrics()
             .dispatcher_workers_configured
             .set(placement.worker_count.get() as i64);
-        let runner = runner.with_execution_budget(execution_budget.clone());
+        let runner = runner.with_parallel_execution(cpu_admission.clone());
         Ok(Self {
             inner: Arc::new(PoolInner {
                 runner: Arc::new(runner.into_shared()),
                 dispatcher,
-                execution_budget,
+                cpu_admission,
                 external_request_handler,
                 state: Mutex::new(PoolState::default()),
             }),
@@ -506,7 +506,7 @@ impl CompioTaskDriver {
     {
         let start = Instant::now();
         metrics::dispatch_started(operation);
-        let dispatch_permit = self.inner.execution_budget.enter_dispatch();
+        let dispatch_permit = self.inner.cpu_admission.acquire_dispatch().await;
         let receiver = match self.inner.dispatcher.dispatch(move || async move {
             let _dispatch_permit = dispatch_permit;
             f().await

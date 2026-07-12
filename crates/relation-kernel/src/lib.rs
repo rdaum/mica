@@ -66,7 +66,7 @@ pub use dispatch::{
     positional_method_args, role_value,
 };
 pub use error::{Conflict, ConflictKind, KernelError};
-pub use execution::{ExecutionBudget, ExecutionContext, ExecutionPermit};
+pub use execution::{ExecutionAdmission, ExecutionContext};
 pub use fact::Fact;
 pub use kernel::RelationKernel;
 pub use materialized::materialize_rule_set;

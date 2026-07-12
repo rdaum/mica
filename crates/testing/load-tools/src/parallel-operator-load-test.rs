@@ -4,23 +4,24 @@
 // the terms of the GNU Affero General Public License as published by the Free
 // Software Foundation, version 3.
 
-//! Measures a two-thread packed union prototype under concurrent Mica VM load.
+//! Measures production packed-union placement under concurrent Mica VM load.
 
 use clap::Parser;
 use mica_relation_kernel::{
-    ExecutionContext, PackedRelation, QueryPlan, RelationId, RelationKernel, RelationMetadata,
-    RelationRead, Snapshot, Tuple,
+    ExecutionAdmission, ExecutionContext, QueryPlan, RelationId, RelationKernel, RelationMetadata,
+    Snapshot, Tuple, metrics as relation_metrics,
 };
 use mica_runtime::{AuthorityContext, SharedSourceRunner, SourceRunner, TaskInput, TaskRequest};
 use mica_var::{Identity, Symbol, Value};
-use std::cmp::Ordering;
 use std::hint::black_box;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const ENDPOINT_START: u64 = 0x00ee_3000_0000_0000;
+const TASK_ADMISSION_HEADROOM: usize = 1;
 
 #[derive(Clone, Debug, Parser)]
 struct Args {
@@ -32,8 +33,10 @@ struct Args {
     operator_workers: usize,
     #[arg(long, default_value_t = 200)]
     mica_loop_iterations: i64,
-    #[arg(long, default_value_t = 16_384)]
+    #[arg(long, default_value_t = 1_048_576)]
     relation_rows: usize,
+    #[arg(long)]
+    cpu_capacity: Option<NonZeroUsize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -48,14 +51,87 @@ struct ResultRow {
     mode: OperatorMode,
     mica_tasks: u64,
     operator_queries: u64,
+    parallel_unions: u64,
+    capacity_fallbacks: u64,
     elapsed: Duration,
 }
 
 struct UnionWorkload {
     snapshot: Arc<Snapshot>,
     query: QueryPlan,
-    left: Arc<PackedRelation>,
-    right: Arc<PackedRelation>,
+}
+
+struct BenchmarkAdmission {
+    capacity: NonZeroUsize,
+    state: Mutex<BenchmarkAdmissionState>,
+    available: Condvar,
+}
+
+#[derive(Default)]
+struct BenchmarkAdmissionState {
+    occupied: usize,
+    task_waiters: usize,
+}
+
+struct BenchmarkTaskPermit<'a> {
+    admission: &'a BenchmarkAdmission,
+}
+
+impl BenchmarkAdmission {
+    fn new(capacity: NonZeroUsize) -> Self {
+        Self {
+            capacity,
+            state: Mutex::new(BenchmarkAdmissionState::default()),
+            available: Condvar::new(),
+        }
+    }
+
+    fn acquire_task(&self) -> BenchmarkTaskPermit<'_> {
+        let mut state = self.state.lock().unwrap();
+        state.task_waiters += 1;
+        while state.occupied == self.capacity.get() {
+            state = self.available.wait(state).unwrap();
+        }
+        state.task_waiters -= 1;
+        state.occupied += 1;
+        BenchmarkTaskPermit { admission: self }
+    }
+}
+
+impl ExecutionAdmission for BenchmarkAdmission {
+    fn capacity(&self) -> NonZeroUsize {
+        self.capacity
+    }
+
+    fn try_reserve_parallel(&self, additional_workers: NonZeroUsize) -> bool {
+        let Ok(mut state) = self.state.try_lock() else {
+            return false;
+        };
+        if state.task_waiters > 0
+            || state.occupied + additional_workers.get() + TASK_ADMISSION_HEADROOM
+                > self.capacity.get()
+        {
+            return false;
+        }
+        state.occupied += additional_workers.get();
+        true
+    }
+
+    fn release_parallel(&self, additional_workers: NonZeroUsize) {
+        let mut state = self.state.lock().unwrap();
+        state.occupied -= additional_workers.get();
+        drop(state);
+        self.available.notify_all();
+    }
+}
+
+impl Drop for BenchmarkTaskPermit<'_> {
+    fn drop(&mut self) {
+        let mut state = self.admission.state.lock().unwrap();
+        state.occupied -= 1;
+        drop(state);
+        self.admission.available.notify_one();
+    }
 }
 
 fn main() -> Result<(), String> {
@@ -70,13 +146,17 @@ fn main() -> Result<(), String> {
 
     let (runner, actor) = build_runner()?;
     let union = build_union(args.relation_rows)?;
+    let cpu_capacity = args.cpu_capacity.unwrap_or_else(|| {
+        std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
+    });
+    let admission = Arc::new(BenchmarkAdmission::new(cpu_capacity));
+    let parallel_context = ExecutionContext::parallel(admission.clone());
     black_box(
         union
             .query
             .execute(union.snapshot.as_ref(), &ExecutionContext::serial())
             .map_err(debug_error)?,
     );
-    black_box(parallel_union_rows(union.left.rows(), union.right.rows()));
 
     let baseline = run_mode(
         &args,
@@ -85,8 +165,8 @@ fn main() -> Result<(), String> {
         actor,
         union.snapshot.as_ref(),
         &union.query,
-        &union.left,
-        &union.right,
+        &parallel_context,
+        &admission,
     )?;
     let serial = run_mode(
         &args,
@@ -95,8 +175,8 @@ fn main() -> Result<(), String> {
         actor,
         union.snapshot.as_ref(),
         &union.query,
-        &union.left,
-        &union.right,
+        &parallel_context,
+        &admission,
     )?;
     let parallel = run_mode(
         &args,
@@ -105,18 +185,20 @@ fn main() -> Result<(), String> {
         actor,
         union.snapshot.as_ref(),
         &union.query,
-        &union.left,
-        &union.right,
+        &parallel_context,
+        &admission,
     )?;
 
     for result in [baseline, serial, parallel] {
         println!(
-            "mode={:?} mica_tasks_per_second={:.2} operator_queries_per_second={:.2} mica_tasks={} operator_queries={}",
+            "mode={:?} mica_tasks_per_second={:.2} operator_queries_per_second={:.2} mica_tasks={} operator_queries={} parallel_unions={} capacity_fallbacks={}",
             result.mode,
             result.mica_tasks as f64 / result.elapsed.as_secs_f64(),
             result.operator_queries as f64 / result.elapsed.as_secs_f64(),
             result.mica_tasks,
             result.operator_queries,
+            result.parallel_unions,
+            result.capacity_fallbacks,
         );
     }
     let serial_mica = serial.mica_tasks as f64 / serial.elapsed.as_secs_f64();
@@ -135,12 +217,15 @@ fn main() -> Result<(), String> {
     );
     println!(
         "placement={}",
-        if mica_change >= 0.0 && operator_change > 0.0 {
+        if parallel.parallel_unions == 0 {
+            "not_admitted"
+        } else if mica_change >= 0.0 && operator_change > 0.0 {
             "candidate"
         } else {
             "rejected"
         }
     );
+    println!("cpu_capacity={cpu_capacity}");
     Ok(())
 }
 
@@ -152,8 +237,8 @@ fn run_mode(
     actor: Identity,
     snapshot: &Snapshot,
     union: &QueryPlan,
-    left: &PackedRelation,
-    right: &PackedRelation,
+    parallel_context: &ExecutionContext,
+    admission: &Arc<BenchmarkAdmission>,
 ) -> Result<ResultRow, String> {
     let operator_workers = match mode {
         OperatorMode::None => 0,
@@ -163,15 +248,24 @@ fn run_mode(
     let stop = Arc::new(AtomicBool::new(false));
     let mica_tasks = Arc::new(AtomicU64::new(0));
     let operator_queries = Arc::new(AtomicU64::new(0));
+    let metrics = relation_metrics::metrics();
+    let parallel_before = metrics
+        .parallel_union_placements
+        .get(relation_metrics::ParallelUnionPlacement::Parallel);
+    let capacity_before = metrics
+        .parallel_union_placements
+        .get(relation_metrics::ParallelUnionPlacement::Capacity);
     let elapsed = thread::scope(|scope| -> Result<Duration, String> {
         for worker in 0..args.mica_workers {
             let barrier = barrier.clone();
             let stop = stop.clone();
             let mica_tasks = mica_tasks.clone();
             let runner = runner.clone();
+            let admission = admission.clone();
             scope.spawn(move || {
                 barrier.wait();
                 while !stop.load(AtomicOrdering::Relaxed) {
+                    let _permit = admission.acquire_task();
                     runner
                         .submit_invocation(TaskRequest {
                             principal: None,
@@ -211,7 +305,7 @@ fn run_mode(
                             );
                         }
                         OperatorMode::Parallel => {
-                            black_box(parallel_union_rows(left.rows(), right.rows()));
+                            black_box(union.execute(snapshot, parallel_context).unwrap());
                         }
                     }
                     operator_queries.fetch_add(1, AtomicOrdering::Relaxed);
@@ -228,6 +322,14 @@ fn run_mode(
         mode,
         mica_tasks: mica_tasks.load(AtomicOrdering::Relaxed),
         operator_queries: operator_queries.load(AtomicOrdering::Relaxed),
+        parallel_unions: (metrics
+            .parallel_union_placements
+            .get(relation_metrics::ParallelUnionPlacement::Parallel)
+            - parallel_before) as u64,
+        capacity_fallbacks: (metrics
+            .parallel_union_placements
+            .get(relation_metrics::ParallelUnionPlacement::Capacity)
+            - capacity_before) as u64,
         elapsed,
     })
 }
@@ -270,14 +372,6 @@ fn build_union(rows: usize) -> Result<UnionWorkload, String> {
             .map_err(debug_error)?;
     }
     let snapshot = tx.commit().map_err(debug_error)?.into_snapshot();
-    let left = snapshot
-        .export_relation_batch(rel(10), &[None])
-        .map_err(debug_error)?
-        .unwrap();
-    let right = snapshot
-        .export_relation_batch(rel(11), &[None])
-        .map_err(debug_error)?
-        .unwrap();
     let union = QueryPlan::union(
         QueryPlan::scan(rel(10), [None]),
         QueryPlan::scan(rel(11), [None]),
@@ -285,60 +379,6 @@ fn build_union(rows: usize) -> Result<UnionWorkload, String> {
     Ok(UnionWorkload {
         snapshot,
         query: union,
-        left,
-        right,
-    })
-}
-
-fn merge_tuple_slices(left: &[Tuple], right: &[Tuple]) -> Vec<Tuple> {
-    let mut output = Vec::with_capacity(left.len() + right.len());
-    let (mut left_row, mut right_row) = (0usize, 0usize);
-    while left_row < left.len() || right_row < right.len() {
-        match (left.get(left_row), right.get(right_row)) {
-            (Some(left), Some(right)) => match left.cmp(right) {
-                Ordering::Less => {
-                    output.push(left.clone());
-                    left_row += 1;
-                }
-                Ordering::Equal => {
-                    output.push(left.clone());
-                    left_row += 1;
-                    right_row += 1;
-                }
-                Ordering::Greater => {
-                    output.push(right.clone());
-                    right_row += 1;
-                }
-            },
-            (Some(left), None) => {
-                output.push(left.clone());
-                left_row += 1;
-            }
-            (None, Some(right)) => {
-                output.push(right.clone());
-                right_row += 1;
-            }
-            (None, None) => break,
-        }
-    }
-    output
-}
-
-fn parallel_union_rows(left: &[Tuple], right: &[Tuple]) -> Vec<Tuple> {
-    let pivot = match (left.get(left.len() / 2), right.get(right.len() / 2)) {
-        (Some(left), Some(right)) => left.max(right),
-        (Some(left), None) => left,
-        (None, Some(right)) => right,
-        (None, None) => return Vec::new(),
-    };
-    let left_split = left.partition_point(|tuple| tuple < pivot);
-    let right_split = right.partition_point(|tuple| tuple < pivot);
-    thread::scope(|scope| {
-        let lower = scope.spawn(|| merge_tuple_slices(&left[..left_split], &right[..right_split]));
-        let upper = scope.spawn(|| merge_tuple_slices(&left[left_split..], &right[right_split..]));
-        let mut rows = lower.join().unwrap();
-        rows.extend(upper.join().unwrap());
-        rows
     })
 }
 

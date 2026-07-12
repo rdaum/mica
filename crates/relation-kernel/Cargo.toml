@@ -16,6 +16,7 @@ fast-telemetry.workspace = true
 fjall = { workspace = true, optional = true }
 mica-var.workspace = true
 rart.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 micromeasure.workspace = true

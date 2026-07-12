@@ -18,8 +18,8 @@ use crate::snapshot::{
 };
 use crate::{
     CatalogChange, Commit, CommitProvider, ComputedRelation, ComputedRelationRegistry,
-    ExecutionBudget, ExecutionContext, FactChangeKind, KernelError, RelationMetadata, Rule,
-    RuleDefinition, RuleSet, Snapshot, Transaction,
+    ExecutionContext, FactChangeKind, KernelError, RelationMetadata, Rule, RuleDefinition, RuleSet,
+    Snapshot, Transaction,
 };
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
@@ -278,8 +278,8 @@ impl RelationKernel {
         })
     }
 
-    pub fn with_execution_budget(mut self, budget: Arc<dyn ExecutionBudget>) -> Self {
-        self.execution_context = ExecutionContext::with_budget(budget);
+    pub fn with_execution_context(mut self, execution_context: ExecutionContext) -> Self {
+        self.execution_context = execution_context;
         self
     }
 

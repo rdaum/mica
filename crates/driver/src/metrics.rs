@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use fast_telemetry::{
-    Counter, DeriveLabel, ExportMetrics, Gauge, LabeledCounter, LabeledGauge, LabeledHistogram,
-    LabeledSampledTimer,
+    Counter, DeriveLabel, ExportMetrics, Gauge, Histogram, LabeledCounter, LabeledGauge,
+    LabeledHistogram, LabeledSampledTimer,
 };
 use mica_runtime::SuspendKind;
 use std::sync::LazyLock;
@@ -68,6 +68,15 @@ pub enum WorkerOutcome {
     Cancelled,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, DeriveLabel)]
+#[label_name = "outcome"]
+pub enum ParallelAdmissionOutcome {
+    Admitted,
+    Capacity,
+    TaskWaiting,
+    Contended,
+}
+
 #[derive(Copy, Clone, Debug, DeriveLabel)]
 #[label_name = "kind"]
 pub enum SuspendKindMetric {
@@ -100,6 +109,15 @@ pub struct DriverMetrics {
 
     #[help = "Dispatcher job duration by operation"]
     pub dispatch_duration: LabeledSampledTimer<DispatchOperation>,
+
+    #[help = "Task segments that waited for shared CPU admission"]
+    pub task_admission_waits: Counter,
+
+    #[help = "Task segment CPU admission wait duration in microseconds"]
+    pub task_admission_wait_duration_us: Histogram,
+
+    #[help = "Parallel relation worker admission attempts by outcome"]
+    pub parallel_admission: LabeledCounter<ParallelAdmissionOutcome>,
 
     #[help = "Async workers spawned by worker kind"]
     pub async_workers_started: LabeledCounter<AsyncWorkerKind>,
@@ -153,6 +171,9 @@ impl DriverMetrics {
                 shard_count,
                 TIMER_SAMPLE_STRIDE,
             ),
+            task_admission_waits: Counter::new(shard_count),
+            task_admission_wait_duration_us: Histogram::new(LATENCY_BUCKETS_US, shard_count),
+            parallel_admission: LabeledCounter::new(shard_count),
             async_workers_started: LabeledCounter::new(shard_count),
             async_workers_completed: LabeledCounter::new(shard_count),
             async_worker_errors: LabeledCounter::new(shard_count),
@@ -179,6 +200,20 @@ pub fn metrics() -> &'static DriverMetrics {
 
 pub(crate) fn duration_us(elapsed: Duration) -> u64 {
     elapsed.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+pub(crate) fn record_task_admission_wait() {
+    metrics().task_admission_waits.inc();
+}
+
+pub(crate) fn record_task_admission_wait_duration(elapsed: Duration) {
+    metrics()
+        .task_admission_wait_duration_us
+        .record(duration_us(elapsed));
+}
+
+pub(crate) fn record_parallel_admission(outcome: ParallelAdmissionOutcome) {
+    metrics().parallel_admission.inc(outcome);
 }
 
 pub(crate) fn dispatch_started(operation: DispatchOperation) {
