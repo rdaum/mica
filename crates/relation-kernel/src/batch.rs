@@ -606,7 +606,10 @@ fn packed_plan_eligible(
     reader: &impl RelationRead,
 ) -> Result<bool, KernelError> {
     let mut has_large_input = false;
-    let eligible = visit_scans(plan, &mut |relation| {
+    let eligible = visit_scans(plan, &mut |relation, bindings| {
+        if bindings.iter().any(Option::is_some) {
+            return Ok(false);
+        }
         let capabilities = reader.relation_capabilities(relation)?;
         has_large_input |= capabilities
             .cardinality
@@ -620,10 +623,10 @@ fn packed_plan_eligible(
 
 fn visit_scans(
     plan: &PhysicalQueryPlan,
-    visit: &mut impl FnMut(crate::RelationId) -> Result<bool, KernelError>,
+    visit: &mut impl FnMut(crate::RelationId, &[Option<Value>]) -> Result<bool, KernelError>,
 ) -> Result<bool, KernelError> {
     match plan {
-        PhysicalQueryPlan::Scan { relation, .. } => visit(*relation),
+        PhysicalQueryPlan::Scan { relation, bindings } => visit(*relation, bindings),
         PhysicalQueryPlan::Project { input, .. } => visit_scans(input, visit),
         PhysicalQueryPlan::JoinEq { left, right, .. }
         | PhysicalQueryPlan::SemiJoin { left, right, .. }

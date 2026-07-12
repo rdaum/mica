@@ -1101,6 +1101,15 @@ mod tests {
             overlay_query.execute(&overlay).unwrap(),
             execute_physical_query(&overlay_query.root, &overlay).unwrap()
         );
+
+        let snapshot = kernel.snapshot();
+        let bound_query = QueryPlan::scan(rel(100), [Some(int(1))]).prepare();
+        assert!(
+            crate::batch::execute_packed_query(&bound_query.root, snapshot.as_ref())
+                .unwrap()
+                .is_none(),
+            "selective bound scans should retain the tuple/index path",
+        );
     }
 
     #[test]
