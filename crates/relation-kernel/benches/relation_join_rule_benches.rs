@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_relation_kernel::{
-    Atom, KernelError, QueryPlan, RelationId, RelationKernel, RelationMetadata, RelationRead, Rule,
-    RuleSet, ScanControl, Snapshot, Term, Tuple, metrics,
+    Atom, KernelError, PreparedQuery, QueryPlan, RelationId, RelationKernel, RelationMetadata,
+    RelationRead, Rule, RuleSet, ScanControl, Snapshot, Term, Tuple, metrics,
 };
 use mica_var::{Identity, Symbol, Value};
 use micromeasure::{
@@ -39,21 +39,21 @@ const RECURSIVE_CYCLE_NODES: usize = 32;
 
 struct JoinRuleContext {
     snapshot: Arc<Snapshot>,
-    query: QueryPlan,
+    query: PreparedQuery,
     rules: RuleSet,
 }
 
 struct NaturalJoinContext {
     snapshot: Arc<Snapshot>,
-    join_query: QueryPlan,
-    semi_query: QueryPlan,
-    union_query: QueryPlan,
-    difference_query: QueryPlan,
+    join_query: PreparedQuery,
+    semi_query: PreparedQuery,
+    union_query: PreparedQuery,
+    difference_query: PreparedQuery,
 }
 
 struct TemporaryProjectedJoinContext {
     snapshot: Arc<Snapshot>,
-    query: QueryPlan,
+    query: PreparedQuery,
 }
 
 struct CountingReader {
@@ -169,7 +169,7 @@ impl BenchContext for JoinRuleContext {
         tx.commit().unwrap();
         Self {
             snapshot: kernel.snapshot(),
-            query: visible_items_query(actor(0)),
+            query: visible_items_query(actor(0)).prepare(),
             rules: visible_items_rules(),
         }
     }
@@ -223,21 +223,25 @@ impl BenchContext for NaturalJoinContext {
                 [0],
                 [0],
             )
-            .project([0]),
+            .project([0])
+            .prepare(),
             semi_query: QueryPlan::semi_join(
                 QueryPlan::scan(active_item(), [None]),
                 QueryPlan::scan(visible_item(), [None]),
                 [0],
                 [0],
-            ),
+            )
+            .prepare(),
             union_query: QueryPlan::union(
                 QueryPlan::scan(active_item(), [None]),
                 QueryPlan::scan(visible_item(), [None]),
-            ),
+            )
+            .prepare(),
             difference_query: QueryPlan::difference(
                 QueryPlan::scan(active_item(), [None]),
                 QueryPlan::scan(visible_item(), [None]),
-            ),
+            )
+            .prepare(),
         }
     }
 
@@ -292,7 +296,7 @@ impl BenchContext for TemporaryProjectedJoinContext {
 
         Self {
             snapshot: kernel.snapshot(),
-            query: QueryPlan::join_eq(left, right, [0], [0]),
+            query: QueryPlan::join_eq(left, right, [0], [0]).prepare(),
         }
     }
 

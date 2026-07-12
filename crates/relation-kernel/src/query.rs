@@ -114,6 +114,49 @@ pub enum QueryPlan {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedQuery {
+    root: PhysicalQueryPlan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PhysicalQueryPlan {
+    Scan {
+        relation: RelationId,
+        bindings: Vec<Option<Value>>,
+    },
+    Project {
+        input: Box<PhysicalQueryPlan>,
+        positions: Vec<u16>,
+    },
+    JoinEq {
+        left: Box<PhysicalQueryPlan>,
+        right: Box<PhysicalQueryPlan>,
+        left_positions: Vec<u16>,
+        right_positions: Vec<u16>,
+    },
+    SemiJoin {
+        left: Box<PhysicalQueryPlan>,
+        right: Box<PhysicalQueryPlan>,
+        left_positions: Vec<u16>,
+        right_positions: Vec<u16>,
+    },
+    AntiJoin {
+        left: Box<PhysicalQueryPlan>,
+        right: Box<PhysicalQueryPlan>,
+        left_positions: Vec<u16>,
+        right_positions: Vec<u16>,
+    },
+    Union {
+        left: Box<PhysicalQueryPlan>,
+        right: Box<PhysicalQueryPlan>,
+    },
+    Difference {
+        left: Box<PhysicalQueryPlan>,
+        right: Box<PhysicalQueryPlan>,
+    },
+}
+
 impl QueryPlan {
     pub fn scan(relation: RelationId, bindings: impl IntoIterator<Item = Option<Value>>) -> Self {
         Self::Scan {
@@ -185,51 +228,141 @@ impl QueryPlan {
         }
     }
 
-    pub fn execute(&self, reader: &impl RelationRead) -> Result<Vec<Tuple>, KernelError> {
-        match self {
-            Self::Scan { relation, bindings } => reader.scan_relation(*relation, bindings),
-            Self::Project { input, positions } => {
-                let rows = input.execute(reader)?;
-                Ok(finish_tuple_rows(
-                    rows.into_iter()
-                        .map(|tuple| tuple.select(positions.iter().copied()))
-                        .collect(),
-                ))
-            }
-            Self::JoinEq {
-                left,
-                right,
-                left_positions,
-                right_positions,
-            } => execute_join_eq(left, right, left_positions, right_positions, reader),
-            Self::SemiJoin {
-                left,
-                right,
-                left_positions,
-                right_positions,
-            } => execute_semi_join(left, right, left_positions, right_positions, reader, true),
-            Self::AntiJoin {
-                left,
-                right,
-                left_positions,
-                right_positions,
-            } => execute_semi_join(left, right, left_positions, right_positions, reader, false),
-            Self::Union { left, right } => {
-                let mut rows = left.execute(reader)?;
-                rows.extend(right.execute(reader)?);
-                Ok(finish_tuple_rows(rows))
-            }
-            Self::Difference { left, right } => Ok(difference_tuple_rows(
-                left.execute(reader)?,
-                right.execute(reader)?,
-            )),
+    pub fn prepare(&self) -> PreparedQuery {
+        PreparedQuery {
+            root: compile_query(self),
         }
+    }
+
+    pub fn execute(&self, reader: &impl RelationRead) -> Result<Vec<Tuple>, KernelError> {
+        self.prepare().execute(reader)
+    }
+}
+
+impl PreparedQuery {
+    pub fn execute(&self, reader: &impl RelationRead) -> Result<Vec<Tuple>, KernelError> {
+        execute_physical_query(&self.root, reader)
+    }
+}
+
+fn compile_query(plan: &QueryPlan) -> PhysicalQueryPlan {
+    match plan {
+        QueryPlan::Scan { relation, bindings } => PhysicalQueryPlan::Scan {
+            relation: *relation,
+            bindings: bindings.clone(),
+        },
+        QueryPlan::Project { input, positions } => {
+            compile_projection(compile_query(input), positions)
+        }
+        QueryPlan::JoinEq {
+            left,
+            right,
+            left_positions,
+            right_positions,
+        } => PhysicalQueryPlan::JoinEq {
+            left: Box::new(compile_query(left)),
+            right: Box::new(compile_query(right)),
+            left_positions: left_positions.clone(),
+            right_positions: right_positions.clone(),
+        },
+        QueryPlan::SemiJoin {
+            left,
+            right,
+            left_positions,
+            right_positions,
+        } => PhysicalQueryPlan::SemiJoin {
+            left: Box::new(compile_query(left)),
+            right: Box::new(compile_query(right)),
+            left_positions: left_positions.clone(),
+            right_positions: right_positions.clone(),
+        },
+        QueryPlan::AntiJoin {
+            left,
+            right,
+            left_positions,
+            right_positions,
+        } => PhysicalQueryPlan::AntiJoin {
+            left: Box::new(compile_query(left)),
+            right: Box::new(compile_query(right)),
+            left_positions: left_positions.clone(),
+            right_positions: right_positions.clone(),
+        },
+        QueryPlan::Union { left, right } => PhysicalQueryPlan::Union {
+            left: Box::new(compile_query(left)),
+            right: Box::new(compile_query(right)),
+        },
+        QueryPlan::Difference { left, right } => PhysicalQueryPlan::Difference {
+            left: Box::new(compile_query(left)),
+            right: Box::new(compile_query(right)),
+        },
+    }
+}
+
+fn compile_projection(input: PhysicalQueryPlan, positions: &[u16]) -> PhysicalQueryPlan {
+    let PhysicalQueryPlan::Project {
+        input,
+        positions: input_positions,
+    } = input
+    else {
+        return PhysicalQueryPlan::Project {
+            input: Box::new(input),
+            positions: positions.to_vec(),
+        };
+    };
+    let positions = positions
+        .iter()
+        .map(|position| input_positions[*position as usize])
+        .collect();
+    PhysicalQueryPlan::Project { input, positions }
+}
+
+fn execute_physical_query(
+    plan: &PhysicalQueryPlan,
+    reader: &impl RelationRead,
+) -> Result<Vec<Tuple>, KernelError> {
+    match plan {
+        PhysicalQueryPlan::Scan { relation, bindings } => reader.scan_relation(*relation, bindings),
+        PhysicalQueryPlan::Project { input, positions } => {
+            let rows = execute_physical_query(input, reader)?;
+            Ok(finish_tuple_rows(
+                rows.into_iter()
+                    .map(|tuple| tuple.select(positions.iter().copied()))
+                    .collect(),
+            ))
+        }
+        PhysicalQueryPlan::JoinEq {
+            left,
+            right,
+            left_positions,
+            right_positions,
+        } => execute_join_eq(left, right, left_positions, right_positions, reader),
+        PhysicalQueryPlan::SemiJoin {
+            left,
+            right,
+            left_positions,
+            right_positions,
+        } => execute_semi_join(left, right, left_positions, right_positions, reader, true),
+        PhysicalQueryPlan::AntiJoin {
+            left,
+            right,
+            left_positions,
+            right_positions,
+        } => execute_semi_join(left, right, left_positions, right_positions, reader, false),
+        PhysicalQueryPlan::Union { left, right } => {
+            let mut rows = execute_physical_query(left, reader)?;
+            rows.extend(execute_physical_query(right, reader)?);
+            Ok(finish_tuple_rows(rows))
+        }
+        PhysicalQueryPlan::Difference { left, right } => Ok(difference_tuple_rows(
+            execute_physical_query(left, reader)?,
+            execute_physical_query(right, reader)?,
+        )),
     }
 }
 
 fn execute_join_eq(
-    left: &QueryPlan,
-    right: &QueryPlan,
+    left: &PhysicalQueryPlan,
+    right: &PhysicalQueryPlan,
     left_positions: &[u16],
     right_positions: &[u16],
     reader: &impl RelationRead,
@@ -240,7 +373,7 @@ fn execute_join_eq(
         return Ok(rows);
     }
 
-    let left_rows = left.execute(reader)?;
+    let left_rows = execute_physical_query(left, reader)?;
     if let Some((relation, bindings)) = scan_parts(right)
         && should_probe_join(left_rows.len(), reader, relation, bindings, right_positions)?
     {
@@ -254,7 +387,7 @@ fn execute_join_eq(
         );
     }
 
-    let right_rows = right.execute(reader)?;
+    let right_rows = execute_physical_query(right, reader)?;
     Ok(join_eq(
         left_rows,
         right_rows,
@@ -264,18 +397,18 @@ fn execute_join_eq(
 }
 
 fn direct_relation_join(
-    left: &QueryPlan,
-    right: &QueryPlan,
+    left: &PhysicalQueryPlan,
+    right: &PhysicalQueryPlan,
     left_positions: &[u16],
     right_positions: &[u16],
     reader: &impl RelationRead,
 ) -> Result<Option<Vec<Tuple>>, KernelError> {
     let (
-        QueryPlan::Scan {
+        PhysicalQueryPlan::Scan {
             relation: left_relation,
             bindings: left_bindings,
         },
-        QueryPlan::Scan {
+        PhysicalQueryPlan::Scan {
             relation: right_relation,
             bindings: right_bindings,
         },
@@ -295,15 +428,15 @@ fn direct_relation_join(
 }
 
 fn execute_semi_join(
-    left: &QueryPlan,
-    right: &QueryPlan,
+    left: &PhysicalQueryPlan,
+    right: &PhysicalQueryPlan,
     left_positions: &[u16],
     right_positions: &[u16],
     reader: &impl RelationRead,
     keep_matches: bool,
 ) -> Result<Vec<Tuple>, KernelError> {
     validate_join_positions(left_positions, right_positions);
-    let left_rows = left.execute(reader)?;
+    let left_rows = execute_physical_query(left, reader)?;
     if let Some((relation, bindings)) = scan_parts(right)
         && should_probe_join(left_rows.len(), reader, relation, bindings, right_positions)?
     {
@@ -318,7 +451,7 @@ fn execute_semi_join(
         );
     }
 
-    let right_rows = right.execute(reader)?;
+    let right_rows = execute_physical_query(right, reader)?;
     Ok(semi_join(
         left_rows,
         right_rows,
@@ -328,8 +461,8 @@ fn execute_semi_join(
     ))
 }
 
-fn scan_parts(plan: &QueryPlan) -> Option<(RelationId, &[Option<Value>])> {
-    let QueryPlan::Scan { relation, bindings } = plan else {
+fn scan_parts(plan: &PhysicalQueryPlan) -> Option<(RelationId, &[Option<Value>])> {
+    let PhysicalQueryPlan::Scan { relation, bindings } = plan else {
         return None;
     };
     Some((*relation, bindings))
@@ -692,6 +825,43 @@ mod tests {
             path2.execute(&tx).unwrap(),
             vec![Tuple::from([int(1), int(3)])]
         );
+    }
+
+    #[test]
+    fn prepared_query_combines_nested_projections() {
+        let prepared = QueryPlan::scan(rel(10), [None, None, None])
+            .project([2, 0])
+            .project([1])
+            .prepare();
+
+        assert_eq!(
+            prepared.root,
+            PhysicalQueryPlan::Project {
+                input: Box::new(PhysicalQueryPlan::Scan {
+                    relation: rel(10),
+                    bindings: vec![None, None, None],
+                }),
+                positions: vec![0],
+            }
+        );
+    }
+
+    #[test]
+    fn prepared_and_logical_queries_produce_identical_results() {
+        let kernel = kernel_with_edges();
+        let mut tx = kernel.begin();
+        tx.assert(rel(10), Tuple::from([int(1), int(2)])).unwrap();
+        tx.assert(rel(10), Tuple::from([int(2), int(3)])).unwrap();
+        let query = QueryPlan::join_eq(
+            QueryPlan::scan(rel(10), [None, None]),
+            QueryPlan::scan(rel(10), [None, None]),
+            [1],
+            [0],
+        )
+        .project([0, 3]);
+        let prepared = query.prepare();
+
+        assert_eq!(query.execute(&tx).unwrap(), prepared.execute(&tx).unwrap());
     }
 
     #[test]
