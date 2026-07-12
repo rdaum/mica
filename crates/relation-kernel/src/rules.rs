@@ -214,17 +214,16 @@ impl RuleSet {
         &self,
         reader: &impl RelationRead,
     ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
-        let strata = self.stratified_rules()?;
+        let program = self.compile()?;
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
 
-        for rules in strata {
-            let rules = compile_rules(&rules);
+        for stratum in program.strata {
             let overlay = DerivedReader {
                 base: reader,
                 derived: &derived,
             };
             let mut stratum_out: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
-            evaluate_rules_once(&overlay, &rules, &mut stratum_out)?;
+            evaluate_rules_once(&overlay, &stratum.rules, &mut stratum_out)?;
             for (relation, tuples) in stratum_out {
                 derived.entry(relation).or_default().extend(tuples);
             }
@@ -240,18 +239,17 @@ impl RuleSet {
         &self,
         reader: &impl RelationRead,
     ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
-        let strata = self.stratified_rules()?;
+        let program = self.compile()?;
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
 
-        for rules in strata {
-            let rules = compile_rules(&rules);
+        for stratum in program.strata {
             loop {
                 let overlay = DerivedReader {
                     base: reader,
                     derived: &derived,
                 };
                 let mut round = BTreeMap::new();
-                evaluate_rules_once(&overlay, &rules, &mut round)?;
+                evaluate_rules_once(&overlay, &stratum.rules, &mut round)?;
                 let mut changed = false;
                 for (relation, tuples) in round {
                     let relation_tuples = derived.entry(relation).or_default();
@@ -273,6 +271,16 @@ impl RuleSet {
 
     pub fn iter(&self) -> impl Iterator<Item = &Rule> {
         self.rules.iter()
+    }
+
+    fn compile(&self) -> Result<CompiledRuleSet, RuleError> {
+        let strata = self.stratified_rules()?;
+        Ok(CompiledRuleSet {
+            strata: strata
+                .into_iter()
+                .map(|rules| compile_stratum(&rules))
+                .collect(),
+        })
     }
 
     fn stratified_rules(&self) -> Result<Vec<Vec<&Rule>>, RuleError> {
@@ -361,6 +369,31 @@ struct CompiledRule {
     head_terms: Vec<CompiledTerm>,
     body: Vec<CompiledBodyItem>,
     slot_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledRuleSet {
+    strata: Vec<CompiledStratum>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledStratum {
+    rules: Vec<CompiledRule>,
+    components: Vec<CompiledScc>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledScc {
+    target_relations: BTreeSet<RelationId>,
+    rule_indices: Vec<usize>,
+    seed_rule_indices: Vec<usize>,
+    recursive_variants: Vec<CompiledRuleVariant>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CompiledRuleVariant {
+    rule_index: usize,
+    delta_body_index: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -477,8 +510,186 @@ fn evaluate_rules_once(
     Ok(())
 }
 
-fn compile_rules(rules: &[&Rule]) -> Vec<CompiledRule> {
-    rules.iter().map(|rule| compile_rule(rule)).collect()
+fn compile_stratum(rules: &[&Rule]) -> CompiledStratum {
+    let compiled_rules = rules
+        .iter()
+        .map(|rule| compile_rule(rule))
+        .collect::<Vec<_>>();
+    let target_relations = rules
+        .iter()
+        .map(|rule| rule.head_relation)
+        .collect::<BTreeSet<_>>();
+    let dependencies = positive_dependencies(rules, &target_relations);
+    let relation_components = strongly_connected_relations(&target_relations, &dependencies);
+    let ordered_components = order_relation_components(&relation_components, &dependencies);
+    let components = ordered_components
+        .into_iter()
+        .map(|relations| compile_component(&compiled_rules, relations))
+        .collect();
+    CompiledStratum {
+        rules: compiled_rules,
+        components,
+    }
+}
+
+fn positive_dependencies(
+    rules: &[&Rule],
+    target_relations: &BTreeSet<RelationId>,
+) -> BTreeMap<RelationId, BTreeSet<RelationId>> {
+    let mut dependencies = target_relations
+        .iter()
+        .copied()
+        .map(|relation| (relation, BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    for rule in rules {
+        let head_dependencies = dependencies.get_mut(&rule.head_relation).unwrap();
+        for atom in rule.body_atoms() {
+            if !atom.negated && target_relations.contains(&atom.relation) {
+                head_dependencies.insert(atom.relation);
+            }
+        }
+    }
+    dependencies
+}
+
+fn strongly_connected_relations(
+    relations: &BTreeSet<RelationId>,
+    dependencies: &BTreeMap<RelationId, BTreeSet<RelationId>>,
+) -> Vec<BTreeSet<RelationId>> {
+    let reachable = relations
+        .iter()
+        .copied()
+        .map(|relation| (relation, reachable_relations(relation, dependencies)))
+        .collect::<BTreeMap<_, _>>();
+    let mut remaining = relations.clone();
+    let mut components = Vec::new();
+    while let Some(root) = remaining.first().copied() {
+        let component = remaining
+            .iter()
+            .copied()
+            .filter(|relation| {
+                reachable[&root].contains(relation) && reachable[relation].contains(&root)
+            })
+            .collect::<BTreeSet<_>>();
+        remaining.retain(|relation| !component.contains(relation));
+        components.push(component);
+    }
+    components
+}
+
+fn reachable_relations(
+    start: RelationId,
+    dependencies: &BTreeMap<RelationId, BTreeSet<RelationId>>,
+) -> BTreeSet<RelationId> {
+    let mut reachable = BTreeSet::new();
+    let mut pending = vec![start];
+    while let Some(relation) = pending.pop() {
+        if !reachable.insert(relation) {
+            continue;
+        }
+        pending.extend(dependencies[&relation].iter().copied());
+    }
+    reachable
+}
+
+fn order_relation_components(
+    components: &[BTreeSet<RelationId>],
+    dependencies: &BTreeMap<RelationId, BTreeSet<RelationId>>,
+) -> Vec<BTreeSet<RelationId>> {
+    let relation_components = components
+        .iter()
+        .enumerate()
+        .flat_map(|(index, relations)| {
+            relations
+                .iter()
+                .copied()
+                .map(move |relation| (relation, index))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let component_dependencies = components
+        .iter()
+        .enumerate()
+        .map(|(index, relations)| {
+            let dependencies = relations
+                .iter()
+                .flat_map(|relation| dependencies[relation].iter())
+                .map(|relation| relation_components[relation])
+                .filter(|dependency| *dependency != index)
+                .collect::<BTreeSet<_>>();
+            (index, dependencies)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut ordered = Vec::with_capacity(components.len());
+    let mut visited = BTreeSet::new();
+    for index in 0..components.len() {
+        visit_component(index, &component_dependencies, &mut visited, &mut ordered);
+    }
+    ordered
+        .into_iter()
+        .map(|index| components[index].clone())
+        .collect()
+}
+
+fn visit_component(
+    index: usize,
+    dependencies: &BTreeMap<usize, BTreeSet<usize>>,
+    visited: &mut BTreeSet<usize>,
+    ordered: &mut Vec<usize>,
+) {
+    if !visited.insert(index) {
+        return;
+    }
+    for dependency in &dependencies[&index] {
+        visit_component(*dependency, dependencies, visited, ordered);
+    }
+    ordered.push(index);
+}
+
+fn compile_component(
+    rules: &[CompiledRule],
+    target_relations: BTreeSet<RelationId>,
+) -> CompiledScc {
+    let rule_indices = rules
+        .iter()
+        .enumerate()
+        .filter_map(|(index, rule)| {
+            target_relations
+                .contains(&rule.head_relation)
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let mut seed_rule_indices = Vec::new();
+    let mut recursive_variants = Vec::new();
+    for &rule_index in &rule_indices {
+        let recursive_body_indices = rules[rule_index]
+            .body
+            .iter()
+            .enumerate()
+            .filter_map(|(body_index, item)| match item {
+                CompiledBodyItem::Atom(atom)
+                    if !atom.negated && target_relations.contains(&atom.relation) =>
+                {
+                    Some(body_index)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if recursive_body_indices.is_empty() {
+            seed_rule_indices.push(rule_index);
+        }
+        recursive_variants.extend(recursive_body_indices.into_iter().map(|delta_body_index| {
+            CompiledRuleVariant {
+                rule_index,
+                delta_body_index,
+            }
+        }));
+    }
+    CompiledScc {
+        target_relations,
+        rule_indices,
+        seed_rule_indices,
+        recursive_variants,
+    }
 }
 
 fn compile_rule(rule: &Rule) -> CompiledRule {
@@ -1129,6 +1340,72 @@ mod tests {
         assert_eq!(
             RuleSet::new([rule]).evaluate(&VisitOnlyReader).unwrap()[&rel(95)],
             vec![Tuple::from([int(1)])]
+        );
+    }
+
+    #[test]
+    fn compiled_stratum_groups_mutual_recursion_and_orders_dependencies_first() {
+        let rules = RuleSet::new([
+            Rule::new(rel(101), [var("x")], [Atom::positive(rel(100), [var("x")])]),
+            Rule::new(rel(102), [var("x")], [Atom::positive(rel(101), [var("x")])]),
+            Rule::new(rel(103), [var("x")], [Atom::positive(rel(104), [var("x")])]),
+            Rule::new(rel(104), [var("x")], [Atom::positive(rel(103), [var("x")])]),
+        ]);
+
+        let program = rules.compile().unwrap();
+        let components = &program.strata[0].components;
+        let dependency = components
+            .iter()
+            .position(|component| component.target_relations == BTreeSet::from([rel(101)]))
+            .unwrap();
+        let dependent = components
+            .iter()
+            .position(|component| component.target_relations == BTreeSet::from([rel(102)]))
+            .unwrap();
+
+        assert!(dependency < dependent);
+        assert!(components.iter().any(|component| {
+            component.target_relations == BTreeSet::from([rel(103), rel(104)])
+        }));
+    }
+
+    #[test]
+    fn compiled_component_classifies_seeds_and_one_variant_per_recursive_atom() {
+        let rules = RuleSet::new([
+            Rule::new(rel(111), [var("x")], [Atom::positive(rel(110), [var("x")])]),
+            Rule::new(rel(111), [var("x")], [Atom::positive(rel(111), [var("x")])]),
+            Rule::new(
+                rel(111),
+                [var("x")],
+                [
+                    Atom::positive(rel(111), [var("x")]),
+                    Atom::positive(rel(111), [var("x")]),
+                ],
+            ),
+        ]);
+
+        let program = rules.compile().unwrap();
+        let component = &program.strata[0].components[0];
+
+        assert_eq!(component.target_relations, BTreeSet::from([rel(111)]));
+        assert_eq!(component.rule_indices, vec![0, 1, 2]);
+        assert_eq!(component.seed_rule_indices, vec![0]);
+        assert_eq!(
+            component.recursive_variants,
+            vec![
+                CompiledRuleVariant {
+                    rule_index: 1,
+                    delta_body_index: 0,
+                },
+                CompiledRuleVariant {
+                    rule_index: 2,
+                    delta_body_index: 0,
+                },
+                CompiledRuleVariant {
+                    rule_index: 2,
+                    delta_body_index: 1,
+                },
+            ]
         );
     }
 
