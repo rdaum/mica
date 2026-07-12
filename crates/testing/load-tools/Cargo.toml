@@ -18,6 +18,10 @@ path = "src/property-update-load-test.rs"
 name = "query-join-load-test"
 path = "src/query-join-load-test.rs"
 
+[[bin]]
+name = "parallel-operator-load-test"
+path = "src/parallel-operator-load-test.rs"
+
 [dependencies]
 clap.workspace = true
 compio.workspace = true
