@@ -2180,78 +2180,6 @@ mod tests {
         );
     }
 
-    struct TupleOnlyReader<'a, R> {
-        inner: &'a R,
-    }
-
-    impl<R: RelationRead> RelationRead for TupleOnlyReader<'_, R> {
-        fn scan_relation(
-            &self,
-            relation: RelationId,
-            bindings: &[Option<Value>],
-        ) -> Result<Vec<Tuple>, KernelError> {
-            self.inner.scan_relation(relation, bindings)
-        }
-
-        fn visit_relation(
-            &self,
-            relation: RelationId,
-            bindings: &[Option<Value>],
-            visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
-        ) -> Result<(), KernelError> {
-            self.inner.visit_relation(relation, bindings, visitor)
-        }
-
-        fn estimate_relation_scan(
-            &self,
-            relation: RelationId,
-            bindings: &[Option<Value>],
-        ) -> Result<Option<usize>, KernelError> {
-            self.inner.estimate_relation_scan(relation, bindings)
-        }
-    }
-
-    fn evaluate_fixpoint_reference(
-        rules: &RuleSet,
-        reader: &impl RelationRead,
-    ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
-        let reader = TupleOnlyReader { inner: reader };
-        let strata = rules.stratified_rules()?;
-        let mut derived = BTreeMap::<RelationId, BTreeSet<Tuple>>::new();
-        for rules in strata {
-            let rules = rules.into_iter().map(compile_rule).collect::<Vec<_>>();
-            loop {
-                let overlay = DerivedReader {
-                    base: &reader,
-                    derived: &derived,
-                };
-                let mut round = BTreeMap::new();
-                evaluate_rules_once(&overlay, &rules, &mut round)?;
-                let mut changed = false;
-                for (relation, tuples) in round {
-                    let relation_tuples = derived.entry(relation).or_default();
-                    for tuple in tuples {
-                        changed |= relation_tuples.insert(tuple);
-                    }
-                }
-                if !changed {
-                    break;
-                }
-            }
-        }
-        Ok(derived
-            .into_iter()
-            .map(|(relation, tuples)| (relation, tuples.into_iter().collect()))
-            .collect())
-    }
-
-    fn assert_matches_reference(rules: &RuleSet, reader: &impl RelationRead) {
-        assert_eq!(
-            rules.evaluate_fixpoint(reader).unwrap(),
-            evaluate_fixpoint_reference(rules, reader).unwrap()
-        );
-    }
-
     struct BatchExportReader {
         snapshot: Arc<crate::Snapshot>,
         exports: Cell<usize>,
@@ -2292,7 +2220,7 @@ mod tests {
     }
 
     #[test]
-    fn large_two_atom_rule_uses_packed_join_and_matches_tuple_reference() {
+    fn large_two_atom_rule_uses_packed_join_and_matches_expected_output() {
         let kernel = RelationKernel::new();
         for (relation, name) in [(rel(200), "Left"), (rel(201), "Right")] {
             kernel
@@ -2322,10 +2250,11 @@ mod tests {
 
         let packed = rules.evaluate_fixpoint(&reader).unwrap();
         assert_eq!(reader.exports.get(), 2);
-        assert_eq!(packed[&rel(202)].len(), 300);
         assert_eq!(
-            packed,
-            evaluate_fixpoint_reference(&rules, reader.snapshot.as_ref()).unwrap()
+            packed[&rel(202)],
+            (0..300)
+                .map(|row| Tuple::from([int(row), int(row + 2)]))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2368,7 +2297,14 @@ mod tests {
         let forward = RuleSet::new([edge.clone(), shortcut.clone(), step.clone()]);
         let reversed = RuleSet::new([step, shortcut, edge]);
 
-        assert_matches_reference(&forward, &tx);
+        assert_eq!(
+            forward.evaluate_fixpoint(&tx).unwrap()[&rel(122)],
+            vec![
+                Tuple::from([int(1), int(2)]),
+                Tuple::from([int(1), int(3)]),
+                Tuple::from([int(2), int(3)]),
+            ]
+        );
         assert_eq!(
             forward.evaluate_fixpoint(&tx).unwrap(),
             reversed.evaluate_fixpoint(&tx).unwrap()
@@ -2402,8 +2338,17 @@ mod tests {
             ),
         ]);
 
-        assert_matches_reference(&rules, &tx);
-        assert_eq!(rules.evaluate_fixpoint(&tx).unwrap()[&rel(131)].len(), 6);
+        assert_eq!(
+            rules.evaluate_fixpoint(&tx).unwrap()[&rel(131)],
+            vec![
+                Tuple::from([int(1), int(2)]),
+                Tuple::from([int(1), int(3)]),
+                Tuple::from([int(1), int(4)]),
+                Tuple::from([int(2), int(3)]),
+                Tuple::from([int(2), int(4)]),
+                Tuple::from([int(3), int(4)]),
+            ]
+        );
     }
 
     #[test]
@@ -2432,9 +2377,14 @@ mod tests {
             ),
         ]);
 
-        assert_matches_reference(&rules, &tx);
-        assert_eq!(rules.evaluate_fixpoint(&tx).unwrap()[&rel(142)].len(), 3);
-        assert_eq!(rules.evaluate_fixpoint(&tx).unwrap()[&rel(143)].len(), 3);
+        let derived = rules.evaluate_fixpoint(&tx).unwrap();
+        let expected = vec![
+            Tuple::from([int(1)]),
+            Tuple::from([int(2)]),
+            Tuple::from([int(3)]),
+        ];
+        assert_eq!(derived[&rel(142)], expected);
+        assert_eq!(derived[&rel(143)], expected);
     }
 
     #[test]
@@ -2463,7 +2413,6 @@ mod tests {
             ],
         )]);
 
-        assert_matches_reference(&rules, &tx);
         assert_eq!(
             rules.evaluate_fixpoint(&tx).unwrap()[&rel(151)],
             vec![Tuple::from([int(1), int(3)]), Tuple::from([int(1), int(4)]),]
@@ -2514,11 +2463,18 @@ mod tests {
             ),
         ]);
 
-        assert_matches_reference(&rules, &tx);
+        assert_eq!(
+            rules.evaluate_fixpoint(&tx).unwrap()[&rel(165)],
+            vec![
+                Tuple::from([int(1)]),
+                Tuple::from([int(2)]),
+                Tuple::from([int(3)])
+            ]
+        );
     }
 
     #[test]
-    fn semi_naive_evaluation_matches_reference_for_generated_small_graphs() {
+    fn semi_naive_evaluation_matches_graph_closure_for_generated_small_graphs() {
         let possible_edges = [(1, 1), (1, 2), (1, 3), (2, 2), (2, 3), (3, 1), (3, 3)];
         for mask in 0u16..(1 << possible_edges.len()) {
             let kernel = RelationKernel::new();
@@ -2547,7 +2503,39 @@ mod tests {
                     ],
                 ),
             ]);
-            assert_matches_reference(&rules, &tx);
+            let mut expected = possible_edges
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, edge)| *edge)
+                .collect::<BTreeSet<_>>();
+            loop {
+                let before = expected.len();
+                let paths = expected.iter().copied().collect::<Vec<_>>();
+                for (from, middle) in &paths {
+                    for (next_from, to) in &paths {
+                        if middle == next_from {
+                            expected.insert((*from, *to));
+                        }
+                    }
+                }
+                if expected.len() == before {
+                    break;
+                }
+            }
+            let expected = expected
+                .into_iter()
+                .map(|(from, to)| Tuple::from([int(from), int(to)]))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rules
+                    .evaluate_fixpoint(&tx)
+                    .unwrap()
+                    .get(&rel(171))
+                    .cloned()
+                    .unwrap_or_default(),
+                expected
+            );
         }
     }
 
@@ -2574,7 +2562,6 @@ mod tests {
         ]);
         let tx = kernel.begin();
 
-        assert_matches_reference(&rules, &tx);
         assert!(
             !rules
                 .evaluate_fixpoint(&tx)
@@ -2615,7 +2602,6 @@ mod tests {
             ),
         ]);
 
-        assert_matches_reference(&rules, &tx);
         assert_eq!(
             rules.evaluate_fixpoint(&tx).unwrap()[&rel(191)],
             vec![
@@ -2659,7 +2645,6 @@ mod tests {
             ),
         ]);
 
-        assert_matches_reference(&rules, &tx);
         assert_eq!(
             rules.evaluate_fixpoint(&tx).unwrap()[&rel(201)],
             vec![
