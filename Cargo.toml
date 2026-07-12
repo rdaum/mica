@@ -93,3 +93,5 @@ rustyline = "18.0.0"
 # development / testing / benching
 micromeasure = "0.9"
 proptest = "1.11"
+pollster = "0.4"
+wgpu = { version = "30.0", default-features = false, features = ["parking_lot", "std", "vulkan", "wgsl"] }

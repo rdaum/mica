@@ -22,6 +22,10 @@ path = "src/query-join-load-test.rs"
 name = "parallel-operator-load-test"
 path = "src/parallel-operator-load-test.rs"
 
+[[bin]]
+name = "wgpu-membership-prototype"
+path = "src/wgpu-membership-prototype.rs"
+
 [dependencies]
 clap.workspace = true
 compio.workspace = true
@@ -29,3 +33,6 @@ mica-driver.workspace = true
 mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
 mica-runtime.workspace = true
 mica-var.workspace = true
+pollster.workspace = true
+rayon.workspace = true
+wgpu.workspace = true

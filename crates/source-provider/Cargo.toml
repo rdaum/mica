@@ -14,7 +14,7 @@ jj-lib = { version = "0.41", features = ["git"] }
 mica-compiler.workspace = true
 mica-relation-kernel.workspace = true
 mica-var.workspace = true
-pollster = "0.4"
+pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"
