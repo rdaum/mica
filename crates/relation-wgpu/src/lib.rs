@@ -10,8 +10,8 @@ use fast_telemetry::{Counter, ExportMetrics, Histogram};
 use mica_relation_kernel::{
     AccelerationDecline, AccelerationOutcome, MembershipSelection, RelationAccelerator,
 };
-use mica_var::{Identity, Value};
-use std::collections::HashMap;
+use mica_var::{Identity, Value, ValueKind};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak, mpsc};
@@ -108,6 +108,7 @@ enum ValueEncoding {
     Int,
     Identity,
     Float,
+    Dictionary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -125,6 +126,17 @@ struct EncodedColumn {
 struct CachedColumn {
     source: Weak<[Value]>,
     encoded: Arc<EncodedColumn>,
+}
+
+struct EncodedPair {
+    left: Arc<EncodedColumn>,
+    right: Arc<EncodedColumn>,
+}
+
+struct CachedPair {
+    left_source: Weak<[Value]>,
+    right_source: Weak<[Value]>,
+    encoded: Arc<EncodedPair>,
 }
 
 struct OutputBuffers {
@@ -216,6 +228,7 @@ pub struct WgpuAccelerator {
     admission: GpuAdmission,
     availability: GpuAvailability,
     column_cache: [Mutex<HashMap<(usize, ColumnLayout), CachedColumn>>; CACHE_SHARDS],
+    dictionary_cache: [Mutex<HashMap<(usize, usize), CachedPair>>; CACHE_SHARDS],
     output_pool: Mutex<HashMap<u64, Vec<OutputBuffers>>>,
 }
 
@@ -304,6 +317,7 @@ impl WgpuAccelerator {
                 enabled: AtomicBool::new(true),
             },
             column_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+            dictionary_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             output_pool: Mutex::new(HashMap::new()),
         })
     }
@@ -346,23 +360,7 @@ impl WgpuAccelerator {
             values.sort_unstable();
             values.dedup();
         }
-        let input_usage = match self.buffer_mode {
-            BufferMode::StagedReadback => wgpu::BufferUsages::STORAGE,
-            BufferMode::SharedMappable => {
-                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::MAP_WRITE
-            }
-        };
-        let buffer = create_u64_buffer(
-            &self.device,
-            "mica-relation-encoded-column",
-            &values,
-            input_usage,
-        );
-        let encoded = Arc::new(EncodedColumn {
-            encoding,
-            buffer,
-            len: values.len(),
-        });
+        let encoded = self.create_encoded_column(encoding, &values);
         self.column_cache[shard].lock().unwrap().insert(
             key,
             CachedColumn {
@@ -374,6 +372,97 @@ impl WgpuAccelerator {
             .encoded_column_duration_us
             .record(duration_us(started.elapsed()));
         Some(encoded)
+    }
+
+    fn encoded_string_pair(
+        &self,
+        left: &Arc<[Value]>,
+        right: &Arc<[Value]>,
+    ) -> Option<Arc<EncodedPair>> {
+        if !left
+            .iter()
+            .chain(right.iter())
+            .all(|value| value.kind() == ValueKind::String)
+        {
+            return None;
+        }
+        let key = (left.as_ptr() as usize, right.as_ptr() as usize);
+        let shard = (key.0 ^ key.1.rotate_left(17)) % CACHE_SHARDS;
+        {
+            let mut cache = self.dictionary_cache[shard].lock().unwrap();
+            cache.retain(|_, cached| {
+                cached.left_source.strong_count() != 0 && cached.right_source.strong_count() != 0
+            });
+            if let Some(cached) = cache.get(&key)
+                && Weak::ptr_eq(&cached.left_source, &Arc::downgrade(left))
+                && Weak::ptr_eq(&cached.right_source, &Arc::downgrade(right))
+            {
+                metrics().encoded_column_cache_hits.inc();
+                return Some(Arc::clone(&cached.encoded));
+            }
+        }
+
+        metrics().encoded_column_cache_misses.inc();
+        let started = Instant::now();
+        let mut dictionary = left
+            .iter()
+            .chain(right.iter())
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        dictionary.sort_unstable();
+        let codes = dictionary
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(code, value)| (value, code as u64))
+            .collect::<HashMap<_, _>>();
+        let left_codes = left
+            .iter()
+            .map(|value| codes.get(value).copied())
+            .collect::<Option<Vec<_>>>()?;
+        let mut right_codes = right
+            .iter()
+            .map(|value| codes.get(value).copied())
+            .collect::<Option<Vec<_>>>()?;
+        right_codes.sort_unstable();
+        right_codes.dedup();
+        let encoded = Arc::new(EncodedPair {
+            left: self.create_encoded_column(ValueEncoding::Dictionary, &left_codes),
+            right: self.create_encoded_column(ValueEncoding::Dictionary, &right_codes),
+        });
+        self.dictionary_cache[shard].lock().unwrap().insert(
+            key,
+            CachedPair {
+                left_source: Arc::downgrade(left),
+                right_source: Arc::downgrade(right),
+                encoded: Arc::clone(&encoded),
+            },
+        );
+        metrics()
+            .encoded_column_duration_us
+            .record(duration_us(started.elapsed()));
+        Some(encoded)
+    }
+
+    fn create_encoded_column(&self, encoding: ValueEncoding, values: &[u64]) -> Arc<EncodedColumn> {
+        let input_usage = match self.buffer_mode {
+            BufferMode::StagedReadback => wgpu::BufferUsages::STORAGE,
+            BufferMode::SharedMappable => {
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::MAP_WRITE
+            }
+        };
+        Arc::new(EncodedColumn {
+            encoding,
+            buffer: create_u64_buffer(
+                &self.device,
+                "mica-relation-encoded-column",
+                values,
+                input_usage,
+            ),
+            len: values.len(),
+        })
     }
 
     fn acquire_output_buffers(&self, row_count: usize) -> OutputBuffers {
@@ -545,15 +634,24 @@ impl RelationAccelerator for WgpuAccelerator {
             metrics().membership_busy.inc();
             return AccelerationOutcome::Declined(AccelerationDecline::Busy);
         };
-        let Some(left) = self.encoded_column(selection.left, ColumnLayout::RowOrder) else {
-            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
+        let (left, right) = if detect_encoding(selection.left, selection.right).is_some() {
+            let Some(left) = self.encoded_column(selection.left, ColumnLayout::RowOrder) else {
+                return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
+            };
+            let Some(right) = self.encoded_column(selection.right, ColumnLayout::SortedUnique)
+            else {
+                return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
+            };
+            if left.encoding != right.encoding {
+                return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
+            }
+            (left, right)
+        } else {
+            let Some(pair) = self.encoded_string_pair(selection.left, selection.right) else {
+                return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
+            };
+            (Arc::clone(&pair.left), Arc::clone(&pair.right))
         };
-        let Some(right) = self.encoded_column(selection.right, ColumnLayout::SortedUnique) else {
-            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
-        };
-        if left.encoding != right.encoding {
-            return AccelerationOutcome::Declined(AccelerationDecline::UnsupportedDomain);
-        }
         let started = Instant::now();
         match self.execute_membership(&left, &right, selection.keep_matches) {
             Ok(selected) => {
@@ -607,6 +705,7 @@ fn encode_value(value: &Value, encoding: ValueEncoding) -> Option<u64> {
                 u64::from(bits ^ 0x8000_0000)
             }
         }),
+        ValueEncoding::Dictionary => None,
     }
 }
 
@@ -747,6 +846,20 @@ mod tests {
             AccelerationOutcome::Selected(vec![0, 2])
         );
         assert!(metrics().encoded_column_cache_hits.sum() >= cache_hits + 2);
+        let string_left = Arc::from(
+            ["gamma", "alpha", "missing", "alpha"]
+                .map(Value::string)
+                .to_vec(),
+        );
+        let string_right = Arc::from(["alpha", "beta"].map(Value::string).to_vec());
+        assert_eq!(
+            accelerator.select_membership(MembershipSelection {
+                left: &string_left,
+                right: &string_right,
+                keep_matches: true,
+            }),
+            AccelerationOutcome::Selected(vec![1, 3])
+        );
         assert_eq!(
             accelerator
                 .output_pool

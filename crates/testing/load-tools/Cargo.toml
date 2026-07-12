@@ -30,6 +30,10 @@ path = "src/wgpu-membership-prototype.rs"
 name = "relation-membership-benchmark"
 path = "src/relation-membership-benchmark.rs"
 
+[[bin]]
+name = "wgpu-string-membership-prototype"
+path = "src/wgpu-string-membership-prototype.rs"
+
 [dependencies]
 clap.workspace = true
 compio.workspace = true
