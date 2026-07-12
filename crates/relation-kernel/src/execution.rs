@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use mica_var::Value;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -28,14 +29,47 @@ pub trait ExecutionAdmission: Send + Sync {
     fn release_parallel(&self, additional_workers: NonZeroUsize);
 }
 
+/// Immutable columns participating in one equality-membership selection.
+///
+/// Implementations return indexes into `left` in ascending order. `right` is
+/// not necessarily ordered by the selected relation column.
+pub struct MembershipSelection<'a> {
+    pub left: &'a Arc<[Value]>,
+    pub right: &'a Arc<[Value]>,
+    pub keep_matches: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccelerationDecline {
+    Busy,
+    UnsupportedDomain,
+    Unavailable,
+    Failed,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum AccelerationOutcome {
+    Selected(Vec<usize>),
+    Declined(AccelerationDecline),
+}
+
+/// Optional executor for large packed relation operators.
+pub trait RelationAccelerator: Send + Sync {
+    fn select_membership(&self, selection: MembershipSelection<'_>) -> AccelerationOutcome;
+}
+
 #[derive(Clone)]
 pub struct ExecutionContext {
     parallel: Option<Arc<ParallelExecution>>,
+    accelerator: Option<Arc<dyn RelationAccelerator>>,
 }
 
 impl ExecutionContext {
     pub fn serial() -> Self {
-        Self { parallel: None }
+        Self {
+            parallel: None,
+            accelerator: None,
+        }
     }
 
     pub fn parallel(admission: Arc<dyn ExecutionAdmission>) -> Self {
@@ -49,7 +83,23 @@ impl ExecutionContext {
                 rayon_workers,
                 pool: OnceLock::new(),
             })),
+            accelerator: None,
         }
+    }
+
+    pub fn with_accelerator(mut self, accelerator: Arc<dyn RelationAccelerator>) -> Self {
+        self.accelerator = Some(accelerator);
+        self
+    }
+
+    pub(crate) fn select_membership(
+        &self,
+        selection: MembershipSelection<'_>,
+    ) -> AccelerationOutcome {
+        let Some(accelerator) = &self.accelerator else {
+            return AccelerationOutcome::Declined(AccelerationDecline::Unavailable);
+        };
+        accelerator.select_membership(selection)
     }
 
     pub(crate) fn try_join<A, B, RA, RB>(
@@ -100,6 +150,7 @@ impl fmt::Debug for ExecutionContext {
                     .as_ref()
                     .is_some_and(|parallel| parallel.pool.get().is_some()),
             )
+            .field("accelerator", &self.accelerator.is_some())
             .finish()
     }
 }

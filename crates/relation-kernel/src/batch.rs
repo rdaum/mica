@@ -9,7 +9,9 @@ use crate::metrics::{
     ParallelUnionPlacement, record_parallel_union_duration, record_parallel_union_placement,
 };
 use crate::query::PhysicalQueryPlan;
-use crate::{ExecutionContext, KernelError, RelationRead, Tuple};
+use crate::{
+    AccelerationOutcome, ExecutionContext, KernelError, MembershipSelection, RelationRead, Tuple,
+};
 use mica_var::Value;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -19,6 +21,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const PACKED_ROW_THRESHOLD: usize = 256;
+const ACCELERATOR_MEMBERSHIP_ROW_THRESHOLD: usize = 262_144;
 const PARALLEL_MEMBERSHIP_ROW_THRESHOLD: usize = 262_144;
 const PARALLEL_MEMBERSHIP_WORKERS: NonZeroUsize = NonZeroUsize::new(1).unwrap();
 const PARALLEL_UNION_ROW_THRESHOLD: usize = 2_097_152;
@@ -40,6 +43,7 @@ struct MembershipPlacement {
     left_position: usize,
     right_position: usize,
     keep_matches: bool,
+    accelerator_row_threshold: usize,
     row_threshold: usize,
 }
 
@@ -161,6 +165,13 @@ impl NativeColumn {
             panic!("output columns must be owned");
         };
         values.push(value);
+    }
+
+    fn shared(&self) -> Option<&Arc<[Value]>> {
+        match self {
+            Self::Shared(values) => Some(values),
+            Self::Owned(_) => None,
+        }
     }
 }
 
@@ -1041,6 +1052,7 @@ fn select_membership_rows(
             left_position,
             right_position,
             keep_matches,
+            accelerator_row_threshold: ACCELERATOR_MEMBERSHIP_ROW_THRESHOLD,
             row_threshold: PARALLEL_MEMBERSHIP_ROW_THRESHOLD,
         },
         execution_context,
@@ -1055,14 +1067,28 @@ fn select_membership_rows_with_threshold(
     execution_context: &ExecutionContext,
     workspace: &mut BatchWorkspace,
 ) -> Option<Vec<usize>> {
-    let left_values = left.columns.get(placement.left_position)?.as_slice();
-    let right_values = right.columns.get(placement.right_position)?.as_slice();
+    let left_column = left.columns.get(placement.left_position)?;
+    let right_column = right.columns.get(placement.right_position)?;
+    let left_values = left_column.as_slice();
+    let right_values = right_column.as_slice();
+    let input_rows = left_values.len() + right_values.len();
+    if input_rows >= placement.accelerator_row_threshold
+        && let (Some(left), Some(right)) = (left_column.shared(), right_column.shared())
+        && let AccelerationOutcome::Selected(selected) =
+            execution_context.select_membership(MembershipSelection {
+                left,
+                right,
+                keep_matches: placement.keep_matches,
+            })
+        && selected_rows_are_valid(&selected, left_values.len())
+    {
+        return Some(selected);
+    }
     let mut right_keys = workspace.column(right_values.len());
     right_keys.extend_from_slice(right_values);
     right_keys.sort_unstable();
     right_keys.dedup();
 
-    let input_rows = left_values.len() + right_values.len();
     let selected = if input_rows >= placement.row_threshold {
         let split = left_values.len() / 2;
         match execution_context.try_join(
@@ -1098,6 +1124,11 @@ fn select_membership_rows_with_threshold(
     right_keys.clear();
     workspace.columns.push(right_keys);
     Some(selected)
+}
+
+fn selected_rows_are_valid(rows: &[usize], input_rows: usize) -> bool {
+    rows.last().is_none_or(|row| *row < input_rows)
+        && rows.windows(2).all(|window| window[0] < window[1])
 }
 
 fn select_membership_range(
@@ -1230,12 +1261,25 @@ fn difference(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ExecutionAdmission;
+    use crate::{ExecutionAdmission, RelationAccelerator};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     struct TestAdmission {
         available: Mutex<usize>,
         attempts: Mutex<usize>,
+    }
+
+    struct TestAccelerator {
+        calls: AtomicUsize,
+        selected: Vec<usize>,
+    }
+
+    impl RelationAccelerator for TestAccelerator {
+        fn select_membership(&self, _selection: MembershipSelection<'_>) -> AccelerationOutcome {
+            self.calls.fetch_add(1, AtomicOrdering::Relaxed);
+            AccelerationOutcome::Selected(self.selected.clone())
+        }
     }
 
     impl ExecutionAdmission for TestAdmission {
@@ -1389,6 +1433,7 @@ mod tests {
                 left_position: 1,
                 right_position: 0,
                 keep_matches: true,
+                accelerator_row_threshold: usize::MAX,
                 row_threshold: 0,
             },
             &context,
@@ -1428,6 +1473,84 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected, vec![0, 2]);
+    }
+
+    #[test]
+    fn one_column_membership_uses_accelerator_for_shared_columns() {
+        let left = crate::PackedRelation::from_canonical_tuples(
+            vec![
+                Tuple::from([int(0), int(30)]),
+                Tuple::from([int(1), int(10)]),
+                Tuple::from([int(2), int(40)]),
+                Tuple::from([int(3), int(10)]),
+            ],
+            2,
+        )
+        .unwrap();
+        let right = crate::PackedRelation::from_canonical_tuples(unary_rows([10, 20]), 1).unwrap();
+        let left = NativeBatch::from_packed(&left);
+        let right = NativeBatch::from_packed(&right);
+        let accelerator = Arc::new(TestAccelerator {
+            calls: AtomicUsize::new(0),
+            selected: vec![1, 3],
+        });
+        let context = ExecutionContext::serial().with_accelerator(accelerator.clone());
+        let mut workspace = BatchWorkspace::default();
+
+        let selected = select_membership_rows_with_threshold(
+            &left,
+            &right,
+            MembershipPlacement {
+                left_position: 1,
+                right_position: 0,
+                keep_matches: true,
+                accelerator_row_threshold: 0,
+                row_threshold: usize::MAX,
+            },
+            &context,
+            &mut workspace,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![1, 3]);
+        assert_eq!(accelerator.calls.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[test]
+    fn one_column_membership_does_not_accelerate_owned_columns() {
+        let left = NativeBatch::from_tuples(
+            vec![
+                Tuple::from([int(0), int(30)]),
+                Tuple::from([int(1), int(10)]),
+            ],
+            2,
+        )
+        .unwrap();
+        let right = NativeBatch::from_tuples(unary_rows([10, 20]), 1).unwrap();
+        let accelerator = Arc::new(TestAccelerator {
+            calls: AtomicUsize::new(0),
+            selected: vec![1],
+        });
+        let context = ExecutionContext::serial().with_accelerator(accelerator.clone());
+        let mut workspace = BatchWorkspace::default();
+
+        let selected = select_membership_rows_with_threshold(
+            &left,
+            &right,
+            MembershipPlacement {
+                left_position: 1,
+                right_position: 0,
+                keep_matches: true,
+                accelerator_row_threshold: 0,
+                row_threshold: usize::MAX,
+            },
+            &context,
+            &mut workspace,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![1]);
+        assert_eq!(accelerator.calls.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[test]
