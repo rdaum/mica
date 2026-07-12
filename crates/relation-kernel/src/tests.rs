@@ -16,8 +16,8 @@ use crate::{
     ComposedRelationRead, ComposedTransactionRead, ComputedRelation, Conflict, ConflictKind,
     ConflictPolicy, Fact, FactChange, FactChangeKind, InMemoryCommitProvider, KernelError,
     MentionedFact, ProjectedStore, QueryPlan, RelationId, RelationKernel, RelationMetadata,
-    RelationRead, RelationWorkspace, Rule, RuleBodyItem, RuleComparisonOp, RuleGuard, SubjectFact,
-    Term, TransientStore, Tuple, method_program_id,
+    RelationRead, RelationSource, RelationWorkspace, Rule, RuleBodyItem, RuleComparisonOp,
+    RuleGuard, SubjectFact, Term, TransientStore, Tuple, ValueDomain, method_program_id,
 };
 #[cfg(feature = "fjall-provider")]
 use crate::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
@@ -968,6 +968,11 @@ fn composed_reader_joins_transient_scopes() {
         rows,
         vec![Tuple::from([int(7), int(7), Value::string("lamp")])]
     );
+    let capabilities = reader.relation_capabilities(rel(50)).unwrap();
+    assert_eq!(capabilities.source, RelationSource::Transient);
+    assert_eq!(capabilities.cardinality, Some(1));
+    assert_eq!(capabilities.value_domains, vec![ValueDomain::Immediate]);
+    assert!(capabilities.exact_indexes.is_empty());
 }
 
 #[test]
@@ -1295,6 +1300,13 @@ fn projected_store_implements_workspace_for_local_mutation() {
             .unwrap(),
         vec![Tuple::from([int(1), Value::string("golden lamp")])]
     );
+    let capabilities = projected.relation_capabilities(rel(74)).unwrap();
+    assert_eq!(capabilities.source, RelationSource::Projected);
+    assert_eq!(capabilities.cardinality, Some(1));
+    assert_eq!(
+        capabilities.value_domains,
+        vec![ValueDomain::Immediate, ValueDomain::Heap]
+    );
 }
 
 #[test]
@@ -1524,6 +1536,45 @@ fn relation_estimates_track_index_bucket_statistics_without_exact_scans() {
             .unwrap(),
         Some(1)
     );
+}
+
+#[test]
+fn relation_capabilities_describe_snapshot_domains_and_overlay_boundaries() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(4),
+            Symbol::intern("DomainExample"),
+            2,
+        ))
+        .unwrap();
+    let mut seed = kernel.begin();
+    seed.assert(rel(4), Tuple::from([int(1), Value::string("heap")]))
+        .unwrap();
+    seed.assert(rel(4), Tuple::from([int(2), int(20)])).unwrap();
+    seed.commit().unwrap();
+
+    let snapshot = kernel.snapshot();
+    let capabilities = snapshot.relation_capabilities(rel(4)).unwrap();
+    assert_eq!(capabilities.source, RelationSource::Snapshot);
+    assert_eq!(capabilities.cardinality, Some(2));
+    assert_eq!(
+        capabilities.value_domains,
+        vec![ValueDomain::Immediate, ValueDomain::Mixed]
+    );
+    assert!(!capabilities.immediate_only());
+    assert!(capabilities.supports_batch_export);
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(4), Tuple::from([int(3), int(30)])).unwrap();
+    let capabilities = tx.relation_capabilities(rel(4)).unwrap();
+    assert_eq!(capabilities.source, RelationSource::TransactionOverlay);
+    assert_eq!(
+        capabilities.value_domains,
+        vec![ValueDomain::Unknown, ValueDomain::Unknown]
+    );
+    assert!(capabilities.exact_indexes.is_empty());
+    assert!(!capabilities.supports_batch_export);
 }
 
 #[test]

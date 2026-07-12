@@ -14,8 +14,9 @@
 use crate::index::RelationState;
 use crate::snapshot::{active_rules, build_derived_relations, relation_has_active_rule_head};
 use crate::{
-    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationId,
-    RelationMetadata, RelationRead, RuleSet, ScanControl, Transaction, Tuple,
+    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationCapabilities,
+    RelationId, RelationMetadata, RelationRead, RelationSource, RuleSet, ScanControl, Transaction,
+    Tuple, ValueDomain,
 };
 use mica_var::{Identity, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -150,6 +151,34 @@ impl TransientStore {
                 .is_some_and(|scope| scope.contains_relation(relation))
         })
     }
+
+    fn relation_summary(
+        &self,
+        scopes: &[Identity],
+        relation: RelationId,
+    ) -> Option<(usize, Vec<ValueDomain>)> {
+        let mut rows = 0usize;
+        let mut domains: Option<Vec<ValueDomain>> = None;
+        for scope in scopes {
+            let Some(relation) = self
+                .scopes
+                .get(scope)
+                .and_then(|scope| scope.relations.get(&relation))
+            else {
+                continue;
+            };
+            let relation_rows = relation.cardinality();
+            let relation_domains = relation.value_domains();
+            domains = Some(match domains {
+                None => relation_domains,
+                Some(current) => {
+                    combine_transient_domains(&current, rows, &relation_domains, relation_rows)
+                }
+            });
+            rows = rows.saturating_add(relation_rows);
+        }
+        domains.map(|domains| (rows, domains))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -268,6 +297,27 @@ impl<R: RelationRead> RelationRead for ComposedRelationRead<'_, R> {
         }
         Ok(())
     }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        let Some((transient_rows, transient_domains)) =
+            self.transient.relation_summary(self.scopes, relation)
+        else {
+            return self.base.relation_capabilities(relation);
+        };
+        let base = match self.base.relation_capabilities(relation) {
+            Ok(capabilities) => Some(capabilities),
+            Err(KernelError::UnknownRelation(unknown)) if unknown == relation => None,
+            Err(error) => return Err(error),
+        };
+        Ok(composed_capabilities(
+            base.as_ref(),
+            transient_rows,
+            transient_domains,
+        ))
+    }
 }
 
 pub struct ComposedTransactionRead<'a, 'kernel> {
@@ -342,6 +392,29 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
         }
         Ok(())
     }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        if !self.relation_depends_on_visible_transient(relation) {
+            return self.tx.relation_capabilities(relation);
+        }
+        let summary = self.transient.relation_summary(self.scopes, relation);
+        let base = self.tx.relation_capabilities(relation).ok();
+        let (transient_rows, transient_domains) = summary.unwrap_or_else(|| {
+            let arity = base
+                .as_ref()
+                .map(|capabilities| capabilities.value_domains.len())
+                .unwrap_or(0);
+            (0, vec![ValueDomain::Unknown; arity])
+        });
+        Ok(composed_capabilities(
+            base.as_ref(),
+            transient_rows,
+            transient_domains,
+        ))
+    }
 }
 
 impl DispatchRead for ComposedTransactionRead<'_, '_> {
@@ -406,6 +479,69 @@ impl RelationRead for ComposedExtensionalTransactionRead<'_, '_> {
         )
         .map(|rows| rows.into_iter().collect())
     }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        let summary = self.transient.relation_summary(self.scopes, relation);
+        let base = self.tx.relation_capabilities(relation).ok();
+        let Some((transient_rows, transient_domains)) = summary else {
+            return base.ok_or(KernelError::UnknownRelation(relation));
+        };
+        Ok(composed_capabilities(
+            base.as_ref(),
+            transient_rows,
+            transient_domains,
+        ))
+    }
+}
+
+fn composed_capabilities(
+    base: Option<&RelationCapabilities>,
+    transient_rows: usize,
+    transient_domains: Vec<ValueDomain>,
+) -> RelationCapabilities {
+    let base_rows = base.and_then(|base| base.cardinality).unwrap_or(0);
+    let value_domains = base.map_or(transient_domains.clone(), |base| {
+        combine_transient_domains(
+            &base.value_domains,
+            base_rows,
+            &transient_domains,
+            transient_rows,
+        )
+    });
+    RelationCapabilities {
+        source: RelationSource::Transient,
+        cardinality: Some(base_rows.saturating_add(transient_rows)),
+        exact_indexes: Vec::new(),
+        value_domains,
+        supports_streaming: true,
+        supports_batch_export: false,
+    }
+}
+
+fn combine_transient_domains(
+    left: &[ValueDomain],
+    left_rows: usize,
+    right: &[ValueDomain],
+    right_rows: usize,
+) -> Vec<ValueDomain> {
+    if left_rows == 0 {
+        return right.to_vec();
+    }
+    if right_rows == 0 {
+        return left.to_vec();
+    }
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| match (*left, *right) {
+            (ValueDomain::Immediate, ValueDomain::Immediate) => ValueDomain::Immediate,
+            (ValueDomain::Heap, ValueDomain::Heap) => ValueDomain::Heap,
+            (ValueDomain::Unknown, _) | (_, ValueDomain::Unknown) => ValueDomain::Unknown,
+            _ => ValueDomain::Mixed,
+        })
+        .collect()
 }
 
 fn scan_composed_relation(

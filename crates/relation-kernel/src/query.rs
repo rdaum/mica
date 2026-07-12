@@ -21,6 +21,57 @@ const PROBE_JOIN_LEFT_ROW_LIMIT: usize = 32;
 const SMALL_RIGHT_SEMI_JOIN_FACTOR: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelationSource {
+    Unknown,
+    Snapshot,
+    TransactionOverlay,
+    Projected,
+    Transient,
+    Computed,
+    DerivedFull,
+    DerivedDelta,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValueDomain {
+    Immediate,
+    Heap,
+    Mixed,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelationCapabilities {
+    pub source: RelationSource,
+    pub cardinality: Option<usize>,
+    pub exact_indexes: Vec<Vec<u16>>,
+    pub value_domains: Vec<ValueDomain>,
+    pub supports_streaming: bool,
+    pub supports_batch_export: bool,
+}
+
+impl RelationCapabilities {
+    pub fn unknown() -> Self {
+        Self {
+            source: RelationSource::Unknown,
+            cardinality: None,
+            exact_indexes: Vec::new(),
+            value_domains: Vec::new(),
+            supports_streaming: true,
+            supports_batch_export: false,
+        }
+    }
+
+    pub fn immediate_only(&self) -> bool {
+        !self.value_domains.is_empty()
+            && self
+                .value_domains
+                .iter()
+                .all(|domain| *domain == ValueDomain::Immediate)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScanControl {
     Continue,
     Stop,
@@ -53,6 +104,13 @@ pub trait RelationRead {
         _bindings: &[Option<Value>],
     ) -> Result<Option<usize>, KernelError> {
         Ok(None)
+    }
+
+    fn relation_capabilities(
+        &self,
+        _relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        Ok(RelationCapabilities::unknown())
     }
 
     fn has_exact_relation_index(

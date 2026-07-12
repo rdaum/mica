@@ -16,8 +16,8 @@ use crate::snapshot::{active_rules, build_derived_relations};
 use crate::tuple::union_ordered_tuple_rows;
 use crate::{
     CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, FactId, KernelError,
-    RelationId, RelationMetadata, RelationRead, RelationWorkspace, Rule, RuleDefinition, RuleSet,
-    Tuple, Version,
+    RelationCapabilities, RelationId, RelationMetadata, RelationRead, RelationSource,
+    RelationWorkspace, Rule, RuleDefinition, RuleSet, Tuple, ValueDomain, Version,
 };
 use mica_var::Value;
 use std::cell::RefCell;
@@ -223,6 +223,26 @@ impl ProjectedStore {
     fn invalidate_derived(&self) {
         *self.derived_cache.borrow_mut() = None;
     }
+
+    fn extensional_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        let relation = self.relation(relation)?;
+        Ok(RelationCapabilities {
+            source: RelationSource::Projected,
+            cardinality: Some(relation.cardinality()),
+            exact_indexes: relation
+                .metadata()
+                .indexes()
+                .iter()
+                .map(|index| index.positions().to_vec())
+                .collect(),
+            value_domains: relation.value_domains(),
+            supports_streaming: true,
+            supports_batch_export: false,
+        })
+    }
 }
 
 impl RelationRead for ProjectedStore {
@@ -239,6 +259,41 @@ impl RelationRead for ProjectedStore {
             visible = union_ordered_tuple_rows(visible, rows.scan(bindings)?);
         }
         Ok(visible)
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        let mut rows = self.relation(relation)?.estimate_scan_count(bindings)?;
+        if let Some(derived) = self.derived_relations()?.get(&relation) {
+            rows = rows.saturating_add(derived.estimate_scan_count(bindings)?);
+        }
+        Ok(Some(rows))
+    }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        let mut capabilities = self.extensional_capabilities(relation)?;
+        if let Some(derived) = self.derived_relations()?.get(&relation) {
+            capabilities.cardinality = capabilities
+                .cardinality
+                .map(|rows| rows.saturating_add(derived.cardinality()));
+            capabilities.value_domains =
+                vec![ValueDomain::Unknown; self.relation(relation)?.metadata().arity() as usize];
+        }
+        Ok(capabilities)
+    }
+
+    fn has_exact_relation_index(
+        &self,
+        relation: RelationId,
+        positions: &[u16],
+    ) -> Result<bool, KernelError> {
+        Ok(self.relation(relation)?.has_exact_index(positions))
     }
 }
 
@@ -288,6 +343,24 @@ impl RelationRead for ExtensionalProjectedReader<'_> {
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
         self.store.scan_extensional(relation, bindings)
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.store
+            .relation(relation)?
+            .estimate_scan_count(bindings)
+            .map(Some)
+    }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        self.store.extensional_capabilities(relation)
     }
 }
 

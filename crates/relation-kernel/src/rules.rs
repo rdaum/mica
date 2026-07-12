@@ -12,7 +12,10 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::metrics::record_rule_fixpoint;
-use crate::{KernelError, RelationId, RelationRead, ScanControl, Tuple};
+use crate::{
+    KernelError, RelationCapabilities, RelationId, RelationRead, RelationSource, ScanControl,
+    Tuple, ValueDomain,
+};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::OnceLock;
@@ -547,6 +550,19 @@ impl<R: RelationRead> RelationRead for DerivedReader<'_, R> {
         let derived_estimate = self.derived.get(&relation).map(BTreeSet::len).unwrap_or(0);
         Ok(base_estimate.map(|estimate| estimate + derived_estimate))
     }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        combined_derived_capabilities(
+            relation,
+            optional_relation_capabilities(self.base, relation)?,
+            self.derived.get(&relation),
+            None,
+            RelationSource::DerivedFull,
+        )
+    }
 }
 
 impl<R: RelationRead> RelationRead for SccReader<'_, R> {
@@ -597,6 +613,19 @@ impl<R: RelationRead> RelationRead for SccReader<'_, R> {
         let full = self.full.get(&relation).map(BTreeSet::len).unwrap_or(0);
         Ok(base.map(|base| base.saturating_add(completed).saturating_add(full)))
     }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        combined_derived_capabilities(
+            relation,
+            optional_relation_capabilities(self.base, relation)?,
+            self.completed.get(&relation),
+            self.full.get(&relation),
+            RelationSource::DerivedFull,
+        )
+    }
 }
 
 impl RelationRead for TupleMapReader<'_> {
@@ -641,6 +670,99 @@ impl RelationRead for TupleMapReader<'_> {
             self.tuples.get(&relation).map(BTreeSet::len).unwrap_or(0),
         ))
     }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        combined_derived_capabilities(
+            relation,
+            None,
+            self.tuples.get(&relation),
+            None,
+            RelationSource::DerivedDelta,
+        )
+    }
+}
+
+fn optional_relation_capabilities(
+    reader: &impl RelationRead,
+    relation: RelationId,
+) -> Result<Option<RelationCapabilities>, KernelError> {
+    match reader.relation_capabilities(relation) {
+        Ok(capabilities) => Ok(Some(capabilities)),
+        Err(KernelError::UnknownRelation(unknown)) if unknown == relation => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn combined_derived_capabilities(
+    relation: RelationId,
+    base: Option<RelationCapabilities>,
+    first: Option<&BTreeSet<Tuple>>,
+    second: Option<&BTreeSet<Tuple>>,
+    source: RelationSource,
+) -> Result<RelationCapabilities, KernelError> {
+    let base_rows = base.as_ref().and_then(|base| base.cardinality).unwrap_or(0);
+    let derived_rows =
+        first.map(BTreeSet::len).unwrap_or(0) + second.map(BTreeSet::len).unwrap_or(0);
+    let arity = first
+        .and_then(|tuples| tuples.first())
+        .or_else(|| second.and_then(|tuples| tuples.first()))
+        .map(Tuple::arity)
+        .or_else(|| base.as_ref().map(|base| base.value_domains.len()))
+        .ok_or(KernelError::UnknownRelation(relation))?;
+    let derived_domains = tuple_sets_value_domains(first, second, arity);
+    let value_domains = match base {
+        Some(base) if base_rows > 0 && derived_rows > 0 => base
+            .value_domains
+            .iter()
+            .zip(&derived_domains)
+            .map(|(base, derived)| match (*base, *derived) {
+                (ValueDomain::Immediate, ValueDomain::Immediate) => ValueDomain::Immediate,
+                (ValueDomain::Heap, ValueDomain::Heap) => ValueDomain::Heap,
+                (ValueDomain::Unknown, _) | (_, ValueDomain::Unknown) => ValueDomain::Unknown,
+                _ => ValueDomain::Mixed,
+            })
+            .collect(),
+        Some(base) if derived_rows == 0 => base.value_domains,
+        _ => derived_domains,
+    };
+    let supports_batch_export = value_domains
+        .iter()
+        .all(|domain| *domain == ValueDomain::Immediate);
+    Ok(RelationCapabilities {
+        source,
+        cardinality: Some(base_rows.saturating_add(derived_rows)),
+        exact_indexes: Vec::new(),
+        value_domains,
+        supports_streaming: true,
+        supports_batch_export,
+    })
+}
+
+fn tuple_sets_value_domains(
+    first: Option<&BTreeSet<Tuple>>,
+    second: Option<&BTreeSet<Tuple>>,
+    arity: usize,
+) -> Vec<ValueDomain> {
+    let mut immediate = vec![true; arity];
+    let mut heap = vec![true; arity];
+    for tuple in first.into_iter().chain(second).flatten() {
+        for (position, value) in tuple.values().iter().enumerate() {
+            immediate[position] &= value.is_immediate();
+            heap[position] &= !value.is_immediate();
+        }
+    }
+    immediate
+        .into_iter()
+        .zip(heap)
+        .map(|(immediate, heap)| match (immediate, heap) {
+            (true, _) => ValueDomain::Immediate,
+            (_, true) => ValueDomain::Heap,
+            _ => ValueDomain::Mixed,
+        })
+        .collect()
 }
 
 fn extend_matching(

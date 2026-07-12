@@ -24,8 +24,8 @@ use crate::snapshot::{
 use crate::tuple::{difference_ordered_tuple_rows, union_ordered_tuple_rows};
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRead, DispatchRelations,
-    KernelError, RelationId, RelationKernel, RelationMetadata, RelationRead, RelationWorkspace,
-    RuleSet, ScanControl, Snapshot, Tuple, Version,
+    KernelError, RelationCapabilities, RelationId, RelationKernel, RelationMetadata, RelationRead,
+    RelationSource, RelationWorkspace, RuleSet, ScanControl, Snapshot, Tuple, ValueDomain, Version,
 };
 use mica_var::{Symbol, Value};
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
@@ -798,6 +798,25 @@ impl RelationRead for Transaction<'_> {
         self.estimate_scan(relation, bindings).map(Some)
     }
 
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        if !self.has_local_writes(relation) {
+            return self.base.relation_capabilities(relation);
+        }
+        let mut capabilities = self.base.extensional_relation_capabilities(relation)?;
+        capabilities.source = RelationSource::TransactionOverlay;
+        capabilities.cardinality = capabilities
+            .cardinality
+            .map(|rows| rows.saturating_add(self.writes[&relation].len()));
+        capabilities.exact_indexes.clear();
+        capabilities.value_domains =
+            vec![ValueDomain::Unknown; self.base.relation(relation)?.metadata().arity() as usize];
+        capabilities.supports_batch_export = false;
+        Ok(capabilities)
+    }
+
     fn has_exact_relation_index(
         &self,
         relation: RelationId,
@@ -894,6 +913,28 @@ impl crate::RelationRead for ExtensionalTransactionReader<'_, '_> {
         self.tx
             .estimate_extensional_scan(relation, bindings)
             .map(Some)
+    }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        if !self.tx.has_local_writes(relation) {
+            return self.tx.base.extensional_relation_capabilities(relation);
+        }
+        let mut capabilities = self.tx.base.extensional_relation_capabilities(relation)?;
+        capabilities.source = RelationSource::TransactionOverlay;
+        capabilities.cardinality = capabilities
+            .cardinality
+            .map(|rows| rows.saturating_add(self.tx.writes[&relation].len()));
+        capabilities.exact_indexes.clear();
+        capabilities.value_domains = vec![
+            ValueDomain::Unknown;
+            self.tx.base.relation(relation)?.metadata().arity()
+                as usize
+        ];
+        capabilities.supports_batch_export = false;
+        Ok(capabilities)
     }
 
     fn has_exact_relation_index(

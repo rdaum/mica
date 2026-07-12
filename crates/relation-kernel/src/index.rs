@@ -35,6 +35,7 @@ pub(crate) struct RelationState {
     metadata: RelationMetadata,
     tuples: TupleStore,
     indexes: Vec<TupleIndex>,
+    non_immediate_counts: Vec<usize>,
 }
 
 impl RelationState {
@@ -52,6 +53,7 @@ impl RelationState {
             metadata,
             tuples: TupleStore::empty(),
             indexes,
+            non_immediate_counts: vec![0; arity as usize],
         })
     }
 
@@ -65,6 +67,17 @@ impl RelationState {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.tuples.is_empty()
+    }
+
+    pub(crate) fn value_domains(&self) -> Vec<crate::ValueDomain> {
+        self.non_immediate_counts
+            .iter()
+            .map(|non_immediate| match *non_immediate {
+                0 => crate::ValueDomain::Immediate,
+                count if count == self.cardinality() => crate::ValueDomain::Heap,
+                _ => crate::ValueDomain::Mixed,
+            })
+            .collect()
     }
 
     pub(crate) fn contains_tuple(&self, tuple: &Tuple) -> bool {
@@ -258,6 +271,10 @@ impl RelationState {
         }
 
         self.tuples = TupleStore::from_sorted_unique(&rows);
+        self.non_immediate_counts.fill(0);
+        for tuple in &rows {
+            self.record_value_domains(tuple, true);
+        }
         let arity = self.metadata.arity();
         for index in &mut self.indexes {
             index.rebuild_from_sorted_unique_rows(arity, &rows);
@@ -387,6 +404,7 @@ impl RelationState {
         for index in &mut self.indexes {
             index.insert(tuple.clone());
         }
+        self.record_value_domains(&tuple, true);
         true
     }
 
@@ -398,7 +416,22 @@ impl RelationState {
         for index in &mut self.indexes {
             index.remove(tuple);
         }
+        self.record_value_domains(tuple, false);
         true
+    }
+
+    fn record_value_domains(&mut self, tuple: &Tuple, inserted: bool) {
+        for (position, value) in tuple.values().iter().enumerate() {
+            if value.is_immediate() {
+                continue;
+            }
+            if inserted {
+                self.non_immediate_counts[position] += 1;
+            } else {
+                self.non_immediate_counts[position] =
+                    self.non_immediate_counts[position].saturating_sub(1);
+            }
+        }
     }
 }
 

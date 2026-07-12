@@ -73,7 +73,10 @@ pub use projected::{ProjectedDelta, ProjectedStore};
 pub use provider::{CommitProvider, InMemoryCommitProvider, PersistedKernelState};
 #[cfg(feature = "fjall-provider")]
 pub use provider::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
-pub use query::{PreparedQuery, QueryPlan, RelationRead, ScanControl};
+pub use query::{
+    PreparedQuery, QueryPlan, RelationCapabilities, RelationRead, RelationSource, ScanControl,
+    ValueDomain,
+};
 pub use rules::{
     Atom, Rule, RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleError, RuleEvalError,
     RuleGuard, RuleSet, Term,

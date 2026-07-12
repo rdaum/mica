@@ -17,9 +17,9 @@ use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
 use crate::tuple::union_ordered_tuple_rows;
 use crate::{
-    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationId,
-    RelationMetadata, RelationRead, RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple,
-    Version,
+    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationCapabilities,
+    RelationId, RelationMetadata, RelationRead, RelationSource, RuleDefinition, RuleEvalError,
+    RuleSet, ScanControl, Tuple, ValueDomain, Version,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -321,6 +321,37 @@ impl Snapshot {
         relation.estimate_scan_count(bindings)
     }
 
+    pub(crate) fn extensional_relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        let relation = self.relation(relation)?;
+        let computed = self
+            .computed_relations
+            .is_computed_relation(relation.metadata());
+        Ok(RelationCapabilities {
+            source: if computed {
+                RelationSource::Computed
+            } else {
+                RelationSource::Snapshot
+            },
+            cardinality: (!computed).then_some(relation.cardinality()),
+            exact_indexes: relation
+                .metadata()
+                .indexes()
+                .iter()
+                .map(|index| index.positions().to_vec())
+                .collect(),
+            value_domains: if computed {
+                vec![ValueDomain::Unknown; relation.metadata().arity() as usize]
+            } else {
+                relation.value_domains()
+            },
+            supports_streaming: true,
+            supports_batch_export: !computed,
+        })
+    }
+
     pub(crate) fn visit_extensional(
         &self,
         relation: RelationId,
@@ -574,6 +605,29 @@ impl RelationRead for Snapshot {
         self.estimate_scan(relation, bindings).map(Some)
     }
 
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        let mut capabilities = self.extensional_relation_capabilities(relation)?;
+        if capabilities.source == RelationSource::Computed
+            || !relation_has_active_rule_head(&self.rules, relation)
+        {
+            return Ok(capabilities);
+        }
+        if let Some(derived) = self.derived_relations()?.get(&relation) {
+            let base_rows = capabilities.cardinality.unwrap_or(0);
+            capabilities.cardinality = Some(base_rows.saturating_add(derived.cardinality()));
+            capabilities.value_domains = combine_value_domains(
+                &capabilities.value_domains,
+                base_rows,
+                &derived.value_domains(),
+                derived.cardinality(),
+            );
+        }
+        Ok(capabilities)
+    }
+
     fn has_exact_relation_index(
         &self,
         relation: RelationId,
@@ -646,6 +700,29 @@ struct ExtensionalSnapshotReader<'a> {
     snapshot: &'a Snapshot,
 }
 
+fn combine_value_domains(
+    left: &[ValueDomain],
+    left_rows: usize,
+    right: &[ValueDomain],
+    right_rows: usize,
+) -> Vec<ValueDomain> {
+    if left_rows == 0 {
+        return right.to_vec();
+    }
+    if right_rows == 0 {
+        return left.to_vec();
+    }
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| match (*left, *right) {
+            (ValueDomain::Unknown, _) | (_, ValueDomain::Unknown) => ValueDomain::Unknown,
+            (ValueDomain::Immediate, ValueDomain::Immediate) => ValueDomain::Immediate,
+            (ValueDomain::Heap, ValueDomain::Heap) => ValueDomain::Heap,
+            _ => ValueDomain::Mixed,
+        })
+        .collect()
+}
+
 impl crate::RelationRead for ExtensionalSnapshotReader<'_> {
     fn scan_relation(
         &self,
@@ -663,6 +740,13 @@ impl crate::RelationRead for ExtensionalSnapshotReader<'_> {
         self.snapshot
             .estimate_extensional_scan(relation, bindings)
             .map(Some)
+    }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        self.snapshot.extensional_relation_capabilities(relation)
     }
 
     fn has_exact_relation_index(
