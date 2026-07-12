@@ -69,6 +69,10 @@ mod tests {
         f()
     }
 
+    fn new_source_runner() -> SourceRunner {
+        with_source_provider_env(SourceRunner::new_empty)
+    }
+
     fn rust_analyzer_available() -> bool {
         std::process::Command::new("rust-analyzer")
             .arg("--version")
@@ -182,7 +186,7 @@ mod tests {
 
     #[test]
     fn source_provider_reads_file_text_from_allowed_root() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
@@ -199,7 +203,7 @@ mod tests {
 
     #[test]
     fn source_provider_reads_line_windows() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
@@ -221,7 +225,7 @@ mod tests {
 
     #[test]
     fn source_provider_counts_file_lines() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
@@ -238,7 +242,7 @@ mod tests {
 
     #[test]
     fn source_provider_lists_repository_entries() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
@@ -259,7 +263,7 @@ mod tests {
 
     #[test]
     fn source_provider_rejects_escaping_paths() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         // Scan KernelErrors are now raised as Mica error values so
@@ -275,7 +279,7 @@ mod tests {
 
     #[test]
     fn source_provider_requires_bound_path() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
@@ -289,7 +293,7 @@ mod tests {
 
     #[test]
     fn syntax_provider_requires_constrained_queries() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
@@ -315,7 +319,7 @@ mod tests {
 
     #[test]
     fn source_provider_relations_are_read_only() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let repo = runner.named_identity(Symbol::intern("repo")).unwrap();
@@ -418,6 +422,7 @@ mod tests {
         git(["clone", path(&remote), path(&work)]);
         git_in(&work, ["config", "user.name", "Mica Tester"]);
         git_in(&work, ["config", "user.email", "mica@example.test"]);
+        git_in(&work, ["branch", "-M", "main"]);
         fs::write(work.join("README.md"), "base\n").expect("base file should be written");
         git_in(&work, ["add", "README.md"]);
         git_in(&work, ["commit", "-m", "Initial base"]);
@@ -484,7 +489,7 @@ mod tests {
 
     #[test]
     fn source_provider_returns_rust_syntax_outline() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
@@ -562,7 +567,7 @@ mod tests {
 
     #[test]
     fn source_provider_returns_line_level_syntax_segments() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
@@ -592,7 +597,7 @@ mod tests {
 
     #[test]
     fn source_provider_reports_nearest_syntax_node() {
-        let mut runner = SourceRunner::new_empty();
+        let mut runner = new_source_runner();
         load_source_relations(&mut runner);
 
         let report = runner
