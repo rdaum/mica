@@ -63,7 +63,7 @@ impl PackedRelation {
         Self::from_canonical_tuples(finish_tuple_rows(rows), arity)
     }
 
-    pub(crate) fn from_canonical_tuples(rows: Vec<Tuple>, arity: usize) -> Option<Self> {
+    pub fn from_canonical_tuples(rows: Vec<Tuple>, arity: usize) -> Option<Self> {
         if arity == 0 {
             return None;
         }

@@ -7,6 +7,7 @@
 use crate::query::PhysicalQueryPlan;
 use crate::{KernelError, RelationRead, Tuple};
 use mica_var::Value;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -18,6 +19,67 @@ pub(crate) struct PackedJoinInput<'a> {
     pub reader: &'a dyn RelationRead,
     pub relation: crate::RelationId,
     pub bindings: &'a [Option<Value>],
+}
+
+#[derive(Default)]
+struct BatchWorkspace {
+    columns: Vec<Vec<Value>>,
+    row_indexes: Vec<Vec<usize>>,
+    tuple_buffers: Vec<Vec<Tuple>>,
+}
+
+thread_local! {
+    static BATCH_WORKSPACE: RefCell<BatchWorkspace> = RefCell::new(BatchWorkspace::default());
+}
+
+impl BatchWorkspace {
+    fn column(&mut self, capacity: usize) -> Vec<Value> {
+        let mut column = self.columns.pop().unwrap_or_default();
+        column.clear();
+        column.reserve(capacity);
+        column
+    }
+
+    fn row_indexes(&mut self, capacity: usize) -> Vec<usize> {
+        let mut rows = self.row_indexes.pop().unwrap_or_default();
+        rows.clear();
+        rows.reserve(capacity);
+        rows
+    }
+
+    fn tuples(&mut self, capacity: usize) -> Vec<Tuple> {
+        let mut tuples = self.tuple_buffers.pop().unwrap_or_default();
+        tuples.clear();
+        tuples.reserve(capacity);
+        tuples
+    }
+
+    fn recycle_batch(&mut self, batch: NativeBatch) {
+        for column in batch.columns {
+            if let NativeColumn::Owned(mut values) = column {
+                values.clear();
+                self.columns.push(values);
+            }
+        }
+        if let Some(mut tuples) = batch.tuples {
+            tuples.clear();
+            self.tuple_buffers.push(tuples);
+        }
+    }
+
+    fn recycle_row_indexes(&mut self, mut rows: Vec<usize>) {
+        rows.clear();
+        self.row_indexes.push(rows);
+    }
+}
+
+fn with_batch_workspace<T>(execute: impl FnOnce(&mut BatchWorkspace) -> T) -> T {
+    BATCH_WORKSPACE.with(|workspace| {
+        let Ok(mut workspace) = workspace.try_borrow_mut() else {
+            return execute(&mut BatchWorkspace::default());
+        };
+        execute(&mut workspace)
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,17 +140,19 @@ impl NativeBatch {
         })
     }
 
-    fn empty(arity: usize) -> Self {
+    fn empty(arity: usize, capacity: usize, workspace: &mut BatchWorkspace) -> Self {
         Self {
             columns: (0..arity)
-                .map(|_| NativeColumn::Owned(Vec::new()))
+                .map(|_| NativeColumn::Owned(workspace.column(capacity)))
                 .collect(),
             tuples: None,
             row_count: 0,
         }
     }
 
-    fn from_packed(batch: &crate::PackedRelation) -> Self {
+    fn from_packed(batch: &crate::PackedRelation, workspace: &mut BatchWorkspace) -> Self {
+        let mut tuples = workspace.tuples(batch.row_count());
+        tuples.extend_from_slice(batch.rows());
         Self {
             columns: batch
                 .columns()
@@ -96,7 +160,7 @@ impl NativeBatch {
                 .cloned()
                 .map(NativeColumn::Shared)
                 .collect(),
-            tuples: Some(batch.rows().to_vec()),
+            tuples: Some(tuples),
             row_count: batch.row_count(),
         }
     }
@@ -105,7 +169,7 @@ impl NativeBatch {
         self.columns.len()
     }
 
-    fn project(&self, positions: &[u16]) -> Option<Self> {
+    fn project(&self, positions: &[u16], workspace: &mut BatchWorkspace) -> Option<Self> {
         let columns = positions
             .iter()
             .map(|position| self.columns.get(*position as usize).cloned())
@@ -120,7 +184,7 @@ impl NativeBatch {
                 .flatten(),
             row_count: self.row_count,
         };
-        projected.canonicalize();
+        projected.canonicalize(workspace);
         Some(projected)
     }
 
@@ -169,23 +233,22 @@ impl NativeBatch {
         out.row_count += 1;
     }
 
-    fn select_rows(&self, rows: &[usize]) -> Self {
+    fn select_rows(&self, rows: &[usize], workspace: &mut BatchWorkspace) -> Self {
         Self {
             columns: self
                 .columns
                 .iter()
                 .map(|column| {
-                    NativeColumn::Owned(
-                        rows.iter()
-                            .map(|row| column.as_slice()[*row].clone())
-                            .collect(),
-                    )
+                    let mut selected = workspace.column(rows.len());
+                    selected.extend(rows.iter().map(|row| column.as_slice()[*row].clone()));
+                    NativeColumn::Owned(selected)
                 })
                 .collect(),
-            tuples: self
-                .tuples
-                .as_ref()
-                .map(|tuples| rows.iter().map(|row| tuples[*row].clone()).collect()),
+            tuples: self.tuples.as_ref().map(|tuples| {
+                let mut selected = workspace.tuples(rows.len());
+                selected.extend(rows.iter().map(|row| tuples[*row].clone()));
+                selected
+            }),
             row_count: rows.len(),
         }
     }
@@ -207,29 +270,47 @@ impl NativeBatch {
             .unwrap_or(Ordering::Equal)
     }
 
-    fn canonicalize(&mut self) {
+    fn canonicalize(&mut self, workspace: &mut BatchWorkspace) {
         if self.row_count <= 1 {
             return;
         }
-        let mut order = (0..self.row_count).collect::<Vec<_>>();
+        let mut order = workspace.row_indexes(self.row_count);
+        order.extend(0..self.row_count);
         order.sort_unstable_by(|left, right| self.compare_rows(*left, *right));
         order.dedup_by(|right, left| self.compare_rows(*left, *right) == Ordering::Equal);
-        *self = self.select_rows(&order);
+        let selected = self.select_rows(&order, workspace);
+        workspace.recycle_row_indexes(order);
+        let previous = std::mem::replace(self, selected);
+        workspace.recycle_batch(previous);
     }
 
-    fn into_tuples(self) -> Vec<Tuple> {
-        if let Some(tuples) = self.tuples {
+    fn into_tuples(self, workspace: &mut BatchWorkspace) -> Vec<Tuple> {
+        let Self {
+            columns,
+            tuples,
+            row_count,
+        } = self;
+        if let Some(tuples) = tuples {
+            for column in columns {
+                if let NativeColumn::Owned(mut values) = column {
+                    values.clear();
+                    workspace.columns.push(values);
+                }
+            }
             return tuples;
         }
-        (0..self.row_count)
-            .map(|row| {
-                Tuple::new(
-                    self.columns
-                        .iter()
-                        .map(|column| column.as_slice()[row].clone()),
-                )
-            })
-            .collect()
+        let mut output = workspace.tuples(row_count);
+        output
+            .extend((0..row_count).map(|row| {
+                Tuple::new(columns.iter().map(|column| column.as_slice()[row].clone()))
+            }));
+        for column in columns {
+            if let NativeColumn::Owned(mut values) = column {
+                values.clear();
+                workspace.columns.push(values);
+            }
+        }
+        output
     }
 }
 
@@ -243,7 +324,9 @@ pub(crate) fn execute_packed_query(
     if let Some(rows) = execute_cached_terminal_set(plan, reader)? {
         return Ok(Some(rows));
     }
-    Ok(execute_batch(plan, reader)?.map(NativeBatch::into_tuples))
+    with_batch_workspace(|workspace| {
+        Ok(execute_batch(plan, reader, workspace)?.map(|batch| batch.into_tuples(workspace)))
+    })
 }
 
 pub(crate) fn execute_packed_relation_join(
@@ -283,9 +366,14 @@ pub(crate) fn execute_packed_relation_join(
     else {
         return Ok(None);
     };
-    let left = NativeBatch::from_packed(&left);
-    let right = NativeBatch::from_packed(&right);
-    Ok(join(&left, &right, left_positions, right_positions).map(NativeBatch::into_tuples))
+    with_batch_workspace(|workspace| {
+        let left = NativeBatch::from_packed(&left, workspace);
+        let right = NativeBatch::from_packed(&right, workspace);
+        let output = join(&left, &right, left_positions, right_positions, workspace);
+        workspace.recycle_batch(left);
+        workspace.recycle_batch(right);
+        Ok(output.map(|batch| batch.into_tuples(workspace)))
+    })
 }
 
 fn batch_join_capabilities_eligible(capabilities: &crate::RelationCapabilities) -> bool {
@@ -477,18 +565,21 @@ fn cached_terminal_semi_join(
     let Some((left, right)) = cached_scan_pair(left, right, reader)? else {
         return Ok(None);
     };
-    let left_batch = NativeBatch::from_packed(&left);
-    let right_batch = NativeBatch::from_packed(&right);
-    let Some(selected) = merge_semi_join(
-        &left_batch,
-        &right_batch,
-        left_positions,
-        right_positions,
-        keep_matches,
-    ) else {
-        return Ok(None);
-    };
-    Ok(Some(selected.into_tuples()))
+    with_batch_workspace(|workspace| {
+        let left_batch = NativeBatch::from_packed(&left, workspace);
+        let right_batch = NativeBatch::from_packed(&right, workspace);
+        let selected = merge_semi_join(
+            &left_batch,
+            &right_batch,
+            left_positions,
+            right_positions,
+            keep_matches,
+            workspace,
+        );
+        workspace.recycle_batch(left_batch);
+        workspace.recycle_batch(right_batch);
+        Ok(selected.map(|batch| batch.into_tuples(workspace)))
+    })
 }
 
 fn packed_plan_eligible(
@@ -528,17 +619,23 @@ fn visit_scans(
 fn execute_batch(
     plan: &PhysicalQueryPlan,
     reader: &impl RelationRead,
+    workspace: &mut BatchWorkspace,
 ) -> Result<Option<NativeBatch>, KernelError> {
     match plan {
         PhysicalQueryPlan::Scan { relation, bindings } => {
             if let Some(batch) = reader.export_relation_batch(*relation, bindings)? {
-                return Ok(Some(NativeBatch::from_packed(&batch)));
+                return Ok(Some(NativeBatch::from_packed(&batch, workspace)));
             }
             let rows = reader.scan_relation(*relation, bindings)?;
             Ok(NativeBatch::from_tuples(rows, bindings.len()))
         }
         PhysicalQueryPlan::Project { input, positions } => {
-            Ok(execute_batch(input, reader)?.and_then(|input| input.project(positions)))
+            let Some(input) = execute_batch(input, reader, workspace)? else {
+                return Ok(None);
+            };
+            let output = input.project(positions, workspace);
+            workspace.recycle_batch(input);
+            Ok(output)
         }
         PhysicalQueryPlan::JoinEq {
             left,
@@ -546,43 +643,71 @@ fn execute_batch(
             left_positions,
             right_positions,
         } => {
-            let Some(left) = execute_batch(left, reader)? else {
+            let Some(left) = execute_batch(left, reader, workspace)? else {
                 return Ok(None);
             };
-            let Some(right) = execute_batch(right, reader)? else {
+            let Some(right) = execute_batch(right, reader, workspace)? else {
+                workspace.recycle_batch(left);
                 return Ok(None);
             };
-            Ok(join(&left, &right, left_positions, right_positions))
+            let output = join(&left, &right, left_positions, right_positions, workspace);
+            workspace.recycle_batch(left);
+            workspace.recycle_batch(right);
+            Ok(output)
         }
         PhysicalQueryPlan::SemiJoin {
             left,
             right,
             left_positions,
             right_positions,
-        } => execute_batch_semi_join(left, right, left_positions, right_positions, reader, true),
+        } => execute_batch_semi_join(
+            left,
+            right,
+            left_positions,
+            right_positions,
+            reader,
+            true,
+            workspace,
+        ),
         PhysicalQueryPlan::AntiJoin {
             left,
             right,
             left_positions,
             right_positions,
-        } => execute_batch_semi_join(left, right, left_positions, right_positions, reader, false),
+        } => execute_batch_semi_join(
+            left,
+            right,
+            left_positions,
+            right_positions,
+            reader,
+            false,
+            workspace,
+        ),
         PhysicalQueryPlan::Union { left, right } => {
-            let Some(left) = execute_batch(left, reader)? else {
+            let Some(left) = execute_batch(left, reader, workspace)? else {
                 return Ok(None);
             };
-            let Some(right) = execute_batch(right, reader)? else {
+            let Some(right) = execute_batch(right, reader, workspace)? else {
+                workspace.recycle_batch(left);
                 return Ok(None);
             };
-            Ok(union(left, right))
+            let output = union(&left, &right, workspace);
+            workspace.recycle_batch(left);
+            workspace.recycle_batch(right);
+            Ok(output)
         }
         PhysicalQueryPlan::Difference { left, right } => {
-            let Some(left) = execute_batch(left, reader)? else {
+            let Some(left) = execute_batch(left, reader, workspace)? else {
                 return Ok(None);
             };
-            let Some(right) = execute_batch(right, reader)? else {
+            let Some(right) = execute_batch(right, reader, workspace)? else {
+                workspace.recycle_batch(left);
                 return Ok(None);
             };
-            Ok(difference(left, right))
+            let output = difference(&left, &right, workspace);
+            workspace.recycle_batch(left);
+            workspace.recycle_batch(right);
+            Ok(output)
         }
     }
 }
@@ -592,13 +717,14 @@ fn join(
     right: &NativeBatch,
     left_positions: &[u16],
     right_positions: &[u16],
+    workspace: &mut BatchWorkspace,
 ) -> Option<NativeBatch> {
     if left_positions.len() != right_positions.len() || !matches!(left_positions.len(), 1 | 2) {
         return None;
     }
     if positions_are_natural_prefix(left_positions) && positions_are_natural_prefix(right_positions)
     {
-        return merge_join(left, right, left_positions, right_positions);
+        return merge_join(left, right, left_positions, right_positions, workspace);
     }
     let mut right_index = BTreeMap::<PackedKey, Vec<usize>>::new();
     for row in 0..right.row_count {
@@ -607,7 +733,11 @@ fn join(
             .or_default()
             .push(row);
     }
-    let mut output = NativeBatch::empty(left.arity() + right.arity());
+    let mut output = NativeBatch::empty(
+        left.arity() + right.arity(),
+        left.row_count.max(right.row_count),
+        workspace,
+    );
     for left_row in 0..left.row_count {
         let key = left.key(left_row, left_positions)?;
         let Some(right_rows) = right_index.get(&key) else {
@@ -617,7 +747,7 @@ fn join(
             left.concat_rows(left_row, right, *right_row, &mut output);
         }
     }
-    output.canonicalize();
+    output.canonicalize(workspace);
     Some(output)
 }
 
@@ -630,8 +760,13 @@ fn merge_join(
     right: &NativeBatch,
     left_positions: &[u16],
     right_positions: &[u16],
+    workspace: &mut BatchWorkspace,
 ) -> Option<NativeBatch> {
-    let mut output = NativeBatch::empty(left.arity() + right.arity());
+    let mut output = NativeBatch::empty(
+        left.arity() + right.arity(),
+        left.row_count.max(right.row_count),
+        workspace,
+    );
     let mut left_row = 0usize;
     let mut right_row = 0usize;
     while left_row < left.row_count && right_row < right.row_count {
@@ -678,43 +813,60 @@ fn execute_batch_semi_join(
     right_positions: &[u16],
     reader: &impl RelationRead,
     keep_matches: bool,
+    workspace: &mut BatchWorkspace,
 ) -> Result<Option<NativeBatch>, KernelError> {
-    let Some(left) = execute_batch(left, reader)? else {
+    let Some(left) = execute_batch(left, reader, workspace)? else {
         return Ok(None);
     };
-    let Some(right) = execute_batch(right, reader)? else {
+    let Some(right) = execute_batch(right, reader, workspace)? else {
+        workspace.recycle_batch(left);
         return Ok(None);
     };
     if left_positions.len() != right_positions.len() || !matches!(left_positions.len(), 1 | 2) {
+        workspace.recycle_batch(left);
+        workspace.recycle_batch(right);
         return Ok(None);
     }
-    if positions_are_natural_prefix(left_positions) && positions_are_natural_prefix(right_positions)
+    let output = if positions_are_natural_prefix(left_positions)
+        && positions_are_natural_prefix(right_positions)
     {
-        return Ok(merge_semi_join(
+        merge_semi_join(
             &left,
             &right,
             left_positions,
             right_positions,
             keep_matches,
-        ));
-    }
-    let mut right_keys = BTreeSet::new();
-    for row in 0..right.row_count {
-        let Some(key) = right.key(row, right_positions) else {
-            return Ok(None);
-        };
-        right_keys.insert(key);
-    }
-    let mut selected = Vec::new();
-    for row in 0..left.row_count {
-        let Some(key) = left.key(row, left_positions) else {
-            return Ok(None);
-        };
-        if right_keys.contains(&key) == keep_matches {
-            selected.push(row);
+            workspace,
+        )
+    } else {
+        let mut right_keys = BTreeSet::new();
+        for row in 0..right.row_count {
+            let Some(key) = right.key(row, right_positions) else {
+                workspace.recycle_batch(left);
+                workspace.recycle_batch(right);
+                return Ok(None);
+            };
+            right_keys.insert(key);
         }
-    }
-    Ok(Some(left.select_rows(&selected)))
+        let mut selected = workspace.row_indexes(left.row_count);
+        for row in 0..left.row_count {
+            let Some(key) = left.key(row, left_positions) else {
+                workspace.recycle_row_indexes(selected);
+                workspace.recycle_batch(left);
+                workspace.recycle_batch(right);
+                return Ok(None);
+            };
+            if right_keys.contains(&key) == keep_matches {
+                selected.push(row);
+            }
+        }
+        let output = left.select_rows(&selected, workspace);
+        workspace.recycle_row_indexes(selected);
+        Some(output)
+    };
+    workspace.recycle_batch(left);
+    workspace.recycle_batch(right);
+    Ok(output)
 }
 
 fn merge_semi_join(
@@ -723,8 +875,9 @@ fn merge_semi_join(
     left_positions: &[u16],
     right_positions: &[u16],
     keep_matches: bool,
+    workspace: &mut BatchWorkspace,
 ) -> Option<NativeBatch> {
-    let mut selected = Vec::new();
+    let mut selected = workspace.row_indexes(left.row_count);
     let mut left_row = 0usize;
     let mut right_row = 0usize;
     while left_row < left.row_count {
@@ -744,19 +897,23 @@ fn merge_semi_join(
         }
         left_row = left_end;
     }
-    Some(left.select_rows(&selected))
+    let output = left.select_rows(&selected, workspace);
+    workspace.recycle_row_indexes(selected);
+    Some(output)
 }
 
-fn union(mut left: NativeBatch, mut right: NativeBatch) -> Option<NativeBatch> {
+fn union(
+    left: &NativeBatch,
+    right: &NativeBatch,
+    workspace: &mut BatchWorkspace,
+) -> Option<NativeBatch> {
     if left.arity() != right.arity() {
         return None;
     }
-    left.canonicalize();
-    right.canonicalize();
     let preserve_tuples = left.tuples.is_some() && right.tuples.is_some();
-    let mut output = NativeBatch::empty(left.arity());
+    let mut output = NativeBatch::empty(left.arity(), left.row_count + right.row_count, workspace);
     if preserve_tuples {
-        output.tuples = Some(Vec::with_capacity(left.row_count + right.row_count));
+        output.tuples = Some(workspace.tuples(left.row_count + right.row_count));
     }
     let mut left_row = 0usize;
     let mut right_row = 0usize;
@@ -771,7 +928,7 @@ fn union(mut left: NativeBatch, mut right: NativeBatch) -> Option<NativeBatch> {
             left_row += 1;
             continue;
         }
-        match left.compare_row_with(left_row, &right, right_row) {
+        match left.compare_row_with(left_row, right, right_row) {
             Ordering::Less => {
                 left.push_row_to(left_row, &mut output);
                 left_row += 1;
@@ -790,13 +947,15 @@ fn union(mut left: NativeBatch, mut right: NativeBatch) -> Option<NativeBatch> {
     Some(output)
 }
 
-fn difference(mut left: NativeBatch, mut right: NativeBatch) -> Option<NativeBatch> {
+fn difference(
+    left: &NativeBatch,
+    right: &NativeBatch,
+    workspace: &mut BatchWorkspace,
+) -> Option<NativeBatch> {
     if left.arity() != right.arity() {
         return None;
     }
-    left.canonicalize();
-    right.canonicalize();
-    let mut selected = Vec::new();
+    let mut selected = workspace.row_indexes(left.row_count);
     let mut left_row = 0usize;
     let mut right_row = 0usize;
     while left_row < left.row_count {
@@ -804,7 +963,7 @@ fn difference(mut left: NativeBatch, mut right: NativeBatch) -> Option<NativeBat
             selected.extend(left_row..left.row_count);
             break;
         }
-        match left.compare_row_with(left_row, &right, right_row) {
+        match left.compare_row_with(left_row, right, right_row) {
             Ordering::Less => {
                 selected.push(left_row);
                 left_row += 1;
@@ -816,7 +975,9 @@ fn difference(mut left: NativeBatch, mut right: NativeBatch) -> Option<NativeBat
             Ordering::Greater => right_row += 1,
         }
     }
-    Some(left.select_rows(&selected))
+    let output = left.select_rows(&selected, workspace);
+    workspace.recycle_row_indexes(selected);
+    Some(output)
 }
 
 #[cfg(test)]
@@ -829,6 +990,7 @@ mod tests {
 
     #[test]
     fn native_batch_projects_and_canonicalizes_without_tuple_intermediates() {
+        let mut workspace = BatchWorkspace::default();
         let rows = vec![
             Tuple::from([int(2), int(20)]),
             Tuple::from([int(1), int(10)]),
@@ -836,17 +998,18 @@ mod tests {
         ];
         let projected = NativeBatch::from_tuples(rows, 2)
             .unwrap()
-            .project(&[0])
+            .project(&[0], &mut workspace)
             .unwrap();
 
         assert_eq!(
-            projected.into_tuples(),
+            projected.into_tuples(&mut workspace),
             vec![Tuple::from([int(1)]), Tuple::from([int(2)])]
         );
     }
 
     #[test]
     fn native_batch_join_and_difference_match_set_semantics() {
+        let mut workspace = BatchWorkspace::default();
         let left = NativeBatch::from_tuples(
             vec![
                 Tuple::from([int(1), int(10)]),
@@ -863,20 +1026,48 @@ mod tests {
             2,
         )
         .unwrap();
-        let joined = join(&left, &right, &[1], &[0]).unwrap();
+        let joined = join(&left, &right, &[1], &[0], &mut workspace).unwrap();
         assert_eq!(
-            joined.into_tuples(),
+            joined.into_tuples(&mut workspace),
             vec![Tuple::from([int(1), int(10), int(10), int(100)])]
         );
 
-        let difference = difference(
-            left,
-            NativeBatch::from_tuples(vec![Tuple::from([int(1), int(10)])], 2).unwrap(),
-        )
-        .unwrap();
+        let removed = NativeBatch::from_tuples(vec![Tuple::from([int(1), int(10)])], 2).unwrap();
+        let difference = difference(&left, &removed, &mut workspace).unwrap();
         assert_eq!(
-            difference.into_tuples(),
+            difference.into_tuples(&mut workspace),
             vec![Tuple::from([int(2), int(20)])]
         );
+    }
+
+    #[test]
+    fn batch_workspace_reuses_owned_intermediate_columns() {
+        let left_rows = vec![
+            Tuple::from([int(1), int(10)]),
+            Tuple::from([int(2), int(20)]),
+        ];
+        let right_rows = vec![
+            Tuple::from([int(10), int(100)]),
+            Tuple::from([int(20), int(200)]),
+        ];
+        let mut workspace = BatchWorkspace::default();
+
+        let mut retained_columns = None;
+        for _ in 0..2 {
+            let left = NativeBatch::from_tuples(left_rows.clone(), 2).unwrap();
+            let right = NativeBatch::from_tuples(right_rows.clone(), 2).unwrap();
+            let joined = join(&left, &right, &[1], &[0], &mut workspace).unwrap();
+            assert_eq!(joined.into_tuples(&mut workspace).len(), 2);
+            if let Some(retained_columns) = retained_columns {
+                assert_eq!(
+                    workspace.columns.len(),
+                    retained_columns,
+                    "the second execution should return the same column buffers",
+                );
+            } else {
+                retained_columns = Some(workspace.columns.len());
+                assert!(workspace.columns.len() >= 4);
+            }
+        }
     }
 }

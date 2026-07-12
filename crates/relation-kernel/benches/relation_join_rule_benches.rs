@@ -21,7 +21,8 @@ use micromeasure::{
     BenchContext, BenchmarkMainOptions, DiagnosticError, DiagnosticResult, MetricValue, Throughput,
     benchmark_main, black_box,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,6 +39,7 @@ const RECURSIVE_CHAIN_NODES: usize = 48;
 const RECURSIVE_PACKED_CHAIN_NODES: usize = 384;
 const RECURSIVE_BRANCHING_NODES: usize = 63;
 const RECURSIVE_CYCLE_NODES: usize = 32;
+type PackedBenchCache = BTreeMap<(RelationId, Vec<Option<Value>>), Arc<PackedRelation>>;
 
 struct JoinRuleContext {
     snapshot: Arc<Snapshot>,
@@ -66,6 +68,97 @@ struct CountingReader {
     estimate_calls: Cell<u64>,
     visit_calls: Cell<u64>,
     rows_returned: Cell<u64>,
+}
+
+struct ColdPackingReader<'a> {
+    snapshot: &'a Snapshot,
+}
+
+struct AmortizedPackingReader<'a> {
+    snapshot: &'a Snapshot,
+    batches: RefCell<PackedBenchCache>,
+}
+
+impl RelationRead for ColdPackingReader<'_> {
+    fn scan_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        self.snapshot.scan_relation(relation, bindings)
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.snapshot.estimate_relation_scan(relation, bindings)
+    }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        self.snapshot.relation_capabilities(relation)
+    }
+
+    fn export_relation_batch(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        let capabilities = self.snapshot.relation_capabilities(relation)?;
+        let rows = self.snapshot.scan_relation(relation, bindings)?;
+        Ok(
+            PackedRelation::from_canonical_tuples(rows, capabilities.value_domains.len())
+                .map(Arc::new),
+        )
+    }
+}
+
+impl RelationRead for AmortizedPackingReader<'_> {
+    fn scan_relation(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        self.snapshot.scan_relation(relation, bindings)
+    }
+
+    fn estimate_relation_scan(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<usize>, KernelError> {
+        self.snapshot.estimate_relation_scan(relation, bindings)
+    }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        self.snapshot.relation_capabilities(relation)
+    }
+
+    fn export_relation_batch(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        let key = (relation, bindings.to_vec());
+        if let Some(batch) = self.batches.borrow().get(&key).cloned() {
+            return Ok(Some(batch));
+        }
+        let capabilities = self.snapshot.relation_capabilities(relation)?;
+        let rows = self.snapshot.scan_relation(relation, bindings)?;
+        let batch = PackedRelation::from_canonical_tuples(rows, capabilities.value_domains.len())
+            .map(Arc::new);
+        if let Some(batch) = &batch {
+            self.batches.borrow_mut().insert(key, batch.clone());
+        }
+        Ok(batch)
+    }
 }
 
 struct RecursiveCase {
@@ -388,6 +481,35 @@ fn query_natural_unary_union(ctx: &mut NaturalJoinContext, chunk_size: usize, _c
     }
 }
 
+fn query_natural_unary_union_cold_packing(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    let reader = ColdPackingReader {
+        snapshot: ctx.snapshot.as_ref(),
+    };
+    for _ in 0..chunk_size {
+        black_box(ctx.union_query.execute(&reader).unwrap());
+    }
+}
+
+fn query_natural_unary_union_amortized_packing_4(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        let reader = AmortizedPackingReader {
+            snapshot: ctx.snapshot.as_ref(),
+            batches: RefCell::new(BTreeMap::new()),
+        };
+        for _ in 0..4 {
+            black_box(ctx.union_query.execute(&reader).unwrap());
+        }
+    }
+}
+
 fn merge_tuple_slices(left: &[Tuple], right: &[Tuple]) -> Vec<Tuple> {
     let mut output = Vec::with_capacity(left.len() + right.len());
     let mut left_row = 0usize;
@@ -503,6 +625,35 @@ fn query_natural_unary_difference(
     }
 }
 
+fn query_natural_unary_difference_cold_packing(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    let reader = ColdPackingReader {
+        snapshot: ctx.snapshot.as_ref(),
+    };
+    for _ in 0..chunk_size {
+        black_box(ctx.difference_query.execute(&reader).unwrap());
+    }
+}
+
+fn query_natural_unary_difference_amortized_packing_4(
+    ctx: &mut NaturalJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        let reader = AmortizedPackingReader {
+            snapshot: ctx.snapshot.as_ref(),
+            batches: RefCell::new(BTreeMap::new()),
+        };
+        for _ in 0..4 {
+            black_box(ctx.difference_query.execute(&reader).unwrap());
+        }
+    }
+}
+
 fn query_temporary_projected_low_cardinality_join(
     ctx: &mut TemporaryProjectedJoinContext,
     chunk_size: usize,
@@ -510,6 +661,35 @@ fn query_temporary_projected_low_cardinality_join(
 ) {
     for _ in 0..chunk_size {
         black_box(ctx.query.execute(&*ctx.snapshot).unwrap());
+    }
+}
+
+fn query_temporary_projected_low_cardinality_join_cold_packing(
+    ctx: &mut TemporaryProjectedJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    let reader = ColdPackingReader {
+        snapshot: ctx.snapshot.as_ref(),
+    };
+    for _ in 0..chunk_size {
+        black_box(ctx.query.execute(&reader).unwrap());
+    }
+}
+
+fn query_temporary_projected_low_cardinality_join_amortized_packing_4(
+    ctx: &mut TemporaryProjectedJoinContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        let reader = AmortizedPackingReader {
+            snapshot: ctx.snapshot.as_ref(),
+            batches: RefCell::new(BTreeMap::new()),
+        };
+        for _ in 0..4 {
+            black_box(ctx.query.execute(&reader).unwrap());
+        }
     }
 }
 
@@ -1251,6 +1431,14 @@ benchmark_main!(
             g.throughput(Throughput::per_operation(1, "query"))
                 .bench("natural_unary_union", query_natural_unary_union);
             g.throughput(Throughput::per_operation(1, "query")).bench(
+                "natural_unary_union_cold_packing",
+                query_natural_unary_union_cold_packing,
+            );
+            g.throughput(Throughput::per_operation(4, "query")).bench(
+                "natural_unary_union_amortized_packing_4",
+                query_natural_unary_union_amortized_packing_4,
+            );
+            g.throughput(Throughput::per_operation(1, "query")).bench(
                 "natural_unary_union_parallel_experiment",
                 query_natural_unary_union_parallel_experiment,
             );
@@ -1264,12 +1452,28 @@ benchmark_main!(
             );
             g.throughput(Throughput::per_operation(1, "query"))
                 .bench("natural_unary_difference", query_natural_unary_difference);
+            g.throughput(Throughput::per_operation(1, "query")).bench(
+                "natural_unary_difference_cold_packing",
+                query_natural_unary_difference_cold_packing,
+            );
+            g.throughput(Throughput::per_operation(4, "query")).bench(
+                "natural_unary_difference_amortized_packing_4",
+                query_natural_unary_difference_amortized_packing_4,
+            );
         });
 
         runner.group::<TemporaryProjectedJoinContext>("query", |g| {
             g.throughput(Throughput::per_operation(1, "query")).bench(
                 "temporary_projected_low_cardinality_join",
                 query_temporary_projected_low_cardinality_join,
+            );
+            g.throughput(Throughput::per_operation(1, "query")).bench(
+                "temporary_projected_low_cardinality_join_cold_packing",
+                query_temporary_projected_low_cardinality_join_cold_packing,
+            );
+            g.throughput(Throughput::per_operation(4, "query")).bench(
+                "temporary_projected_low_cardinality_join_amortized_packing_4",
+                query_temporary_projected_low_cardinality_join_amortized_packing_4,
             );
         });
 
