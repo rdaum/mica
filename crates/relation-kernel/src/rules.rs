@@ -1415,7 +1415,7 @@ fn evaluate_two_atom_batch(
 
     let left_reader = reader_for_body_item(full_reader, delta, 0);
     let right_reader = reader_for_body_item(full_reader, delta, 1);
-    let Some(rows) = crate::batch::execute_packed_relation_join(
+    let output = crate::batch::execute_packed_relation_join(
         crate::batch::PackedJoinInput {
             reader: left_reader,
             relation: *left_relation,
@@ -1428,24 +1428,50 @@ fn evaluate_two_atom_batch(
         },
         left_positions,
         right_positions,
-    )?
-    else {
-        return Ok(None);
-    };
+        |rows| {
+            let mut output = Vec::with_capacity(rows.row_count());
+            let empty = vec![None; rule.slot_count];
+            for row in 0..rows.row_count() {
+                let Some(binding) = unify_packed_row(left, &empty, &rows, row, 0) else {
+                    continue;
+                };
+                if let Some(binding) =
+                    unify_packed_row(right, &binding, &rows, row, left.terms.len())
+                {
+                    output.push(binding);
+                }
+            }
+            output
+        },
+    )?;
+    Ok(output)
+}
 
-    let mut output = Vec::with_capacity(rows.len());
-    let empty = vec![None; rule.slot_count];
-    for row in rows {
-        let left_tuple = Tuple::new(row.values()[..left.terms.len()].iter().cloned());
-        let right_tuple = Tuple::new(row.values()[left.terms.len()..].iter().cloned());
-        let Some(binding) = unify_tuple(left, &empty, &left_tuple) else {
-            continue;
-        };
-        if let Some(binding) = unify_tuple(right, &binding, &right_tuple) {
-            output.push(binding);
+fn unify_packed_row(
+    atom: &CompiledAtom,
+    binding: &Binding,
+    rows: &crate::batch::PackedRows<'_>,
+    row: usize,
+    column_offset: usize,
+) -> Option<Binding> {
+    let mut next = binding.clone();
+    for (position, term) in atom.terms.iter().enumerate() {
+        let value = rows.value(row, column_offset + position);
+        match term {
+            CompiledTerm::Value(expected) if expected != value => return None,
+            CompiledTerm::Value(_) => {}
+            CompiledTerm::Var { slot, .. } => {
+                if let Some(bound) = &next[*slot] {
+                    if bound != value {
+                        return None;
+                    }
+                } else {
+                    next[*slot] = Some(value.clone());
+                }
+            }
         }
     }
-    Ok(Some(output))
+    Some(next)
 }
 
 fn atoms_have_unique_variables(left: &CompiledAtom, right: &CompiledAtom) -> bool {

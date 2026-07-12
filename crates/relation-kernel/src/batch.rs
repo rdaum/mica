@@ -21,6 +21,20 @@ pub(crate) struct PackedJoinInput<'a> {
     pub bindings: &'a [Option<Value>],
 }
 
+pub(crate) struct PackedRows<'a> {
+    batch: &'a NativeBatch,
+}
+
+impl PackedRows<'_> {
+    pub fn row_count(&self) -> usize {
+        self.batch.row_count
+    }
+
+    pub fn value(&self, row: usize, column: usize) -> &Value {
+        &self.batch.columns[column].as_slice()[row]
+    }
+}
+
 #[derive(Default)]
 struct BatchWorkspace {
     columns: Vec<Vec<Value>>,
@@ -329,12 +343,13 @@ pub(crate) fn execute_packed_query(
     })
 }
 
-pub(crate) fn execute_packed_relation_join(
+pub(crate) fn execute_packed_relation_join<T>(
     left: PackedJoinInput<'_>,
     right: PackedJoinInput<'_>,
     left_positions: &[u16],
     right_positions: &[u16],
-) -> Result<Option<Vec<Tuple>>, KernelError> {
+    consume: impl FnOnce(PackedRows<'_>) -> T,
+) -> Result<Option<T>, KernelError> {
     let left_capabilities = match left.reader.relation_capabilities(left.relation) {
         Ok(capabilities) => capabilities,
         Err(KernelError::UnknownRelation(relation)) if relation == left.relation => {
@@ -372,7 +387,11 @@ pub(crate) fn execute_packed_relation_join(
         let output = join(&left, &right, left_positions, right_positions, workspace);
         workspace.recycle_batch(left);
         workspace.recycle_batch(right);
-        Ok(output.map(|batch| batch.into_tuples(workspace)))
+        let result = output.as_ref().map(|batch| consume(PackedRows { batch }));
+        if let Some(output) = output {
+            workspace.recycle_batch(output);
+        }
+        Ok(result)
     })
 }
 
