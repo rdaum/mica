@@ -12,6 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::metrics::record_rule_fixpoint;
+use crate::query::PhysicalQueryPlan;
 use crate::{
     KernelError, PackedRelation, RelationCapabilities, RelationId, RelationRead, RelationSource,
     ScanControl, Tuple, ValueDomain,
@@ -415,6 +416,7 @@ struct CompiledRule {
     slot_count: usize,
     head_slots: BTreeSet<usize>,
     body_slots: Vec<BTreeSet<usize>>,
+    batch_plan: Option<PhysicalQueryPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1254,6 +1256,7 @@ fn compile_rule(rule: &Rule) -> CompiledRule {
         .collect();
     let head_slots = head_terms.iter().filter_map(compiled_term_slot).collect();
     let body_slots = body.iter().map(compiled_body_slots).collect();
+    let batch_plan = compile_two_atom_batch_plan(&body);
     CompiledRule {
         head_relation: rule.head_relation,
         head_terms,
@@ -1261,7 +1264,50 @@ fn compile_rule(rule: &Rule) -> CompiledRule {
         slot_count: variables.len(),
         head_slots,
         body_slots,
+        batch_plan,
     }
+}
+
+fn compile_two_atom_batch_plan(body: &[CompiledBodyItem]) -> Option<PhysicalQueryPlan> {
+    let [CompiledBodyItem::Atom(left), CompiledBodyItem::Atom(right)] = body else {
+        return None;
+    };
+    if left.negated || right.negated || !atoms_have_unique_variables(left, right) {
+        return None;
+    }
+
+    let mut left_positions = Vec::new();
+    let mut right_positions = Vec::new();
+    for (left_position, left_term) in left.terms.iter().enumerate() {
+        let CompiledTerm::Var {
+            slot: left_slot, ..
+        } = left_term
+        else {
+            return None;
+        };
+        for (right_position, right_term) in right.terms.iter().enumerate() {
+            if matches!(right_term, CompiledTerm::Var { slot, .. } if slot == left_slot) {
+                left_positions.push(left_position as u16);
+                right_positions.push(right_position as u16);
+            }
+        }
+    }
+    if !matches!(left_positions.len(), 1 | 2) {
+        return None;
+    }
+
+    Some(PhysicalQueryPlan::JoinEq {
+        left: Box::new(PhysicalQueryPlan::Scan {
+            relation: left.relation,
+            bindings: vec![None; left.terms.len()],
+        }),
+        right: Box::new(PhysicalQueryPlan::Scan {
+            relation: right.relation,
+            bindings: vec![None; right.terms.len()],
+        }),
+        left_positions,
+        right_positions,
+    })
 }
 
 fn compiled_body_slots(item: &CompiledBodyItem) -> BTreeSet<usize> {
@@ -1344,47 +1390,44 @@ fn evaluate_two_atom_batch(
     let [CompiledBodyItem::Atom(left), CompiledBodyItem::Atom(right)] = rule.body.as_slice() else {
         return Ok(None);
     };
-    if left.negated || right.negated || !atoms_have_unique_variables(left, right) {
+    let Some(PhysicalQueryPlan::JoinEq {
+        left: plan_left,
+        right: plan_right,
+        left_positions,
+        right_positions,
+    }) = &rule.batch_plan
+    else {
         return Ok(None);
-    }
-
-    let mut left_positions = Vec::new();
-    let mut right_positions = Vec::new();
-    for (left_position, left_term) in left.terms.iter().enumerate() {
-        let CompiledTerm::Var {
-            slot: left_slot, ..
-        } = left_term
-        else {
-            return Ok(None);
-        };
-        for (right_position, right_term) in right.terms.iter().enumerate() {
-            if matches!(right_term, CompiledTerm::Var { slot, .. } if slot == left_slot) {
-                left_positions.push(left_position as u16);
-                right_positions.push(right_position as u16);
-            }
-        }
-    }
-    if !matches!(left_positions.len(), 1 | 2) {
+    };
+    let (
+        PhysicalQueryPlan::Scan {
+            relation: left_relation,
+            bindings: left_bindings,
+        },
+        PhysicalQueryPlan::Scan {
+            relation: right_relation,
+            bindings: right_bindings,
+        },
+    ) = (plan_left.as_ref(), plan_right.as_ref())
+    else {
         return Ok(None);
-    }
+    };
 
     let left_reader = reader_for_body_item(full_reader, delta, 0);
     let right_reader = reader_for_body_item(full_reader, delta, 1);
-    let bindings = vec![None; left.terms.len()];
-    let right_bindings = vec![None; right.terms.len()];
     let Some(rows) = crate::batch::execute_packed_relation_join(
         crate::batch::PackedJoinInput {
             reader: left_reader,
-            relation: left.relation,
-            bindings: &bindings,
+            relation: *left_relation,
+            bindings: left_bindings,
         },
         crate::batch::PackedJoinInput {
             reader: right_reader,
-            relation: right.relation,
-            bindings: &right_bindings,
+            relation: *right_relation,
+            bindings: right_bindings,
         },
-        &left_positions,
-        &right_positions,
+        left_positions,
+        right_positions,
     )?
     else {
         return Ok(None);
@@ -2105,6 +2148,36 @@ mod tests {
         let second = rules.compile().unwrap();
 
         assert!(std::ptr::eq(first, second));
+    }
+
+    #[test]
+    fn two_atom_rule_uses_the_shared_compiled_physical_plan() {
+        let rules = RuleSet::new([Rule::new(
+            rel(203),
+            [var("from"), var("to")],
+            [
+                Atom::positive(rel(200), [var("from"), var("mid")]),
+                Atom::positive(rel(201), [var("mid"), var("to")]),
+            ],
+        )]);
+        let compiled = rules.compile().unwrap();
+        let rule = &compiled.strata[0].rules[0];
+
+        assert_eq!(
+            rule.batch_plan,
+            Some(PhysicalQueryPlan::JoinEq {
+                left: Box::new(PhysicalQueryPlan::Scan {
+                    relation: rel(200),
+                    bindings: vec![None, None],
+                }),
+                right: Box::new(PhysicalQueryPlan::Scan {
+                    relation: rel(201),
+                    bindings: vec![None, None],
+                }),
+                left_positions: vec![1],
+                right_positions: vec![0],
+            })
+        );
     }
 
     struct TupleOnlyReader<'a, R> {
