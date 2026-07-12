@@ -3322,7 +3322,7 @@ dependencies = [
  "rusty_paseto",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "time",
  "tracing",
  "ureq 2.12.1",
