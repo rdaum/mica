@@ -12,8 +12,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_relation_kernel::{
-    Atom, KernelError, PreparedQuery, QueryPlan, RelationId, RelationKernel, RelationMetadata,
-    RelationRead, Rule, RuleSet, ScanControl, Snapshot, Term, Tuple, metrics,
+    Atom, KernelError, PackedRelation, PreparedQuery, QueryPlan, RelationCapabilities, RelationId,
+    RelationKernel, RelationMetadata, RelationRead, Rule, RuleSet, ScanControl, Snapshot, Term,
+    Tuple, metrics,
 };
 use mica_var::{Identity, Symbol, Value};
 use micromeasure::{
@@ -34,6 +35,7 @@ const UNARY_SET_OVERLAP: usize = 8_192;
 const TEMP_PROJECTED_GROUPS: usize = 4096;
 const TEMP_PROJECTED_ITEMS_PER_GROUP: usize = 4;
 const RECURSIVE_CHAIN_NODES: usize = 48;
+const RECURSIVE_PACKED_CHAIN_NODES: usize = 384;
 const RECURSIVE_BRANCHING_NODES: usize = 63;
 const RECURSIVE_CYCLE_NODES: usize = 32;
 
@@ -71,6 +73,7 @@ struct RecursiveCase {
 
 struct RecursiveRuleContext {
     linear_chain: RecursiveCase,
+    packed_linear_chain: RecursiveCase,
     branching_graph: RecursiveCase,
     cyclic_graph: RecursiveCase,
     mutual_recursion: RecursiveCase,
@@ -158,6 +161,21 @@ impl RelationRead for CountingReader {
     ) -> Result<Option<usize>, KernelError> {
         self.estimate_calls.set(self.estimate_calls.get() + 1);
         self.snapshot.estimate_relation_scan(relation, bindings)
+    }
+
+    fn relation_capabilities(
+        &self,
+        relation: RelationId,
+    ) -> Result<RelationCapabilities, KernelError> {
+        self.snapshot.relation_capabilities(relation)
+    }
+
+    fn export_relation_batch(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        self.snapshot.export_relation_batch(relation, bindings)
     }
 }
 
@@ -316,6 +334,7 @@ impl BenchContext for RecursiveRuleContext {
     fn prepare(_num_chunks: usize) -> Self {
         Self {
             linear_chain: build_linear_chain_case(),
+            packed_linear_chain: build_linear_chain_case_with_nodes(RECURSIVE_PACKED_CHAIN_NODES),
             branching_graph: build_branching_graph_case(),
             cyclic_graph: build_cyclic_graph_case(),
             mutual_recursion: build_mutual_recursion_case(),
@@ -401,6 +420,14 @@ fn rule_recursive_linear_chain(
     _chunk_num: usize,
 ) {
     evaluate_recursive_case(&ctx.linear_chain, chunk_size);
+}
+
+fn rule_recursive_packed_linear_chain(
+    ctx: &mut RecursiveRuleContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    evaluate_recursive_case(&ctx.packed_linear_chain, chunk_size);
 }
 
 fn rule_recursive_branching_graph(
@@ -726,9 +753,13 @@ fn transitive_rules(edge: RelationId, reachable: RelationId) -> RuleSet {
 }
 
 fn build_linear_chain_case() -> RecursiveCase {
+    build_linear_chain_case_with_nodes(RECURSIVE_CHAIN_NODES)
+}
+
+fn build_linear_chain_case_with_nodes(node_count: usize) -> RecursiveCase {
     let kernel = recursive_kernel(&[(recursive_edge(), "RecursiveEdge", 2)]);
     let mut tx = kernel.begin();
-    for index in 0..RECURSIVE_CHAIN_NODES - 1 {
+    for index in 0..node_count - 1 {
         tx.assert(
             recursive_edge(),
             Tuple::from([node_value(index), node_value(index + 1)]),
@@ -1128,6 +1159,11 @@ benchmark_main!(
             g.throughput(Throughput::per_operation(1, "fixpoint"))
                 .diagnostic_pass(recursive_linear_chain_diagnostics)
                 .bench("recursive_linear_chain", rule_recursive_linear_chain);
+            g.throughput(Throughput::per_operation(1, "fixpoint"))
+                .bench(
+                    "recursive_packed_linear_chain",
+                    rule_recursive_packed_linear_chain,
+                );
             g.throughput(Throughput::per_operation(1, "fixpoint"))
                 .diagnostic_pass(recursive_branching_graph_diagnostics)
                 .bench("recursive_branching_graph", rule_recursive_branching_graph);

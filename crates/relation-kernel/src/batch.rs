@@ -14,6 +14,12 @@ use std::sync::Arc;
 const PACKED_ROW_THRESHOLD: usize = 256;
 type PackedPair = (Arc<crate::PackedRelation>, Arc<crate::PackedRelation>);
 
+pub(crate) struct PackedJoinInput<'a> {
+    pub reader: &'a dyn RelationRead,
+    pub relation: crate::RelationId,
+    pub bindings: &'a [Option<Value>],
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NativeBatch {
     columns: Vec<NativeColumn>,
@@ -238,6 +244,57 @@ pub(crate) fn execute_packed_query(
         return Ok(Some(rows));
     }
     Ok(execute_batch(plan, reader)?.map(NativeBatch::into_tuples))
+}
+
+pub(crate) fn execute_packed_relation_join(
+    left: PackedJoinInput<'_>,
+    right: PackedJoinInput<'_>,
+    left_positions: &[u16],
+    right_positions: &[u16],
+) -> Result<Option<Vec<Tuple>>, KernelError> {
+    let left_capabilities = match left.reader.relation_capabilities(left.relation) {
+        Ok(capabilities) => capabilities,
+        Err(KernelError::UnknownRelation(relation)) if relation == left.relation => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let right_capabilities = match right.reader.relation_capabilities(right.relation) {
+        Ok(capabilities) => capabilities,
+        Err(KernelError::UnknownRelation(relation)) if relation == right.relation => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    if !batch_join_capabilities_eligible(&left_capabilities)
+        || !batch_join_capabilities_eligible(&right_capabilities)
+    {
+        return Ok(None);
+    }
+    let Some(left) = left
+        .reader
+        .export_relation_batch(left.relation, left.bindings)?
+    else {
+        return Ok(None);
+    };
+    let Some(right) = right
+        .reader
+        .export_relation_batch(right.relation, right.bindings)?
+    else {
+        return Ok(None);
+    };
+    let left = NativeBatch::from_packed(&left);
+    let right = NativeBatch::from_packed(&right);
+    Ok(join(&left, &right, left_positions, right_positions).map(NativeBatch::into_tuples))
+}
+
+fn batch_join_capabilities_eligible(capabilities: &crate::RelationCapabilities) -> bool {
+    capabilities.supports_batch_export
+        && capabilities.immediate_only()
+        && matches!(capabilities.value_domains.len(), 1 | 2)
+        && capabilities
+            .cardinality
+            .is_some_and(|rows| rows >= PACKED_ROW_THRESHOLD)
 }
 
 fn execute_cached_terminal_set(

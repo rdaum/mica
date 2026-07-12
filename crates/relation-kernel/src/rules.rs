@@ -13,12 +13,12 @@
 
 use crate::metrics::record_rule_fixpoint;
 use crate::{
-    KernelError, RelationCapabilities, RelationId, RelationRead, RelationSource, ScanControl,
-    Tuple, ValueDomain,
+    KernelError, PackedRelation, RelationCapabilities, RelationId, RelationRead, RelationSource,
+    ScanControl, Tuple, ValueDomain,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Term {
@@ -563,6 +563,17 @@ impl<R: RelationRead> RelationRead for DerivedReader<'_, R> {
             RelationSource::DerivedFull,
         )
     }
+
+    fn export_relation_batch(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        if !self.derived.contains_key(&relation) {
+            return self.base.export_relation_batch(relation, bindings);
+        }
+        export_reader_batch(self, relation, bindings)
+    }
 }
 
 impl<R: RelationRead> RelationRead for SccReader<'_, R> {
@@ -626,6 +637,17 @@ impl<R: RelationRead> RelationRead for SccReader<'_, R> {
             RelationSource::DerivedFull,
         )
     }
+
+    fn export_relation_batch(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        if !self.completed.contains_key(&relation) && !self.full.contains_key(&relation) {
+            return self.base.export_relation_batch(relation, bindings);
+        }
+        export_reader_batch(self, relation, bindings)
+    }
 }
 
 impl RelationRead for TupleMapReader<'_> {
@@ -683,6 +705,27 @@ impl RelationRead for TupleMapReader<'_> {
             RelationSource::DerivedDelta,
         )
     }
+
+    fn export_relation_batch(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+        export_reader_batch(self, relation, bindings)
+    }
+}
+
+fn export_reader_batch(
+    reader: &dyn RelationRead,
+    relation: RelationId,
+    bindings: &[Option<Value>],
+) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+    let capabilities = reader.relation_capabilities(relation)?;
+    if !capabilities.supports_batch_export || !capabilities.immediate_only() {
+        return Ok(None);
+    }
+    let rows = reader.scan_relation(relation, bindings)?;
+    Ok(PackedRelation::from_canonical_tuples(rows, capabilities.value_domains.len()).map(Arc::new))
 }
 
 fn optional_relation_capabilities(
@@ -1273,6 +1316,9 @@ fn evaluate_body_with_readers(
     delta: Option<(&dyn RelationRead, usize)>,
     rule: &CompiledRule,
 ) -> Result<Vec<Binding>, RuleEvalError> {
+    if let Some(bindings) = evaluate_two_atom_batch(full_reader, delta, rule)? {
+        return Ok(bindings);
+    }
     let mut bindings = vec![vec![None; rule.slot_count]];
     let mut remaining = rule.body.iter().enumerate().collect::<Vec<_>>();
     while !remaining.is_empty() {
@@ -1288,6 +1334,89 @@ fn evaluate_body_with_readers(
         };
     }
     Ok(bindings)
+}
+
+fn evaluate_two_atom_batch(
+    full_reader: &dyn RelationRead,
+    delta: Option<(&dyn RelationRead, usize)>,
+    rule: &CompiledRule,
+) -> Result<Option<Vec<Binding>>, RuleEvalError> {
+    let [CompiledBodyItem::Atom(left), CompiledBodyItem::Atom(right)] = rule.body.as_slice() else {
+        return Ok(None);
+    };
+    if left.negated || right.negated || !atoms_have_unique_variables(left, right) {
+        return Ok(None);
+    }
+
+    let mut left_positions = Vec::new();
+    let mut right_positions = Vec::new();
+    for (left_position, left_term) in left.terms.iter().enumerate() {
+        let CompiledTerm::Var {
+            slot: left_slot, ..
+        } = left_term
+        else {
+            return Ok(None);
+        };
+        for (right_position, right_term) in right.terms.iter().enumerate() {
+            if matches!(right_term, CompiledTerm::Var { slot, .. } if slot == left_slot) {
+                left_positions.push(left_position as u16);
+                right_positions.push(right_position as u16);
+            }
+        }
+    }
+    if !matches!(left_positions.len(), 1 | 2) {
+        return Ok(None);
+    }
+
+    let left_reader = reader_for_body_item(full_reader, delta, 0);
+    let right_reader = reader_for_body_item(full_reader, delta, 1);
+    let bindings = vec![None; left.terms.len()];
+    let right_bindings = vec![None; right.terms.len()];
+    let Some(rows) = crate::batch::execute_packed_relation_join(
+        crate::batch::PackedJoinInput {
+            reader: left_reader,
+            relation: left.relation,
+            bindings: &bindings,
+        },
+        crate::batch::PackedJoinInput {
+            reader: right_reader,
+            relation: right.relation,
+            bindings: &right_bindings,
+        },
+        &left_positions,
+        &right_positions,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let mut output = Vec::with_capacity(rows.len());
+    let empty = vec![None; rule.slot_count];
+    for row in rows {
+        let left_tuple = Tuple::new(row.values()[..left.terms.len()].iter().cloned());
+        let right_tuple = Tuple::new(row.values()[left.terms.len()..].iter().cloned());
+        let Some(binding) = unify_tuple(left, &empty, &left_tuple) else {
+            continue;
+        };
+        if let Some(binding) = unify_tuple(right, &binding, &right_tuple) {
+            output.push(binding);
+        }
+    }
+    Ok(Some(output))
+}
+
+fn atoms_have_unique_variables(left: &CompiledAtom, right: &CompiledAtom) -> bool {
+    [left, right].into_iter().all(|atom| {
+        let slots = atom
+            .terms
+            .iter()
+            .filter_map(|term| match term {
+                CompiledTerm::Var { slot, .. } => Some(*slot),
+                CompiledTerm::Value(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
+        slots.len() == atom.terms.len()
+    })
 }
 
 fn reader_for_body_item<'a>(
@@ -1563,7 +1692,7 @@ mod tests {
     use super::*;
     use crate::{RelationKernel, RelationMetadata};
     use mica_var::Identity;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     fn rel(id: u64) -> RelationId {
         Identity::new(id).unwrap()
@@ -1978,17 +2107,49 @@ mod tests {
         assert!(std::ptr::eq(first, second));
     }
 
+    struct TupleOnlyReader<'a, R> {
+        inner: &'a R,
+    }
+
+    impl<R: RelationRead> RelationRead for TupleOnlyReader<'_, R> {
+        fn scan_relation(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+        ) -> Result<Vec<Tuple>, KernelError> {
+            self.inner.scan_relation(relation, bindings)
+        }
+
+        fn visit_relation(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+            visitor: &mut dyn FnMut(&Tuple) -> Result<ScanControl, KernelError>,
+        ) -> Result<(), KernelError> {
+            self.inner.visit_relation(relation, bindings, visitor)
+        }
+
+        fn estimate_relation_scan(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+        ) -> Result<Option<usize>, KernelError> {
+            self.inner.estimate_relation_scan(relation, bindings)
+        }
+    }
+
     fn evaluate_fixpoint_reference(
         rules: &RuleSet,
         reader: &impl RelationRead,
     ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
+        let reader = TupleOnlyReader { inner: reader };
         let strata = rules.stratified_rules()?;
         let mut derived = BTreeMap::<RelationId, BTreeSet<Tuple>>::new();
         for rules in strata {
             let rules = rules.into_iter().map(compile_rule).collect::<Vec<_>>();
             loop {
                 let overlay = DerivedReader {
-                    base: reader,
+                    base: &reader,
                     derived: &derived,
                 };
                 let mut round = BTreeMap::new();
@@ -2015,6 +2176,83 @@ mod tests {
         assert_eq!(
             rules.evaluate_fixpoint(reader).unwrap(),
             evaluate_fixpoint_reference(rules, reader).unwrap()
+        );
+    }
+
+    struct BatchExportReader {
+        snapshot: Arc<crate::Snapshot>,
+        exports: Cell<usize>,
+    }
+
+    impl RelationRead for BatchExportReader {
+        fn scan_relation(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+        ) -> Result<Vec<Tuple>, KernelError> {
+            self.snapshot.scan_relation(relation, bindings)
+        }
+
+        fn estimate_relation_scan(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+        ) -> Result<Option<usize>, KernelError> {
+            self.snapshot.estimate_relation_scan(relation, bindings)
+        }
+
+        fn relation_capabilities(
+            &self,
+            relation: RelationId,
+        ) -> Result<RelationCapabilities, KernelError> {
+            self.snapshot.relation_capabilities(relation)
+        }
+
+        fn export_relation_batch(
+            &self,
+            relation: RelationId,
+            bindings: &[Option<Value>],
+        ) -> Result<Option<Arc<PackedRelation>>, KernelError> {
+            self.exports.set(self.exports.get() + 1);
+            self.snapshot.export_relation_batch(relation, bindings)
+        }
+    }
+
+    #[test]
+    fn large_two_atom_rule_uses_packed_join_and_matches_tuple_reference() {
+        let kernel = RelationKernel::new();
+        for (relation, name) in [(rel(200), "Left"), (rel(201), "Right")] {
+            kernel
+                .create_relation(RelationMetadata::new(relation, Symbol::intern(name), 2))
+                .unwrap();
+        }
+        let mut tx = kernel.begin();
+        for row in 0..300 {
+            tx.assert(rel(200), Tuple::from([int(row), int(row + 1)]))
+                .unwrap();
+            tx.assert(rel(201), Tuple::from([int(row + 1), int(row + 2)]))
+                .unwrap();
+        }
+        tx.commit().unwrap();
+        let reader = BatchExportReader {
+            snapshot: kernel.snapshot(),
+            exports: Cell::new(0),
+        };
+        let rules = RuleSet::new([Rule::new(
+            rel(202),
+            [var("from"), var("to")],
+            [
+                Atom::positive(rel(200), [var("from"), var("mid")]),
+                Atom::positive(rel(201), [var("mid"), var("to")]),
+            ],
+        )]);
+
+        let packed = rules.evaluate_fixpoint(&reader).unwrap();
+        assert_eq!(reader.exports.get(), 2);
+        assert_eq!(packed[&rel(202)].len(), 300);
+        assert_eq!(
+            packed,
+            evaluate_fixpoint_reference(&rules, reader.snapshot.as_ref()).unwrap()
         );
     }
 
