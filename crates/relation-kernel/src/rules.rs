@@ -15,6 +15,7 @@ use crate::metrics::record_rule_fixpoint;
 use crate::{KernelError, RelationId, RelationRead, ScanControl, Tuple};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Term {
@@ -194,18 +195,57 @@ impl RuleDefinition {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RuleSet {
     rules: Vec<Rule>,
+    compiled: OnceLock<Result<CompiledRuleSet, RuleError>>,
 }
+
+impl Clone for RuleSet {
+    fn clone(&self) -> Self {
+        let compiled = OnceLock::new();
+        if let Some(program) = self.compiled.get() {
+            compiled.set(program.clone()).unwrap();
+        }
+        Self {
+            rules: self.rules.clone(),
+            compiled,
+        }
+    }
+}
+
+impl std::fmt::Debug for RuleSet {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuleSet")
+            .field("rules", &self.rules)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for RuleSet {
+    fn default() -> Self {
+        Self::new([])
+    }
+}
+
+impl PartialEq for RuleSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.rules == other.rules
+    }
+}
+
+impl Eq for RuleSet {}
 
 impl RuleSet {
     pub fn new(rules: impl IntoIterator<Item = Rule>) -> Self {
         Self {
             rules: rules.into_iter().collect(),
+            compiled: OnceLock::new(),
         }
     }
+}
 
+impl RuleSet {
     pub fn validate_stratified(&self) -> Result<(), RuleError> {
         self.stratified_rules()?;
         Ok(())
@@ -218,7 +258,7 @@ impl RuleSet {
         let program = self.compile()?;
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
 
-        for stratum in program.strata {
+        for stratum in &program.strata {
             let overlay = DerivedReader {
                 base: reader,
                 derived: &derived,
@@ -244,7 +284,7 @@ impl RuleSet {
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
         let mut stats = RuleEvaluationStats::default();
 
-        for stratum in program.strata {
+        for stratum in &program.strata {
             for component in &stratum.components {
                 evaluate_component(reader, &stratum.rules, component, &mut derived, &mut stats)?;
             }
@@ -269,14 +309,19 @@ impl RuleSet {
         self.rules.iter()
     }
 
-    fn compile(&self) -> Result<CompiledRuleSet, RuleError> {
-        let strata = self.stratified_rules()?;
-        Ok(CompiledRuleSet {
-            strata: strata
-                .into_iter()
-                .map(|rules| compile_stratum(&rules))
-                .collect(),
-        })
+    fn compile(&self) -> Result<&CompiledRuleSet, RuleError> {
+        self.compiled
+            .get_or_init(|| {
+                let strata = self.stratified_rules()?;
+                Ok(CompiledRuleSet {
+                    strata: strata
+                        .into_iter()
+                        .map(|rules| compile_stratum(&rules))
+                        .collect(),
+                })
+            })
+            .as_ref()
+            .map_err(|error| *error)
     }
 
     fn stratified_rules(&self) -> Result<Vec<Vec<&Rule>>, RuleError> {
@@ -497,16 +542,7 @@ impl<R: RelationRead> RelationRead for DerivedReader<'_, R> {
             Err(KernelError::UnknownRelation(unknown)) if unknown == relation => Some(0),
             Err(error) => return Err(error),
         };
-        let derived_estimate = self
-            .derived
-            .get(&relation)
-            .map(|tuples| {
-                tuples
-                    .iter()
-                    .filter(|tuple| tuple.matches_bindings(bindings))
-                    .count()
-            })
-            .unwrap_or(0);
+        let derived_estimate = self.derived.get(&relation).map(BTreeSet::len).unwrap_or(0);
         Ok(base_estimate.map(|estimate| estimate + derived_estimate))
     }
 }
@@ -546,7 +582,18 @@ impl<R: RelationRead> RelationRead for SccReader<'_, R> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Option<usize>, KernelError> {
-        Ok(Some(self.scan_relation(relation, bindings)?.len()))
+        let base = match self.base.estimate_relation_scan(relation, bindings) {
+            Ok(estimate) => estimate,
+            Err(KernelError::UnknownRelation(unknown)) if unknown == relation => Some(0),
+            Err(error) => return Err(error),
+        };
+        let completed = self
+            .completed
+            .get(&relation)
+            .map(BTreeSet::len)
+            .unwrap_or(0);
+        let full = self.full.get(&relation).map(BTreeSet::len).unwrap_or(0);
+        Ok(base.map(|base| base.saturating_add(completed).saturating_add(full)))
     }
 }
 
@@ -586,15 +633,10 @@ impl RelationRead for TupleMapReader<'_> {
     fn estimate_relation_scan(
         &self,
         relation: RelationId,
-        bindings: &[Option<Value>],
+        _bindings: &[Option<Value>],
     ) -> Result<Option<usize>, KernelError> {
         Ok(Some(
-            self.tuples
-                .get(&relation)
-                .into_iter()
-                .flatten()
-                .filter(|tuple| tuple.matches_bindings(bindings))
-                .count(),
+            self.tuples.get(&relation).map(BTreeSet::len).unwrap_or(0),
         ))
     }
 }
@@ -1762,6 +1804,20 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn rule_set_reuses_its_compiled_program() {
+        let rules = RuleSet::new([Rule::new(
+            rel(119),
+            [var("x")],
+            [Atom::positive(rel(118), [var("x")])],
+        )]);
+
+        let first = rules.compile().unwrap();
+        let second = rules.compile().unwrap();
+
+        assert!(std::ptr::eq(first, second));
     }
 
     fn evaluate_fixpoint_reference(

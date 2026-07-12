@@ -1487,6 +1487,46 @@ fn indexed_scan_respects_non_leading_bindings() {
 }
 
 #[test]
+fn relation_estimates_track_index_bucket_statistics_without_exact_scans() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(3), Symbol::intern("Grouped"), 2).with_index([0]),
+        )
+        .unwrap();
+    let mut tx = kernel.begin();
+    tx.assert(rel(3), Tuple::from([int(1), int(10)])).unwrap();
+    tx.assert(rel(3), Tuple::from([int(1), int(11)])).unwrap();
+    tx.assert(rel(3), Tuple::from([int(2), int(20)])).unwrap();
+    tx.commit().unwrap();
+
+    let snapshot = kernel.snapshot();
+    assert_eq!(
+        snapshot
+            .estimate_relation_scan(rel(3), &[Some(int(1)), None])
+            .unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        snapshot
+            .estimate_relation_scan(rel(3), &[None, Some(int(10))])
+            .unwrap(),
+        Some(3)
+    );
+
+    let mut tx = kernel.begin();
+    tx.retract(rel(3), Tuple::from([int(1), int(10)])).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        kernel
+            .snapshot()
+            .estimate_relation_scan(rel(3), &[Some(int(1)), None])
+            .unwrap(),
+        Some(1)
+    );
+}
+
+#[test]
 fn commit_result_records_semantic_fact_changes() {
     let kernel = kernel_with_located();
     let tuple = Tuple::from([int(1), int(2)]);

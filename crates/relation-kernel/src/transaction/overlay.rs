@@ -15,13 +15,20 @@ pub(super) enum LocalChange {
 
 pub(super) struct RelationWriteOverlay {
     changes: OverlayChanges,
+    change_count: usize,
     scan_indexes: RefCell<HashMap<Vec<u16>, LocalScanIndex>>,
     scan_requests: RefCell<HashMap<Vec<u16>, usize>>,
 }
 
 impl RelationWriteOverlay {
+    pub(super) fn len(&self) -> usize {
+        self.change_count
+    }
+
     pub(super) fn insert(&mut self, tuple: Tuple, change: LocalChange) {
-        self.changes.insert(tuple, change);
+        if self.changes.insert(tuple, change) {
+            self.change_count += 1;
+        }
         self.scan_indexes.get_mut().clear();
         self.scan_requests.get_mut().clear();
     }
@@ -145,6 +152,7 @@ impl Default for RelationWriteOverlay {
     fn default() -> Self {
         Self {
             changes: OverlayChanges::Small(Vec::new()),
+            change_count: 0,
             scan_indexes: RefCell::new(HashMap::new()),
             scan_requests: RefCell::new(HashMap::new()),
         }
@@ -225,12 +233,16 @@ impl OverlayChanges {
         }
     }
 
-    fn insert(&mut self, tuple: Tuple, change: LocalChange) {
+    fn insert(&mut self, tuple: Tuple, change: LocalChange) -> bool {
+        let mut inserted = false;
         let promote = match self {
             Self::Small(changes) => {
                 match changes.binary_search_by(|entry| entry.tuple.cmp(&tuple)) {
                     Ok(index) => changes[index].change = change,
-                    Err(index) => changes.insert(index, OverlayEntry { tuple, change }),
+                    Err(index) => {
+                        changes.insert(index, OverlayEntry { tuple, change });
+                        inserted = true;
+                    }
                 }
                 if changes.len() > LOCAL_RADIX_OVERLAY_THRESHOLD {
                     Some(std::mem::take(changes))
@@ -240,6 +252,7 @@ impl OverlayChanges {
             }
             Self::Radix(changes) => {
                 let key = key_from_values(tuple.values());
+                inserted = changes.get_k(&key).is_none();
                 changes.insert_k(&key, OverlayEntry { tuple, change });
                 None
             }
@@ -253,6 +266,7 @@ impl OverlayChanges {
             }
             *self = Self::Radix(radix);
         }
+        inserted
     }
 
     fn apply_to_relation(

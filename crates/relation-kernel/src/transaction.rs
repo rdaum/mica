@@ -215,18 +215,12 @@ impl<'a> Transaction<'a> {
         crate::metrics::metrics()
             .transaction_read_operations
             .inc(TransactionReadOperation::EstimateScan);
-        let metadata = self.base.relation(relation)?.metadata();
-        let rows = if !relation_has_active_rule_head(self.base.rules(), relation)
-            && !self.writes.contains_key(&relation)
+        let mut rows = self.estimate_extensional_scan(relation, bindings)?;
+        if relation_has_active_rule_head(self.base.rules(), relation)
+            && let Some(derived) = self.derived_relations()?.get(&relation)
         {
-            if self.base.computed_relations.is_computed_relation(metadata) {
-                self.estimate_extensional_scan(relation, bindings)?
-            } else {
-                self.base.estimate_extensional_scan(relation, bindings)?
-            }
-        } else {
-            self.scan(relation, bindings)?.len()
-        };
+            rows = rows.saturating_add(derived.estimate_scan_count(bindings)?);
+        }
         crate::metrics::metrics()
             .transaction_read_rows
             .record(TransactionReadOperation::EstimateScan, rows as u64);
@@ -261,7 +255,9 @@ impl<'a> Transaction<'a> {
         if !self.writes.contains_key(&relation) {
             return self.base.estimate_extensional_scan(relation, bindings);
         }
-        Ok(self.scan_extensional(relation, bindings)?.len())
+        let base = self.base.estimate_extensional_scan(relation, bindings)?;
+        let local = self.writes[&relation].len();
+        Ok(base.saturating_add(local))
     }
 
     pub fn visit(

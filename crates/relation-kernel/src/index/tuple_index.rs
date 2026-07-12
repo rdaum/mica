@@ -13,18 +13,18 @@ pub(super) struct TupleIndex {
     spec: crate::TupleIndexSpec,
     unique_keys: bool,
     entries: VersionedAdaptiveRadixTree<RadixTupleKey, TupleBucket>,
+    tuple_count: usize,
+    distinct_key_count: usize,
+    max_bucket_size: usize,
 }
 
 impl fmt::Debug for TupleIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let tuple_count = self
-            .entries
-            .values_iter()
-            .map(TupleBucket::len)
-            .sum::<usize>();
         f.debug_struct("TupleIndex")
             .field("spec", &self.spec)
-            .field("tuple_count", &tuple_count)
+            .field("tuple_count", &self.tuple_count)
+            .field("distinct_key_count", &self.distinct_key_count)
+            .field("max_bucket_size", &self.max_bucket_size)
             .finish_non_exhaustive()
     }
 }
@@ -35,6 +35,9 @@ impl Clone for TupleIndex {
             spec: self.spec.clone(),
             unique_keys: self.unique_keys,
             entries: self.entries.clone(),
+            tuple_count: self.tuple_count,
+            distinct_key_count: self.distinct_key_count,
+            max_bucket_size: self.max_bucket_size,
         }
     }
 }
@@ -46,6 +49,9 @@ impl TupleIndex {
             spec,
             unique_keys,
             entries: VersionedAdaptiveRadixTree::new(),
+            tuple_count: 0,
+            distinct_key_count: 0,
+            max_bucket_size: 0,
         }
     }
 
@@ -78,6 +84,9 @@ impl TupleIndex {
                     .entries
                     .insert_k(&key, TupleBucket::one(tuple.clone()));
             }
+            index.tuple_count = rows.len();
+            index.distinct_key_count = rows.len();
+            index.max_bucket_size = usize::from(!rows.is_empty());
             return index;
         }
 
@@ -114,16 +123,22 @@ impl TupleIndex {
                     .map(|(_, tuple)| tuple.clone()),
             );
             index.entries.insert_k(&keyed_rows[start].0, bucket);
+            index.distinct_key_count += 1;
+            index.max_bucket_size = index.max_bucket_size.max(end - start);
             start = end;
         }
+
+        index.tuple_count = rows.len();
 
         index
     }
 
     pub(super) fn insert(&mut self, tuple: Tuple) {
         let key = self.tuple_key(&tuple);
+        let previous_bucket_size = self.entries.get_k(&key).map(TupleBucket::len).unwrap_or(0);
         if self.unique_keys {
             self.entries.insert_k(&key, TupleBucket::one(tuple));
+            self.record_insert(previous_bucket_size);
             return;
         }
 
@@ -134,12 +149,15 @@ impl TupleIndex {
                 SlotUpdate::Keep
             }
         });
+        self.record_insert(previous_bucket_size);
     }
 
     pub(super) fn remove(&mut self, tuple: &Tuple) {
         let key = self.tuple_key(tuple);
+        let previous_bucket_size = self.entries.get_k(&key).map(TupleBucket::len).unwrap_or(0);
         if self.unique_keys {
             self.entries.delete_k(&key);
+            self.record_remove(previous_bucket_size);
             return;
         }
 
@@ -154,6 +172,26 @@ impl TupleIndex {
                 }
             }
         });
+        self.record_remove(previous_bucket_size);
+    }
+
+    fn record_insert(&mut self, previous_bucket_size: usize) {
+        self.tuple_count += 1;
+        if previous_bucket_size == 0 {
+            self.distinct_key_count += 1;
+        }
+        self.max_bucket_size = self.max_bucket_size.max(previous_bucket_size + 1);
+    }
+
+    fn record_remove(&mut self, previous_bucket_size: usize) {
+        debug_assert!(previous_bucket_size > 0);
+        self.tuple_count = self.tuple_count.saturating_sub(1);
+        if previous_bucket_size == 1 {
+            self.distinct_key_count = self.distinct_key_count.saturating_sub(1);
+        }
+        if self.tuple_count == 0 {
+            self.max_bucket_size = 0;
+        }
     }
 
     pub(super) fn scan_prefix(
@@ -174,12 +212,23 @@ impl TupleIndex {
         bindings: &[Option<Value>],
         bound_count: usize,
     ) -> Result<usize, KernelError> {
-        let mut count = 0usize;
-        self.visit_prefix(bindings, bound_count, &mut |_| {
-            count += 1;
-            Ok(ScanControl::Continue)
-        })?;
-        Ok(count)
+        if bound_count == self.spec.positions.len() {
+            let key = self.binding_prefix_key(bindings, bound_count);
+            return Ok(self.entries.get_k(&key).map(TupleBucket::len).unwrap_or(0));
+        }
+        if self.tuple_count == 0 || bound_count == 0 {
+            return Ok(self.tuple_count);
+        }
+
+        let key_fraction = bound_count as f64 / self.spec.positions.len() as f64;
+        let estimated_distinct_prefixes = (self.distinct_key_count as f64)
+            .powf(key_fraction)
+            .round()
+            .max(1.0) as usize;
+        Ok(self
+            .tuple_count
+            .div_ceil(estimated_distinct_prefixes)
+            .max(self.max_bucket_size.min(self.tuple_count)))
     }
 
     pub(super) fn visit_prefix(

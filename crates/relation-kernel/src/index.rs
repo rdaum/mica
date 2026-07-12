@@ -99,9 +99,7 @@ impl RelationState {
 
         match self.checked_access(bindings)? {
             Some(access) => access.estimate_prefix_count(bindings),
-            None if bindings.iter().any(Option::is_some) => {
-                Ok(self.tuples.matching_count(bindings))
-            }
+            None if bindings.iter().any(Option::is_some) => Ok(self.cardinality()),
             None => Ok(self.cardinality()),
         }
     }

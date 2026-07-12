@@ -137,23 +137,20 @@ impl TupleStore {
         }
     }
 
-    pub(super) fn matching_count(&self, bindings: &[Option<Value>]) -> usize {
-        let mut count = 0usize;
-        self.for_each_matching(bindings, |_| count += 1);
-        count
-    }
-
     pub(super) fn estimate_prefix_count(
         &self,
         bindings: &[Option<Value>],
         bound_count: usize,
     ) -> Result<usize, KernelError> {
-        let mut count = 0usize;
-        self.visit_prefix(bindings, bound_count, &mut |_| {
-            count += 1;
-            Ok(ScanControl::Continue)
-        })?;
-        Ok(count)
+        let row_count = self.len();
+        if row_count == 0 || bound_count == 0 {
+            return Ok(row_count);
+        }
+        let estimated_distinct_prefixes = (row_count as f64)
+            .powf(bound_count as f64 / bindings.len() as f64)
+            .round()
+            .max(1.0) as usize;
+        Ok(row_count.div_ceil(estimated_distinct_prefixes))
     }
 
     pub(super) fn matching(&self, bindings: &[Option<Value>]) -> Vec<Tuple> {
