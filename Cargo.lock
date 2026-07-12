@@ -3461,6 +3461,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mica-relation-wgpu"
+version = "0.1.0"
+dependencies = [
+ "mica-relation-kernel",
+ "mica-var",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "mica-runner"
 version = "0.1.0"
 dependencies = [

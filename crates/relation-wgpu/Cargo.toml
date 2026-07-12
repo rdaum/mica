@@ -1,0 +1,13 @@
+[package]
+name = "mica-relation-wgpu"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "wgpu execution for packed Mica relation operators"
+
+[dependencies]
+mica-relation-kernel.workspace = true
+mica-var.workspace = true
+pollster.workspace = true
+wgpu.workspace = true

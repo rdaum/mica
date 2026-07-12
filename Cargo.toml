@@ -15,6 +15,7 @@ members = [
     "crates/telnet-host",
     "crates/runner",
     "crates/relation-kernel",
+    "crates/relation-wgpu",
     "crates/runtime",
     "crates/source-provider",
     "crates/testing/load-tools",
@@ -40,6 +41,7 @@ mica-webtransport-host = { path = "crates/webtransport-host" }
 mica-telnet-host = { path = "crates/telnet-host" }
 mica-host-zmq = { path = "crates/host-zmq" }
 mica-relation-kernel = { path = "crates/relation-kernel", default-features = false }
+mica-relation-wgpu = { path = "crates/relation-wgpu" }
 mica-runtime = { path = "crates/runtime" }
 mica-source-provider = { path = "crates/source-provider" }
 mica-var = { path = "crates/var" }
@@ -62,6 +64,7 @@ fast-telemetry-export = { git = "https://github.com/eden-dev-inc/fast-telemetry.
 h3-webtransport = "0.1.2"
 httparse = "1.10"
 http = "1.4"
+pollster = "0.4"
 rand = "0.9"
 rand_core = { version = "0.6", features = ["getrandom"] }
 rayon = "1.12"
@@ -84,6 +87,7 @@ tree-sitter-javascript = "0.25"
 tree-sitter-md = { version = "0.5", features = ["parser"] }
 tree-sitter-rust = "0.24"
 wtransport = { version = "0.7", features = ["dangerous-configuration"] }
+wgpu = { version = "30.0", default-features = false, features = ["parking_lot", "std", "vulkan", "wgsl"] }
 xml = "1.0"
 zmq = { git = "https://github.com/rdaum/rust-zmq.git", branch = "main" }
 
@@ -93,5 +97,3 @@ rustyline = "18.0.0"
 # development / testing / benching
 micromeasure = "0.9"
 proptest = "1.11"
-pollster = "0.4"
-wgpu = { version = "30.0", default-features = false, features = ["parking_lot", "std", "vulkan", "wgsl"] }
