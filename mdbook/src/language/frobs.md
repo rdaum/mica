@@ -1,22 +1,20 @@
 # Frobs
 
-Frobs are lightweight parameterized values with a delegate identity and a
-payload:
+Frobs are lightweight parameterized values with a delegate identity and a payload:
 
 ```mica
 #take_event<{:actor -> #alice, :item -> #coin}>
 ```
 
-They are useful when a value needs behaviour or interpretation without becoming
-a durable object identity. An event value, a substitution template node, or a
-rendered fragment may need structured data and dispatchable behaviour, but it
-does not necessarily deserve a permanent identity in the world.
+They are useful when a value needs behaviour or interpretation without becoming a durable object
+identity. An event value, a substitution template node, or a rendered fragment may need structured
+data and dispatchable behaviour, but it does not necessarily deserve a permanent identity in the
+world.
 
-The design goal is to avoid polluting the durable identity space with short
-lived structured things. If every event, rendered fragment, or substitution
-piece became a full identity, the world would accumulate objects that are not
-really world entities. A frob keeps the structure in a value while still giving
-dispatch something meaningful to restrict on.
+The design goal is to avoid polluting the durable identity space with short lived structured things.
+If every event, rendered fragment, or substitution piece became a full identity, the world would
+accumulate objects that are not really world entities. A frob keeps the structure in a value while
+still giving dispatch something meaningful to restrict on.
 
 A frob has two parts:
 
@@ -38,8 +36,8 @@ The payload can be any value appropriate for the domain:
 #html_node<{:tag -> :a, :attrs -> {:href -> "/docs"}, :children -> ["docs"]}>
 ```
 
-The delegate identity says how the value should be interpreted. The payload is
-the data being interpreted.
+The delegate identity says how the value should be interpreted. The payload is the data being
+interpreted.
 
 Frobs can participate in dispatch restrictions:
 
@@ -49,9 +47,8 @@ verb render(event @ #event<_>)
 end
 ```
 
-The restriction `#event<_>` means "a frob whose delegate matches `#event`,
-with any payload". This gives libraries a way to define behaviour over
-families of structured values.
+The restriction `#event<_>` means "a frob whose delegate matches `#event`, with any payload". This
+gives libraries a way to define behaviour over families of structured values.
 
 Restrictions can be more specific when the caller wants a particular delegate:
 
@@ -62,14 +59,13 @@ verb render(event @ #movement_event<_>)
 end
 ```
 
-This is not the same as prototype delegation between durable identities. A
-frob delegates at the value level: the value carries a delegate identity and a
-payload. Prototype delegation is world state expressed through `Delegates`
-facts and is used to decide whether identities match role restrictions.
+This is not the same as prototype delegation between durable identities. A frob delegates at the
+value level: the value carries a delegate identity and a payload. Prototype delegation is world
+state expressed through `Delegates` facts and is used to decide whether identities match role
+restrictions.
 
-Persistability depends on the payload. A frob containing ephemeral capability
-values cannot be filed out as durable source.
+Persistability depends on the payload. A frob containing ephemeral capability values cannot be filed
+out as durable source.
 
-Frobs should be used for values that need structure and interpretation. Use an
-identity when the thing should have durable facts, policy, history, or
-authorable behaviour attached to it.
+Frobs should be used for values that need structure and interpretation. Use an identity when the
+thing should have durable facts, policy, history, or authorable behaviour attached to it.

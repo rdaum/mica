@@ -1,7 +1,7 @@
 # Syntax Quick Reference
 
-This chapter is a compact map of the current surface syntax. Details live in
-the topical reference chapters.
+This chapter is a compact map of the current surface syntax. Details live in the topical reference
+chapters.
 
 ## Comments
 
@@ -34,8 +34,8 @@ items[2]
 items[2.._]
 ```
 
-`[@prefix, last]` splices the list in `prefix` into a new list before `last`.
-`2.._` is an open-ended range used by index operations.
+`[@prefix, last]` splices the list in `prefix` into a new list before `last`. `2.._` is an
+open-ended range used by index operations.
 
 ## DOM Markup
 
@@ -47,10 +47,9 @@ dom <button type="submit" class={class}>
 dom <ul>{@items}</ul>
 ```
 
-`dom <...>` builds DOM node values and lowers to `dom_element(...)` and
-`dom_text(...)`. Use `{expr}` for dynamic attributes or children, and `{@expr}`
-to splice a list of child nodes. Bare `<tag>` is not expression syntax; the
-`dom` prefix is required.
+`dom <...>` builds DOM node values and lowers to `dom_element(...)` and `dom_text(...)`. Use
+`{expr}` for dynamic attributes or children, and `{@expr}` to splice a list of child nodes. Bare
+`<tag>` is not expression syntax; the `dom` prefix is required.
 
 ## Relations
 
@@ -66,12 +65,10 @@ LocatedIn(?thing, #room)
 one Name(#lamp, ?name)
 ```
 
-`[0]` is a zero-based key-position list for a functional relation. `?thing` and
-`?name` are query variables that bind returned values. `_` is a wildcard that
-matches without binding.
+`[0]` is a zero-based key-position list for a functional relation. `?thing` and `?name` are query
+variables that bind returned values. `_` is a wildcard that matches without binding.
 
-`assert` and `retract` require relation atoms. `require` accepts any boolean
-condition:
+`assert` and `retract` require relation atoms. `require` accepts any boolean condition:
 
 ```mica
 require CanMove(actor, item)
@@ -86,9 +83,8 @@ VisibleTo(actor, item) :-
   not HiddenFrom(item, actor)
 ```
 
-Rule variables are conventionally bare names such as `actor`, `item`, and
-`room`. The current compiler also accepts `?name` in rule atoms, but bare names
-are the preferred rule style.
+Rule variables are conventionally bare names such as `actor`, `item`, and `room`. The current
+compiler also accepts `?name` in rule atoms, but bare names are the preferred rule style.
 
 ## Control
 
@@ -153,9 +149,8 @@ end
 #coin:look(actor: #alice)
 ```
 
-`actor @ #player` is a role restriction. `#coin:look(actor: #alice)` is
-receiver-call sugar for a named-role dispatch with `receiver: #coin`; it is not
-classic method-table lookup.
+`actor @ #player` is a role restriction. `#coin:look(actor: #alice)` is receiver-call sugar for a
+named-role dispatch with `receiver: #coin`; it is not classic method-table lookup.
 
 ## Task Control
 

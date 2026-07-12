@@ -1,18 +1,17 @@
 # mica-runner
 
-`mica-runner` is the command-line executable crate for Mica. It provides the
-`mica` binary, the REPL, source evaluation, filein, and fileout commands.
+`mica-runner` is the command-line executable crate for Mica. It provides the `mica` binary, the
+REPL, source evaluation, filein, and fileout commands.
 
-This crate is not the live runtime environment. That code lives in
-`mica-runtime`; this crate is a command-line consumer of it. Ordinary source
-evaluation is submitted through `mica-driver` so timed suspensions, commits,
-input waits, and emitted effects use the same driver path as future daemons and
-listeners.
+This crate is not the live runtime environment. That code lives in `mica-runtime`; this crate is a
+command-line consumer of it. Ordinary source evaluation is submitted through `mica-driver` so timed
+suspensions, commits, input waits, and emitted effects use the same driver path as future daemons
+and listeners.
 
 ## What's Here
 
-- `src/main.rs`: command-line entry point for `mica run`, `mica filein`,
-  `mica eval`, and `mica repl`.
+- `src/main.rs`: command-line entry point for `mica run`, `mica filein`, `mica eval`, and
+  `mica repl`.
 
 ## Commands
 
@@ -42,13 +41,12 @@ cargo run --bin mica
 
 ## Role In Mica
 
-The runner opens a `mica-runtime` `SourceRunner`, gives it to the compio driver,
-feeds source from files, command-line arguments, or the REPL through that
-driver, and renders reports for humans. Filein/fileout still use the runtime
-directly because they are import/export operations rather than ordinary task
-submissions.
+The runner opens a `mica-runtime` `SourceRunner`, gives it to the compio driver, feeds source from
+files, command-line arguments, or the REPL through that driver, and renders reports for humans.
+Filein/fileout still use the runtime directly because they are import/export operations rather than
+ordinary task submissions.
 
 ## Licence
 
-Mica is licensed under the GNU Affero General Public License v3.0. See the
-repository root `LICENSE`.
+Mica is licensed under the GNU Affero General Public License v3.0. See the repository root
+`LICENSE`.

@@ -10,69 +10,69 @@ const MIN_WINDOW_WIDTH = 320;
 const MIN_WINDOW_HEIGHT = 240;
 
 function cssEscape(value) {
-  return window.CSS?.escape ? CSS.escape(value) : String(value).replaceAll('"', '\\"');
+    return window.CSS?.escape ? CSS.escape(value) : String(value).replaceAll("\"", "\\\"");
 }
 
 function applySavedColumnWidth() {
-  const saved = window.localStorage?.getItem(RIGHT_COLUMN_WIDTH_KEY);
-  if (saved) {
-    document.documentElement.style.setProperty("--agent-right-width", saved);
-  }
+    const saved = window.localStorage?.getItem(RIGHT_COLUMN_WIDTH_KEY);
+    if (saved) {
+        document.documentElement.style.setProperty("--agent-right-width", saved);
+    }
 }
 
 function installColumnSplitter(mount) {
-  let drag = null;
+    let drag = null;
 
-  mount.addEventListener("pointerdown", (event) => {
-    const splitter = event.target?.closest?.(".column-splitter");
-    if (!splitter || !mount.contains(splitter)) {
-      return;
+    mount.addEventListener("pointerdown", (event) => {
+        const splitter = event.target?.closest?.(".column-splitter");
+        if (!splitter || !mount.contains(splitter)) {
+            return;
+        }
+
+        const columns = splitter.closest(".agent-columns");
+        if (!columns) {
+            return;
+        }
+
+        const right = columns.querySelector(".agent-right-column");
+        if (!right) {
+            return;
+        }
+
+        drag = {
+            splitter,
+            columns,
+            pointerId: event.pointerId,
+        };
+        splitter.classList.add("is-dragging");
+        splitter.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+    });
+
+    mount.addEventListener("pointermove", (event) => {
+        if (!drag || drag.pointerId !== event.pointerId) {
+            return;
+        }
+
+        const bounds = drag.columns.getBoundingClientRect();
+        const maxRightWidth = Math.max(MIN_RIGHT_COLUMN_WIDTH, bounds.width - MIN_LEFT_COLUMN_WIDTH);
+        const nextWidth = Math.min(Math.max(bounds.right - event.clientX, MIN_RIGHT_COLUMN_WIDTH), maxRightWidth);
+        const value = `${Math.round(nextWidth)}px`;
+        document.documentElement.style.setProperty("--agent-right-width", value);
+        window.localStorage?.setItem(RIGHT_COLUMN_WIDTH_KEY, value);
+    });
+
+    function finishDrag(event) {
+        if (!drag || drag.pointerId !== event.pointerId) {
+            return;
+        }
+        drag.splitter.classList.remove("is-dragging");
+        drag.splitter.releasePointerCapture?.(event.pointerId);
+        drag = null;
     }
 
-    const columns = splitter.closest(".agent-columns");
-    if (!columns) {
-      return;
-    }
-
-    const right = columns.querySelector(".agent-right-column");
-    if (!right) {
-      return;
-    }
-
-    drag = {
-      splitter,
-      columns,
-      pointerId: event.pointerId,
-    };
-    splitter.classList.add("is-dragging");
-    splitter.setPointerCapture?.(event.pointerId);
-    event.preventDefault();
-  });
-
-  mount.addEventListener("pointermove", (event) => {
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-
-    const bounds = drag.columns.getBoundingClientRect();
-    const maxRightWidth = Math.max(MIN_RIGHT_COLUMN_WIDTH, bounds.width - MIN_LEFT_COLUMN_WIDTH);
-    const nextWidth = Math.min(Math.max(bounds.right - event.clientX, MIN_RIGHT_COLUMN_WIDTH), maxRightWidth);
-    const value = `${Math.round(nextWidth)}px`;
-    document.documentElement.style.setProperty("--agent-right-width", value);
-    window.localStorage?.setItem(RIGHT_COLUMN_WIDTH_KEY, value);
-  });
-
-  function finishDrag(event) {
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    drag.splitter.classList.remove("is-dragging");
-    drag.splitter.releasePointerCapture?.(event.pointerId);
-    drag = null;
-  }
-
-  mount.addEventListener("pointerup", finishDrag);
-  mount.addEventListener("pointercancel", finishDrag);
+    mount.addEventListener("pointerup", finishDrag);
+    mount.addEventListener("pointercancel", finishDrag);
 }
 
 applySavedColumnWidth();
@@ -83,197 +83,206 @@ installQueueModeToggle(document.getElementById("mount"));
 // field based on whether shift was held. Shift+Enter during streaming
 // queues the message as a follow-up instead of steering.
 function installQueueModeToggle(mount) {
-  mount.addEventListener("submit", (event) => {
-    const form = event.target?.closest?.("form");
-    if (!form || !mount.contains(form)) {
-      return;
-    }
-    if (form.dataset.syncAction !== "agent_command") {
-      return;
-    }
-    let modeInput = form.querySelector('input[name="mode"]');
-    if (!modeInput) {
-      modeInput = document.createElement("input");
-      modeInput.type = "hidden";
-      modeInput.name = "mode";
-      form.appendChild(modeInput);
-    }
-    modeInput.value = event.shiftKey ? "follow_up" : "";
-  }, true);
+    mount.addEventListener("submit", (event) => {
+        const form = event.target?.closest?.("form");
+        if (!form || !mount.contains(form)) {
+            return;
+        }
+        if (form.dataset.syncAction !== "agent_command") {
+            return;
+        }
+        let modeInput = form.querySelector("input[name=\"mode\"]");
+        if (!modeInput) {
+            modeInput = document.createElement("input");
+            modeInput.type = "hidden";
+            modeInput.name = "mode";
+            form.appendChild(modeInput);
+        }
+        modeInput.value = event.shiftKey ? "follow_up" : "";
+    }, true);
 }
 
 function closeDetails(details) {
-  if (details) {
-    details.open = false;
-  }
+    if (details) {
+        details.open = false;
+    }
 }
 
 function installToolWindows(mount) {
-  let drag = null;
+    let drag = null;
 
-  mount.addEventListener("toggle", (event) => {
-    const details = event.target?.closest?.("details.tool-sheet");
-    if (!details || event.target !== details || !details.open) {
-      return;
-    }
-    const windowEl = details.querySelector(".tool-window");
-    if (windowEl) {
-      const saved = window.localStorage?.getItem(toolWindowStateKey(windowEl));
-      if (saved) {
-        restoreToolWindowState(windowEl);
-      } else {
-        const summary = details.querySelector("summary");
-        if (summary) {
-          const rect = summary.getBoundingClientRect();
-          const width = 520;
-          let left = rect.right - width;
-          if (left < 8) left = 8;
-          let top = rect.bottom + 4;
-          const height = 360;
-          if (top + height > window.innerHeight - 8) {
-            top = Math.max(8, rect.top - height - 4);
-          }
-          windowEl.style.left = `${Math.round(left)}px`;
-          windowEl.style.right = "auto";
-          windowEl.style.top = `${Math.round(top)}px`;
+    mount.addEventListener("toggle", (event) => {
+        const details = event.target?.closest?.("details.tool-sheet");
+        if (!details || event.target !== details || !details.open) {
+            return;
         }
-      }
-    }
-  }, true);
+        const windowEl = details.querySelector(".tool-window");
+        if (windowEl) {
+            const saved = window.localStorage?.getItem(toolWindowStateKey(windowEl));
+            if (saved) {
+                restoreToolWindowState(windowEl);
+            } else {
+                const summary = details.querySelector("summary");
+                if (summary) {
+                    const rect = summary.getBoundingClientRect();
+                    const width = 520;
+                    let left = rect.right - width;
+                    if (left < 8) left = 8;
+                    let top = rect.bottom + 4;
+                    const height = 360;
+                    if (top + height > window.innerHeight - 8) {
+                        top = Math.max(8, rect.top - height - 4);
+                    }
+                    windowEl.style.left = `${Math.round(left)}px`;
+                    windowEl.style.right = "auto";
+                    windowEl.style.top = `${Math.round(top)}px`;
+                }
+            }
+        }
+    }, true);
 
-  mount.addEventListener("click", (event) => {
-    const close = event.target?.closest?.("[data-close-details]");
-    if (close && mount.contains(close)) {
-      closeDetails(close.closest("details"));
-      event.preventDefault();
-    }
-  });
+    mount.addEventListener("click", (event) => {
+        const close = event.target?.closest?.("[data-close-details]");
+        if (close && mount.contains(close)) {
+            closeDetails(close.closest("details"));
+            event.preventDefault();
+        }
+    });
 
-  mount.addEventListener("pointerdown", (event) => {
-    if (event.target?.closest?.("[data-close-details]")) {
-      return;
+    mount.addEventListener("pointerdown", (event) => {
+        if (event.target?.closest?.("[data-close-details]")) {
+            return;
+        }
+
+        const dragHandle = event.target?.closest?.("[data-window-drag]");
+        const resizeHandle = event.target?.closest?.("[data-window-resize]");
+        const handle = resizeHandle || dragHandle;
+        if (!handle || !mount.contains(handle)) {
+            return;
+        }
+
+        const windowEl = handle.closest(".tool-window");
+        if (!windowEl) {
+            return;
+        }
+
+        const rect = windowEl.getBoundingClientRect();
+        drag = {
+            mode: resizeHandle ? "resize" : "move",
+            windowEl,
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height,
+        };
+        windowEl.classList.add(resizeHandle ? "is-resizing" : "is-dragging");
+        handle.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+    });
+
+    mount.addEventListener("pointermove", (event) => {
+        if (!drag || drag.pointerId !== event.pointerId) {
+            return;
+        }
+
+        if (drag.mode === "move") {
+            const width = drag.windowEl.offsetWidth;
+            const height = drag.windowEl.offsetHeight;
+            const left = Math.min(Math.max(drag.left + event.clientX - drag.startX, 8), window.innerWidth - width - 8);
+            const top = Math.min(Math.max(drag.top + event.clientY - drag.startY, 8), window.innerHeight - height - 8);
+            drag.windowEl.style.left = `${Math.round(left)}px`;
+            drag.windowEl.style.right = "auto";
+            drag.windowEl.style.top = `${Math.round(top)}px`;
+        } else {
+            const width = Math.min(
+                Math.max(drag.width + event.clientX - drag.startX, MIN_WINDOW_WIDTH),
+                window.innerWidth - drag.left - 8,
+            );
+            const height = Math.min(
+                Math.max(drag.height + event.clientY - drag.startY, MIN_WINDOW_HEIGHT),
+                window.innerHeight - drag.top - 8,
+            );
+            drag.windowEl.style.width = `${Math.round(width)}px`;
+            drag.windowEl.style.height = `${Math.round(height)}px`;
+        }
+    });
+
+    function finishWindowDrag(event) {
+        if (!drag || drag.pointerId !== event.pointerId) {
+            return;
+        }
+        drag.windowEl.classList.remove("is-dragging", "is-resizing");
+        saveToolWindowState(drag.windowEl);
+        event.target?.releasePointerCapture?.(event.pointerId);
+        drag = null;
     }
 
-    const dragHandle = event.target?.closest?.("[data-window-drag]");
-    const resizeHandle = event.target?.closest?.("[data-window-resize]");
-    const handle = resizeHandle || dragHandle;
-    if (!handle || !mount.contains(handle)) {
-      return;
-    }
+    mount.addEventListener("pointerup", finishWindowDrag);
+    mount.addEventListener("pointercancel", finishWindowDrag);
 
-    const windowEl = handle.closest(".tool-window");
-    if (!windowEl) {
-      return;
-    }
-
-    const rect = windowEl.getBoundingClientRect();
-    drag = {
-      mode: resizeHandle ? "resize" : "move",
-      windowEl,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      left: rect.left,
-      top: rect.top,
-      width: rect.width,
-      height: rect.height,
-    };
-    windowEl.classList.add(resizeHandle ? "is-resizing" : "is-dragging");
-    handle.setPointerCapture?.(event.pointerId);
-    event.preventDefault();
-  });
-
-  mount.addEventListener("pointermove", (event) => {
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-
-    if (drag.mode === "move") {
-      const width = drag.windowEl.offsetWidth;
-      const height = drag.windowEl.offsetHeight;
-      const left = Math.min(Math.max(drag.left + event.clientX - drag.startX, 8), window.innerWidth - width - 8);
-      const top = Math.min(Math.max(drag.top + event.clientY - drag.startY, 8), window.innerHeight - height - 8);
-      drag.windowEl.style.left = `${Math.round(left)}px`;
-      drag.windowEl.style.right = "auto";
-      drag.windowEl.style.top = `${Math.round(top)}px`;
-    } else {
-      const width = Math.min(Math.max(drag.width + event.clientX - drag.startX, MIN_WINDOW_WIDTH), window.innerWidth - drag.left - 8);
-      const height = Math.min(Math.max(drag.height + event.clientY - drag.startY, MIN_WINDOW_HEIGHT), window.innerHeight - drag.top - 8);
-      drag.windowEl.style.width = `${Math.round(width)}px`;
-      drag.windowEl.style.height = `${Math.round(height)}px`;
-    }
-  });
-
-  function finishWindowDrag(event) {
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    drag.windowEl.classList.remove("is-dragging", "is-resizing");
-    saveToolWindowState(drag.windowEl);
-    event.target?.releasePointerCapture?.(event.pointerId);
-    drag = null;
-  }
-
-  mount.addEventListener("pointerup", finishWindowDrag);
-  mount.addEventListener("pointercancel", finishWindowDrag);
-
-  window.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") {
-      return;
-    }
-    let closed = false;
-    for (const details of mount.querySelectorAll("details.tool-sheet[open]")) {
-      closeDetails(details);
-      closed = true;
-    }
-    if (closed) {
-      event.preventDefault();
-    }
-  });
+    window.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") {
+            return;
+        }
+        let closed = false;
+        for (const details of mount.querySelectorAll("details.tool-sheet[open]")) {
+            closeDetails(details);
+            closed = true;
+        }
+        if (closed) {
+            event.preventDefault();
+        }
+    });
 }
 
 function toolWindowStateKey(windowEl) {
-  const key = windowEl.dataset.windowKey || windowEl.id || "default";
-  return `micaAgentWindow:${key}`;
+    const key = windowEl.dataset.windowKey || windowEl.id || "default";
+    return `micaAgentWindow:${key}`;
 }
 
 function windowState(windowEl) {
-  const style = windowEl.style;
-  return {
-    left: style.left || "",
-    top: style.top || "",
-    width: style.width || "",
-    height: style.height || "",
-  };
+    const style = windowEl.style;
+    return {
+        left: style.left || "",
+        top: style.top || "",
+        width: style.width || "",
+        height: style.height || "",
+    };
 }
 
 function saveToolWindowState(windowEl) {
-  window.localStorage?.setItem(toolWindowStateKey(windowEl), JSON.stringify(windowState(windowEl)));
+    window.localStorage?.setItem(toolWindowStateKey(windowEl), JSON.stringify(windowState(windowEl)));
 }
 
 function applyToolWindowState(windowEl, state) {
-  if (!state) {
-    return;
-  }
-  const maxLeft = Math.max(12, window.innerWidth - MIN_WINDOW_WIDTH - 12);
-  const maxTop = Math.max(12, window.innerHeight - MIN_WINDOW_HEIGHT - 12);
-  const left = Math.min(Math.max(Number(state.left) || 18, 12), maxLeft);
-  const top = Math.min(Math.max(Number(state.top) || 82, 12), maxTop);
-  const width = Math.min(Math.max(Number(state.width) || 520, MIN_WINDOW_WIDTH), window.innerWidth - 24);
-  const height = Math.min(Math.max(Number(state.height) || 360, MIN_WINDOW_HEIGHT), window.innerHeight - 24);
-  windowEl.style.left = `${left}px`;
-  windowEl.style.right = "auto";
-  windowEl.style.top = `${top}px`;
-  windowEl.style.width = `${width}px`;
-  windowEl.style.height = `${height}px`;
+    if (!state) {
+        return;
+    }
+    const maxLeft = Math.max(12, window.innerWidth - MIN_WINDOW_WIDTH - 12);
+    const maxTop = Math.max(12, window.innerHeight - MIN_WINDOW_HEIGHT - 12);
+    const left = Math.min(Math.max(Number(state.left) || 18, 12), maxLeft);
+    const top = Math.min(Math.max(Number(state.top) || 82, 12), maxTop);
+    const width = Math.min(Math.max(Number(state.width) || 520, MIN_WINDOW_WIDTH), window.innerWidth - 24);
+    const height = Math.min(Math.max(Number(state.height) || 360, MIN_WINDOW_HEIGHT), window.innerHeight - 24);
+    windowEl.style.left = `${left}px`;
+    windowEl.style.right = "auto";
+    windowEl.style.top = `${top}px`;
+    windowEl.style.width = `${width}px`;
+    windowEl.style.height = `${height}px`;
 }
 
 function restoreToolWindowState(windowEl) {
-  try {
-    applyToolWindowState(windowEl, JSON.parse(window.localStorage?.getItem(toolWindowStateKey(windowEl)) ?? "null"));
-  } catch {
-    window.localStorage?.removeItem(toolWindowStateKey(windowEl));
-  }
+    try {
+        applyToolWindowState(
+            windowEl,
+            JSON.parse(window.localStorage?.getItem(toolWindowStateKey(windowEl)) ?? "null"),
+        );
+    } catch {
+        window.localStorage?.removeItem(toolWindowStateKey(windowEl));
+    }
 }
 
 installToolWindows(document.getElementById("mount"));
@@ -282,20 +291,20 @@ installMarkdownRendering(document.getElementById("mount"));
 installAutoScroll(document.getElementById("mount"));
 
 function linkifyMentions(html) {
-  return html.replace(/(^|[\s(>])@(\.\/[^\s`"'*<>\[\]\(\)\)]+)/g, (_, pre, path) => {
-    const entity = `#target/file<"${path}">`;
-    return `${pre}<button type="button" class="mention-link" data-entity="${entity}">@${path}</button>`;
-  });
+    return html.replace(/(^|[\s(>])@(\.\/[^\s`"'*<>\[\]\(\)\)]+)/g, (_, pre, path) => {
+        const entity = `#target/file<"${path}">`;
+        return `${pre}<button type="button" class="mention-link" data-entity="${entity}">@${path}</button>`;
+    });
 }
 
 function renderMessageContent(el) {
-  const raw = el.dataset.rawContent;
-  if (raw === undefined) return;
-  delete el.dataset.rawContent;
-  const html = marked.parse(raw);
-  const linked = linkifyMentions(html);
-  const shadow = el.shadowRoot || el.attachShadow({ mode: "open" });
-  shadow.innerHTML = `<style>
+    const raw = el.dataset.rawContent;
+    if (raw === undefined) return;
+    delete el.dataset.rawContent;
+    const html = marked.parse(raw);
+    const linked = linkifyMentions(html);
+    const shadow = el.shadowRoot || el.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<style>
     :host { all: inherit; }
     .markdown-body { line-height: 1.5; }
     .markdown-body > *:first-child { margin-top: 0; }
@@ -320,278 +329,277 @@ function renderMessageContent(el) {
     .mention-link { display: inline; background: none; border: none; padding: 0; font-family: var(--mono-font, monospace); font-size: inherit; color: #91d8c7; cursor: pointer; text-decoration: none; }
     .mention-link:hover { text-decoration: underline; }
   </style><div class="markdown-body">${linked}</div>`;
-  shadow.addEventListener("click", (event) => {
-    const btn = event.target?.closest?.("button.mention-link");
-    if (!btn) return;
-    event.preventDefault();
-    const form = document.createElement("form");
-    form.dataset.syncEvent = "submit";
-    form.dataset.syncAction = "agent_inspect";
-    const hidden = document.createElement("input");
-    hidden.type = "hidden";
-    hidden.name = "entity";
-    hidden.value = btn.dataset.entity;
-    form.appendChild(hidden);
-    mount.appendChild(form);
-    form.requestSubmit();
-    form.remove();
-  });
+    shadow.addEventListener("click", (event) => {
+        const btn = event.target?.closest?.("button.mention-link");
+        if (!btn) return;
+        event.preventDefault();
+        const form = document.createElement("form");
+        form.dataset.syncEvent = "submit";
+        form.dataset.syncAction = "agent_inspect";
+        const hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "entity";
+        hidden.value = btn.dataset.entity;
+        form.appendChild(hidden);
+        mount.appendChild(form);
+        form.requestSubmit();
+        form.remove();
+    });
 }
 
 function installMarkdownRendering(mount) {
-  for (const el of mount.querySelectorAll("[data-raw-content]")) {
-    renderMessageContent(el);
-  }
-  const observer = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType !== Node.ELEMENT_NODE) continue;
-        if (node.dataset?.rawContent !== undefined) {
-          renderMessageContent(node);
-        }
-        for (const el of node.querySelectorAll?.("[data-raw-content]") || []) {
-          renderMessageContent(el);
-        }
-      }
+    for (const el of mount.querySelectorAll("[data-raw-content]")) {
+        renderMessageContent(el);
     }
-  });
-  observer.observe(mount, { childList: true, subtree: true });
+    const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                if (node.dataset?.rawContent !== undefined) {
+                    renderMessageContent(node);
+                }
+                for (const el of node.querySelectorAll?.("[data-raw-content]") || []) {
+                    renderMessageContent(el);
+                }
+            }
+        }
+    });
+    observer.observe(mount, { childList: true, subtree: true });
 }
 
 function installAtCompletion(mount) {
-  let dropdown = null;
-  let activeInput = null;
-  let items = [];
-  let selectedIndex = 0;
-  let fetchController = null;
+    let dropdown = null;
+    let activeInput = null;
+    let items = [];
+    let selectedIndex = 0;
+    let fetchController = null;
 
-  function createDropdown() {
-    const el = document.createElement("div");
-    el.className = "at-completion-dropdown";
-    el.setAttribute("role", "listbox");
-    el.style.display = "none";
-    mount.appendChild(el);
-    return el;
-  }
-
-  function destroyDropdown() {
-    if (dropdown) {
-      dropdown.remove();
-      dropdown = null;
+    function createDropdown() {
+        const el = document.createElement("div");
+        el.className = "at-completion-dropdown";
+        el.setAttribute("role", "listbox");
+        el.style.display = "none";
+        mount.appendChild(el);
+        return el;
     }
-    if (fetchController) {
-      fetchController.abort();
-      fetchController = null;
-    }
-    items = [];
-    selectedIndex = 0;
-    activeInput = null;
-  }
 
-  function renderItems() {
-    if (!dropdown) return;
-    if (items.length === 0) {
-      dropdown.innerHTML = '<div class="at-completion-empty">No files found</div>';
-      return;
+    function destroyDropdown() {
+        if (dropdown) {
+            dropdown.remove();
+            dropdown = null;
+        }
+        if (fetchController) {
+            fetchController.abort();
+            fetchController = null;
+        }
+        items = [];
+        selectedIndex = 0;
+        activeInput = null;
     }
-    dropdown.innerHTML = items
-      .map((item, i) => {
-        const cls = i === selectedIndex ? "at-completion-item selected" : "at-completion-item";
-        const icon = item.kind === "directory" ? "📁" : "";
-        const lang = item.language ? `<span class="at-completion-lang">${item.language}</span>` : "";
-        return `<div class="${cls}" role="option" data-index="${i}">` +
-          `<span class="at-completion-path">${icon}${item.path}</span>${lang}</div>`;
-      })
-      .join("");
-  }
 
-  function positionDropdown(input) {
-    if (!dropdown) return;
-    const rect = input.getBoundingClientRect();
-    dropdown.style.left = `${rect.left}px`;
-    dropdown.style.bottom = `${window.innerHeight - rect.top + 2}px`;
-    dropdown.style.minWidth = `${Math.max(rect.width, 300)}px`;
-  }
-
-  async function fetchCompletions(query) {
-    if (fetchController) {
-      fetchController.abort();
+    function renderItems() {
+        if (!dropdown) return;
+        if (items.length === 0) {
+            dropdown.innerHTML = "<div class=\"at-completion-empty\">No files found</div>";
+            return;
+        }
+        dropdown.innerHTML = items
+            .map((item, i) => {
+                const cls = i === selectedIndex ? "at-completion-item selected" : "at-completion-item";
+                const icon = item.kind === "directory" ? "📁" : "";
+                const lang = item.language ? `<span class="at-completion-lang">${item.language}</span>` : "";
+                return `<div class="${cls}" role="option" data-index="${i}">`
+                    + `<span class="at-completion-path">${icon}${item.path}</span>${lang}</div>`;
+            })
+            .join("");
     }
-    fetchController = new AbortController();
-    try {
-      const res = await fetch(`/agent/api/completions?q=${encodeURIComponent(query)}`, {
-        signal: fetchController.signal,
-      });
-      const data = await res.json();
-      items = data.items || [];
-      selectedIndex = 0;
-      renderItems();
-      if (items.length > 0) {
-        dropdown.style.display = "block";
-        positionDropdown(activeInput);
-      } else {
-        dropdown.style.display = "none";
-      }
-    } catch {
-      // aborted or network error
-    }
-  }
 
-  function findAtPrefix(text, cursorPos) {
-    const before = text.slice(0, cursorPos);
-    for (let i = before.length - 1; i >= 0; i--) {
-      const ch = before[i];
-      if (ch === "@") {
-        if (i === 0 || before[i - 1] === " " || before[i - 1] === "\t" || before[i - 1] === "\n") {
-          return before.slice(i + 1);
+    function positionDropdown(input) {
+        if (!dropdown) return;
+        const rect = input.getBoundingClientRect();
+        dropdown.style.left = `${rect.left}px`;
+        dropdown.style.bottom = `${window.innerHeight - rect.top + 2}px`;
+        dropdown.style.minWidth = `${Math.max(rect.width, 300)}px`;
+    }
+
+    async function fetchCompletions(query) {
+        if (fetchController) {
+            fetchController.abort();
+        }
+        fetchController = new AbortController();
+        try {
+            const res = await fetch(`/agent/api/completions?q=${encodeURIComponent(query)}`, {
+                signal: fetchController.signal,
+            });
+            const data = await res.json();
+            items = data.items || [];
+            selectedIndex = 0;
+            renderItems();
+            if (items.length > 0) {
+                dropdown.style.display = "block";
+                positionDropdown(activeInput);
+            } else {
+                dropdown.style.display = "none";
+            }
+        } catch {
+            // aborted or network error
+        }
+    }
+
+    function findAtPrefix(text, cursorPos) {
+        const before = text.slice(0, cursorPos);
+        for (let i = before.length - 1; i >= 0; i--) {
+            const ch = before[i];
+            if (ch === "@") {
+                if (i === 0 || before[i - 1] === " " || before[i - 1] === "\t" || before[i - 1] === "\n") {
+                    return before.slice(i + 1);
+                }
+                return null;
+            }
+            if (ch === " " || ch === "\t" || ch === "\n") {
+                return null;
+            }
         }
         return null;
-      }
-      if (ch === " " || ch === "\t" || ch === "\n") {
-        return null;
-      }
     }
-    return null;
-  }
 
-  function applyCompletion(item, prefixLength) {
-    const input = activeInput;
-    if (!input) return;
-    const before = input.value.slice(0, input.selectionStart - prefixLength);
-    const after = input.value.slice(input.selectionEnd);
-    const rawPath = item.path;
-    const path = rawPath.startsWith("/") || rawPath.startsWith("./") ? rawPath : `./${rawPath}`;
-    const suffix = item.kind === "directory" ? "/" : " ";
-    const insert = `${path}${suffix}`;
-    input.value = before + insert + after;
-    const cursorPos = before.length + insert.length;
-    input.setSelectionRange(cursorPos, cursorPos);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.focus();
-  }
+    function applyCompletion(item, prefixLength) {
+        const input = activeInput;
+        if (!input) return;
+        const before = input.value.slice(0, input.selectionStart - prefixLength);
+        const after = input.value.slice(input.selectionEnd);
+        const rawPath = item.path;
+        const path = rawPath.startsWith("/") || rawPath.startsWith("./") ? rawPath : `./${rawPath}`;
+        const suffix = item.kind === "directory" ? "/" : " ";
+        const insert = `${path}${suffix}`;
+        input.value = before + insert + after;
+        const cursorPos = before.length + insert.length;
+        input.setSelectionRange(cursorPos, cursorPos);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.focus();
+    }
 
-  mount.addEventListener("input", (event) => {
-    const input = event.target;
-    if (!input || input.name !== "text" || !input.closest('[data-sync-action="agent_command"]')) {
-      return;
-    }
-    const prefix = findAtPrefix(input.value, input.selectionStart);
-    if (prefix === null) {
-      if (dropdown) {
-        destroyDropdown();
-      }
-      return;
-    }
-    if (!dropdown) {
-      dropdown = createDropdown();
-      activeInput = input;
-    }
-    activeInput = input;
-    fetchCompletions(prefix);
-  });
-
-  mount.addEventListener("click", (event) => {
-    const item = event.target?.closest?.(".at-completion-item");
-    if (item && dropdown && dropdown.contains(item)) {
-      const idx = parseInt(item.dataset.index, 10);
-      const selected = items[idx];
-      if (selected) {
-        const text = activeInput.value;
-        const cursor = activeInput.selectionStart;
-        const before = text.slice(0, cursor);
-        const atPos = before.lastIndexOf("@");
-        if (atPos >= 0) {
-          const prefixLen = cursor - atPos - 1;
-          applyCompletion(selected, prefixLen);
+    mount.addEventListener("input", (event) => {
+        const input = event.target;
+        if (!input || input.name !== "text" || !input.closest("[data-sync-action=\"agent_command\"]")) {
+            return;
         }
-      }
-      destroyDropdown();
-      event.preventDefault();
-      return;
-    }
-    if (dropdown && activeInput && !activeInput.contains(event.target) && !dropdown.contains(event.target)) {
-      destroyDropdown();
-    }
-  });
+        const prefix = findAtPrefix(input.value, input.selectionStart);
+        if (prefix === null) {
+            if (dropdown) {
+                destroyDropdown();
+            }
+            return;
+        }
+        if (!dropdown) {
+            dropdown = createDropdown();
+            activeInput = input;
+        }
+        activeInput = input;
+        fetchCompletions(prefix);
+    });
 
-  window.addEventListener("keydown", (event) => {
-    if (!dropdown || dropdown.style.display === "none" || !activeInput) {
-      return;
-    }
-    if (event.key === "Escape") {
-      destroyDropdown();
-      event.preventDefault();
-      return;
-    }
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      selectedIndex = Math.min(selectedIndex + 1, items.length - 1);
-      renderItems();
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      selectedIndex = Math.max(selectedIndex - 1, 0);
-      renderItems();
-      return;
-    }
-    if (event.key === "Enter" || event.key === "Tab") {
-      if (items.length === 0) return;
-      event.preventDefault();
-      const selected = items[selectedIndex];
-      const text = activeInput.value;
-      const cursor = activeInput.selectionStart;
-      const before = text.slice(0, cursor);
-      const atPos = before.lastIndexOf("@");
-      if (atPos >= 0) {
-        const prefixLen = cursor - atPos - 1;
-        applyCompletion(selected, prefixLen);
-      }
-      destroyDropdown();
-      return;
-    }
-  });
+    mount.addEventListener("click", (event) => {
+        const item = event.target?.closest?.(".at-completion-item");
+        if (item && dropdown && dropdown.contains(item)) {
+            const idx = parseInt(item.dataset.index, 10);
+            const selected = items[idx];
+            if (selected) {
+                const text = activeInput.value;
+                const cursor = activeInput.selectionStart;
+                const before = text.slice(0, cursor);
+                const atPos = before.lastIndexOf("@");
+                if (atPos >= 0) {
+                    const prefixLen = cursor - atPos - 1;
+                    applyCompletion(selected, prefixLen);
+                }
+            }
+            destroyDropdown();
+            event.preventDefault();
+            return;
+        }
+        if (dropdown && activeInput && !activeInput.contains(event.target) && !dropdown.contains(event.target)) {
+            destroyDropdown();
+        }
+    });
 
-  window.addEventListener("scroll", () => {
-    if (dropdown && activeInput) {
-      positionDropdown(activeInput);
-    }
-  }, true);
+    window.addEventListener("keydown", (event) => {
+        if (!dropdown || dropdown.style.display === "none" || !activeInput) {
+            return;
+        }
+        if (event.key === "Escape") {
+            destroyDropdown();
+            event.preventDefault();
+            return;
+        }
+        if (event.key === "ArrowDown") {
+            event.preventDefault();
+            selectedIndex = Math.min(selectedIndex + 1, items.length - 1);
+            renderItems();
+            return;
+        }
+        if (event.key === "ArrowUp") {
+            event.preventDefault();
+            selectedIndex = Math.max(selectedIndex - 1, 0);
+            renderItems();
+            return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+            if (items.length === 0) return;
+            event.preventDefault();
+            const selected = items[selectedIndex];
+            const text = activeInput.value;
+            const cursor = activeInput.selectionStart;
+            const before = text.slice(0, cursor);
+            const atPos = before.lastIndexOf("@");
+            if (atPos >= 0) {
+                const prefixLen = cursor - atPos - 1;
+                applyCompletion(selected, prefixLen);
+            }
+            destroyDropdown();
+            return;
+        }
+    });
+
+    window.addEventListener("scroll", () => {
+        if (dropdown && activeInput) {
+            positionDropdown(activeInput);
+        }
+    }, true);
 }
 
 function installAutoScroll(mount) {
-  const tailKeys = new WeakMap();
+    const tailKeys = new WeakMap();
 
-  function scrollToBottom(el) {
-    requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-      setTimeout(() => {
-        el.scrollTop = el.scrollHeight;
-      }, 0);
-    });
-  }
-
-  function refreshTranscriptScroll() {
-    for (const el of mount.querySelectorAll("[data-sync-follow='bottom']")) {
-      const lastChild = el.lastElementChild;
-      const tailKey = lastChild
-        ? `${lastChild.getAttribute("data-sync-key") ?? ""}:${lastChild.textContent?.length ?? 0}`
-        : "";
-      const prevKey = tailKeys.get(el) ?? "";
-      if (tailKey && tailKey !== prevKey) {
-        const wasAtBottom =
-          el.scrollHeight <= el.clientHeight ||
-          el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
-        if (wasAtBottom) {
-          scrollToBottom(el);
-        }
-      }
-      tailKeys.set(el, tailKey);
+    function scrollToBottom(el) {
+        requestAnimationFrame(() => {
+            el.scrollTop = el.scrollHeight;
+            setTimeout(() => {
+                el.scrollTop = el.scrollHeight;
+            }, 0);
+        });
     }
-  }
 
-  refreshTranscriptScroll();
-  new MutationObserver(() => {
+    function refreshTranscriptScroll() {
+        for (const el of mount.querySelectorAll("[data-sync-follow='bottom']")) {
+            const lastChild = el.lastElementChild;
+            const tailKey = lastChild
+                ? `${lastChild.getAttribute("data-sync-key") ?? ""}:${lastChild.textContent?.length ?? 0}`
+                : "";
+            const prevKey = tailKeys.get(el) ?? "";
+            if (tailKey && tailKey !== prevKey) {
+                const wasAtBottom = el.scrollHeight <= el.clientHeight
+                    || el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+                if (wasAtBottom) {
+                    scrollToBottom(el);
+                }
+            }
+            tailKeys.set(el, tailKey);
+        }
+    }
+
     refreshTranscriptScroll();
-  }).observe(mount, { childList: true, subtree: true });
+    new MutationObserver(() => {
+        refreshTranscriptScroll();
+    }).observe(mount, { childList: true, subtree: true });
 }

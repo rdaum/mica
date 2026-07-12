@@ -6,64 +6,64 @@ members = [
     "crates/compiler",
     "crates/daemon",
     "crates/driver",
-    "crates/host-zmq",
-    "crates/host-protocol",
     "crates/host-console",
+    "crates/host-protocol",
+    "crates/host-zmq",
     "crates/micac",
-    "crates/web-host",
-    "crates/webtransport-host",
-    "crates/telnet-host",
-    "crates/runner",
     "crates/relation-kernel",
     "crates/relation-wgpu",
+    "crates/runner",
     "crates/runtime",
     "crates/source-provider",
+    "crates/telnet-host",
     "crates/testing/load-tools",
     "crates/var",
     "crates/vm",
+    "crates/web-host",
+    "crates/webtransport-host",
 ]
 exclude = ["crates/var/fuzz"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.95"
 license = "AGPL-3.0-only"
+rust-version = "1.95"
 
 [workspace.dependencies]
 mica-auth = { path = "crates/auth" }
 mica-compiler = { path = "crates/compiler" }
 mica-driver = { path = "crates/driver" }
-mica-host-protocol = { path = "crates/host-protocol" }
 mica-host-console = { path = "crates/host-console" }
-mica-micac = { path = "crates/micac" }
-mica-web-host = { path = "crates/web-host" }
-mica-webtransport-host = { path = "crates/webtransport-host" }
-mica-telnet-host = { path = "crates/telnet-host" }
+mica-host-protocol = { path = "crates/host-protocol" }
 mica-host-zmq = { path = "crates/host-zmq" }
+mica-micac = { path = "crates/micac" }
 mica-relation-kernel = { path = "crates/relation-kernel", default-features = false }
 mica-relation-wgpu = { path = "crates/relation-wgpu" }
 mica-runtime = { path = "crates/runtime" }
 mica-source-provider = { path = "crates/source-provider" }
+mica-telnet-host = { path = "crates/telnet-host" }
 mica-var = { path = "crates/var" }
 mica-vm = { path = "crates/vm" }
+mica-web-host = { path = "crates/web-host" }
+mica-webtransport-host = { path = "crates/webtransport-host" }
 rart = { version = "0.10", default-features = false }
 
 # core
-ariadne = "0.6"
-argon2 = { version = "0.5", features = ["std"] }
 arc-swap = "1.9"
+argon2 = { version = "0.5", features = ["std"] }
+ariadne = "0.6"
 base64 = "0.22"
 bytes = "1.11"
 clap = { version = "4.6", features = ["derive"] }
 compio = { version = "=0.19.1", features = ["async-fd", "dispatcher", "net", "time"] }
 compio-quic = { version = "=0.8.0", features = ["h3"] }
 cyper = { version = "0.9.0-rc.3", default-features = false, features = ["native-tls"] }
-fjall = "3.1"
 fast-telemetry = { git = "https://github.com/eden-dev-inc/fast-telemetry.git", branch = "rd/compio-exporter" }
 fast-telemetry-export = { git = "https://github.com/eden-dev-inc/fast-telemetry.git", branch = "rd/compio-exporter", default-features = false, features = ["compio"] }
+fjall = "3.1"
 h3-webtransport = "0.1.2"
-httparse = "1.10"
 http = "1.4"
+httparse = "1.10"
 pollster = "0.4"
 rand = "0.9"
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -82,12 +82,12 @@ tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
-ureq = "2.12"
 tree-sitter-javascript = "0.25"
 tree-sitter-md = { version = "0.5", features = ["parser"] }
 tree-sitter-rust = "0.24"
-wtransport = { version = "0.7", features = ["dangerous-configuration"] }
+ureq = "2.12"
 wgpu = { version = "30.0", default-features = false, features = ["parking_lot", "std", "vulkan", "wgsl"] }
+wtransport = { version = "0.7", features = ["dangerous-configuration"] }
 xml = "1.0"
 zmq = { git = "https://github.com/rdaum/rust-zmq.git", branch = "main" }
 

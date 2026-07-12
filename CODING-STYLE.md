@@ -13,8 +13,8 @@
   - Types: `PascalCase`
   - Traits: Verb-noun combinations
   - **Important**: Names must describe what code does, not implementation details or history
-  - **Avoid**: Implementation details ("JsonParserImpl", "RedisWrapper"), temporal context ("NewAPI",
-    "LegacyHandler"), pattern names unless they add clarity
+  - **Avoid**: Implementation details ("JsonParserImpl", "RedisWrapper"), temporal context
+    ("NewAPI", "LegacyHandler"), pattern names unless they add clarity
 - **Imports**: All `use` statements at top of file/module (avoid per-function imports)
 - **Avoid deep nesting**: Rust code -- with its extensive use of matching over ADT -- can trend
   towards deeply nested code that becomes increasingly difficult to read. To avoid this there are a
@@ -45,6 +45,7 @@ match item {
 ```
 
 In this pattern:
+
 - only the successful branch stays in the main arm body,
 - invalid data falls through to the `_` arm,
 - and the pattern matching logic remains flat and readable.
@@ -131,29 +132,26 @@ Performance is paramount, especially in critical paths in protocol parsing or bu
 
 ### Dependency Policy
 
-We avoid gratuitous Cargo dependencies. Every dependency is part of the system's
-long-term maintenance surface, and every transitive dependency is code we may
-need to audit, reason about, build, and debug.
+We avoid gratuitous Cargo dependencies. Every dependency is part of the system's long-term
+maintenance surface, and every transitive dependency is code we may need to audit, reason about,
+build, and debug.
 
-- Prefer the standard library and existing workspace crates when they are a
-  reasonable fit.
-- Add a new crate only when it provides clear value that would be expensive,
-  risky, or distracting to reproduce locally.
-- Keep dependency versions centralised in the root workspace `Cargo.toml`.
-  Member crates should use `workspace = true` instead of specifying versions.
-- Before adding a dependency, inspect its transitive dependency graph, feature
-  defaults, licence, maintenance state, and whether it pulls in async runtimes,
-  logging stacks, serialization frameworks, or platform code we do not need.
-- Disable default features when practical and enable only the features Mica
-  actually uses.
-- Avoid dependencies for small helpers, thin wrappers, trivial derive
-  conveniences, or one-off algorithms that are clearer to write directly.
-- Be especially conservative in low-level crates such as `mica-var` and
-  `mica-relation-kernel`, where dependency choices affect the whole stack.
+- Prefer the standard library and existing workspace crates when they are a reasonable fit.
+- Add a new crate only when it provides clear value that would be expensive, risky, or distracting
+  to reproduce locally.
+- Keep dependency versions centralised in the root workspace `Cargo.toml`. Member crates should use
+  `workspace = true` instead of specifying versions.
+- Before adding a dependency, inspect its transitive dependency graph, feature defaults, licence,
+  maintenance state, and whether it pulls in async runtimes, logging stacks, serialization
+  frameworks, or platform code we do not need.
+- Disable default features when practical and enable only the features Mica actually uses.
+- Avoid dependencies for small helpers, thin wrappers, trivial derive conveniences, or one-off
+  algorithms that are clearer to write directly.
+- Be especially conservative in low-level crates such as `mica-var` and `mica-relation-kernel`,
+  where dependency choices affect the whole stack.
 
-The goal is not zero dependencies. The goal is a transitive dependency set that
-is small enough, stable enough, and intentional enough that we can understand
-it.
+The goal is not zero dependencies. The goal is a transitive dependency set that is small enough,
+stable enough, and intentional enough that we can understand it.
 
 ## Testing
 

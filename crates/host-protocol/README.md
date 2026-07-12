@@ -1,13 +1,13 @@
 # mica-host-protocol
 
-`mica-host-protocol` defines Mica's language-neutral host/daemon wire format.
-This crate is the Rust implementation of that contract, but the wire format is
-not Rust-specific and should be implementable by other runtimes.
+`mica-host-protocol` defines Mica's language-neutral host/daemon wire format. This crate is the Rust
+implementation of that contract, but the wire format is not Rust-specific and should be
+implementable by other runtimes.
 
 ## Frame Format
 
-All integers are little-endian. Strings are length-prefixed UTF-8. Mica values
-use the `mica-var` value wire format.
+All integers are little-endian. Strings are length-prefixed UTF-8. Mica values use the `mica-var`
+value wire format.
 
 ```text
 magic[4]      = "MHP1"
@@ -17,21 +17,19 @@ flags u16      = reserved, currently zero
 payload bytes
 ```
 
-Unknown message types can be skipped by generic transports using `frame_len`.
-The typed decoder in this crate rejects unknown message types and non-zero
-reserved flags.
+Unknown message types can be skipped by generic transports using `frame_len`. The typed decoder in
+this crate rejects unknown message types and non-zero reserved flags.
 
 ## Streaming
 
-Transport code should treat frames as a byte stream, not as one read per
-message. The Rust implementation provides a `FrameDecoder` that buffers partial
-input and exposes a borrowed `FrameRef` when a complete frame is available.
-Callers decode or route that borrowed frame, then explicitly consume it.
+Transport code should treat frames as a byte stream, not as one read per message. The Rust
+implementation provides a `FrameDecoder` that buffers partial input and exposes a borrowed
+`FrameRef` when a complete frame is available. Callers decode or route that borrowed frame, then
+explicitly consume it.
 
-For writes, `encode_frame_segments` builds a scatter/gather-friendly frame. It
-keeps fixed-width headers in small scratch segments and borrows string and heap
-value payload bytes where possible, so transports that support vectored writes
-can avoid flattening the frame into one contiguous buffer.
+For writes, `encode_frame_segments` builds a scatter/gather-friendly frame. It keeps fixed-width
+headers in small scratch segments and borrows string and heap value payload bytes where possible, so
+transports that support vectored writes can avoid flattening the frame into one contiguous buffer.
 
 ## Message IDs
 
@@ -143,5 +141,5 @@ TaskFailed:
 
 ## Licence
 
-Mica is licensed under the GNU Affero General Public License v3.0. See the
-repository root `LICENSE`.
+Mica is licensed under the GNU Affero General Public License v3.0. See the repository root
+`LICENSE`.

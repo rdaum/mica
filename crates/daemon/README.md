@@ -1,23 +1,21 @@
 # mica-daemon
 
-`mica-daemon` starts a Mica runtime, files in whatever Mica source files you
-pass with `--filein`, and binds whichever host surfaces you ask it to expose.
+`mica-daemon` starts a Mica runtime, files in whatever Mica source files you pass with `--filein`,
+and binds whichever host surfaces you ask it to expose.
 
-In practice, this is the process that turns a Mica world into a running
-service. It can host:
+In practice, this is the process that turns a Mica world into a running service. It can host:
 
 - HTTP;
 - WebTransport;
 - telnet;
 - host RPC over ZeroMQ.
 
-The daemon itself is not where request handling or command behaviour lives.
-Those stay in Mica source. The Rust side owns transport setup, protocol
-parsing, connection lifecycles, and routing host input into the runtime.
+The daemon itself is not where request handling or command behaviour lives. Those stay in Mica
+source. The Rust side owns transport setup, protocol parsing, connection lifecycles, and routing
+host input into the runtime.
 
-The daemon does not load an app by default. Wrapper scripts such as
-`scripts/chat.sh` and `scripts/mud.sh`, or your own command line, are expected
-to provide the filein set.
+The daemon does not load an app by default. Wrapper scripts such as `scripts/chat.sh` and
+`scripts/mud.sh`, or your own command line, are expected to provide the filein set.
 
 ## Browser Surface
 
@@ -29,9 +27,8 @@ cargo run --bin mica-daemon -- \
   --web-bind 127.0.0.1:8008
 ```
 
-HTTP requests are routed into the Mica `:http_request(...)` verb. Request
-handlers run as the configured web principal, `#web` by default, so ordinary
-Mica authority policy still applies.
+HTTP requests are routed into the Mica `:http_request(...)` verb. Request handlers run as the
+configured web principal, `#web` by default, so ordinary Mica authority policy still applies.
 
 If you also want the WebTransport host:
 
@@ -47,11 +44,11 @@ cargo run --bin mica-daemon -- \
   --webtransport-key key.pem
 ```
 
-WebTransport sessions are bound into the same runtime, under the configured
-WebTransport principal, `#web` by default.
+WebTransport sessions are bound into the same runtime, under the configured WebTransport principal,
+`#web` by default.
 
-If you just want to launch the browser examples, use the wrapper scripts at the
-workspace root instead:
+If you just want to launch the browser examples, use the wrapper scripts at the workspace root
+instead:
 
 ```sh
 scripts/chat.sh
@@ -72,8 +69,8 @@ cargo run --bin mica-daemon -- \
   --telnet-bind 127.0.0.1:7777
 ```
 
-Line input is routed into the in-world `:command(...)` verb. The telnet actor
-defaults to `#alice`, and can be changed with `--actor`.
+Line input is routed into the in-world `:command(...)` verb. The telnet actor defaults to `#alice`,
+and can be changed with `--actor`.
 
 ## RPC Surface
 
@@ -89,8 +86,8 @@ cargo run --bin mica-daemon -- \
   --rpc-bind ipc:///tmp/mica-rpc.sock
 ```
 
-That lets separate host processes connect to the runtime over the host
-protocol. For example, a separate telnet host can bind through the RPC socket:
+That lets separate host processes connect to the runtime over the host protocol. For example, a
+separate telnet host can bind through the RPC socket:
 
 ```sh
 cargo run --bin mica-daemon -- \
@@ -105,7 +102,7 @@ cargo run --bin mica-telnet-host -- --rpc ipc:///tmp/mica-rpc.sock --bind 127.0.
 
 ## Notes
 
-- The daemon needs at least one surface: `--rpc-bind`, `--telnet-bind`,
-  `--web-bind`, or `--webtransport-bind`.
+- The daemon needs at least one surface: `--rpc-bind`, `--telnet-bind`, `--web-bind`, or
+  `--webtransport-bind`.
 - WebTransport requires `--webtransport-cert` and `--webtransport-key`.
 - Multiple surfaces can be hosted in one process.
