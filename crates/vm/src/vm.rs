@@ -32,6 +32,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "cranelift")]
+use mica_vm_cranelift::IntegerLoopOutcome;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     program: usize,
@@ -191,6 +194,8 @@ pub struct VmHostContext<'ctx, 'kernel> {
 
 const BUDGET_PROFILE_SAMPLE_INTERVAL: usize = 1024;
 const BUDGET_PROFILE_TOP_LIMIT: usize = 12;
+#[cfg(feature = "cranelift")]
+const MIN_NATIVE_INTEGER_LOOP_ITERATIONS: usize = 4_096;
 
 #[derive(Clone, Debug, Default)]
 struct BudgetProfiler {
@@ -218,6 +223,21 @@ impl BudgetProfiler {
             .samples
             .entry((frame.program_index(), frame.ip(), opcode))
             .or_insert(0) += 1;
+    }
+
+    fn sample_native(&mut self, instruction: usize, trace: NativeBudgetTrace) {
+        let first_instruction = instruction + 1;
+        let last_instruction = instruction + trace.instructions;
+        let first_sample = first_instruction.div_ceil(BUDGET_PROFILE_SAMPLE_INTERVAL)
+            * BUDGET_PROFILE_SAMPLE_INTERVAL;
+        if first_sample > last_instruction {
+            return;
+        }
+        let samples = ((last_instruction - first_sample) / BUDGET_PROFILE_SAMPLE_INTERVAL) + 1;
+        *self
+            .samples
+            .entry((trace.program, trace.ip, "NativeIntegerLoop"))
+            .or_insert(0) += samples;
     }
 
     fn profile(&self, vm: &RegisterVm) -> BudgetProfile {
@@ -1070,6 +1090,31 @@ fn opcode_name(opcode: &Opcode) -> &'static str {
 #[derive(Clone, Debug)]
 pub struct RegisterVm {
     state: VmState,
+    #[cfg(feature = "cranelift")]
+    native_execution: bool,
+}
+
+#[derive(Clone, Copy)]
+struct NativeBudgetTrace {
+    program: usize,
+    ip: usize,
+    instructions: usize,
+}
+
+struct VmStep {
+    response: VmHostResponse,
+    instructions: usize,
+    native_trace: Option<NativeBudgetTrace>,
+}
+
+impl VmStep {
+    fn single(response: VmHostResponse) -> Self {
+        Self {
+            response,
+            instructions: 1,
+            native_trace: None,
+        }
+    }
 }
 
 impl RegisterVm {
@@ -1083,11 +1128,35 @@ impl RegisterVm {
                 frames: vec![Frame::root(0, register_count)],
                 pending_resume: None,
             },
+            #[cfg(feature = "cranelift")]
+            native_execution: true,
+        }
+    }
+
+    pub fn new_interpreted(program: Arc<Program>) -> Self {
+        let vm = Self::new(program);
+        #[cfg(feature = "cranelift")]
+        let vm = {
+            let mut vm = vm;
+            vm.native_execution = false;
+            vm
+        };
+        vm
+    }
+
+    pub fn disable_native_execution(&mut self) {
+        #[cfg(feature = "cranelift")]
+        {
+            self.native_execution = false;
         }
     }
 
     pub fn from_state(state: VmState) -> Self {
-        Self { state }
+        Self {
+            state,
+            #[cfg(feature = "cranelift")]
+            native_execution: true,
+        }
     }
 
     pub fn snapshot_state(&self) -> VmState {
@@ -1165,11 +1234,19 @@ impl RegisterVm {
         max_call_depth: usize,
     ) -> Result<VmHostResponse, RuntimeError> {
         let mut profiler = BudgetProfiler::new();
-        for instruction in 0..instruction_budget {
+        let mut instruction = 0;
+        while instruction < instruction_budget {
             profiler.sample(instruction, self);
-            let response = self.step(host, max_call_depth)?;
-            if response != VmHostResponse::Continue {
-                return Ok(response);
+            let remaining_budget = instruction_budget - instruction;
+            let step = self.step(host, max_call_depth, remaining_budget)?;
+            debug_assert!(step.instructions > 0);
+            debug_assert!(step.instructions <= remaining_budget);
+            if let Some(trace) = step.native_trace {
+                profiler.sample_native(instruction, trace);
+            }
+            instruction += step.instructions;
+            if step.response != VmHostResponse::Continue {
+                return Ok(step.response);
             }
         }
         let profile = profiler.profile(self);
@@ -1185,7 +1262,10 @@ impl RegisterVm {
         &mut self,
         host: &mut H,
         max_call_depth: usize,
-    ) -> Result<VmHostResponse, RuntimeError> {
+        remaining_budget: usize,
+    ) -> Result<VmStep, RuntimeError> {
+        #[cfg(not(feature = "cranelift"))]
+        let _ = remaining_budget;
         let (opcode, program, ip) = {
             let frame = self.current_frame_unchecked();
             let ip = frame.ip;
@@ -1208,7 +1288,7 @@ impl RegisterVm {
             Opcode::Load { dst, value } => {
                 self.write_register_unchecked(*dst, program.constant(*value).clone());
                 self.advance_ip_unchecked();
-                Ok(VmHostResponse::Continue)
+                Ok(VmStep::single(VmHostResponse::Continue))
             }
             Opcode::Binary {
                 dst,
@@ -1222,24 +1302,34 @@ impl RegisterVm {
                     self.read_register_unchecked(*right),
                 ) {
                     Ok(value) => value,
-                    Err(error) => return self.begin_raise(error),
+                    Err(error) => return self.begin_raise(error).map(VmStep::single),
                 };
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
-                Ok(VmHostResponse::Continue)
+                Ok(VmStep::single(VmHostResponse::Continue))
             }
             Opcode::Branch {
                 condition,
                 if_true,
                 if_false,
             } => {
-                let target = if truthy(self.read_register_unchecked(*condition)) {
+                let branch_is_true = truthy(self.read_register_unchecked(*condition));
+                let target = if branch_is_true {
                     if_true.0 as usize
                 } else {
                     if_false.0 as usize
                 };
+                #[cfg(feature = "cranelift")]
+                if branch_is_true
+                    && self.native_execution
+                    && target < ip
+                    && let Some(step) =
+                        self.execute_native_integer_loop(program, ip, remaining_budget)
+                {
+                    return Ok(step);
+                }
                 self.current_frame_mut_unchecked().ip = target;
-                Ok(VmHostResponse::Continue)
+                Ok(VmStep::single(VmHostResponse::Continue))
             }
             Opcode::Call {
                 dst,
@@ -1259,21 +1349,80 @@ impl RegisterVm {
                 self.state
                     .frames
                     .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
-                Ok(VmHostResponse::Continue)
+                Ok(VmStep::single(VmHostResponse::Continue))
             }
             Opcode::BuiltinCall { dst, name, args } => {
                 let args = self.resolve_operands(program, program.operands(*args));
                 let value = host.call_builtin(*name, &args)?;
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
-                Ok(VmHostResponse::Continue)
+                Ok(VmStep::single(VmHostResponse::Continue))
             }
             Opcode::Return { value } => {
                 let value = self.resolve_operand_ref(program, *value);
-                self.return_from_frame(value)
+                self.return_from_frame(value).map(VmStep::single)
             }
-            _ => self.step_extended(host, max_call_depth, program, opcode),
+            _ => self
+                .step_extended(host, max_call_depth, program, opcode)
+                .map(VmStep::single),
         }
+    }
+
+    #[cfg(feature = "cranelift")]
+    fn execute_native_integer_loop(
+        &mut self,
+        program: &Program,
+        branch_ip: usize,
+        remaining_budget: usize,
+    ) -> Option<VmStep> {
+        let max_iterations = remaining_budget.checked_sub(1)? / 3;
+        if max_iterations == 0 {
+            return None;
+        }
+        let site = program.integer_loop_site(branch_ip)?;
+        let current = Value::int(self.read_register_unchecked(site.current).as_int()?).ok()?;
+        let step = Value::int(self.read_register_unchecked(site.step).as_int()?).ok()?;
+        let limit = Value::int(self.read_register_unchecked(site.limit).as_int()?).ok()?;
+        let compile = native_integer_loop_is_profitable(
+            current.as_int()?,
+            step.as_int()?,
+            limit.as_int()?,
+            max_iterations,
+        );
+        let compiled = program.compiled_integer_loop(compile)?;
+        let outcome = compiled.run(&current, &step, &limit, u64::try_from(max_iterations).ok()?);
+        let (current, condition, iterations, next_ip) = match outcome {
+            IntegerLoopOutcome::Complete {
+                current,
+                condition,
+                iterations,
+            } => (current, condition, iterations, site.exit_ip),
+            IntegerLoopOutcome::BudgetExhausted {
+                current,
+                condition,
+                iterations,
+            } => (current, condition, iterations, site.entry_ip),
+            IntegerLoopOutcome::SideExit => return None,
+        };
+        let iterations = usize::try_from(iterations).ok()?;
+        let native_instructions = iterations.checked_mul(3)?;
+        let instructions = native_instructions.checked_add(1)?;
+        if instructions > remaining_budget {
+            return None;
+        }
+        let program_index = self.current_frame_unchecked().program;
+        self.write_register_unchecked(site.current, current);
+        self.write_register_unchecked(site.condition, condition);
+        self.current_frame_mut_unchecked().ip = next_ip;
+        Some(VmStep {
+            response: VmHostResponse::Continue,
+            instructions,
+            native_trace: Some(NativeBudgetTrace {
+                program: program_index,
+                ip: site.entry_ip,
+                instructions: native_instructions,
+            }),
+        })
     }
 
     fn step_extended<H: VmHost>(
@@ -2561,6 +2710,28 @@ fn truthy(value: &Value) -> bool {
         ValueKind::List => value.list_len().is_some_and(|len| len > 0),
         _ => true,
     }
+}
+
+#[cfg(feature = "cranelift")]
+fn native_integer_loop_is_profitable(
+    current: i64,
+    step: i64,
+    limit: i64,
+    max_iterations: usize,
+) -> bool {
+    if max_iterations < MIN_NATIVE_INTEGER_LOOP_ITERATIONS {
+        return false;
+    }
+    if step <= 0 {
+        return current < limit;
+    }
+    let distance = i128::from(limit) - i128::from(current);
+    if distance <= 0 {
+        return false;
+    }
+    let step = i128::from(step);
+    let iterations = (distance + step - 1) / step;
+    iterations >= MIN_NATIVE_INTEGER_LOOP_ITERATIONS as i128
 }
 
 fn eval_unary(op: RuntimeUnaryOp, value: &Value) -> Result<Value, Value> {

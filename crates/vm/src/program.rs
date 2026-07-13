@@ -18,6 +18,15 @@ use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(feature = "cranelift")]
+use mica_vm_cranelift::CompiledIntegerLoop;
+#[cfg(feature = "cranelift")]
+use std::fmt::{Debug, Formatter};
+#[cfg(feature = "cranelift")]
+use std::sync::OnceLock;
+#[cfg(feature = "cranelift")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Register(pub u16);
 
@@ -729,6 +738,159 @@ pub(crate) enum Opcode {
     },
 }
 
+#[cfg(feature = "cranelift")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IntegerLoopSite {
+    pub(crate) entry_ip: usize,
+    pub(crate) branch_ip: usize,
+    pub(crate) exit_ip: usize,
+    pub(crate) current: Register,
+    pub(crate) step: Register,
+    pub(crate) limit: Register,
+    pub(crate) condition: Register,
+}
+
+#[cfg(feature = "cranelift")]
+struct NativeProgramCacheState {
+    integer_loop_sites: Box<[IntegerLoopSite]>,
+    integer_loop: OnceLock<Result<Arc<CompiledIntegerLoop>, Box<str>>>,
+    compile_attempts: AtomicUsize,
+}
+
+#[cfg(feature = "cranelift")]
+#[derive(Clone)]
+struct NativeProgramCache(Arc<NativeProgramCacheState>);
+
+#[cfg(feature = "cranelift")]
+impl NativeProgramCache {
+    fn recognize(opcodes: &[Opcode]) -> Option<Self> {
+        let integer_loop_sites = (2..opcodes.len())
+            .filter_map(|branch_ip| recognize_integer_loop(opcodes, branch_ip))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        if integer_loop_sites.is_empty() {
+            return None;
+        }
+        Some(Self(Arc::new(NativeProgramCacheState {
+            integer_loop_sites,
+            integer_loop: OnceLock::new(),
+            compile_attempts: AtomicUsize::new(0),
+        })))
+    }
+
+    fn integer_loop_site(&self, branch_ip: usize) -> Option<&IntegerLoopSite> {
+        self.0
+            .integer_loop_sites
+            .binary_search_by_key(&branch_ip, |site| site.branch_ip)
+            .ok()
+            .map(|index| &self.0.integer_loop_sites[index])
+    }
+
+    fn compiled_integer_loop(&self, compile: bool) -> Option<Arc<CompiledIntegerLoop>> {
+        if let Some(compiled) = self.0.integer_loop.get() {
+            return compiled.as_ref().ok().cloned();
+        }
+        if !compile {
+            return None;
+        }
+        self.0
+            .integer_loop
+            .get_or_init(|| {
+                self.0.compile_attempts.fetch_add(1, Ordering::Relaxed);
+                CompiledIntegerLoop::compile()
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string().into_boxed_str())
+            })
+            .as_ref()
+            .ok()
+            .cloned()
+    }
+
+    #[cfg(test)]
+    fn compile_attempts(&self) -> usize {
+        self.0.compile_attempts.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(feature = "cranelift")]
+impl Debug for NativeProgramCache {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeProgramCache")
+            .field("integer_loop_sites", &self.0.integer_loop_sites)
+            .field("compiled", &self.0.integer_loop.get().is_some())
+            .finish()
+    }
+}
+
+#[cfg(feature = "cranelift")]
+impl PartialEq for NativeProgramCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "cranelift")]
+impl Eq for NativeProgramCache {}
+
+#[cfg(feature = "cranelift")]
+fn recognize_integer_loop(opcodes: &[Opcode], branch_ip: usize) -> Option<IntegerLoopSite> {
+    let entry_ip = branch_ip.checked_sub(2)?;
+    let Opcode::Binary {
+        dst: current,
+        op: RuntimeBinaryOp::Add,
+        left,
+        right,
+    } = opcodes.get(entry_ip)?
+    else {
+        return None;
+    };
+    let step = if left == current && right != current {
+        *right
+    } else if right == current && left != current {
+        *left
+    } else {
+        return None;
+    };
+    let Opcode::Binary {
+        dst: condition,
+        op: RuntimeBinaryOp::Lt,
+        left: comparison_left,
+        right: limit,
+    } = opcodes.get(entry_ip + 1)?
+    else {
+        return None;
+    };
+    let Opcode::Branch {
+        condition: branch_condition,
+        if_true,
+        if_false,
+    } = opcodes.get(branch_ip)?
+    else {
+        return None;
+    };
+    if comparison_left != current
+        || branch_condition != condition
+        || if_true.0 as usize != entry_ip
+        || if_false.0 as usize <= branch_ip
+        || current == limit
+        || condition == current
+        || condition == &step
+        || condition == limit
+    {
+        return None;
+    }
+    Some(IntegerLoopSite {
+        entry_ip,
+        branch_ip,
+        exit_ip: if_false.0 as usize,
+        current: *current,
+        step,
+        limit: *limit,
+        condition: *condition,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeUnaryOp {
     Not,
@@ -768,6 +930,8 @@ pub struct Program {
     relations: Arc<[RelationId]>,
     dispatch_specs: Arc<[DispatchSpec]>,
     suspend_kinds: Arc<[SuspendKind]>,
+    #[cfg(feature = "cranelift")]
+    native_cache: Option<NativeProgramCache>,
 }
 
 impl Program {
@@ -867,6 +1031,23 @@ impl Program {
     #[inline]
     pub(crate) fn suspend_kind(&self, id: SuspendKindId) -> &SuspendKind {
         &self.suspend_kinds[id.0 as usize]
+    }
+
+    #[cfg(feature = "cranelift")]
+    pub(crate) fn integer_loop_site(&self, branch_ip: usize) -> Option<&IntegerLoopSite> {
+        self.native_cache.as_ref()?.integer_loop_site(branch_ip)
+    }
+
+    #[cfg(feature = "cranelift")]
+    pub(crate) fn compiled_integer_loop(&self, compile: bool) -> Option<Arc<CompiledIntegerLoop>> {
+        self.native_cache.as_ref()?.compiled_integer_loop(compile)
+    }
+
+    #[cfg(all(feature = "cranelift", test))]
+    pub(crate) fn native_compile_attempts(&self) -> usize {
+        self.native_cache
+            .as_ref()
+            .map_or(0, NativeProgramCache::compile_attempts)
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, RuntimeError> {
@@ -1529,6 +1710,8 @@ impl ProgramBuilder {
     }
 
     pub fn finish(self, register_count: usize) -> Result<Program, RuntimeError> {
+        #[cfg(feature = "cranelift")]
+        let native_cache = NativeProgramCache::recognize(&self.opcodes);
         let program = Program {
             register_count,
             opcodes: self.opcodes.into(),
@@ -1546,6 +1729,8 @@ impl ProgramBuilder {
             relations: self.relations.into(),
             dispatch_specs: self.dispatch_specs.into(),
             suspend_kinds: self.suspend_kinds.into(),
+            #[cfg(feature = "cranelift")]
+            native_cache,
         };
         let instructions = program.instructions();
         for instruction in &instructions {

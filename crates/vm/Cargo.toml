@@ -6,11 +6,16 @@ license.workspace = true
 rust-version.workspace = true
 description = "Register-based bytecode VM for Mica"
 
+[features]
+default = []
+cranelift = ["dep:mica-vm-cranelift"]
+
 [dependencies]
 arc-swap.workspace = true
 fast-telemetry.workspace = true
 mica-relation-kernel.workspace = true
 mica-var.workspace = true
+mica-vm-cranelift = { workspace = true, optional = true }
 tracing.workspace = true
 
 [dev-dependencies]
@@ -19,3 +24,4 @@ micromeasure.workspace = true
 [[bench]]
 name = "vm_benches"
 harness = false
+required-features = ["cranelift"]

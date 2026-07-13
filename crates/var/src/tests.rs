@@ -11,6 +11,11 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::abi::{
+    VALUE_ABI_VERSION, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG, VALUE_PAYLOAD_MASK,
+    VALUE_TAG_SHIFT, borrowed_value_bits, clone_value_bits, drop_value_bits, from_owned_value_bits,
+    into_owned_value_bits, pack_value, value_is_immediate, value_payload, value_tag,
+};
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
     CapabilityId, Identity, Symbol, SymbolEncoding, SymbolMetadata, Value, ValueCodecError,
@@ -25,6 +30,75 @@ use std::mem::{align_of, size_of};
 fn value_is_one_word() {
     assert_eq!(size_of::<Value>(), 8);
     assert_eq!(align_of::<Value>(), 8);
+}
+
+#[test]
+fn process_local_value_abi_matches_value_layout() {
+    assert_eq!(VALUE_ABI_VERSION, 1);
+    assert_eq!(VALUE_TAG_SHIFT, 56);
+    assert_eq!(VALUE_PAYLOAD_MASK, 0x00ff_ffff_ffff_ffff);
+    assert_eq!(VALUE_INT_MIN, INT_MIN);
+    assert_eq!(VALUE_INT_MAX, INT_MAX);
+
+    for integer in [INT_MIN, -1, 0, 1, INT_MAX] {
+        let value = Value::int(integer).unwrap();
+        let bits = borrowed_value_bits(&value);
+        assert_eq!(value_tag(bits), VALUE_INT_TAG);
+        assert_eq!(value_payload(bits), integer as u64 & VALUE_PAYLOAD_MASK);
+        assert_eq!(pack_value(VALUE_INT_TAG, value_payload(bits)), bits);
+    }
+}
+
+#[test]
+fn process_local_value_abi_classifies_heap_ownership() {
+    let immediate_values = [
+        Value::nothing(),
+        Value::bool(true),
+        Value::int(1).unwrap(),
+        Value::float(1.5),
+        Value::identity_raw(1).unwrap(),
+        Value::symbol(Symbol::intern("value-abi-symbol")),
+        Value::error_code(Symbol::intern("E_VALUE_ABI")),
+        Value::capability_raw(1).unwrap(),
+        Value::function_raw(1).unwrap(),
+    ];
+    for value in immediate_values {
+        assert!(value_is_immediate(borrowed_value_bits(&value)));
+    }
+
+    let heap_values = [
+        Value::string("value ABI"),
+        Value::bytes([1, 2, 3]),
+        Value::list([Value::int(1).unwrap()]),
+        Value::map([(Value::bool(true), Value::int(1).unwrap())]),
+        Value::range(Value::int(1).unwrap(), Some(Value::int(2).unwrap())),
+        Value::error(Symbol::intern("E_VALUE_ABI_HEAP"), None::<Box<str>>, None),
+        Value::frob(Identity::new(1).unwrap(), Value::nothing()),
+    ];
+    for value in heap_values {
+        assert!(!value_is_immediate(borrowed_value_bits(&value)));
+    }
+    assert!(!value_is_immediate(pack_value(16, 0)));
+}
+
+#[test]
+fn process_local_value_abi_preserves_heap_reference_ownership() {
+    let value = Value::string("owned value word");
+    let borrowed_bits = borrowed_value_bits(&value);
+    assert_eq!(value.heap_strong_count(), Some(1));
+
+    let cloned_bits = unsafe { clone_value_bits(borrowed_bits) };
+    assert_eq!(value.heap_strong_count(), Some(2));
+    unsafe { drop_value_bits(cloned_bits) };
+    assert_eq!(value.heap_strong_count(), Some(1));
+
+    let owned_bits = into_owned_value_bits(value);
+    let reconstructed = unsafe { from_owned_value_bits(owned_bits) };
+    assert_eq!(
+        reconstructed.with_str(str::to_owned).as_deref(),
+        Some("owned value word")
+    );
+    assert_eq!(reconstructed.heap_strong_count(), Some(1));
 }
 
 #[test]

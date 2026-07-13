@@ -74,6 +74,7 @@ struct TaskBenchContext {
     builtins: Arc<BuiltinRegistry>,
     next_task_id: u64,
     workload: Workload,
+    interpret_only: bool,
 }
 
 struct ConcurrentTaskBenchContext {
@@ -82,7 +83,9 @@ struct ConcurrentTaskBenchContext {
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
     dispatches_per_task: u64,
+    bytecodes_per_task: u64,
     instruction_budget: usize,
+    interpret_only: bool,
 }
 
 impl ConcurrentTaskBenchContext {
@@ -93,7 +96,9 @@ impl ConcurrentTaskBenchContext {
             resolver: context.resolver,
             builtins: context.builtins,
             dispatches_per_task: context.workload.dispatch_cache_lookups,
+            bytecodes_per_task: context.workload.executed_bytecodes,
             instruction_budget: context.workload.executed_bytecodes as usize + 1,
+            interpret_only: context.interpret_only,
         }
     }
 
@@ -110,6 +115,9 @@ impl ConcurrentTaskBenchContext {
                 max_call_depth: MAX_CALL_DEPTH,
             },
         );
+        if self.interpret_only {
+            task.vm_mut().disable_native_execution();
+        }
         let outcome = task.run().unwrap();
         debug_assert!(matches!(outcome, TaskOutcome::Complete { .. }));
         black_box(outcome);
@@ -131,6 +139,7 @@ impl TaskBenchContext {
             builtins: Arc::new(BuiltinRegistry::new()),
             next_task_id: 1,
             workload,
+            interpret_only: false,
         }
     }
 
@@ -187,6 +196,12 @@ impl TaskBenchContext {
             program,
             Workload::task(INTEGER_LOOP_BYTECODES),
         )
+    }
+
+    fn interpreted_integer_loop() -> Self {
+        let mut context = Self::integer_loop();
+        context.interpret_only = true;
+        context
     }
 
     fn indexed_relation_read() -> Self {
@@ -680,6 +695,7 @@ impl TaskBenchContext {
             builtins: Arc::new(BuiltinRegistry::new()),
             next_task_id: 1,
             workload,
+            interpret_only: false,
         };
 
         // Populate the snapshot dispatch caches before micromeasure opens its timing window.
@@ -702,6 +718,9 @@ impl TaskBenchContext {
                 max_call_depth: MAX_CALL_DEPTH,
             },
         );
+        if self.interpret_only {
+            task.vm_mut().disable_native_execution();
+        }
         let outcome = task.run().unwrap();
         debug_assert!(matches!(outcome, TaskOutcome::Complete { .. }));
         black_box(outcome);
@@ -734,6 +753,22 @@ fn run_concurrent_tasks(
         dispatches = dispatches.wrapping_add(context.dispatches_per_task);
     }
     ConcurrentWorkerResult::operations(dispatches).with_counter("tasks", tasks)
+}
+
+fn run_concurrent_integer_tasks(
+    context: &ConcurrentTaskBenchContext,
+    control: &ConcurrentBenchControl,
+) -> ConcurrentWorkerResult {
+    let mut task_id = ((control.thread_index() as u64) + 1) << 48;
+    let mut tasks = 0_u64;
+    let mut bytecodes = 0_u64;
+    while !control.should_stop() {
+        context.run_one(task_id);
+        task_id = task_id.wrapping_add(1);
+        tasks = tasks.wrapping_add(1);
+        bytecodes = bytecodes.wrapping_add(context.bytecodes_per_task);
+    }
+    ConcurrentWorkerResult::operations(bytecodes).with_counter("tasks", tasks)
 }
 
 fn workload_diagnostics(
@@ -905,12 +940,19 @@ benchmark_main!(
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_minimal_return", run_tasks);
 
-            let integer = || TaskBenchContext::integer_loop();
+            let interpreted_integer = || TaskBenchContext::interpreted_integer_loop();
             group
                 .throughput(Throughput::ops())
-                .factory(&integer)
+                .factory(&interpreted_integer)
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_integer_loop", run_tasks);
+
+            let cranelift_integer = || TaskBenchContext::integer_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_integer)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_integer_loop", run_tasks);
 
             let read = || TaskBenchContext::indexed_relation_read();
             group
@@ -965,6 +1007,23 @@ benchmark_main!(
             threads: CONCURRENT_DISPATCH_THREADS,
             run: run_concurrent_tasks,
         }];
+        let single_integer_worker = [ConcurrentWorker {
+            name: "integer loop",
+            threads: 1,
+            run: run_concurrent_integer_tasks,
+        }];
+        let concurrent_integer_workers = [ConcurrentWorker {
+            name: "integer loop",
+            threads: CONCURRENT_DISPATCH_THREADS,
+            run: run_concurrent_integer_tasks,
+        }];
+        let interpreted_integer = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::interpreted_integer_loop(),
+            )
+        };
+        let cranelift_integer =
+            |_| ConcurrentTaskBenchContext::from_task_context(TaskBenchContext::integer_loop());
         let one_shot = |_| {
             ConcurrentTaskBenchContext::from_task_context(
                 TaskBenchContext::warm_positional_dispatch(),
@@ -986,6 +1045,46 @@ benchmark_main!(
             )
         };
         runner.concurrent_group::<ConcurrentTaskBenchContext>("task concurrent", |group| {
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("threads", "1")
+                .factory(&interpreted_integer)
+                .bench(
+                    "task_concurrent_integer_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&interpreted_integer)
+                .bench(
+                    "task_concurrent_integer_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("threads", "1")
+                .factory(&cranelift_integer)
+                .bench(
+                    "task_concurrent_cranelift_integer_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&cranelift_integer)
+                .bench(
+                    "task_concurrent_cranelift_integer_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
             group
                 .sample_duration(Duration::from_millis(50))
                 .throughput(Throughput::per_operation(1, "dispatches"))
