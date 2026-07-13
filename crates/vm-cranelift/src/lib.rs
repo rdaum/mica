@@ -15,6 +15,11 @@
 
 mod emitter;
 mod integer_loop;
+mod natural_loop;
 
 pub use emitter::{EmittedValue, ValueEmitter};
 pub use integer_loop::{CompiledIntegerLoop, IntegerLoopError, IntegerLoopOutcome};
+pub use natural_loop::{
+    CompiledNaturalLoop, NaturalLoopError, NaturalLoopInstruction, NaturalLoopOutcome,
+    NaturalLoopPlan,
+};

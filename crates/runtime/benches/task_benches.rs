@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use mica_compiler::{CompileContext, MethodRelations, install_methods_from_source};
+use mica_compiler::{CompileContext, MethodRelations, compile_source, install_methods_from_source};
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Tuple,
 };
@@ -30,6 +30,8 @@ use std::time::Duration;
 
 const INTEGER_LOOP_ITERATIONS: u64 = 16_384;
 const INTEGER_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 3) + 4;
+const COMPILER_COUNTER_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 7) + 6;
+const COMPILER_ACCUMULATOR_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 9) + 7;
 const REPEATED_DISPATCH_ITERATIONS: u64 = 1_024;
 const THREE_SITE_DISPATCH_ROUNDS: u64 = REPEATED_DISPATCH_ITERATIONS / 3;
 const THREE_SITE_DISPATCHES_PER_TASK: u64 = THREE_SITE_DISPATCH_ROUNDS * 3;
@@ -86,6 +88,36 @@ struct ConcurrentTaskBenchContext {
     bytecodes_per_task: u64,
     instruction_budget: usize,
     interpret_only: bool,
+}
+
+struct ColdCompilerLoopContext {
+    register_count: usize,
+    instructions: Arc<[Instruction]>,
+    workload: Workload,
+}
+
+impl ColdCompilerLoopContext {
+    fn from_task_context(context: TaskBenchContext) -> Self {
+        Self {
+            register_count: context.program.register_count(),
+            instructions: context.program.instructions().into(),
+            workload: context.workload,
+        }
+    }
+
+    fn counter() -> Self {
+        Self::from_task_context(TaskBenchContext::compiler_counter_loop())
+    }
+
+    fn accumulator() -> Self {
+        Self::from_task_context(TaskBenchContext::compiler_accumulator_loop())
+    }
+}
+
+impl BenchContext for ColdCompilerLoopContext {
+    fn prepare(_num_chunks: usize) -> Self {
+        Self::counter()
+    }
 }
 
 impl ConcurrentTaskBenchContext {
@@ -200,6 +232,56 @@ impl TaskBenchContext {
 
     fn interpreted_integer_loop() -> Self {
         let mut context = Self::integer_loop();
+        context.interpret_only = true;
+        context
+    }
+
+    fn compiler_counter_loop() -> Self {
+        let source = format!(
+            "let i = 0\n\
+             while i < {INTEGER_LOOP_ITERATIONS}\n\
+               i = i + 1\n\
+             end\n\
+             return i",
+        );
+        let program = compile_source(&source, &CompileContext::new())
+            .unwrap()
+            .program;
+        Self::from_program(
+            RelationKernel::new(),
+            program,
+            Workload::task(COMPILER_COUNTER_LOOP_BYTECODES),
+        )
+    }
+
+    fn interpreted_compiler_counter_loop() -> Self {
+        let mut context = Self::compiler_counter_loop();
+        context.interpret_only = true;
+        context
+    }
+
+    fn compiler_accumulator_loop() -> Self {
+        let source = format!(
+            "let i = 0\n\
+             let total = 0\n\
+             while i < {INTEGER_LOOP_ITERATIONS}\n\
+               i = i + 1\n\
+               total = total + i\n\
+             end\n\
+             return total",
+        );
+        let program = compile_source(&source, &CompileContext::new())
+            .unwrap()
+            .program;
+        Self::from_program(
+            RelationKernel::new(),
+            program,
+            Workload::task(COMPILER_ACCUMULATOR_LOOP_BYTECODES),
+        )
+    }
+
+    fn interpreted_compiler_accumulator_loop() -> Self {
+        let mut context = Self::compiler_accumulator_loop();
         context.interpret_only = true;
         context
     }
@@ -713,7 +795,7 @@ impl TaskBenchContext {
             Arc::clone(&self.resolver),
             Arc::clone(&self.builtins),
             TaskLimits {
-                instruction_budget: INTEGER_LOOP_BYTECODES as usize + 1,
+                instruction_budget: self.workload.executed_bytecodes as usize + 1,
                 max_retries: 0,
                 max_call_depth: MAX_CALL_DEPTH,
             },
@@ -736,6 +818,20 @@ impl BenchContext for TaskBenchContext {
 fn run_tasks(context: &mut TaskBenchContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
         context.run_one();
+    }
+}
+
+fn run_cold_compiler_loop(
+    context: &mut ColdCompilerLoopContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        let program =
+            Program::new(context.register_count, context.instructions.iter().cloned()).unwrap();
+        let mut task =
+            TaskBenchContext::from_program(RelationKernel::new(), program, context.workload);
+        task.run_one();
     }
 }
 
@@ -954,6 +1050,36 @@ benchmark_main!(
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_cranelift_integer_loop", run_tasks);
 
+            let interpreted_compiler_counter =
+                || TaskBenchContext::interpreted_compiler_counter_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_compiler_counter)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_compiler_counter_loop", run_tasks);
+
+            let cranelift_compiler_counter = || TaskBenchContext::compiler_counter_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_compiler_counter)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_compiler_counter_loop", run_tasks);
+
+            let interpreted_compiler_accumulator =
+                || TaskBenchContext::interpreted_compiler_accumulator_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_compiler_accumulator)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_compiler_accumulator_loop", run_tasks);
+
+            let cranelift_compiler_accumulator = || TaskBenchContext::compiler_accumulator_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_compiler_accumulator)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_compiler_accumulator_loop", run_tasks);
+
             let read = || TaskBenchContext::indexed_relation_read();
             group
                 .throughput(Throughput::ops())
@@ -997,6 +1123,25 @@ benchmark_main!(
                 .bench("task_three_site_positional_dispatch", run_tasks);
         });
 
+        runner.group::<ColdCompilerLoopContext>("task compiler loop cold", |group| {
+            // These cases rebuild the compiler-produced Program so the timing
+            // includes program creation, JIT compilation, and task execution.
+            let counter = || ColdCompilerLoopContext::counter();
+            group.throughput(Throughput::ops()).factory(&counter).bench(
+                "task_cranelift_compiler_counter_loop_cold",
+                run_cold_compiler_loop,
+            );
+
+            let accumulator = || ColdCompilerLoopContext::accumulator();
+            group
+                .throughput(Throughput::ops())
+                .factory(&accumulator)
+                .bench(
+                    "task_cranelift_compiler_accumulator_loop_cold",
+                    run_cold_compiler_loop,
+                );
+        });
+
         let single_worker = [ConcurrentWorker {
             name: "dispatch",
             threads: 1,
@@ -1024,6 +1169,24 @@ benchmark_main!(
         };
         let cranelift_integer =
             |_| ConcurrentTaskBenchContext::from_task_context(TaskBenchContext::integer_loop());
+        let interpreted_compiler_counter = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::interpreted_compiler_counter_loop(),
+            )
+        };
+        let cranelift_compiler_counter = |_| {
+            ConcurrentTaskBenchContext::from_task_context(TaskBenchContext::compiler_counter_loop())
+        };
+        let interpreted_compiler_accumulator = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::interpreted_compiler_accumulator_loop(),
+            )
+        };
+        let cranelift_compiler_accumulator = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::compiler_accumulator_loop(),
+            )
+        };
         let one_shot = |_| {
             ConcurrentTaskBenchContext::from_task_context(
                 TaskBenchContext::warm_positional_dispatch(),
@@ -1083,6 +1246,94 @@ benchmark_main!(
                 .factory(&cranelift_integer)
                 .bench(
                     "task_concurrent_cranelift_integer_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler counter loop")
+                .metadata("threads", "1")
+                .factory(&interpreted_compiler_counter)
+                .bench(
+                    "task_concurrent_interpreter_compiler_counter_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler counter loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&interpreted_compiler_counter)
+                .bench(
+                    "task_concurrent_interpreter_compiler_counter_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler counter loop")
+                .metadata("threads", "1")
+                .factory(&cranelift_compiler_counter)
+                .bench(
+                    "task_concurrent_cranelift_compiler_counter_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler counter loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&cranelift_compiler_counter)
+                .bench(
+                    "task_concurrent_cranelift_compiler_counter_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler accumulator loop")
+                .metadata("threads", "1")
+                .factory(&interpreted_compiler_accumulator)
+                .bench(
+                    "task_concurrent_interpreter_compiler_accumulator_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler accumulator loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&interpreted_compiler_accumulator)
+                .bench(
+                    "task_concurrent_interpreter_compiler_accumulator_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler accumulator loop")
+                .metadata("threads", "1")
+                .factory(&cranelift_compiler_accumulator)
+                .bench(
+                    "task_concurrent_cranelift_compiler_accumulator_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler accumulator loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&cranelift_compiler_accumulator)
+                .bench(
+                    "task_concurrent_cranelift_compiler_accumulator_loop_4_threads",
                     &concurrent_integer_workers,
                 );
             group
