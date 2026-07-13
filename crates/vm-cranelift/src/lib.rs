@@ -27,5 +27,5 @@ pub use float_loop::{
 pub use integer_loop::{CompiledIntegerLoop, IntegerLoopError, IntegerLoopOutcome};
 pub use natural_loop::{
     CompiledNaturalLoop, NaturalLoopError, NaturalLoopInstruction, NaturalLoopOutcome,
-    NaturalLoopPlan,
+    NaturalLoopPlan, NaturalLoopRangeView,
 };

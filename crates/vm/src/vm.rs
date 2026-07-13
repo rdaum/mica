@@ -13,9 +13,9 @@
 
 use crate::builtin::{RuntimePorts, TransientAccess};
 use crate::metrics::RelationOperation;
-#[cfg(feature = "cranelift")]
-use crate::program::MAX_NATURAL_LOOP_SLOTS;
 use crate::program::{CompactListItem, CompactMapItem, CompactRelationArg, Opcode, OperandRef};
+#[cfg(feature = "cranelift")]
+use crate::program::{MAX_NATURAL_LOOP_RANGE_VIEWS, MAX_NATURAL_LOOP_SLOTS};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
     Emission, ErrorField, ExternalRequest, MailboxRecvRequest, Program, ProgramResolver,
@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
     FloatArithmetic, FloatComparison, FloatLoopOutcome, FloatLoopPlan, IntegerComparison,
-    IntegerLoopOutcome, NaturalLoopOutcome,
+    IntegerLoopOutcome, NaturalLoopOutcome, NaturalLoopRangeView,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1547,12 +1547,22 @@ impl RegisterVm {
             max_iterations,
         );
         let compiled = program.compiled_natural_integer_loop(branch_ip, compile)?;
+        let mut range_views = [NaturalLoopRangeView::default(); MAX_NATURAL_LOOP_RANGE_VIEWS];
+        for (view, register) in site.range_view_registers.iter().copied().enumerate() {
+            let Some(range_view) = natural_loop_range_view(self.read_register_unchecked(register))
+            else {
+                self.native_side_exits.push((program_index, branch_ip));
+                return None;
+            };
+            range_views[view] = range_view;
+        }
         let mut scratch = [0_u64; MAX_NATURAL_LOOP_SLOTS];
         for (slot, register) in site.registers.iter().enumerate() {
             scratch[slot] = borrowed_value_bits(self.read_register_unchecked(*register));
         }
         let outcome = compiled.run(
             &mut scratch[..site.registers.len()],
+            &range_views[..site.range_view_registers.len()],
             u64::try_from(native_budget).ok()?,
         );
         let (native_instructions, next_ip, modified_slots) = match outcome {
@@ -3233,6 +3243,15 @@ fn collection_len(collection: &Value) -> Value {
         .ok()
         .and_then(|len| Value::int(len).ok())
         .unwrap_or_else(Value::nothing)
+}
+
+#[cfg(feature = "cranelift")]
+fn natural_loop_range_view(collection: &Value) -> Option<NaturalLoopRangeView> {
+    collection
+        .with_range(|start, end| {
+            NaturalLoopRangeView::new(start.as_int()?, end.and_then(Value::as_int)?)
+        })
+        .flatten()
 }
 
 fn query_rows(rows: Vec<Tuple>, outputs: &[QueryBinding]) -> Vec<Value> {

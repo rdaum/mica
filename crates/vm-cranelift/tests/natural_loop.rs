@@ -15,7 +15,7 @@ use mica_var::Value;
 use mica_var::abi::{borrowed_value_bits, from_owned_value_bits};
 use mica_vm_cranelift::{
     CompiledNaturalLoop, NaturalLoopInstruction, NaturalLoopOutcome, NaturalLoopPlan,
-    ScalarComparison,
+    NaturalLoopRangeView, ScalarComparison,
 };
 use std::sync::{Arc, Barrier};
 
@@ -38,6 +38,7 @@ fn int_bits(value: i64) -> u64 {
 fn plan(limit: i64) -> NaturalLoopPlan {
     NaturalLoopPlan::new(
         7,
+        0,
         3,
         [
             NaturalLoopInstruction::Load {
@@ -99,12 +100,65 @@ fn value(bits: u64) -> Value {
     unsafe { from_owned_value_bits(bits) }
 }
 
+fn range_value_plan() -> NaturalLoopPlan {
+    NaturalLoopPlan::new(
+        2,
+        1,
+        0,
+        [NaturalLoopInstruction::RangeValueAt {
+            dst: 0,
+            view: 0,
+            index: 1,
+        }],
+    )
+    .unwrap()
+}
+
+#[test]
+fn generated_range_value_at_emits_checked_integer_values_without_helpers() {
+    let compiled = CompiledNaturalLoop::compile(&range_value_plan()).unwrap();
+    let range = [NaturalLoopRangeView::new(-5, 5).unwrap()];
+    let mut scratch = [bits(Value::nothing()), int_bits(7)];
+
+    assert_eq!(
+        compiled.run(&mut scratch, &range, 1),
+        NaturalLoopOutcome::Complete {
+            instructions: 1,
+            modified_slots: 1,
+        },
+    );
+    assert_eq!(value(scratch[0]).as_int(), Some(2));
+    assert_eq!(compiled.imported_helper_count(), 0);
+}
+
+#[test]
+fn generated_range_value_at_side_exits_on_invalid_indices_and_bounds() {
+    let compiled = CompiledNaturalLoop::compile(&range_value_plan()).unwrap();
+    let cases = [
+        (NaturalLoopRangeView::new(5, 4).unwrap(), int_bits(0)),
+        (NaturalLoopRangeView::new(0, 5).unwrap(), int_bits(-1)),
+        (NaturalLoopRangeView::new(0, 5).unwrap(), int_bits(6)),
+        (
+            NaturalLoopRangeView::new(0, 5).unwrap(),
+            bits(Value::float(1.0).unwrap()),
+        ),
+    ];
+
+    for (range, index) in cases {
+        let mut scratch = [bits(Value::nothing()), index];
+        assert_eq!(
+            compiled.run(&mut scratch, &[range], 1),
+            NaturalLoopOutcome::SideExit,
+        );
+    }
+}
+
 #[test]
 fn generated_natural_loop_completes_compiler_shaped_accumulation() {
     let compiled = CompiledNaturalLoop::compile(&plan(16_384)).unwrap();
     let mut scratch = scratch(16_384);
     assert_eq!(
-        compiled.run(&mut scratch, 16_384 * 9),
+        compiled.run(&mut scratch, &[], 16_384 * 9),
         NaturalLoopOutcome::Complete {
             instructions: 16_384 * 9,
             modified_slots: 0x7f,
@@ -122,7 +176,7 @@ fn generated_natural_loop_stops_at_an_exact_instruction_budget() {
     let compiled = CompiledNaturalLoop::compile(&plan(16_384)).unwrap();
     let mut scratch = scratch(16_384);
     assert_eq!(
-        compiled.run(&mut scratch, 90),
+        compiled.run(&mut scratch, &[], 90),
         NaturalLoopOutcome::BudgetExhausted {
             instructions: 90,
             resume: 3,
@@ -141,7 +195,7 @@ fn generated_natural_loop_side_exits_on_mixed_arithmetic() {
     let mixed = Value::string("not an integer");
     scratch[TOTAL as usize] = borrowed_value_bits(&mixed);
     assert_eq!(
-        compiled.run(&mut scratch, 16_384 * 9),
+        compiled.run(&mut scratch, &[], 16_384 * 9),
         NaturalLoopOutcome::SideExit,
     );
 }
@@ -157,7 +211,7 @@ fn generated_natural_loop_executes_concurrently() {
         threads.push(std::thread::spawn(move || {
             let mut scratch = scratch(16_384);
             barrier.wait();
-            let outcome = compiled.run(&mut scratch, 16_384 * 9);
+            let outcome = compiled.run(&mut scratch, &[], 16_384 * 9);
             (outcome, value(scratch[TOTAL as usize]).as_int())
         }));
     }

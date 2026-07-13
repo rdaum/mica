@@ -29,6 +29,7 @@ const NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT: usize = (ITERATIONS * 19) + 6;
 const NATURAL_SCALAR_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 7;
 const PREDICTABLE_BRANCH_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 10;
 const ALTERNATING_BRANCH_INSTRUCTION_COUNT: usize = (ITERATIONS / 2 * 17) + 10;
+const NATURAL_RANGE_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 8;
 const MAX_CALL_DEPTH: usize = 8;
 
 #[derive(Default)]
@@ -231,6 +232,84 @@ fn natural_accumulator_program_with_limit(total: Value, limit: usize) -> Arc<Pro
         )
         .unwrap(),
     )
+}
+
+fn natural_collection_program(collection: Value) -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            9,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: collection,
+                },
+                Instruction::CollectionLen {
+                    dst: register(1),
+                    collection: register(0),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(5),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(2),
+                    right: register(1),
+                },
+                Instruction::Branch {
+                    condition: register(5),
+                    if_true: 7,
+                    if_false: 13,
+                },
+                Instruction::CollectionValueAt {
+                    dst: register(6),
+                    collection: register(0),
+                    index: register(2),
+                },
+                Instruction::Binary {
+                    dst: register(7),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(3),
+                    right: register(6),
+                },
+                Instruction::Move {
+                    dst: register(3),
+                    src: register(7),
+                },
+                Instruction::Binary {
+                    dst: register(8),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(2),
+                    right: register(4),
+                },
+                Instruction::Move {
+                    dst: register(2),
+                    src: register(8),
+                },
+                Instruction::Jump { target: 5 },
+                Instruction::Return {
+                    value: Operand::Register(register(3)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
+fn natural_range_program() -> Arc<Program> {
+    natural_collection_program(Value::range(
+        Value::int(1).unwrap(),
+        Some(Value::int(ITERATIONS as i64).unwrap()),
+    ))
 }
 
 fn natural_countdown_program(iterations: usize) -> Arc<Program> {
@@ -969,6 +1048,63 @@ fn native_natural_loop_matches_interpreter_completion() {
     );
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_range_loop_matches_interpreter_completion() {
+    let program = natural_range_program();
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    assert_eq!(
+        run(&mut native, NATURAL_RANGE_INSTRUCTION_COUNT).unwrap(),
+        run(&mut interpreted, NATURAL_RANGE_INSTRUCTION_COUNT).unwrap(),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_range_loop_preserves_budget_remainders() {
+    for budget in (NATURAL_RANGE_INSTRUCTION_COUNT - 10)..=NATURAL_RANGE_INSTRUCTION_COUNT {
+        let program = natural_range_program();
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(program);
+
+        let interpreted_outcome = run(&mut interpreted, budget);
+        let native_outcome = run(&mut native, budget);
+        match (native_outcome, interpreted_outcome) {
+            (Ok(native), Ok(interpreted)) => assert_eq!(native, interpreted, "budget {budget}"),
+            (
+                Err(RuntimeError::InstructionBudgetExceeded { .. }),
+                Err(RuntimeError::InstructionBudgetExceeded { .. }),
+            ) => {}
+            (native, interpreted) => panic!(
+                "budget {budget} produced different outcomes: native={native:?} interpreted={interpreted:?}",
+            ),
+        }
+        assert_eq!(
+            native.snapshot_state(),
+            interpreted.snapshot_state(),
+            "budget {budget}",
+        );
+    }
+}
+
+#[test]
+fn native_natural_range_view_side_exit_is_atomic_and_sticky() {
+    let collection = Value::list((1..=ITERATIONS as i64).map(|value| Value::int(value).unwrap()));
+    let program = natural_collection_program(collection);
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    assert_eq!(
+        run(&mut native, NATURAL_RANGE_INSTRUCTION_COUNT).unwrap(),
+        run(&mut interpreted, NATURAL_RANGE_INSTRUCTION_COUNT).unwrap(),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+    assert_eq!(native.native_side_exit_count(), 1);
 }
 
 #[test]
