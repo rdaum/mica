@@ -790,6 +790,8 @@ impl Debug for FloatLoopSite {
 
 #[cfg(feature = "cranelift")]
 pub(crate) const MAX_NATURAL_LOOP_SLOTS: usize = 32;
+#[cfg(feature = "cranelift")]
+pub(crate) const MAX_NATURAL_LOOP_RANGE_VIEWS: usize = 32;
 
 #[cfg(feature = "cranelift")]
 pub(crate) struct NaturalIntegerLoopSite {
@@ -799,6 +801,7 @@ pub(crate) struct NaturalIntegerLoopSite {
     pub(crate) exit_ip: usize,
     pub(crate) region_instruction_count: usize,
     pub(crate) registers: Box<[Register]>,
+    pub(crate) range_view_registers: Box<[Register]>,
     pub(crate) current: Register,
     pub(crate) delta: i64,
     pub(crate) limit: Register,
@@ -818,6 +821,7 @@ impl Debug for NaturalIntegerLoopSite {
             .field("exit_ip", &self.exit_ip)
             .field("region_instruction_count", &self.region_instruction_count)
             .field("registers", &self.registers)
+            .field("range_view_registers", &self.range_view_registers)
             .field("current", &self.current)
             .field("delta", &self.delta)
             .field("limit", &self.limit)
@@ -1164,6 +1168,24 @@ fn recognize_natural_integer_loop(
     let header = opcodes.get(header_ip..branch_ip)?;
     let body = opcodes.get(body_ip..backedge_ip)?;
     let region = opcodes.get(header_ip..exit_ip)?;
+    let range_view_registers = region
+        .iter()
+        .filter_map(|opcode| match opcode {
+            Opcode::CollectionValueAt { collection, .. } => Some(*collection),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if range_view_registers.len() > MAX_NATURAL_LOOP_RANGE_VIEWS
+        || range_view_registers
+            .iter()
+            .any(|register| region.iter().any(|opcode| opcode_writes(opcode, *register)))
+    {
+        return None;
+    }
+    let range_view_registers = range_view_registers
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
     let mut registers = BTreeSet::new();
     registers.insert(*condition);
     for opcode in region {
@@ -1179,18 +1201,32 @@ fn recognize_natural_integer_loop(
             .ok()
             .and_then(|slot| u16::try_from(slot).ok())
     };
+    let range_view = |register: Register| {
+        range_view_registers
+            .binary_search(&register)
+            .ok()
+            .and_then(|view| u16::try_from(view).ok())
+    };
     let instructions = region
         .iter()
-        .map(|opcode| natural_loop_instruction(opcode, constants, &slot, header_ip, exit_ip))
+        .map(|opcode| {
+            natural_loop_instruction(opcode, constants, &slot, &range_view, header_ip, exit_ip)
+        })
         .collect::<Option<Vec<_>>>()?;
     let plan = NaturalLoopPlan::new(
         u16::try_from(registers.len()).ok()?,
+        u16::try_from(range_view_registers.len()).ok()?,
         u16::try_from(body_ip.checked_sub(header_ip)?).ok()?,
         instructions,
     )
     .ok()?;
-    let (current, delta, limit, comparison) =
-        recognize_natural_loop_induction(header, body, constants, *condition)?;
+    let (current, delta, limit, comparison) = recognize_natural_loop_induction(
+        opcodes.get(..header_ip)?,
+        header,
+        body,
+        constants,
+        *condition,
+    )?;
     Some(NaturalIntegerLoopSite {
         header_ip,
         branch_ip,
@@ -1198,6 +1234,7 @@ fn recognize_natural_integer_loop(
         exit_ip,
         region_instruction_count: region.len(),
         registers,
+        range_view_registers,
         current,
         delta,
         limit,
@@ -1242,6 +1279,10 @@ fn collect_natural_loop_registers(
         Opcode::Branch { condition, .. } => {
             registers.insert(*condition);
         }
+        Opcode::CollectionValueAt { dst, index, .. } => {
+            registers.insert(*dst);
+            registers.insert(*index);
+        }
         Opcode::Jump { .. } => {}
         _ => return None,
     }
@@ -1253,6 +1294,7 @@ fn natural_loop_instruction(
     opcode: &Opcode,
     constants: &[Value],
     slot: &impl Fn(Register) -> Option<u16>,
+    range_view: &impl Fn(Register) -> Option<u16>,
     region_start: usize,
     region_end: usize,
 ) -> Option<NaturalLoopInstruction> {
@@ -1297,6 +1339,15 @@ fn natural_loop_instruction(
             dst: slot(*dst)?,
             left: slot(*left)?,
             right: slot(*right)?,
+        }),
+        Opcode::CollectionValueAt {
+            dst,
+            collection,
+            index,
+        } => Some(NaturalLoopInstruction::RangeValueAt {
+            dst: slot(*dst)?,
+            view: range_view(*collection)?,
+            index: slot(*index)?,
         }),
         Opcode::Binary {
             dst,
@@ -1369,6 +1420,7 @@ fn natural_loop_instruction(
 
 #[cfg(feature = "cranelift")]
 fn recognize_natural_loop_induction(
+    preheader: &[Opcode],
     header: &[Opcode],
     body: &[Opcode],
     constants: &[Value],
@@ -1425,11 +1477,24 @@ fn recognize_natural_loop_induction(
     let step = body[..arithmetic_index]
         .iter()
         .rev()
-        .find_map(|opcode| match opcode {
-            Opcode::Load { dst, value } if *dst == step_register => {
-                constants.get(value.0 as usize)?.as_int()
+        .find(|opcode| opcode_writes(opcode, step_register))
+        .map(|opcode| loaded_integer(opcode, step_register, constants))
+        .unwrap_or_else(|| {
+            if header
+                .iter()
+                .any(|opcode| opcode_writes(opcode, step_register))
+            {
+                return None;
             }
-            _ => None,
+            let tail_start = preheader
+                .iter()
+                .rposition(|opcode| matches!(opcode, Opcode::Branch { .. } | Opcode::Jump { .. }))
+                .map_or(0, |index| index + 1);
+            preheader[tail_start..]
+                .iter()
+                .rev()
+                .find(|opcode| opcode_writes(opcode, step_register))
+                .and_then(|opcode| loaded_integer(opcode, step_register, constants))
         })?;
     let delta = if direction > 0 {
         step
@@ -1437,6 +1502,14 @@ fn recognize_natural_loop_induction(
         step.checked_neg()?
     };
     Some((current, delta, limit, comparison))
+}
+
+#[cfg(feature = "cranelift")]
+fn loaded_integer(opcode: &Opcode, register: Register, constants: &[Value]) -> Option<i64> {
+    let Opcode::Load { dst, value } = opcode else {
+        return None;
+    };
+    (*dst == register).then(|| constants.get(value.0 as usize)?.as_int())?
 }
 
 #[cfg(feature = "cranelift")]
@@ -1499,7 +1572,8 @@ fn opcode_writes(opcode: &Opcode, register: Register) -> bool {
         Opcode::Load { dst, .. }
         | Opcode::Move { dst, .. }
         | Opcode::Unary { dst, .. }
-        | Opcode::Binary { dst, .. } => *dst == register,
+        | Opcode::Binary { dst, .. }
+        | Opcode::CollectionValueAt { dst, .. } => *dst == register,
         _ => false,
     }
 }

@@ -19,7 +19,9 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
-use mica_var::abi::{VALUE_ABI_VERSION, value_is_immediate};
+use mica_var::abi::{
+    VALUE_ABI_VERSION, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG, value_is_immediate,
+};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Mutex;
@@ -28,7 +30,32 @@ const STATUS_COMPLETE: u32 = 0;
 const STATUS_BUDGET_EXHAUSTED: u32 = 1;
 const STATUS_SIDE_EXIT: u32 = 2;
 
-type NaturalLoopFunction = unsafe extern "C" fn(*mut u64, u64, *mut u64, *mut u32, *mut u32) -> u32;
+type NaturalLoopFunction = unsafe extern "C" fn(
+    *mut u64,
+    *const NaturalLoopRangeView,
+    u64,
+    *mut u64,
+    *mut u32,
+    *mut u32,
+) -> u32;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NaturalLoopRangeView {
+    start: i64,
+    end: i64,
+}
+
+impl NaturalLoopRangeView {
+    pub fn new(start: i64, end: i64) -> Option<Self> {
+        if !(VALUE_INT_MIN..=VALUE_INT_MAX).contains(&start)
+            || !(VALUE_INT_MIN..=VALUE_INT_MAX).contains(&end)
+        {
+            return None;
+        }
+        Some(Self { start, end })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NaturalLoopInstruction {
@@ -79,6 +106,11 @@ pub enum NaturalLoopInstruction {
         left: u16,
         right: u16,
     },
+    RangeValueAt {
+        dst: u16,
+        view: u16,
+        index: u16,
+    },
     Branch {
         condition: u16,
         if_true: u16,
@@ -104,6 +136,7 @@ impl NaturalLoopInstruction {
             | Self::Compare {
                 dst, left, right, ..
             } => [Some(dst), Some(left), Some(right)],
+            Self::RangeValueAt { dst, index, .. } => [Some(dst), Some(index), None],
             Self::Branch { condition, .. } => [Some(condition), None, None],
             Self::Jump { .. } => [None, None, None],
         }
@@ -113,6 +146,7 @@ impl NaturalLoopInstruction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NaturalLoopPlan {
     slot_count: u16,
+    range_view_count: u16,
     entry: u16,
     instructions: Box<[NaturalLoopInstruction]>,
 }
@@ -120,6 +154,7 @@ pub struct NaturalLoopPlan {
 impl NaturalLoopPlan {
     pub fn new(
         slot_count: u16,
+        range_view_count: u16,
         entry: u16,
         instructions: impl Into<Box<[NaturalLoopInstruction]>>,
     ) -> Result<Self, NaturalLoopError> {
@@ -162,11 +197,17 @@ impl NaturalLoopPlan {
                         "natural loop jump target is outside the compiled region".to_owned(),
                     ));
                 }
+                NaturalLoopInstruction::RangeValueAt { view, .. } if view >= range_view_count => {
+                    return Err(NaturalLoopError(
+                        "natural loop range instruction references an invalid view".to_owned(),
+                    ));
+                }
                 _ => {}
             }
         }
         Ok(Self {
             slot_count,
+            range_view_count,
             entry,
             instructions,
         })
@@ -210,6 +251,7 @@ pub struct CompiledNaturalLoop {
     _module: Mutex<JITModule>,
     function: NaturalLoopFunction,
     slot_count: usize,
+    range_view_count: usize,
     code_size: usize,
     imported_helper_count: usize,
     value_abi_version: u32,
@@ -224,6 +266,7 @@ impl CompiledNaturalLoop {
         let mut module = JITModule::new(builder);
         let pointer_type = module.target_config().pointer_type();
         let mut signature = Signature::new(module.isa().default_call_conv());
+        signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(types::I64));
         signature.params.push(AbiParam::new(pointer_type));
@@ -259,6 +302,7 @@ impl CompiledNaturalLoop {
             _module: Mutex::new(module),
             function,
             slot_count: usize::from(plan.slot_count),
+            range_view_count: usize::from(plan.range_view_count),
             code_size,
             imported_helper_count,
             value_abi_version: VALUE_ABI_VERSION,
@@ -313,10 +357,11 @@ impl CompiledNaturalLoop {
         builder.switch_to_block(entry);
         let params = builder.block_params(entry).to_vec();
         let scratch = params[0];
-        let instruction_budget = params[1];
-        let instructions_out = params[2];
-        let resume_out = params[3];
-        let modified_slots_out = params[4];
+        let range_views = params[1];
+        let instruction_budget = params[2];
+        let instructions_out = params[3];
+        let resume_out = params[4];
+        let modified_slots_out = params[5];
         let zero_instructions = builder.ins().iconst(types::I64, 0);
         let zero_slots = builder.ins().iconst(types::I32, 0);
         builder.ins().jump(
@@ -393,7 +438,8 @@ impl CompiledNaturalLoop {
                         .jump(target, &[instructions.into(), modified_slots.into()]);
                 }
                 instruction => {
-                    let (is_fast, dst) = Self::emit_instruction(&mut builder, scratch, instruction);
+                    let (is_fast, dst) =
+                        Self::emit_instruction(&mut builder, scratch, range_views, instruction);
                     let slot_bit = 1_u32 << dst;
                     let slot_bit = builder.ins().iconst(types::I32, i64::from(slot_bit));
                     let modified_slots = builder.ins().bor(modified_slots, slot_bit);
@@ -467,6 +513,7 @@ impl CompiledNaturalLoop {
     fn emit_instruction(
         builder: &mut FunctionBuilder<'_>,
         scratch: cranelift_codegen::ir::Value,
+        range_views: cranelift_codegen::ir::Value,
         instruction: NaturalLoopInstruction,
     ) -> (cranelift_codegen::ir::Value, u16) {
         match instruction {
@@ -540,6 +587,41 @@ impl CompiledNaturalLoop {
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }
+            NaturalLoopInstruction::RangeValueAt { dst, view, index } => {
+                let index = Self::load_slot(builder, scratch, index);
+                let index_is_int = ValueEmitter::emit_is_int(builder, index);
+                let index = ValueEmitter::emit_unbox_int(builder, index);
+                let index_is_nonnegative =
+                    builder
+                        .ins()
+                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, index, 0);
+                let view_offset = i32::from(view) * 16;
+                let start =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new(), range_views, view_offset);
+                let end = builder.ins().load(
+                    types::I64,
+                    MemFlagsData::new(),
+                    range_views,
+                    view_offset + 8,
+                );
+                let range_is_nonempty =
+                    builder.ins().icmp(IntCC::SignedLessThanOrEqual, start, end);
+                let value = builder.ins().iadd(start, index);
+                let value_fits =
+                    builder
+                        .ins()
+                        .icmp_imm(IntCC::SignedLessThanOrEqual, value, VALUE_INT_MAX);
+                let value_in_range = builder.ins().icmp(IntCC::SignedLessThanOrEqual, value, end);
+                let is_fast = builder.ins().band(index_is_int, index_is_nonnegative);
+                let is_fast = builder.ins().band(is_fast, range_is_nonempty);
+                let is_fast = builder.ins().band(is_fast, value_fits);
+                let is_fast = builder.ins().band(is_fast, value_in_range);
+                let value = ValueEmitter::emit_pack(builder, VALUE_INT_TAG, value);
+                Self::store_slot(builder, scratch, dst, value);
+                (is_fast, dst)
+            }
             NaturalLoopInstruction::Branch { .. } | NaturalLoopInstruction::Jump { .. } => {
                 unreachable!("control-flow instructions are emitted by build_function")
             }
@@ -578,8 +660,16 @@ impl CompiledNaturalLoop {
         self.imported_helper_count
     }
 
-    pub fn run(&self, scratch: &mut [u64], instruction_budget: u64) -> NaturalLoopOutcome {
-        if self.value_abi_version != VALUE_ABI_VERSION || scratch.len() < self.slot_count {
+    pub fn run(
+        &self,
+        scratch: &mut [u64],
+        range_views: &[NaturalLoopRangeView],
+        instruction_budget: u64,
+    ) -> NaturalLoopOutcome {
+        if self.value_abi_version != VALUE_ABI_VERSION
+            || scratch.len() < self.slot_count
+            || range_views.len() < self.range_view_count
+        {
             return NaturalLoopOutcome::SideExit;
         }
         let mut instructions = 0;
@@ -588,6 +678,7 @@ impl CompiledNaturalLoop {
         let status = unsafe {
             (self.function)(
                 scratch.as_mut_ptr(),
+                range_views.as_ptr(),
                 instruction_budget,
                 &mut instructions,
                 &mut resume,

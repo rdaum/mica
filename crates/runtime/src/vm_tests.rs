@@ -17,6 +17,7 @@ use crate::{
     Register, RelationArg, RuntimeBinaryOp, RuntimeError, SpawnTarget, SuspendKind, Task,
     TaskError, TaskLimits, TaskManager, TaskManagerError, TaskOutcome,
 };
+use mica_compiler::{CompileContext, compile_source};
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Tuple,
 };
@@ -156,6 +157,21 @@ fn run_program_with_authority(
     task.run()
 }
 
+fn compiled_range_loop_program() -> Arc<Program> {
+    Arc::new(
+        compile_source(
+            "let total = 0\n\
+             for number in 1..16384\n\
+               total = total + number\n\
+             end\n\
+             return total",
+            &CompileContext::new(),
+        )
+        .unwrap()
+        .program,
+    )
+}
+
 fn emit_first_arg(
     context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
@@ -193,6 +209,80 @@ fn instruction_budget_exhaustion_reports_runtime_error() {
     assert_eq!(budget, 3);
     assert!(current_stack.iter().any(|frame| frame.contains("Jump")));
     assert!(hot_spots.iter().any(|frame| frame.contains("Jump")));
+}
+
+#[test]
+fn compiler_range_loop_matches_native_and_interpreted_execution() {
+    let kernel = RelationKernel::new();
+    let program = compiled_range_loop_program();
+    let resolver = Arc::new(ProgramResolver::new());
+    let limits = TaskLimits {
+        instruction_budget: 200_000,
+        max_retries: 0,
+        max_call_depth: 50,
+    };
+    let mut native = Task::new(
+        1,
+        &kernel,
+        Arc::clone(&program),
+        Arc::clone(&resolver),
+        limits,
+    );
+    let mut interpreted = Task::new(2, &kernel, program, resolver, limits);
+    interpreted.vm_mut().disable_native_execution();
+
+    let native_outcome = native.run().unwrap();
+    let interpreted_outcome = interpreted.run().unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert!(matches!(
+        native_outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(134_225_920).unwrap()
+    ));
+    assert_eq!(
+        native.vm().snapshot_state(),
+        interpreted.vm().snapshot_state()
+    );
+}
+
+#[test]
+fn compiler_range_loop_preserves_native_budget_boundaries() {
+    for budget in [1, 8, 1_024, 50_000, 100_000, 131_000] {
+        let kernel = RelationKernel::new();
+        let program = compiled_range_loop_program();
+        let resolver = Arc::new(ProgramResolver::new());
+        let limits = TaskLimits {
+            instruction_budget: budget,
+            max_retries: 0,
+            max_call_depth: 50,
+        };
+        let mut native = Task::new(
+            1,
+            &kernel,
+            Arc::clone(&program),
+            Arc::clone(&resolver),
+            limits,
+        );
+        let mut interpreted = Task::new(2, &kernel, program, resolver, limits);
+        interpreted.vm_mut().disable_native_execution();
+
+        assert!(matches!(
+            native.run(),
+            Err(TaskError::Runtime(
+                RuntimeError::InstructionBudgetExceeded { .. }
+            ))
+        ));
+        assert!(matches!(
+            interpreted.run(),
+            Err(TaskError::Runtime(
+                RuntimeError::InstructionBudgetExceeded { .. }
+            ))
+        ));
+        assert_eq!(
+            native.vm().snapshot_state(),
+            interpreted.vm().snapshot_state(),
+            "budget {budget}",
+        );
+    }
 }
 
 #[test]
