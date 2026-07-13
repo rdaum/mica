@@ -19,7 +19,9 @@ mod integer_loop;
 mod natural_loop;
 
 pub use emitter::{EmittedValue, FloatComparison, IntegerComparison, ValueEmitter};
-pub use float_loop::{CompiledFloatLoop, FloatLoopError, FloatLoopOutcome};
+pub use float_loop::{
+    CompiledFloatLoop, FloatArithmetic, FloatLoopError, FloatLoopOutcome, FloatLoopPlan,
+};
 pub use integer_loop::{CompiledIntegerLoop, IntegerLoopError, IntegerLoopOutcome};
 pub use natural_loop::{
     CompiledNaturalLoop, NaturalLoopError, NaturalLoopInstruction, NaturalLoopOutcome,

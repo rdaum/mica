@@ -22,8 +22,8 @@ use std::sync::Arc;
 use mica_var::abi::{borrowed_value_bits, value_is_immediate};
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
-    CompiledFloatLoop, CompiledIntegerLoop, CompiledNaturalLoop, IntegerComparison,
-    NaturalLoopInstruction, NaturalLoopPlan,
+    CompiledFloatLoop, CompiledIntegerLoop, CompiledNaturalLoop, FloatArithmetic, FloatComparison,
+    FloatLoopPlan, IntegerComparison, NaturalLoopInstruction, NaturalLoopPlan,
 };
 #[cfg(feature = "cranelift")]
 use std::collections::BTreeSet;
@@ -758,6 +758,37 @@ pub(crate) struct IntegerLoopSite {
 }
 
 #[cfg(feature = "cranelift")]
+pub(crate) struct FloatLoopSite {
+    pub(crate) entry_ip: usize,
+    pub(crate) branch_ip: usize,
+    pub(crate) exit_ip: usize,
+    pub(crate) current: Register,
+    pub(crate) step: Register,
+    pub(crate) limit: Register,
+    pub(crate) condition: Register,
+    pub(crate) plan: FloatLoopPlan,
+    compiled: OnceLock<Result<Arc<CompiledFloatLoop>, Box<str>>>,
+}
+
+#[cfg(feature = "cranelift")]
+impl Debug for FloatLoopSite {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FloatLoopSite")
+            .field("entry_ip", &self.entry_ip)
+            .field("branch_ip", &self.branch_ip)
+            .field("exit_ip", &self.exit_ip)
+            .field("current", &self.current)
+            .field("step", &self.step)
+            .field("limit", &self.limit)
+            .field("condition", &self.condition)
+            .field("plan", &self.plan)
+            .field("compiled", &self.compiled.get().is_some())
+            .finish()
+    }
+}
+
+#[cfg(feature = "cranelift")]
 pub(crate) const MAX_NATURAL_LOOP_SLOTS: usize = 32;
 
 #[cfg(feature = "cranelift")]
@@ -800,8 +831,8 @@ impl Debug for NaturalIntegerLoopSite {
 #[cfg(feature = "cranelift")]
 struct NativeProgramCacheState {
     integer_loop_sites: Box<[IntegerLoopSite]>,
+    float_loop_sites: Box<[FloatLoopSite]>,
     natural_integer_loop_sites: Box<[NaturalIntegerLoopSite]>,
-    float_loop: OnceLock<Result<Arc<CompiledFloatLoop>, Box<str>>>,
     integer_loop: OnceLock<Result<Arc<CompiledIntegerLoop>, Box<str>>>,
     compile_attempts: AtomicUsize,
 }
@@ -817,17 +848,24 @@ impl NativeProgramCache {
             .filter_map(|branch_ip| recognize_integer_loop(opcodes, branch_ip))
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        let float_loop_sites = (2..opcodes.len())
+            .filter_map(|branch_ip| recognize_float_loop(opcodes, branch_ip))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         let natural_integer_loop_sites = (0..opcodes.len())
             .filter_map(|branch_ip| recognize_natural_integer_loop(opcodes, constants, branch_ip))
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        if integer_loop_sites.is_empty() && natural_integer_loop_sites.is_empty() {
+        if integer_loop_sites.is_empty()
+            && float_loop_sites.is_empty()
+            && natural_integer_loop_sites.is_empty()
+        {
             return None;
         }
         Some(Self(Arc::new(NativeProgramCacheState {
             integer_loop_sites,
+            float_loop_sites,
             natural_integer_loop_sites,
-            float_loop: OnceLock::new(),
             integer_loop: OnceLock::new(),
             compile_attempts: AtomicUsize::new(0),
         })))
@@ -861,18 +899,30 @@ impl NativeProgramCache {
             .cloned()
     }
 
-    fn compiled_float_loop(&self, compile: bool) -> Option<Arc<CompiledFloatLoop>> {
-        if let Some(compiled) = self.0.float_loop.get() {
+    fn float_loop_site(&self, branch_ip: usize) -> Option<&FloatLoopSite> {
+        self.0
+            .float_loop_sites
+            .binary_search_by_key(&branch_ip, |site| site.branch_ip)
+            .ok()
+            .map(|index| &self.0.float_loop_sites[index])
+    }
+
+    fn compiled_float_loop(
+        &self,
+        branch_ip: usize,
+        compile: bool,
+    ) -> Option<Arc<CompiledFloatLoop>> {
+        let site = self.float_loop_site(branch_ip)?;
+        if let Some(compiled) = site.compiled.get() {
             return compiled.as_ref().ok().cloned();
         }
         if !compile {
             return None;
         }
-        self.0
-            .float_loop
+        site.compiled
             .get_or_init(|| {
                 self.0.compile_attempts.fetch_add(1, Ordering::Relaxed);
-                CompiledFloatLoop::compile()
+                CompiledFloatLoop::compile(site.plan)
                     .map(Arc::new)
                     .map_err(|error| error.to_string().into_boxed_str())
             })
@@ -925,6 +975,7 @@ impl Debug for NativeProgramCache {
         formatter
             .debug_struct("NativeProgramCache")
             .field("integer_loop_sites", &self.0.integer_loop_sites)
+            .field("float_loop_sites", &self.0.float_loop_sites)
             .field(
                 "natural_integer_loop_sites",
                 &self.0.natural_integer_loop_sites,
@@ -999,6 +1050,85 @@ fn recognize_integer_loop(opcodes: &[Opcode], branch_ip: usize) -> Option<Intege
         step,
         limit: *limit,
         condition: *condition,
+    })
+}
+
+#[cfg(feature = "cranelift")]
+fn recognize_float_loop(opcodes: &[Opcode], branch_ip: usize) -> Option<FloatLoopSite> {
+    let entry_ip = branch_ip.checked_sub(2)?;
+    let Opcode::Binary {
+        dst: current,
+        op,
+        left,
+        right,
+    } = opcodes.get(entry_ip)?
+    else {
+        return None;
+    };
+    let arithmetic = match op {
+        RuntimeBinaryOp::Add => FloatArithmetic::Add,
+        RuntimeBinaryOp::Sub => FloatArithmetic::Subtract,
+        RuntimeBinaryOp::Mul => FloatArithmetic::Multiply,
+        RuntimeBinaryOp::Div => FloatArithmetic::Divide,
+        _ => return None,
+    };
+    let step = if left == current && right != current {
+        *right
+    } else if matches!(arithmetic, FloatArithmetic::Add | FloatArithmetic::Multiply)
+        && right == current
+        && left != current
+    {
+        *left
+    } else {
+        return None;
+    };
+    let Opcode::Binary {
+        dst: condition,
+        op,
+        left: comparison_left,
+        right: limit,
+    } = opcodes.get(entry_ip + 1)?
+    else {
+        return None;
+    };
+    let comparison = match op {
+        RuntimeBinaryOp::Eq => FloatComparison::Equal,
+        RuntimeBinaryOp::Ne => FloatComparison::NotEqual,
+        RuntimeBinaryOp::Lt => FloatComparison::LessThan,
+        RuntimeBinaryOp::Le => FloatComparison::LessThanOrEqual,
+        RuntimeBinaryOp::Gt => FloatComparison::GreaterThan,
+        RuntimeBinaryOp::Ge => FloatComparison::GreaterThanOrEqual,
+        _ => return None,
+    };
+    let Opcode::Branch {
+        condition: branch_condition,
+        if_true,
+        if_false,
+    } = opcodes.get(branch_ip)?
+    else {
+        return None;
+    };
+    if comparison_left != current
+        || branch_condition != condition
+        || if_true.0 as usize != entry_ip
+        || if_false.0 as usize <= branch_ip
+        || current == limit
+        || condition == current
+        || condition == &step
+        || condition == limit
+    {
+        return None;
+    }
+    Some(FloatLoopSite {
+        entry_ip,
+        branch_ip,
+        exit_ip: if_false.0 as usize,
+        current: *current,
+        step,
+        limit: *limit,
+        condition: *condition,
+        plan: FloatLoopPlan::new(arithmetic, comparison),
+        compiled: OnceLock::new(),
     })
 }
 
@@ -1491,8 +1621,19 @@ impl Program {
     }
 
     #[cfg(feature = "cranelift")]
-    pub(crate) fn compiled_float_loop(&self, compile: bool) -> Option<Arc<CompiledFloatLoop>> {
-        self.native_cache.as_ref()?.compiled_float_loop(compile)
+    pub(crate) fn float_loop_site(&self, branch_ip: usize) -> Option<&FloatLoopSite> {
+        self.native_cache.as_ref()?.float_loop_site(branch_ip)
+    }
+
+    #[cfg(feature = "cranelift")]
+    pub(crate) fn compiled_float_loop(
+        &self,
+        branch_ip: usize,
+        compile: bool,
+    ) -> Option<Arc<CompiledFloatLoop>> {
+        self.native_cache
+            .as_ref()?
+            .compiled_float_loop(branch_ip, compile)
     }
 
     #[cfg(feature = "cranelift")]

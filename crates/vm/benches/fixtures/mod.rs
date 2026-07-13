@@ -35,30 +35,81 @@ pub struct ProgramFixture {
 }
 
 pub fn integer_loop_fixture() -> ProgramFixture {
+    direct_loop_fixture(
+        int(0),
+        int(1),
+        int(INTEGER_LOOP_ITERATIONS as i64),
+        RuntimeBinaryOp::Add,
+        RuntimeBinaryOp::Lt,
+        INTEGER_LOOP_ITERATIONS as u64,
+    )
+}
+
+pub fn float_add_loop_fixture() -> ProgramFixture {
+    direct_loop_fixture(
+        float(0.0),
+        float(0.5),
+        float(INTEGER_LOOP_ITERATIONS as f32 / 2.0),
+        RuntimeBinaryOp::Add,
+        RuntimeBinaryOp::Lt,
+        INTEGER_LOOP_ITERATIONS as u64,
+    )
+}
+
+pub fn float_multiply_loop_fixture() -> ProgramFixture {
+    let factor = 1.0001_f32;
+    let limit = 5.0_f32;
+    let mut current = 1.0_f32;
+    let mut iterations = 0_u64;
+    loop {
+        current *= factor;
+        iterations += 1;
+        if current >= limit {
+            break;
+        }
+    }
+    direct_loop_fixture(
+        float(1.0),
+        float(factor),
+        float(limit),
+        RuntimeBinaryOp::Mul,
+        RuntimeBinaryOp::Lt,
+        iterations,
+    )
+}
+
+fn direct_loop_fixture(
+    start: Value,
+    step: Value,
+    limit: Value,
+    arithmetic: RuntimeBinaryOp,
+    comparison: RuntimeBinaryOp,
+    iterations: u64,
+) -> ProgramFixture {
     let program = Program::new(
         4,
         [
             Instruction::Load {
                 dst: reg(0),
-                value: int(0),
+                value: start,
             },
             Instruction::Load {
                 dst: reg(1),
-                value: int(1),
+                value: step,
             },
             Instruction::Load {
                 dst: reg(2),
-                value: int(INTEGER_LOOP_ITERATIONS as i64),
+                value: limit,
             },
             Instruction::Binary {
                 dst: reg(0),
-                op: RuntimeBinaryOp::Add,
+                op: arithmetic,
                 left: reg(0),
                 right: reg(1),
             },
             Instruction::Binary {
                 dst: reg(3),
-                op: RuntimeBinaryOp::Lt,
+                op: comparison,
                 left: reg(0),
                 right: reg(2),
             },
@@ -73,7 +124,7 @@ pub fn integer_loop_fixture() -> ProgramFixture {
     .unwrap();
     ProgramFixture {
         program: Arc::new(program),
-        instruction_count: INTEGER_LOOP_INSTRUCTIONS,
+        instruction_count: (iterations * 3) + 4,
     }
 }
 
@@ -198,4 +249,8 @@ fn r(index: u16) -> Operand {
 
 fn int(value: i64) -> Value {
     Value::int(value).unwrap()
+}
+
+fn float(value: f32) -> Value {
+    Value::float(value).unwrap()
 }
