@@ -791,7 +791,7 @@ impl Debug for FloatLoopSite {
 #[cfg(feature = "cranelift")]
 pub(crate) const MAX_NATURAL_LOOP_SLOTS: usize = 32;
 #[cfg(feature = "cranelift")]
-pub(crate) const MAX_NATURAL_LOOP_RANGE_VIEWS: usize = 32;
+pub(crate) const MAX_NATURAL_LOOP_COLLECTION_VIEWS: usize = 32;
 
 #[cfg(feature = "cranelift")]
 pub(crate) struct NaturalIntegerLoopSite {
@@ -801,7 +801,7 @@ pub(crate) struct NaturalIntegerLoopSite {
     pub(crate) exit_ip: usize,
     pub(crate) region_instruction_count: usize,
     pub(crate) registers: Box<[Register]>,
-    pub(crate) range_view_registers: Box<[Register]>,
+    pub(crate) collection_view_registers: Box<[Register]>,
     pub(crate) current: Register,
     pub(crate) delta: i64,
     pub(crate) limit: Register,
@@ -821,7 +821,7 @@ impl Debug for NaturalIntegerLoopSite {
             .field("exit_ip", &self.exit_ip)
             .field("region_instruction_count", &self.region_instruction_count)
             .field("registers", &self.registers)
-            .field("range_view_registers", &self.range_view_registers)
+            .field("collection_view_registers", &self.collection_view_registers)
             .field("current", &self.current)
             .field("delta", &self.delta)
             .field("limit", &self.limit)
@@ -1168,22 +1168,27 @@ fn recognize_natural_integer_loop(
     let header = opcodes.get(header_ip..branch_ip)?;
     let body = opcodes.get(body_ip..backedge_ip)?;
     let region = opcodes.get(header_ip..exit_ip)?;
-    let range_view_registers = region
+    let collection_view_registers = region
         .iter()
         .filter_map(|opcode| match opcode {
             Opcode::CollectionKeyAt { collection, .. }
             | Opcode::CollectionValueAt { collection, .. } => Some(*collection),
+            Opcode::Index {
+                collection,
+                index: OperandRef::Register(_),
+                ..
+            } => Some(*collection),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
-    if range_view_registers.len() > MAX_NATURAL_LOOP_RANGE_VIEWS
-        || range_view_registers
+    if collection_view_registers.len() > MAX_NATURAL_LOOP_COLLECTION_VIEWS
+        || collection_view_registers
             .iter()
             .any(|register| region.iter().any(|opcode| opcode_writes(opcode, *register)))
     {
         return None;
     }
-    let range_view_registers = range_view_registers
+    let collection_view_registers = collection_view_registers
         .into_iter()
         .collect::<Vec<_>>()
         .into_boxed_slice();
@@ -1202,8 +1207,8 @@ fn recognize_natural_integer_loop(
             .ok()
             .and_then(|slot| u16::try_from(slot).ok())
     };
-    let range_view = |register: Register| {
-        range_view_registers
+    let collection_view = |register: Register| {
+        collection_view_registers
             .binary_search(&register)
             .ok()
             .and_then(|view| u16::try_from(view).ok())
@@ -1211,12 +1216,19 @@ fn recognize_natural_integer_loop(
     let instructions = region
         .iter()
         .map(|opcode| {
-            natural_loop_instruction(opcode, constants, &slot, &range_view, header_ip, exit_ip)
+            natural_loop_instruction(
+                opcode,
+                constants,
+                &slot,
+                &collection_view,
+                header_ip,
+                exit_ip,
+            )
         })
         .collect::<Option<Vec<_>>>()?;
     let plan = NaturalLoopPlan::new(
         u16::try_from(registers.len()).ok()?,
-        u16::try_from(range_view_registers.len()).ok()?,
+        u16::try_from(collection_view_registers.len()).ok()?,
         u16::try_from(body_ip.checked_sub(header_ip)?).ok()?,
         instructions,
     )
@@ -1235,7 +1247,7 @@ fn recognize_natural_integer_loop(
         exit_ip,
         region_instruction_count: region.len(),
         registers,
-        range_view_registers,
+        collection_view_registers,
         current,
         delta,
         limit,
@@ -1285,6 +1297,14 @@ fn collect_natural_loop_registers(
             registers.insert(*dst);
             registers.insert(*index);
         }
+        Opcode::Index {
+            dst,
+            index: OperandRef::Register(index),
+            ..
+        } => {
+            registers.insert(*dst);
+            registers.insert(*index);
+        }
         Opcode::Jump { .. } => {}
         _ => return None,
     }
@@ -1296,7 +1316,7 @@ fn natural_loop_instruction(
     opcode: &Opcode,
     constants: &[Value],
     slot: &impl Fn(Register) -> Option<u16>,
-    range_view: &impl Fn(Register) -> Option<u16>,
+    collection_view: &impl Fn(Register) -> Option<u16>,
     region_start: usize,
     region_end: usize,
 ) -> Option<NaturalLoopInstruction> {
@@ -1346,18 +1366,27 @@ fn natural_loop_instruction(
             dst,
             collection,
             index,
-        } => Some(NaturalLoopInstruction::RangeValueAt {
+        } => Some(NaturalLoopInstruction::CollectionValueAt {
             dst: slot(*dst)?,
-            view: range_view(*collection)?,
+            view: collection_view(*collection)?,
             index: slot(*index)?,
         }),
         Opcode::CollectionKeyAt {
             dst,
             collection,
             index,
-        } => Some(NaturalLoopInstruction::RangeKeyAt {
+        } => Some(NaturalLoopInstruction::CollectionKeyAt {
             dst: slot(*dst)?,
-            view: range_view(*collection)?,
+            view: collection_view(*collection)?,
+            index: slot(*index)?,
+        }),
+        Opcode::Index {
+            dst,
+            collection,
+            index: OperandRef::Register(index),
+        } => Some(NaturalLoopInstruction::ListValueAt {
+            dst: slot(*dst)?,
+            view: collection_view(*collection)?,
             index: slot(*index)?,
         }),
         Opcode::Binary {
@@ -1584,6 +1613,7 @@ fn opcode_writes(opcode: &Opcode, register: Register) -> bool {
         | Opcode::Move { dst, .. }
         | Opcode::Unary { dst, .. }
         | Opcode::Binary { dst, .. }
+        | Opcode::Index { dst, .. }
         | Opcode::CollectionKeyAt { dst, .. }
         | Opcode::CollectionValueAt { dst, .. } => *dst == register,
         _ => false,

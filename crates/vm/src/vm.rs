@@ -15,7 +15,7 @@ use crate::builtin::{RuntimePorts, TransientAccess};
 use crate::metrics::RelationOperation;
 use crate::program::{CompactListItem, CompactMapItem, CompactRelationArg, Opcode, OperandRef};
 #[cfg(feature = "cranelift")]
-use crate::program::{MAX_NATURAL_LOOP_RANGE_VIEWS, MAX_NATURAL_LOOP_SLOTS};
+use crate::program::{MAX_NATURAL_LOOP_COLLECTION_VIEWS, MAX_NATURAL_LOOP_SLOTS};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
     Emission, ErrorField, ExternalRequest, MailboxRecvRequest, Program, ProgramResolver,
@@ -29,7 +29,11 @@ use mica_relation_kernel::{
     method_program_id, normalize_dispatch_roles, system_row_source_relation,
 };
 #[cfg(feature = "cranelift")]
-use mica_var::abi::{borrowed_value_bits, from_owned_value_bits, value_is_immediate};
+use mica_var::ValueRef;
+#[cfg(feature = "cranelift")]
+use mica_var::abi::{
+    borrowed_value_bits, clone_value_bits, from_owned_value_bits, value_is_immediate,
+};
 use mica_var::{FunctionId, Identity, Symbol, Value, ValueKind};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -39,7 +43,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
     FloatArithmetic, FloatComparison, FloatLoopOutcome, FloatLoopPlan, IntegerComparison,
-    IntegerLoopOutcome, NaturalLoopOutcome, NaturalLoopRangeView,
+    IntegerLoopOutcome, NaturalLoopCollectionView, NaturalLoopOutcome,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -204,8 +208,8 @@ const BUDGET_PROFILE_TOP_LIMIT: usize = 12;
 #[cfg(feature = "cranelift")]
 const MIN_NATIVE_INTEGER_LOOP_ITERATIONS: usize = 4_096;
 #[cfg(feature = "cranelift")]
-// Cold source-range benchmarks lose at 4,096 iterations and win at 8,192.
-const MIN_NATIVE_RANGE_LOOP_ITERATIONS: usize = 8_192;
+// Cold collection-loop benchmarks win at 8,192 iterations across ranges, lists, and maps.
+const MIN_NATIVE_COLLECTION_LOOP_ITERATIONS: usize = 8_192;
 #[cfg(feature = "cranelift")]
 const MIN_NATIVE_FLOAT_LOOP_ITERATIONS: usize = 8_192;
 
@@ -1548,21 +1552,23 @@ impl RegisterVm {
             limit,
             site.comparison,
             max_iterations,
-            if site.range_view_registers.is_empty() {
+            if site.collection_view_registers.is_empty() {
                 MIN_NATIVE_INTEGER_LOOP_ITERATIONS
             } else {
-                MIN_NATIVE_RANGE_LOOP_ITERATIONS
+                MIN_NATIVE_COLLECTION_LOOP_ITERATIONS
             },
         );
         let compiled = program.compiled_natural_integer_loop(branch_ip, compile)?;
-        let mut range_views = [NaturalLoopRangeView::default(); MAX_NATURAL_LOOP_RANGE_VIEWS];
-        for (view, register) in site.range_view_registers.iter().copied().enumerate() {
-            let Some(range_view) = natural_loop_range_view(self.read_register_unchecked(register))
+        let mut collection_views =
+            [NaturalLoopCollectionView::default(); MAX_NATURAL_LOOP_COLLECTION_VIEWS];
+        for (view, register) in site.collection_view_registers.iter().copied().enumerate() {
+            let Some(collection_view) =
+                natural_loop_collection_view(self.read_register_unchecked(register))
             else {
                 self.native_side_exits.push((program_index, branch_ip));
                 return None;
             };
-            range_views[view] = range_view;
+            collection_views[view] = collection_view;
         }
         let mut scratch = [0_u64; MAX_NATURAL_LOOP_SLOTS];
         for (slot, register) in site.registers.iter().enumerate() {
@@ -1570,7 +1576,7 @@ impl RegisterVm {
         }
         let outcome = compiled.run(
             &mut scratch[..site.registers.len()],
-            &range_views[..site.range_view_registers.len()],
+            &collection_views[..site.collection_view_registers.len()],
             u64::try_from(native_budget).ok()?,
         );
         let (native_instructions, next_ip, modified_slots) = match outcome {
@@ -1597,19 +1603,23 @@ impl RegisterVm {
         if instructions > remaining_budget {
             return None;
         }
-        for (slot, value) in scratch.iter().enumerate().take(site.registers.len()) {
-            if modified_slots & (1_u32 << slot) != 0 && !value_is_immediate(*value) {
-                return None;
-            }
-        }
-
         for (slot, register) in site.registers.iter().copied().enumerate() {
             if modified_slots & (1_u32 << slot) == 0 {
                 continue;
             }
-            // SAFETY: a successful natural-loop execution only produces
-            // immediate values in modified slots, checked immediately above.
-            let value = unsafe { from_owned_value_bits(scratch[slot]) };
+            let bits = scratch[slot];
+            let value = if value_is_immediate(bits) {
+                // SAFETY: generated code produces valid immediate words.
+                unsafe { from_owned_value_bits(bits) }
+            } else {
+                // SAFETY: non-immediate generated outputs are borrowed words
+                // loaded from an immutable collection view. The collection's
+                // VM register owns their storage throughout this call.
+                let owned_bits = unsafe { clone_value_bits(bits) };
+                // SAFETY: clone_value_bits transferred one live strong
+                // reference into owned_bits immediately above.
+                unsafe { from_owned_value_bits(owned_bits) }
+            };
             self.write_register_unchecked(register, value);
         }
         self.current_frame_mut_unchecked().ip = next_ip;
@@ -3255,12 +3265,16 @@ fn collection_len(collection: &Value) -> Value {
 }
 
 #[cfg(feature = "cranelift")]
-fn natural_loop_range_view(collection: &Value) -> Option<NaturalLoopRangeView> {
-    collection
-        .with_range(|start, end| {
-            NaturalLoopRangeView::new(start.as_int()?, end.and_then(Value::as_int)?)
-        })
-        .flatten()
+fn natural_loop_collection_view(collection: &Value) -> Option<NaturalLoopCollectionView<'_>> {
+    match collection.as_value_ref() {
+        ValueRef::Range {
+            start,
+            end: Some(end),
+        } => NaturalLoopCollectionView::range(start.as_int()?, end.as_int()?),
+        ValueRef::List(values) => Some(NaturalLoopCollectionView::list(values)),
+        ValueRef::Map(entries) => Some(NaturalLoopCollectionView::map(entries)),
+        _ => None,
+    }
 }
 
 fn query_rows(rows: Vec<Tuple>, outputs: &[QueryBinding]) -> Vec<Value> {

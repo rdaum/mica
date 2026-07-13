@@ -14,8 +14,8 @@
 use mica_var::Value;
 use mica_var::abi::{borrowed_value_bits, from_owned_value_bits};
 use mica_vm_cranelift::{
-    CompiledNaturalLoop, NaturalLoopInstruction, NaturalLoopOutcome, NaturalLoopPlan,
-    NaturalLoopRangeView, ScalarComparison,
+    CompiledNaturalLoop, NaturalLoopCollectionView, NaturalLoopInstruction, NaturalLoopOutcome,
+    NaturalLoopPlan, ScalarComparison,
 };
 use std::sync::{Arc, Barrier};
 
@@ -100,12 +100,12 @@ fn value(bits: u64) -> Value {
     unsafe { from_owned_value_bits(bits) }
 }
 
-fn range_value_plan() -> NaturalLoopPlan {
+fn collection_value_plan() -> NaturalLoopPlan {
     NaturalLoopPlan::new(
         2,
         1,
         0,
-        [NaturalLoopInstruction::RangeValueAt {
+        [NaturalLoopInstruction::CollectionValueAt {
             dst: 0,
             view: 0,
             index: 1,
@@ -114,12 +114,26 @@ fn range_value_plan() -> NaturalLoopPlan {
     .unwrap()
 }
 
-fn range_key_plan() -> NaturalLoopPlan {
+fn collection_key_plan() -> NaturalLoopPlan {
     NaturalLoopPlan::new(
         2,
         1,
         0,
-        [NaturalLoopInstruction::RangeKeyAt {
+        [NaturalLoopInstruction::CollectionKeyAt {
+            dst: 0,
+            view: 0,
+            index: 1,
+        }],
+    )
+    .unwrap()
+}
+
+fn list_index_plan() -> NaturalLoopPlan {
+    NaturalLoopPlan::new(
+        2,
+        1,
+        0,
+        [NaturalLoopInstruction::ListValueAt {
             dst: 0,
             view: 0,
             index: 1,
@@ -130,8 +144,8 @@ fn range_key_plan() -> NaturalLoopPlan {
 
 #[test]
 fn generated_range_value_at_emits_checked_integer_values_without_helpers() {
-    let compiled = CompiledNaturalLoop::compile(&range_value_plan()).unwrap();
-    let range = [NaturalLoopRangeView::new(-5, 5).unwrap()];
+    let compiled = CompiledNaturalLoop::compile(&collection_value_plan()).unwrap();
+    let range = [NaturalLoopCollectionView::range(-5, 5).unwrap()];
     let mut scratch = [bits(Value::nothing()), int_bits(7)];
 
     assert_eq!(
@@ -147,13 +161,16 @@ fn generated_range_value_at_emits_checked_integer_values_without_helpers() {
 
 #[test]
 fn generated_range_value_at_side_exits_on_invalid_indices_and_bounds() {
-    let compiled = CompiledNaturalLoop::compile(&range_value_plan()).unwrap();
+    let compiled = CompiledNaturalLoop::compile(&collection_value_plan()).unwrap();
     let cases = [
-        (NaturalLoopRangeView::new(5, 4).unwrap(), int_bits(0)),
-        (NaturalLoopRangeView::new(0, 5).unwrap(), int_bits(-1)),
-        (NaturalLoopRangeView::new(0, 5).unwrap(), int_bits(6)),
+        (NaturalLoopCollectionView::range(5, 4).unwrap(), int_bits(0)),
         (
-            NaturalLoopRangeView::new(0, 5).unwrap(),
+            NaturalLoopCollectionView::range(0, 5).unwrap(),
+            int_bits(-1),
+        ),
+        (NaturalLoopCollectionView::range(0, 5).unwrap(), int_bits(6)),
+        (
+            NaturalLoopCollectionView::range(0, 5).unwrap(),
             bits(Value::float(1.0).unwrap()),
         ),
     ];
@@ -169,8 +186,8 @@ fn generated_range_value_at_side_exits_on_invalid_indices_and_bounds() {
 
 #[test]
 fn generated_range_key_at_emits_checked_zero_based_ordinals_without_helpers() {
-    let compiled = CompiledNaturalLoop::compile(&range_key_plan()).unwrap();
-    let range = [NaturalLoopRangeView::new(10, 20).unwrap()];
+    let compiled = CompiledNaturalLoop::compile(&collection_key_plan()).unwrap();
+    let range = [NaturalLoopCollectionView::range(10, 20).unwrap()];
     let mut scratch = [bits(Value::nothing()), int_bits(7)];
 
     assert_eq!(
@@ -186,8 +203,8 @@ fn generated_range_key_at_emits_checked_zero_based_ordinals_without_helpers() {
 
 #[test]
 fn generated_range_key_at_side_exits_on_invalid_ordinals() {
-    let compiled = CompiledNaturalLoop::compile(&range_key_plan()).unwrap();
-    let range = [NaturalLoopRangeView::new(10, 20).unwrap()];
+    let compiled = CompiledNaturalLoop::compile(&collection_key_plan()).unwrap();
+    let range = [NaturalLoopCollectionView::range(10, 20).unwrap()];
     for index in [int_bits(-1), bits(Value::float(1.0).unwrap())] {
         let mut scratch = [bits(Value::nothing()), index];
         assert_eq!(
@@ -195,6 +212,111 @@ fn generated_range_key_at_side_exits_on_invalid_ordinals() {
             NaturalLoopOutcome::SideExit,
         );
     }
+}
+
+#[test]
+fn generated_list_access_emits_immediate_values_and_ordinals_without_helpers() {
+    let values = [
+        Value::int(10).unwrap(),
+        Value::float(2.5).unwrap(),
+        Value::bool(true),
+    ];
+    let view = [NaturalLoopCollectionView::list(&values)];
+    let mut value_scratch = [bits(Value::nothing()), int_bits(1)];
+    let value_compiled = CompiledNaturalLoop::compile(&collection_value_plan()).unwrap();
+
+    assert!(matches!(
+        value_compiled.run(&mut value_scratch, &view, 1),
+        NaturalLoopOutcome::Complete { .. }
+    ));
+    assert_eq!(value(value_scratch[0]).as_float(), Some(2.5));
+    assert_eq!(value_compiled.imported_helper_count(), 0);
+
+    let mut key_scratch = [bits(Value::nothing()), int_bits(2)];
+    let key_compiled = CompiledNaturalLoop::compile(&collection_key_plan()).unwrap();
+    assert!(matches!(
+        key_compiled.run(&mut key_scratch, &view, 1),
+        NaturalLoopOutcome::Complete { .. }
+    ));
+    assert_eq!(value(key_scratch[0]).as_int(), Some(2));
+    assert_eq!(key_compiled.imported_helper_count(), 0);
+}
+
+#[test]
+fn generated_list_index_emits_checked_values_without_helpers() {
+    let values = [Value::int(4).unwrap(), Value::int(9).unwrap()];
+    let view = [NaturalLoopCollectionView::list(&values)];
+    let compiled = CompiledNaturalLoop::compile(&list_index_plan()).unwrap();
+    let mut scratch = [bits(Value::nothing()), int_bits(1)];
+
+    assert!(matches!(
+        compiled.run(&mut scratch, &view, 1),
+        NaturalLoopOutcome::Complete { .. }
+    ));
+    assert_eq!(value(scratch[0]).as_int(), Some(9));
+    assert_eq!(compiled.imported_helper_count(), 0);
+
+    for index in [int_bits(-1), int_bits(2), bits(Value::float(0.0).unwrap())] {
+        let mut scratch = [bits(Value::nothing()), index];
+        assert_eq!(
+            compiled.run(&mut scratch, &view, 1),
+            NaturalLoopOutcome::SideExit,
+        );
+    }
+}
+
+#[test]
+fn generated_collection_access_preserves_heap_words_and_checks_ordinals() {
+    let values = [Value::string("heap")];
+    let view = [NaturalLoopCollectionView::list(&values)];
+    let compiled = CompiledNaturalLoop::compile(&collection_value_plan()).unwrap();
+
+    let mut scratch = [bits(Value::nothing()), int_bits(0)];
+    assert!(matches!(
+        compiled.run(&mut scratch, &view, 1),
+        NaturalLoopOutcome::Complete { .. }
+    ));
+    assert_eq!(scratch[0], borrowed_value_bits(&values[0]));
+
+    for index in [int_bits(-1), int_bits(1)] {
+        let mut scratch = [bits(Value::nothing()), index];
+        assert_eq!(
+            compiled.run(&mut scratch, &view, 1),
+            NaturalLoopOutcome::SideExit,
+        );
+    }
+}
+
+#[test]
+fn generated_map_access_emits_immediate_keys_and_values_without_helpers() {
+    let entries = [
+        (Value::int(3).unwrap(), Value::float(4.5).unwrap()),
+        (
+            Value::symbol(mica_var::Symbol::intern("key")),
+            Value::int(7).unwrap(),
+        ),
+    ];
+    let view = [NaturalLoopCollectionView::map(&entries)];
+    let mut key_scratch = [bits(Value::nothing()), int_bits(1)];
+    let key_compiled = CompiledNaturalLoop::compile(&collection_key_plan()).unwrap();
+    assert!(matches!(
+        key_compiled.run(&mut key_scratch, &view, 1),
+        NaturalLoopOutcome::Complete { .. }
+    ));
+    assert_eq!(
+        value(key_scratch[0]).as_symbol(),
+        Some(mica_var::Symbol::intern("key"))
+    );
+
+    let mut value_scratch = [bits(Value::nothing()), int_bits(0)];
+    let value_compiled = CompiledNaturalLoop::compile(&collection_value_plan()).unwrap();
+    assert!(matches!(
+        value_compiled.run(&mut value_scratch, &view, 1),
+        NaturalLoopOutcome::Complete { .. }
+    ));
+    assert_eq!(value(value_scratch[0]).as_float(), Some(4.5));
+    assert_eq!(key_compiled.imported_helper_count(), 0);
+    assert_eq!(value_compiled.imported_helper_count(), 0);
 }
 
 #[test]
