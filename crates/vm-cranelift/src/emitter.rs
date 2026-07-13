@@ -195,6 +195,73 @@ impl ValueEmitter {
         }
     }
 
+    pub fn emit_checked_int_div(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        let left_is_int = Self::emit_is_int(builder, left);
+        let right_is_int = Self::emit_is_int(builder, right);
+        let operands_are_ints = builder.ins().band(left_is_int, right_is_int);
+        let left = Self::emit_unbox_int(builder, left);
+        let right = Self::emit_unbox_int(builder, right);
+        let divisor_is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, right, 0);
+        let one = builder.ins().iconst(types::I64, 1);
+        let safe_right = builder.ins().select(divisor_is_nonzero, right, one);
+        let quotient = builder.ins().sdiv(left, safe_right);
+        let reconstructed = builder.ins().imul(quotient, safe_right);
+        let is_exact = builder.ins().icmp(IntCC::Equal, reconstructed, left);
+        let in_range = Self::emit_int_in_range(builder, quotient);
+        let is_fast = builder.ins().band(operands_are_ints, divisor_is_nonzero);
+        let is_fast = builder.ins().band(is_fast, is_exact);
+        let is_fast = builder.ins().band(is_fast, in_range);
+
+        EmittedValue {
+            word: Self::emit_pack(builder, VALUE_INT_TAG, quotient),
+            is_fast,
+        }
+    }
+
+    pub fn emit_checked_int_rem(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        let left_is_int = Self::emit_is_int(builder, left);
+        let right_is_int = Self::emit_is_int(builder, right);
+        let operands_are_ints = builder.ins().band(left_is_int, right_is_int);
+        let left = Self::emit_unbox_int(builder, left);
+        let right = Self::emit_unbox_int(builder, right);
+        let divisor_is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, right, 0);
+        let one = builder.ins().iconst(types::I64, 1);
+        let safe_right = builder.ins().select(divisor_is_nonzero, right, one);
+        let remainder = builder.ins().srem(left, safe_right);
+        let in_range = Self::emit_int_in_range(builder, remainder);
+        let is_fast = builder.ins().band(operands_are_ints, divisor_is_nonzero);
+        let is_fast = builder.ins().band(is_fast, in_range);
+
+        EmittedValue {
+            word: Self::emit_pack(builder, VALUE_INT_TAG, remainder),
+            is_fast,
+        }
+    }
+
+    pub fn emit_checked_int_neg(
+        builder: &mut FunctionBuilder<'_>,
+        value: CraneliftValue,
+    ) -> EmittedValue {
+        let is_int = Self::emit_is_int(builder, value);
+        let value = Self::emit_unbox_int(builder, value);
+        let negated = builder.ins().ineg(value);
+        let in_range = Self::emit_int_in_range(builder, negated);
+        let is_fast = builder.ins().band(is_int, in_range);
+
+        EmittedValue {
+            word: Self::emit_pack(builder, VALUE_INT_TAG, negated),
+            is_fast,
+        }
+    }
+
     fn emit_int_in_range(
         builder: &mut FunctionBuilder<'_>,
         value: CraneliftValue,
@@ -276,6 +343,16 @@ impl ValueEmitter {
             is_fast,
         }
     }
+
+    pub fn emit_not(builder: &mut FunctionBuilder<'_>, word: CraneliftValue) -> EmittedValue {
+        let truth = Self::emit_truthy(builder, word);
+        let truth_payload = Self::emit_payload(builder, truth.word());
+        let negated = builder.ins().icmp_imm(IntCC::Equal, truth_payload, 0);
+        EmittedValue {
+            word: Self::emit_bool(builder, negated),
+            is_fast: truth.is_fast(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -290,7 +367,8 @@ mod tests {
     use cranelift_module::{Linkage, Module, default_libcall_names};
     use mica_var::Value;
     use mica_var::abi::{
-        VALUE_INT_MAX, VALUE_NOTHING_TAG, borrowed_value_bits, from_owned_value_bits, pack_value,
+        VALUE_INT_MAX, VALUE_INT_MIN, VALUE_NOTHING_TAG, borrowed_value_bits,
+        from_owned_value_bits, pack_value,
     };
 
     const STATUS_COMPLETE: u32 = 0;
@@ -400,6 +478,10 @@ mod tests {
                 assert_eq!(probe.run(&left, &right), left.checked_add(&right));
             }
         }
+        assert_eq!(
+            probe.run(&Value::int(VALUE_INT_MAX).unwrap(), &Value::int(1).unwrap(),),
+            None,
+        );
         assert_eq!(probe.run(&Value::float(1.0), &Value::int(1).unwrap()), None);
     }
 
@@ -418,9 +500,51 @@ mod tests {
         let max = Value::int(VALUE_INT_MAX).unwrap();
         assert_eq!(multiply.run(&max, &Value::int(2).unwrap()), None);
         assert_eq!(
+            subtract.run(&Value::int(VALUE_INT_MIN).unwrap(), &Value::int(1).unwrap(),),
+            None,
+        );
+        assert_eq!(
             subtract.run(&Value::float(1.0), &Value::int(1).unwrap()),
             None,
         );
+    }
+
+    #[test]
+    fn emitted_checked_integer_divide_and_remainder_match_integer_results() {
+        let divide = Probe::compile(ValueEmitter::emit_checked_int_div);
+        let remainder = Probe::compile(ValueEmitter::emit_checked_int_rem);
+        for left in [-1_000, -31, -1, 0, 1, 31, 1_000] {
+            for right in [-31, -3, -1, 0, 1, 3, 31] {
+                let left = Value::int(left).unwrap();
+                let right = Value::int(right).unwrap();
+                let expected_division = left
+                    .checked_div(&right)
+                    .filter(|value| value.as_int().is_some());
+                assert_eq!(divide.run(&left, &right), expected_division);
+                assert_eq!(remainder.run(&left, &right), left.checked_rem(&right));
+            }
+        }
+        let min = Value::int(VALUE_INT_MIN).unwrap();
+        assert_eq!(divide.run(&min, &Value::int(-1).unwrap()), None);
+        assert_eq!(
+            divide.run(&Value::float(6.0), &Value::int(3).unwrap()),
+            None,
+        );
+        assert_eq!(
+            remainder.run(&Value::float(6.0), &Value::int(3).unwrap()),
+            None,
+        );
+    }
+
+    #[test]
+    fn emitted_checked_integer_negation_matches_value_arithmetic() {
+        let negate =
+            Probe::compile(|builder, value, _| ValueEmitter::emit_checked_int_neg(builder, value));
+        for value in [VALUE_INT_MIN, -1_000, -1, 0, 1, 1_000, VALUE_INT_MAX] {
+            let value = Value::int(value).unwrap();
+            assert_eq!(negate.run(&value, &Value::nothing()), value.checked_neg());
+        }
+        assert_eq!(negate.run(&Value::float(1.0), &Value::nothing()), None,);
     }
 
     #[test]
@@ -495,5 +619,25 @@ mod tests {
             );
         }
         assert_eq!(probe.run(&Value::list([]), &Value::nothing()), None,);
+    }
+
+    #[test]
+    fn emitted_not_matches_vm_fast_cases() {
+        let probe = Probe::compile(|builder, value, _| ValueEmitter::emit_not(builder, value));
+        let cases = [
+            (Value::nothing(), true),
+            (Value::bool(false), true),
+            (Value::bool(true), false),
+            (Value::int(0).unwrap(), false),
+            (Value::float(0.0), false),
+            (Value::string(""), false),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                probe.run(&value, &Value::nothing()),
+                Some(Value::bool(expected)),
+            );
+        }
+        assert_eq!(probe.run(&Value::list([]), &Value::nothing()), None);
     }
 }

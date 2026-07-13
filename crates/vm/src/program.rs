@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[cfg(feature = "cranelift")]
-use mica_var::abi::borrowed_value_bits;
+use mica_var::abi::{borrowed_value_bits, value_is_immediate};
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
     CompiledIntegerLoop, CompiledNaturalLoop, IntegerComparison, NaturalLoopInstruction,
@@ -758,7 +758,7 @@ pub(crate) struct IntegerLoopSite {
 }
 
 #[cfg(feature = "cranelift")]
-pub(crate) const MAX_NATURAL_LOOP_SLOTS: usize = 16;
+pub(crate) const MAX_NATURAL_LOOP_SLOTS: usize = 32;
 
 #[cfg(feature = "cranelift")]
 pub(crate) struct NaturalIntegerLoopSite {
@@ -1067,10 +1067,17 @@ fn collect_natural_loop_registers(
 ) -> Option<()> {
     match opcode {
         Opcode::Load { dst, value } => {
-            constants.get(value.0 as usize)?.as_int()?;
+            let value = constants.get(value.0 as usize)?;
+            if !value_is_immediate(borrowed_value_bits(value)) {
+                return None;
+            }
             registers.insert(*dst);
         }
         Opcode::Move { dst, src } => {
+            registers.insert(*dst);
+            registers.insert(*src);
+        }
+        Opcode::Unary { dst, src, .. } => {
             registers.insert(*dst);
             registers.insert(*src);
         }
@@ -1104,6 +1111,22 @@ fn natural_loop_instruction(
             dst: slot(*dst)?,
             src: slot(*src)?,
         }),
+        Opcode::Unary {
+            dst,
+            op: RuntimeUnaryOp::Neg,
+            src,
+        } => Some(NaturalLoopInstruction::Negate {
+            dst: slot(*dst)?,
+            src: slot(*src)?,
+        }),
+        Opcode::Unary {
+            dst,
+            op: RuntimeUnaryOp::Not,
+            src,
+        } => Some(NaturalLoopInstruction::Not {
+            dst: slot(*dst)?,
+            src: slot(*src)?,
+        }),
         Opcode::Binary {
             dst,
             op: RuntimeBinaryOp::Add,
@@ -1130,6 +1153,26 @@ fn natural_loop_instruction(
             left,
             right,
         } => Some(NaturalLoopInstruction::Multiply {
+            dst: slot(*dst)?,
+            left: slot(*left)?,
+            right: slot(*right)?,
+        }),
+        Opcode::Binary {
+            dst,
+            op: RuntimeBinaryOp::Div,
+            left,
+            right,
+        } => Some(NaturalLoopInstruction::Divide {
+            dst: slot(*dst)?,
+            left: slot(*left)?,
+            right: slot(*right)?,
+        }),
+        Opcode::Binary {
+            dst,
+            op: RuntimeBinaryOp::Rem,
+            left,
+            right,
+        } => Some(NaturalLoopInstruction::Remainder {
             dst: slot(*dst)?,
             left: slot(*left)?,
             right: slot(*right)?,
@@ -1239,7 +1282,11 @@ fn induction_step(
 #[cfg(feature = "cranelift")]
 fn natural_binary_operation(operation: RuntimeBinaryOp) -> Option<()> {
     match operation {
-        RuntimeBinaryOp::Add | RuntimeBinaryOp::Sub | RuntimeBinaryOp::Mul => Some(()),
+        RuntimeBinaryOp::Add
+        | RuntimeBinaryOp::Sub
+        | RuntimeBinaryOp::Mul
+        | RuntimeBinaryOp::Div
+        | RuntimeBinaryOp::Rem => Some(()),
         operation if integer_comparison(operation).is_some() => Some(()),
         _ => None,
     }
@@ -1261,9 +1308,10 @@ fn integer_comparison(operation: RuntimeBinaryOp) -> Option<IntegerComparison> {
 #[cfg(feature = "cranelift")]
 fn opcode_writes(opcode: &Opcode, register: Register) -> bool {
     match opcode {
-        Opcode::Load { dst, .. } | Opcode::Move { dst, .. } | Opcode::Binary { dst, .. } => {
-            *dst == register
-        }
+        Opcode::Load { dst, .. }
+        | Opcode::Move { dst, .. }
+        | Opcode::Unary { dst, .. }
+        | Opcode::Binary { dst, .. } => *dst == register,
         _ => false,
     }
 }
