@@ -25,6 +25,8 @@ mod traits;
 mod value;
 mod visit;
 
+pub mod abi;
+
 #[cfg(test)]
 mod tests;
 

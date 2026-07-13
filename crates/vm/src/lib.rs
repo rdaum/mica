@@ -26,6 +26,9 @@ pub mod metrics;
 mod program;
 mod vm;
 
+#[cfg(all(test, feature = "cranelift"))]
+mod cranelift_tests;
+
 pub use authority::{AuthorityContext, CapabilityGrant, CapabilityOp, CapabilityScope};
 pub use builtin::{
     Builtin, BuiltinContext, BuiltinRegistry, ClientBuiltin, ClientBuiltinContext,

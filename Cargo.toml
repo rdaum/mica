@@ -19,6 +19,7 @@ members = [
     "crates/testing/load-tools",
     "crates/var",
     "crates/vm",
+    "crates/vm-cranelift",
     "crates/web-host",
     "crates/webtransport-host",
 ]
@@ -43,7 +44,8 @@ mica-runtime = { path = "crates/runtime" }
 mica-source-provider = { path = "crates/source-provider" }
 mica-telnet-host = { path = "crates/telnet-host" }
 mica-var = { path = "crates/var" }
-mica-vm = { path = "crates/vm" }
+mica-vm = { path = "crates/vm", default-features = false }
+mica-vm-cranelift = { path = "crates/vm-cranelift" }
 mica-web-host = { path = "crates/web-host" }
 mica-webtransport-host = { path = "crates/webtransport-host" }
 rart = { version = "0.10", default-features = false }
@@ -57,6 +59,10 @@ bytes = "1.11"
 clap = { version = "4.6", features = ["derive"] }
 compio = { version = "=0.18.0", features = ["dispatcher", "net", "time"] }
 compio-quic = { version = "=0.7.0", features = ["h3"] }
+cranelift-codegen = { version = "0.133.1", default-features = false, features = ["std"] }
+cranelift-frontend = { version = "0.133.1", default-features = false, features = ["std"] }
+cranelift-jit = { version = "0.133.1", default-features = false }
+cranelift-module = { version = "0.133.1", default-features = false, features = ["std"] }
 cyper = { version = "0.8.0", default-features = false, features = ["native-tls"] }
 fast-telemetry = "0.8"
 fast-telemetry-export = { version = "0.8", default-features = false, features = ["compio"] }

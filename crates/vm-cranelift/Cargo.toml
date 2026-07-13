@@ -1,0 +1,21 @@
+[package]
+name = "mica-vm-cranelift"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Cranelift execution support for Mica values and VM programs"
+
+[dependencies]
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-jit.workspace = true
+cranelift-module.workspace = true
+mica-var.workspace = true
+
+[dev-dependencies]
+micromeasure.workspace = true
+
+[[bench]]
+name = "value_codegen_benches"
+harness = false

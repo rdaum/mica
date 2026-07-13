@@ -14,7 +14,7 @@ mica-host-protocol.workspace = true
 mica-relation-kernel = { workspace = true, features = ["fjall-provider"] }
 mica-source-provider.workspace = true
 mica-var.workspace = true
-mica-vm.workspace = true
+mica-vm = { workspace = true, features = ["cranelift"] }
 serde_json.workspace = true
 tracing.workspace = true
 xml.workspace = true
