@@ -6,11 +6,21 @@
 use mica_var::Value;
 use mica_var::abi::VALUE_ABI_VERSION;
 use mica_var::language_cmp;
-use mica_vm_cranelift::{CompiledFloatLoop, FloatLoopOutcome};
+use mica_vm_cranelift::{
+    CompiledFloatLoop, FloatArithmetic, FloatComparison, FloatLoopOutcome, FloatLoopPlan,
+};
 use std::sync::Arc;
 
 fn float(value: f32) -> Value {
     Value::float(value).unwrap()
+}
+
+fn compile_add_lt() -> CompiledFloatLoop {
+    CompiledFloatLoop::compile(FloatLoopPlan::new(
+        FloatArithmetic::Add,
+        FloatComparison::LessThan,
+    ))
+    .unwrap()
 }
 
 fn interpreted_float_loop(start: f32, step: f32, limit: f32) -> (Value, u64) {
@@ -29,7 +39,7 @@ fn interpreted_float_loop(start: f32, step: f32, limit: f32) -> (Value, u64) {
 
 #[test]
 fn generated_float_loop_matches_binary32_value_arithmetic_and_comparison() {
-    let compiled = CompiledFloatLoop::compile().unwrap();
+    let compiled = compile_add_lt();
     for start in [-10.0f32, -1.5, 0.0, 1.5, 10.0] {
         for step in [0.25f32, 0.5, 1.5] {
             for distance in [0.5f32, 1.0, 4.0, 16.0] {
@@ -49,8 +59,58 @@ fn generated_float_loop_matches_binary32_value_arithmetic_and_comparison() {
 }
 
 #[test]
+fn generated_float_loop_supports_arithmetic_and_comparison_plans() {
+    let cases = [
+        (
+            FloatLoopPlan::new(FloatArithmetic::Subtract, FloatComparison::GreaterThan),
+            10.0,
+            0.5,
+            0.0,
+            20,
+            0.0,
+        ),
+        (
+            FloatLoopPlan::new(FloatArithmetic::Multiply, FloatComparison::LessThan),
+            1.0,
+            2.0,
+            16.0,
+            4,
+            16.0,
+        ),
+        (
+            FloatLoopPlan::new(FloatArithmetic::Divide, FloatComparison::GreaterThan),
+            16.0,
+            2.0,
+            1.0,
+            4,
+            1.0,
+        ),
+        (
+            FloatLoopPlan::new(FloatArithmetic::Add, FloatComparison::NotEqual),
+            0.0,
+            1.0,
+            3.0,
+            3,
+            3.0,
+        ),
+    ];
+
+    for (plan, start, step, limit, iterations, expected) in cases {
+        let compiled = CompiledFloatLoop::compile(plan).unwrap();
+        assert_eq!(
+            compiled.run(&float(start), &float(step), &float(limit), iterations + 1,),
+            FloatLoopOutcome::Complete {
+                current: float(expected),
+                condition: Value::bool(false),
+                iterations,
+            },
+        );
+    }
+}
+
+#[test]
 fn generated_float_loop_reports_budget_exhaustion_at_a_branch_boundary() {
-    let compiled = CompiledFloatLoop::compile().unwrap();
+    let compiled = compile_add_lt();
     assert_eq!(
         compiled.run(&float(0.0), &float(0.5), &float(100.0), 17),
         FloatLoopOutcome::BudgetExhausted {
@@ -63,7 +123,7 @@ fn generated_float_loop_reports_budget_exhaustion_at_a_branch_boundary() {
 
 #[test]
 fn generated_float_loop_side_exits_for_non_floats_and_non_finite_results() {
-    let compiled = CompiledFloatLoop::compile().unwrap();
+    let compiled = compile_add_lt();
     assert_eq!(
         compiled.run(&Value::int(1).unwrap(), &float(1.0), &float(10.0), 10),
         FloatLoopOutcome::SideExit,
@@ -76,7 +136,7 @@ fn generated_float_loop_side_exits_for_non_floats_and_non_finite_results() {
 
 #[test]
 fn generated_float_loop_records_abi_and_codegen_properties() {
-    let compiled = CompiledFloatLoop::compile().unwrap();
+    let compiled = compile_add_lt();
     assert_eq!(compiled.value_abi_version(), VALUE_ABI_VERSION);
     assert!(compiled.code_size() > 0);
     assert_eq!(compiled.imported_helper_count(), 0);
@@ -84,7 +144,7 @@ fn generated_float_loop_records_abi_and_codegen_properties() {
 
 #[test]
 fn generated_float_loop_can_execute_concurrently() {
-    let compiled = Arc::new(CompiledFloatLoop::compile().unwrap());
+    let compiled = Arc::new(compile_add_lt());
     let mut threads = Vec::new();
     for worker in 0..4 {
         let compiled = Arc::clone(&compiled);

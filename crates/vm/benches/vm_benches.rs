@@ -15,8 +15,8 @@ mod fixtures;
 
 use fixtures::{
     BUILTIN_CALL_INSTRUCTIONS, BenchmarkHost, INTEGER_LOOP_INSTRUCTIONS, MAX_CALL_DEPTH,
-    ProgramFixture, STATIC_CALL_INSTRUCTIONS, builtin_call_fixture, integer_loop_fixture,
-    static_call_fixture,
+    ProgramFixture, STATIC_CALL_INSTRUCTIONS, builtin_call_fixture, float_add_loop_fixture,
+    float_multiply_loop_fixture, integer_loop_fixture, static_call_fixture,
 };
 use mica_vm::{RegisterVm, VmHostResponse};
 use micromeasure::{
@@ -37,6 +37,22 @@ struct NativeIntegerLoopContext {
     host: BenchmarkHost,
 }
 
+struct FloatLoopContext {
+    fixture: ProgramFixture,
+    host: BenchmarkHost,
+    native: bool,
+}
+
+impl BenchContext for FloatLoopContext {
+    fn prepare(_num_chunks: usize) -> Self {
+        Self {
+            fixture: float_add_loop_fixture(),
+            host: BenchmarkHost::default(),
+            native: false,
+        }
+    }
+}
+
 impl BenchContext for NativeIntegerLoopContext {
     fn prepare(_num_chunks: usize) -> Self {
         Self {
@@ -49,6 +65,7 @@ impl BenchContext for NativeIntegerLoopContext {
 struct ConcurrentIntegerLoopContext {
     fixture: ProgramFixture,
     native: bool,
+    instruction_count: u64,
 }
 
 impl ConcurrentBenchContext for ConcurrentIntegerLoopContext {
@@ -56,6 +73,7 @@ impl ConcurrentBenchContext for ConcurrentIntegerLoopContext {
         Self {
             fixture: integer_loop_fixture(),
             native: true,
+            instruction_count: INTEGER_LOOP_INSTRUCTIONS,
         }
     }
 }
@@ -132,6 +150,33 @@ fn native_integer_loop_cold(_ctx: &mut NoContext, chunk_size: usize, _chunk_num:
     }
 }
 
+fn native_float_add_loop_cold(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    let mut host = BenchmarkHost::default();
+    for _ in 0..chunk_size {
+        let fixture = float_add_loop_fixture();
+        black_box(execute_fixture_native(&fixture, &mut host));
+    }
+}
+
+fn native_float_multiply_loop_cold(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    let mut host = BenchmarkHost::default();
+    for _ in 0..chunk_size {
+        let fixture = float_multiply_loop_fixture();
+        black_box(execute_fixture_native(&fixture, &mut host));
+    }
+}
+
+fn float_loop(ctx: &mut FloatLoopContext, chunk_size: usize, _chunk_num: usize) {
+    for _ in 0..chunk_size {
+        let response = if ctx.native {
+            execute_fixture_native(&ctx.fixture, &mut ctx.host)
+        } else {
+            execute_fixture_interpreted(&ctx.fixture, &mut ctx.host)
+        };
+        black_box(response);
+    }
+}
+
 fn interpreter_static_calls(ctx: &mut StaticCallContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
         black_box(execute_fixture_interpreted(&ctx.fixture, &mut ctx.host));
@@ -160,14 +205,14 @@ fn run_concurrent_integer_loops(
         black_box(response);
         loops = loops.wrapping_add(1);
     }
-    ConcurrentWorkerResult::operations(loops.wrapping_mul(INTEGER_LOOP_INSTRUCTIONS))
+    ConcurrentWorkerResult::operations(loops.wrapping_mul(context.instruction_count))
         .with_counter("loops", loops)
 }
 
 benchmark_main!(
     BenchmarkMainOptions {
         filter_help: Some(
-            "all, integer, call, builtin, or any benchmark name substring".to_string()
+            "all, integer, float, call, builtin, or any benchmark name substring".to_string()
         ),
         runtime: micromeasure::BenchmarkRuntimeOptions {
             warm_up_duration: Duration::from_millis(100),
@@ -194,9 +239,63 @@ benchmark_main!(
             .bench("cranelift_integer_loop", native_integer_loop);
         });
 
+        runner.group::<FloatLoopContext>("float", |group| {
+            for (interpreter_name, cranelift_name, fixture) in [
+                (
+                    "interpreter_float_add_loop",
+                    "cranelift_float_add_loop",
+                    float_add_loop_fixture as fn() -> ProgramFixture,
+                ),
+                (
+                    "interpreter_float_multiply_loop",
+                    "cranelift_float_multiply_loop",
+                    float_multiply_loop_fixture as fn() -> ProgramFixture,
+                ),
+            ] {
+                let instruction_count = fixture().instruction_count;
+                let interpreted = move || FloatLoopContext {
+                    fixture: fixture(),
+                    host: BenchmarkHost::default(),
+                    native: false,
+                };
+                group
+                    .throughput(Throughput::per_operation(
+                        instruction_count,
+                        "bytecode_instruction",
+                    ))
+                    .factory(&interpreted)
+                    .bench(interpreter_name, float_loop);
+
+                let native = move || FloatLoopContext {
+                    fixture: fixture(),
+                    host: BenchmarkHost::default(),
+                    native: true,
+                };
+                group
+                    .throughput(Throughput::per_operation(
+                        instruction_count,
+                        "bytecode_instruction",
+                    ))
+                    .factory(&native)
+                    .bench(cranelift_name, float_loop);
+            }
+        });
+
         runner.group::<NoContext>("integer cold", |g| {
             g.throughput(Throughput::per_operation(1, "task"))
                 .bench("cranelift_integer_loop_cold", native_integer_loop_cold);
+        });
+
+        runner.group::<NoContext>("float cold", |group| {
+            group
+                .throughput(Throughput::per_operation(1, "task"))
+                .bench("cranelift_float_add_loop_cold", native_float_add_loop_cold);
+            group
+                .throughput(Throughput::per_operation(1, "task"))
+                .bench(
+                    "cranelift_float_multiply_loop_cold",
+                    native_float_multiply_loop_cold,
+                );
         });
 
         runner.group::<StaticCallContext>("call", |g| {
@@ -228,10 +327,12 @@ benchmark_main!(
         let interpreted = |_| ConcurrentIntegerLoopContext {
             fixture: integer_loop_fixture(),
             native: false,
+            instruction_count: INTEGER_LOOP_INSTRUCTIONS,
         };
         let native = |_| ConcurrentIntegerLoopContext {
             fixture: integer_loop_fixture(),
             native: true,
+            instruction_count: INTEGER_LOOP_INSTRUCTIONS,
         };
         runner.concurrent_group::<ConcurrentIntegerLoopContext>("integer concurrent", |group| {
             group
@@ -262,6 +363,62 @@ benchmark_main!(
                 .metadata("threads", CONCURRENT_THREADS.to_string())
                 .factory(&native)
                 .bench("cranelift_integer_loop_4_threads", &four_threads);
+        });
+
+        runner.concurrent_group::<ConcurrentIntegerLoopContext>("float concurrent", |group| {
+            for (fixture, interpreter_one, interpreter_four, cranelift_one, cranelift_four) in [
+                (
+                    float_add_loop_fixture as fn() -> ProgramFixture,
+                    "interpreter_float_add_loop_1_thread",
+                    "interpreter_float_add_loop_4_threads",
+                    "cranelift_float_add_loop_1_thread",
+                    "cranelift_float_add_loop_4_threads",
+                ),
+                (
+                    float_multiply_loop_fixture as fn() -> ProgramFixture,
+                    "interpreter_float_multiply_loop_1_thread",
+                    "interpreter_float_multiply_loop_4_threads",
+                    "cranelift_float_multiply_loop_1_thread",
+                    "cranelift_float_multiply_loop_4_threads",
+                ),
+            ] {
+                for (backend, native, one_name, four_name) in [
+                    ("interpreter", false, interpreter_one, interpreter_four),
+                    ("cranelift", true, cranelift_one, cranelift_four),
+                ] {
+                    let one = move |_| {
+                        let fixture = fixture();
+                        ConcurrentIntegerLoopContext {
+                            instruction_count: fixture.instruction_count,
+                            fixture,
+                            native,
+                        }
+                    };
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecode_instruction"))
+                        .metadata("backend", backend)
+                        .metadata("threads", "1")
+                        .factory(&one)
+                        .bench(one_name, &one_thread);
+
+                    let four = move |_| {
+                        let fixture = fixture();
+                        ConcurrentIntegerLoopContext {
+                            instruction_count: fixture.instruction_count,
+                            fixture,
+                            native,
+                        }
+                    };
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecode_instruction"))
+                        .metadata("backend", backend)
+                        .metadata("threads", CONCURRENT_THREADS.to_string())
+                        .factory(&four)
+                        .bench(four_name, &four_threads);
+                }
+            }
         });
     }
 );

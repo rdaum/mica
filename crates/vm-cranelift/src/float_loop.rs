@@ -60,7 +60,32 @@ pub enum FloatLoopOutcome {
     SideExit,
 }
 
-/// A generated `float add; float less-than; branch` loop.
+/// Binary32 arithmetic operations supported by a compiled float loop body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FloatArithmetic {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+}
+
+/// The arithmetic and branch comparison performed by one loop iteration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FloatLoopPlan {
+    pub arithmetic: FloatArithmetic,
+    pub comparison: FloatComparison,
+}
+
+impl FloatLoopPlan {
+    pub const fn new(arithmetic: FloatArithmetic, comparison: FloatComparison) -> Self {
+        Self {
+            arithmetic,
+            comparison,
+        }
+    }
+}
+
+/// A generated `float arithmetic; float comparison; branch` loop.
 ///
 /// It owns its executable allocation and touches only the immediate Mica value
 /// words supplied at its boundary. Mixed numeric operands, non-finite results,
@@ -74,7 +99,7 @@ pub struct CompiledFloatLoop {
 }
 
 impl CompiledFloatLoop {
-    pub fn compile() -> Result<Self, FloatLoopError> {
+    pub fn compile(plan: FloatLoopPlan) -> Result<Self, FloatLoopError> {
         let builder = JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names())
             .map_err(|error| FloatLoopError(format!("could not initialize Cranelift: {error}")))?;
         let mut module = JITModule::new(builder);
@@ -92,7 +117,7 @@ impl CompiledFloatLoop {
         let mut context = Context::new();
         context.func.signature = signature;
         let mut builder_context = FunctionBuilderContext::new();
-        Self::build_function(&mut context, &mut builder_context);
+        Self::build_function(&mut context, &mut builder_context, plan);
         let imported_helper_count = context.func.dfg.ext_funcs.len();
         module
             .define_function(function_id, &mut context)
@@ -116,7 +141,11 @@ impl CompiledFloatLoop {
         })
     }
 
-    fn build_function(context: &mut Context, builder_context: &mut FunctionBuilderContext) {
+    fn build_function(
+        context: &mut Context,
+        builder_context: &mut FunctionBuilderContext,
+        plan: FloatLoopPlan,
+    ) {
         let mut builder = FunctionBuilder::new(&mut context.func, builder_context);
         let entry = builder.create_block();
         let loop_header = builder.create_block();
@@ -180,7 +209,20 @@ impl CompiledFloatLoop {
         builder.switch_to_block(loop_body);
         let current = builder.block_params(loop_body)[0];
         let iterations = builder.block_params(loop_body)[1];
-        let next = ValueEmitter::emit_checked_float_add(&mut builder, current, step);
+        let next = match plan.arithmetic {
+            FloatArithmetic::Add => {
+                ValueEmitter::emit_checked_float_add(&mut builder, current, step)
+            }
+            FloatArithmetic::Subtract => {
+                ValueEmitter::emit_checked_float_sub(&mut builder, current, step)
+            }
+            FloatArithmetic::Multiply => {
+                ValueEmitter::emit_checked_float_mul(&mut builder, current, step)
+            }
+            FloatArithmetic::Divide => {
+                ValueEmitter::emit_checked_float_div(&mut builder, current, step)
+            }
+        };
         let one = builder.ins().iconst(types::I64, 1);
         let next_iterations = builder.ins().iadd(iterations, one);
         builder.ins().brif(
@@ -194,12 +236,8 @@ impl CompiledFloatLoop {
         builder.switch_to_block(after_add);
         let current = builder.block_params(after_add)[0];
         let iterations = builder.block_params(after_add)[1];
-        let comparison = ValueEmitter::emit_checked_float_compare(
-            &mut builder,
-            current,
-            limit,
-            FloatComparison::LessThan,
-        );
+        let comparison =
+            ValueEmitter::emit_checked_float_compare(&mut builder, current, limit, plan.comparison);
         builder.ins().brif(
             comparison.is_fast(),
             dispatch,

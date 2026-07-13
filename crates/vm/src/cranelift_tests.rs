@@ -94,6 +94,22 @@ impl VmHost for TestHost {
 }
 
 fn integer_loop_program(start: Value, step: Value, limit: Value) -> Arc<Program> {
+    direct_loop_program(
+        start,
+        step,
+        limit,
+        RuntimeBinaryOp::Add,
+        RuntimeBinaryOp::Lt,
+    )
+}
+
+fn direct_loop_program(
+    start: Value,
+    step: Value,
+    limit: Value,
+    arithmetic: RuntimeBinaryOp,
+    comparison: RuntimeBinaryOp,
+) -> Arc<Program> {
     Arc::new(
         Program::new(
             4,
@@ -112,13 +128,13 @@ fn integer_loop_program(start: Value, step: Value, limit: Value) -> Arc<Program>
                 },
                 Instruction::Binary {
                     dst: register(0),
-                    op: RuntimeBinaryOp::Add,
+                    op: arithmetic,
                     left: register(0),
                     right: register(1),
                 },
                 Instruction::Binary {
                     dst: register(3),
-                    op: RuntimeBinaryOp::Lt,
+                    op: comparison,
                     left: register(0),
                     right: register(2),
                 },
@@ -572,6 +588,81 @@ fn native_float_loop_matches_interpreter_binary32_execution() {
     );
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_float_loop_does_not_compile_below_measured_break_even() {
+    let iterations = 4_096;
+    let program = integer_loop_program(
+        Value::float(0.0).unwrap(),
+        Value::float(1.0).unwrap(),
+        Value::float(iterations as f32).unwrap(),
+    );
+    let mut vm = RegisterVm::new(Arc::clone(&program));
+
+    assert_eq!(
+        run(&mut vm, (iterations * 3) + 4).unwrap(),
+        VmHostResponse::Complete(Value::float(iterations as f32).unwrap()),
+    );
+    assert_eq!(program.native_compile_attempts(), 0);
+}
+
+#[test]
+fn native_float_loop_supports_subtract_multiply_and_comparison_variants() {
+    let cases = [
+        (
+            direct_loop_program(
+                Value::float(ITERATIONS as f32 / 2.0).unwrap(),
+                Value::float(0.5).unwrap(),
+                Value::float(0.0).unwrap(),
+                RuntimeBinaryOp::Sub,
+                RuntimeBinaryOp::Gt,
+            ),
+            INSTRUCTION_COUNT,
+        ),
+        (
+            direct_loop_program(
+                Value::float(1.0).unwrap(),
+                Value::float(1.0001).unwrap(),
+                Value::float(5.0).unwrap(),
+                RuntimeBinaryOp::Mul,
+                RuntimeBinaryOp::Le,
+            ),
+            60_000,
+        ),
+        (
+            direct_loop_program(
+                Value::float(5.0).unwrap(),
+                Value::float(1.0001).unwrap(),
+                Value::float(1.0).unwrap(),
+                RuntimeBinaryOp::Div,
+                RuntimeBinaryOp::Ge,
+            ),
+            60_000,
+        ),
+        (
+            direct_loop_program(
+                Value::float(0.0).unwrap(),
+                Value::float(1.0).unwrap(),
+                Value::float(ITERATIONS as f32).unwrap(),
+                RuntimeBinaryOp::Add,
+                RuntimeBinaryOp::Ne,
+            ),
+            INSTRUCTION_COUNT,
+        ),
+    ];
+
+    for (program, budget) in cases {
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(Arc::clone(&program));
+
+        assert_eq!(
+            run(&mut native, budget).unwrap(),
+            run(&mut interpreted, budget).unwrap(),
+        );
+        assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+        assert_eq!(program.native_compile_attempts(), 1);
+    }
 }
 
 #[test]

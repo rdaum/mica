@@ -38,7 +38,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
-    FloatLoopOutcome, IntegerComparison, IntegerLoopOutcome, NaturalLoopOutcome,
+    FloatArithmetic, FloatComparison, FloatLoopOutcome, FloatLoopPlan, IntegerComparison,
+    IntegerLoopOutcome, NaturalLoopOutcome,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -202,6 +203,8 @@ const BUDGET_PROFILE_SAMPLE_INTERVAL: usize = 1024;
 const BUDGET_PROFILE_TOP_LIMIT: usize = 12;
 #[cfg(feature = "cranelift")]
 const MIN_NATIVE_INTEGER_LOOP_ITERATIONS: usize = 4_096;
+#[cfg(feature = "cranelift")]
+const MIN_NATIVE_FLOAT_LOOP_ITERATIONS: usize = 8_192;
 
 #[derive(Clone, Debug, Default)]
 struct BudgetProfiler {
@@ -1466,17 +1469,22 @@ impl RegisterVm {
         if max_iterations == 0 {
             return None;
         }
-        let site = program.integer_loop_site(branch_ip)?;
+        let site = program.float_loop_site(branch_ip)?;
         let current = Value::float(self.read_register_unchecked(site.current).as_float()?).ok()?;
         let step = Value::float(self.read_register_unchecked(site.step).as_float()?).ok()?;
         let limit = Value::float(self.read_register_unchecked(site.limit).as_float()?).ok()?;
-        let compile = native_float_loop_is_profitable(
-            current.as_float()?,
-            step.as_float()?,
-            limit.as_float()?,
-            max_iterations,
-        );
-        let compiled = program.compiled_float_loop(compile)?;
+        let compiled = if let Some(compiled) = program.compiled_float_loop(branch_ip, false) {
+            compiled
+        } else {
+            let compile = native_float_loop_is_profitable(
+                current.as_float()?,
+                step.as_float()?,
+                limit.as_float()?,
+                site.plan,
+                max_iterations,
+            );
+            program.compiled_float_loop(branch_ip, compile)?
+        };
         let outcome = compiled.run(&current, &step, &limit, u64::try_from(max_iterations).ok()?);
         let (current, condition, iterations, next_ip) = match outcome {
             FloatLoopOutcome::Complete {
@@ -2899,9 +2907,92 @@ fn native_float_loop_is_profitable(
     current: f32,
     step: f32,
     limit: f32,
+    plan: FloatLoopPlan,
     max_iterations: usize,
 ) -> bool {
-    max_iterations >= MIN_NATIVE_INTEGER_LOOP_ITERATIONS && step > 0.0 && current < limit
+    if max_iterations < MIN_NATIVE_FLOAT_LOOP_ITERATIONS {
+        return false;
+    }
+    let next = match plan.arithmetic {
+        FloatArithmetic::Add => current + step,
+        FloatArithmetic::Subtract => current - step,
+        FloatArithmetic::Multiply => current * step,
+        FloatArithmetic::Divide => current / step,
+    };
+    if !next.is_finite() || !float_comparison_holds(next, limit, plan.comparison) {
+        return false;
+    }
+    if next == current {
+        return true;
+    }
+    if plan.comparison == FloatComparison::Equal {
+        return next == limit;
+    }
+
+    let progress = match plan.arithmetic {
+        FloatArithmetic::Add => f64::from(step),
+        FloatArithmetic::Subtract => -f64::from(step),
+        FloatArithmetic::Multiply if current > 0.0 && limit > 0.0 && step > 0.0 => {
+            let factor = f64::from(step);
+            return multiplicative_float_loop_is_profitable(
+                current,
+                limit,
+                factor,
+                plan.comparison,
+            );
+        }
+        FloatArithmetic::Divide if current > 0.0 && limit > 0.0 && step > 0.0 && step != 1.0 => {
+            let factor = 1.0 / f64::from(step);
+            return multiplicative_float_loop_is_profitable(
+                current,
+                limit,
+                factor,
+                plan.comparison,
+            );
+        }
+        _ => f64::from(next) - f64::from(current),
+    };
+    let distance = f64::from(limit) - f64::from(current);
+    if distance.signum() != progress.signum() {
+        return true;
+    }
+    (distance / progress).abs() >= MIN_NATIVE_FLOAT_LOOP_ITERATIONS as f64
+}
+
+#[cfg(feature = "cranelift")]
+fn multiplicative_float_loop_is_profitable(
+    current: f32,
+    limit: f32,
+    factor: f64,
+    comparison: FloatComparison,
+) -> bool {
+    if factor == 1.0 {
+        return true;
+    }
+    let moves_up = factor > 1.0;
+    let exits_up = match comparison {
+        FloatComparison::LessThan | FloatComparison::LessThanOrEqual => true,
+        FloatComparison::GreaterThan | FloatComparison::GreaterThanOrEqual => false,
+        FloatComparison::NotEqual => current < limit,
+        FloatComparison::Equal => unreachable!("equal loops are handled before estimation"),
+    };
+    if moves_up != exits_up {
+        return true;
+    }
+    let iterations = (f64::from(limit) / f64::from(current)).ln() / factor.ln();
+    iterations.abs() >= MIN_NATIVE_FLOAT_LOOP_ITERATIONS as f64
+}
+
+#[cfg(feature = "cranelift")]
+fn float_comparison_holds(left: f32, right: f32, comparison: FloatComparison) -> bool {
+    match comparison {
+        FloatComparison::Equal => left == right,
+        FloatComparison::NotEqual => left != right,
+        FloatComparison::LessThan => left < right,
+        FloatComparison::LessThanOrEqual => left <= right,
+        FloatComparison::GreaterThan => left > right,
+        FloatComparison::GreaterThanOrEqual => left >= right,
+    }
 }
 
 #[cfg(feature = "cranelift")]
