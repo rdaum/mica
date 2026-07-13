@@ -79,7 +79,7 @@ fn generated_integer_loop_side_exits_for_non_integers_and_overflow() {
     let compiled = CompiledIntegerLoop::compile().unwrap();
     assert_eq!(
         compiled.run(
-            &Value::float(1.0),
+            &Value::float(1.0).unwrap(),
             &Value::int(1).unwrap(),
             &Value::int(10).unwrap(),
             10,

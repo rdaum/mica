@@ -554,6 +554,27 @@ fn native_integer_loop_matches_interpreter_completion() {
 }
 
 #[test]
+fn native_float_loop_matches_interpreter_binary32_execution() {
+    let program = integer_loop_program(
+        Value::float(0.0).unwrap(),
+        Value::float(0.5).unwrap(),
+        Value::float(ITERATIONS as f32 / 2.0).unwrap(),
+    );
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let interpreted_outcome = run(&mut interpreted, INSTRUCTION_COUNT).unwrap();
+    let native_outcome = run(&mut native, INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert_eq!(
+        native_outcome,
+        VmHostResponse::Complete(Value::float(ITERATIONS as f32 / 2.0).unwrap()),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
 fn native_integer_loop_preserves_every_budget_boundary() {
     for budget in [
         1,
@@ -582,17 +603,16 @@ fn native_integer_loop_preserves_every_budget_boundary() {
 }
 
 #[test]
-fn native_integer_loop_falls_back_before_mixed_value_mutation() {
+fn native_integer_loop_keeps_mixed_numeric_loop_interpreted() {
     let program = integer_loop_program(
         Value::int(0).unwrap(),
         Value::int(1).unwrap(),
-        Value::float(10.0),
+        Value::float(10.0).unwrap(),
     );
     let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
     let mut native = RegisterVm::new(Arc::clone(&program));
 
-    assert!(run(&mut interpreted, 100).is_err());
-    assert!(run(&mut native, 100).is_err());
+    assert_eq!(run(&mut native, 100), run(&mut interpreted, 100));
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 0);
 }
@@ -717,7 +737,7 @@ fn native_natural_loop_preserves_budget_remainders() {
 
 #[test]
 fn native_natural_loop_side_exit_is_atomic_and_sticky() {
-    let program = natural_accumulator_program(Value::float(0.0));
+    let program = natural_accumulator_program(Value::float(0.0).unwrap());
     let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
     let mut native = RegisterVm::new(Arc::clone(&program));
 

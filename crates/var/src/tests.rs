@@ -55,7 +55,7 @@ fn process_local_value_abi_classifies_heap_ownership() {
         Value::nothing(),
         Value::bool(true),
         Value::int(1).unwrap(),
-        Value::float(1.5),
+        Value::float(1.5).unwrap(),
         Value::identity_raw(1).unwrap(),
         Value::symbol(Symbol::intern("value-abi-symbol")),
         Value::error_code(Symbol::intern("E_VALUE_ABI")),
