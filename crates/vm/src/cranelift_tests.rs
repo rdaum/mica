@@ -26,6 +26,7 @@ const INSTRUCTION_COUNT: usize = (ITERATIONS * 3) + 4;
 const NATURAL_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 7;
 const NATURAL_ARITHMETIC_INSTRUCTION_COUNT: usize = (ITERATIONS * 11) + 7;
 const NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT: usize = (ITERATIONS * 19) + 6;
+const NATURAL_SCALAR_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 7;
 const MAX_CALL_DEPTH: usize = 8;
 
 #[derive(Default)]
@@ -294,6 +295,76 @@ fn natural_countdown_program(iterations: usize) -> Arc<Program> {
         )
         .unwrap(),
     )
+}
+
+fn natural_scalar_program() -> (Arc<Program>, Value) {
+    let alpha = Value::symbol(Symbol::intern("scalar_alpha"));
+    let beta = Value::symbol(Symbol::intern("scalar_beta"));
+    let expected = Value::bool(alpha < beta);
+    let program = Program::new(
+        7,
+        [
+            Instruction::Load {
+                dst: register(0),
+                value: Value::int(0).unwrap(),
+            },
+            Instruction::Load {
+                dst: register(1),
+                value: Value::int(ITERATIONS as i64).unwrap(),
+            },
+            Instruction::Load {
+                dst: register(2),
+                value: alpha,
+            },
+            Instruction::Load {
+                dst: register(3),
+                value: beta,
+            },
+            Instruction::Binary {
+                dst: register(5),
+                op: RuntimeBinaryOp::Lt,
+                left: register(0),
+                right: register(1),
+            },
+            Instruction::Branch {
+                condition: register(5),
+                if_true: 6,
+                if_false: 12,
+            },
+            Instruction::Binary {
+                dst: register(6),
+                op: RuntimeBinaryOp::Lt,
+                left: register(2),
+                right: register(3),
+            },
+            Instruction::Unary {
+                dst: register(6),
+                op: RuntimeUnaryOp::Not,
+                src: register(6),
+            },
+            Instruction::Unary {
+                dst: register(6),
+                op: RuntimeUnaryOp::Not,
+                src: register(6),
+            },
+            Instruction::Load {
+                dst: register(4),
+                value: Value::int(1).unwrap(),
+            },
+            Instruction::Binary {
+                dst: register(0),
+                op: RuntimeBinaryOp::Add,
+                left: register(0),
+                right: register(4),
+            },
+            Instruction::Jump { target: 4 },
+            Instruction::Return {
+                value: Operand::Register(register(6)),
+            },
+        ],
+    )
+    .unwrap();
+    (Arc::new(program), expected)
 }
 
 fn natural_scaled_countdown_program() -> Arc<Program> {
@@ -861,6 +932,20 @@ fn native_natural_countdown_loop_matches_interpreter() {
         run(&mut native, NATURAL_INSTRUCTION_COUNT).unwrap(),
         run(&mut interpreted, NATURAL_INSTRUCTION_COUNT).unwrap(),
     );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_loop_executes_boolean_and_symbol_operations() {
+    let (program, expected) = natural_scalar_program();
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let native_outcome = run(&mut native, NATURAL_SCALAR_INSTRUCTION_COUNT).unwrap();
+    let interpreted_outcome = run(&mut interpreted, NATURAL_SCALAR_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert_eq!(native_outcome, VmHostResponse::Complete(expected));
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
 }

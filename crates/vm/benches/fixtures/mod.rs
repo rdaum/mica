@@ -17,12 +17,13 @@ use mica_relation_kernel::{
 use mica_var::{Identity, Symbol, Value};
 use mica_vm::{
     AuthorityContext, Instruction, Operand, Program, Register, RuntimeBinaryOp, RuntimeError,
-    VmHost,
+    RuntimeUnaryOp, VmHost,
 };
 use std::sync::Arc;
 
 pub const INTEGER_LOOP_ITERATIONS: usize = 16_384;
 pub const INTEGER_LOOP_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 3) + 4;
+pub const SCALAR_LOOP_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 8) + 7;
 pub const STATIC_CALL_COUNT: usize = 8_192;
 pub const STATIC_CALL_INSTRUCTIONS: u64 = (STATIC_CALL_COUNT as u64 * 2) + 1;
 pub const BUILTIN_CALL_COUNT: usize = 16_384;
@@ -76,6 +77,76 @@ pub fn float_multiply_loop_fixture() -> ProgramFixture {
         RuntimeBinaryOp::Lt,
         iterations,
     )
+}
+
+pub fn scalar_symbol_loop_fixture() -> ProgramFixture {
+    let alpha = Value::symbol(Symbol::intern("benchmark_scalar_alpha"));
+    let beta = Value::symbol(Symbol::intern("benchmark_scalar_beta"));
+    let program = Program::new(
+        7,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(0),
+            },
+            Instruction::Load {
+                dst: reg(1),
+                value: int(INTEGER_LOOP_ITERATIONS as i64),
+            },
+            Instruction::Load {
+                dst: reg(2),
+                value: alpha,
+            },
+            Instruction::Load {
+                dst: reg(3),
+                value: beta,
+            },
+            Instruction::Binary {
+                dst: reg(5),
+                op: RuntimeBinaryOp::Lt,
+                left: reg(0),
+                right: reg(1),
+            },
+            Instruction::Branch {
+                condition: reg(5),
+                if_true: 6,
+                if_false: 12,
+            },
+            Instruction::Binary {
+                dst: reg(6),
+                op: RuntimeBinaryOp::Lt,
+                left: reg(2),
+                right: reg(3),
+            },
+            Instruction::Unary {
+                dst: reg(6),
+                op: RuntimeUnaryOp::Not,
+                src: reg(6),
+            },
+            Instruction::Unary {
+                dst: reg(6),
+                op: RuntimeUnaryOp::Not,
+                src: reg(6),
+            },
+            Instruction::Load {
+                dst: reg(4),
+                value: int(1),
+            },
+            Instruction::Binary {
+                dst: reg(0),
+                op: RuntimeBinaryOp::Add,
+                left: reg(0),
+                right: reg(4),
+            },
+            Instruction::Jump { target: 4 },
+            Instruction::Return { value: r(6) },
+        ],
+    )
+    .unwrap();
+    ProgramFixture {
+        program: Arc::new(program),
+        instruction_count: SCALAR_LOOP_INSTRUCTIONS,
+    }
 }
 
 fn direct_loop_fixture(

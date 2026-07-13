@@ -18,7 +18,9 @@ mod float_loop;
 mod integer_loop;
 mod natural_loop;
 
-pub use emitter::{EmittedValue, FloatComparison, IntegerComparison, ValueEmitter};
+pub use emitter::{
+    EmittedValue, FloatComparison, IntegerComparison, ScalarComparison, ValueEmitter,
+};
 pub use float_loop::{
     CompiledFloatLoop, FloatArithmetic, FloatLoopError, FloatLoopOutcome, FloatLoopPlan,
 };
