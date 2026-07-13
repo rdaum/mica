@@ -19,7 +19,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[cfg(feature = "cranelift")]
-use mica_vm_cranelift::CompiledIntegerLoop;
+use mica_var::abi::borrowed_value_bits;
+#[cfg(feature = "cranelift")]
+use mica_vm_cranelift::{
+    CompiledIntegerLoop, CompiledNaturalLoop, NaturalLoopInstruction, NaturalLoopPlan,
+};
+#[cfg(feature = "cranelift")]
+use std::collections::BTreeSet;
 #[cfg(feature = "cranelift")]
 use std::fmt::{Debug, Formatter};
 #[cfg(feature = "cranelift")]
@@ -751,8 +757,47 @@ pub(crate) struct IntegerLoopSite {
 }
 
 #[cfg(feature = "cranelift")]
+pub(crate) const MAX_NATURAL_LOOP_SLOTS: usize = 16;
+
+#[cfg(feature = "cranelift")]
+pub(crate) struct NaturalIntegerLoopSite {
+    pub(crate) header_ip: usize,
+    pub(crate) branch_ip: usize,
+    pub(crate) body_ip: usize,
+    pub(crate) exit_ip: usize,
+    pub(crate) cycle_instruction_count: usize,
+    pub(crate) registers: Box<[Register]>,
+    pub(crate) current: Register,
+    pub(crate) step: i64,
+    pub(crate) limit: Register,
+    pub(crate) plan: NaturalLoopPlan,
+    compiled: OnceLock<Result<Arc<CompiledNaturalLoop>, Box<str>>>,
+}
+
+#[cfg(feature = "cranelift")]
+impl Debug for NaturalIntegerLoopSite {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NaturalIntegerLoopSite")
+            .field("header_ip", &self.header_ip)
+            .field("branch_ip", &self.branch_ip)
+            .field("body_ip", &self.body_ip)
+            .field("exit_ip", &self.exit_ip)
+            .field("cycle_instruction_count", &self.cycle_instruction_count)
+            .field("registers", &self.registers)
+            .field("current", &self.current)
+            .field("step", &self.step)
+            .field("limit", &self.limit)
+            .field("plan", &self.plan)
+            .field("compiled", &self.compiled.get().is_some())
+            .finish()
+    }
+}
+
+#[cfg(feature = "cranelift")]
 struct NativeProgramCacheState {
     integer_loop_sites: Box<[IntegerLoopSite]>,
+    natural_integer_loop_sites: Box<[NaturalIntegerLoopSite]>,
     integer_loop: OnceLock<Result<Arc<CompiledIntegerLoop>, Box<str>>>,
     compile_attempts: AtomicUsize,
 }
@@ -763,16 +808,21 @@ struct NativeProgramCache(Arc<NativeProgramCacheState>);
 
 #[cfg(feature = "cranelift")]
 impl NativeProgramCache {
-    fn recognize(opcodes: &[Opcode]) -> Option<Self> {
+    fn recognize(opcodes: &[Opcode], constants: &[Value]) -> Option<Self> {
         let integer_loop_sites = (2..opcodes.len())
             .filter_map(|branch_ip| recognize_integer_loop(opcodes, branch_ip))
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        if integer_loop_sites.is_empty() {
+        let natural_integer_loop_sites = (0..opcodes.len())
+            .filter_map(|branch_ip| recognize_natural_integer_loop(opcodes, constants, branch_ip))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        if integer_loop_sites.is_empty() && natural_integer_loop_sites.is_empty() {
             return None;
         }
         Some(Self(Arc::new(NativeProgramCacheState {
             integer_loop_sites,
+            natural_integer_loop_sites,
             integer_loop: OnceLock::new(),
             compile_attempts: AtomicUsize::new(0),
         })))
@@ -806,6 +856,38 @@ impl NativeProgramCache {
             .cloned()
     }
 
+    fn natural_integer_loop_site(&self, branch_ip: usize) -> Option<&NaturalIntegerLoopSite> {
+        self.0
+            .natural_integer_loop_sites
+            .binary_search_by_key(&branch_ip, |site| site.branch_ip)
+            .ok()
+            .map(|index| &self.0.natural_integer_loop_sites[index])
+    }
+
+    fn compiled_natural_integer_loop(
+        &self,
+        branch_ip: usize,
+        compile: bool,
+    ) -> Option<Arc<CompiledNaturalLoop>> {
+        let site = self.natural_integer_loop_site(branch_ip)?;
+        if let Some(compiled) = site.compiled.get() {
+            return compiled.as_ref().ok().cloned();
+        }
+        if !compile {
+            return None;
+        }
+        site.compiled
+            .get_or_init(|| {
+                self.0.compile_attempts.fetch_add(1, Ordering::Relaxed);
+                CompiledNaturalLoop::compile(&site.plan)
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string().into_boxed_str())
+            })
+            .as_ref()
+            .ok()
+            .cloned()
+    }
+
     #[cfg(test)]
     fn compile_attempts(&self) -> usize {
         self.0.compile_attempts.load(Ordering::Relaxed)
@@ -818,6 +900,10 @@ impl Debug for NativeProgramCache {
         formatter
             .debug_struct("NativeProgramCache")
             .field("integer_loop_sites", &self.0.integer_loop_sites)
+            .field(
+                "natural_integer_loop_sites",
+                &self.0.natural_integer_loop_sites,
+            )
             .field("compiled", &self.0.integer_loop.get().is_some())
             .finish()
     }
@@ -889,6 +975,241 @@ fn recognize_integer_loop(opcodes: &[Opcode], branch_ip: usize) -> Option<Intege
         limit: *limit,
         condition: *condition,
     })
+}
+
+#[cfg(feature = "cranelift")]
+fn recognize_natural_integer_loop(
+    opcodes: &[Opcode],
+    constants: &[Value],
+    branch_ip: usize,
+) -> Option<NaturalIntegerLoopSite> {
+    let Opcode::Branch {
+        condition,
+        if_true,
+        if_false,
+    } = opcodes.get(branch_ip)?
+    else {
+        return None;
+    };
+    let body_ip = if_true.0 as usize;
+    let exit_ip = if_false.0 as usize;
+    let backedge_ip = exit_ip.checked_sub(1)?;
+    let Opcode::Jump { target } = opcodes.get(backedge_ip)? else {
+        return None;
+    };
+    let header_ip = target.0 as usize;
+    if header_ip >= branch_ip
+        || body_ip != branch_ip + 1
+        || backedge_ip < body_ip
+        || exit_ip > opcodes.len()
+    {
+        return None;
+    }
+
+    let header = opcodes.get(header_ip..branch_ip)?;
+    let body = opcodes.get(body_ip..backedge_ip)?;
+    let mut registers = BTreeSet::new();
+    registers.insert(*condition);
+    for opcode in body.iter().chain(header.iter()) {
+        collect_natural_loop_registers(opcode, constants, &mut registers)?;
+    }
+    if registers.len() > MAX_NATURAL_LOOP_SLOTS {
+        return None;
+    }
+    let registers = registers.into_iter().collect::<Vec<_>>().into_boxed_slice();
+    let slot = |register: Register| {
+        registers
+            .binary_search(&register)
+            .ok()
+            .and_then(|slot| u16::try_from(slot).ok())
+    };
+    let body_plan = body
+        .iter()
+        .map(|opcode| natural_loop_instruction(opcode, constants, &slot))
+        .collect::<Option<Vec<_>>>()?;
+    let header_plan = header
+        .iter()
+        .map(|opcode| natural_loop_instruction(opcode, constants, &slot))
+        .collect::<Option<Vec<_>>>()?;
+    let plan = NaturalLoopPlan::new(
+        u16::try_from(registers.len()).ok()?,
+        slot(*condition)?,
+        body_plan,
+        header_plan,
+    )
+    .ok()?;
+    let (current, step, limit) =
+        recognize_natural_loop_induction(header, body, constants, *condition)?;
+    Some(NaturalIntegerLoopSite {
+        header_ip,
+        branch_ip,
+        body_ip,
+        exit_ip,
+        cycle_instruction_count: body.len() + header.len() + 2,
+        registers,
+        current,
+        step,
+        limit,
+        plan,
+        compiled: OnceLock::new(),
+    })
+}
+
+#[cfg(feature = "cranelift")]
+fn collect_natural_loop_registers(
+    opcode: &Opcode,
+    constants: &[Value],
+    registers: &mut BTreeSet<Register>,
+) -> Option<()> {
+    match opcode {
+        Opcode::Load { dst, value } => {
+            constants.get(value.0 as usize)?.as_int()?;
+            registers.insert(*dst);
+        }
+        Opcode::Move { dst, src } => {
+            registers.insert(*dst);
+            registers.insert(*src);
+        }
+        Opcode::Binary {
+            dst,
+            op: RuntimeBinaryOp::Add | RuntimeBinaryOp::Lt,
+            left,
+            right,
+        } => {
+            registers.insert(*dst);
+            registers.insert(*left);
+            registers.insert(*right);
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+#[cfg(feature = "cranelift")]
+fn natural_loop_instruction(
+    opcode: &Opcode,
+    constants: &[Value],
+    slot: &impl Fn(Register) -> Option<u16>,
+) -> Option<NaturalLoopInstruction> {
+    match opcode {
+        Opcode::Load { dst, value } => Some(NaturalLoopInstruction::Load {
+            dst: slot(*dst)?,
+            value: borrowed_value_bits(constants.get(value.0 as usize)?),
+        }),
+        Opcode::Move { dst, src } => Some(NaturalLoopInstruction::Move {
+            dst: slot(*dst)?,
+            src: slot(*src)?,
+        }),
+        Opcode::Binary {
+            dst,
+            op: RuntimeBinaryOp::Add,
+            left,
+            right,
+        } => Some(NaturalLoopInstruction::Add {
+            dst: slot(*dst)?,
+            left: slot(*left)?,
+            right: slot(*right)?,
+        }),
+        Opcode::Binary {
+            dst,
+            op: RuntimeBinaryOp::Lt,
+            left,
+            right,
+        } => Some(NaturalLoopInstruction::LessThan {
+            dst: slot(*dst)?,
+            left: slot(*left)?,
+            right: slot(*right)?,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "cranelift")]
+fn recognize_natural_loop_induction(
+    header: &[Opcode],
+    body: &[Opcode],
+    constants: &[Value],
+    condition: Register,
+) -> Option<(Register, i64, Register)> {
+    let (current, limit) = header.iter().rev().find_map(|opcode| match opcode {
+        Opcode::Binary {
+            dst,
+            op: RuntimeBinaryOp::Lt,
+            left,
+            right,
+        } if *dst == condition => Some((*left, *right)),
+        _ => None,
+    })?;
+    if current == limit || header.iter().any(|opcode| opcode_writes(opcode, current)) {
+        return None;
+    }
+
+    let current_writes = body
+        .iter()
+        .enumerate()
+        .filter(|(_, opcode)| opcode_writes(opcode, current))
+        .collect::<Vec<_>>();
+    if current_writes.len() != 1 {
+        return None;
+    }
+    let (write_index, write) = current_writes[0];
+    let (add_index, step_register) = match write {
+        Opcode::Binary {
+            op: RuntimeBinaryOp::Add,
+            left,
+            right,
+            ..
+        } => (write_index, other_add_operand(*left, *right, current)?),
+        Opcode::Move { src, .. } => {
+            let (add_index, left, right) =
+                body[..write_index]
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(index, opcode)| match opcode {
+                        Opcode::Binary {
+                            dst,
+                            op: RuntimeBinaryOp::Add,
+                            left,
+                            right,
+                        } if dst == src => Some((index, *left, *right)),
+                        _ => None,
+                    })?;
+            (add_index, other_add_operand(left, right, current)?)
+        }
+        _ => return None,
+    };
+    let step = body[..add_index]
+        .iter()
+        .rev()
+        .find_map(|opcode| match opcode {
+            Opcode::Load { dst, value } if *dst == step_register => {
+                constants.get(value.0 as usize)?.as_int()
+            }
+            _ => None,
+        })?;
+    Some((current, step, limit))
+}
+
+#[cfg(feature = "cranelift")]
+fn other_add_operand(left: Register, right: Register, current: Register) -> Option<Register> {
+    if left == current && right != current {
+        Some(right)
+    } else if right == current && left != current {
+        Some(left)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "cranelift")]
+fn opcode_writes(opcode: &Opcode, register: Register) -> bool {
+    match opcode {
+        Opcode::Load { dst, .. } | Opcode::Move { dst, .. } | Opcode::Binary { dst, .. } => {
+            *dst == register
+        }
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1041,6 +1362,27 @@ impl Program {
     #[cfg(feature = "cranelift")]
     pub(crate) fn compiled_integer_loop(&self, compile: bool) -> Option<Arc<CompiledIntegerLoop>> {
         self.native_cache.as_ref()?.compiled_integer_loop(compile)
+    }
+
+    #[cfg(feature = "cranelift")]
+    pub(crate) fn natural_integer_loop_site(
+        &self,
+        branch_ip: usize,
+    ) -> Option<&NaturalIntegerLoopSite> {
+        self.native_cache
+            .as_ref()?
+            .natural_integer_loop_site(branch_ip)
+    }
+
+    #[cfg(feature = "cranelift")]
+    pub(crate) fn compiled_natural_integer_loop(
+        &self,
+        branch_ip: usize,
+        compile: bool,
+    ) -> Option<Arc<CompiledNaturalLoop>> {
+        self.native_cache
+            .as_ref()?
+            .compiled_natural_integer_loop(branch_ip, compile)
     }
 
     #[cfg(all(feature = "cranelift", test))]
@@ -1711,7 +2053,7 @@ impl ProgramBuilder {
 
     pub fn finish(self, register_count: usize) -> Result<Program, RuntimeError> {
         #[cfg(feature = "cranelift")]
-        let native_cache = NativeProgramCache::recognize(&self.opcodes);
+        let native_cache = NativeProgramCache::recognize(&self.opcodes, &self.constants);
         let program = Program {
             register_count,
             opcodes: self.opcodes.into(),

@@ -23,6 +23,7 @@ use std::sync::{Arc, Barrier};
 
 const ITERATIONS: usize = 16_384;
 const INSTRUCTION_COUNT: usize = (ITERATIONS * 3) + 4;
+const NATURAL_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 7;
 const MAX_CALL_DEPTH: usize = 8;
 
 #[derive(Default)]
@@ -138,6 +139,76 @@ fn canonical_program() -> Arc<Program> {
         Value::int(0).unwrap(),
         Value::int(1).unwrap(),
         Value::int(ITERATIONS as i64).unwrap(),
+    )
+}
+
+fn natural_accumulator_program(total: Value) -> Arc<Program> {
+    natural_accumulator_program_with_limit(total, ITERATIONS)
+}
+
+fn natural_accumulator_program_with_limit(total: Value, limit: usize) -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            8,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(1),
+                    value: total,
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::nothing(),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::int(limit as i64).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(4),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(0),
+                    right: register(3),
+                },
+                Instruction::Branch {
+                    condition: register(4),
+                    if_true: 6,
+                    if_false: 12,
+                },
+                Instruction::Load {
+                    dst: register(5),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(6),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(0),
+                    right: register(5),
+                },
+                Instruction::Move {
+                    dst: register(0),
+                    src: register(6),
+                },
+                Instruction::Binary {
+                    dst: register(7),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(1),
+                    right: register(0),
+                },
+                Instruction::Move {
+                    dst: register(1),
+                    src: register(7),
+                },
+                Instruction::Jump { target: 3 },
+                Instruction::Return {
+                    value: Operand::Register(register(1)),
+                },
+            ],
+        )
+        .unwrap(),
     )
 }
 
@@ -282,4 +353,96 @@ fn native_integer_loop_resumes_from_snapshotted_budget_exit() {
         run(&mut interpreted, 1).unwrap()
     );
     assert_eq!(resumed.snapshot_state(), interpreted.snapshot_state());
+}
+
+#[test]
+fn native_natural_loop_matches_interpreter_completion() {
+    let program = natural_accumulator_program(Value::int(0).unwrap());
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let interpreted_outcome = run(&mut interpreted, NATURAL_INSTRUCTION_COUNT).unwrap();
+    let native_outcome = run(&mut native, NATURAL_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert_eq!(
+        native_outcome,
+        VmHostResponse::Complete(Value::int(134_225_920).unwrap()),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_loop_preserves_budget_remainders() {
+    for budget in (NATURAL_INSTRUCTION_COUNT - 12)..=NATURAL_INSTRUCTION_COUNT {
+        let program = natural_accumulator_program(Value::int(0).unwrap());
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(program);
+
+        let interpreted_outcome = run(&mut interpreted, budget);
+        let native_outcome = run(&mut native, budget);
+        match (native_outcome, interpreted_outcome) {
+            (Ok(native), Ok(interpreted)) => assert_eq!(native, interpreted, "budget {budget}"),
+            (
+                Err(RuntimeError::InstructionBudgetExceeded { .. }),
+                Err(RuntimeError::InstructionBudgetExceeded { .. }),
+            ) => {}
+            (native, interpreted) => panic!(
+                "budget {budget} produced different outcomes: native={native:?} interpreted={interpreted:?}",
+            ),
+        }
+        assert_eq!(
+            native.snapshot_state(),
+            interpreted.snapshot_state(),
+            "budget {budget}",
+        );
+    }
+}
+
+#[test]
+fn native_natural_loop_side_exit_is_atomic_and_sticky() {
+    let program = natural_accumulator_program(Value::float(0.0));
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let interpreted_outcome = run(&mut interpreted, NATURAL_INSTRUCTION_COUNT).unwrap();
+    let native_outcome = run(&mut native, NATURAL_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+    assert_eq!(native.native_side_exit_count(), 1);
+}
+
+#[test]
+fn native_natural_loop_does_not_compile_short_cold_loops() {
+    let program = natural_accumulator_program_with_limit(Value::int(0).unwrap(), 32);
+    let mut vm = RegisterVm::new(Arc::clone(&program));
+    assert_eq!(
+        run(&mut vm, (32 * 9) + 7).unwrap(),
+        VmHostResponse::Complete(Value::int(528).unwrap()),
+    );
+    assert_eq!(program.native_compile_attempts(), 0);
+}
+
+#[test]
+fn native_natural_loop_cache_is_shared_across_threads() {
+    let program = natural_accumulator_program(Value::int(0).unwrap());
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let program = Arc::clone(&program);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let mut vm = RegisterVm::new(program);
+            barrier.wait();
+            run(&mut vm, NATURAL_INSTRUCTION_COUNT).unwrap()
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            VmHostResponse::Complete(Value::int(134_225_920).unwrap()),
+        );
+    }
+    assert_eq!(program.native_compile_attempts(), 1);
 }

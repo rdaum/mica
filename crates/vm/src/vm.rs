@@ -13,6 +13,8 @@
 
 use crate::builtin::{RuntimePorts, TransientAccess};
 use crate::metrics::RelationOperation;
+#[cfg(feature = "cranelift")]
+use crate::program::MAX_NATURAL_LOOP_SLOTS;
 use crate::program::{CompactListItem, CompactMapItem, CompactRelationArg, Opcode, OperandRef};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
@@ -26,6 +28,8 @@ use mica_relation_kernel::{
     Tuple, applicable_method_calls_normalized, applicable_positional_methods_cached,
     method_program_id, normalize_dispatch_roles, system_row_source_relation,
 };
+#[cfg(feature = "cranelift")]
+use mica_var::abi::{borrowed_value_bits, from_owned_value_bits, value_is_immediate};
 use mica_var::{FunctionId, Identity, Symbol, Value, ValueKind};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -33,7 +37,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "cranelift")]
-use mica_vm_cranelift::IntegerLoopOutcome;
+use mica_vm_cranelift::{IntegerLoopOutcome, NaturalLoopOutcome};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
@@ -1092,6 +1096,8 @@ pub struct RegisterVm {
     state: VmState,
     #[cfg(feature = "cranelift")]
     native_execution: bool,
+    #[cfg(feature = "cranelift")]
+    native_side_exits: Vec<(usize, usize)>,
 }
 
 #[derive(Clone, Copy)]
@@ -1130,6 +1136,8 @@ impl RegisterVm {
             },
             #[cfg(feature = "cranelift")]
             native_execution: true,
+            #[cfg(feature = "cranelift")]
+            native_side_exits: Vec::new(),
         }
     }
 
@@ -1151,11 +1159,18 @@ impl RegisterVm {
         }
     }
 
+    #[cfg(all(feature = "cranelift", test))]
+    pub(crate) fn native_side_exit_count(&self) -> usize {
+        self.native_side_exits.len()
+    }
+
     pub fn from_state(state: VmState) -> Self {
         Self {
             state,
             #[cfg(feature = "cranelift")]
             native_execution: true,
+            #[cfg(feature = "cranelift")]
+            native_side_exits: Vec::new(),
         }
     }
 
@@ -1165,6 +1180,8 @@ impl RegisterVm {
 
     pub fn restore_state(&mut self, state: &VmState) {
         self.state = state.clone();
+        #[cfg(feature = "cranelift")]
+        self.native_side_exits.clear();
     }
 
     pub fn resume_with(&mut self, value: Value) -> Result<(), RuntimeError> {
@@ -1320,13 +1337,18 @@ impl RegisterVm {
                     if_false.0 as usize
                 };
                 #[cfg(feature = "cranelift")]
-                if branch_is_true
-                    && self.native_execution
-                    && target < ip
-                    && let Some(step) =
-                        self.execute_native_integer_loop(program, ip, remaining_budget)
-                {
-                    return Ok(step);
+                if branch_is_true && self.native_execution {
+                    if target < ip
+                        && let Some(step) =
+                            self.execute_native_integer_loop(program, ip, remaining_budget)
+                    {
+                        return Ok(step);
+                    }
+                    if let Some(step) =
+                        self.execute_native_natural_integer_loop(program, ip, remaining_budget)
+                    {
+                        return Ok(step);
+                    }
                 }
                 self.current_frame_mut_unchecked().ip = target;
                 Ok(VmStep::single(VmHostResponse::Continue))
@@ -1420,6 +1442,73 @@ impl RegisterVm {
             native_trace: Some(NativeBudgetTrace {
                 program: program_index,
                 ip: site.entry_ip,
+                instructions: native_instructions,
+            }),
+        })
+    }
+
+    #[cfg(feature = "cranelift")]
+    fn execute_native_natural_integer_loop(
+        &mut self,
+        program: &Program,
+        branch_ip: usize,
+        remaining_budget: usize,
+    ) -> Option<VmStep> {
+        let program_index = self.current_frame_unchecked().program;
+        if self.native_side_exits.contains(&(program_index, branch_ip)) {
+            return None;
+        }
+        let site = program.natural_integer_loop_site(branch_ip)?;
+        let max_iterations = remaining_budget.checked_sub(1)? / site.cycle_instruction_count;
+        if max_iterations == 0 {
+            return None;
+        }
+        let current = self.read_register_unchecked(site.current).as_int()?;
+        let limit = self.read_register_unchecked(site.limit).as_int()?;
+        let compile = native_integer_loop_is_profitable(current, site.step, limit, max_iterations);
+        let compiled = program.compiled_natural_integer_loop(branch_ip, compile)?;
+        let mut scratch = [0_u64; MAX_NATURAL_LOOP_SLOTS];
+        for (slot, register) in site.registers.iter().enumerate() {
+            scratch[slot] = borrowed_value_bits(self.read_register_unchecked(*register));
+        }
+        let outcome = compiled.run(
+            &mut scratch[..site.registers.len()],
+            u64::try_from(max_iterations).ok()?,
+        );
+        let (iterations, next_ip) = match outcome {
+            NaturalLoopOutcome::Complete { iterations } => (iterations, site.exit_ip),
+            NaturalLoopOutcome::BudgetExhausted { iterations } => (iterations, site.body_ip),
+            NaturalLoopOutcome::SideExit => {
+                self.native_side_exits.push((program_index, branch_ip));
+                return None;
+            }
+        };
+        let iterations = usize::try_from(iterations).ok()?;
+        let native_instructions = iterations.checked_mul(site.cycle_instruction_count)?;
+        let instructions = native_instructions.checked_add(1)?;
+        if instructions > remaining_budget {
+            return None;
+        }
+        for &slot in site.plan.modified_slots() {
+            if !value_is_immediate(scratch[usize::from(slot)]) {
+                return None;
+            }
+        }
+
+        for &slot in site.plan.modified_slots() {
+            let slot = usize::from(slot);
+            // SAFETY: a successful natural-loop execution only produces
+            // immediate values in modified slots, checked immediately above.
+            let value = unsafe { from_owned_value_bits(scratch[slot]) };
+            self.write_register_unchecked(site.registers[slot], value);
+        }
+        self.current_frame_mut_unchecked().ip = next_ip;
+        Some(VmStep {
+            response: VmHostResponse::Continue,
+            instructions,
+            native_trace: Some(NativeBudgetTrace {
+                program: program_index,
+                ip: site.header_ip,
                 instructions: native_instructions,
             }),
         })
