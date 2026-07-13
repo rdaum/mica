@@ -1210,22 +1210,6 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Opcode::Move { dst, src } => {
-                let value = self.read_register_unchecked(*src).clone();
-                self.write_register_unchecked(*dst, value);
-                self.advance_ip_unchecked();
-                Ok(VmHostResponse::Continue)
-            }
-            Opcode::Unary { dst, op, src } => {
-                let value = self.read_register_unchecked(*src);
-                let value = match eval_unary(*op, value) {
-                    Ok(value) => value,
-                    Err(error) => return self.begin_raise(error),
-                };
-                self.write_register_unchecked(*dst, value);
-                self.advance_ip_unchecked();
-                Ok(VmHostResponse::Continue)
-            }
             Opcode::Binary {
                 dst,
                 op,
@@ -1237,6 +1221,84 @@ impl RegisterVm {
                     self.read_register_unchecked(*left),
                     self.read_register_unchecked(*right),
                 ) {
+                    Ok(value) => value,
+                    Err(error) => return self.begin_raise(error),
+                };
+                self.write_register_unchecked(*dst, value);
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::Branch {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let target = if truthy(self.read_register_unchecked(*condition)) {
+                    if_true.0 as usize
+                } else {
+                    if_false.0 as usize
+                };
+                self.current_frame_mut_unchecked().ip = target;
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::Call {
+                dst,
+                program: callee,
+                args,
+            } => {
+                if self.state.frames.len() >= max_call_depth {
+                    return Err(RuntimeError::MaxCallDepthExceeded {
+                        max_depth: max_call_depth,
+                    });
+                }
+                let args = self.resolve_operands(program, program.operands(*args));
+                let callee = program.program(*callee);
+                let callee_id = self.intern_program(Arc::clone(callee));
+                let register_count = callee.register_count();
+                self.advance_ip_unchecked();
+                self.state
+                    .frames
+                    .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::BuiltinCall { dst, name, args } => {
+                let args = self.resolve_operands(program, program.operands(*args));
+                let value = host.call_builtin(*name, &args)?;
+                self.write_register_unchecked(*dst, value);
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::Return { value } => {
+                let value = self.resolve_operand_ref(program, *value);
+                self.return_from_frame(value)
+            }
+            _ => self.step_extended(host, max_call_depth, program, opcode),
+        }
+    }
+
+    fn step_extended<H: VmHost>(
+        &mut self,
+        host: &mut H,
+        max_call_depth: usize,
+        program: &Program,
+        opcode: &Opcode,
+    ) -> Result<VmHostResponse, RuntimeError> {
+        match opcode {
+            Opcode::Load { .. }
+            | Opcode::Binary { .. }
+            | Opcode::Branch { .. }
+            | Opcode::Call { .. }
+            | Opcode::BuiltinCall { .. }
+            | Opcode::Return { .. } => unreachable!("core opcode handled by RegisterVm::step"),
+            Opcode::Move { dst, src } => {
+                let value = self.read_register_unchecked(*src).clone();
+                self.write_register_unchecked(*dst, value);
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
+            Opcode::Unary { dst, op, src } => {
+                let value = self.read_register_unchecked(*src);
+                let value = match eval_unary(*op, value) {
                     Ok(value) => value,
                     Err(error) => return self.begin_raise(error),
                 };
@@ -1509,19 +1571,6 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
-            Opcode::Branch {
-                condition,
-                if_true,
-                if_false,
-            } => {
-                let target = if truthy(self.read_register_unchecked(*condition)) {
-                    if_true.0 as usize
-                } else {
-                    if_false.0 as usize
-                };
-                self.current_frame_mut_unchecked().ip = target;
-                Ok(VmHostResponse::Continue)
-            }
             Opcode::Jump { target } => {
                 self.current_frame_mut_unchecked().ip = target.0 as usize;
                 Ok(VmHostResponse::Continue)
@@ -1592,33 +1641,6 @@ impl RegisterVm {
                 let callee = self.resolve_operand_ref(program, *callee);
                 let user_args = self.resolve_list_items(program, program.list_items(*args))?;
                 self.call_function_value(*dst, callee, user_args, max_call_depth)?;
-                Ok(VmHostResponse::Continue)
-            }
-            Opcode::Call {
-                dst,
-                program: callee,
-                args,
-            } => {
-                if self.state.frames.len() >= max_call_depth {
-                    return Err(RuntimeError::MaxCallDepthExceeded {
-                        max_depth: max_call_depth,
-                    });
-                }
-                let args = self.resolve_operands(program, program.operands(*args));
-                let callee = program.program(*callee);
-                let callee_id = self.intern_program(Arc::clone(callee));
-                let register_count = callee.register_count();
-                self.advance_ip_unchecked();
-                self.state
-                    .frames
-                    .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
-                Ok(VmHostResponse::Continue)
-            }
-            Opcode::BuiltinCall { dst, name, args } => {
-                let args = self.resolve_operands(program, program.operands(*args));
-                let value = host.call_builtin(*name, &args)?;
-                self.write_register_unchecked(*dst, value);
-                self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
             Opcode::BuiltinCallDynamic { dst, name, args } => {
@@ -2019,10 +2041,6 @@ impl RegisterVm {
             Opcode::RollbackRetry => {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::RollbackRetry)
-            }
-            Opcode::Return { value } => {
-                let value = self.resolve_operand_ref(program, *value);
-                self.return_from_frame(value)
             }
             Opcode::Abort { error } => {
                 let error = self.resolve_operand_ref(program, *error);

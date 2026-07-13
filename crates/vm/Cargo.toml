@@ -12,3 +12,10 @@ fast-telemetry.workspace = true
 mica-relation-kernel.workspace = true
 mica-var.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+micromeasure.workspace = true
+
+[[bench]]
+name = "vm_benches"
+harness = false

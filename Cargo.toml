@@ -95,5 +95,5 @@ zmq = { git = "https://github.com/rdaum/rust-zmq.git", branch = "main" }
 rustyline = "18.0.0"
 
 # development / testing / benching
-micromeasure = "0.9"
+micromeasure = "0.10"
 proptest = "1.11"

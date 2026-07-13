@@ -3492,6 +3492,7 @@ dependencies = [
  "fast-telemetry",
  "mica-relation-kernel",
  "mica-var",
+ "micromeasure",
  "tracing",
 ]
 
@@ -3539,9 +3540,9 @@ dependencies = [
 
 [[package]]
 name = "micromeasure"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adf124fcd022ce9273f8b8e83b707ab08a2774cee1b483f49f46457ae8c0fbc2"
+checksum = "55ed706e2cc32462538ef0dac32ff6ad08ebf45b567989c128e17c69a840b2d3"
 dependencies = [
  "libc",
  "perf-event2",
