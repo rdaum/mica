@@ -14,11 +14,11 @@
 use crate::{
     Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider,
     ComposedRelationRead, ComposedTransactionRead, ComputedRelation, Conflict, ConflictKind,
-    ConflictPolicy, ExecutionContext, Fact, FactChange, FactChangeKind, InMemoryCommitProvider,
-    KernelError, MentionedFact, ProjectedStore, QueryPlan, RelationId, RelationKernel,
-    RelationMetadata, RelationRead, RelationSource, RelationWorkspace, Rule, RuleBodyItem,
-    RuleComparisonOp, RuleGuard, SubjectFact, Term, TransientStore, Tuple, ValueDomain,
-    method_program_id,
+    ConflictPolicy, DispatchRelations, ExecutionContext, Fact, FactChange, FactChangeKind,
+    InMemoryCommitProvider, KernelError, MentionedFact, ProjectedStore, QueryPlan, RelationId,
+    RelationKernel, RelationMetadata, RelationRead, RelationSource, RelationWorkspace, Rule,
+    RuleBodyItem, RuleComparisonOp, RuleGuard, SubjectFact, Term, TransientStore, Tuple,
+    ValueDomain, applicable_positional_methods_cached, method_program_id,
 };
 #[cfg(feature = "fjall-provider")]
 use crate::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
@@ -1129,6 +1129,179 @@ fn composed_transaction_reader_skips_rules_for_non_derived_relation() {
 }
 
 #[test]
+fn composed_transaction_reader_scans_transient_only_relation() {
+    let kernel = RelationKernel::new();
+    let tx = kernel.begin();
+    let scope = rel(74);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(
+            scope,
+            RelationMetadata::new(rel(73), Symbol::intern("TransientOnly"), 1),
+            Tuple::from([int(9)]),
+        )
+        .unwrap();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        reader.scan_relation(rel(73), &[None]).unwrap(),
+        vec![Tuple::from([int(9)])]
+    );
+}
+
+#[test]
+fn composed_transaction_reader_merges_computed_and_direct_transient_rows() {
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        vec![Arc::new(EchoComputedRelation) as Arc<dyn ComputedRelation>],
+    );
+    let computed_metadata = RelationMetadata::new(rel(200), Symbol::intern("ComputedEcho"), 2);
+    kernel.create_relation(computed_metadata.clone()).unwrap();
+
+    let tx = kernel.begin();
+    let scope = rel(74);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(scope, computed_metadata, Tuple::from([int(7), int(12)]))
+        .unwrap();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        reader
+            .scan_relation(rel(200), &[Some(int(7)), None])
+            .unwrap(),
+        vec![
+            Tuple::from([int(7), int(11)]),
+            Tuple::from([int(7), int(12)])
+        ]
+    );
+}
+
+#[test]
+fn composed_transaction_reader_merges_computed_and_derived_rows() {
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        vec![Arc::new(EchoComputedRelation) as Arc<dyn ComputedRelation>],
+    );
+    kernel
+        .create_relation(RelationMetadata::new(rel(73), Symbol::intern("Source"), 2))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(200),
+            Symbol::intern("ComputedEcho"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(200),
+                [var("item"), var("value")],
+                [Atom::positive(rel(73), [var("item"), var("value")])],
+            ),
+            "ComputedEcho(item, value) :- Source(item, value)",
+        )
+        .unwrap();
+
+    let tx = kernel.begin();
+    let scope = rel(74);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(
+            scope,
+            RelationMetadata::new(rel(73), Symbol::intern("Source"), 2),
+            Tuple::from([int(7), int(12)]),
+        )
+        .unwrap();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        reader
+            .scan_relation(rel(200), &[Some(int(7)), None])
+            .unwrap(),
+        vec![
+            Tuple::from([int(7), int(11)]),
+            Tuple::from([int(7), int(12)])
+        ]
+    );
+}
+
+#[test]
+fn composed_transaction_rules_see_transient_inputs_through_computed_relations() {
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        vec![Arc::new(MirrorLocatedInComputedRelation) as Arc<dyn ComputedRelation>],
+    );
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(1),
+            Symbol::intern("LocatedIn"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(rel(2), Symbol::intern("Probe"), 1))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(201),
+            Symbol::intern("MirrorLocatedIn"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(202),
+            Symbol::intern("Derived"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(202),
+                [var("item"), var("place")],
+                [
+                    Atom::positive(rel(2), [var("item")]),
+                    Atom::positive(rel(201), [var("item"), var("place")]),
+                ],
+            ),
+            "Derived(item, place) :- Probe(item), MirrorLocatedIn(item, place)",
+        )
+        .unwrap();
+    let tx = kernel.begin();
+    let scope = rel(203);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(
+            scope,
+            RelationMetadata::new(rel(1), Symbol::intern("LocatedIn"), 2),
+            Tuple::from([int(7), int(12)]),
+        )
+        .unwrap();
+    transient
+        .assert(
+            scope,
+            RelationMetadata::new(rel(2), Symbol::intern("Probe"), 1),
+            Tuple::from([int(7)]),
+        )
+        .unwrap();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        reader
+            .scan_relation(rel(202), &[Some(int(7)), None])
+            .unwrap(),
+        vec![Tuple::from([int(7), int(12)])]
+    );
+}
+
+#[test]
 fn method_program_cache_is_scoped_to_snapshot_version() {
     let kernel = RelationKernel::new();
     kernel
@@ -1205,6 +1378,116 @@ fn transaction_method_program_cache_survives_unrelated_local_writes() {
 
     assert_eq!(
         method_program_id(&tx, rel(93), &method).unwrap(),
+        Some(program)
+    );
+}
+
+#[test]
+fn transaction_method_program_cache_tracks_computed_relation_writes() {
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        vec![Arc::new(MirrorLocatedInComputedRelation) as Arc<dyn ComputedRelation>],
+    );
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(1), Symbol::intern("ProgramBinding"), 2).with_index([0]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(201),
+            Symbol::intern("MirrorLocatedIn"),
+            2,
+        ))
+        .unwrap();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(40), Symbol::intern("MethodSelector"), 2).with_index([1, 0]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(41), Symbol::intern("Param"), 4).with_index([0, 1]),
+        )
+        .unwrap();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(42), Symbol::intern("Delegates"), 3).with_index([0, 2, 1]),
+        )
+        .unwrap();
+
+    let method = Value::identity(rel(202));
+    let program = Value::identity(rel(203));
+    let selector = Value::symbol(Symbol::intern("look"));
+    let binding = Tuple::from([method.clone(), program.clone()]);
+    let dispatch_relations = DispatchRelations {
+        method_selector: rel(40),
+        param: rel(41),
+        delegates: rel(42),
+    };
+    let mut seed = kernel.begin();
+    seed.assert(rel(40), Tuple::from([method.clone(), selector.clone()]))
+        .unwrap();
+    seed.commit().unwrap();
+    let mut tx = kernel.begin();
+
+    for _ in 0..3 {
+        assert_eq!(
+            applicable_positional_methods_cached(&tx, dispatch_relations, selector.clone(), &[],)
+                .unwrap()
+                .as_ref(),
+            std::slice::from_ref(&method)
+        );
+    }
+    assert_eq!(method_program_id(&tx, rel(201), &method).unwrap(), None);
+    assert_eq!(method_program_id(&tx, rel(201), &method).unwrap(), None);
+
+    tx.assert(rel(1), binding.clone()).unwrap();
+    assert_eq!(
+        method_program_id(&tx, rel(201), &method).unwrap(),
+        Some(program)
+    );
+
+    tx.retract(rel(1), binding).unwrap();
+    assert_eq!(method_program_id(&tx, rel(201), &method).unwrap(), None);
+}
+
+#[test]
+fn composed_method_program_cache_tracks_transient_inputs_to_computed_relation() {
+    let kernel = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        vec![Arc::new(MirrorLocatedInComputedRelation) as Arc<dyn ComputedRelation>],
+    );
+    let source_metadata =
+        RelationMetadata::new(rel(1), Symbol::intern("ProgramBinding"), 2).with_index([0]);
+    kernel.create_relation(source_metadata.clone()).unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(
+            rel(201),
+            Symbol::intern("MirrorLocatedIn"),
+            2,
+        ))
+        .unwrap();
+
+    let method = Value::identity(rel(202));
+    let program = Value::identity(rel(203));
+    let tx = kernel.begin();
+    assert_eq!(method_program_id(&tx, rel(201), &method).unwrap(), None);
+
+    let scope = rel(204);
+    let mut transient = TransientStore::new();
+    transient
+        .assert(
+            scope,
+            source_metadata,
+            Tuple::from([method.clone(), program.clone()]),
+        )
+        .unwrap();
+    let scopes = [scope];
+    let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
+
+    assert_eq!(
+        method_program_id(&reader, rel(201), &method).unwrap(),
         Some(program)
     );
 }

@@ -21,8 +21,9 @@ use mica_runtime::{
 };
 use mica_var::{Identity, Symbol, Value};
 use micromeasure::{
-    BenchContext, BenchmarkMainOptions, DiagnosticError, DiagnosticResult, MetricValue, Throughput,
-    benchmark_main, black_box,
+    BenchContext, BenchmarkMainOptions, ConcurrentBenchContext, ConcurrentBenchControl,
+    ConcurrentWorker, ConcurrentWorkerResult, DiagnosticError, DiagnosticResult, MetricValue,
+    Throughput, benchmark_main, black_box,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +31,9 @@ use std::time::Duration;
 const INTEGER_LOOP_ITERATIONS: u64 = 16_384;
 const INTEGER_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 3) + 4;
 const REPEATED_DISPATCH_ITERATIONS: u64 = 1_024;
+const THREE_SITE_DISPATCH_ROUNDS: u64 = REPEATED_DISPATCH_ITERATIONS / 3;
+const THREE_SITE_DISPATCHES_PER_TASK: u64 = THREE_SITE_DISPATCH_ROUNDS * 3;
+const CONCURRENT_DISPATCH_THREADS: usize = 4;
 const MAX_CALL_DEPTH: usize = 64;
 
 #[derive(Clone, Copy)]
@@ -70,6 +74,52 @@ struct TaskBenchContext {
     builtins: Arc<BuiltinRegistry>,
     next_task_id: u64,
     workload: Workload,
+}
+
+struct ConcurrentTaskBenchContext {
+    kernel: RelationKernel,
+    program: Arc<Program>,
+    resolver: Arc<ProgramResolver>,
+    builtins: Arc<BuiltinRegistry>,
+    dispatches_per_task: u64,
+    instruction_budget: usize,
+}
+
+impl ConcurrentTaskBenchContext {
+    fn from_task_context(context: TaskBenchContext) -> Self {
+        Self {
+            kernel: context.kernel,
+            program: context.program,
+            resolver: context.resolver,
+            builtins: context.builtins,
+            dispatches_per_task: context.workload.dispatch_cache_lookups,
+            instruction_budget: context.workload.executed_bytecodes as usize + 1,
+        }
+    }
+
+    fn run_one(&self, task_id: u64) {
+        let mut task = Task::new_with_builtins(
+            task_id,
+            &self.kernel,
+            Arc::clone(&self.program),
+            Arc::clone(&self.resolver),
+            Arc::clone(&self.builtins),
+            TaskLimits {
+                instruction_budget: self.instruction_budget,
+                max_retries: 0,
+                max_call_depth: MAX_CALL_DEPTH,
+            },
+        );
+        let outcome = task.run().unwrap();
+        debug_assert!(matches!(outcome, TaskOutcome::Complete { .. }));
+        black_box(outcome);
+    }
+}
+
+impl ConcurrentBenchContext for ConcurrentTaskBenchContext {
+    fn prepare(_num_threads: usize) -> Self {
+        Self::from_task_context(TaskBenchContext::warm_positional_dispatch())
+    }
 }
 
 impl TaskBenchContext {
@@ -291,6 +341,147 @@ impl TaskBenchContext {
         Self::warm_dispatch_context(kernel, program, resolver, workload)
     }
 
+    fn alternating_positional_dispatch() -> Self {
+        let (kernel, relations, receiver, resolver) =
+            Self::alternating_positional_dispatch_fixture();
+        let loop_iterations = REPEATED_DISPATCH_ITERATIONS / 2;
+        let program = Arc::new(
+            Program::new(
+                6,
+                [
+                    Instruction::Load {
+                        dst: register(0),
+                        value: int(0),
+                    },
+                    Instruction::Load {
+                        dst: register(1),
+                        value: int(1),
+                    },
+                    Instruction::Load {
+                        dst: register(2),
+                        value: int(loop_iterations as i64),
+                    },
+                    Instruction::PositionalDispatch {
+                        dst: register(3),
+                        relations: relations.dispatch,
+                        program_relation: relations.method_program,
+                        program_bytes: relations.program_bytes,
+                        selector: value(Value::symbol(Symbol::intern("benchmark_a"))),
+                        args: vec![value(Value::identity(receiver))],
+                    },
+                    Instruction::PositionalDispatch {
+                        dst: register(4),
+                        relations: relations.dispatch,
+                        program_relation: relations.method_program,
+                        program_bytes: relations.program_bytes,
+                        selector: value(Value::symbol(Symbol::intern("benchmark_b"))),
+                        args: vec![value(Value::identity(receiver))],
+                    },
+                    Instruction::Binary {
+                        dst: register(0),
+                        op: RuntimeBinaryOp::Add,
+                        left: register(0),
+                        right: register(1),
+                    },
+                    Instruction::Binary {
+                        dst: register(5),
+                        op: RuntimeBinaryOp::Lt,
+                        left: register(0),
+                        right: register(2),
+                    },
+                    Instruction::Branch {
+                        condition: register(5),
+                        if_true: 3,
+                        if_false: 8,
+                    },
+                    Instruction::Return { value: operand(4) },
+                ],
+            )
+            .unwrap(),
+        );
+        let mut workload = Workload::task((loop_iterations * 9) + 4);
+        workload.dispatch_cache_lookups = REPEATED_DISPATCH_ITERATIONS;
+        workload.method_program_cache_lookups = REPEATED_DISPATCH_ITERATIONS;
+        workload.vm_resolved_program_lookups = REPEATED_DISPATCH_ITERATIONS;
+        workload.program_resolver_lookups = 2;
+        Self::warm_dispatch_context(kernel, program, resolver, workload)
+    }
+
+    fn three_site_positional_dispatch() -> Self {
+        let (kernel, relations, receiver, resolver) =
+            Self::three_site_positional_dispatch_fixture();
+        // The first A/B/C round fills the two-entry transaction cache with B and C. Later
+        // rounds keep A as a stable miss without replacement churn.
+        let program = Arc::new(
+            Program::new(
+                7,
+                [
+                    Instruction::Load {
+                        dst: register(0),
+                        value: int(0),
+                    },
+                    Instruction::Load {
+                        dst: register(1),
+                        value: int(1),
+                    },
+                    Instruction::Load {
+                        dst: register(2),
+                        value: int(THREE_SITE_DISPATCH_ROUNDS as i64),
+                    },
+                    Instruction::PositionalDispatch {
+                        dst: register(3),
+                        relations: relations.dispatch,
+                        program_relation: relations.method_program,
+                        program_bytes: relations.program_bytes,
+                        selector: value(Value::symbol(Symbol::intern("benchmark_a"))),
+                        args: vec![value(Value::identity(receiver))],
+                    },
+                    Instruction::PositionalDispatch {
+                        dst: register(4),
+                        relations: relations.dispatch,
+                        program_relation: relations.method_program,
+                        program_bytes: relations.program_bytes,
+                        selector: value(Value::symbol(Symbol::intern("benchmark_b"))),
+                        args: vec![value(Value::identity(receiver))],
+                    },
+                    Instruction::PositionalDispatch {
+                        dst: register(5),
+                        relations: relations.dispatch,
+                        program_relation: relations.method_program,
+                        program_bytes: relations.program_bytes,
+                        selector: value(Value::symbol(Symbol::intern("benchmark_c"))),
+                        args: vec![value(Value::identity(receiver))],
+                    },
+                    Instruction::Binary {
+                        dst: register(0),
+                        op: RuntimeBinaryOp::Add,
+                        left: register(0),
+                        right: register(1),
+                    },
+                    Instruction::Binary {
+                        dst: register(6),
+                        op: RuntimeBinaryOp::Lt,
+                        left: register(0),
+                        right: register(2),
+                    },
+                    Instruction::Branch {
+                        condition: register(6),
+                        if_true: 3,
+                        if_false: 9,
+                    },
+                    Instruction::Return { value: operand(5) },
+                ],
+            )
+            .unwrap(),
+        );
+        let mut workload = Workload::task((THREE_SITE_DISPATCH_ROUNDS * 12) + 4);
+        workload.dispatch_cache_lookups = THREE_SITE_DISPATCHES_PER_TASK;
+        workload.method_program_cache_lookups = THREE_SITE_DISPATCHES_PER_TASK;
+        workload.vm_resolved_program_lookups = THREE_SITE_DISPATCHES_PER_TASK;
+        workload.program_resolver_lookups = 3;
+        Self::warm_dispatch_context(kernel, program, resolver, workload)
+    }
+
     fn positional_dispatch_fixture() -> (
         RelationKernel,
         MethodRelations,
@@ -341,6 +532,139 @@ impl TaskBenchContext {
             ProgramResolver::new().with_program(installed.program, installed.compiled.program),
         );
         (kernel, relations, receiver, resolver)
+    }
+
+    fn alternating_positional_dispatch_fixture() -> (
+        RelationKernel,
+        MethodRelations,
+        Identity,
+        Arc<ProgramResolver>,
+    ) {
+        let relations = method_relations();
+        let method_a = identity(100);
+        let method_program_a = identity(101);
+        let method_b = identity(102);
+        let method_program_b = identity(103);
+        let prototype = identity(200);
+        let receiver = identity(300);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel, relations);
+
+        let context = CompileContext::new()
+            .with_method_relations(relations)
+            .with_identity("benchmark_method_a", method_a)
+            .with_program_identity("benchmark_method_a", method_program_a)
+            .with_identity("benchmark_method_b", method_b)
+            .with_program_identity("benchmark_method_b", method_program_b)
+            .with_identity("benchmark_prototype", prototype);
+        let mut install = kernel.begin();
+        let installation = install_methods_from_source(
+            "method #benchmark_method_a :benchmark_a\n\
+               roles receiver @ #benchmark_prototype\n\
+             do\n\
+               return 7\n\
+             end\n\
+             method #benchmark_method_b :benchmark_b\n\
+               roles receiver @ #benchmark_prototype\n\
+             do\n\
+               return 8\n\
+             end",
+            &context,
+            &mut install,
+        )
+        .unwrap();
+        install
+            .assert(
+                relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(receiver),
+                    Value::identity(prototype),
+                    int(0),
+                ]),
+            )
+            .unwrap();
+        install.commit().unwrap();
+
+        assert_eq!(installation.methods.len(), 2);
+        let resolver =
+            installation
+                .methods
+                .into_iter()
+                .fold(ProgramResolver::new(), |resolver, installed| {
+                    resolver.with_program(installed.program, installed.compiled.program)
+                });
+        (kernel, relations, receiver, Arc::new(resolver))
+    }
+
+    fn three_site_positional_dispatch_fixture() -> (
+        RelationKernel,
+        MethodRelations,
+        Identity,
+        Arc<ProgramResolver>,
+    ) {
+        let relations = method_relations();
+        let method_a = identity(100);
+        let method_program_a = identity(101);
+        let method_b = identity(102);
+        let method_program_b = identity(103);
+        let method_c = identity(104);
+        let method_program_c = identity(105);
+        let prototype = identity(200);
+        let receiver = identity(300);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel, relations);
+
+        let context = CompileContext::new()
+            .with_method_relations(relations)
+            .with_identity("benchmark_method_a", method_a)
+            .with_program_identity("benchmark_method_a", method_program_a)
+            .with_identity("benchmark_method_b", method_b)
+            .with_program_identity("benchmark_method_b", method_program_b)
+            .with_identity("benchmark_method_c", method_c)
+            .with_program_identity("benchmark_method_c", method_program_c)
+            .with_identity("benchmark_prototype", prototype);
+        let mut install = kernel.begin();
+        let installation = install_methods_from_source(
+            "method #benchmark_method_a :benchmark_a\n\
+               roles receiver @ #benchmark_prototype\n\
+             do\n\
+               return 7\n\
+             end\n\
+             method #benchmark_method_b :benchmark_b\n\
+               roles receiver @ #benchmark_prototype\n\
+             do\n\
+               return 8\n\
+             end\n\
+             method #benchmark_method_c :benchmark_c\n\
+               roles receiver @ #benchmark_prototype\n\
+             do\n\
+               return 9\n\
+             end",
+            &context,
+            &mut install,
+        )
+        .unwrap();
+        install
+            .assert(
+                relations.dispatch.delegates,
+                Tuple::from([
+                    Value::identity(receiver),
+                    Value::identity(prototype),
+                    int(0),
+                ]),
+            )
+            .unwrap();
+        install.commit().unwrap();
+
+        assert_eq!(installation.methods.len(), 3);
+        let resolver =
+            installation
+                .methods
+                .into_iter()
+                .fold(ProgramResolver::new(), |resolver, installed| {
+                    resolver.with_program(installed.program, installed.compiled.program)
+                });
+        (kernel, relations, receiver, Arc::new(resolver))
     }
 
     fn warm_dispatch_context(
@@ -394,6 +718,22 @@ fn run_tasks(context: &mut TaskBenchContext, chunk_size: usize, _chunk_num: usiz
     for _ in 0..chunk_size {
         context.run_one();
     }
+}
+
+fn run_concurrent_tasks(
+    context: &ConcurrentTaskBenchContext,
+    control: &ConcurrentBenchControl,
+) -> ConcurrentWorkerResult {
+    let mut task_id = ((control.thread_index() as u64) + 1) << 48;
+    let mut tasks = 0_u64;
+    let mut dispatches = 0_u64;
+    while !control.should_stop() {
+        context.run_one(task_id);
+        task_id = task_id.wrapping_add(1);
+        tasks = tasks.wrapping_add(1);
+        dispatches = dispatches.wrapping_add(context.dispatches_per_task);
+    }
+    ConcurrentWorkerResult::operations(dispatches).with_counter("tasks", tasks)
 }
 
 fn workload_diagnostics(
@@ -549,7 +889,7 @@ benchmark_main!(
                 .to_owned(),
         ),
         runtime: micromeasure::BenchmarkRuntimeOptions {
-            warm_up_duration: Duration::from_millis(100),
+            warm_up_duration: Duration::from_millis(250),
             benchmark_duration: Duration::from_secs(1),
             min_samples: 10,
             max_samples: 30,
@@ -599,6 +939,151 @@ benchmark_main!(
                 .factory(&repeated_dispatch)
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_repeated_positional_dispatch", run_tasks);
+
+            let alternating_dispatch = || TaskBenchContext::alternating_positional_dispatch();
+            group
+                .throughput(Throughput::ops())
+                .factory(&alternating_dispatch)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_alternating_positional_dispatch", run_tasks);
+
+            let three_site_dispatch = || TaskBenchContext::three_site_positional_dispatch();
+            group
+                .throughput(Throughput::ops())
+                .factory(&three_site_dispatch)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_three_site_positional_dispatch", run_tasks);
+        });
+
+        let single_worker = [ConcurrentWorker {
+            name: "dispatch",
+            threads: 1,
+            run: run_concurrent_tasks,
+        }];
+        let concurrent_workers = [ConcurrentWorker {
+            name: "dispatch",
+            threads: CONCURRENT_DISPATCH_THREADS,
+            run: run_concurrent_tasks,
+        }];
+        let one_shot = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::warm_positional_dispatch(),
+            )
+        };
+        let repeated = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::repeated_positional_dispatch(),
+            )
+        };
+        let alternating = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::alternating_positional_dispatch(),
+            )
+        };
+        let three_site = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::three_site_positional_dispatch(),
+            )
+        };
+        runner.concurrent_group::<ConcurrentTaskBenchContext>("task concurrent", |group| {
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "dispatches"))
+                .metadata("threads", "1")
+                .metadata("dispatches_per_task", "1")
+                .factory(&one_shot)
+                .bench(
+                    "task_concurrent_warm_positional_dispatch_1_thread",
+                    &single_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "dispatches"))
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .metadata("dispatches_per_task", "1")
+                .factory(&one_shot)
+                .bench(
+                    "task_concurrent_warm_positional_dispatch_4_threads",
+                    &concurrent_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "dispatches"))
+                .metadata("threads", "1")
+                .metadata(
+                    "dispatches_per_task",
+                    REPEATED_DISPATCH_ITERATIONS.to_string(),
+                )
+                .factory(&repeated)
+                .bench(
+                    "task_concurrent_repeated_positional_dispatch_1_thread",
+                    &single_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "dispatches"))
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .metadata(
+                    "dispatches_per_task",
+                    REPEATED_DISPATCH_ITERATIONS.to_string(),
+                )
+                .factory(&repeated)
+                .bench(
+                    "task_concurrent_repeated_positional_dispatch_4_threads",
+                    &concurrent_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "dispatches"))
+                .metadata("threads", "1")
+                .metadata(
+                    "dispatches_per_task",
+                    REPEATED_DISPATCH_ITERATIONS.to_string(),
+                )
+                .factory(&alternating)
+                .bench(
+                    "task_concurrent_alternating_positional_dispatch_1_thread",
+                    &single_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "dispatches"))
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .metadata(
+                    "dispatches_per_task",
+                    REPEATED_DISPATCH_ITERATIONS.to_string(),
+                )
+                .factory(&alternating)
+                .bench(
+                    "task_concurrent_alternating_positional_dispatch_4_threads",
+                    &concurrent_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "dispatches"))
+                .metadata("threads", "1")
+                .metadata(
+                    "dispatches_per_task",
+                    THREE_SITE_DISPATCHES_PER_TASK.to_string(),
+                )
+                .factory(&three_site)
+                .bench(
+                    "task_concurrent_three_site_positional_dispatch_1_thread",
+                    &single_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "dispatches"))
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .metadata(
+                    "dispatches_per_task",
+                    THREE_SITE_DISPATCHES_PER_TASK.to_string(),
+                )
+                .factory(&three_site)
+                .bench(
+                    "task_concurrent_three_site_positional_dispatch_4_threads",
+                    &concurrent_workers,
+                );
         });
     }
 );

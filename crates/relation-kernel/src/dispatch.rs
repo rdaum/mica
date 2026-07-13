@@ -586,7 +586,10 @@ fn identity_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ComposedTransactionRead, RelationKernel, RelationMetadata, TransientStore, Tuple};
+    use crate::{
+        Atom, ComposedTransactionRead, RelationKernel, RelationMetadata, Rule, Term,
+        TransientStore, Tuple,
+    };
     use mica_var::{Identity, STRING_PROTOTYPE, Symbol, Value};
 
     fn rel(id: u64) -> RelationId {
@@ -1057,6 +1060,124 @@ mod tests {
                 args: Some(Vec::new())
             }]
         );
+    }
+
+    #[test]
+    fn transaction_positional_inline_cache_invalidates_after_dispatch_writes() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut tx = kernel.begin();
+        let binding = Tuple::from([int(100), sym("look")]);
+
+        for _ in 0..3 {
+            assert!(
+                applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[],)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        tx.assert(rel(40), binding.clone()).unwrap();
+
+        let first =
+            applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[])
+                .unwrap();
+        assert_eq!(first.as_ref(), &[int(100)]);
+        let second =
+            applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[])
+                .unwrap();
+        let third =
+            applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[])
+                .unwrap();
+        assert!(Arc::ptr_eq(&second, &third));
+
+        tx.retract(rel(40), binding).unwrap();
+        assert!(
+            applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[],)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn transaction_positional_inline_cache_invalidates_for_derived_dispatch_relation() {
+        let kernel = kernel_with_dispatch_relations();
+        kernel
+            .create_relation(RelationMetadata::new(
+                rel(43),
+                Symbol::intern("PendingMethodSelector"),
+                2,
+            ))
+            .unwrap();
+
+        let method = Term::Var(Symbol::intern("method"));
+        let selector = Term::Var(Symbol::intern("selector"));
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(40),
+                    [method.clone(), selector.clone()],
+                    [Atom::positive(rel(43), [method, selector])],
+                ),
+                "MethodSelector(method, selector) :- PendingMethodSelector(method, selector)",
+            )
+            .unwrap();
+
+        let mut tx = kernel.begin();
+        for _ in 0..3 {
+            assert!(
+                applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[],)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        tx.assert(rel(43), Tuple::from([int(100), sym("look")]))
+            .unwrap();
+
+        assert_eq!(
+            applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[],)
+                .unwrap()
+                .as_ref(),
+            &[int(100)]
+        );
+    }
+
+    #[test]
+    fn transaction_method_program_inline_cache_invalidates_after_relation_writes() {
+        let kernel = kernel_with_dispatch_relations();
+        kernel
+            .create_relation(
+                RelationMetadata::new(rel(43), Symbol::intern("MethodProgram"), 2).with_index([0]),
+            )
+            .unwrap();
+        let method = int(100);
+        let program = int(101);
+        let selector_binding = Tuple::from([method.clone(), sym("look")]);
+        let program_binding = Tuple::from([method.clone(), program.clone()]);
+        let mut seed = kernel.begin();
+        seed.assert(rel(40), selector_binding).unwrap();
+        seed.assert(rel(43), program_binding.clone()).unwrap();
+        seed.commit().unwrap();
+
+        let mut tx = kernel.begin();
+        for _ in 0..3 {
+            assert_eq!(
+                applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[],)
+                    .unwrap()
+                    .as_ref(),
+                std::slice::from_ref(&method)
+            );
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                method_program_id(&tx, rel(43), &method).unwrap(),
+                Some(program.clone())
+            );
+        }
+
+        tx.retract(rel(43), program_binding).unwrap();
+
+        assert_eq!(method_program_id(&tx, rel(43), &method).unwrap(), None);
     }
 
     #[test]

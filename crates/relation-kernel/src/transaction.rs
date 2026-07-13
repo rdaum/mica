@@ -30,7 +30,7 @@ use crate::{
 };
 use mica_var::{Symbol, Value};
 use overlay::{FunctionalVisibleMap, LocalChange, RelationWriteOverlay};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
@@ -41,7 +41,180 @@ pub struct Transaction<'a> {
     writes: HashMap<RelationId, RelationWriteOverlay>,
     functional_visible: HashMap<RelationId, FunctionalVisibleMap>,
     derived_cache: RefCell<Option<Result<HashMap<RelationId, RelationState>, KernelError>>>,
+    dispatch_inline_cache: TransactionDispatchCache,
     execution_context: ExecutionContext,
+}
+
+struct TransactionDispatchCache {
+    state: Cell<u8>,
+    entries: RefCell<Option<Box<TransactionDispatchCacheEntries>>>,
+}
+
+#[derive(Default)]
+struct TransactionDispatchCacheEntries {
+    positional: [Option<PositionalDispatchCacheEntry>; INLINE_DISPATCH_CACHE_CAPACITY],
+    method_program: [Option<MethodProgramCacheEntry>; INLINE_DISPATCH_CACHE_CAPACITY],
+}
+
+// Keep the first two admitted keys transaction-local. Full caches do not evict on misses, which
+// avoids turning workloads with more keys into per-dispatch cache rewrites.
+const INLINE_DISPATCH_CACHE_CAPACITY: usize = 2;
+const POSITIONAL_DISPATCH_SEEN: u8 = 1 << 0;
+const POSITIONAL_DISPATCH_CACHED: u8 = 1 << 1;
+const METHOD_PROGRAM_ENABLED: u8 = 1 << 2;
+const METHOD_PROGRAM_CACHED: u8 = 1 << 3;
+
+struct PositionalDispatchCacheEntry {
+    relations: DispatchRelations,
+    selector: Value,
+    args: PositionalDispatchArgs,
+    methods: Arc<[Value]>,
+}
+
+enum PositionalDispatchArgs {
+    Empty,
+    One(Value),
+    Many(Vec<Value>),
+}
+
+struct MethodProgramCacheEntry {
+    relation: RelationId,
+    method: Value,
+    program: Option<Value>,
+}
+
+impl PositionalDispatchArgs {
+    fn new(args: &[Value]) -> Self {
+        match args {
+            [] => Self::Empty,
+            [arg] => Self::One(arg.clone()),
+            _ => Self::Many(args.to_vec()),
+        }
+    }
+
+    fn matches(&self, args: &[Value]) -> bool {
+        match (self, args) {
+            (Self::Empty, []) => true,
+            (Self::One(cached), [arg]) => cached == arg,
+            (Self::Many(cached), args) => cached == args,
+            _ => false,
+        }
+    }
+}
+
+impl TransactionDispatchCache {
+    fn new() -> Self {
+        Self {
+            state: Cell::new(0),
+            entries: RefCell::new(None),
+        }
+    }
+
+    fn clear(&self) {
+        self.state.set(0);
+        self.entries.borrow_mut().take();
+    }
+
+    fn state(&self) -> u8 {
+        self.state.get()
+    }
+
+    fn mark_positional_seen(&self, state: u8) {
+        self.state.set(state | POSITIONAL_DISPATCH_SEEN);
+    }
+
+    fn positional(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+        state: u8,
+    ) -> Option<Arc<[Value]>> {
+        let entries = self.entries.borrow();
+        let entry = entries.as_ref().and_then(|entries| {
+            entries.positional.iter().flatten().find(|entry| {
+                entry.relations == relations
+                    && &entry.selector == selector
+                    && entry.args.matches(args)
+            })
+        })?;
+        self.state.set(state | METHOD_PROGRAM_ENABLED);
+        Some(Arc::clone(&entry.methods))
+    }
+
+    fn remember_positional(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+        methods: Arc<[Value]>,
+    ) {
+        let mut cached = self.entries.borrow_mut();
+        let entries =
+            cached.get_or_insert_with(|| Box::new(TransactionDispatchCacheEntries::default()));
+        let Some(entry) = entries.positional.iter_mut().find(|entry| entry.is_none()) else {
+            return;
+        };
+        *entry = Some(PositionalDispatchCacheEntry {
+            relations,
+            selector: selector.clone(),
+            args: PositionalDispatchArgs::new(args),
+            methods,
+        });
+    }
+
+    #[inline(never)]
+    fn promote_positional(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+        methods: Arc<[Value]>,
+        state: u8,
+    ) {
+        self.remember_positional(relations, selector, args, methods);
+        self.state.set(state | POSITIONAL_DISPATCH_CACHED);
+    }
+
+    fn method_program(&self, relation: RelationId, method: &Value) -> Option<Option<Value>> {
+        let entries = self.entries.borrow();
+        entries.as_ref().and_then(|entries| {
+            entries
+                .method_program
+                .iter()
+                .flatten()
+                .find(|entry| entry.relation == relation && &entry.method == method)
+                .map(|entry| entry.program.clone())
+        })
+    }
+
+    fn consider_method_program(
+        &self,
+        relation: RelationId,
+        method: &Value,
+        program: Option<Value>,
+        state: u8,
+    ) {
+        if state & METHOD_PROGRAM_ENABLED == 0 {
+            return;
+        }
+        let mut cached = self.entries.borrow_mut();
+        let entries =
+            cached.get_or_insert_with(|| Box::new(TransactionDispatchCacheEntries::default()));
+        let Some(entry) = entries
+            .method_program
+            .iter_mut()
+            .find(|entry| entry.is_none())
+        else {
+            return;
+        };
+        *entry = Some(MethodProgramCacheEntry {
+            relation,
+            method: method.clone(),
+            program,
+        });
+        self.state.set(state | METHOD_PROGRAM_CACHED);
+    }
 }
 
 impl<'a> Transaction<'a> {
@@ -56,6 +229,7 @@ impl<'a> Transaction<'a> {
             writes: HashMap::new(),
             functional_visible: HashMap::new(),
             derived_cache: RefCell::new(None),
+            dispatch_inline_cache: TransactionDispatchCache::new(),
             execution_context,
         }
     }
@@ -86,7 +260,7 @@ impl<'a> Transaction<'a> {
         selector: &Value,
         roles: &[(Value, Value)],
     ) -> Result<Vec<ApplicableMethodCall>, KernelError> {
-        if self.has_dispatch_writes(relations) {
+        if !self.dispatch_view_matches_base(relations)? {
             return crate::dispatch::applicable_method_calls_uncached(
                 self, relations, selector, roles,
             );
@@ -101,7 +275,7 @@ impl<'a> Transaction<'a> {
         selector: &Value,
         roles: &[(Value, Value)],
     ) -> Result<Vec<ApplicableMethodCall>, KernelError> {
-        if self.has_dispatch_writes(relations) {
+        if !self.dispatch_view_matches_base(relations)? {
             return crate::dispatch::applicable_method_calls_uncached(
                 self, relations, selector, roles,
             );
@@ -115,10 +289,33 @@ impl<'a> Transaction<'a> {
         relation: RelationId,
         method: &Value,
     ) -> Result<Option<Value>, KernelError> {
-        if self.has_local_writes(relation) {
-            return crate::dispatch::method_program_id_uncached(self, relation, method);
+        let state = self.dispatch_inline_cache.state();
+        if state & METHOD_PROGRAM_ENABLED == 0 {
+            return self.method_program_from_view(relation, method);
         }
-        self.base.cached_method_program(relation, method)
+        self.cached_method_program_active(relation, method, state)
+    }
+
+    #[inline(never)]
+    fn cached_method_program_active(
+        &self,
+        relation: RelationId,
+        method: &Value,
+        state: u8,
+    ) -> Result<Option<Value>, KernelError> {
+        if state & METHOD_PROGRAM_CACHED != 0
+            && let Some(program) = self.dispatch_inline_cache.method_program(relation, method)
+        {
+            return Ok(program);
+        }
+        let program = self.method_program_from_view(relation, method)?;
+        self.dispatch_inline_cache.consider_method_program(
+            relation,
+            method,
+            program.clone(),
+            state,
+        );
+        Ok(program)
     }
 
     pub(crate) fn cached_applicable_positional_methods(
@@ -127,23 +324,101 @@ impl<'a> Transaction<'a> {
         selector: &Value,
         args: &[Value],
     ) -> Result<Arc<[Value]>, KernelError> {
-        if self.has_dispatch_writes(relations) {
-            return crate::dispatch::applicable_positional_methods(
-                self,
-                relations,
-                selector.clone(),
-                args,
-            )
-            .map(Arc::from);
+        let state = self.dispatch_inline_cache.state();
+        if state & POSITIONAL_DISPATCH_CACHED != 0 {
+            return self
+                .cached_applicable_positional_methods_active(relations, selector, args, state);
         }
-        self.base
-            .cached_applicable_positional_methods(relations, selector, args)
+        let methods = self.positional_methods_from_view(relations, selector, args)?;
+        if state & POSITIONAL_DISPATCH_SEEN == 0 {
+            self.dispatch_inline_cache.mark_positional_seen(state);
+        } else {
+            self.dispatch_inline_cache.promote_positional(
+                relations,
+                selector,
+                args,
+                Arc::clone(&methods),
+                state,
+            );
+        }
+        Ok(methods)
     }
 
-    fn has_dispatch_writes(&self, relations: DispatchRelations) -> bool {
-        self.has_local_writes(relations.method_selector)
-            || self.has_local_writes(relations.param)
-            || self.has_local_writes(relations.delegates)
+    #[inline(never)]
+    fn cached_applicable_positional_methods_active(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+        state: u8,
+    ) -> Result<Arc<[Value]>, KernelError> {
+        if let Some(methods) = self
+            .dispatch_inline_cache
+            .positional(relations, selector, args, state)
+        {
+            return Ok(methods);
+        }
+        let methods = self.positional_methods_from_view(relations, selector, args)?;
+        self.dispatch_inline_cache.remember_positional(
+            relations,
+            selector,
+            args,
+            Arc::clone(&methods),
+        );
+        Ok(methods)
+    }
+
+    fn method_program_from_view(
+        &self,
+        relation: RelationId,
+        method: &Value,
+    ) -> Result<Option<Value>, KernelError> {
+        if self.relation_view_matches_base(relation)? {
+            self.base.cached_method_program(relation, method)
+        } else {
+            crate::dispatch::method_program_id_uncached(self, relation, method)
+        }
+    }
+
+    fn positional_methods_from_view(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+    ) -> Result<Arc<[Value]>, KernelError> {
+        if self.dispatch_view_matches_base(relations)? {
+            self.base
+                .cached_applicable_positional_methods(relations, selector, args)
+        } else {
+            crate::dispatch::applicable_positional_methods(self, relations, selector.clone(), args)
+                .map(Arc::from)
+        }
+    }
+
+    fn dispatch_view_matches_base(
+        &self,
+        relations: DispatchRelations,
+    ) -> Result<bool, KernelError> {
+        if self.writes.is_empty() {
+            return Ok(true);
+        }
+        Ok(self.relation_view_matches_base(relations.method_selector)?
+            && self.relation_view_matches_base(relations.param)?
+            && self.relation_view_matches_base(relations.delegates)?)
+    }
+
+    fn relation_view_matches_base(&self, relation: RelationId) -> Result<bool, KernelError> {
+        if self.writes.is_empty() {
+            return Ok(true);
+        }
+        if self.has_local_writes(relation) {
+            return Ok(false);
+        }
+        if relation_has_active_rule_head(self.base.rules(), relation) {
+            return Ok(false);
+        }
+        let metadata = self.base.relation(relation)?.metadata();
+        Ok(!self.base.computed_relations.is_computed_relation(metadata))
     }
 
     pub fn assert(&mut self, relation: RelationId, tuple: Tuple) -> Result<(), KernelError> {
@@ -558,6 +833,7 @@ impl<'a> Transaction<'a> {
             .entry(relation)
             .or_default()
             .insert(tuple.clone(), change);
+        self.dispatch_inline_cache.clear();
         match change {
             LocalChange::Assert => crate::metrics::metrics()
                 .transaction_write_operations
@@ -1007,5 +1283,64 @@ impl From<LocalChange> for RelationMutationKind {
             LocalChange::Assert => Self::Assert,
             LocalChange::Retract => Self::Retract,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mica_var::Identity;
+
+    fn rel(id: u64) -> RelationId {
+        Identity::new(id).unwrap()
+    }
+
+    #[test]
+    fn full_positional_inline_cache_does_not_displace_existing_entries() {
+        let cache = TransactionDispatchCache::new();
+        let relations = DispatchRelations {
+            method_selector: rel(1),
+            param: rel(2),
+            delegates: rel(3),
+        };
+        let selectors = [
+            Value::symbol(Symbol::intern("first")),
+            Value::symbol(Symbol::intern("second")),
+            Value::symbol(Symbol::intern("third")),
+        ];
+        let methods = [
+            Arc::<[Value]>::from([Value::identity(rel(11))]),
+            Arc::<[Value]>::from([Value::identity(rel(12))]),
+            Arc::<[Value]>::from([Value::identity(rel(13))]),
+        ];
+
+        for index in 0..INLINE_DISPATCH_CACHE_CAPACITY {
+            cache.remember_positional(
+                relations,
+                &selectors[index],
+                &[],
+                Arc::clone(&methods[index]),
+            );
+        }
+        for _ in 0..3 {
+            cache.remember_positional(relations, &selectors[2], &[], Arc::clone(&methods[2]));
+        }
+
+        for index in 0..INLINE_DISPATCH_CACHE_CAPACITY {
+            let cached = cache
+                .positional(
+                    relations,
+                    &selectors[index],
+                    &[],
+                    POSITIONAL_DISPATCH_CACHED,
+                )
+                .unwrap();
+            assert!(Arc::ptr_eq(&cached, &methods[index]));
+        }
+        assert!(
+            cache
+                .positional(relations, &selectors[2], &[], POSITIONAL_DISPATCH_CACHED,)
+                .is_none()
+        );
     }
 }

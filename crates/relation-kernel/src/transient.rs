@@ -14,9 +14,9 @@
 use crate::index::RelationState;
 use crate::snapshot::{active_rules, build_derived_relations, relation_has_active_rule_head};
 use crate::{
-    ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, RelationCapabilities,
-    RelationId, RelationMetadata, RelationRead, RelationSource, RuleSet, ScanControl, Transaction,
-    Tuple, ValueDomain,
+    ApplicableMethodCall, ComputedRelationRead, DispatchRead, DispatchRelations, KernelError,
+    RelationCapabilities, RelationId, RelationMetadata, RelationRead, RelationSource,
+    RuleDefinition, RuleSet, ScanControl, Transaction, Tuple, ValueDomain, Version,
 };
 use mica_var::{Identity, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -351,13 +351,30 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
             return self.tx.scan_relation(relation, bindings);
         }
 
-        let mut visible = scan_composed_transaction_extensional(
-            self.tx,
-            self.transient,
-            self.scopes,
-            relation,
-            bindings,
-        )?;
+        let computed = self
+            .tx
+            .base
+            .relation(relation)
+            .ok()
+            .and_then(|base_relation| {
+                self.tx
+                    .base
+                    .computed_relations
+                    .scan(self, base_relation.metadata(), bindings)
+            });
+        let mut visible = if let Some(rows) = computed {
+            let mut visible = rows?.into_iter().collect::<BTreeSet<_>>();
+            visible.extend(self.transient.scan(self.scopes, relation, bindings)?);
+            visible
+        } else {
+            scan_composed_transaction_extensional(
+                self.tx,
+                self.transient,
+                self.scopes,
+                relation,
+                bindings,
+            )?
+        };
 
         if relation_has_active_rule_head(self.tx.base.rules(), relation) {
             let reader = ComposedExtensionalTransactionRead {
@@ -415,6 +432,24 @@ impl RelationRead for ComposedTransactionRead<'_, '_> {
             transient_rows,
             transient_domains,
         ))
+    }
+}
+
+impl ComputedRelationRead for ComposedTransactionRead<'_, '_> {
+    fn version(&self) -> Version {
+        self.tx.base_version()
+    }
+
+    fn relation_metadata_vec(&self) -> Vec<RelationMetadata> {
+        composed_transaction_relation_metadata(self.tx, self.transient, self.scopes)
+    }
+
+    fn rules_vec(&self) -> Vec<RuleDefinition> {
+        self.tx.base.rules().to_vec()
+    }
+
+    fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {
+        composed_transaction_extensional_facts(self.tx, self.transient, self.scopes)
     }
 }
 
@@ -485,6 +520,17 @@ impl RelationRead for ComposedExtensionalTransactionRead<'_, '_> {
         relation: RelationId,
         bindings: &[Option<Value>],
     ) -> Result<Vec<Tuple>, KernelError> {
+        if let Ok(base_relation) = self.tx.base.relation(relation)
+            && let Some(rows) =
+                self.tx
+                    .base
+                    .computed_relations
+                    .scan(self, base_relation.metadata(), bindings)
+        {
+            let mut visible = rows?.into_iter().collect::<BTreeSet<_>>();
+            visible.extend(self.transient.scan(self.scopes, relation, bindings)?);
+            return Ok(visible.into_iter().collect());
+        }
         scan_composed_transaction_extensional(
             self.tx,
             self.transient,
@@ -510,6 +556,75 @@ impl RelationRead for ComposedExtensionalTransactionRead<'_, '_> {
             transient_domains,
         ))
     }
+}
+
+impl ComputedRelationRead for ComposedExtensionalTransactionRead<'_, '_> {
+    fn version(&self) -> Version {
+        self.tx.base_version()
+    }
+
+    fn relation_metadata_vec(&self) -> Vec<RelationMetadata> {
+        composed_transaction_relation_metadata(self.tx, self.transient, self.scopes)
+    }
+
+    fn rules_vec(&self) -> Vec<RuleDefinition> {
+        self.tx.base.rules().to_vec()
+    }
+
+    fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {
+        composed_transaction_extensional_facts(self.tx, self.transient, self.scopes)
+    }
+}
+
+fn composed_transaction_relation_metadata(
+    tx: &Transaction<'_>,
+    transient: &TransientStore,
+    scopes: &[Identity],
+) -> Vec<RelationMetadata> {
+    let mut metadata = tx
+        .base
+        .relation_metadata()
+        .cloned()
+        .map(|metadata| (metadata.id(), metadata))
+        .collect::<HashMap<_, _>>();
+    for scope in scopes {
+        let Some(scope) = transient.scopes.get(scope) else {
+            continue;
+        };
+        for relation in scope.relations.values() {
+            metadata
+                .entry(relation.metadata().id())
+                .or_insert_with(|| relation.metadata().clone());
+        }
+    }
+    let mut metadata = metadata.into_values().collect::<Vec<_>>();
+    metadata.sort_by_key(RelationMetadata::id);
+    metadata
+}
+
+fn composed_transaction_extensional_facts(
+    tx: &Transaction<'_>,
+    transient: &TransientStore,
+    scopes: &[Identity],
+) -> Result<Vec<(RelationId, Tuple)>, KernelError> {
+    let mut facts = ComputedRelationRead::extensional_facts(tx)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    for scope in scopes {
+        let Some(scope) = transient.scopes.get(scope) else {
+            continue;
+        };
+        for (relation_id, relation) in &scope.relations {
+            let bindings = vec![None; relation.metadata().arity() as usize];
+            facts.extend(
+                relation
+                    .scan(&bindings)?
+                    .into_iter()
+                    .map(|tuple| (*relation_id, tuple)),
+            );
+        }
+    }
+    Ok(facts.into_iter().collect())
 }
 
 fn composed_capabilities(
@@ -640,25 +755,33 @@ impl ComposedTransactionRead<'_, '_> {
         dispatch_relations
             .iter()
             .any(|relation| self.transient.relation_visible(self.scopes, *relation))
-            || dispatch_relation_can_be_derived(self.tx, relations)
-                && self
-                    .scopes
-                    .iter()
-                    .any(|scope| self.transient.scope_len(*scope) > 0)
+            || self.has_visible_transient_rows()
+                && (dispatch_relation_can_be_derived(self.tx, relations)
+                    || dispatch_relations
+                        .iter()
+                        .any(|relation| self.relation_is_computed(*relation)))
     }
 
     fn method_program_cache_is_transient(&self, relation: RelationId) -> bool {
         self.transient.relation_visible(self.scopes, relation)
-            || self
-                .tx
-                .base
-                .rules()
-                .iter()
-                .any(|rule| rule.active() && rule.rule().head_relation() == relation)
-                && self
-                    .scopes
+            || self.has_visible_transient_rows()
+                && (self
+                    .tx
+                    .base
+                    .rules()
                     .iter()
-                    .any(|scope| self.transient.scope_len(*scope) > 0)
+                    .any(|rule| rule.active() && rule.rule().head_relation() == relation)
+                    || self.relation_is_computed(relation))
+    }
+
+    fn has_visible_transient_rows(&self) -> bool {
+        self.scopes
+            .iter()
+            .any(|scope| self.transient.scope_len(*scope) > 0)
+    }
+
+    fn relation_is_computed(&self, relation: RelationId) -> bool {
+        relation_is_computed(self.tx, relation)
     }
 }
 
@@ -672,6 +795,11 @@ fn relation_depends_on_visible_transient(
     if transient.relation_visible(scopes, relation) {
         return true;
     }
+    if scopes.iter().any(|scope| transient.scope_len(*scope) > 0)
+        && relation_is_computed(tx, relation)
+    {
+        return true;
+    }
     if !seen.insert(relation) {
         return false;
     }
@@ -681,5 +809,13 @@ fn relation_depends_on_visible_transient(
             && rule.rule().body_atoms().any(|atom| {
                 relation_depends_on_visible_transient(tx, transient, scopes, atom.relation(), seen)
             })
+    })
+}
+
+fn relation_is_computed(tx: &Transaction<'_>, relation: RelationId) -> bool {
+    tx.base.relation(relation).is_ok_and(|relation| {
+        tx.base
+            .computed_relations
+            .is_computed_relation(relation.metadata())
     })
 }
