@@ -172,6 +172,21 @@ fn compiled_range_loop_program() -> Arc<Program> {
     )
 }
 
+fn compiled_indexed_range_loop_program() -> Arc<Program> {
+    Arc::new(
+        compile_source(
+            "let total = 0\n\
+             for index, number in 1..16384\n\
+               total = total + index + number\n\
+             end\n\
+             return total",
+            &CompileContext::new(),
+        )
+        .unwrap()
+        .program,
+    )
+}
+
 fn emit_first_arg(
     context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
@@ -249,6 +264,80 @@ fn compiler_range_loop_preserves_native_budget_boundaries() {
     for budget in [1, 8, 1_024, 50_000, 100_000, 131_000] {
         let kernel = RelationKernel::new();
         let program = compiled_range_loop_program();
+        let resolver = Arc::new(ProgramResolver::new());
+        let limits = TaskLimits {
+            instruction_budget: budget,
+            max_retries: 0,
+            max_call_depth: 50,
+        };
+        let mut native = Task::new(
+            1,
+            &kernel,
+            Arc::clone(&program),
+            Arc::clone(&resolver),
+            limits,
+        );
+        let mut interpreted = Task::new(2, &kernel, program, resolver, limits);
+        interpreted.vm_mut().disable_native_execution();
+
+        assert!(matches!(
+            native.run(),
+            Err(TaskError::Runtime(
+                RuntimeError::InstructionBudgetExceeded { .. }
+            ))
+        ));
+        assert!(matches!(
+            interpreted.run(),
+            Err(TaskError::Runtime(
+                RuntimeError::InstructionBudgetExceeded { .. }
+            ))
+        ));
+        assert_eq!(
+            native.vm().snapshot_state(),
+            interpreted.vm().snapshot_state(),
+            "budget {budget}",
+        );
+    }
+}
+
+#[test]
+fn compiler_indexed_range_loop_matches_native_and_interpreted_execution() {
+    let kernel = RelationKernel::new();
+    let program = compiled_indexed_range_loop_program();
+    let resolver = Arc::new(ProgramResolver::new());
+    let limits = TaskLimits {
+        instruction_budget: 163_851,
+        max_retries: 0,
+        max_call_depth: 50,
+    };
+    let mut native = Task::new(
+        1,
+        &kernel,
+        Arc::clone(&program),
+        Arc::clone(&resolver),
+        limits,
+    );
+    let mut interpreted = Task::new(2, &kernel, program, resolver, limits);
+    interpreted.vm_mut().disable_native_execution();
+
+    let native_outcome = native.run().unwrap();
+    let interpreted_outcome = interpreted.run().unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert!(matches!(
+        native_outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(268_435_456).unwrap()
+    ));
+    assert_eq!(
+        native.vm().snapshot_state(),
+        interpreted.vm().snapshot_state()
+    );
+}
+
+#[test]
+fn compiler_indexed_range_loop_preserves_native_budget_boundaries() {
+    for budget in [1, 8, 1_024, 50_000, 100_000, 160_000, 163_850] {
+        let kernel = RelationKernel::new();
+        let program = compiled_indexed_range_loop_program();
         let resolver = Arc::new(ProgramResolver::new());
         let limits = TaskLimits {
             instruction_budget: budget,

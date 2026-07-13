@@ -114,6 +114,20 @@ fn range_value_plan() -> NaturalLoopPlan {
     .unwrap()
 }
 
+fn range_key_plan() -> NaturalLoopPlan {
+    NaturalLoopPlan::new(
+        2,
+        1,
+        0,
+        [NaturalLoopInstruction::RangeKeyAt {
+            dst: 0,
+            view: 0,
+            index: 1,
+        }],
+    )
+    .unwrap()
+}
+
 #[test]
 fn generated_range_value_at_emits_checked_integer_values_without_helpers() {
     let compiled = CompiledNaturalLoop::compile(&range_value_plan()).unwrap();
@@ -148,6 +162,36 @@ fn generated_range_value_at_side_exits_on_invalid_indices_and_bounds() {
         let mut scratch = [bits(Value::nothing()), index];
         assert_eq!(
             compiled.run(&mut scratch, &[range], 1),
+            NaturalLoopOutcome::SideExit,
+        );
+    }
+}
+
+#[test]
+fn generated_range_key_at_emits_checked_zero_based_ordinals_without_helpers() {
+    let compiled = CompiledNaturalLoop::compile(&range_key_plan()).unwrap();
+    let range = [NaturalLoopRangeView::new(10, 20).unwrap()];
+    let mut scratch = [bits(Value::nothing()), int_bits(7)];
+
+    assert_eq!(
+        compiled.run(&mut scratch, &range, 1),
+        NaturalLoopOutcome::Complete {
+            instructions: 1,
+            modified_slots: 1,
+        },
+    );
+    assert_eq!(value(scratch[0]).as_int(), Some(7));
+    assert_eq!(compiled.imported_helper_count(), 0);
+}
+
+#[test]
+fn generated_range_key_at_side_exits_on_invalid_ordinals() {
+    let compiled = CompiledNaturalLoop::compile(&range_key_plan()).unwrap();
+    let range = [NaturalLoopRangeView::new(10, 20).unwrap()];
+    for index in [int_bits(-1), bits(Value::float(1.0).unwrap())] {
+        let mut scratch = [bits(Value::nothing()), index];
+        assert_eq!(
+            compiled.run(&mut scratch, &range, 1),
             NaturalLoopOutcome::SideExit,
         );
     }
