@@ -37,7 +37,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "cranelift")]
-use mica_vm_cranelift::{IntegerLoopOutcome, NaturalLoopOutcome};
+use mica_vm_cranelift::{IntegerComparison, IntegerLoopOutcome, NaturalLoopOutcome};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
@@ -1465,7 +1465,13 @@ impl RegisterVm {
         }
         let current = self.read_register_unchecked(site.current).as_int()?;
         let limit = self.read_register_unchecked(site.limit).as_int()?;
-        let compile = native_integer_loop_is_profitable(current, site.step, limit, max_iterations);
+        let compile = natural_integer_loop_is_profitable(
+            current,
+            site.delta,
+            limit,
+            site.comparison,
+            max_iterations,
+        );
         let compiled = program.compiled_natural_integer_loop(branch_ip, compile)?;
         let mut scratch = [0_u64; MAX_NATURAL_LOOP_SLOTS];
         for (slot, register) in site.registers.iter().enumerate() {
@@ -2820,6 +2826,86 @@ fn native_integer_loop_is_profitable(
     }
     let step = i128::from(step);
     let iterations = (distance + step - 1) / step;
+    iterations >= MIN_NATIVE_INTEGER_LOOP_ITERATIONS as i128
+}
+
+#[cfg(feature = "cranelift")]
+fn natural_integer_loop_is_profitable(
+    current: i64,
+    delta: i64,
+    limit: i64,
+    comparison: IntegerComparison,
+    max_iterations: usize,
+) -> bool {
+    if max_iterations < MIN_NATIVE_INTEGER_LOOP_ITERATIONS {
+        return false;
+    }
+    let current = i128::from(current);
+    let delta = i128::from(delta);
+    let limit = i128::from(limit);
+    let unbounded = max_iterations as i128;
+    let iterations = match comparison {
+        IntegerComparison::Equal => {
+            if current != limit {
+                0
+            } else if delta == 0 {
+                unbounded
+            } else {
+                1
+            }
+        }
+        IntegerComparison::NotEqual => {
+            let distance = limit - current;
+            if distance == 0 {
+                0
+            } else if delta == 0 || distance.signum() != delta.signum() || distance % delta != 0 {
+                unbounded
+            } else {
+                distance / delta
+            }
+        }
+        IntegerComparison::LessThan => {
+            let distance = limit - current;
+            if distance <= 0 {
+                0
+            } else if delta <= 0 {
+                unbounded
+            } else {
+                (distance + delta - 1) / delta
+            }
+        }
+        IntegerComparison::LessThanOrEqual => {
+            let distance = limit - current;
+            if distance < 0 {
+                0
+            } else if delta <= 0 {
+                unbounded
+            } else {
+                (distance / delta) + 1
+            }
+        }
+        IntegerComparison::GreaterThan => {
+            let distance = current - limit;
+            if distance <= 0 {
+                0
+            } else if delta >= 0 {
+                unbounded
+            } else {
+                let step = -delta;
+                (distance + step - 1) / step
+            }
+        }
+        IntegerComparison::GreaterThanOrEqual => {
+            let distance = current - limit;
+            if distance < 0 {
+                0
+            } else if delta >= 0 {
+                unbounded
+            } else {
+                (distance / -delta) + 1
+            }
+        }
+    };
     iterations >= MIN_NATIVE_INTEGER_LOOP_ITERATIONS as i128
 }
 

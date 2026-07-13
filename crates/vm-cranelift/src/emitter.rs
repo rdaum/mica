@@ -27,6 +27,29 @@ pub struct EmittedValue {
     is_fast: CraneliftValue,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IntegerComparison {
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+}
+
+impl IntegerComparison {
+    const fn condition_code(self) -> IntCC {
+        match self {
+            Self::Equal => IntCC::Equal,
+            Self::NotEqual => IntCC::NotEqual,
+            Self::LessThan => IntCC::SignedLessThan,
+            Self::LessThanOrEqual => IntCC::SignedLessThanOrEqual,
+            Self::GreaterThan => IntCC::SignedGreaterThan,
+            Self::GreaterThanOrEqual => IntCC::SignedGreaterThanOrEqual,
+        }
+    }
+}
+
 impl EmittedValue {
     pub const fn word(self) -> CraneliftValue {
         self.word
@@ -130,20 +153,85 @@ impl ValueEmitter {
         }
     }
 
-    pub fn emit_checked_int_lt(
+    pub fn emit_checked_int_sub(
         builder: &mut FunctionBuilder<'_>,
         left: CraneliftValue,
         right: CraneliftValue,
     ) -> EmittedValue {
         let left_is_int = Self::emit_is_int(builder, left);
         let right_is_int = Self::emit_is_int(builder, right);
+        let operands_are_ints = builder.ins().band(left_is_int, right_is_int);
+        let left = Self::emit_unbox_int(builder, left);
+        let right = Self::emit_unbox_int(builder, right);
+        let difference = builder.ins().isub(left, right);
+        let in_range = Self::emit_int_in_range(builder, difference);
+        let is_fast = builder.ins().band(operands_are_ints, in_range);
+
+        EmittedValue {
+            word: Self::emit_pack(builder, VALUE_INT_TAG, difference),
+            is_fast,
+        }
+    }
+
+    pub fn emit_checked_int_mul(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        let left_is_int = Self::emit_is_int(builder, left);
+        let right_is_int = Self::emit_is_int(builder, right);
+        let operands_are_ints = builder.ins().band(left_is_int, right_is_int);
+        let left = Self::emit_unbox_int(builder, left);
+        let right = Self::emit_unbox_int(builder, right);
+        let (product, overflow) = builder.ins().smul_overflow(left, right);
+        let no_overflow = builder.ins().icmp_imm(IntCC::Equal, overflow, 0);
+        let in_range = Self::emit_int_in_range(builder, product);
+        let is_fast = builder.ins().band(operands_are_ints, no_overflow);
+        let is_fast = builder.ins().band(is_fast, in_range);
+
+        EmittedValue {
+            word: Self::emit_pack(builder, VALUE_INT_TAG, product),
+            is_fast,
+        }
+    }
+
+    fn emit_int_in_range(
+        builder: &mut FunctionBuilder<'_>,
+        value: CraneliftValue,
+    ) -> CraneliftValue {
+        let above_min =
+            builder
+                .ins()
+                .icmp_imm(IntCC::SignedGreaterThanOrEqual, value, VALUE_INT_MIN);
+        let below_max = builder
+            .ins()
+            .icmp_imm(IntCC::SignedLessThanOrEqual, value, VALUE_INT_MAX);
+        builder.ins().band(above_min, below_max)
+    }
+
+    pub fn emit_checked_int_lt(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        Self::emit_checked_int_compare(builder, left, right, IntegerComparison::LessThan)
+    }
+
+    pub fn emit_checked_int_compare(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+        comparison: IntegerComparison,
+    ) -> EmittedValue {
+        let left_is_int = Self::emit_is_int(builder, left);
+        let right_is_int = Self::emit_is_int(builder, right);
         let is_fast = builder.ins().band(left_is_int, right_is_int);
         let left = Self::emit_unbox_int(builder, left);
         let right = Self::emit_unbox_int(builder, right);
-        let less = builder.ins().icmp(IntCC::SignedLessThan, left, right);
+        let result = builder.ins().icmp(comparison.condition_code(), left, right);
 
         EmittedValue {
-            word: Self::emit_bool(builder, less),
+            word: Self::emit_bool(builder, result),
             is_fast,
         }
     }
@@ -192,7 +280,7 @@ impl ValueEmitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmittedValue, ValueEmitter};
+    use super::{EmittedValue, IntegerComparison, ValueEmitter};
     use cranelift_codegen::Context;
     use cranelift_codegen::ir::{
         AbiParam, InstBuilder, MemFlagsData, Signature, Value as CraneliftValue, types,
@@ -202,7 +290,7 @@ mod tests {
     use cranelift_module::{Linkage, Module, default_libcall_names};
     use mica_var::Value;
     use mica_var::abi::{
-        VALUE_NOTHING_TAG, borrowed_value_bits, from_owned_value_bits, pack_value,
+        VALUE_INT_MAX, VALUE_NOTHING_TAG, borrowed_value_bits, from_owned_value_bits, pack_value,
     };
 
     const STATUS_COMPLETE: u32 = 0;
@@ -316,6 +404,26 @@ mod tests {
     }
 
     #[test]
+    fn emitted_checked_integer_subtract_and_multiply_match_value_arithmetic() {
+        let subtract = Probe::compile(ValueEmitter::emit_checked_int_sub);
+        let multiply = Probe::compile(ValueEmitter::emit_checked_int_mul);
+        for left in [-1_000, -1, 0, 1, 1_000] {
+            for right in [-31, -1, 0, 1, 31] {
+                let left = Value::int(left).unwrap();
+                let right = Value::int(right).unwrap();
+                assert_eq!(subtract.run(&left, &right), left.checked_sub(&right));
+                assert_eq!(multiply.run(&left, &right), left.checked_mul(&right));
+            }
+        }
+        let max = Value::int(VALUE_INT_MAX).unwrap();
+        assert_eq!(multiply.run(&max, &Value::int(2).unwrap()), None);
+        assert_eq!(
+            subtract.run(&Value::float(1.0), &Value::int(1).unwrap()),
+            None,
+        );
+    }
+
+    #[test]
     fn emitted_immediate_equality_matches_value_equality() {
         let probe = Probe::compile(ValueEmitter::emit_immediate_eq);
         let values = [
@@ -338,15 +446,35 @@ mod tests {
 
     #[test]
     fn emitted_integer_comparison_matches_value_ordering() {
-        let probe = Probe::compile(ValueEmitter::emit_checked_int_lt);
-        for left in [-1_000, -1, 0, 1, 1_000] {
-            for right in [-31, -1, 0, 1, 31] {
-                let left = Value::int(left).unwrap();
-                let right = Value::int(right).unwrap();
-                assert_eq!(probe.run(&left, &right), Some(Value::bool(left < right)));
+        let comparisons = [
+            IntegerComparison::Equal,
+            IntegerComparison::NotEqual,
+            IntegerComparison::LessThan,
+            IntegerComparison::LessThanOrEqual,
+            IntegerComparison::GreaterThan,
+            IntegerComparison::GreaterThanOrEqual,
+        ];
+        for comparison in comparisons {
+            let probe = Probe::compile(|builder, left, right| {
+                ValueEmitter::emit_checked_int_compare(builder, left, right, comparison)
+            });
+            for left in [-1_000, -1, 0, 1, 1_000] {
+                for right in [-31, -1, 0, 1, 31] {
+                    let left = Value::int(left).unwrap();
+                    let right = Value::int(right).unwrap();
+                    let expected = match comparison {
+                        IntegerComparison::Equal => left == right,
+                        IntegerComparison::NotEqual => left != right,
+                        IntegerComparison::LessThan => left < right,
+                        IntegerComparison::LessThanOrEqual => left <= right,
+                        IntegerComparison::GreaterThan => left > right,
+                        IntegerComparison::GreaterThanOrEqual => left >= right,
+                    };
+                    assert_eq!(probe.run(&left, &right), Some(Value::bool(expected)));
+                }
             }
+            assert_eq!(probe.run(&Value::float(1.0), &Value::int(1).unwrap()), None,);
         }
-        assert_eq!(probe.run(&Value::float(1.0), &Value::int(1).unwrap()), None);
     }
 
     #[test]
