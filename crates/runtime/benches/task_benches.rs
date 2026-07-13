@@ -35,7 +35,8 @@ const COMPILER_ACCUMULATOR_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 9) +
 const COMPILER_COUNTDOWN_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 9) + 7;
 const COMPILER_ARITHMETIC_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 11) + 7;
 const COMPILER_INTEGER_SURFACE_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 19) + 6;
-const COMPILER_RANGE_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 8) + 10;
+const RANGE_ADMISSION_ITERATIONS: [u64; 4] = [2_048, 4_096, 8_192, 16_384];
+const RANGE_ADMISSION_CONCURRENT_ITERATIONS: [u64; 2] = [8_192, 16_384];
 const REPEATED_DISPATCH_ITERATIONS: u64 = 1_024;
 const THREE_SITE_DISPATCH_ROUNDS: u64 = REPEATED_DISPATCH_ITERATIONS / 3;
 const THREE_SITE_DISPATCHES_PER_TASK: u64 = THREE_SITE_DISPATCH_ROUNDS * 3;
@@ -98,6 +99,7 @@ struct ColdCompilerLoopContext {
     register_count: usize,
     instructions: Arc<[Instruction]>,
     workload: Workload,
+    interpret_only: bool,
 }
 
 impl ColdCompilerLoopContext {
@@ -106,6 +108,7 @@ impl ColdCompilerLoopContext {
             register_count: context.program.register_count(),
             instructions: context.program.instructions().into(),
             workload: context.workload,
+            interpret_only: context.interpret_only,
         }
     }
 
@@ -127,6 +130,12 @@ impl ColdCompilerLoopContext {
 
     fn integer_surface() -> Self {
         Self::from_task_context(TaskBenchContext::compiler_integer_surface_loop())
+    }
+
+    fn range(iterations: u64, interpret_only: bool) -> Self {
+        let mut context = TaskBenchContext::compiler_range_loop_with_iterations(iterations);
+        context.interpret_only = interpret_only;
+        Self::from_task_context(context)
     }
 }
 
@@ -387,9 +396,13 @@ impl TaskBenchContext {
     }
 
     fn compiler_range_loop() -> Self {
+        Self::compiler_range_loop_with_iterations(INTEGER_LOOP_ITERATIONS)
+    }
+
+    fn compiler_range_loop_with_iterations(iterations: u64) -> Self {
         let source = format!(
             "let total = 0\n\
-             for number in 1..{INTEGER_LOOP_ITERATIONS}\n\
+             for number in 1..{iterations}\n\
                total = total + number\n\
              end\n\
              return total",
@@ -400,12 +413,18 @@ impl TaskBenchContext {
         Self::from_program(
             RelationKernel::new(),
             program,
-            Workload::task(COMPILER_RANGE_LOOP_BYTECODES),
+            Workload::task((iterations * 8) + 10),
         )
     }
 
     fn interpreted_compiler_range_loop() -> Self {
         let mut context = Self::compiler_range_loop();
+        context.interpret_only = true;
+        context
+    }
+
+    fn interpreted_compiler_range_loop_with_iterations(iterations: u64) -> Self {
+        let mut context = Self::compiler_range_loop_with_iterations(iterations);
         context.interpret_only = true;
         context
     }
@@ -955,6 +974,7 @@ fn run_cold_compiler_loop(
             Program::new(context.register_count, context.instructions.iter().cloned()).unwrap();
         let mut task =
             TaskBenchContext::from_program(RelationKernel::new(), program, context.workload);
+        task.interpret_only = context.interpret_only;
         task.run_one();
     }
 }
@@ -1307,6 +1327,29 @@ benchmark_main!(
                 .bench("task_three_site_positional_dispatch", run_tasks);
         });
 
+        runner.group::<TaskBenchContext>("range JIT admission warm", |group| {
+            for iterations in RANGE_ADMISSION_ITERATIONS {
+                let interpreted = || {
+                    TaskBenchContext::interpreted_compiler_range_loop_with_iterations(iterations)
+                };
+                let interpreted_name =
+                    format!("range_admission_warm_interpreter_{iterations}_iterations");
+                group
+                    .throughput(Throughput::ops())
+                    .factory(&interpreted)
+                    .bench(&interpreted_name, run_tasks);
+
+                let native_enabled =
+                    || TaskBenchContext::compiler_range_loop_with_iterations(iterations);
+                let native_enabled_name =
+                    format!("range_admission_warm_native_enabled_{iterations}_iterations");
+                group
+                    .throughput(Throughput::ops())
+                    .factory(&native_enabled)
+                    .bench(&native_enabled_name, run_tasks);
+            }
+        });
+
         runner.group::<ColdCompilerLoopContext>("task compiler loop cold", |group| {
             // These cases rebuild the compiler-produced Program so the timing
             // includes program creation, JIT compilation, and task execution.
@@ -1351,6 +1394,26 @@ benchmark_main!(
                     "task_cranelift_compiler_integer_surface_loop_cold",
                     run_cold_compiler_loop,
                 );
+        });
+
+        runner.group::<ColdCompilerLoopContext>("range JIT admission cold", |group| {
+            for iterations in RANGE_ADMISSION_ITERATIONS {
+                let interpreted = || ColdCompilerLoopContext::range(iterations, true);
+                let interpreted_name =
+                    format!("range_admission_cold_interpreter_{iterations}_iterations");
+                group
+                    .throughput(Throughput::ops())
+                    .factory(&interpreted)
+                    .bench(&interpreted_name, run_cold_compiler_loop);
+
+                let native_enabled = || ColdCompilerLoopContext::range(iterations, false);
+                let native_enabled_name =
+                    format!("range_admission_cold_native_enabled_{iterations}_iterations");
+                group
+                    .throughput(Throughput::ops())
+                    .factory(&native_enabled)
+                    .bench(&native_enabled_name, run_cold_compiler_loop);
+            }
         });
 
         let single_worker = [ConcurrentWorker {
@@ -1860,5 +1923,70 @@ benchmark_main!(
                     &concurrent_workers,
                 );
         });
+
+        runner.concurrent_group::<ConcurrentTaskBenchContext>(
+            "range JIT admission concurrent",
+            |group| {
+                for iterations in RANGE_ADMISSION_CONCURRENT_ITERATIONS {
+                    let interpreted = |_| {
+                        ConcurrentTaskBenchContext::from_task_context(
+                            TaskBenchContext::interpreted_compiler_range_loop_with_iterations(
+                                iterations,
+                            ),
+                        )
+                    };
+                    let interpreted_one = format!(
+                        "range_admission_concurrent_interpreter_{iterations}_iterations_1_thread"
+                    );
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecodes"))
+                        .metadata("backend", "interpreter")
+                        .metadata("iterations", iterations.to_string())
+                        .metadata("threads", "1")
+                        .factory(&interpreted)
+                        .bench(&interpreted_one, &single_integer_worker);
+                    let interpreted_four = format!(
+                        "range_admission_concurrent_interpreter_{iterations}_iterations_4_threads"
+                    );
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecodes"))
+                        .metadata("backend", "interpreter")
+                        .metadata("iterations", iterations.to_string())
+                        .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                        .factory(&interpreted)
+                        .bench(&interpreted_four, &concurrent_integer_workers);
+
+                    let cranelift = |_| {
+                        ConcurrentTaskBenchContext::from_task_context(
+                            TaskBenchContext::compiler_range_loop_with_iterations(iterations),
+                        )
+                    };
+                    let cranelift_one = format!(
+                        "range_admission_concurrent_cranelift_{iterations}_iterations_1_thread"
+                    );
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecodes"))
+                        .metadata("backend", "cranelift")
+                        .metadata("iterations", iterations.to_string())
+                        .metadata("threads", "1")
+                        .factory(&cranelift)
+                        .bench(&cranelift_one, &single_integer_worker);
+                    let cranelift_four = format!(
+                        "range_admission_concurrent_cranelift_{iterations}_iterations_4_threads"
+                    );
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecodes"))
+                        .metadata("backend", "cranelift")
+                        .metadata("iterations", iterations.to_string())
+                        .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                        .factory(&cranelift)
+                        .bench(&cranelift_four, &concurrent_integer_workers);
+                }
+            },
+        );
     }
 );

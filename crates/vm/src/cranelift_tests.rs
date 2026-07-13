@@ -306,9 +306,13 @@ fn natural_collection_program(collection: Value) -> Arc<Program> {
 }
 
 fn natural_range_program() -> Arc<Program> {
+    natural_range_program_with_iterations(ITERATIONS)
+}
+
+fn natural_range_program_with_iterations(iterations: usize) -> Arc<Program> {
     natural_collection_program(Value::range(
         Value::int(1).unwrap(),
-        Some(Value::int(ITERATIONS as i64).unwrap()),
+        Some(Value::int(iterations as i64).unwrap()),
     ))
 }
 
@@ -1062,6 +1066,22 @@ fn native_natural_range_loop_matches_interpreter_completion() {
     );
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_range_loop_uses_its_measured_admission_threshold() {
+    for (iterations, expected_compile_attempts) in [(8_191, 0), (8_192, 1)] {
+        let program = natural_range_program_with_iterations(iterations);
+        let mut native = RegisterVm::new(Arc::clone(&program));
+
+        assert_eq!(
+            run(&mut native, (iterations * 8) + 8).unwrap(),
+            VmHostResponse::Complete(
+                Value::int((iterations as i64 * (iterations as i64 + 1)) / 2).unwrap()
+            ),
+        );
+        assert_eq!(program.native_compile_attempts(), expected_compile_attempts);
+    }
 }
 
 #[test]
