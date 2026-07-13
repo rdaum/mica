@@ -24,6 +24,9 @@ use std::sync::Arc;
 pub const INTEGER_LOOP_ITERATIONS: usize = 16_384;
 pub const INTEGER_LOOP_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 3) + 4;
 pub const SCALAR_LOOP_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 8) + 7;
+pub const PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 9) + 10;
+pub const ALTERNATING_BRANCH_LOOP_INSTRUCTIONS: u64 =
+    (INTEGER_LOOP_ITERATIONS as u64 / 2 * 17) + 10;
 pub const STATIC_CALL_COUNT: usize = 8_192;
 pub const STATIC_CALL_INSTRUCTIONS: u64 = (STATIC_CALL_COUNT as u64 * 2) + 1;
 pub const BUILTIN_CALL_COUNT: usize = 16_384;
@@ -146,6 +149,109 @@ pub fn scalar_symbol_loop_fixture() -> ProgramFixture {
     ProgramFixture {
         program: Arc::new(program),
         instruction_count: SCALAR_LOOP_INSTRUCTIONS,
+    }
+}
+
+pub fn predictable_branch_loop_fixture() -> ProgramFixture {
+    branch_loop_fixture(false, PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS)
+}
+
+pub fn alternating_branch_loop_fixture() -> ProgramFixture {
+    branch_loop_fixture(true, ALTERNATING_BRANCH_LOOP_INSTRUCTIONS)
+}
+
+fn branch_loop_fixture(toggle_flag: bool, instruction_count: u64) -> ProgramFixture {
+    let flag_update = if toggle_flag {
+        Instruction::Unary {
+            dst: reg(2),
+            op: RuntimeUnaryOp::Not,
+            src: reg(2),
+        }
+    } else {
+        Instruction::Move {
+            dst: reg(2),
+            src: reg(2),
+        }
+    };
+    let program = Program::new(
+        8,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(0),
+            },
+            Instruction::Load {
+                dst: reg(1),
+                value: int(INTEGER_LOOP_ITERATIONS as i64),
+            },
+            Instruction::Load {
+                dst: reg(2),
+                value: Value::bool(true),
+            },
+            Instruction::Load {
+                dst: reg(3),
+                value: int(0),
+            },
+            Instruction::Load {
+                dst: reg(4),
+                value: int(1),
+            },
+            Instruction::Load {
+                dst: reg(5),
+                value: int(2),
+            },
+            Instruction::Load {
+                dst: reg(7),
+                value: Value::nothing(),
+            },
+            Instruction::Binary {
+                dst: reg(6),
+                op: RuntimeBinaryOp::Lt,
+                left: reg(0),
+                right: reg(1),
+            },
+            Instruction::Branch {
+                condition: reg(6),
+                if_true: 9,
+                if_false: 17,
+            },
+            Instruction::Branch {
+                condition: reg(2),
+                if_true: 10,
+                if_false: 12,
+            },
+            Instruction::Binary {
+                dst: reg(3),
+                op: RuntimeBinaryOp::Add,
+                left: reg(3),
+                right: reg(4),
+            },
+            Instruction::Jump { target: 13 },
+            Instruction::Binary {
+                dst: reg(3),
+                op: RuntimeBinaryOp::Add,
+                left: reg(3),
+                right: reg(5),
+            },
+            flag_update,
+            Instruction::Load {
+                dst: reg(7),
+                value: int(1),
+            },
+            Instruction::Binary {
+                dst: reg(0),
+                op: RuntimeBinaryOp::Add,
+                left: reg(0),
+                right: reg(7),
+            },
+            Instruction::Jump { target: 7 },
+            Instruction::Return { value: r(3) },
+        ],
+    )
+    .unwrap();
+    ProgramFixture {
+        program: Arc::new(program),
+        instruction_count,
     }
 }
 

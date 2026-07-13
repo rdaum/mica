@@ -6204,6 +6204,41 @@ mod tests {
     }
 
     #[test]
+    fn compiled_task_runs_internal_branch_loop() {
+        let context = CompileContext::new();
+        let kernel = RelationKernel::new();
+        let mut task_manager = TaskManager::new(kernel);
+        let submitted = submit_source_task(
+            "let i = 0\n\
+             let total = 0\n\
+             let flag = true\n\
+             while i < 4096\n\
+               if flag\n\
+                 total = total + 1\n\
+               else\n\
+                 total = total + 2\n\
+               end\n\
+               flag = flag == false\n\
+               i = i + 1\n\
+             end\n\
+             return total",
+            &context,
+            &mut task_manager,
+        )
+        .unwrap();
+
+        assert_eq!(
+            submitted.outcome,
+            TaskOutcome::Complete {
+                value: Value::int(6_144).unwrap(),
+                effects: vec![],
+                mailbox_sends: Vec::new(),
+                retries: 0,
+            }
+        );
+    }
+
+    #[test]
     fn compiled_task_runs_break_and_continue() {
         let context = CompileContext::new();
         let kernel = RelationKernel::new();

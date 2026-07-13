@@ -797,7 +797,7 @@ pub(crate) struct NaturalIntegerLoopSite {
     pub(crate) branch_ip: usize,
     pub(crate) body_ip: usize,
     pub(crate) exit_ip: usize,
-    pub(crate) cycle_instruction_count: usize,
+    pub(crate) region_instruction_count: usize,
     pub(crate) registers: Box<[Register]>,
     pub(crate) current: Register,
     pub(crate) delta: i64,
@@ -816,7 +816,7 @@ impl Debug for NaturalIntegerLoopSite {
             .field("branch_ip", &self.branch_ip)
             .field("body_ip", &self.body_ip)
             .field("exit_ip", &self.exit_ip)
-            .field("cycle_instruction_count", &self.cycle_instruction_count)
+            .field("region_instruction_count", &self.region_instruction_count)
             .field("registers", &self.registers)
             .field("current", &self.current)
             .field("delta", &self.delta)
@@ -1163,9 +1163,10 @@ fn recognize_natural_integer_loop(
 
     let header = opcodes.get(header_ip..branch_ip)?;
     let body = opcodes.get(body_ip..backedge_ip)?;
+    let region = opcodes.get(header_ip..exit_ip)?;
     let mut registers = BTreeSet::new();
     registers.insert(*condition);
-    for opcode in body.iter().chain(header.iter()) {
+    for opcode in region {
         collect_natural_loop_registers(opcode, constants, &mut registers)?;
     }
     if registers.len() > MAX_NATURAL_LOOP_SLOTS {
@@ -1178,19 +1179,14 @@ fn recognize_natural_integer_loop(
             .ok()
             .and_then(|slot| u16::try_from(slot).ok())
     };
-    let body_plan = body
+    let instructions = region
         .iter()
-        .map(|opcode| natural_loop_instruction(opcode, constants, &slot))
-        .collect::<Option<Vec<_>>>()?;
-    let header_plan = header
-        .iter()
-        .map(|opcode| natural_loop_instruction(opcode, constants, &slot))
+        .map(|opcode| natural_loop_instruction(opcode, constants, &slot, header_ip, exit_ip))
         .collect::<Option<Vec<_>>>()?;
     let plan = NaturalLoopPlan::new(
         u16::try_from(registers.len()).ok()?,
-        slot(*condition)?,
-        body_plan,
-        header_plan,
+        u16::try_from(body_ip.checked_sub(header_ip)?).ok()?,
+        instructions,
     )
     .ok()?;
     let (current, delta, limit, comparison) =
@@ -1200,7 +1196,7 @@ fn recognize_natural_integer_loop(
         branch_ip,
         body_ip,
         exit_ip,
-        cycle_instruction_count: body.len() + header.len() + 2,
+        region_instruction_count: region.len(),
         registers,
         current,
         delta,
@@ -1243,6 +1239,10 @@ fn collect_natural_loop_registers(
             registers.insert(*left);
             registers.insert(*right);
         }
+        Opcode::Branch { condition, .. } => {
+            registers.insert(*condition);
+        }
+        Opcode::Jump { .. } => {}
         _ => return None,
     }
     Some(())
@@ -1253,7 +1253,16 @@ fn natural_loop_instruction(
     opcode: &Opcode,
     constants: &[Value],
     slot: &impl Fn(Register) -> Option<u16>,
+    region_start: usize,
+    region_end: usize,
 ) -> Option<NaturalLoopInstruction> {
+    let target = |target: Target| {
+        let target = usize::from(target.0);
+        if !(region_start..=region_end).contains(&target) {
+            return None;
+        }
+        u16::try_from(target - region_start).ok()
+    };
     match opcode {
         Opcode::Load { dst, value } => Some(NaturalLoopInstruction::Load {
             dst: slot(*dst)?,
@@ -1339,6 +1348,20 @@ fn natural_loop_instruction(
             comparison: scalar_comparison(*op)?,
             left: slot(*left)?,
             right: slot(*right)?,
+        }),
+        Opcode::Branch {
+            condition,
+            if_true,
+            if_false,
+        } => Some(NaturalLoopInstruction::Branch {
+            condition: slot(*condition)?,
+            if_true: target(*if_true)?,
+            if_false: target(*if_false)?,
+        }),
+        Opcode::Jump {
+            target: jump_target,
+        } => Some(NaturalLoopInstruction::Jump {
+            target: target(*jump_target)?,
         }),
         _ => None,
     }

@@ -38,8 +38,23 @@ fn int_bits(value: i64) -> u64 {
 fn plan(limit: i64) -> NaturalLoopPlan {
     NaturalLoopPlan::new(
         7,
-        CONDITION,
+        3,
         [
+            NaturalLoopInstruction::Load {
+                dst: LIMIT,
+                value: int_bits(limit),
+            },
+            NaturalLoopInstruction::Compare {
+                dst: CONDITION,
+                comparison: ScalarComparison::LessThan,
+                left: CURRENT,
+                right: LIMIT,
+            },
+            NaturalLoopInstruction::Branch {
+                condition: CONDITION,
+                if_true: 3,
+                if_false: 9,
+            },
             NaturalLoopInstruction::Load {
                 dst: STEP,
                 value: int_bits(1),
@@ -62,18 +77,7 @@ fn plan(limit: i64) -> NaturalLoopPlan {
                 dst: TOTAL,
                 src: NEXT_TOTAL,
             },
-        ],
-        [
-            NaturalLoopInstruction::Load {
-                dst: LIMIT,
-                value: int_bits(limit),
-            },
-            NaturalLoopInstruction::Compare {
-                dst: CONDITION,
-                comparison: ScalarComparison::LessThan,
-                left: CURRENT,
-                right: LIMIT,
-            },
+            NaturalLoopInstruction::Jump { target: 0 },
         ],
     )
     .unwrap()
@@ -100,8 +104,11 @@ fn generated_natural_loop_completes_compiler_shaped_accumulation() {
     let compiled = CompiledNaturalLoop::compile(&plan(16_384)).unwrap();
     let mut scratch = scratch(16_384);
     assert_eq!(
-        compiled.run(&mut scratch, 16_384),
-        NaturalLoopOutcome::Complete { iterations: 16_384 },
+        compiled.run(&mut scratch, 16_384 * 9),
+        NaturalLoopOutcome::Complete {
+            instructions: 16_384 * 9,
+            modified_slots: 0x7f,
+        },
     );
     assert_eq!(value(scratch[CURRENT as usize]).as_int(), Some(16_384));
     assert_eq!(value(scratch[TOTAL as usize]).as_int(), Some(134_225_920),);
@@ -111,12 +118,16 @@ fn generated_natural_loop_completes_compiler_shaped_accumulation() {
 }
 
 #[test]
-fn generated_natural_loop_stops_at_a_whole_cycle_budget() {
+fn generated_natural_loop_stops_at_an_exact_instruction_budget() {
     let compiled = CompiledNaturalLoop::compile(&plan(16_384)).unwrap();
     let mut scratch = scratch(16_384);
     assert_eq!(
-        compiled.run(&mut scratch, 10),
-        NaturalLoopOutcome::BudgetExhausted { iterations: 10 },
+        compiled.run(&mut scratch, 90),
+        NaturalLoopOutcome::BudgetExhausted {
+            instructions: 90,
+            resume: 3,
+            modified_slots: 0x7f,
+        },
     );
     assert_eq!(value(scratch[CURRENT as usize]).as_int(), Some(10));
     assert_eq!(value(scratch[TOTAL as usize]).as_int(), Some(55));
@@ -130,7 +141,7 @@ fn generated_natural_loop_side_exits_on_mixed_arithmetic() {
     let mixed = Value::string("not an integer");
     scratch[TOTAL as usize] = borrowed_value_bits(&mixed);
     assert_eq!(
-        compiled.run(&mut scratch, 16_384),
+        compiled.run(&mut scratch, 16_384 * 9),
         NaturalLoopOutcome::SideExit,
     );
 }
@@ -146,7 +157,7 @@ fn generated_natural_loop_executes_concurrently() {
         threads.push(std::thread::spawn(move || {
             let mut scratch = scratch(16_384);
             barrier.wait();
-            let outcome = compiled.run(&mut scratch, 16_384);
+            let outcome = compiled.run(&mut scratch, 16_384 * 9);
             (outcome, value(scratch[TOTAL as usize]).as_int())
         }));
     }
@@ -154,7 +165,10 @@ fn generated_natural_loop_executes_concurrently() {
         assert_eq!(
             thread.join().unwrap(),
             (
-                NaturalLoopOutcome::Complete { iterations: 16_384 },
+                NaturalLoopOutcome::Complete {
+                    instructions: 16_384 * 9,
+                    modified_slots: 0x7f,
+                },
                 Some(134_225_920),
             ),
         );

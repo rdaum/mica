@@ -28,7 +28,7 @@ const STATUS_COMPLETE: u32 = 0;
 const STATUS_BUDGET_EXHAUSTED: u32 = 1;
 const STATUS_SIDE_EXIT: u32 = 2;
 
-type NaturalLoopFunction = unsafe extern "C" fn(*mut u64, u64, *mut u64) -> u32;
+type NaturalLoopFunction = unsafe extern "C" fn(*mut u64, u64, *mut u64, *mut u32, *mut u32) -> u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NaturalLoopInstruction {
@@ -79,24 +79,17 @@ pub enum NaturalLoopInstruction {
         left: u16,
         right: u16,
     },
+    Branch {
+        condition: u16,
+        if_true: u16,
+        if_false: u16,
+    },
+    Jump {
+        target: u16,
+    },
 }
 
 impl NaturalLoopInstruction {
-    fn dst(self) -> u16 {
-        match self {
-            Self::Load { dst, .. }
-            | Self::Move { dst, .. }
-            | Self::Negate { dst, .. }
-            | Self::Not { dst, .. }
-            | Self::Add { dst, .. }
-            | Self::Subtract { dst, .. }
-            | Self::Multiply { dst, .. }
-            | Self::Divide { dst, .. }
-            | Self::Remainder { dst, .. }
-            | Self::Compare { dst, .. } => dst,
-        }
-    }
-
     fn slots(self) -> [Option<u16>; 3] {
         match self {
             Self::Load { dst, .. } => [Some(dst), None, None],
@@ -111,6 +104,8 @@ impl NaturalLoopInstruction {
             | Self::Compare {
                 dst, left, right, ..
             } => [Some(dst), Some(left), Some(right)],
+            Self::Branch { condition, .. } => [Some(condition), None, None],
+            Self::Jump { .. } => [None, None, None],
         }
     }
 }
@@ -118,36 +113,30 @@ impl NaturalLoopInstruction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NaturalLoopPlan {
     slot_count: u16,
-    condition: u16,
-    body: Box<[NaturalLoopInstruction]>,
-    header: Box<[NaturalLoopInstruction]>,
-    modified_slots: Box<[u16]>,
+    entry: u16,
+    instructions: Box<[NaturalLoopInstruction]>,
 }
 
 impl NaturalLoopPlan {
     pub fn new(
         slot_count: u16,
-        condition: u16,
-        body: impl Into<Box<[NaturalLoopInstruction]>>,
-        header: impl Into<Box<[NaturalLoopInstruction]>>,
+        entry: u16,
+        instructions: impl Into<Box<[NaturalLoopInstruction]>>,
     ) -> Result<Self, NaturalLoopError> {
-        let body = body.into();
-        let header = header.into();
-        if slot_count == 0 || condition >= slot_count {
+        let instructions = instructions.into();
+        if slot_count == 0 || slot_count > 32 || usize::from(entry) >= instructions.len() {
             return Err(NaturalLoopError(
                 "natural loop has an invalid slot layout".to_owned(),
             ));
         }
-        if body.is_empty() || header.is_empty() {
+        if instructions.is_empty() || instructions.len() > usize::from(u16::MAX) {
             return Err(NaturalLoopError(
-                "natural loop body and header must not be empty".to_owned(),
+                "natural loop instruction layout is invalid".to_owned(),
             ));
         }
 
-        let mut immediate = vec![false; usize::from(slot_count)];
-        let mut modified = vec![false; usize::from(slot_count)];
-        let mut condition_is_comparison = false;
-        for instruction in body.iter().chain(header.iter()) {
+        let exit = u16::try_from(instructions.len()).expect("instruction length checked above");
+        for instruction in &instructions {
             for slot in instruction.slots().into_iter().flatten() {
                 if slot >= slot_count {
                     return Err(NaturalLoopError(
@@ -156,66 +145,35 @@ impl NaturalLoopPlan {
                 }
             }
             match *instruction {
-                NaturalLoopInstruction::Load { dst, value } => {
-                    if !value_is_immediate(value) {
-                        return Err(NaturalLoopError(
-                            "natural loop constants must use immediate values".to_owned(),
-                        ));
-                    }
-                    immediate[usize::from(dst)] = true;
+                NaturalLoopInstruction::Load { value, .. } if !value_is_immediate(value) => {
+                    return Err(NaturalLoopError(
+                        "natural loop constants must use immediate values".to_owned(),
+                    ));
                 }
-                NaturalLoopInstruction::Move { dst, src } => {
-                    if !immediate[usize::from(src)] {
-                        return Err(NaturalLoopError(
-                            "natural loop moves must consume a checked immediate result".to_owned(),
-                        ));
-                    }
-                    immediate[usize::from(dst)] = true;
+                NaturalLoopInstruction::Branch {
+                    if_true, if_false, ..
+                } if if_true > exit || if_false > exit => {
+                    return Err(NaturalLoopError(
+                        "natural loop branch target is outside the compiled region".to_owned(),
+                    ));
                 }
-                NaturalLoopInstruction::Negate { dst, .. }
-                | NaturalLoopInstruction::Not { dst, .. }
-                | NaturalLoopInstruction::Add { dst, .. }
-                | NaturalLoopInstruction::Subtract { dst, .. }
-                | NaturalLoopInstruction::Multiply { dst, .. }
-                | NaturalLoopInstruction::Divide { dst, .. }
-                | NaturalLoopInstruction::Remainder { dst, .. }
-                | NaturalLoopInstruction::Compare { dst, .. } => {
-                    immediate[usize::from(dst)] = true;
+                NaturalLoopInstruction::Jump { target } if target > exit => {
+                    return Err(NaturalLoopError(
+                        "natural loop jump target is outside the compiled region".to_owned(),
+                    ));
                 }
-            }
-            let dst = instruction.dst();
-            modified[usize::from(dst)] = true;
-            if dst == condition {
-                condition_is_comparison =
-                    matches!(instruction, NaturalLoopInstruction::Compare { .. });
+                _ => {}
             }
         }
-        if !condition_is_comparison {
-            return Err(NaturalLoopError(
-                "natural loop condition must be produced by a scalar comparison".to_owned(),
-            ));
-        }
-        let modified_slots = modified
-            .into_iter()
-            .enumerate()
-            .filter_map(|(slot, modified)| modified.then_some(slot as u16))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
         Ok(Self {
             slot_count,
-            condition,
-            body,
-            header,
-            modified_slots,
+            entry,
+            instructions,
         })
     }
 
     pub const fn slot_count(&self) -> u16 {
         self.slot_count
-    }
-
-    pub fn modified_slots(&self) -> &[u16] {
-        &self.modified_slots
     }
 }
 
@@ -232,8 +190,15 @@ impl Error for NaturalLoopError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NaturalLoopOutcome {
-    Complete { iterations: u64 },
-    BudgetExhausted { iterations: u64 },
+    Complete {
+        instructions: u64,
+        modified_slots: u32,
+    },
+    BudgetExhausted {
+        instructions: u64,
+        resume: u16,
+        modified_slots: u32,
+    },
     SideExit,
 }
 
@@ -262,6 +227,8 @@ impl CompiledNaturalLoop {
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(types::I64));
         signature.params.push(AbiParam::new(pointer_type));
+        signature.params.push(AbiParam::new(pointer_type));
+        signature.params.push(AbiParam::new(pointer_type));
         signature.returns.push(AbiParam::new(types::I32));
 
         let function_id = module
@@ -277,7 +244,7 @@ impl CompiledNaturalLoop {
         module
             .define_function(function_id, &mut context)
             .map_err(|error| {
-                NaturalLoopError(format!("could not compile natural loop: {error}"))
+                NaturalLoopError(format!("could not compile natural loop: {error:?}"))
             })?;
         let code_size = context
             .compiled_code()
@@ -305,85 +272,172 @@ impl CompiledNaturalLoop {
     ) {
         let mut builder = FunctionBuilder::new(&mut context.func, builder_context);
         let entry = builder.create_block();
-        let loop_header = builder.create_block();
-        let cycle = builder.create_block();
-        let dispatch = builder.create_block();
         let complete = builder.create_block();
         let budget_exhausted = builder.create_block();
         let side_exit = builder.create_block();
+        let instruction_blocks = plan
+            .instructions
+            .iter()
+            .map(|_| builder.create_block())
+            .collect::<Vec<_>>();
+        let execute_blocks = plan
+            .instructions
+            .iter()
+            .map(|_| builder.create_block())
+            .collect::<Vec<_>>();
+        let branch_dispatch = plan
+            .instructions
+            .iter()
+            .map(|instruction| {
+                matches!(instruction, NaturalLoopInstruction::Branch { .. })
+                    .then(|| builder.create_block())
+            })
+            .collect::<Vec<_>>();
 
         builder.append_block_params_for_function_params(entry);
-        builder.append_block_param(loop_header, types::I64);
-        builder.append_block_param(cycle, types::I64);
-        builder.append_block_param(dispatch, types::I64);
-        builder.append_block_param(dispatch, types::I8);
         builder.append_block_param(complete, types::I64);
+        builder.append_block_param(complete, types::I32);
         builder.append_block_param(budget_exhausted, types::I64);
+        builder.append_block_param(budget_exhausted, types::I32);
+        builder.append_block_param(budget_exhausted, types::I32);
+        for block in instruction_blocks.iter().chain(execute_blocks.iter()) {
+            builder.append_block_param(*block, types::I64);
+            builder.append_block_param(*block, types::I32);
+        }
+        for block in branch_dispatch.iter().flatten() {
+            builder.append_block_param(*block, types::I64);
+            builder.append_block_param(*block, types::I32);
+            builder.append_block_param(*block, types::I8);
+        }
 
         builder.switch_to_block(entry);
         let params = builder.block_params(entry).to_vec();
         let scratch = params[0];
-        let max_iterations = params[1];
-        let iterations_out = params[2];
-        let zero = builder.ins().iconst(types::I64, 0);
-        builder.ins().jump(loop_header, &[zero.into()]);
-
-        builder.switch_to_block(loop_header);
-        let iterations = builder.block_params(loop_header)[0];
-        let has_budget = builder
-            .ins()
-            .icmp(IntCC::UnsignedLessThan, iterations, max_iterations);
-        builder.ins().brif(
-            has_budget,
-            cycle,
-            &[iterations.into()],
-            budget_exhausted,
-            &[iterations.into()],
+        let instruction_budget = params[1];
+        let instructions_out = params[2];
+        let resume_out = params[3];
+        let modified_slots_out = params[4];
+        let zero_instructions = builder.ins().iconst(types::I64, 0);
+        let zero_slots = builder.ins().iconst(types::I32, 0);
+        builder.ins().jump(
+            instruction_blocks[usize::from(plan.entry)],
+            &[zero_instructions.into(), zero_slots.into()],
         );
 
-        builder.switch_to_block(cycle);
-        let iterations = builder.block_params(cycle)[0];
-        let mut is_fast = builder.ins().iconst(types::I8, 1);
-        for instruction in plan.body.iter().chain(plan.header.iter()) {
-            is_fast = Self::emit_instruction(&mut builder, scratch, *instruction, is_fast);
+        for (index, instruction) in plan.instructions.iter().copied().enumerate() {
+            let instruction_block = instruction_blocks[index];
+            let execute_block = execute_blocks[index];
+            builder.switch_to_block(instruction_block);
+            let instructions = builder.block_params(instruction_block)[0];
+            let modified_slots = builder.block_params(instruction_block)[1];
+            let has_budget =
+                builder
+                    .ins()
+                    .icmp(IntCC::UnsignedLessThan, instructions, instruction_budget);
+            let resume = builder.ins().iconst(types::I32, index as i64);
+            builder.ins().brif(
+                has_budget,
+                execute_block,
+                &[instructions.into(), modified_slots.into()],
+                budget_exhausted,
+                &[instructions.into(), resume.into(), modified_slots.into()],
+            );
+
+            builder.switch_to_block(execute_block);
+            let instructions = builder.block_params(execute_block)[0];
+            let modified_slots = builder.block_params(execute_block)[1];
+            let one = builder.ins().iconst(types::I64, 1);
+            let instructions = builder.ins().iadd(instructions, one);
+
+            match instruction {
+                NaturalLoopInstruction::Branch {
+                    condition,
+                    if_true,
+                    if_false,
+                } => {
+                    let condition = Self::load_slot(&mut builder, scratch, condition);
+                    let truth = ValueEmitter::emit_truthy(&mut builder, condition);
+                    let truth_payload = ValueEmitter::emit_payload(&mut builder, truth.word());
+                    let truth_value = builder.ins().icmp_imm(IntCC::NotEqual, truth_payload, 0);
+                    let dispatch = branch_dispatch[index].expect("branch dispatch block");
+                    builder.ins().brif(
+                        truth.is_fast(),
+                        dispatch,
+                        &[
+                            instructions.into(),
+                            modified_slots.into(),
+                            truth_value.into(),
+                        ],
+                        side_exit,
+                        &[],
+                    );
+
+                    builder.switch_to_block(dispatch);
+                    let instructions = builder.block_params(dispatch)[0];
+                    let modified_slots = builder.block_params(dispatch)[1];
+                    let truth_value = builder.block_params(dispatch)[2];
+                    let if_true = Self::target_block(&instruction_blocks, complete, if_true);
+                    let if_false = Self::target_block(&instruction_blocks, complete, if_false);
+                    builder.ins().brif(
+                        truth_value,
+                        if_true,
+                        &[instructions.into(), modified_slots.into()],
+                        if_false,
+                        &[instructions.into(), modified_slots.into()],
+                    );
+                }
+                NaturalLoopInstruction::Jump { target } => {
+                    let target = Self::target_block(&instruction_blocks, complete, target);
+                    builder
+                        .ins()
+                        .jump(target, &[instructions.into(), modified_slots.into()]);
+                }
+                instruction => {
+                    let (is_fast, dst) = Self::emit_instruction(&mut builder, scratch, instruction);
+                    let slot_bit = 1_u32 << dst;
+                    let slot_bit = builder.ins().iconst(types::I32, i64::from(slot_bit));
+                    let modified_slots = builder.ins().bor(modified_slots, slot_bit);
+                    let next = Self::target_block(
+                        &instruction_blocks,
+                        complete,
+                        u16::try_from(index + 1).expect("plan length validated"),
+                    );
+                    builder.ins().brif(
+                        is_fast,
+                        next,
+                        &[instructions.into(), modified_slots.into()],
+                        side_exit,
+                        &[],
+                    );
+                }
+            }
         }
-        let one = builder.ins().iconst(types::I64, 1);
-        let iterations = builder.ins().iadd(iterations, one);
-        let condition = Self::load_slot(&mut builder, scratch, plan.condition);
-        let condition = ValueEmitter::emit_payload(&mut builder, condition);
-        let keep_looping = builder.ins().icmp_imm(IntCC::NotEqual, condition, 0);
-        builder.ins().brif(
-            is_fast,
-            dispatch,
-            &[iterations.into(), keep_looping.into()],
-            side_exit,
-            &[],
-        );
-
-        builder.switch_to_block(dispatch);
-        let iterations = builder.block_params(dispatch)[0];
-        let keep_looping = builder.block_params(dispatch)[1];
-        builder.ins().brif(
-            keep_looping,
-            loop_header,
-            &[iterations.into()],
-            complete,
-            &[iterations.into()],
-        );
 
         builder.switch_to_block(complete);
-        let iterations = builder.block_params(complete)[0];
+        let instructions = builder.block_params(complete)[0];
+        let modified_slots = builder.block_params(complete)[1];
         builder
             .ins()
-            .store(MemFlagsData::new(), iterations, iterations_out, 0);
+            .store(MemFlagsData::new(), instructions, instructions_out, 0);
+        builder
+            .ins()
+            .store(MemFlagsData::new(), modified_slots, modified_slots_out, 0);
         let status = builder.ins().iconst(types::I32, i64::from(STATUS_COMPLETE));
         builder.ins().return_(&[status]);
 
         builder.switch_to_block(budget_exhausted);
-        let iterations = builder.block_params(budget_exhausted)[0];
+        let instructions = builder.block_params(budget_exhausted)[0];
+        let resume = builder.block_params(budget_exhausted)[1];
+        let modified_slots = builder.block_params(budget_exhausted)[2];
         builder
             .ins()
-            .store(MemFlagsData::new(), iterations, iterations_out, 0);
+            .store(MemFlagsData::new(), instructions, instructions_out, 0);
+        builder
+            .ins()
+            .store(MemFlagsData::new(), resume, resume_out, 0);
+        builder
+            .ins()
+            .store(MemFlagsData::new(), modified_slots, modified_slots_out, 0);
         let status = builder
             .ins()
             .iconst(types::I32, i64::from(STATUS_BUDGET_EXHAUSTED));
@@ -399,69 +453,80 @@ impl CompiledNaturalLoop {
         builder.finalize();
     }
 
+    fn target_block(
+        instruction_blocks: &[cranelift_codegen::ir::Block],
+        complete: cranelift_codegen::ir::Block,
+        target: u16,
+    ) -> cranelift_codegen::ir::Block {
+        instruction_blocks
+            .get(usize::from(target))
+            .copied()
+            .unwrap_or(complete)
+    }
+
     fn emit_instruction(
         builder: &mut FunctionBuilder<'_>,
         scratch: cranelift_codegen::ir::Value,
         instruction: NaturalLoopInstruction,
-        is_fast: cranelift_codegen::ir::Value,
-    ) -> cranelift_codegen::ir::Value {
+    ) -> (cranelift_codegen::ir::Value, u16) {
         match instruction {
             NaturalLoopInstruction::Load { dst, value } => {
                 let value = builder.ins().iconst(types::I64, value as i64);
                 Self::store_slot(builder, scratch, dst, value);
-                is_fast
+                let is_fast = builder.ins().iconst(types::I8, 1);
+                (is_fast, dst)
             }
             NaturalLoopInstruction::Move { dst, src } => {
                 let value = Self::load_slot(builder, scratch, src);
                 Self::store_slot(builder, scratch, dst, value);
-                is_fast
+                (ValueEmitter::emit_is_immediate(builder, value), dst)
             }
             NaturalLoopInstruction::Negate { dst, src } => {
                 let value = Self::load_slot(builder, scratch, src);
                 let result = ValueEmitter::emit_checked_int_neg(builder, value);
                 Self::store_slot(builder, scratch, dst, result.word());
-                builder.ins().band(is_fast, result.is_fast())
+                (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Not { dst, src } => {
                 let value = Self::load_slot(builder, scratch, src);
                 let result = ValueEmitter::emit_not(builder, value);
                 Self::store_slot(builder, scratch, dst, result.word());
-                builder.ins().band(is_fast, result.is_fast())
+                (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Add { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
                 let result = ValueEmitter::emit_checked_int_add(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
-                builder.ins().band(is_fast, result.is_fast())
+                (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Subtract { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
                 let result = ValueEmitter::emit_checked_int_sub(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
-                builder.ins().band(is_fast, result.is_fast())
+                (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Multiply { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
                 let result = ValueEmitter::emit_checked_int_mul(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
-                builder.ins().band(is_fast, result.is_fast())
+                (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Divide { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
                 let result = ValueEmitter::emit_checked_int_div(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
-                builder.ins().band(is_fast, result.is_fast())
+                (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Remainder { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
                 let result = ValueEmitter::emit_checked_int_rem(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
-                builder.ins().band(is_fast, result.is_fast())
+                (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Compare {
                 dst,
@@ -473,7 +538,10 @@ impl CompiledNaturalLoop {
                 let right = Self::load_slot(builder, scratch, right);
                 let result = ValueEmitter::emit_scalar_compare(builder, left, right, comparison);
                 Self::store_slot(builder, scratch, dst, result.word());
-                builder.ins().band(is_fast, result.is_fast())
+                (result.is_fast(), dst)
+            }
+            NaturalLoopInstruction::Branch { .. } | NaturalLoopInstruction::Jump { .. } => {
+                unreachable!("control-flow instructions are emitted by build_function")
             }
         }
     }
@@ -510,16 +578,32 @@ impl CompiledNaturalLoop {
         self.imported_helper_count
     }
 
-    pub fn run(&self, scratch: &mut [u64], max_iterations: u64) -> NaturalLoopOutcome {
+    pub fn run(&self, scratch: &mut [u64], instruction_budget: u64) -> NaturalLoopOutcome {
         if self.value_abi_version != VALUE_ABI_VERSION || scratch.len() < self.slot_count {
             return NaturalLoopOutcome::SideExit;
         }
-        let mut iterations = 0;
-        let status =
-            unsafe { (self.function)(scratch.as_mut_ptr(), max_iterations, &mut iterations) };
+        let mut instructions = 0;
+        let mut resume = 0;
+        let mut modified_slots = 0;
+        let status = unsafe {
+            (self.function)(
+                scratch.as_mut_ptr(),
+                instruction_budget,
+                &mut instructions,
+                &mut resume,
+                &mut modified_slots,
+            )
+        };
         match status {
-            STATUS_COMPLETE => NaturalLoopOutcome::Complete { iterations },
-            STATUS_BUDGET_EXHAUSTED => NaturalLoopOutcome::BudgetExhausted { iterations },
+            STATUS_COMPLETE => NaturalLoopOutcome::Complete {
+                instructions,
+                modified_slots,
+            },
+            STATUS_BUDGET_EXHAUSTED => NaturalLoopOutcome::BudgetExhausted {
+                instructions,
+                resume: u16::try_from(resume).expect("compiled resume index fits u16"),
+                modified_slots,
+            },
             STATUS_SIDE_EXIT => NaturalLoopOutcome::SideExit,
             status => panic!("generated natural loop returned unknown status {status}"),
         }

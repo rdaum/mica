@@ -27,6 +27,8 @@ const NATURAL_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 7;
 const NATURAL_ARITHMETIC_INSTRUCTION_COUNT: usize = (ITERATIONS * 11) + 7;
 const NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT: usize = (ITERATIONS * 19) + 6;
 const NATURAL_SCALAR_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 7;
+const PREDICTABLE_BRANCH_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 10;
+const ALTERNATING_BRANCH_INSTRUCTION_COUNT: usize = (ITERATIONS / 2 * 17) + 10;
 const MAX_CALL_DEPTH: usize = 8;
 
 #[derive(Default)]
@@ -365,6 +367,105 @@ fn natural_scalar_program() -> (Arc<Program>, Value) {
     )
     .unwrap();
     (Arc::new(program), expected)
+}
+
+fn natural_branch_program(
+    initial_flag: Value,
+    toggle_flag: bool,
+    then_increment: Value,
+    else_increment: Value,
+) -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            8,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(1),
+                    value: Value::int(ITERATIONS as i64).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: initial_flag,
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: then_increment,
+                },
+                Instruction::Load {
+                    dst: register(5),
+                    value: else_increment,
+                },
+                Instruction::Load {
+                    dst: register(7),
+                    value: Value::nothing(),
+                },
+                Instruction::Binary {
+                    dst: register(6),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(0),
+                    right: register(1),
+                },
+                Instruction::Branch {
+                    condition: register(6),
+                    if_true: 9,
+                    if_false: 17,
+                },
+                Instruction::Branch {
+                    condition: register(2),
+                    if_true: 10,
+                    if_false: 12,
+                },
+                Instruction::Binary {
+                    dst: register(3),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(3),
+                    right: register(4),
+                },
+                Instruction::Jump { target: 13 },
+                Instruction::Binary {
+                    dst: register(3),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(3),
+                    right: register(5),
+                },
+                if toggle_flag {
+                    Instruction::Unary {
+                        dst: register(2),
+                        op: RuntimeUnaryOp::Not,
+                        src: register(2),
+                    }
+                } else {
+                    Instruction::Move {
+                        dst: register(2),
+                        src: register(2),
+                    }
+                },
+                Instruction::Load {
+                    dst: register(7),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(0),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(0),
+                    right: register(7),
+                },
+                Instruction::Jump { target: 7 },
+                Instruction::Return {
+                    value: Operand::Register(register(3)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
 }
 
 fn natural_scaled_countdown_program() -> Arc<Program> {
@@ -948,6 +1049,135 @@ fn native_natural_loop_executes_boolean_and_symbol_operations() {
     assert_eq!(native_outcome, VmHostResponse::Complete(expected));
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_loop_executes_predictable_internal_branch_and_join() {
+    let program = natural_branch_program(
+        Value::bool(true),
+        false,
+        Value::int(1).unwrap(),
+        Value::int(2).unwrap(),
+    );
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let native_outcome = run(&mut native, PREDICTABLE_BRANCH_INSTRUCTION_COUNT).unwrap();
+    let interpreted_outcome = run(&mut interpreted, PREDICTABLE_BRANCH_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert_eq!(
+        native_outcome,
+        VmHostResponse::Complete(Value::int(ITERATIONS as i64).unwrap()),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_loop_executes_alternating_internal_branches() {
+    let program = natural_branch_program(
+        Value::bool(true),
+        true,
+        Value::int(1).unwrap(),
+        Value::int(2).unwrap(),
+    );
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let native_outcome = run(&mut native, ALTERNATING_BRANCH_INSTRUCTION_COUNT).unwrap();
+    let interpreted_outcome = run(&mut interpreted, ALTERNATING_BRANCH_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert_eq!(
+        native_outcome,
+        VmHostResponse::Complete(Value::int((ITERATIONS / 2 * 3) as i64).unwrap()),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_branch_loop_preserves_unequal_path_budget_boundaries() {
+    let program = natural_branch_program(
+        Value::bool(true),
+        true,
+        Value::int(1).unwrap(),
+        Value::int(2).unwrap(),
+    );
+    let mut warm = RegisterVm::new(Arc::clone(&program));
+    assert!(run(&mut warm, ALTERNATING_BRANCH_INSTRUCTION_COUNT).is_ok());
+    assert_eq!(program.native_compile_attempts(), 1);
+
+    for budget in (20..=200)
+        .chain((ALTERNATING_BRANCH_INSTRUCTION_COUNT - 12)..=ALTERNATING_BRANCH_INSTRUCTION_COUNT)
+    {
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(Arc::clone(&program));
+        let interpreted_outcome = run(&mut interpreted, budget);
+        let native_outcome = run(&mut native, budget);
+        match (native_outcome, interpreted_outcome) {
+            (Ok(native), Ok(interpreted)) => assert_eq!(native, interpreted, "budget {budget}"),
+            (
+                Err(RuntimeError::InstructionBudgetExceeded { .. }),
+                Err(RuntimeError::InstructionBudgetExceeded { .. }),
+            ) => {}
+            (native, interpreted) => panic!(
+                "budget {budget} produced different outcomes: native={native:?} interpreted={interpreted:?}",
+            ),
+        }
+        assert_eq!(
+            native.snapshot_state(),
+            interpreted.snapshot_state(),
+            "budget {budget}",
+        );
+    }
+}
+
+#[test]
+fn native_branch_loop_side_exits_atomically_from_either_arm() {
+    for (initial_flag, then_increment, else_increment) in [
+        (
+            Value::bool(true),
+            Value::float(1.0).unwrap(),
+            Value::int(2).unwrap(),
+        ),
+        (
+            Value::bool(true),
+            Value::int(1).unwrap(),
+            Value::float(2.0).unwrap(),
+        ),
+    ] {
+        let program = natural_branch_program(initial_flag, true, then_increment, else_increment);
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(Arc::clone(&program));
+
+        assert_eq!(
+            run(&mut native, ALTERNATING_BRANCH_INSTRUCTION_COUNT).unwrap(),
+            run(&mut interpreted, ALTERNATING_BRANCH_INSTRUCTION_COUNT).unwrap(),
+        );
+        assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+        assert_eq!(program.native_compile_attempts(), 1);
+        assert_eq!(native.native_side_exit_count(), 1);
+    }
+}
+
+#[test]
+fn native_branch_loop_side_exit_from_condition_is_atomic() {
+    let program = natural_branch_program(
+        Value::list([]),
+        false,
+        Value::int(1).unwrap(),
+        Value::int(2).unwrap(),
+    );
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    assert_eq!(
+        run(&mut native, ALTERNATING_BRANCH_INSTRUCTION_COUNT).unwrap(),
+        run(&mut interpreted, ALTERNATING_BRANCH_INSTRUCTION_COUNT).unwrap(),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+    assert_eq!(native.native_side_exit_count(), 1);
 }
 
 #[test]
