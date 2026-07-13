@@ -95,14 +95,14 @@ struct ConcurrentTaskBenchContext {
     interpret_only: bool,
 }
 
-struct ColdCompilerLoopContext {
+struct ColdLoopBenchContext {
     register_count: usize,
     instructions: Arc<[Instruction]>,
     workload: Workload,
     interpret_only: bool,
 }
 
-impl ColdCompilerLoopContext {
+impl ColdLoopBenchContext {
     fn from_task_context(context: TaskBenchContext) -> Self {
         Self {
             register_count: context.program.register_count(),
@@ -143,9 +143,15 @@ impl ColdCompilerLoopContext {
         context.interpret_only = interpret_only;
         Self::from_task_context(context)
     }
+
+    fn collection(context: TaskBenchContext, interpret_only: bool) -> Self {
+        let mut context = context;
+        context.interpret_only = interpret_only;
+        Self::from_task_context(context)
+    }
 }
 
-impl BenchContext for ColdCompilerLoopContext {
+impl BenchContext for ColdLoopBenchContext {
     fn prepare(_num_chunks: usize) -> Self {
         Self::counter()
     }
@@ -459,6 +465,206 @@ impl TaskBenchContext {
 
     fn interpreted_compiler_indexed_range_loop() -> Self {
         let mut context = Self::compiler_indexed_range_loop();
+        context.interpret_only = true;
+        context
+    }
+
+    fn indexed_collection_traversal(collection: Value, iterations: u64) -> Self {
+        let program = Program::new(
+            11,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: collection,
+                },
+                Instruction::CollectionLen {
+                    dst: register(1),
+                    collection: register(0),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: int(0),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: int(0),
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: int(1),
+                },
+                Instruction::Binary {
+                    dst: register(5),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(2),
+                    right: register(1),
+                },
+                Instruction::Branch {
+                    condition: register(5),
+                    if_true: 7,
+                    if_false: 15,
+                },
+                Instruction::CollectionKeyAt {
+                    dst: register(6),
+                    collection: register(0),
+                    index: register(2),
+                },
+                Instruction::CollectionValueAt {
+                    dst: register(7),
+                    collection: register(0),
+                    index: register(2),
+                },
+                Instruction::Binary {
+                    dst: register(8),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(3),
+                    right: register(6),
+                },
+                Instruction::Binary {
+                    dst: register(9),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(8),
+                    right: register(7),
+                },
+                Instruction::Move {
+                    dst: register(3),
+                    src: register(9),
+                },
+                Instruction::Binary {
+                    dst: register(10),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(2),
+                    right: register(4),
+                },
+                Instruction::Move {
+                    dst: register(2),
+                    src: register(10),
+                },
+                Instruction::Jump { target: 5 },
+                Instruction::Return { value: operand(3) },
+            ],
+        )
+        .unwrap();
+        Self::from_program(
+            RelationKernel::new(),
+            program,
+            Workload::task((iterations * 10) + 8),
+        )
+    }
+
+    fn list_traversal() -> Self {
+        Self::list_traversal_with_iterations(INTEGER_LOOP_ITERATIONS)
+    }
+
+    fn list_traversal_with_iterations(iterations: u64) -> Self {
+        Self::indexed_collection_traversal(
+            Value::list((1..=iterations as i64).map(int)),
+            iterations,
+        )
+    }
+
+    fn interpreted_list_traversal() -> Self {
+        let mut context = Self::list_traversal();
+        context.interpret_only = true;
+        context
+    }
+
+    fn map_traversal() -> Self {
+        Self::map_traversal_with_iterations(INTEGER_LOOP_ITERATIONS)
+    }
+
+    fn map_traversal_with_iterations(iterations: u64) -> Self {
+        Self::indexed_collection_traversal(
+            Value::map((0..iterations as i64).map(|index| (int(index), int(index + 1)))),
+            iterations,
+        )
+    }
+
+    fn interpreted_map_traversal() -> Self {
+        let mut context = Self::map_traversal();
+        context.interpret_only = true;
+        context
+    }
+
+    fn list_index_loop() -> Self {
+        Self::list_index_loop_with_iterations(INTEGER_LOOP_ITERATIONS)
+    }
+
+    fn list_index_loop_with_iterations(iterations: u64) -> Self {
+        let collection = Value::list((1..=iterations as i64).map(int));
+        let program = Program::new(
+            9,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: collection,
+                },
+                Instruction::Load {
+                    dst: register(1),
+                    value: int(0),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: int(0),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: int(iterations as i64),
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: int(1),
+                },
+                Instruction::Binary {
+                    dst: register(5),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(1),
+                    right: register(3),
+                },
+                Instruction::Branch {
+                    condition: register(5),
+                    if_true: 7,
+                    if_false: 13,
+                },
+                Instruction::Index {
+                    dst: register(6),
+                    collection: register(0),
+                    index: operand(1),
+                },
+                Instruction::Binary {
+                    dst: register(7),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(2),
+                    right: register(6),
+                },
+                Instruction::Move {
+                    dst: register(2),
+                    src: register(7),
+                },
+                Instruction::Binary {
+                    dst: register(8),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(1),
+                    right: register(4),
+                },
+                Instruction::Move {
+                    dst: register(1),
+                    src: register(8),
+                },
+                Instruction::Jump { target: 5 },
+                Instruction::Return { value: operand(2) },
+            ],
+        )
+        .unwrap();
+        Self::from_program(
+            RelationKernel::new(),
+            program,
+            Workload::task((iterations * 8) + 8),
+        )
+    }
+
+    fn interpreted_list_index_loop() -> Self {
+        let mut context = Self::list_index_loop();
         context.interpret_only = true;
         context
     }
@@ -998,11 +1204,7 @@ fn run_tasks(context: &mut TaskBenchContext, chunk_size: usize, _chunk_num: usiz
     }
 }
 
-fn run_cold_compiler_loop(
-    context: &mut ColdCompilerLoopContext,
-    chunk_size: usize,
-    _chunk_num: usize,
-) {
+fn run_cold_loop(context: &mut ColdLoopBenchContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
         let program =
             Program::new(context.register_count, context.instructions.iter().cloned()).unwrap();
@@ -1334,6 +1536,48 @@ benchmark_main!(
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_cranelift_compiler_indexed_range_loop", run_tasks);
 
+            let interpreted_list_traversal = || TaskBenchContext::interpreted_list_traversal();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_list_traversal)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_list_traversal", run_tasks);
+
+            let cranelift_list_traversal = || TaskBenchContext::list_traversal();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_list_traversal)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_list_traversal", run_tasks);
+
+            let interpreted_list_index = || TaskBenchContext::interpreted_list_index_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_list_index)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_list_index_loop", run_tasks);
+
+            let cranelift_list_index = || TaskBenchContext::list_index_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_list_index)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_list_index_loop", run_tasks);
+
+            let interpreted_map_traversal = || TaskBenchContext::interpreted_map_traversal();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_map_traversal)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_map_traversal", run_tasks);
+
+            let cranelift_map_traversal = || TaskBenchContext::map_traversal();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_map_traversal)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_map_traversal", run_tasks);
+
             let read = || TaskBenchContext::indexed_relation_read();
             group
                 .throughput(Throughput::ops())
@@ -1400,90 +1644,152 @@ benchmark_main!(
             }
         });
 
-        runner.group::<ColdCompilerLoopContext>("task compiler loop cold", |group| {
+        runner.group::<ColdLoopBenchContext>("task compiler loop cold", |group| {
             // These cases rebuild the compiler-produced Program so the timing
             // includes program creation, JIT compilation, and task execution.
-            let counter = || ColdCompilerLoopContext::counter();
-            group.throughput(Throughput::ops()).factory(&counter).bench(
-                "task_cranelift_compiler_counter_loop_cold",
-                run_cold_compiler_loop,
-            );
+            let counter = || ColdLoopBenchContext::counter();
+            group
+                .throughput(Throughput::ops())
+                .factory(&counter)
+                .bench("task_cranelift_compiler_counter_loop_cold", run_cold_loop);
 
-            let accumulator = || ColdCompilerLoopContext::accumulator();
+            let accumulator = || ColdLoopBenchContext::accumulator();
             group
                 .throughput(Throughput::ops())
                 .factory(&accumulator)
                 .bench(
                     "task_cranelift_compiler_accumulator_loop_cold",
-                    run_cold_compiler_loop,
+                    run_cold_loop,
                 );
 
-            let countdown = || ColdCompilerLoopContext::countdown();
+            let countdown = || ColdLoopBenchContext::countdown();
             group
                 .throughput(Throughput::ops())
                 .factory(&countdown)
-                .bench(
-                    "task_cranelift_compiler_countdown_loop_cold",
-                    run_cold_compiler_loop,
-                );
+                .bench("task_cranelift_compiler_countdown_loop_cold", run_cold_loop);
 
-            let arithmetic = || ColdCompilerLoopContext::arithmetic();
+            let arithmetic = || ColdLoopBenchContext::arithmetic();
             group
                 .throughput(Throughput::ops())
                 .factory(&arithmetic)
                 .bench(
                     "task_cranelift_compiler_arithmetic_loop_cold",
-                    run_cold_compiler_loop,
+                    run_cold_loop,
                 );
 
-            let integer_surface = || ColdCompilerLoopContext::integer_surface();
+            let integer_surface = || ColdLoopBenchContext::integer_surface();
             group
                 .throughput(Throughput::ops())
                 .factory(&integer_surface)
                 .bench(
                     "task_cranelift_compiler_integer_surface_loop_cold",
-                    run_cold_compiler_loop,
+                    run_cold_loop,
                 );
         });
 
-        runner.group::<ColdCompilerLoopContext>("range JIT admission cold", |group| {
+        runner.group::<ColdLoopBenchContext>("range JIT admission cold", |group| {
             for iterations in RANGE_ADMISSION_ITERATIONS {
-                let interpreted = || ColdCompilerLoopContext::range(iterations, true);
+                let interpreted = || ColdLoopBenchContext::range(iterations, true);
                 let interpreted_name =
                     format!("range_admission_cold_interpreter_{iterations}_iterations");
                 group
                     .throughput(Throughput::ops())
                     .factory(&interpreted)
-                    .bench(&interpreted_name, run_cold_compiler_loop);
+                    .bench(&interpreted_name, run_cold_loop);
 
-                let native_enabled = || ColdCompilerLoopContext::range(iterations, false);
+                let native_enabled = || ColdLoopBenchContext::range(iterations, false);
                 let native_enabled_name =
                     format!("range_admission_cold_native_enabled_{iterations}_iterations");
                 group
                     .throughput(Throughput::ops())
                     .factory(&native_enabled)
-                    .bench(&native_enabled_name, run_cold_compiler_loop);
+                    .bench(&native_enabled_name, run_cold_loop);
             }
         });
 
-        runner.group::<ColdCompilerLoopContext>("indexed range loop cold", |group| {
-            let interpreted = || ColdCompilerLoopContext::indexed_range(8_192, true);
+        runner.group::<ColdLoopBenchContext>("indexed range loop cold", |group| {
+            let interpreted = || ColdLoopBenchContext::indexed_range(8_192, true);
             group
                 .throughput(Throughput::ops())
                 .factory(&interpreted)
                 .bench(
                     "indexed_range_cold_interpreter_8192_iterations",
-                    run_cold_compiler_loop,
+                    run_cold_loop,
                 );
 
-            let native_enabled = || ColdCompilerLoopContext::indexed_range(8_192, false);
+            let native_enabled = || ColdLoopBenchContext::indexed_range(8_192, false);
             group
                 .throughput(Throughput::ops())
                 .factory(&native_enabled)
                 .bench(
                     "indexed_range_cold_native_enabled_8192_iterations",
-                    run_cold_compiler_loop,
+                    run_cold_loop,
                 );
+        });
+
+        runner.group::<ColdLoopBenchContext>("collection loop cold", |group| {
+            let interpreted_list = || {
+                ColdLoopBenchContext::collection(
+                    TaskBenchContext::list_traversal_with_iterations(8_192),
+                    true,
+                )
+            };
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_list)
+                .bench("list_traversal_cold_interpreter", run_cold_loop);
+            let native_list = || {
+                ColdLoopBenchContext::collection(
+                    TaskBenchContext::list_traversal_with_iterations(8_192),
+                    false,
+                )
+            };
+            group
+                .throughput(Throughput::ops())
+                .factory(&native_list)
+                .bench("list_traversal_cold_cranelift", run_cold_loop);
+
+            let interpreted_index = || {
+                ColdLoopBenchContext::collection(
+                    TaskBenchContext::list_index_loop_with_iterations(8_192),
+                    true,
+                )
+            };
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_index)
+                .bench("list_index_cold_interpreter", run_cold_loop);
+            let native_index = || {
+                ColdLoopBenchContext::collection(
+                    TaskBenchContext::list_index_loop_with_iterations(8_192),
+                    false,
+                )
+            };
+            group
+                .throughput(Throughput::ops())
+                .factory(&native_index)
+                .bench("list_index_cold_cranelift", run_cold_loop);
+
+            let interpreted_map = || {
+                ColdLoopBenchContext::collection(
+                    TaskBenchContext::map_traversal_with_iterations(8_192),
+                    true,
+                )
+            };
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_map)
+                .bench("map_traversal_cold_interpreter", run_cold_loop);
+            let native_map = || {
+                ColdLoopBenchContext::collection(
+                    TaskBenchContext::map_traversal_with_iterations(8_192),
+                    false,
+                )
+            };
+            group
+                .throughput(Throughput::ops())
+                .factory(&native_map)
+                .bench("map_traversal_cold_cranelift", run_cold_loop);
         });
 
         let single_worker = [ConcurrentWorker {
@@ -2047,6 +2353,72 @@ benchmark_main!(
                     &concurrent_workers,
                 );
         });
+
+        runner.concurrent_group::<ConcurrentTaskBenchContext>(
+            "collection loop concurrent",
+            |group| {
+                for (name, interpreted_context, native_context) in [
+                    (
+                        "list_traversal",
+                        TaskBenchContext::interpreted_list_traversal as fn() -> TaskBenchContext,
+                        TaskBenchContext::list_traversal as fn() -> TaskBenchContext,
+                    ),
+                    (
+                        "list_index",
+                        TaskBenchContext::interpreted_list_index_loop as fn() -> TaskBenchContext,
+                        TaskBenchContext::list_index_loop as fn() -> TaskBenchContext,
+                    ),
+                    (
+                        "map_traversal",
+                        TaskBenchContext::interpreted_map_traversal as fn() -> TaskBenchContext,
+                        TaskBenchContext::map_traversal as fn() -> TaskBenchContext,
+                    ),
+                ] {
+                    let interpreted = move |_| {
+                        ConcurrentTaskBenchContext::from_task_context(interpreted_context())
+                    };
+                    let interpreted_one = format!("{name}_concurrent_interpreter_1_thread");
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecodes"))
+                        .metadata("backend", "interpreter")
+                        .metadata("threads", "1")
+                        .factory(&interpreted)
+                        .bench(&interpreted_one, &single_integer_worker);
+                    let interpreted_four = format!(
+                        "{name}_concurrent_interpreter_{CONCURRENT_DISPATCH_THREADS}_threads"
+                    );
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecodes"))
+                        .metadata("backend", "interpreter")
+                        .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                        .factory(&interpreted)
+                        .bench(&interpreted_four, &concurrent_integer_workers);
+
+                    let native =
+                        move |_| ConcurrentTaskBenchContext::from_task_context(native_context());
+                    let native_one = format!("{name}_concurrent_cranelift_1_thread");
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecodes"))
+                        .metadata("backend", "cranelift")
+                        .metadata("threads", "1")
+                        .factory(&native)
+                        .bench(&native_one, &single_integer_worker);
+                    let native_four = format!(
+                        "{name}_concurrent_cranelift_{CONCURRENT_DISPATCH_THREADS}_threads"
+                    );
+                    group
+                        .sample_duration(Duration::from_millis(50))
+                        .throughput(Throughput::per_operation(1, "bytecodes"))
+                        .metadata("backend", "cranelift")
+                        .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                        .factory(&native)
+                        .bench(&native_four, &concurrent_integer_workers);
+                }
+            },
+        );
 
         runner.concurrent_group::<ConcurrentTaskBenchContext>(
             "range JIT admission concurrent",

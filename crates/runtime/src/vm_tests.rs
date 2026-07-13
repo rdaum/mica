@@ -187,6 +187,110 @@ fn compiled_indexed_range_loop_program() -> Arc<Program> {
     )
 }
 
+fn integer_list_literal(iterations: usize) -> String {
+    (1..=iterations)
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn compiler_list_traversal_source(indexed: bool) -> String {
+    let values = integer_list_literal(8_192);
+    if indexed {
+        format!(
+            "let total = 0\n\
+             for index, value in [{values}]\n\
+               total = total + index + value\n\
+             end\n\
+             return total"
+        )
+    } else {
+        format!(
+            "let total = 0\n\
+             for value in [{values}]\n\
+               total = total + value\n\
+             end\n\
+             return total"
+        )
+    }
+}
+
+fn compiler_list_index_source() -> String {
+    let values = integer_list_literal(8_192);
+    format!(
+        "let values = [{values}]\n\
+         let index = 0\n\
+         let total = 0\n\
+         while index < 8192\n\
+           total = total + values[index]\n\
+           index = index + 1\n\
+         end\n\
+         return total"
+    )
+}
+
+fn compiler_map_traversal_source(indexed: bool) -> String {
+    let entries = (1..=8_192)
+        .map(|value| format!(":key_{value} -> {value}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if indexed {
+        format!(
+            "let total = 0\n\
+             for key, value in {{{entries}}}\n\
+               if key != :missing\n\
+                 total = total + value\n\
+               end\n\
+             end\n\
+             return total"
+        )
+    } else {
+        format!(
+            "let total = 0\n\
+             for value in {{{entries}}}\n\
+               total = total + value\n\
+             end\n\
+             return total"
+        )
+    }
+}
+
+fn assert_compiler_collection_loop_matches_interpreter(source: &str, expected: i64) {
+    let kernel = RelationKernel::new();
+    let program = Arc::new(
+        compile_source(source, &CompileContext::new())
+            .unwrap()
+            .program,
+    );
+    let resolver = Arc::new(ProgramResolver::new());
+    let limits = TaskLimits {
+        instruction_budget: 200_000,
+        max_retries: 0,
+        max_call_depth: 50,
+    };
+    let mut native = Task::new(
+        1,
+        &kernel,
+        Arc::clone(&program),
+        Arc::clone(&resolver),
+        limits,
+    );
+    let mut interpreted = Task::new(2, &kernel, Arc::clone(&program), resolver, limits);
+    interpreted.vm_mut().disable_native_execution();
+
+    let native_outcome = native.run().unwrap();
+    let interpreted_outcome = interpreted.run().unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert!(matches!(
+        native_outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(expected).unwrap()
+    ));
+    assert_eq!(
+        native.vm().snapshot_state(),
+        interpreted.vm().snapshot_state()
+    );
+}
+
 fn emit_first_arg(
     context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
@@ -372,6 +476,35 @@ fn compiler_indexed_range_loop_preserves_native_budget_boundaries() {
             "budget {budget}",
         );
     }
+}
+
+#[test]
+fn compiler_list_traversal_matches_native_and_interpreted_execution() {
+    assert_compiler_collection_loop_matches_interpreter(
+        &compiler_list_traversal_source(false),
+        33_558_528,
+    );
+    assert_compiler_collection_loop_matches_interpreter(
+        &compiler_list_traversal_source(true),
+        67_108_864,
+    );
+}
+
+#[test]
+fn compiler_list_index_loop_matches_native_and_interpreted_execution() {
+    assert_compiler_collection_loop_matches_interpreter(&compiler_list_index_source(), 33_558_528);
+}
+
+#[test]
+fn compiler_map_traversal_matches_native_and_interpreted_execution() {
+    assert_compiler_collection_loop_matches_interpreter(
+        &compiler_map_traversal_source(false),
+        33_558_528,
+    );
+    assert_compiler_collection_loop_matches_interpreter(
+        &compiler_map_traversal_source(true),
+        33_558_528,
+    );
 }
 
 #[test]

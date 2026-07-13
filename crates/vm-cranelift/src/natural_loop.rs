@@ -19,11 +19,15 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
+use mica_var::Value;
 use mica_var::abi::{
     VALUE_ABI_VERSION, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG, value_is_immediate,
 };
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::marker::PhantomData;
+use std::mem::{offset_of, size_of};
+use std::ptr;
 use std::sync::Mutex;
 
 const STATUS_COMPLETE: u32 = 0;
@@ -32,28 +36,96 @@ const STATUS_SIDE_EXIT: u32 = 2;
 
 type NaturalLoopFunction = unsafe extern "C" fn(
     *mut u64,
-    *const NaturalLoopRangeView,
+    *const NaturalLoopCollectionView<'static>,
     u64,
     *mut u64,
     *mut u32,
     *mut u32,
 ) -> u32;
 
+const COLLECTION_RANGE: u64 = 0;
+const COLLECTION_LIST: u64 = 1;
+const COLLECTION_MAP: u64 = 2;
+static EMPTY_COLLECTION_WORD: u64 = 0;
+
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct NaturalLoopRangeView {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NaturalLoopCollectionView<'a> {
+    kind: u64,
+    len: u64,
     start: i64,
-    end: i64,
+    key_base: *const u8,
+    value_base: *const u8,
+    stride: u64,
+    owner: PhantomData<&'a Value>,
 }
 
-impl NaturalLoopRangeView {
-    pub fn new(start: i64, end: i64) -> Option<Self> {
+impl<'a> NaturalLoopCollectionView<'a> {
+    pub fn range(start: i64, end: i64) -> Option<Self> {
         if !(VALUE_INT_MIN..=VALUE_INT_MAX).contains(&start)
             || !(VALUE_INT_MIN..=VALUE_INT_MAX).contains(&end)
         {
             return None;
         }
-        Some(Self { start, end })
+        let len = if end < start {
+            0
+        } else {
+            u64::try_from(end.checked_sub(start)?.checked_add(1)?).ok()?
+        };
+        Some(Self {
+            kind: COLLECTION_RANGE,
+            len,
+            start,
+            ..Self::default()
+        })
+    }
+
+    pub fn list(values: &'a [Value]) -> Self {
+        let value_base = values.first().map_or_else(
+            || ptr::from_ref(&EMPTY_COLLECTION_WORD).cast(),
+            |value| ptr::from_ref(value).cast(),
+        );
+        Self {
+            kind: COLLECTION_LIST,
+            len: values.len() as u64,
+            value_base,
+            stride: size_of::<Value>() as u64,
+            ..Self::default()
+        }
+    }
+
+    pub fn map(entries: &'a [(Value, Value)]) -> Self {
+        let key_base = entries.first().map_or_else(
+            || ptr::from_ref(&EMPTY_COLLECTION_WORD).cast(),
+            |entry| ptr::from_ref(&entry.0).cast(),
+        );
+        let value_base = entries.first().map_or_else(
+            || ptr::from_ref(&EMPTY_COLLECTION_WORD).cast(),
+            |entry| ptr::from_ref(&entry.1).cast(),
+        );
+        Self {
+            kind: COLLECTION_MAP,
+            len: entries.len() as u64,
+            key_base,
+            value_base,
+            stride: size_of::<(Value, Value)>() as u64,
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for NaturalLoopCollectionView<'_> {
+    fn default() -> Self {
+        let empty = ptr::from_ref(&EMPTY_COLLECTION_WORD).cast();
+        Self {
+            kind: COLLECTION_RANGE,
+            len: 0,
+            start: 0,
+            key_base: empty,
+            value_base: empty,
+            stride: 0,
+            owner: PhantomData,
+        }
     }
 }
 
@@ -106,12 +178,17 @@ pub enum NaturalLoopInstruction {
         left: u16,
         right: u16,
     },
-    RangeValueAt {
+    CollectionValueAt {
         dst: u16,
         view: u16,
         index: u16,
     },
-    RangeKeyAt {
+    CollectionKeyAt {
+        dst: u16,
+        view: u16,
+        index: u16,
+    },
+    ListValueAt {
         dst: u16,
         view: u16,
         index: u16,
@@ -141,9 +218,9 @@ impl NaturalLoopInstruction {
             | Self::Compare {
                 dst, left, right, ..
             } => [Some(dst), Some(left), Some(right)],
-            Self::RangeValueAt { dst, index, .. } | Self::RangeKeyAt { dst, index, .. } => {
-                [Some(dst), Some(index), None]
-            }
+            Self::CollectionValueAt { dst, index, .. }
+            | Self::CollectionKeyAt { dst, index, .. }
+            | Self::ListValueAt { dst, index, .. } => [Some(dst), Some(index), None],
             Self::Branch { condition, .. } => [Some(condition), None, None],
             Self::Jump { .. } => [None, None, None],
         }
@@ -153,7 +230,7 @@ impl NaturalLoopInstruction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NaturalLoopPlan {
     slot_count: u16,
-    range_view_count: u16,
+    collection_view_count: u16,
     entry: u16,
     instructions: Box<[NaturalLoopInstruction]>,
 }
@@ -161,7 +238,7 @@ pub struct NaturalLoopPlan {
 impl NaturalLoopPlan {
     pub fn new(
         slot_count: u16,
-        range_view_count: u16,
+        collection_view_count: u16,
         entry: u16,
         instructions: impl Into<Box<[NaturalLoopInstruction]>>,
     ) -> Result<Self, NaturalLoopError> {
@@ -204,12 +281,13 @@ impl NaturalLoopPlan {
                         "natural loop jump target is outside the compiled region".to_owned(),
                     ));
                 }
-                NaturalLoopInstruction::RangeValueAt { view, .. }
-                | NaturalLoopInstruction::RangeKeyAt { view, .. }
-                    if view >= range_view_count =>
+                NaturalLoopInstruction::CollectionValueAt { view, .. }
+                | NaturalLoopInstruction::CollectionKeyAt { view, .. }
+                | NaturalLoopInstruction::ListValueAt { view, .. }
+                    if view >= collection_view_count =>
                 {
                     return Err(NaturalLoopError(
-                        "natural loop range instruction references an invalid view".to_owned(),
+                        "natural loop collection instruction references an invalid view".to_owned(),
                     ));
                 }
                 _ => {}
@@ -217,7 +295,7 @@ impl NaturalLoopPlan {
         }
         Ok(Self {
             slot_count,
-            range_view_count,
+            collection_view_count,
             entry,
             instructions,
         })
@@ -261,7 +339,7 @@ pub struct CompiledNaturalLoop {
     _module: Mutex<JITModule>,
     function: NaturalLoopFunction,
     slot_count: usize,
-    range_view_count: usize,
+    collection_view_count: usize,
     code_size: usize,
     imported_helper_count: usize,
     value_abi_version: u32,
@@ -312,7 +390,7 @@ impl CompiledNaturalLoop {
             _module: Mutex::new(module),
             function,
             slot_count: usize::from(plan.slot_count),
-            range_view_count: usize::from(plan.range_view_count),
+            collection_view_count: usize::from(plan.collection_view_count),
             code_size,
             imported_helper_count,
             value_abi_version: VALUE_ABI_VERSION,
@@ -367,7 +445,7 @@ impl CompiledNaturalLoop {
         builder.switch_to_block(entry);
         let params = builder.block_params(entry).to_vec();
         let scratch = params[0];
-        let range_views = params[1];
+        let collection_views = params[1];
         let instruction_budget = params[2];
         let instructions_out = params[3];
         let resume_out = params[4];
@@ -448,8 +526,12 @@ impl CompiledNaturalLoop {
                         .jump(target, &[instructions.into(), modified_slots.into()]);
                 }
                 instruction => {
-                    let (is_fast, dst) =
-                        Self::emit_instruction(&mut builder, scratch, range_views, instruction);
+                    let (is_fast, dst) = Self::emit_instruction(
+                        &mut builder,
+                        scratch,
+                        collection_views,
+                        instruction,
+                    );
                     let slot_bit = 1_u32 << dst;
                     let slot_bit = builder.ins().iconst(types::I32, i64::from(slot_bit));
                     let modified_slots = builder.ins().bor(modified_slots, slot_bit);
@@ -523,7 +605,7 @@ impl CompiledNaturalLoop {
     fn emit_instruction(
         builder: &mut FunctionBuilder<'_>,
         scratch: cranelift_codegen::ir::Value,
-        range_views: cranelift_codegen::ir::Value,
+        collection_views: cranelift_codegen::ir::Value,
         instruction: NaturalLoopInstruction,
     ) -> (cranelift_codegen::ir::Value, u16) {
         match instruction {
@@ -597,57 +679,148 @@ impl CompiledNaturalLoop {
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }
-            NaturalLoopInstruction::RangeValueAt { dst, view, index } => {
-                let index = Self::load_slot(builder, scratch, index);
-                let index_is_int = ValueEmitter::emit_is_int(builder, index);
-                let index = ValueEmitter::emit_unbox_int(builder, index);
+            NaturalLoopInstruction::CollectionValueAt { dst, view, index } => {
+                let index_word = Self::load_slot(builder, scratch, index);
+                let index_is_int = ValueEmitter::emit_is_int(builder, index_word);
+                let index = ValueEmitter::emit_unbox_int(builder, index_word);
+                let (kind, len, start, _, value_base, stride) =
+                    Self::load_collection_view(builder, collection_views, view);
                 let index_is_nonnegative =
                     builder
                         .ins()
                         .icmp_imm(IntCC::SignedGreaterThanOrEqual, index, 0);
-                let view_offset = i32::from(view) * 16;
-                let start =
+                let index_is_bounded = builder.ins().icmp(IntCC::UnsignedLessThan, index, len);
+                let index_is_valid = builder.ins().band(index_is_int, index_is_nonnegative);
+                let index_is_valid = builder.ins().band(index_is_valid, index_is_bounded);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let safe_index = builder.ins().select(index_is_valid, index, zero);
+
+                let range_value = builder.ins().iadd(start, safe_index);
+                let range_value = ValueEmitter::emit_pack(builder, VALUE_INT_TAG, range_value);
+                let address_offset = builder.ins().imul(safe_index, stride);
+                let address = builder.ins().iadd(value_base, address_offset);
+                let collection_value =
                     builder
                         .ins()
-                        .load(types::I64, MemFlagsData::new(), range_views, view_offset);
-                let end = builder.ins().load(
-                    types::I64,
-                    MemFlagsData::new(),
-                    range_views,
-                    view_offset + 8,
-                );
-                let range_is_nonempty =
-                    builder.ins().icmp(IntCC::SignedLessThanOrEqual, start, end);
-                let value = builder.ins().iadd(start, index);
-                let value_fits =
-                    builder
-                        .ins()
-                        .icmp_imm(IntCC::SignedLessThanOrEqual, value, VALUE_INT_MAX);
-                let value_in_range = builder.ins().icmp(IntCC::SignedLessThanOrEqual, value, end);
-                let is_fast = builder.ins().band(index_is_int, index_is_nonnegative);
-                let is_fast = builder.ins().band(is_fast, range_is_nonempty);
-                let is_fast = builder.ins().band(is_fast, value_fits);
-                let is_fast = builder.ins().band(is_fast, value_in_range);
-                let value = ValueEmitter::emit_pack(builder, VALUE_INT_TAG, value);
+                        .load(types::I64, MemFlagsData::new().with_readonly(), address, 0);
+                let is_range = builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, kind, COLLECTION_RANGE as i64);
+                let is_list = builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, kind, COLLECTION_LIST as i64);
+                let is_map = builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, kind, COLLECTION_MAP as i64);
+                let kind_is_valid = builder.ins().bor(is_range, is_list);
+                let kind_is_valid = builder.ins().bor(kind_is_valid, is_map);
+                let value = builder
+                    .ins()
+                    .select(is_range, range_value, collection_value);
+                let is_fast = builder.ins().band(index_is_valid, kind_is_valid);
                 Self::store_slot(builder, scratch, dst, value);
                 (is_fast, dst)
             }
-            NaturalLoopInstruction::RangeKeyAt { dst, index, .. } => {
-                let index = Self::load_slot(builder, scratch, index);
-                let index_is_int = ValueEmitter::emit_is_int(builder, index);
-                let unpacked = ValueEmitter::emit_unbox_int(builder, index);
+            NaturalLoopInstruction::CollectionKeyAt { dst, view, index } => {
+                let index_word = Self::load_slot(builder, scratch, index);
+                let index_is_int = ValueEmitter::emit_is_int(builder, index_word);
+                let index = ValueEmitter::emit_unbox_int(builder, index_word);
+                let (kind, len, _, key_base, _, stride) =
+                    Self::load_collection_view(builder, collection_views, view);
                 let index_is_nonnegative =
                     builder
                         .ins()
-                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, unpacked, 0);
-                let is_fast = builder.ins().band(index_is_int, index_is_nonnegative);
-                Self::store_slot(builder, scratch, dst, index);
+                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, index, 0);
+                let index_is_bounded = builder.ins().icmp(IntCC::UnsignedLessThan, index, len);
+                let index_is_valid = builder.ins().band(index_is_int, index_is_nonnegative);
+                let index_is_valid = builder.ins().band(index_is_valid, index_is_bounded);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let safe_index = builder.ins().select(index_is_valid, index, zero);
+                let address_offset = builder.ins().imul(safe_index, stride);
+                let address = builder.ins().iadd(key_base, address_offset);
+                let map_key =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new().with_readonly(), address, 0);
+                let is_range = builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, kind, COLLECTION_RANGE as i64);
+                let is_list = builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, kind, COLLECTION_LIST as i64);
+                let is_map = builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, kind, COLLECTION_MAP as i64);
+                let ordinal_kind = builder.ins().bor(is_range, is_list);
+                let kind_is_valid = builder.ins().bor(ordinal_kind, is_map);
+                let value = builder.ins().select(is_map, map_key, index_word);
+                let is_fast = builder.ins().band(index_is_valid, kind_is_valid);
+                Self::store_slot(builder, scratch, dst, value);
+                (is_fast, dst)
+            }
+            NaturalLoopInstruction::ListValueAt { dst, view, index } => {
+                let index_word = Self::load_slot(builder, scratch, index);
+                let index_is_int = ValueEmitter::emit_is_int(builder, index_word);
+                let index = ValueEmitter::emit_unbox_int(builder, index_word);
+                let (kind, len, _, _, value_base, stride) =
+                    Self::load_collection_view(builder, collection_views, view);
+                let index_is_nonnegative =
+                    builder
+                        .ins()
+                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, index, 0);
+                let index_is_bounded = builder.ins().icmp(IntCC::UnsignedLessThan, index, len);
+                let index_is_valid = builder.ins().band(index_is_int, index_is_nonnegative);
+                let index_is_valid = builder.ins().band(index_is_valid, index_is_bounded);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let safe_index = builder.ins().select(index_is_valid, index, zero);
+                let address_offset = builder.ins().imul(safe_index, stride);
+                let address = builder.ins().iadd(value_base, address_offset);
+                let value =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::new().with_readonly(), address, 0);
+                let is_list = builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, kind, COLLECTION_LIST as i64);
+                let is_fast = builder.ins().band(index_is_valid, is_list);
+                Self::store_slot(builder, scratch, dst, value);
                 (is_fast, dst)
             }
             NaturalLoopInstruction::Branch { .. } | NaturalLoopInstruction::Jump { .. } => {
                 unreachable!("control-flow instructions are emitted by build_function")
             }
         }
+    }
+
+    fn load_collection_view(
+        builder: &mut FunctionBuilder<'_>,
+        collection_views: cranelift_codegen::ir::Value,
+        view: u16,
+    ) -> (
+        cranelift_codegen::ir::Value,
+        cranelift_codegen::ir::Value,
+        cranelift_codegen::ir::Value,
+        cranelift_codegen::ir::Value,
+        cranelift_codegen::ir::Value,
+        cranelift_codegen::ir::Value,
+    ) {
+        let view_offset = i32::from(view) * size_of::<NaturalLoopCollectionView>() as i32;
+        let load = |builder: &mut FunctionBuilder<'_>, field_offset: usize| {
+            builder.ins().load(
+                types::I64,
+                MemFlagsData::new().with_readonly(),
+                collection_views,
+                view_offset + field_offset as i32,
+            )
+        };
+        (
+            load(builder, offset_of!(NaturalLoopCollectionView, kind)),
+            load(builder, offset_of!(NaturalLoopCollectionView, len)),
+            load(builder, offset_of!(NaturalLoopCollectionView, start)),
+            load(builder, offset_of!(NaturalLoopCollectionView, key_base)),
+            load(builder, offset_of!(NaturalLoopCollectionView, value_base)),
+            load(builder, offset_of!(NaturalLoopCollectionView, stride)),
+        )
     }
 
     fn load_slot(
@@ -685,12 +858,12 @@ impl CompiledNaturalLoop {
     pub fn run(
         &self,
         scratch: &mut [u64],
-        range_views: &[NaturalLoopRangeView],
+        collection_views: &[NaturalLoopCollectionView<'_>],
         instruction_budget: u64,
     ) -> NaturalLoopOutcome {
         if self.value_abi_version != VALUE_ABI_VERSION
             || scratch.len() < self.slot_count
-            || range_views.len() < self.range_view_count
+            || collection_views.len() < self.collection_view_count
         {
             return NaturalLoopOutcome::SideExit;
         }
@@ -700,7 +873,7 @@ impl CompiledNaturalLoop {
         let status = unsafe {
             (self.function)(
                 scratch.as_mut_ptr(),
-                range_views.as_ptr(),
+                collection_views.as_ptr().cast(),
                 instruction_budget,
                 &mut instructions,
                 &mut resume,
