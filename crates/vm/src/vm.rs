@@ -1532,7 +1532,8 @@ impl RegisterVm {
             return None;
         }
         let site = program.natural_integer_loop_site(branch_ip)?;
-        let max_iterations = remaining_budget.checked_sub(1)? / site.cycle_instruction_count;
+        let native_budget = remaining_budget.checked_sub(1)?;
+        let max_iterations = native_budget / site.region_instruction_count;
         if max_iterations == 0 {
             return None;
         }
@@ -1552,34 +1553,46 @@ impl RegisterVm {
         }
         let outcome = compiled.run(
             &mut scratch[..site.registers.len()],
-            u64::try_from(max_iterations).ok()?,
+            u64::try_from(native_budget).ok()?,
         );
-        let (iterations, next_ip) = match outcome {
-            NaturalLoopOutcome::Complete { iterations } => (iterations, site.exit_ip),
-            NaturalLoopOutcome::BudgetExhausted { iterations } => (iterations, site.body_ip),
+        let (native_instructions, next_ip, modified_slots) = match outcome {
+            NaturalLoopOutcome::Complete {
+                instructions,
+                modified_slots,
+            } => (instructions, site.exit_ip, modified_slots),
+            NaturalLoopOutcome::BudgetExhausted {
+                instructions,
+                resume,
+                modified_slots,
+            } => (
+                instructions,
+                site.header_ip.checked_add(usize::from(resume))?,
+                modified_slots,
+            ),
             NaturalLoopOutcome::SideExit => {
                 self.native_side_exits.push((program_index, branch_ip));
                 return None;
             }
         };
-        let iterations = usize::try_from(iterations).ok()?;
-        let native_instructions = iterations.checked_mul(site.cycle_instruction_count)?;
+        let native_instructions = usize::try_from(native_instructions).ok()?;
         let instructions = native_instructions.checked_add(1)?;
         if instructions > remaining_budget {
             return None;
         }
-        for &slot in site.plan.modified_slots() {
-            if !value_is_immediate(scratch[usize::from(slot)]) {
+        for (slot, value) in scratch.iter().enumerate().take(site.registers.len()) {
+            if modified_slots & (1_u32 << slot) != 0 && !value_is_immediate(*value) {
                 return None;
             }
         }
 
-        for &slot in site.plan.modified_slots() {
-            let slot = usize::from(slot);
+        for (slot, register) in site.registers.iter().copied().enumerate() {
+            if modified_slots & (1_u32 << slot) == 0 {
+                continue;
+            }
             // SAFETY: a successful natural-loop execution only produces
             // immediate values in modified slots, checked immediately above.
             let value = unsafe { from_owned_value_bits(scratch[slot]) };
-            self.write_register_unchecked(site.registers[slot], value);
+            self.write_register_unchecked(register, value);
         }
         self.current_frame_mut_unchecked().ip = next_ip;
         Some(VmStep {
