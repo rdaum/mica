@@ -592,6 +592,20 @@ impl TaskBenchContext {
 
     fn list_index_loop_with_iterations(iterations: u64) -> Self {
         let collection = Value::list((1..=iterations as i64).map(int));
+        Self::index_loop(collection, iterations)
+    }
+
+    fn map_index_loop() -> Self {
+        Self::map_index_loop_with_iterations(INTEGER_LOOP_ITERATIONS)
+    }
+
+    fn map_index_loop_with_iterations(iterations: u64) -> Self {
+        let collection =
+            Value::map((0..iterations as i64).map(|index| (int(index), int(index + 1))));
+        Self::index_loop(collection, iterations)
+    }
+
+    fn index_loop(collection: Value, iterations: u64) -> Self {
         let program = Program::new(
             9,
             [
@@ -665,6 +679,12 @@ impl TaskBenchContext {
 
     fn interpreted_list_index_loop() -> Self {
         let mut context = Self::list_index_loop();
+        context.interpret_only = true;
+        context
+    }
+
+    fn interpreted_map_index_loop() -> Self {
+        let mut context = Self::map_index_loop();
         context.interpret_only = true;
         context
     }
@@ -1578,6 +1598,20 @@ benchmark_main!(
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_cranelift_map_traversal", run_tasks);
 
+            let interpreted_map_index = || TaskBenchContext::interpreted_map_index_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_map_index)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_map_index_loop", run_tasks);
+
+            let cranelift_map_index = || TaskBenchContext::map_index_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_map_index)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_map_index_loop", run_tasks);
+
             let read = || TaskBenchContext::indexed_relation_read();
             group
                 .throughput(Throughput::ops())
@@ -1790,6 +1824,27 @@ benchmark_main!(
                 .throughput(Throughput::ops())
                 .factory(&native_map)
                 .bench("map_traversal_cold_cranelift", run_cold_loop);
+
+            let interpreted_map_index = || {
+                ColdLoopBenchContext::collection(
+                    TaskBenchContext::map_index_loop_with_iterations(8_192),
+                    true,
+                )
+            };
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_map_index)
+                .bench("map_index_cold_interpreter", run_cold_loop);
+            let native_map_index = || {
+                ColdLoopBenchContext::collection(
+                    TaskBenchContext::map_index_loop_with_iterations(8_192),
+                    false,
+                )
+            };
+            group
+                .throughput(Throughput::ops())
+                .factory(&native_map_index)
+                .bench("map_index_cold_cranelift", run_cold_loop);
         });
 
         let single_worker = [ConcurrentWorker {
@@ -2372,6 +2427,11 @@ benchmark_main!(
                         "map_traversal",
                         TaskBenchContext::interpreted_map_traversal as fn() -> TaskBenchContext,
                         TaskBenchContext::map_traversal as fn() -> TaskBenchContext,
+                    ),
+                    (
+                        "map_index",
+                        TaskBenchContext::interpreted_map_index_loop as fn() -> TaskBenchContext,
+                        TaskBenchContext::map_index_loop as fn() -> TaskBenchContext,
                     ),
                 ] {
                     let interpreted = move |_| {

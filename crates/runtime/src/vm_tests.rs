@@ -255,6 +255,23 @@ fn compiler_map_traversal_source(indexed: bool) -> String {
     }
 }
 
+fn compiler_map_index_source() -> String {
+    let entries = (1..=8_192)
+        .map(|value| format!(":key_{value} -> {value}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "let values = {{{entries}}}\n\
+         let index = 0\n\
+         let total = 0\n\
+         while index < 8192\n\
+           total = total + values[:key_4096]\n\
+           index = index + 1\n\
+         end\n\
+         return total"
+    )
+}
+
 fn assert_compiler_collection_loop_matches_interpreter(source: &str, expected: i64) {
     let kernel = RelationKernel::new();
     let program = Arc::new(
@@ -505,6 +522,11 @@ fn compiler_map_traversal_matches_native_and_interpreted_execution() {
         &compiler_map_traversal_source(true),
         33_558_528,
     );
+}
+
+#[test]
+fn compiler_map_index_loop_matches_native_and_interpreted_execution() {
+    assert_compiler_collection_loop_matches_interpreter(&compiler_map_index_source(), 33_554_432);
 }
 
 #[test]
