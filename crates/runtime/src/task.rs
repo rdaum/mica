@@ -257,8 +257,9 @@ impl<'a> Task<'a> {
         mut transient: Option<&mut TransientStore>,
         transient_scopes: &[Identity],
     ) -> Result<TaskOutcome, TaskError> {
+        let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
         loop {
-            let vm_start = Instant::now();
+            let vm_start = trace_enabled.then(Instant::now);
             let response = {
                 let tx = self.tx.as_mut().ok_or(TaskError::MissingTransaction)?;
                 let mailbox_runtime = self.mailbox_runtime.clone();
@@ -288,20 +289,24 @@ impl<'a> Task<'a> {
                 host.emit_trace_summary(self.task_id);
                 response?
             };
-            tracing::trace!(
-                task_id = self.task_id,
-                response = host_response_label(&response),
-                elapsed_us = vm_start.elapsed().as_micros(),
-                "task VM step completed"
-            );
+            if let Some(vm_start) = vm_start {
+                tracing::trace!(
+                    task_id = self.task_id,
+                    response = host_response_label(&response),
+                    elapsed_us = vm_start.elapsed().as_micros(),
+                    "task VM step completed"
+                );
+            }
 
-            let response_start = Instant::now();
+            let response_start = trace_enabled.then(Instant::now);
             let outcome = self.outcome_from_host_response(response)?;
-            tracing::trace!(
-                task_id = self.task_id,
-                elapsed_us = response_start.elapsed().as_micros(),
-                "task host response processed"
-            );
+            if let Some(response_start) = response_start {
+                tracing::trace!(
+                    task_id = self.task_id,
+                    elapsed_us = response_start.elapsed().as_micros(),
+                    "task host response processed"
+                );
+            }
             if let Some(outcome) = outcome {
                 return Ok(outcome);
             }
@@ -381,7 +386,7 @@ impl<'a> Task<'a> {
                 }))
             }
             VmHostResponse::Complete(value) => {
-                if self.commit_boundary()? == BoundaryResult::Retried {
+                if self.terminal_commit_boundary()? == BoundaryResult::Retried {
                     return Ok(None);
                 }
                 Ok(Some(TaskOutcome::Complete {
@@ -394,7 +399,7 @@ impl<'a> Task<'a> {
             VmHostResponse::Abort(error) => {
                 self.pending_effects.clear();
                 self.pending_mailbox_sends.clear();
-                self.tx = Some(self.kernel.begin());
+                self.tx.take();
                 Ok(Some(TaskOutcome::Aborted {
                     error,
                     effects: self.take_committed_effects(),
@@ -410,55 +415,89 @@ impl<'a> Task<'a> {
     }
 
     fn commit_boundary(&mut self) -> Result<BoundaryResult, TaskError> {
-        let start = Instant::now();
+        self.commit_boundary_with_disposition(BoundaryDisposition::Continue)
+    }
+
+    fn terminal_commit_boundary(&mut self) -> Result<BoundaryResult, TaskError> {
+        self.commit_boundary_with_disposition(BoundaryDisposition::Finish)
+    }
+
+    fn commit_boundary_with_disposition(
+        &mut self,
+        disposition: BoundaryDisposition,
+    ) -> Result<BoundaryResult, TaskError> {
+        let start = tracing::enabled!(tracing::Level::TRACE).then(Instant::now);
         let tx = self.tx.take().ok_or(TaskError::MissingTransaction)?;
         if tx.is_read_only() {
-            self.committed_effects.append(&mut self.pending_effects);
-            self.committed_mailbox_sends
-                .append(&mut self.pending_mailbox_sends);
-            self.retry_state = self.vm.snapshot_state();
-            self.tx = Some(self.kernel.begin());
-            tracing::trace!(
-                task_id = self.task_id,
-                read_only = true,
-                result = "committed",
-                elapsed_us = start.elapsed().as_micros(),
-                "task commit boundary"
-            );
+            self.finish_successful_boundary(disposition);
+            self.trace_successful_boundary(start, true, disposition);
             return Ok(BoundaryResult::Committed);
         }
         match tx.commit() {
             Ok(_) => {
-                self.committed_effects.append(&mut self.pending_effects);
-                self.committed_mailbox_sends
-                    .append(&mut self.pending_mailbox_sends);
-                self.retry_state = self.vm.snapshot_state();
-                self.tx = Some(self.kernel.begin());
-                tracing::trace!(
-                    task_id = self.task_id,
-                    read_only = false,
-                    result = "committed",
-                    elapsed_us = start.elapsed().as_micros(),
-                    "task commit boundary"
-                );
+                self.finish_successful_boundary(disposition);
+                self.trace_successful_boundary(start, false, disposition);
                 Ok(BoundaryResult::Committed)
             }
             Err(error) if is_retryable_conflict(&error) => {
-                self.tx = Some(self.kernel.begin());
                 self.retry_from_boundary()?;
-                tracing::debug!(
-                    task_id = self.task_id,
-                    read_only = false,
-                    result = "retried",
-                    elapsed_us = start.elapsed().as_micros(),
-                    "task commit conflict retried"
-                );
+                self.trace_retried_boundary(start, disposition);
                 Ok(BoundaryResult::Retried)
             }
             Err(error) => {
                 self.tx = Some(self.kernel.begin());
                 Err(error.into())
             }
+        }
+    }
+
+    fn finish_successful_boundary(&mut self, disposition: BoundaryDisposition) {
+        self.committed_effects.append(&mut self.pending_effects);
+        self.committed_mailbox_sends
+            .append(&mut self.pending_mailbox_sends);
+        if disposition == BoundaryDisposition::Continue {
+            self.retry_state = self.vm.snapshot_state();
+            self.tx = Some(self.kernel.begin());
+        }
+    }
+
+    fn trace_successful_boundary(
+        &self,
+        start: Option<Instant>,
+        read_only: bool,
+        disposition: BoundaryDisposition,
+    ) {
+        let Some(start) = start else {
+            return;
+        };
+        tracing::trace!(
+            task_id = self.task_id,
+            read_only,
+            terminal = disposition == BoundaryDisposition::Finish,
+            result = "committed",
+            elapsed_us = start.elapsed().as_micros(),
+            "task commit boundary"
+        );
+    }
+
+    fn trace_retried_boundary(&self, start: Option<Instant>, disposition: BoundaryDisposition) {
+        if let Some(start) = start {
+            tracing::debug!(
+                task_id = self.task_id,
+                read_only = false,
+                terminal = disposition == BoundaryDisposition::Finish,
+                result = "retried",
+                elapsed_us = start.elapsed().as_micros(),
+                "task commit conflict retried"
+            );
+        } else {
+            tracing::debug!(
+                task_id = self.task_id,
+                read_only = false,
+                terminal = disposition == BoundaryDisposition::Finish,
+                result = "retried",
+                "task commit conflict retried"
+            );
         }
     }
 
@@ -503,6 +542,12 @@ impl TaskState {
 enum BoundaryResult {
     Committed,
     Retried,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoundaryDisposition {
+    Continue,
+    Finish,
 }
 
 fn host_response_label(response: &VmHostResponse) -> &'static str {

@@ -514,6 +514,50 @@ fn abort_rolls_back_current_transaction_and_pending_effects() {
 }
 
 #[test]
+fn completed_task_does_not_open_another_transaction() {
+    let kernel = RelationKernel::new();
+    let program = Program::new(
+        0,
+        [Instruction::Return {
+            value: v(Value::nothing()),
+        }],
+    )
+    .unwrap();
+    let mut task = Task::new(
+        1,
+        &kernel,
+        Arc::new(program),
+        Arc::new(ProgramResolver::new()),
+        TaskLimits::default(),
+    );
+
+    assert!(matches!(task.run(), Ok(TaskOutcome::Complete { .. })));
+    assert_eq!(task.run(), Err(TaskError::MissingTransaction));
+}
+
+#[test]
+fn aborted_task_does_not_open_another_transaction() {
+    let kernel = RelationKernel::new();
+    let program = Program::new(
+        0,
+        [Instruction::Abort {
+            error: v(sym("abort")),
+        }],
+    )
+    .unwrap();
+    let mut task = Task::new(
+        1,
+        &kernel,
+        Arc::new(program),
+        Arc::new(ProgramResolver::new()),
+        TaskLimits::default(),
+    );
+
+    assert!(matches!(task.run(), Ok(TaskOutcome::Aborted { .. })));
+    assert_eq!(task.run(), Err(TaskError::MissingTransaction));
+}
+
+#[test]
 fn explicit_commit_boundary_survives_later_abort() {
     let kernel = kernel_with_world_relations();
     let item = int(200);
