@@ -16,6 +16,10 @@ use cyper::Client;
 use http::Method;
 use mica_driver::ExternalRequestHandler;
 use mica_runtime::ExternalRequest;
+use mica_runtime::json::{
+    json_from_value as runtime_json_from_value, value_from_json as runtime_value_from_json,
+    value_from_json_text as runtime_value_from_json_text,
+};
 use mica_var::{Symbol, Value};
 use std::sync::Arc;
 use std::time::Instant;
@@ -342,10 +346,10 @@ async fn perform_openai_request(spec: OpenaiRequestSpec) -> Result<Value, String
                     response.status
                 ));
             }
-            let mut json: serde_json::Value = serde_json::from_slice(&response.body)
-                .map_err(|error| format!("invalid OpenAI chat completion response: {error}"))?;
-            normalize_openai_tool_call_response(&mut json);
-            value_from_json(&json)
+            let raw = std::str::from_utf8(&response.body)
+                .map_err(|error| format!("OpenAI response is not UTF-8 JSON: {error}"))?;
+            let raw_value = runtime_value_from_json_text(raw).map_err(|error| error.to_string())?;
+            normalize_openai_tool_call_value(raw_value)
         }
         OpenaiResponseMode::Stream => {
             let response = perform_http_bytes(spec.request).await?;
@@ -368,12 +372,73 @@ async fn perform_openai_request(spec: OpenaiRequestSpec) -> Result<Value, String
     }
 }
 
-fn normalize_openai_tool_call_response(response: &mut serde_json::Value) {
+/// Normalizes DSML leaked into an OpenAI response without round-tripping the
+/// response through `serde_json::Value`.
+///
+/// The raw response has already been parsed with `value_from_json_text`, so
+/// untouched values retain whether their source JSON token was an integer or
+/// float. Only the synthetic tool-call fields are newly constructed here.
+fn normalize_openai_tool_call_value(response: Value) -> Result<Value, String> {
+    let Some(choices) = map_get(&response, "choices") else {
+        return Ok(response);
+    };
+    let Some(mut choices) = choices.with_list(<[Value]>::to_vec) else {
+        return Ok(response);
+    };
+
+    let mut changed = false;
+    for choice in &mut choices {
+        let Some(message) = map_get(choice, "message") else {
+            continue;
+        };
+        if map_get(&message, "tool_calls").is_some() {
+            continue;
+        }
+        let Some(content) =
+            map_get(&message, "content").and_then(|value| value.with_str(str::to_owned))
+        else {
+            continue;
+        };
+        let tool_calls = parse_dsml_tool_calls(&content);
+        if tool_calls.is_empty() {
+            continue;
+        }
+        tracing::warn!(
+            tool_call_count = tool_calls.len(),
+            "normalized leaked DSML tool calls from OpenAI response content"
+        );
+        let tool_calls = value_from_json(&serde_json::Value::Array(tool_calls))?;
+        let message = message
+            .map_set(Value::symbol(Symbol::intern("tool_calls")), tool_calls)
+            .and_then(|message| {
+                message.map_set(Value::symbol(Symbol::intern("content")), Value::nothing())
+            })
+            .expect("OpenAI message must remain a map");
+        *choice = choice
+            .map_set(Value::symbol(Symbol::intern("message")), message)
+            .expect("OpenAI choice must remain a map");
+        changed = true;
+    }
+
+    if !changed {
+        return Ok(response);
+    }
+    response
+        .map_set(
+            Value::symbol(Symbol::intern("choices")),
+            Value::list(choices),
+        )
+        .ok_or_else(|| "OpenAI response must remain a map".to_owned())
+}
+
+#[cfg(test)]
+fn normalize_openai_tool_call_response(response: &mut serde_json::Value) -> bool {
+    let mut changed = false;
     let Some(choices) = response
         .get_mut("choices")
         .and_then(|value| value.as_array_mut())
     else {
-        return;
+        return false;
     };
     for choice in choices {
         let Some(message) = choice
@@ -401,7 +466,9 @@ fn normalize_openai_tool_call_response(response: &mut serde_json::Value) {
             serde_json::Value::Array(tool_calls),
         );
         message.insert("content".to_owned(), serde_json::Value::Null);
+        changed = true;
     }
+    changed
 }
 
 fn parse_dsml_tool_calls(content: &str) -> Vec<serde_json::Value> {
@@ -521,25 +588,37 @@ async fn perform_embedding_request(spec: HttpRequestSpec) -> Result<Value, Strin
             response.status
         ));
     }
-    let value: serde_json::Value = serde_json::from_slice(&response.body)
+    let raw = std::str::from_utf8(&response.body)
+        .map_err(|error| format!("embedding response is not UTF-8 JSON: {error}"))?;
+    let response_value = runtime_value_from_json_text(raw)
         .map_err(|error| format!("invalid embedding response: {error}"))?;
-    let Some(embedding) = value
-        .get("data")
-        .and_then(|data| data.as_array())
-        .and_then(|data| data.first())
-        .and_then(|item| item.get("embedding"))
-        .and_then(|embedding| embedding.as_array())
-    else {
+    let Some(data) = map_get(&response_value, "data") else {
         return Err("embedding response did not contain data[0].embedding".to_owned());
     };
-    let values = embedding
+    let Some(item) = data.with_list(|values| values.first().cloned()).flatten() else {
+        return Err("embedding response did not contain data[0].embedding".to_owned());
+    };
+    let Some(embedding) = map_get(&item, "embedding") else {
+        return Err("embedding response did not contain data[0].embedding".to_owned());
+    };
+    let Some(values) = embedding.with_list(<[Value]>::to_vec) else {
+        return Err("embedding response did not contain data[0].embedding".to_owned());
+    };
+    let values = values
         .iter()
         .enumerate()
         .map(|(index, value)| {
             value
-                .as_f64()
-                .map(Value::float)
-                .ok_or_else(|| format!("embedding value at index {index} was not a float"))
+                .as_float()
+                .or_else(|| value.as_int().map(|value| value as f32))
+                .ok_or_else(|| {
+                    format!("embedding value at index {index} was not a finite binary32")
+                })
+                .and_then(|value| {
+                    Value::float(value).map_err(|_| {
+                        format!("embedding value at index {index} was not a finite binary32")
+                    })
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Value::list(values))
@@ -590,7 +669,7 @@ fn parse_sse_stream(body: &[u8], provider: &str) -> Result<Value, String> {
     let mut text = String::new();
     let mut tool_calls: Vec<ToolCallAccumulator> = Vec::new();
     let mut finish_reason: Option<String> = None;
-    let mut usage: Option<serde_json::Value> = None;
+    let mut usage: Option<Value> = None;
     let mut model: Option<String> = None;
 
     let text_body = String::from_utf8_lossy(body);
@@ -607,6 +686,8 @@ fn parse_sse_stream(body: &[u8], provider: &str) -> Result<Value, String> {
             if data.trim() == "[DONE]" {
                 continue;
             }
+            let raw_value = runtime_value_from_json_text(data)
+                .map_err(|error| format!("invalid SSE data: {error}"))?;
             let json: serde_json::Value =
                 serde_json::from_str(data).map_err(|error| format!("invalid SSE data: {error}"))?;
 
@@ -614,8 +695,8 @@ fn parse_sse_stream(body: &[u8], provider: &str) -> Result<Value, String> {
                 model = Some(m.to_owned());
             }
 
-            if let Some(u) = json.get("usage") {
-                usage = Some(u.clone());
+            if let Some(value) = map_get(&raw_value, "usage") {
+                usage = Some(value);
             }
 
             let Some(choices) = json.get("choices").and_then(|v| v.as_array()) else {
@@ -704,10 +785,8 @@ fn parse_sse_stream(body: &[u8], provider: &str) -> Result<Value, String> {
         ),
     ];
 
-    if let Some(usage) = usage
-        && let Ok(usage_value) = value_from_json(&usage)
-    {
-        result_fields.push((Value::symbol(Symbol::intern("usage")), usage_value));
+    if let Some(usage) = usage {
+        result_fields.push((Value::symbol(Symbol::intern("usage")), usage));
     }
 
     Ok(Value::map(result_fields))
@@ -744,89 +823,11 @@ fn openai_chat_completion_json(payload: &Value, stream: bool) -> Result<serde_js
 }
 
 fn json_from_value(value: &Value) -> Result<serde_json::Value, String> {
-    if *value == Value::nothing() {
-        return Ok(serde_json::Value::Null);
-    }
-    if let Some(value) = value.as_bool() {
-        return Ok(serde_json::Value::Bool(value));
-    }
-    if let Some(value) = value.as_int() {
-        return Ok(serde_json::Value::Number(value.into()));
-    }
-    if let Some(value) = value.as_float() {
-        return serde_json::Number::from_f64(value)
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| "non-finite float cannot be encoded as JSON".to_owned());
-    }
-    if let Some(text) = value.with_str(str::to_owned) {
-        return Ok(serde_json::Value::String(text));
-    }
-    if let Some(values) = value.with_list(<[Value]>::to_vec) {
-        return values
-            .iter()
-            .map(json_from_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(serde_json::Value::Array);
-    }
-    if let Some(entries) = value.with_map(<[(Value, Value)]>::to_vec) {
-        let mut object = serde_json::Map::new();
-        for (key, value) in entries {
-            object.insert(json_key(&key)?, json_from_value(&value)?);
-        }
-        return Ok(serde_json::Value::Object(object));
-    }
-    Err(format!("unsupported JSON value kind {:?}", value.kind()))
+    runtime_json_from_value(value).map_err(|e| e.to_string())
 }
 
 fn value_from_json(value: &serde_json::Value) -> Result<Value, String> {
-    match value {
-        serde_json::Value::Null => Ok(Value::nothing()),
-        serde_json::Value::Bool(value) => Ok(Value::bool(*value)),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                return Ok(Value::int(value).unwrap_or_else(|_| Value::float(value as f64)));
-            }
-            if let Some(value) = value.as_u64() {
-                return Ok(i64::try_from(value)
-                    .ok()
-                    .and_then(|value| Value::int(value).ok())
-                    .unwrap_or_else(|| Value::float(value as f64)));
-            }
-            value
-                .as_f64()
-                .map(Value::float)
-                .ok_or_else(|| "unsupported JSON number".to_owned())
-        }
-        serde_json::Value::String(value) => Ok(Value::string(value)),
-        serde_json::Value::Array(values) => values
-            .iter()
-            .map(value_from_json)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::list),
-        serde_json::Value::Object(entries) => entries
-            .iter()
-            .map(|(key, value)| {
-                Ok((
-                    Value::symbol(Symbol::intern(key.as_str())),
-                    value_from_json(value)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, String>>()
-            .map(Value::map),
-    }
-}
-
-fn json_key(value: &Value) -> Result<String, String> {
-    if let Some(text) = value.with_str(str::to_owned) {
-        return Ok(text);
-    }
-    if let Some(symbol) = value.as_symbol() {
-        return symbol
-            .name()
-            .map(str::to_owned)
-            .ok_or_else(|| format!("symbol {symbol:?} has no interned name"));
-    }
-    Err("JSON object keys must be strings or symbols".to_owned())
+    runtime_value_from_json(value).map_err(|e| e.to_string())
 }
 
 fn optional_map_headers(
@@ -1130,7 +1131,7 @@ mod tests {
                         Value::symbol(Symbol::intern("options")),
                         Value::map([(
                             Value::symbol(Symbol::intern("temperature")),
-                            Value::float(0.2),
+                            Value::float(0.2).unwrap(),
                         )]),
                     ),
                 ]),
@@ -1180,6 +1181,33 @@ mod tests {
         assert_eq!(arguments["path"], "crates/relation-kernel/src/computed.rs");
         assert_eq!(arguments["start_line"], 150);
         assert_eq!(arguments["line_count"], 100);
+    }
+
+    #[test]
+    fn dsml_normalization_preserves_raw_response_number_kinds() {
+        let response = runtime_value_from_json_text(
+            r#"{
+                "request_score": 1.0,
+                "choices": [{
+                    "message": {
+                        "content": "< | DSML | invoke name=\"read\">< / DSML | invoke>"
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let normalized = normalize_openai_tool_call_value(response).unwrap();
+        assert_eq!(
+            map_get(&normalized, "request_score").unwrap().as_float(),
+            Some(1.0)
+        );
+        let message = map_get(&normalized, "choices")
+            .and_then(|choices| choices.list_get(0))
+            .and_then(|choice| map_get(&choice, "message"))
+            .unwrap();
+        assert_eq!(map_get(&message, "content"), Some(Value::nothing()));
+        assert_eq!(map_get(&message, "tool_calls").unwrap().list_len(), Some(1));
     }
 
     #[test]
@@ -1265,7 +1293,11 @@ mod tests {
             let response = handle_external_request(request, &ExternalHttpConfig::default()).await;
             assert_eq!(
                 response,
-                Value::list([Value::float(0.25), Value::float(0.5), Value::float(0.75)])
+                Value::list([
+                    Value::float(0.25).unwrap(),
+                    Value::float(0.5).unwrap(),
+                    Value::float(0.75).unwrap(),
+                ])
             );
         });
     }
@@ -1329,9 +1361,9 @@ mod tests {
                         mica_driver::DriverEvent::TaskCompleted { task_id, value }
                             if *task_id == report.task_id
                                 && *value == Value::list([
-                                    Value::float(0.25),
-                                    Value::float(0.5),
-                                    Value::float(0.75),
+                                    Value::float(0.25).unwrap(),
+                                    Value::float(0.5).unwrap(),
+                                    Value::float(0.75).unwrap(),
                                 ])
                     )
                 }) {

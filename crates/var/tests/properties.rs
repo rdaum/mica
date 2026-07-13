@@ -22,7 +22,7 @@ fn leaf_value() -> impl Strategy<Value = Value> {
         Just(Value::nothing()),
         any::<bool>().prop_map(Value::bool),
         (-(1i64 << 55)..(1i64 << 55)).prop_map(|value| Value::int(value).unwrap()),
-        any::<f32>().prop_map(|value| Value::float(value as f64)),
+        any::<f32>().prop_map(|value| Value::float(value).unwrap()),
         (0u64..=Identity::MAX).prop_map(|raw| Value::identity(Identity::new(raw).unwrap())),
         "[a-z_][a-z0-9_]{0,12}".prop_map(|name| Value::symbol(Symbol::intern(&name))),
         "E_[A-Z][A-Z0-9_]{0,12}".prop_map(|name| Value::error_code(Symbol::intern(&name))),

@@ -126,7 +126,7 @@ impl ComputedRelation for ExactEmbeddingSearchRelation {
                             .expect("validated query embedding should exist"),
                         bindings[2].clone().expect("validated limit should exist"),
                         subject,
-                        Value::float(score),
+                        host_score_to_value(metadata.id(), score)?,
                         snapshot_version.clone(),
                     ]),
                 ))
@@ -176,6 +176,7 @@ fn parse_vector(relation: RelationId, value: &Value) -> Result<Vec<f64>, KernelE
                 .map(|value| {
                     value
                         .as_float()
+                        .map(|value| value as f64)
                         .or_else(|| value.as_int().map(|value| value as f64))
                         .ok_or_else(|| {
                             invalid_relation(
@@ -187,6 +188,16 @@ fn parse_vector(relation: RelationId, value: &Value) -> Result<Vec<f64>, KernelE
                 .collect::<Result<Vec<_>, KernelError>>()
         })
         .ok_or_else(|| invalid_relation(relation, "embedding payload must be a list"))?
+}
+
+/// Narrows a host f64 score to a finite binary32 Mica value.
+///
+/// Host-side embedding math is done in f64. The final score crosses this
+/// boundary into Mica's binary32 float representation.
+fn host_score_to_value(relation: RelationId, score: f64) -> Result<Value, KernelError> {
+    let value = score as f32;
+    Value::float(value)
+        .map_err(|_| invalid_relation(relation, "host score is not a finite binary32 value"))
 }
 
 fn one_value(
@@ -392,8 +403,14 @@ mod tests {
         };
         value
             .with_list(|values| {
-                assert_eq!(values[0], Value::float("custom-model".len() as f64));
-                assert_eq!(values[1], Value::float("red brass lamp".len() as f64));
+                assert_eq!(
+                    values[0],
+                    Value::float("custom-model".len() as f32).unwrap()
+                );
+                assert_eq!(
+                    values[1],
+                    Value::float("red brass lamp".len() as f32).unwrap()
+                );
             })
             .expect("expected list result");
     }

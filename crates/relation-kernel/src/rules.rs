@@ -17,7 +17,7 @@ use crate::{
     ExecutionContext, KernelError, PackedRelation, RelationCapabilities, RelationId, RelationRead,
     RelationSource, ScanControl, Tuple, ValueDomain,
 };
-use mica_var::{Identity, Symbol, Value};
+use mica_var::{Identity, Symbol, Value, language_cmp};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 
@@ -1715,13 +1715,20 @@ fn guard_value<'a>(
 }
 
 fn compare_values(op: RuleComparisonOp, left: &Value, right: &Value) -> bool {
+    use std::cmp::Ordering;
     match op {
-        RuleComparisonOp::Eq => left == right,
-        RuleComparisonOp::Ne => left != right,
-        RuleComparisonOp::Lt => left < right,
-        RuleComparisonOp::Le => left <= right,
-        RuleComparisonOp::Gt => left > right,
-        RuleComparisonOp::Ge => left >= right,
+        RuleComparisonOp::Eq => language_cmp::numeric_eq(left, right),
+        RuleComparisonOp::Ne => !language_cmp::numeric_eq(left, right),
+        RuleComparisonOp::Lt => language_cmp::numeric_cmp(left, right) == Ordering::Less,
+        RuleComparisonOp::Le => matches!(
+            language_cmp::numeric_cmp(left, right),
+            Ordering::Less | Ordering::Equal
+        ),
+        RuleComparisonOp::Gt => language_cmp::numeric_cmp(left, right) == Ordering::Greater,
+        RuleComparisonOp::Ge => matches!(
+            language_cmp::numeric_cmp(left, right),
+            Ordering::Greater | Ordering::Equal
+        ),
     }
 }
 
@@ -1913,6 +1920,46 @@ mod tests {
                 .evaluate(&tx, &ExecutionContext::serial())
                 .unwrap()[&rel(56)],
             vec![Tuple::from([int(99), int(2)])]
+        );
+    }
+
+    #[test]
+    fn rule_guard_uses_mixed_numeric_equality() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(60), Symbol::intern("Value"), 2))
+            .unwrap();
+        let mut tx = kernel.begin();
+        // Store int 1 and float 1.0 as distinct facts.
+        tx.assert(rel(60), Tuple::from([int(1), int(10)])).unwrap();
+        tx.assert(rel(60), Tuple::from([Value::float(1.0).unwrap(), int(20)]))
+            .unwrap();
+
+        // Rule: find pairs where the first column equals float 1.0.
+        // Language numeric equality means int 1 == float 1.0 is true.
+        let rule = Rule::new(
+            rel(61),
+            [var("row")],
+            vec![
+                RuleBodyItem::from(Atom::positive(rel(60), [var("row"), var("val")])),
+                RuleGuard::new(
+                    RuleComparisonOp::Eq,
+                    var("row"),
+                    val(Value::float(1.0).unwrap()),
+                )
+                .into(),
+            ],
+        );
+
+        let results = RuleSet::new([rule])
+            .evaluate(&tx, &ExecutionContext::serial())
+            .unwrap();
+        // Both int 1 and float 1.0 should match because language numeric
+        // equality considers them equal.
+        assert_eq!(
+            results[&rel(61)].len(),
+            2,
+            "expected both int 1 and float 1.0 to match the guard"
         );
     }
 

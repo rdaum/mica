@@ -713,7 +713,8 @@ fn decode_inline_word(word: u64, options: ValueCodecOptions) -> Result<Value, Va
         TAG_INT => Ok(Value(word)),
         TAG_FLOAT => {
             if payload <= u32::MAX as u64 {
-                Ok(Value(word))
+                Value::float_from_bits(payload as u32)
+                    .map_err(|_| ValueCodecError::InvalidFloatPayload(payload))
             } else {
                 Err(ValueCodecError::InvalidFloatPayload(payload))
             }

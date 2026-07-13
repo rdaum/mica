@@ -450,6 +450,20 @@ fn return_context_errors(errors: Vec<CompileError>) -> Result<(), CompileError> 
     }
 }
 
+/// Parses a float literal string as binary32, returning a Mica `Value`.
+///
+/// Overflow is reported specifically as "float literal overflows binary32".
+/// Underflow to canonical zero is a successful conversion.
+fn parse_float_literal(text: &str) -> Result<Value, String> {
+    let value = text
+        .parse::<f32>()
+        .map_err(|error| format!("invalid float literal: {error}"))?;
+    if value.is_infinite() {
+        return Err("float literal overflows binary32".to_string());
+    }
+    Value::float(value).map_err(|error| format!("invalid float literal: {error:?}"))
+}
+
 fn context_errors(semantic: &SemanticProgram, context: &CompileContext) -> Vec<CompileError> {
     let mut validator = ContextValidator {
         semantic,
@@ -1001,14 +1015,13 @@ fn literal_value_for_rule(
             })
         }
         Literal::Float(value) => {
-            let value = value
-                .parse::<f64>()
-                .map_err(|error| CompileError::InvalidLiteral {
+            let value =
+                parse_float_literal(value).map_err(|message| CompileError::InvalidLiteral {
                     node: id,
                     span: semantic.span(id).cloned(),
-                    message: format!("invalid float literal: {error}"),
+                    message,
                 })?;
-            Ok(Value::float(value))
+            Ok(value)
         }
         Literal::String(value) => Ok(Value::string(value)),
         Literal::Bytes(value) => Ok(Value::bytes(value)),
@@ -4286,14 +4299,13 @@ impl<'a> ProgramCompiler<'a> {
                 Value::int(value).map_err(|error| self.value_error(id, error))
             }
             Literal::Float(value) => {
-                let value = value
-                    .parse::<f64>()
-                    .map_err(|error| CompileError::InvalidLiteral {
+                let value =
+                    parse_float_literal(value).map_err(|message| CompileError::InvalidLiteral {
                         node: id,
                         span: self.span(id),
-                        message: format!("invalid float literal: {error}"),
+                        message,
                     })?;
-                Ok(Value::float(value))
+                Ok(value)
             }
             Literal::String(value) => Ok(Value::string(value)),
             Literal::Bytes(value) => Ok(Value::bytes(value)),
@@ -7546,5 +7558,77 @@ mod tests {
                 retries: 0,
             }
         );
+    }
+
+    #[test]
+    fn compiles_float_literal_as_binary32() {
+        let context = CompileContext::new();
+        let compiled = compile_source("return 1.5", &context).unwrap();
+        let instructions = compiled.program.instructions();
+        let load = instructions
+            .iter()
+            .find(|i| matches!(i, Instruction::Load { value, .. } if value.as_float().is_some()))
+            .unwrap();
+        match load {
+            Instruction::Load { value, .. } => {
+                assert_eq!(value.as_float(), Some(1.5f32));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn compiles_exponent_float_literal() {
+        let context = CompileContext::new();
+        let compiled = compile_source("return 1.5e2", &context).unwrap();
+        let instructions = compiled.program.instructions();
+        let load = instructions
+            .iter()
+            .find(|i| matches!(i, Instruction::Load { value, .. } if value.as_float().is_some()))
+            .unwrap();
+        match load {
+            Instruction::Load { value, .. } => {
+                assert_eq!(value.as_float(), Some(150.0f32));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn rejects_float_literal_overflow() {
+        let context = CompileContext::new();
+        let result = compile_source("return 3.4028236e38", &context);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let message = match error {
+            CompileError::InvalidLiteral { message, .. } => message,
+            other => panic!("expected InvalidLiteral error, got {other:?}"),
+        };
+        assert!(
+            message.contains("overflows binary32"),
+            "expected overflow message, got: {message}"
+        );
+    }
+
+    #[test]
+    fn compiles_binary32_literal_boundaries() {
+        let context = CompileContext::new();
+        for (source, expected) in [
+            ("return 3.4028235e38", f32::MAX),
+            ("return 1.4e-45", f32::from_bits(1)),
+            ("return 1e-50", 0.0),
+        ] {
+            let compiled = compile_source(source, &context).unwrap();
+            let value = compiled
+                .program
+                .instructions()
+                .iter()
+                .find_map(|instruction| match instruction {
+                    Instruction::Load { value, .. } => value.as_float(),
+                    _ => None,
+                })
+                .expect("literal program should load a float");
+            assert_eq!(value.to_bits(), expected.to_bits(), "{source}");
+        }
     }
 }

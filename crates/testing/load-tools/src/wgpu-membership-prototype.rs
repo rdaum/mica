@@ -357,7 +357,9 @@ fn probe_value(domain: ProbeDomain, value: u64) -> Value {
         ProbeDomain::Identity => {
             Value::identity(Identity::new(value).expect("probe should fit in a Mica identity"))
         }
-        ProbeDomain::Float => Value::float(value as f64),
+        ProbeDomain::Float => {
+            Value::float(value as f32).expect("probe should fit in a finite binary32")
+        }
     }
 }
 
@@ -456,7 +458,7 @@ fn encode_value(value: &Value, domain: ProbeDomain) -> Result<u64, String> {
         ProbeDomain::Float => value
             .as_float()
             .map(|value| {
-                let bits = (value as f32).to_bits();
+                let bits = value.to_bits();
                 if (bits & 0x8000_0000) != 0 {
                     u64::from(!bits)
                 } else {
@@ -950,7 +952,11 @@ mod tests {
             ),
             (
                 ProbeDomain::Float,
-                vec![Value::float(-7.5), Value::float(0.0), Value::float(9.25)],
+                vec![
+                    Value::float(-7.5).unwrap(),
+                    Value::float(0.0).unwrap(),
+                    Value::float(9.25).unwrap(),
+                ],
             ),
         ];
 
@@ -963,7 +969,7 @@ mod tests {
 
     #[test]
     fn encoding_rejects_a_mismatched_value_domain() {
-        let error = encode_value(&Value::float(1.0), ProbeDomain::Int).unwrap_err();
+        let error = encode_value(&Value::float(1.0).unwrap(), ProbeDomain::Int).unwrap_err();
         assert!(error.contains("expected int probe value"));
     }
 

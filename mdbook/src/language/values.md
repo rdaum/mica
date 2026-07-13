@@ -115,3 +115,50 @@ durable identities, which is used by role matching and dispatch.
 
 Capability values are runtime authority tokens. They may appear while a task is running, but they
 are not persistable source literals and should not be treated as durable policy.
+
+## Numeric Values
+
+Mica has two numeric value families: integers and floats.
+
+- Mica `Int` is a 56-bit signed integer (`-2^55 ..= 2^55 - 1`).
+- Mica `Float` is a finite IEEE-754 binary32 (single-precision) value. Infinity and NaN are not
+  valid Mica values; operations that would produce them return `E_ARITH` or `E_DIV` instead.
+  Negative zero canonicalizes to positive zero.
+
+Mica `Float` has less integer precision than Mica `Int`. Binary32 can represent every integer up
+to `2^24` exactly, but above that some integers round to the nearest representable float. A 56-bit
+Mica integer always carries more precision than a binary32 float.
+
+### Numeric Equality And Key Identity
+
+Mica has two distinct comparison concepts:
+
+1. **Language numeric comparison** is used by `==`, `!=`, `<`, `<=`, `>`, `>=` in expressions and by
+   relation rule guards. When both operands are numeric, integers and floats compare by numeric
+   value rather than by value kind. Therefore `1 == 1.0` is true.
+
+2. **Canonical value order** is the total, type-sensitive order used by maps, relation tuples,
+   indexes, hashing, and persistence. An integer and a float remain distinct stored values even
+   when numerically equal, and may be distinct keys.
+
+```mica
+1 == 1.0          -- true: language numeric equality
+{:1 -> "int", 1.0 -> "float"}  -- two entries: canonical key identity
+```
+
+### Division Result Kinds
+
+Division follows a result-kind rule:
+
+- `4 / 2` produces `Int(2)` because integer division is exact.
+- `4 / 2.0` produces `Float(2.0)` because a float operand produces a float result.
+- `5 / 2` produces `Float(2.5)` because integer division is not exact.
+
+The numeric values `4 / 2` and `4 / 2.0` are numerically equal (`2 == 2.0` is true), but the
+resulting values have different kinds and occupy different map or relation keys.
+
+### Structural Sorting
+
+Structural sorting uses canonical value order, so it can distinguish and order numeric values that
+language equality considers numerically equal. A sorted list may place `1` before `1.0` even though
+`1 == 1.0`.

@@ -1373,7 +1373,7 @@ fn encode_value(value: &Value, encoding: ValueEncoding) -> Option<u64> {
         ValueEncoding::Int => value.as_int().map(|value| (value as u64) ^ (1 << 63)),
         ValueEncoding::Identity => value.as_identity().map(Identity::raw),
         ValueEncoding::Float => value.as_float().map(|value| {
-            let bits = (value as f32).to_bits();
+            let bits = value.to_bits();
             if (bits & 0x8000_0000) != 0 {
                 u64::from(!bits)
             } else {
@@ -1474,7 +1474,11 @@ mod tests {
             ),
             (
                 ValueEncoding::Float,
-                vec![Value::float(-7.5), Value::float(0.0), Value::float(9.25)],
+                vec![
+                    Value::float(-7.5).unwrap(),
+                    Value::float(0.0).unwrap(),
+                    Value::float(9.25).unwrap(),
+                ],
             ),
         ];
         for (encoding, values) in cases {
@@ -1488,7 +1492,7 @@ mod tests {
     fn encoding_rejects_mixed_domains() {
         assert!(
             encode_column(
-                &[Value::int(1).unwrap(), Value::float(2.0)],
+                &[Value::int(1).unwrap(), Value::float(2.0).unwrap()],
                 ValueEncoding::Int,
             )
             .is_none()

@@ -2039,7 +2039,7 @@ fn fjall_provider_persists_and_loads_canonical_state() {
         Value::nothing(),
         Value::bool(true),
         int(42),
-        Value::float(12.5),
+        Value::float(12.5).unwrap(),
         Value::identity(rel(99)),
         Value::symbol(Symbol::intern("symbolic")),
         Value::error_code(Symbol::intern("E_PERSIST")),

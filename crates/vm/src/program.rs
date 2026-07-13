@@ -3334,7 +3334,7 @@ fn write_value(out: &mut Vec<u8>, value: &Value) -> Result<(), RuntimeError> {
         write_i64(out, value);
     } else if let Some(value) = value.as_float() {
         out.push(VALUE_FLOAT);
-        write_f64(out, value);
+        write_f32(out, value);
     } else if let Some(value) = value.as_identity() {
         out.push(VALUE_IDENTITY);
         write_identity(out, value);
@@ -3409,7 +3409,7 @@ fn write_i64(out: &mut Vec<u8>, value: i64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-fn write_f64(out: &mut Vec<u8>, value: f64) {
+fn write_f32(out: &mut Vec<u8>, value: f32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
@@ -3838,7 +3838,9 @@ impl<'a> ByteReader<'a> {
             VALUE_INT => Value::int(self.read_i64()?).map_err(|error| {
                 artifact_error(format!("invalid serialized integer value: {error:?}"))
             })?,
-            VALUE_FLOAT => Value::float(self.read_f64()?),
+            VALUE_FLOAT => Value::float(self.read_f32()?).map_err(|error| {
+                artifact_error(format!("invalid serialized float value: {error:?}"))
+            })?,
             VALUE_IDENTITY => Value::identity(self.read_identity()?),
             VALUE_SYMBOL => Value::symbol(Symbol::intern(&self.read_string()?)),
             VALUE_ERROR_CODE => Value::error_code(Symbol::intern(&self.read_string()?)),
@@ -3951,11 +3953,9 @@ impl<'a> ByteReader<'a> {
         ]))
     }
 
-    fn read_f64(&mut self) -> Result<f64, RuntimeError> {
-        let bytes = self.read_exact(8)?;
-        Ok(f64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]))
+    fn read_f32(&mut self) -> Result<f32, RuntimeError> {
+        let bytes = self.read_exact(4)?;
+        Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8], RuntimeError> {
