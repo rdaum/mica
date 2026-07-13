@@ -23,7 +23,7 @@ use mica_var::abi::{borrowed_value_bits, value_is_immediate};
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
     CompiledFloatLoop, CompiledIntegerLoop, CompiledNaturalLoop, FloatArithmetic, FloatComparison,
-    FloatLoopPlan, IntegerComparison, NaturalLoopInstruction, NaturalLoopPlan,
+    FloatLoopPlan, IntegerComparison, NaturalLoopInstruction, NaturalLoopPlan, ScalarComparison,
 };
 #[cfg(feature = "cranelift")]
 use std::collections::BTreeSet;
@@ -1336,7 +1336,7 @@ fn natural_loop_instruction(
             right,
         } => Some(NaturalLoopInstruction::Compare {
             dst: slot(*dst)?,
-            comparison: integer_comparison(*op)?,
+            comparison: scalar_comparison(*op)?,
             left: slot(*left)?,
             right: slot(*right)?,
         }),
@@ -1453,6 +1453,19 @@ fn integer_comparison(operation: RuntimeBinaryOp) -> Option<IntegerComparison> {
         RuntimeBinaryOp::Le => Some(IntegerComparison::LessThanOrEqual),
         RuntimeBinaryOp::Gt => Some(IntegerComparison::GreaterThan),
         RuntimeBinaryOp::Ge => Some(IntegerComparison::GreaterThanOrEqual),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "cranelift")]
+fn scalar_comparison(operation: RuntimeBinaryOp) -> Option<ScalarComparison> {
+    match operation {
+        RuntimeBinaryOp::Eq => Some(ScalarComparison::Equal),
+        RuntimeBinaryOp::Ne => Some(ScalarComparison::NotEqual),
+        RuntimeBinaryOp::Lt => Some(ScalarComparison::LessThan),
+        RuntimeBinaryOp::Le => Some(ScalarComparison::LessThanOrEqual),
+        RuntimeBinaryOp::Gt => Some(ScalarComparison::GreaterThan),
+        RuntimeBinaryOp::Ge => Some(ScalarComparison::GreaterThanOrEqual),
         _ => None,
     }
 }

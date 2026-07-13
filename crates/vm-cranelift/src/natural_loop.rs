@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{IntegerComparison, ValueEmitter};
+use crate::{ScalarComparison, ValueEmitter};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     AbiParam, InstBuilder, MemFlagsData, Signature, condcodes::IntCC, types,
@@ -75,7 +75,7 @@ pub enum NaturalLoopInstruction {
     },
     Compare {
         dst: u16,
-        comparison: IntegerComparison,
+        comparison: ScalarComparison,
         left: u16,
         right: u16,
     },
@@ -192,7 +192,7 @@ impl NaturalLoopPlan {
         }
         if !condition_is_comparison {
             return Err(NaturalLoopError(
-                "natural loop condition must be produced by an integer comparison".to_owned(),
+                "natural loop condition must be produced by a scalar comparison".to_owned(),
             ));
         }
         let modified_slots = modified
@@ -471,8 +471,7 @@ impl CompiledNaturalLoop {
             } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
-                let result =
-                    ValueEmitter::emit_checked_int_compare(builder, left, right, comparison);
+                let result = ValueEmitter::emit_scalar_compare(builder, left, right, comparison);
                 Self::store_slot(builder, scratch, dst, result.word());
                 builder.ins().band(is_fast, result.is_fast())
             }

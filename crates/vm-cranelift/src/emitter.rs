@@ -66,6 +66,52 @@ pub enum FloatComparison {
     GreaterThanOrEqual,
 }
 
+/// Language comparisons supported across immediate scalar values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScalarComparison {
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+}
+
+impl ScalarComparison {
+    const fn signed_condition_code(self) -> IntCC {
+        match self {
+            Self::Equal => IntCC::Equal,
+            Self::NotEqual => IntCC::NotEqual,
+            Self::LessThan => IntCC::SignedLessThan,
+            Self::LessThanOrEqual => IntCC::SignedLessThanOrEqual,
+            Self::GreaterThan => IntCC::SignedGreaterThan,
+            Self::GreaterThanOrEqual => IntCC::SignedGreaterThanOrEqual,
+        }
+    }
+
+    const fn unsigned_condition_code(self) -> IntCC {
+        match self {
+            Self::Equal => IntCC::Equal,
+            Self::NotEqual => IntCC::NotEqual,
+            Self::LessThan => IntCC::UnsignedLessThan,
+            Self::LessThanOrEqual => IntCC::UnsignedLessThanOrEqual,
+            Self::GreaterThan => IntCC::UnsignedGreaterThan,
+            Self::GreaterThanOrEqual => IntCC::UnsignedGreaterThanOrEqual,
+        }
+    }
+
+    const fn float_condition_code(self) -> FloatCC {
+        match self {
+            Self::Equal => FloatCC::Equal,
+            Self::NotEqual => FloatCC::NotEqual,
+            Self::LessThan => FloatCC::LessThan,
+            Self::LessThanOrEqual => FloatCC::LessThanOrEqual,
+            Self::GreaterThan => FloatCC::GreaterThan,
+            Self::GreaterThanOrEqual => FloatCC::GreaterThanOrEqual,
+        }
+    }
+}
+
 impl FloatComparison {
     const fn condition_code(self) -> FloatCC {
         match self {
@@ -504,13 +550,53 @@ impl ValueEmitter {
         left: CraneliftValue,
         right: CraneliftValue,
     ) -> EmittedValue {
+        Self::emit_scalar_compare(builder, left, right, ScalarComparison::Equal)
+    }
+
+    pub fn emit_scalar_compare(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+        comparison: ScalarComparison,
+    ) -> EmittedValue {
         let left_is_immediate = Self::emit_is_immediate(builder, left);
         let right_is_immediate = Self::emit_is_immediate(builder, right);
         let is_fast = builder.ins().band(left_is_immediate, right_is_immediate);
-        let equal = builder.ins().icmp(IntCC::Equal, left, right);
+
+        let left_is_int = Self::emit_is_int(builder, left);
+        let right_is_int = Self::emit_is_int(builder, right);
+        let both_int = builder.ins().band(left_is_int, right_is_int);
+        let left_is_float = Self::emit_is_float(builder, left);
+        let right_is_float = Self::emit_is_float(builder, right);
+        let both_float = builder.ins().band(left_is_float, right_is_float);
+        let left_is_numeric = builder.ins().bor(left_is_int, left_is_float);
+        let right_is_numeric = builder.ins().bor(right_is_int, right_is_float);
+        let both_numeric = builder.ins().band(left_is_numeric, right_is_numeric);
+        let same_numeric_kind = builder.ins().bor(both_int, both_float);
+        let mixed_numeric = builder.ins().bxor(both_numeric, same_numeric_kind);
+        let not_mixed_numeric = builder.ins().icmp_imm(IntCC::Equal, mixed_numeric, 0);
+        let is_fast = builder.ins().band(is_fast, not_mixed_numeric);
+
+        let scalar_result = builder
+            .ins()
+            .icmp(comparison.unsigned_condition_code(), left, right);
+        let left_int = Self::emit_unbox_int(builder, left);
+        let right_int = Self::emit_unbox_int(builder, right);
+        let int_result =
+            builder
+                .ins()
+                .icmp(comparison.signed_condition_code(), left_int, right_int);
+        let left_float = Self::emit_unbox_float(builder, left);
+        let right_float = Self::emit_unbox_float(builder, right);
+        let float_result =
+            builder
+                .ins()
+                .fcmp(comparison.float_condition_code(), left_float, right_float);
+        let result = builder.ins().select(both_int, int_result, scalar_result);
+        let result = builder.ins().select(both_float, float_result, result);
 
         EmittedValue {
-            word: Self::emit_bool(builder, equal),
+            word: Self::emit_bool(builder, result),
             is_fast,
         }
     }
@@ -553,7 +639,7 @@ impl ValueEmitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmittedValue, FloatComparison, IntegerComparison, ValueEmitter};
+    use super::{EmittedValue, FloatComparison, IntegerComparison, ScalarComparison, ValueEmitter};
     use cranelift_codegen::Context;
     use cranelift_codegen::ir::{
         AbiParam, InstBuilder, MemFlagsData, Signature, Value as CraneliftValue, types,
@@ -561,11 +647,11 @@ mod tests {
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::{Linkage, Module, default_libcall_names};
-    use mica_var::Value;
     use mica_var::abi::{
         VALUE_INT_MAX, VALUE_INT_MIN, VALUE_NOTHING_TAG, borrowed_value_bits,
         from_owned_value_bits, pack_value,
     };
+    use mica_var::{Symbol, Value, ValueKind};
 
     const STATUS_COMPLETE: u32 = 0;
     const STATUS_SIDE_EXIT: u32 = 1;
@@ -852,10 +938,67 @@ mod tests {
         ];
         for left in &values {
             for right in &values {
-                assert_eq!(probe.run(left, right), Some(Value::bool(left == right)));
+                let mixed_numeric = matches!(left.kind(), ValueKind::Int | ValueKind::Float)
+                    && matches!(right.kind(), ValueKind::Int | ValueKind::Float)
+                    && left.kind() != right.kind();
+                let expected = (!mixed_numeric).then(|| Value::bool(left == right));
+                assert_eq!(probe.run(left, right), expected);
             }
         }
         assert_eq!(probe.run(&Value::string("x"), &Value::string("x")), None);
+    }
+
+    #[test]
+    fn emitted_scalar_comparisons_match_language_ordering() {
+        let comparisons = [
+            ScalarComparison::Equal,
+            ScalarComparison::NotEqual,
+            ScalarComparison::LessThan,
+            ScalarComparison::LessThanOrEqual,
+            ScalarComparison::GreaterThan,
+            ScalarComparison::GreaterThanOrEqual,
+        ];
+        let values = [
+            Value::nothing(),
+            Value::bool(false),
+            Value::bool(true),
+            Value::int(-1).unwrap(),
+            Value::int(1).unwrap(),
+            Value::float(-1.5).unwrap(),
+            Value::float(1.5).unwrap(),
+            Value::identity_raw(7).unwrap(),
+            Value::symbol(Symbol::intern("alpha")),
+            Value::error_code(Symbol::intern("E_SCALAR")),
+            Value::capability_raw(11).unwrap(),
+            Value::function_raw(13).unwrap(),
+        ];
+
+        for comparison in comparisons {
+            let probe = Probe::compile(|builder, left, right| {
+                ValueEmitter::emit_scalar_compare(builder, left, right, comparison)
+            });
+            for left in &values {
+                for right in &values {
+                    let mixed_numeric = matches!(left.kind(), ValueKind::Int | ValueKind::Float)
+                        && matches!(right.kind(), ValueKind::Int | ValueKind::Float)
+                        && left.kind() != right.kind();
+                    let ordering = mica_var::language_cmp::numeric_cmp(left, right);
+                    let expected = match comparison {
+                        ScalarComparison::Equal => ordering.is_eq(),
+                        ScalarComparison::NotEqual => !ordering.is_eq(),
+                        ScalarComparison::LessThan => ordering.is_lt(),
+                        ScalarComparison::LessThanOrEqual => ordering.is_le(),
+                        ScalarComparison::GreaterThan => ordering.is_gt(),
+                        ScalarComparison::GreaterThanOrEqual => ordering.is_ge(),
+                    };
+                    assert_eq!(
+                        probe.run(left, right),
+                        (!mixed_numeric).then(|| Value::bool(expected)),
+                    );
+                }
+            }
+            assert_eq!(probe.run(&Value::string("a"), &values[0]), None);
+        }
     }
 
     #[test]

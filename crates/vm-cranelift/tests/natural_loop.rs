@@ -14,8 +14,8 @@
 use mica_var::Value;
 use mica_var::abi::{borrowed_value_bits, from_owned_value_bits};
 use mica_vm_cranelift::{
-    CompiledNaturalLoop, IntegerComparison, NaturalLoopInstruction, NaturalLoopOutcome,
-    NaturalLoopPlan,
+    CompiledNaturalLoop, NaturalLoopInstruction, NaturalLoopOutcome, NaturalLoopPlan,
+    ScalarComparison,
 };
 use std::sync::{Arc, Barrier};
 
@@ -70,7 +70,7 @@ fn plan(limit: i64) -> NaturalLoopPlan {
             },
             NaturalLoopInstruction::Compare {
                 dst: CONDITION,
-                comparison: IntegerComparison::LessThan,
+                comparison: ScalarComparison::LessThan,
                 left: CURRENT,
                 right: LIMIT,
             },
