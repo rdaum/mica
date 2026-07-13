@@ -13,7 +13,7 @@
 
 use crate::{
     AuthorityContext, Instruction, Operand, Program, Register, RegisterVm, RuntimeBinaryOp,
-    RuntimeError, VmHost, VmHostResponse,
+    RuntimeError, RuntimeUnaryOp, VmHost, VmHostResponse,
 };
 use mica_relation_kernel::{
     DispatchRead, KernelError, RelationId, RelationRead, RelationWorkspace, Tuple,
@@ -25,6 +25,7 @@ const ITERATIONS: usize = 16_384;
 const INSTRUCTION_COUNT: usize = (ITERATIONS * 3) + 4;
 const NATURAL_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 7;
 const NATURAL_ARITHMETIC_INSTRUCTION_COUNT: usize = (ITERATIONS * 11) + 7;
+const NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT: usize = (ITERATIONS * 19) + 6;
 const MAX_CALL_DEPTH: usize = 8;
 
 #[derive(Default)]
@@ -355,6 +356,120 @@ fn natural_scaled_countdown_program() -> Arc<Program> {
     )
 }
 
+fn natural_integer_surface_program(divisor: Value) -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            17,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(1),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::int(ITERATIONS as i64).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(3),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(0),
+                    right: register(2),
+                },
+                Instruction::Branch {
+                    condition: register(3),
+                    if_true: 5,
+                    if_false: 21,
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: Value::int(6).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(5),
+                    op: RuntimeBinaryOp::Mul,
+                    left: register(0),
+                    right: register(4),
+                },
+                Instruction::Load {
+                    dst: register(6),
+                    value: divisor,
+                },
+                Instruction::Binary {
+                    dst: register(7),
+                    op: RuntimeBinaryOp::Div,
+                    left: register(5),
+                    right: register(6),
+                },
+                Instruction::Load {
+                    dst: register(8),
+                    value: Value::int(7).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(9),
+                    op: RuntimeBinaryOp::Rem,
+                    left: register(0),
+                    right: register(8),
+                },
+                Instruction::Unary {
+                    dst: register(10),
+                    op: RuntimeUnaryOp::Neg,
+                    src: register(9),
+                },
+                Instruction::Unary {
+                    dst: register(11),
+                    op: RuntimeUnaryOp::Not,
+                    src: register(0),
+                },
+                Instruction::Binary {
+                    dst: register(12),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(7),
+                    right: register(9),
+                },
+                Instruction::Binary {
+                    dst: register(13),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(12),
+                    right: register(10),
+                },
+                Instruction::Binary {
+                    dst: register(14),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(1),
+                    right: register(13),
+                },
+                Instruction::Move {
+                    dst: register(1),
+                    src: register(14),
+                },
+                Instruction::Load {
+                    dst: register(15),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(16),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(0),
+                    right: register(15),
+                },
+                Instruction::Move {
+                    dst: register(0),
+                    src: register(16),
+                },
+                Instruction::Jump { target: 2 },
+                Instruction::Return {
+                    value: Operand::Register(register(1)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
 fn natural_comparison_program(
     start: i64,
     limit: i64,
@@ -657,6 +772,84 @@ fn native_natural_scaled_countdown_loop_matches_interpreter() {
 }
 
 #[test]
+fn native_natural_loop_covers_the_integer_operation_surface() {
+    let program = natural_integer_surface_program(Value::int(3).unwrap());
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let native_outcome = run(&mut native, NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT).unwrap();
+    let interpreted_outcome =
+        run(&mut interpreted, NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert_eq!(
+        native_outcome,
+        VmHostResponse::Complete(Value::int(268_419_072).unwrap()),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_integer_surface_preserves_budget_remainders() {
+    for budget in
+        (NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT - 20)..=NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT
+    {
+        let program = natural_integer_surface_program(Value::int(3).unwrap());
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(program);
+
+        let interpreted_outcome = run(&mut interpreted, budget);
+        let native_outcome = run(&mut native, budget);
+        match (native_outcome, interpreted_outcome) {
+            (Ok(native), Ok(interpreted)) => assert_eq!(native, interpreted, "budget {budget}"),
+            (
+                Err(RuntimeError::InstructionBudgetExceeded { .. }),
+                Err(RuntimeError::InstructionBudgetExceeded { .. }),
+            ) => {}
+            (native, interpreted) => panic!(
+                "budget {budget} produced different outcomes: native={native:?} interpreted={interpreted:?}",
+            ),
+        }
+        assert_eq!(
+            native.snapshot_state(),
+            interpreted.snapshot_state(),
+            "budget {budget}",
+        );
+    }
+}
+
+#[test]
+fn native_natural_division_side_exit_is_atomic_and_sticky() {
+    let program = natural_integer_surface_program(Value::int(4).unwrap());
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    assert_eq!(
+        run(&mut native, NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT).unwrap(),
+        run(&mut interpreted, NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT).unwrap(),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+    assert_eq!(native.native_side_exit_count(), 1);
+}
+
+#[test]
+fn native_natural_zero_division_side_exits_without_trapping() {
+    let program = natural_integer_surface_program(Value::int(0).unwrap());
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let native_outcome = run(&mut native, NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT).unwrap();
+    let interpreted_outcome =
+        run(&mut interpreted, NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert!(matches!(native_outcome, VmHostResponse::Abort(_)));
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+    assert_eq!(native.native_side_exit_count(), 1);
+}
+
+#[test]
 fn native_natural_countdown_loop_does_not_compile_when_short() {
     let program = natural_countdown_program(32);
     let mut vm = RegisterVm::new(Arc::clone(&program));
@@ -723,6 +916,29 @@ fn native_natural_loop_cache_is_shared_across_threads() {
         assert_eq!(
             thread.join().unwrap(),
             VmHostResponse::Complete(Value::int(134_225_920).unwrap()),
+        );
+    }
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_integer_surface_cache_is_shared_across_threads() {
+    let program = natural_integer_surface_program(Value::int(3).unwrap());
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let program = Arc::clone(&program);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let mut vm = RegisterVm::new(program);
+            barrier.wait();
+            run(&mut vm, NATURAL_INTEGER_SURFACE_INSTRUCTION_COUNT).unwrap()
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            VmHostResponse::Complete(Value::int(268_419_072).unwrap()),
         );
     }
     assert_eq!(program.native_compile_attempts(), 1);

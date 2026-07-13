@@ -40,6 +40,14 @@ pub enum NaturalLoopInstruction {
         dst: u16,
         src: u16,
     },
+    Negate {
+        dst: u16,
+        src: u16,
+    },
+    Not {
+        dst: u16,
+        src: u16,
+    },
     Add {
         dst: u16,
         left: u16,
@@ -51,6 +59,16 @@ pub enum NaturalLoopInstruction {
         right: u16,
     },
     Multiply {
+        dst: u16,
+        left: u16,
+        right: u16,
+    },
+    Divide {
+        dst: u16,
+        left: u16,
+        right: u16,
+    },
+    Remainder {
         dst: u16,
         left: u16,
         right: u16,
@@ -68,9 +86,13 @@ impl NaturalLoopInstruction {
         match self {
             Self::Load { dst, .. }
             | Self::Move { dst, .. }
+            | Self::Negate { dst, .. }
+            | Self::Not { dst, .. }
             | Self::Add { dst, .. }
             | Self::Subtract { dst, .. }
             | Self::Multiply { dst, .. }
+            | Self::Divide { dst, .. }
+            | Self::Remainder { dst, .. }
             | Self::Compare { dst, .. } => dst,
         }
     }
@@ -78,10 +100,14 @@ impl NaturalLoopInstruction {
     fn slots(self) -> [Option<u16>; 3] {
         match self {
             Self::Load { dst, .. } => [Some(dst), None, None],
-            Self::Move { dst, src } => [Some(dst), Some(src), None],
+            Self::Move { dst, src } | Self::Negate { dst, src } | Self::Not { dst, src } => {
+                [Some(dst), Some(src), None]
+            }
             Self::Add { dst, left, right }
             | Self::Subtract { dst, left, right }
             | Self::Multiply { dst, left, right }
+            | Self::Divide { dst, left, right }
+            | Self::Remainder { dst, left, right }
             | Self::Compare {
                 dst, left, right, ..
             } => [Some(dst), Some(left), Some(right)],
@@ -146,9 +172,13 @@ impl NaturalLoopPlan {
                     }
                     immediate[usize::from(dst)] = true;
                 }
-                NaturalLoopInstruction::Add { dst, .. }
+                NaturalLoopInstruction::Negate { dst, .. }
+                | NaturalLoopInstruction::Not { dst, .. }
+                | NaturalLoopInstruction::Add { dst, .. }
                 | NaturalLoopInstruction::Subtract { dst, .. }
                 | NaturalLoopInstruction::Multiply { dst, .. }
+                | NaturalLoopInstruction::Divide { dst, .. }
+                | NaturalLoopInstruction::Remainder { dst, .. }
                 | NaturalLoopInstruction::Compare { dst, .. } => {
                     immediate[usize::from(dst)] = true;
                 }
@@ -386,6 +416,18 @@ impl CompiledNaturalLoop {
                 Self::store_slot(builder, scratch, dst, value);
                 is_fast
             }
+            NaturalLoopInstruction::Negate { dst, src } => {
+                let value = Self::load_slot(builder, scratch, src);
+                let result = ValueEmitter::emit_checked_int_neg(builder, value);
+                Self::store_slot(builder, scratch, dst, result.word());
+                builder.ins().band(is_fast, result.is_fast())
+            }
+            NaturalLoopInstruction::Not { dst, src } => {
+                let value = Self::load_slot(builder, scratch, src);
+                let result = ValueEmitter::emit_not(builder, value);
+                Self::store_slot(builder, scratch, dst, result.word());
+                builder.ins().band(is_fast, result.is_fast())
+            }
             NaturalLoopInstruction::Add { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
@@ -404,6 +446,20 @@ impl CompiledNaturalLoop {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
                 let result = ValueEmitter::emit_checked_int_mul(builder, left, right);
+                Self::store_slot(builder, scratch, dst, result.word());
+                builder.ins().band(is_fast, result.is_fast())
+            }
+            NaturalLoopInstruction::Divide { dst, left, right } => {
+                let left = Self::load_slot(builder, scratch, left);
+                let right = Self::load_slot(builder, scratch, right);
+                let result = ValueEmitter::emit_checked_int_div(builder, left, right);
+                Self::store_slot(builder, scratch, dst, result.word());
+                builder.ins().band(is_fast, result.is_fast())
+            }
+            NaturalLoopInstruction::Remainder { dst, left, right } => {
+                let left = Self::load_slot(builder, scratch, left);
+                let right = Self::load_slot(builder, scratch, right);
+                let result = ValueEmitter::emit_checked_int_rem(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
                 builder.ins().band(is_fast, result.is_fast())
             }
