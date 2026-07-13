@@ -364,7 +364,9 @@ fn probe_value(domain: ProbeDomain, value: u64) -> Value {
         ProbeDomain::Identity => {
             Value::identity(Identity::new(value).expect("probe should fit in a Mica identity"))
         }
-        ProbeDomain::Float => Value::float(value as f64),
+        ProbeDomain::Float => {
+            Value::float(value as f32).expect("probe should fit in a finite binary32")
+        }
     }
 }
 

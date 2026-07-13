@@ -41,6 +41,7 @@ pub use value::{
     ERROR_PROTOTYPE, ErrorValue, FLOAT_PROTOTYPE, FROB_PROTOTYPE, FUNCTION_PROTOTYPE, FrobValue,
     FunctionId, IDENTITY_PROTOTYPE, INTEGER_PROTOTYPE, Identity, LIST_PROTOTYPE, MAP_PROTOTYPE,
     NOTHING_PROTOTYPE, PRIMITIVE_PROTOTYPES, RANGE_PROTOTYPE, STRING_PROTOTYPE, SYMBOL_PROTOTYPE,
-    Value, ValueError, ValueKind, primitive_prototype_for_kind, primitive_prototype_for_value,
+    VALUE_ABI_VERSION, Value, ValueError, ValueKind, language_cmp, primitive_prototype_for_kind,
+    primitive_prototype_for_value,
 };
 pub use visit::{ValueRef, ValueVisitor, VisitDecision};

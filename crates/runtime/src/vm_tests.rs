@@ -514,6 +514,66 @@ fn abort_rolls_back_current_transaction_and_pending_effects() {
 }
 
 #[test]
+fn program_artifact_round_trips_float_constants() {
+    let kernel = kernel_with_world_relations();
+    let program = Program::new(
+        3,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: Value::float(3.5).unwrap(),
+            },
+            Instruction::Load {
+                dst: reg(1),
+                value: Value::float(-0.0).unwrap(),
+            },
+            Instruction::Binary {
+                dst: reg(2),
+                op: RuntimeBinaryOp::Add,
+                left: reg(0),
+                right: reg(1),
+            },
+            Instruction::Return { value: r(2) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+    assert_eq!(
+        run_program(&kernel, restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: Value::float(3.5).unwrap(),
+            effects: vec![],
+            mailbox_sends: Vec::new(),
+            retries: 0,
+        }
+    );
+}
+
+#[test]
+fn program_artifact_rejects_non_finite_float_bits() {
+    let _kernel = kernel_with_world_relations();
+    let program = Program::new(
+        1,
+        [Instruction::Load {
+            dst: reg(0),
+            value: Value::float(1.0).unwrap(),
+        }],
+    )
+    .unwrap();
+    let mut bytes = program.to_bytes().unwrap();
+    // Locate this program's float record, then replace its finite payload with
+    // quiet-NaN bits (0x7fc00000).
+    let float_record = [3u8, 0x00, 0x00, 0x80, 0x3f];
+    let pos = bytes
+        .windows(float_record.len())
+        .position(|window| window == float_record)
+        .expect("program contains the serialized 1.0 float record");
+    bytes[pos + 1..pos + 5].copy_from_slice(&[0x00, 0x00, 0xc0, 0x7f]);
+    assert!(Program::from_bytes(&bytes).is_err());
+}
+
+#[test]
 fn completed_task_does_not_open_another_transaction() {
     let kernel = RelationKernel::new();
     let program = Program::new(
@@ -1622,7 +1682,7 @@ fn program_artifact_round_trips_suspend_and_read() {
         [
             Instruction::SuspendValue {
                 dst: reg(0),
-                duration: Some(v(Value::float(0.5))),
+                duration: Some(v(Value::float(0.5).unwrap())),
             },
             Instruction::Read {
                 dst: reg(1),
@@ -1682,7 +1742,7 @@ fn program_artifact_round_trips_dynamic_positional_spawn() {
                 dst: reg(0),
                 selector: v(sym("inspect")),
                 args: vec![item(v(ident(10))), splice(r(1))],
-                delay: Some(v(Value::float(0.5))),
+                delay: Some(v(Value::float(0.5).unwrap())),
             },
             Instruction::Return { value: r(0) },
         ],
@@ -1720,7 +1780,7 @@ fn program_artifact_round_trips_dynamic_named_spawn() {
                 dst: reg(0),
                 selector: v(sym("inspect")),
                 roles: r(2),
-                delay: Some(v(Value::float(0.5))),
+                delay: Some(v(Value::float(0.5).unwrap())),
             },
             Instruction::Return { value: r(0) },
         ],

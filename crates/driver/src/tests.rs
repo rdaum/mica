@@ -153,7 +153,11 @@ fn vllm_embed_text_suspends_as_embedding_external_request() {
                         .map_get(&Value::symbol(Symbol::intern("text"))),
                     Some(Value::string("red brass lamp"))
                 );
-                Value::list([Value::float(0.25), Value::float(0.5), Value::float(0.75)])
+                Value::list([
+                    Value::float(0.25).unwrap(),
+                    Value::float(0.5).unwrap(),
+                    Value::float(0.75).unwrap(),
+                ])
             }) as crate::types::ExternalRequestFuture
         });
         let runner = SourceRunner::new_empty_with_embedding_provider(EmbeddingProviderKind::Vllm);
@@ -181,9 +185,9 @@ fn vllm_embed_text_suspends_as_embedding_external_request() {
             DriverEvent::TaskCompleted { task_id, value }
                 if *task_id == submitted.task_id
                     && *value == Value::list([
-                        Value::float(0.25),
-                        Value::float(0.5),
-                        Value::float(0.75),
+                        Value::float(0.25).unwrap(),
+                        Value::float(0.5).unwrap(),
+                        Value::float(0.75).unwrap(),
                     ])
         )));
     });
@@ -579,7 +583,7 @@ fn root_startup_source_can_resume_vllm_embed_text() {
         let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
             Box::pin(async move {
                 assert_eq!(request.service, Symbol::intern("embedding"));
-                Value::list([Value::float(1.0), Value::float(0.0)])
+                Value::list([Value::float(1.0).unwrap(), Value::float(0.0).unwrap()])
             }) as crate::types::ExternalRequestFuture
         });
         let runner = SourceRunner::new_empty_with_embedding_provider(EmbeddingProviderKind::Vllm);
@@ -598,7 +602,7 @@ fn root_startup_source_can_resume_vllm_embed_text() {
             event,
             DriverEvent::TaskCompleted { task_id, value }
                 if *task_id == report.task_id
-                    && *value == Value::list([Value::float(1.0), Value::float(0.0)])
+                    && *value == Value::list([Value::float(1.0).unwrap(), Value::float(0.0).unwrap()])
         )));
     });
 }

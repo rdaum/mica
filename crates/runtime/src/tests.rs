@@ -4450,3 +4450,213 @@ fn report_renders_task_outcome() {
 
     assert_eq!(report.render(), "task 1 complete: true (retries: 0)");
 }
+
+// ---------------------------------------------------------------------------
+// F32 semantics cross-layer tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vm_numeric_equality_across_int_and_float() {
+    let mut runner = SourceRunner::new_empty();
+    assert!(matches!(
+        runner.run_source("return 1 == 1.0").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner.run_source("return 1.0 == 1").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner.run_source("return 1 != 1.0").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+    ));
+}
+
+#[test]
+fn vm_numeric_ordering_across_int_and_float() {
+    let mut runner = SourceRunner::new_empty();
+    assert!(matches!(
+        runner.run_source("return 1 < 1.5").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner.run_source("return 2 > 1.5").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner.run_source("return 1.5 <= 1.5").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner.run_source("return 3 >= 2.5").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+}
+
+#[test]
+fn vm_float_arithmetic_is_binary32() {
+    let mut runner = SourceRunner::new_empty();
+    assert!(matches!(
+        runner.run_source("return 0.1 + 0.2").unwrap().outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::float(0.1f32 + 0.2f32).unwrap()
+    ));
+}
+
+#[test]
+fn vm_division_result_kind_rule() {
+    let mut runner = SourceRunner::new_empty();
+    assert!(matches!(
+        runner.run_source("return 4 / 2").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(2).unwrap()
+    ));
+    assert!(matches!(
+        runner.run_source("return 4 / 2.0").unwrap().outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::float(2.0).unwrap()
+    ));
+    assert!(matches!(
+        runner.run_source("return 5 / 2").unwrap().outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::float(2.5).unwrap()
+    ));
+}
+
+#[test]
+fn vm_division_by_zero_returns_e_div() {
+    let mut runner = SourceRunner::new_empty();
+    assert!(matches!(
+        runner.run_source("try\n  return 1 / 0\ncatch E_DIV\n  return 42\nend").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(42).unwrap()
+    ));
+    assert!(matches!(
+        runner
+            .run_source("try\n  return 1.0 / 0.0\ncatch E_DIV\n  return 42\nend")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(42).unwrap()
+    ));
+}
+
+#[test]
+fn vm_arithmetic_overflow_returns_e_arith() {
+    let mut runner = SourceRunner::new_empty();
+    assert!(matches!(
+        runner
+            .run_source("try\n  return 3.4028235e38 * 3.4028235e38\ncatch E_ARITH\n  return 42\nend")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(42).unwrap()
+    ));
+}
+
+#[test]
+fn vm_exponent_float_literal() {
+    let mut runner = SourceRunner::new_empty();
+    assert!(matches!(
+        runner.run_source("return 1.5e2").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::float(150.0).unwrap()
+    ));
+    assert!(matches!(
+        runner.run_source("return 1e0").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::float(1.0).unwrap()
+    ));
+}
+
+#[test]
+fn json_encode_decode_preserves_int_vs_float_kind() {
+    let mut runner = SourceRunner::new_empty();
+    // Int stays int.
+    assert!(matches!(
+        runner
+            .run_source("return json_decode(json_encode(42))")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(42).unwrap()
+    ));
+    // Float stays float.
+    assert!(matches!(
+        runner
+            .run_source("return json_decode(json_encode(3.5))")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::float(3.5).unwrap()
+    ));
+    // An integral float must retain its kind through JSON as well.
+    assert!(matches!(
+        runner
+            .run_source("return json_decode(json_encode(1.0))")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::float(1.0).unwrap()
+    ));
+}
+
+#[test]
+fn json_decode_classifies_token_kinds() {
+    let mut runner = SourceRunner::new_empty();
+    // "1" is an integer.
+    assert!(matches!(
+        runner.run_source("return json_decode(\"1\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
+    ));
+    // "1.0" is a float.
+    assert!(matches!(
+        runner.run_source("return json_decode(\"1.0\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::float(1.0).unwrap()
+    ));
+    // "1e0" is a float.
+    assert!(matches!(
+        runner.run_source("return json_decode(\"1e0\")").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::float(1.0).unwrap()
+    ));
+}
+
+#[test]
+fn json_decode_rejects_oversized_integer() {
+    let mut runner = SourceRunner::new_empty();
+    // 2^55 is outside the Mica integer range (INT_MAX = 2^55 - 1).
+    let error = runner
+        .run_source("return json_decode(\"36028797018963968\")")
+        .unwrap_err();
+    assert!(format!("{error:?}").contains("outside the Mica integer range"));
+
+    let error = runner
+        .run_source("return json_decode(\"18446744073709551616\")")
+        .unwrap_err();
+    assert!(format!("{error:?}").contains("outside the Mica integer range"));
+}
+
+#[test]
+fn float_source_literal_round_trips() {
+    let mut runner = SourceRunner::new_empty();
+    // Verify that to_literal produces a parseable literal that round-trips.
+    let values = [
+        Value::float(0.0).unwrap(),
+        Value::float(1.5).unwrap(),
+        Value::float(-3.25).unwrap(),
+        Value::float(0.1).unwrap(),
+        Value::float(1e10).unwrap(),
+        Value::float(-1e-10).unwrap(),
+        Value::float(f32::MAX).unwrap(),
+        Value::float(f32::MIN_POSITIVE).unwrap(),
+        Value::float(f32::from_bits(1)).unwrap(),
+    ];
+    for value in values {
+        let lit = crate::float_to_literal(value.as_float().unwrap());
+        let source = format!("return {lit}");
+        let report = runner.run_source(&source).unwrap();
+        match report.outcome {
+            TaskOutcome::Complete { value: result, .. } => {
+                assert_eq!(
+                    result.as_float().map(f32::to_bits),
+                    value.as_float().map(f32::to_bits),
+                    "float literal round-trip failed for {:?}: got {:?}",
+                    value,
+                    result
+                );
+            }
+            other => panic!("expected complete outcome for {value:?}, got {other:?}"),
+        }
+    }
+}

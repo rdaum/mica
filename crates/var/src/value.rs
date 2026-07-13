@@ -40,6 +40,14 @@ pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
 pub(crate) const INT_MAX: i64 = (1i64 << (INT_BITS - 1)) - 1;
 pub(crate) const MAX_PAYLOAD: u64 = PAYLOAD_MASK;
 
+/// The process-local `Value` ABI version. Incremented when the physical layout
+/// or invariants of `Value` change so that native code generators and external
+/// processes can detect compatibility.
+///
+/// Version 1: binary32 float payload, finite-value invariant, positive-zero
+/// canonicalization.
+pub const VALUE_ABI_VERSION: u32 = 1;
+
 /// A compact Mica value.
 ///
 /// The layout is private. Use constructors and accessors rather than relying on
@@ -263,6 +271,7 @@ pub enum ValueError {
     CapabilityOutOfRange(u64),
     FunctionOutOfRange(u64),
     HeapPointerOutOfRange(usize),
+    FloatNotFinite(u32),
 }
 
 impl Value {
@@ -290,9 +299,27 @@ impl Value {
     }
 
     #[inline(always)]
-    pub fn float(value: f64) -> Self {
-        let value = normalize_f32(value as f32);
-        Self::pack(TAG_FLOAT, value.to_bits() as u64)
+    pub fn float(value: f32) -> Result<Self, ValueError> {
+        if value.is_nan() || value.is_infinite() {
+            return Err(ValueError::FloatNotFinite(value.to_bits()));
+        }
+        let value = if value == 0.0 { 0.0 } else { value };
+        Ok(Self::pack(TAG_FLOAT, value.to_bits() as u64))
+    }
+
+    /// Checked constructor from raw binary32 bits.
+    ///
+    /// Used by codecs and execution backends that already hold validated
+    /// finite binary32 payloads but need to reconstruct a `Value` without
+    /// going through the floating-point constructor.
+    #[inline(always)]
+    pub(crate) const fn float_from_bits(bits: u32) -> Result<Self, ValueError> {
+        let value = f32::from_bits(bits);
+        if value.is_nan() || value.is_infinite() {
+            return Err(ValueError::FloatNotFinite(bits));
+        }
+        let bits = if value == 0.0 { 0u32 } else { bits };
+        Ok(Self::pack(TAG_FLOAT, bits as u64))
     }
 
     #[inline(always)]
@@ -442,9 +469,9 @@ impl Value {
     }
 
     #[inline(always)]
-    pub fn as_float(&self) -> Option<f64> {
+    pub fn as_float(&self) -> Option<f32> {
         if self.tag() == TAG_FLOAT {
-            Some(f32::from_bits(self.payload() as u32) as f64)
+            Some(f32::from_bits(self.payload() as u32))
         } else {
             None
         }
@@ -648,7 +675,9 @@ impl Value {
             (Some(left), Some(right)) => {
                 left.checked_add(right).and_then(|sum| Self::int(sum).ok())
             }
-            _ => Some(Self::float(self.numeric_as_f64()? + rhs.numeric_as_f64()?)),
+            _ => Some(Self::float_checked(
+                self.numeric_as_f32()? + rhs.numeric_as_f32()?,
+            )?),
         }
     }
 
@@ -657,7 +686,9 @@ impl Value {
             (Some(left), Some(right)) => left
                 .checked_sub(right)
                 .and_then(|diff| Self::int(diff).ok()),
-            _ => Some(Self::float(self.numeric_as_f64()? - rhs.numeric_as_f64()?)),
+            _ => Some(Self::float_checked(
+                self.numeric_as_f32()? - rhs.numeric_as_f32()?,
+            )?),
         }
     }
 
@@ -666,7 +697,9 @@ impl Value {
             (Some(left), Some(right)) => left
                 .checked_mul(right)
                 .and_then(|product| Self::int(product).ok()),
-            _ => Some(Self::float(self.numeric_as_f64()? * rhs.numeric_as_f64()?)),
+            _ => Some(Self::float_checked(
+                self.numeric_as_f32()? * rhs.numeric_as_f32()?,
+            )?),
         }
     }
 
@@ -675,11 +708,11 @@ impl Value {
             (_, Some(0)) => None,
             (Some(left), Some(right)) if left % right == 0 => Self::int(left / right).ok(),
             _ => {
-                let rhs = rhs.numeric_as_f64()?;
+                let rhs = rhs.numeric_as_f32()?;
                 if rhs == 0.0 {
                     None
                 } else {
-                    Some(Self::float(self.numeric_as_f64()? / rhs))
+                    Some(Self::float_checked(self.numeric_as_f32()? / rhs)?)
                 }
             }
         }
@@ -692,11 +725,11 @@ impl Value {
                 left.checked_rem(right).and_then(|rem| Self::int(rem).ok())
             }
             _ => {
-                let rhs = rhs.numeric_as_f64()?;
+                let rhs = rhs.numeric_as_f32()?;
                 if rhs == 0.0 {
                     None
                 } else {
-                    Some(Self::float(self.numeric_as_f64()? % rhs))
+                    Some(Self::float_checked(self.numeric_as_f32()? % rhs)?)
                 }
             }
         }
@@ -706,8 +739,15 @@ impl Value {
         if let Some(value) = self.as_int() {
             value.checked_neg().and_then(|value| Self::int(value).ok())
         } else {
-            Some(Self::float(-self.numeric_as_f64()?))
+            Some(Self::float_checked(-self.numeric_as_f32()?)?)
         }
+    }
+
+    /// Constructs a float from a binary32 result, rejecting non-finite values.
+    /// Negative zero canonicalizes to positive zero via `Value::float`.
+    #[inline(always)]
+    fn float_checked(value: f32) -> Option<Self> {
+        Self::float(value).ok()
     }
 
     #[inline(always)]
@@ -750,9 +790,9 @@ impl Value {
         Some(unsafe { &*self.heap_ptr() })
     }
 
-    pub(crate) fn numeric_as_f64(&self) -> Option<f64> {
+    pub(crate) fn numeric_as_f32(&self) -> Option<f32> {
         if let Some(value) = self.as_int() {
-            Some(value as f64)
+            Some(value as f32)
         } else {
             self.as_float()
         }
@@ -809,8 +849,10 @@ impl From<i32> for Value {
     }
 }
 
-impl From<f64> for Value {
-    fn from(value: f64) -> Self {
+impl TryFrom<f32> for Value {
+    type Error = ValueError;
+
+    fn try_from(value: f32) -> Result<Self, Self::Error> {
         Self::float(value)
     }
 }
@@ -827,13 +869,110 @@ impl From<Identity> for Value {
     }
 }
 
-#[inline(always)]
-pub(crate) fn normalize_f32(value: f32) -> f32 {
-    if value.is_nan() {
-        f32::NAN
-    } else if value == 0.0 {
-        0.0
-    } else {
-        value
+/// Language numeric comparison helpers.
+///
+/// These provide the numeric comparison semantics used by VM operators and
+/// relation rule guards. They differ from `Value`'s canonical `Ord`/`Eq`:
+/// when both operands are numeric, integers and floats compare by numeric
+/// value rather than by `ValueKind`. Canonical stored values remain
+/// distinguishable, so `1 == 1.0` is true in language comparison while `1`
+/// and `1.0` remain distinct map and relation keys.
+pub mod language_cmp {
+    use crate::value::{Value, ValueKind};
+    use std::cmp::Ordering;
+
+    /// Boundary constants for the exact mixed comparison algorithm.
+    /// Both powers of two are exactly representable as binary32.
+    /// -2^55 and 2^55 as f32 bit patterns.
+    const INT_LOWER: f32 = f32::from_bits(0xdb00_0000); // -2^55
+    const INT_UPPER_EXCLUSIVE: f32 = f32::from_bits(0x5b00_0000); // 2^55
+
+    /// Compares a Mica integer with a finite binary32 float exactly, without
+    /// converting the integer to `f32` or `f64`.
+    ///
+    /// The integer is on the left; reverse the result if the float is on the
+    /// left.
+    ///
+    /// # Preconditions
+    ///
+    /// `integer` must be a valid Mica integer (`INT_MIN <= integer <= INT_MAX`).
+    /// `float` must be a finite binary32 value (not NaN, not infinity). These
+    /// are invariants of every constructible `Value`. Callers passing raw
+    /// integers or floats from external sources must validate first.
+    pub fn compare_int_float(integer: i64, float: f32) -> Ordering {
+        debug_assert!(
+            !float.is_nan() && !float.is_infinite(),
+            "compare_int_float requires a finite float"
+        );
+        // If float is outside the integer range, every Mica integer is on one
+        // side of it.
+        if float < INT_LOWER {
+            return Ordering::Greater;
+        }
+        if float >= INT_UPPER_EXCLUSIVE {
+            return Ordering::Less;
+        }
+
+        // The float is within the Mica integer conversion range. Truncate
+        // toward zero; this conversion is exact and cannot saturate because
+        // of the preceding bounds checks.
+        let truncated = float.trunc() as i64;
+
+        match integer.cmp(&truncated) {
+            Ordering::Equal => {
+                // Inspect the fractional part to decide the final ordering.
+                let fract = float.fract();
+                if fract > 0.0 {
+                    Ordering::Less
+                } else if fract < 0.0 {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            }
+            non_equal => non_equal,
+        }
+    }
+
+    /// Returns the numeric ordering of two values for language comparison.
+    ///
+    /// Non-numeric pairs retain canonical `Value::cmp` ordering.
+    pub fn numeric_cmp(left: &Value, right: &Value) -> Ordering {
+        match (left.kind(), right.kind()) {
+            (ValueKind::Int, ValueKind::Int) => {
+                left.as_int().unwrap().cmp(&right.as_int().unwrap())
+            }
+            (ValueKind::Float, ValueKind::Float) => left
+                .as_float()
+                .unwrap()
+                .total_cmp(&right.as_float().unwrap()),
+            (ValueKind::Int, ValueKind::Float) => {
+                compare_int_float(left.as_int().unwrap(), right.as_float().unwrap())
+            }
+            (ValueKind::Float, ValueKind::Int) => {
+                compare_int_float(right.as_int().unwrap(), left.as_float().unwrap()).reverse()
+            }
+            _ => left.cmp(right),
+        }
+    }
+
+    /// Returns true if two values are numerically equal for language
+    /// comparison.
+    ///
+    /// Non-numeric pairs retain canonical `Value` equality.
+    pub fn numeric_eq(left: &Value, right: &Value) -> bool {
+        match (left.kind(), right.kind()) {
+            (ValueKind::Int, ValueKind::Int) => left.payload() == right.payload(),
+            (ValueKind::Float, ValueKind::Float) => left.payload() == right.payload(),
+            (ValueKind::Int, ValueKind::Float) => {
+                compare_int_float(left.as_int().unwrap(), right.as_float().unwrap())
+                    == Ordering::Equal
+            }
+            (ValueKind::Float, ValueKind::Int) => {
+                compare_int_float(right.as_int().unwrap(), left.as_float().unwrap())
+                    == Ordering::Equal
+            }
+            _ => left == right,
+        }
     }
 }

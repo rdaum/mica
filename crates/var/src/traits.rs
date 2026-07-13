@@ -14,7 +14,6 @@
 use crate::heap::HeapValue;
 use crate::value::{
     TAG_BYTES, TAG_ERROR, TAG_FROB, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value, ValueKind,
-    normalize_f32,
 };
 use base64::{Engine, engine::general_purpose};
 use std::cmp::Ordering;
@@ -58,9 +57,8 @@ impl Value {
                 out.extend_from_slice(&normalized.to_be_bytes());
             }
             ValueKind::Float => {
-                out.extend_from_slice(
-                    &ordered_f32_bits(f32::from_bits(self.payload() as u32)).to_be_bytes(),
-                );
+                let value = f32::from_bits(self.payload() as u32);
+                out.extend_from_slice(&ordered_f32_bits(value).to_be_bytes());
             }
             ValueKind::Identity
             | ValueKind::Symbol
@@ -410,7 +408,7 @@ impl fmt::Display for Value {
 
 #[inline(always)]
 fn ordered_f32_bits(value: f32) -> u32 {
-    let bits = normalize_f32(value).to_bits();
+    let bits = value.to_bits();
     if (bits & 0x8000_0000) != 0 {
         !bits
     } else {

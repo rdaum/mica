@@ -80,7 +80,7 @@ impl<'a> Cursor<'a> {
                 let value = ((raw & 0x00ff_ffff_ffff_ffff) as i64) << 8 >> 8;
                 Value::int(value).ok()
             }
-            3 => Some(Value::float(f32::from_bits(self.u32()?) as f64)),
+            3 => Value::float(f32::from_bits(self.u32()?)).ok(),
             4 => {
                 let raw = self.u64()? & Identity::MAX;
                 Some(Value::identity(Identity::new(raw).unwrap()))

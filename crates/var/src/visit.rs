@@ -24,7 +24,7 @@ pub enum ValueRef<'a> {
     Nothing,
     Bool(bool),
     Int(i64),
-    Float(f64),
+    Float(f32),
     Identity(Identity),
     Symbol(Symbol),
     ErrorCode(Symbol),

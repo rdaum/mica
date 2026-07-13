@@ -2539,7 +2539,7 @@ impl RegisterVm {
         let seconds = if let Some(seconds) = value.as_int() {
             seconds as f64
         } else if let Some(seconds) = value.as_float() {
-            seconds
+            seconds as f64
         } else {
             return Err(RuntimeError::InvalidSuspendDuration(value));
         };
@@ -2574,12 +2574,24 @@ fn eval_unary(op: RuntimeUnaryOp, value: &Value) -> Result<Value, Value> {
 
 fn eval_binary(op: RuntimeBinaryOp, left: &Value, right: &Value) -> Result<Value, Value> {
     match op {
-        RuntimeBinaryOp::Eq => Ok(Value::bool(left == right)),
-        RuntimeBinaryOp::Ne => Ok(Value::bool(left != right)),
-        RuntimeBinaryOp::Lt => Ok(Value::bool(left < right)),
-        RuntimeBinaryOp::Le => Ok(Value::bool(left <= right)),
-        RuntimeBinaryOp::Gt => Ok(Value::bool(left > right)),
-        RuntimeBinaryOp::Ge => Ok(Value::bool(left >= right)),
+        RuntimeBinaryOp::Eq => Ok(Value::bool(mica_var::language_cmp::numeric_eq(left, right))),
+        RuntimeBinaryOp::Ne => Ok(Value::bool(!mica_var::language_cmp::numeric_eq(
+            left, right,
+        ))),
+        RuntimeBinaryOp::Lt => Ok(Value::bool(
+            mica_var::language_cmp::numeric_cmp(left, right) == std::cmp::Ordering::Less,
+        )),
+        RuntimeBinaryOp::Le => Ok(Value::bool(matches!(
+            mica_var::language_cmp::numeric_cmp(left, right),
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal
+        ))),
+        RuntimeBinaryOp::Gt => Ok(Value::bool(
+            mica_var::language_cmp::numeric_cmp(left, right) == std::cmp::Ordering::Greater,
+        )),
+        RuntimeBinaryOp::Ge => Ok(Value::bool(matches!(
+            mica_var::language_cmp::numeric_cmp(left, right),
+            std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
+        ))),
         RuntimeBinaryOp::Add => left
             .checked_add(right)
             .ok_or_else(|| arithmetic_error("E_ARITH", "invalid addition", [left, right])),

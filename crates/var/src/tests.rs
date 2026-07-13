@@ -169,9 +169,12 @@ fn symbols_intern_consistently_across_threads() {
 
 #[test]
 fn float_is_reduced_precision_and_canonicalizes_zero() {
-    let value = Value::float(1.25);
+    let value = Value::float(1.25).unwrap();
     assert_eq!(value.as_float(), Some(1.25));
-    assert_eq!(Value::float(-0.0), Value::float(0.0));
+    assert_eq!(Value::float(-0.0).unwrap(), Value::float(0.0).unwrap());
+    assert!(Value::float(f32::NAN).is_err());
+    assert!(Value::float(f32::INFINITY).is_err());
+    assert!(Value::float(f32::NEG_INFINITY).is_err());
 }
 
 #[test]
@@ -210,7 +213,7 @@ fn numeric_operations_preserve_ints_when_exact() {
 fn numeric_operations_fall_back_to_floats() {
     let five = Value::int(5).unwrap();
     let two = Value::int(2).unwrap();
-    let half = Value::float(0.5);
+    let half = Value::float(0.5).unwrap();
 
     assert_eq!(
         five.checked_div(&two).and_then(|value| value.as_float()),
@@ -472,7 +475,7 @@ fn value_codec_round_trips_persistable_values() {
         Value::bool(false),
         Value::int(INT_MIN).unwrap(),
         Value::int(INT_MAX).unwrap(),
-        Value::float(12.5),
+        Value::float(12.5).unwrap(),
         Value::identity(Identity::new(99).unwrap()),
         Value::symbol(Symbol::intern("symbolic")),
         Value::error_code(Symbol::intern("E_PERSIST")),
@@ -510,7 +513,7 @@ fn value_codec_uses_little_endian_inline_words() {
         Value::nothing(),
         Value::bool(true),
         Value::int(-123).unwrap(),
-        Value::float(12.5),
+        Value::float(12.5).unwrap(),
         Value::identity(Identity::new(99).unwrap()),
     ];
 
@@ -804,7 +807,7 @@ fn total_order_is_stable() {
         Value::error_code(Symbol::intern("E_NOT_PORTABLE")),
         Value::symbol(Symbol::intern("x")),
         Value::identity_raw(1).unwrap(),
-        Value::float(1.0),
+        Value::float(1.0).unwrap(),
         Value::int(1).unwrap(),
         Value::bool(true),
         Value::nothing(),
@@ -844,9 +847,222 @@ fn arithmetic_fast_path() {
     );
     assert_eq!(
         Value::float(1.5)
+            .unwrap()
             .checked_add(&Value::int(2).unwrap())
             .unwrap()
             .as_float(),
         Some(3.5)
     );
+}
+
+#[test]
+fn float_rejects_non_finite() {
+    assert!(Value::float(f32::NAN).is_err());
+    assert!(Value::float(f32::INFINITY).is_err());
+    assert!(Value::float(f32::NEG_INFINITY).is_err());
+}
+
+#[test]
+fn float_from_bits_rejects_non_finite_and_canonicalizes_zero() {
+    assert!(Value::float_from_bits(0x7f80_0000).is_err()); // +inf
+    assert!(Value::float_from_bits(0xff80_0000).is_err()); // -inf
+    assert!(Value::float_from_bits(0x7fc0_0000).is_err()); // NaN
+    assert!(Value::float_from_bits(0x0000_0001).is_ok()); // smallest subnormal
+    assert!(Value::float_from_bits(0x0080_0000).is_ok()); // smallest normal
+    let neg_zero = Value::float_from_bits(0x8000_0000).unwrap();
+    let pos_zero = Value::float_from_bits(0x0000_0000).unwrap();
+    assert_eq!(neg_zero, pos_zero);
+}
+
+#[test]
+fn language_numeric_eq_distinguishes_from_canonical() {
+    let one_int = Value::int(1).unwrap();
+    let one_float = Value::float(1.0).unwrap();
+    // Canonical: distinct kinds, not equal
+    assert_ne!(one_int, one_float);
+    // Language: numerically equal
+    assert!(crate::language_cmp::numeric_eq(&one_int, &one_float));
+    assert!(crate::language_cmp::numeric_eq(&one_float, &one_int));
+}
+
+#[test]
+fn numeric_equality_does_not_merge_canonical_map_keys() {
+    let integer = Value::int(1).unwrap();
+    let float = Value::float(1.0).unwrap();
+    let map = Value::map([
+        (integer.clone(), Value::string("integer")),
+        (float.clone(), Value::string("float")),
+    ]);
+
+    assert!(crate::language_cmp::numeric_eq(&integer, &float));
+    assert_eq!(map.map_len(), Some(2));
+    assert_eq!(
+        map.map_get(&integer)
+            .and_then(|value| value.with_str(str::to_owned)),
+        Some("integer".to_owned())
+    );
+    assert_eq!(
+        map.map_get(&float)
+            .and_then(|value| value.with_str(str::to_owned)),
+        Some("float".to_owned())
+    );
+}
+
+#[test]
+fn compare_int_float_respects_binary32_precision_boundary() {
+    use crate::language_cmp::compare_int_float;
+    use std::cmp::Ordering;
+
+    let two_to_24 = f32::from_bits(0x4b80_0000);
+    let below = f32::from_bits(two_to_24.to_bits() - 1);
+    let above = f32::from_bits(two_to_24.to_bits() + 1);
+
+    assert_eq!(below, 16_777_215.0);
+    assert_eq!(two_to_24, 16_777_216.0);
+    assert_eq!(above, 16_777_218.0);
+    assert_eq!(compare_int_float(16_777_215, below), Ordering::Equal);
+    assert_eq!(compare_int_float(16_777_216, two_to_24), Ordering::Equal);
+    assert_eq!(compare_int_float(16_777_217, two_to_24), Ordering::Greater);
+    assert_eq!(compare_int_float(16_777_217, above), Ordering::Less);
+    assert_eq!(compare_int_float(-16_777_217, -two_to_24), Ordering::Less);
+    assert_eq!(compare_int_float(-16_777_217, -above), Ordering::Greater);
+}
+
+#[test]
+fn language_numeric_cmp_orders_by_value() {
+    let one_int = Value::int(1).unwrap();
+    let one_float = Value::float(1.0).unwrap();
+    let two_int = Value::int(2).unwrap();
+    let two_float = Value::float(2.0).unwrap();
+    use std::cmp::Ordering;
+
+    assert_eq!(
+        crate::language_cmp::numeric_cmp(&one_int, &two_float),
+        Ordering::Less
+    );
+    assert_eq!(
+        crate::language_cmp::numeric_cmp(&two_int, &one_float),
+        Ordering::Greater
+    );
+    assert_eq!(
+        crate::language_cmp::numeric_cmp(&one_int, &one_float),
+        Ordering::Equal
+    );
+    assert_eq!(
+        crate::language_cmp::numeric_cmp(&one_float, &one_int),
+        Ordering::Equal
+    );
+    assert_eq!(
+        crate::language_cmp::numeric_cmp(&two_float, &one_int),
+        Ordering::Greater
+    );
+}
+
+#[test]
+fn compare_int_float_boundary_constants() {
+    use crate::language_cmp::compare_int_float;
+    use std::cmp::Ordering;
+
+    // Mica integer range boundaries.
+    let int_max = (1i64 << 55) - 1; // 2^55 - 1
+    let int_min = -(1i64 << 55); // -2^55
+
+    // Float at the boundary: 2^55 is exactly representable.
+    let upper_float = f32::from_bits(0x5b00_0000);
+    assert_eq!(upper_float, 2.0f32.powi(55));
+
+    // Every Mica integer (up to INT_MAX) is less than a float at 2^55.
+    assert_eq!(compare_int_float(int_max, upper_float), Ordering::Less);
+    assert_eq!(compare_int_float(int_max - 1, upper_float), Ordering::Less);
+
+    // -2^55: the minimum Mica integer compares equal to the float -2^55.
+    let lower_float = f32::from_bits(0xdb00_0000);
+    assert_eq!(lower_float, -(2.0f32.powi(55)));
+    assert_eq!(compare_int_float(int_min, lower_float), Ordering::Equal);
+    assert_eq!(
+        compare_int_float(int_min + 1, lower_float),
+        Ordering::Greater
+    );
+
+    // The binary32 neighbours exercise each out-of-range branch as well as
+    // the exact endpoint. The spacing here is much larger than one integer,
+    // so none of these comparisons may round the Mica integer first.
+    let upper_below = f32::from_bits(upper_float.to_bits() - 1);
+    let upper_above = f32::from_bits(upper_float.to_bits() + 1);
+    assert_eq!(compare_int_float(int_max, upper_below), Ordering::Greater);
+    assert_eq!(compare_int_float(int_max, upper_above), Ordering::Less);
+
+    let lower_below = f32::from_bits(lower_float.to_bits() + 1);
+    let lower_above = f32::from_bits(lower_float.to_bits() - 1);
+    assert_eq!(compare_int_float(int_min, lower_below), Ordering::Greater);
+    assert_eq!(compare_int_float(int_min, lower_above), Ordering::Less);
+}
+
+#[test]
+fn compare_int_float_fractional_branch() {
+    use crate::language_cmp::compare_int_float;
+    use std::cmp::Ordering;
+
+    // 3.5 truncates to 3, with a positive fraction.
+    assert_eq!(compare_int_float(3, 3.5), Ordering::Less);
+    assert_eq!(compare_int_float(4, 3.5), Ordering::Greater);
+    assert_eq!(compare_int_float(3, 3.0), Ordering::Equal);
+
+    // Negative fractions.
+    assert_eq!(compare_int_float(-3, -3.5), Ordering::Greater);
+    assert_eq!(compare_int_float(-4, -3.5), Ordering::Less);
+    assert_eq!(compare_int_float(-3, -3.0), Ordering::Equal);
+
+    // Float-on-left reverses.
+    assert_eq!(
+        crate::language_cmp::numeric_cmp(&Value::float(3.5).unwrap(), &Value::int(3).unwrap()),
+        Ordering::Greater
+    );
+}
+
+#[test]
+fn float_arithmetic_is_binary32() {
+    // 0.1 in binary32 is not 0.1 in binary64. Verify arithmetic stays binary32.
+    let f = Value::float(0.1).unwrap();
+    let sum = f.checked_add(&Value::float(0.2).unwrap()).unwrap();
+    let expected = Value::float(0.1f32 + 0.2f32).unwrap();
+    assert_eq!(sum.as_float(), expected.as_float());
+
+    // Non-finite result rejected.
+    let big = Value::float(f32::MAX).unwrap();
+    assert!(big.checked_mul(&Value::float(f32::MAX).unwrap()).is_none());
+}
+
+#[test]
+fn division_result_kind_rule() {
+    // Exact integer division stays integer.
+    assert_eq!(
+        Value::int(6).unwrap().checked_div(&Value::int(2).unwrap()),
+        Some(Value::int(3).unwrap())
+    );
+    // Non-exact integer division produces float.
+    let result = Value::int(5)
+        .unwrap()
+        .checked_div(&Value::int(2).unwrap())
+        .unwrap();
+    assert!(result.as_float().is_some());
+    assert!(result.as_int().is_none());
+}
+
+#[test]
+fn float_codec_rejects_non_finite_bits() {
+    // Crafted NaN payload through codec.
+    let nan_bits = 0x7fc0_0000u64;
+    let word = (3u64 << 56) | nan_bits;
+    let encoded = word.to_le_bytes();
+    assert!(decode_value(&encoded).is_err());
+}
+
+#[test]
+fn float_zero_canonicalizes_through_codec() {
+    let neg_zero_bits = 0x8000_0000u64;
+    let word = (3u64 << 56) | neg_zero_bits;
+    let encoded = word.to_le_bytes();
+    let decoded = decode_value(&encoded).unwrap().0;
+    assert_eq!(decoded, Value::float(0.0).unwrap());
 }

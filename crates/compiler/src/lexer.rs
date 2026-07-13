@@ -191,9 +191,21 @@ impl<'a> Lexer<'a> {
 
     fn lex_number(&mut self) -> SyntaxKind {
         self.consume_while(|c| c.is_ascii_digit());
+        let mut is_float = false;
         if self.peek() == Some('.') && self.peek_next() != Some('.') {
             self.bump();
             self.consume_while(|c| c.is_ascii_digit());
+            is_float = true;
+        }
+        if matches!(self.peek(), Some('e' | 'E')) {
+            self.bump();
+            if matches!(self.peek(), Some('+' | '-')) {
+                self.bump();
+            }
+            self.consume_while(|c| c.is_ascii_digit());
+            is_float = true;
+        }
+        if is_float {
             SyntaxKind::Float
         } else {
             SyntaxKind::Int
@@ -349,5 +361,18 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(kinds[0], SyntaxKind::Ident);
         assert_eq!(kinds[2], SyntaxKind::Ident);
+    }
+
+    #[test]
+    fn lexes_float_literals_with_exponent_notation() {
+        fn first_kind(source: &str) -> SyntaxKind {
+            lex(source).into_iter().next().unwrap().kind
+        }
+        assert_eq!(first_kind("1.5"), SyntaxKind::Float);
+        assert_eq!(first_kind("1e0"), SyntaxKind::Float);
+        assert_eq!(first_kind("1.5e2"), SyntaxKind::Float);
+        assert_eq!(first_kind("1.5e-2"), SyntaxKind::Float);
+        assert_eq!(first_kind("1.5e+2"), SyntaxKind::Float);
+        assert_eq!(first_kind("42"), SyntaxKind::Int);
     }
 }

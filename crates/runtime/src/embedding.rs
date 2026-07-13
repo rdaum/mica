@@ -129,7 +129,16 @@ impl Builtin for EmbedTextBuiltin {
                 message,
             }
         })?;
-        Ok(Value::list(values.into_iter().map(Value::float)))
+        let mut out = Vec::with_capacity(values.len());
+        for v in values {
+            out.push(
+                Value::float(v as f32).map_err(|_| RuntimeError::InvalidBuiltinCall {
+                    name: Symbol::intern("embed_text"),
+                    message: "embedding value is not a finite binary32 value".to_owned(),
+                })?,
+            );
+        }
+        Ok(Value::list(out))
     }
 }
 

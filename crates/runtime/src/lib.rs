@@ -13,6 +13,7 @@
 
 mod builtins;
 mod embedding;
+pub mod json;
 pub mod metrics;
 mod openai;
 mod retrieval;
@@ -24,6 +25,7 @@ mod types;
 mod vm_tests;
 
 pub use embedding::{EmbeddingProvider, EmbeddingProviderKind};
+pub use json::{JsonValueError, float_to_literal, value_from_json_text};
 pub use mica_relation_kernel::{
     ExecutionAdmission, ExecutionContext, RelationAccelerator, Tuple,
     metrics as relation_kernel_metrics,
@@ -2948,7 +2950,7 @@ fn source_literal(
         ValueKind::Nothing => "nothing".to_owned(),
         ValueKind::Bool => value.as_bool().unwrap().to_string(),
         ValueKind::Int => value.as_int().unwrap().to_string(),
-        ValueKind::Float => format!("{:?}", value.as_float().unwrap()),
+        ValueKind::Float => float_to_literal(value.as_float().unwrap()),
         ValueKind::Identity => {
             let identity = value.as_identity().unwrap();
             match identity_names.get(&identity) {
@@ -4037,10 +4039,13 @@ fn literal_value(literal: &Literal) -> Result<Option<Value>, RuntimeError> {
             .map(Some)
             .ok_or_else(|| invalid_builtin_call("from_literal", "invalid integer literal")),
         Literal::Float(value) => value
-            .parse::<f64>()
-            .map(Value::float)
-            .map(Some)
-            .map_err(|_| invalid_builtin_call("from_literal", "invalid float literal")),
+            .parse::<f32>()
+            .map_err(|_| invalid_builtin_call("from_literal", "invalid float literal"))
+            .and_then(|value| {
+                Value::float(value).map(Some).map_err(|_| {
+                    invalid_builtin_call("from_literal", "float literal overflows binary32")
+                })
+            }),
         Literal::String(value) => Ok(Some(Value::string(value))),
         Literal::Bytes(value) => Ok(Some(Value::bytes(value))),
         Literal::Bool(value) => Ok(Some(Value::bool(*value))),
@@ -4068,7 +4073,9 @@ fn negated_literal_value(
             .map_err(|_| invalid_builtin_call("from_literal", "invalid integer literal"));
     }
     if let Some(value) = value.as_float() {
-        return Ok(Some(Value::float(-value)));
+        return Value::float(-value)
+            .map(Some)
+            .map_err(|_| invalid_builtin_call("from_literal", "float literal overflows binary32"));
     }
     Ok(None)
 }
@@ -4117,9 +4124,8 @@ fn json_decode_builtin(
         ));
     }
     let text = builtin_string_arg("json_decode", args, 0)?;
-    let json = serde_json::from_str(&text)
-        .map_err(|error| invalid_builtin_call("json_decode", error.to_string()))?;
-    value_from_json(&json)
+    value_from_json_text(&text)
+        .map_err(|error| invalid_builtin_call("json_decode", error.to_string()))
 }
 
 fn dom_text_builtin(
@@ -4284,111 +4290,8 @@ fn sync_signature_builtin(
 }
 
 fn json_value(value: &Value) -> Result<serde_json::Value, RuntimeError> {
-    match value.kind() {
-        ValueKind::Nothing => Ok(serde_json::Value::Null),
-        ValueKind::Bool => Ok(serde_json::Value::Bool(value.as_bool().unwrap())),
-        ValueKind::Int => Ok(serde_json::Value::Number(value.as_int().unwrap().into())),
-        ValueKind::Float => {
-            let number =
-                serde_json::Number::from_f64(value.as_float().unwrap()).ok_or_else(|| {
-                    invalid_builtin_call(
-                        "json_encode",
-                        "non-finite float cannot be encoded as JSON",
-                    )
-                })?;
-            Ok(serde_json::Value::Number(number))
-        }
-        ValueKind::String => Ok(serde_json::Value::String(
-            value.with_str(str::to_owned).unwrap(),
-        )),
-        ValueKind::Symbol => Ok(serde_json::Value::String(json_symbol_name(
-            value.as_symbol().unwrap(),
-        )?)),
-        ValueKind::List => {
-            let Some(values) = value
-                .with_list(|values| values.iter().map(json_value).collect::<Result<Vec<_>, _>>())
-            else {
-                unreachable!("list kind should expose list values");
-            };
-            Ok(serde_json::Value::Array(values?))
-        }
-        ValueKind::Map => {
-            let Some(entries) = value.with_map(|entries| {
-                let mut object = serde_json::Map::new();
-                for (key, value) in entries {
-                    object.insert(json_object_key(key)?, json_value(value)?);
-                }
-                Ok::<_, RuntimeError>(object)
-            }) else {
-                unreachable!("map kind should expose map entries");
-            };
-            Ok(serde_json::Value::Object(entries?))
-        }
-        _ => Err(invalid_builtin_call(
-            "json_encode",
-            format!("cannot encode {:?} value as JSON", value.kind()),
-        )),
-    }
-}
-
-fn value_from_json(value: &serde_json::Value) -> Result<Value, RuntimeError> {
-    match value {
-        serde_json::Value::Null => Ok(Value::nothing()),
-        serde_json::Value::Bool(value) => Ok(Value::bool(*value)),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                return Ok(Value::int(value).unwrap_or_else(|_| Value::float(value as f64)));
-            }
-            if let Some(value) = value.as_u64() {
-                return Ok(i64::try_from(value)
-                    .ok()
-                    .and_then(|value| Value::int(value).ok())
-                    .unwrap_or_else(|| Value::float(value as f64)));
-            }
-            value
-                .as_f64()
-                .map(Value::float)
-                .ok_or_else(|| invalid_builtin_call("json_decode", "unsupported JSON number"))
-        }
-        serde_json::Value::String(value) => Ok(Value::string(value)),
-        serde_json::Value::Array(values) => values
-            .iter()
-            .map(value_from_json)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::list),
-        serde_json::Value::Object(entries) => entries
-            .iter()
-            .map(|(key, value)| {
-                Ok((
-                    Value::symbol(Symbol::intern(key.as_str())),
-                    value_from_json(value)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, RuntimeError>>()
-            .map(Value::map),
-    }
-}
-
-fn json_object_key(value: &Value) -> Result<String, RuntimeError> {
-    if let Some(text) = value.with_str(str::to_owned) {
-        return Ok(text);
-    }
-    if let Some(symbol) = value.as_symbol() {
-        return json_symbol_name(symbol);
-    }
-    Err(invalid_builtin_call(
-        "json_encode",
-        "JSON object keys must be strings or symbols",
-    ))
-}
-
-fn json_symbol_name(symbol: Symbol) -> Result<String, RuntimeError> {
-    symbol.name().map(str::to_owned).ok_or_else(|| {
-        invalid_builtin_call(
-            "json_encode",
-            "anonymous symbols cannot be encoded as JSON strings",
-        )
-    })
+    crate::json::json_from_value(value)
+        .map_err(|e| invalid_builtin_call("json_encode", e.to_string()))
 }
 
 fn dom_text_value(text: impl AsRef<str>) -> Value {
@@ -6748,7 +6651,7 @@ fn render_value(
         ValueKind::Nothing => "nothing".to_owned(),
         ValueKind::Bool => value.as_bool().unwrap().to_string(),
         ValueKind::Int => value.as_int().unwrap().to_string(),
-        ValueKind::Float => format!("{:?}", value.as_float().unwrap()),
+        ValueKind::Float => float_to_literal(value.as_float().unwrap()),
         ValueKind::Identity => {
             let identity = value.as_identity().unwrap();
             match identity_names.get(&identity) {
