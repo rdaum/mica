@@ -111,6 +111,11 @@ pub enum NaturalLoopInstruction {
         view: u16,
         index: u16,
     },
+    RangeKeyAt {
+        dst: u16,
+        view: u16,
+        index: u16,
+    },
     Branch {
         condition: u16,
         if_true: u16,
@@ -136,7 +141,9 @@ impl NaturalLoopInstruction {
             | Self::Compare {
                 dst, left, right, ..
             } => [Some(dst), Some(left), Some(right)],
-            Self::RangeValueAt { dst, index, .. } => [Some(dst), Some(index), None],
+            Self::RangeValueAt { dst, index, .. } | Self::RangeKeyAt { dst, index, .. } => {
+                [Some(dst), Some(index), None]
+            }
             Self::Branch { condition, .. } => [Some(condition), None, None],
             Self::Jump { .. } => [None, None, None],
         }
@@ -197,7 +204,10 @@ impl NaturalLoopPlan {
                         "natural loop jump target is outside the compiled region".to_owned(),
                     ));
                 }
-                NaturalLoopInstruction::RangeValueAt { view, .. } if view >= range_view_count => {
+                NaturalLoopInstruction::RangeValueAt { view, .. }
+                | NaturalLoopInstruction::RangeKeyAt { view, .. }
+                    if view >= range_view_count =>
+                {
                     return Err(NaturalLoopError(
                         "natural loop range instruction references an invalid view".to_owned(),
                     ));
@@ -620,6 +630,18 @@ impl CompiledNaturalLoop {
                 let is_fast = builder.ins().band(is_fast, value_in_range);
                 let value = ValueEmitter::emit_pack(builder, VALUE_INT_TAG, value);
                 Self::store_slot(builder, scratch, dst, value);
+                (is_fast, dst)
+            }
+            NaturalLoopInstruction::RangeKeyAt { dst, index, .. } => {
+                let index = Self::load_slot(builder, scratch, index);
+                let index_is_int = ValueEmitter::emit_is_int(builder, index);
+                let unpacked = ValueEmitter::emit_unbox_int(builder, index);
+                let index_is_nonnegative =
+                    builder
+                        .ins()
+                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, unpacked, 0);
+                let is_fast = builder.ins().band(index_is_int, index_is_nonnegative);
+                Self::store_slot(builder, scratch, dst, index);
                 (is_fast, dst)
             }
             NaturalLoopInstruction::Branch { .. } | NaturalLoopInstruction::Jump { .. } => {

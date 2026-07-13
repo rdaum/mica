@@ -1171,7 +1171,8 @@ fn recognize_natural_integer_loop(
     let range_view_registers = region
         .iter()
         .filter_map(|opcode| match opcode {
-            Opcode::CollectionValueAt { collection, .. } => Some(*collection),
+            Opcode::CollectionKeyAt { collection, .. }
+            | Opcode::CollectionValueAt { collection, .. } => Some(*collection),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
@@ -1279,7 +1280,8 @@ fn collect_natural_loop_registers(
         Opcode::Branch { condition, .. } => {
             registers.insert(*condition);
         }
-        Opcode::CollectionValueAt { dst, index, .. } => {
+        Opcode::CollectionKeyAt { dst, index, .. }
+        | Opcode::CollectionValueAt { dst, index, .. } => {
             registers.insert(*dst);
             registers.insert(*index);
         }
@@ -1345,6 +1347,15 @@ fn natural_loop_instruction(
             collection,
             index,
         } => Some(NaturalLoopInstruction::RangeValueAt {
+            dst: slot(*dst)?,
+            view: range_view(*collection)?,
+            index: slot(*index)?,
+        }),
+        Opcode::CollectionKeyAt {
+            dst,
+            collection,
+            index,
+        } => Some(NaturalLoopInstruction::RangeKeyAt {
             dst: slot(*dst)?,
             view: range_view(*collection)?,
             index: slot(*index)?,
@@ -1573,6 +1584,7 @@ fn opcode_writes(opcode: &Opcode, register: Register) -> bool {
         | Opcode::Move { dst, .. }
         | Opcode::Unary { dst, .. }
         | Opcode::Binary { dst, .. }
+        | Opcode::CollectionKeyAt { dst, .. }
         | Opcode::CollectionValueAt { dst, .. } => *dst == register,
         _ => false,
     }

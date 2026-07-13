@@ -137,6 +137,12 @@ impl ColdCompilerLoopContext {
         context.interpret_only = interpret_only;
         Self::from_task_context(context)
     }
+
+    fn indexed_range(iterations: u64, interpret_only: bool) -> Self {
+        let mut context = TaskBenchContext::compiler_indexed_range_loop_with_iterations(iterations);
+        context.interpret_only = interpret_only;
+        Self::from_task_context(context)
+    }
 }
 
 impl BenchContext for ColdCompilerLoopContext {
@@ -425,6 +431,34 @@ impl TaskBenchContext {
 
     fn interpreted_compiler_range_loop_with_iterations(iterations: u64) -> Self {
         let mut context = Self::compiler_range_loop_with_iterations(iterations);
+        context.interpret_only = true;
+        context
+    }
+
+    fn compiler_indexed_range_loop() -> Self {
+        Self::compiler_indexed_range_loop_with_iterations(INTEGER_LOOP_ITERATIONS)
+    }
+
+    fn compiler_indexed_range_loop_with_iterations(iterations: u64) -> Self {
+        let source = format!(
+            "let total = 0\n\
+             for index, number in 1..{iterations}\n\
+               total = total + index + number\n\
+             end\n\
+             return total",
+        );
+        let program = compile_source(&source, &CompileContext::new())
+            .unwrap()
+            .program;
+        Self::from_program(
+            RelationKernel::new(),
+            program,
+            Workload::task((iterations * 10) + 11),
+        )
+    }
+
+    fn interpreted_compiler_indexed_range_loop() -> Self {
+        let mut context = Self::compiler_indexed_range_loop();
         context.interpret_only = true;
         context
     }
@@ -1284,6 +1318,22 @@ benchmark_main!(
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_cranelift_compiler_range_loop", run_tasks);
 
+            let interpreted_compiler_indexed_range =
+                || TaskBenchContext::interpreted_compiler_indexed_range_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_compiler_indexed_range)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_compiler_indexed_range_loop", run_tasks);
+
+            let cranelift_compiler_indexed_range =
+                || TaskBenchContext::compiler_indexed_range_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_compiler_indexed_range)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_compiler_indexed_range_loop", run_tasks);
+
             let read = || TaskBenchContext::indexed_relation_read();
             group
                 .throughput(Throughput::ops())
@@ -1416,6 +1466,26 @@ benchmark_main!(
             }
         });
 
+        runner.group::<ColdCompilerLoopContext>("indexed range loop cold", |group| {
+            let interpreted = || ColdCompilerLoopContext::indexed_range(8_192, true);
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted)
+                .bench(
+                    "indexed_range_cold_interpreter_8192_iterations",
+                    run_cold_compiler_loop,
+                );
+
+            let native_enabled = || ColdCompilerLoopContext::indexed_range(8_192, false);
+            group
+                .throughput(Throughput::ops())
+                .factory(&native_enabled)
+                .bench(
+                    "indexed_range_cold_native_enabled_8192_iterations",
+                    run_cold_compiler_loop,
+                );
+        });
+
         let single_worker = [ConcurrentWorker {
             name: "dispatch",
             threads: 1,
@@ -1498,6 +1568,16 @@ benchmark_main!(
         };
         let cranelift_compiler_range = |_| {
             ConcurrentTaskBenchContext::from_task_context(TaskBenchContext::compiler_range_loop())
+        };
+        let interpreted_compiler_indexed_range = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::interpreted_compiler_indexed_range_loop(),
+            )
+        };
+        let cranelift_compiler_indexed_range = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::compiler_indexed_range_loop(),
+            )
         };
         let one_shot = |_| {
             ConcurrentTaskBenchContext::from_task_context(
@@ -1822,6 +1902,50 @@ benchmark_main!(
                 .factory(&cranelift_compiler_range)
                 .bench(
                     "task_concurrent_cranelift_compiler_range_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler indexed range loop")
+                .metadata("threads", "1")
+                .factory(&interpreted_compiler_indexed_range)
+                .bench(
+                    "task_concurrent_interpreter_compiler_indexed_range_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler indexed range loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&interpreted_compiler_indexed_range)
+                .bench(
+                    "task_concurrent_interpreter_compiler_indexed_range_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler indexed range loop")
+                .metadata("threads", "1")
+                .factory(&cranelift_compiler_indexed_range)
+                .bench(
+                    "task_concurrent_cranelift_compiler_indexed_range_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler indexed range loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&cranelift_compiler_indexed_range)
+                .bench(
+                    "task_concurrent_cranelift_compiler_indexed_range_loop_4_threads",
                     &concurrent_integer_workers,
                 );
             group
