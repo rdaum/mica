@@ -204,6 +204,9 @@ const BUDGET_PROFILE_TOP_LIMIT: usize = 12;
 #[cfg(feature = "cranelift")]
 const MIN_NATIVE_INTEGER_LOOP_ITERATIONS: usize = 4_096;
 #[cfg(feature = "cranelift")]
+// Cold source-range benchmarks lose at 4,096 iterations and win at 8,192.
+const MIN_NATIVE_RANGE_LOOP_ITERATIONS: usize = 8_192;
+#[cfg(feature = "cranelift")]
 const MIN_NATIVE_FLOAT_LOOP_ITERATIONS: usize = 8_192;
 
 #[derive(Clone, Debug, Default)]
@@ -1545,6 +1548,11 @@ impl RegisterVm {
             limit,
             site.comparison,
             max_iterations,
+            if site.range_view_registers.is_empty() {
+                MIN_NATIVE_INTEGER_LOOP_ITERATIONS
+            } else {
+                MIN_NATIVE_RANGE_LOOP_ITERATIONS
+            },
         );
         let compiled = program.compiled_natural_integer_loop(branch_ip, compile)?;
         let mut range_views = [NaturalLoopRangeView::default(); MAX_NATURAL_LOOP_RANGE_VIEWS];
@@ -3025,8 +3033,9 @@ fn natural_integer_loop_is_profitable(
     limit: i64,
     comparison: IntegerComparison,
     max_iterations: usize,
+    minimum_iterations: usize,
 ) -> bool {
-    if max_iterations < MIN_NATIVE_INTEGER_LOOP_ITERATIONS {
+    if max_iterations < minimum_iterations {
         return false;
     }
     let current = i128::from(current);
@@ -3095,7 +3104,7 @@ fn natural_integer_loop_is_profitable(
             }
         }
     };
-    iterations >= MIN_NATIVE_INTEGER_LOOP_ITERATIONS as i128
+    iterations >= minimum_iterations as i128
 }
 
 fn eval_unary(op: RuntimeUnaryOp, value: &Value) -> Result<Value, Value> {
