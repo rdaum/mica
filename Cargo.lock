@@ -3431,6 +3431,7 @@ dependencies = [
  "mica-source-provider",
  "mica-var",
  "mica-vm",
+ "micromeasure",
  "serde_json",
  "tracing",
  "xml",
