@@ -24,6 +24,7 @@ use std::sync::{Arc, Barrier};
 const ITERATIONS: usize = 16_384;
 const INSTRUCTION_COUNT: usize = (ITERATIONS * 3) + 4;
 const NATURAL_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 7;
+const NATURAL_ARITHMETIC_INSTRUCTION_COUNT: usize = (ITERATIONS * 11) + 7;
 const MAX_CALL_DEPTH: usize = 8;
 
 #[derive(Default)]
@@ -205,6 +206,206 @@ fn natural_accumulator_program_with_limit(total: Value, limit: usize) -> Arc<Pro
                 Instruction::Jump { target: 3 },
                 Instruction::Return {
                     value: Operand::Register(register(1)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
+fn natural_countdown_program(iterations: usize) -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            8,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: Value::int(iterations as i64).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(1),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::nothing(),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(4),
+                    op: RuntimeBinaryOp::Gt,
+                    left: register(0),
+                    right: register(3),
+                },
+                Instruction::Branch {
+                    condition: register(4),
+                    if_true: 6,
+                    if_false: 12,
+                },
+                Instruction::Binary {
+                    dst: register(7),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(1),
+                    right: register(0),
+                },
+                Instruction::Move {
+                    dst: register(1),
+                    src: register(7),
+                },
+                Instruction::Load {
+                    dst: register(5),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(6),
+                    op: RuntimeBinaryOp::Sub,
+                    left: register(0),
+                    right: register(5),
+                },
+                Instruction::Move {
+                    dst: register(0),
+                    src: register(6),
+                },
+                Instruction::Jump { target: 3 },
+                Instruction::Return {
+                    value: Operand::Register(register(1)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
+fn natural_scaled_countdown_program() -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            10,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: Value::int(ITERATIONS as i64).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(1),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::nothing(),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(4),
+                    op: RuntimeBinaryOp::Gt,
+                    left: register(0),
+                    right: register(3),
+                },
+                Instruction::Branch {
+                    condition: register(4),
+                    if_true: 6,
+                    if_false: 14,
+                },
+                Instruction::Load {
+                    dst: register(5),
+                    value: Value::int(3).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(6),
+                    op: RuntimeBinaryOp::Mul,
+                    left: register(0),
+                    right: register(5),
+                },
+                Instruction::Binary {
+                    dst: register(7),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(1),
+                    right: register(6),
+                },
+                Instruction::Move {
+                    dst: register(1),
+                    src: register(7),
+                },
+                Instruction::Load {
+                    dst: register(8),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(9),
+                    op: RuntimeBinaryOp::Sub,
+                    left: register(0),
+                    right: register(8),
+                },
+                Instruction::Move {
+                    dst: register(0),
+                    src: register(9),
+                },
+                Instruction::Jump { target: 3 },
+                Instruction::Return {
+                    value: Operand::Register(register(1)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
+fn natural_comparison_program(
+    start: i64,
+    limit: i64,
+    comparison: RuntimeBinaryOp,
+    update: RuntimeBinaryOp,
+    step: i64,
+) -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            6,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: Value::int(start).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(1),
+                    value: Value::nothing(),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::int(limit).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(3),
+                    op: comparison,
+                    left: register(0),
+                    right: register(2),
+                },
+                Instruction::Branch {
+                    condition: register(3),
+                    if_true: 5,
+                    if_false: 9,
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: Value::int(step).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(5),
+                    op: update,
+                    left: register(0),
+                    right: register(4),
+                },
+                Instruction::Move {
+                    dst: register(0),
+                    src: register(5),
+                },
+                Instruction::Jump { target: 2 },
+                Instruction::Return {
+                    value: Operand::Register(register(0)),
                 },
             ],
         )
@@ -422,6 +623,86 @@ fn native_natural_loop_does_not_compile_short_cold_loops() {
         VmHostResponse::Complete(Value::int(528).unwrap()),
     );
     assert_eq!(program.native_compile_attempts(), 0);
+}
+
+#[test]
+fn native_natural_countdown_loop_matches_interpreter() {
+    let program = natural_countdown_program(ITERATIONS);
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    assert_eq!(
+        run(&mut native, NATURAL_INSTRUCTION_COUNT).unwrap(),
+        run(&mut interpreted, NATURAL_INSTRUCTION_COUNT).unwrap(),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_scaled_countdown_loop_matches_interpreter() {
+    let program = natural_scaled_countdown_program();
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let native_outcome = run(&mut native, NATURAL_ARITHMETIC_INSTRUCTION_COUNT).unwrap();
+    let interpreted_outcome = run(&mut interpreted, NATURAL_ARITHMETIC_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert_eq!(
+        native_outcome,
+        VmHostResponse::Complete(Value::int(402_677_760).unwrap()),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn native_natural_countdown_loop_does_not_compile_when_short() {
+    let program = natural_countdown_program(32);
+    let mut vm = RegisterVm::new(Arc::clone(&program));
+    assert_eq!(
+        run(&mut vm, (32 * 9) + 7).unwrap(),
+        VmHostResponse::Complete(Value::int(528).unwrap()),
+    );
+    assert_eq!(program.native_compile_attempts(), 0);
+}
+
+#[test]
+fn native_natural_loop_supports_inclusive_and_inequality_conditions() {
+    let cases = [
+        (
+            0,
+            4_095,
+            RuntimeBinaryOp::Le,
+            RuntimeBinaryOp::Add,
+            1,
+            4_096,
+        ),
+        (4_095, 0, RuntimeBinaryOp::Ge, RuntimeBinaryOp::Sub, 1, -1),
+        (
+            0,
+            4_096,
+            RuntimeBinaryOp::Ne,
+            RuntimeBinaryOp::Add,
+            1,
+            4_096,
+        ),
+    ];
+    let instruction_count = (4_096 * 7) + 6;
+    for (start, limit, comparison, update, step, expected) in cases {
+        let program = natural_comparison_program(start, limit, comparison, update, step);
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(Arc::clone(&program));
+        assert_eq!(
+            run(&mut native, instruction_count).unwrap(),
+            run(&mut interpreted, instruction_count).unwrap(),
+        );
+        assert_eq!(
+            run(&mut RegisterVm::new(program.clone()), instruction_count).unwrap(),
+            VmHostResponse::Complete(Value::int(expected).unwrap()),
+        );
+        assert_eq!(program.native_compile_attempts(), 1);
+    }
 }
 
 #[test]

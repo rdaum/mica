@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::ValueEmitter;
+use crate::{IntegerComparison, ValueEmitter};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     AbiParam, InstBuilder, MemFlagsData, Signature, condcodes::IntCC, types,
@@ -32,10 +32,35 @@ type NaturalLoopFunction = unsafe extern "C" fn(*mut u64, u64, *mut u64) -> u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NaturalLoopInstruction {
-    Load { dst: u16, value: u64 },
-    Move { dst: u16, src: u16 },
-    Add { dst: u16, left: u16, right: u16 },
-    LessThan { dst: u16, left: u16, right: u16 },
+    Load {
+        dst: u16,
+        value: u64,
+    },
+    Move {
+        dst: u16,
+        src: u16,
+    },
+    Add {
+        dst: u16,
+        left: u16,
+        right: u16,
+    },
+    Subtract {
+        dst: u16,
+        left: u16,
+        right: u16,
+    },
+    Multiply {
+        dst: u16,
+        left: u16,
+        right: u16,
+    },
+    Compare {
+        dst: u16,
+        comparison: IntegerComparison,
+        left: u16,
+        right: u16,
+    },
 }
 
 impl NaturalLoopInstruction {
@@ -44,7 +69,9 @@ impl NaturalLoopInstruction {
             Self::Load { dst, .. }
             | Self::Move { dst, .. }
             | Self::Add { dst, .. }
-            | Self::LessThan { dst, .. } => dst,
+            | Self::Subtract { dst, .. }
+            | Self::Multiply { dst, .. }
+            | Self::Compare { dst, .. } => dst,
         }
     }
 
@@ -52,9 +79,12 @@ impl NaturalLoopInstruction {
         match self {
             Self::Load { dst, .. } => [Some(dst), None, None],
             Self::Move { dst, src } => [Some(dst), Some(src), None],
-            Self::Add { dst, left, right } | Self::LessThan { dst, left, right } => {
-                [Some(dst), Some(left), Some(right)]
-            }
+            Self::Add { dst, left, right }
+            | Self::Subtract { dst, left, right }
+            | Self::Multiply { dst, left, right }
+            | Self::Compare {
+                dst, left, right, ..
+            } => [Some(dst), Some(left), Some(right)],
         }
     }
 }
@@ -116,10 +146,10 @@ impl NaturalLoopPlan {
                     }
                     immediate[usize::from(dst)] = true;
                 }
-                NaturalLoopInstruction::Add { dst, .. } => {
-                    immediate[usize::from(dst)] = true;
-                }
-                NaturalLoopInstruction::LessThan { dst, .. } => {
+                NaturalLoopInstruction::Add { dst, .. }
+                | NaturalLoopInstruction::Subtract { dst, .. }
+                | NaturalLoopInstruction::Multiply { dst, .. }
+                | NaturalLoopInstruction::Compare { dst, .. } => {
                     immediate[usize::from(dst)] = true;
                 }
             }
@@ -127,7 +157,7 @@ impl NaturalLoopPlan {
             modified[usize::from(dst)] = true;
             if dst == condition {
                 condition_is_comparison =
-                    matches!(instruction, NaturalLoopInstruction::LessThan { .. });
+                    matches!(instruction, NaturalLoopInstruction::Compare { .. });
             }
         }
         if !condition_is_comparison {
@@ -363,10 +393,30 @@ impl CompiledNaturalLoop {
                 Self::store_slot(builder, scratch, dst, result.word());
                 builder.ins().band(is_fast, result.is_fast())
             }
-            NaturalLoopInstruction::LessThan { dst, left, right } => {
+            NaturalLoopInstruction::Subtract { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
-                let result = ValueEmitter::emit_checked_int_lt(builder, left, right);
+                let result = ValueEmitter::emit_checked_int_sub(builder, left, right);
+                Self::store_slot(builder, scratch, dst, result.word());
+                builder.ins().band(is_fast, result.is_fast())
+            }
+            NaturalLoopInstruction::Multiply { dst, left, right } => {
+                let left = Self::load_slot(builder, scratch, left);
+                let right = Self::load_slot(builder, scratch, right);
+                let result = ValueEmitter::emit_checked_int_mul(builder, left, right);
+                Self::store_slot(builder, scratch, dst, result.word());
+                builder.ins().band(is_fast, result.is_fast())
+            }
+            NaturalLoopInstruction::Compare {
+                dst,
+                comparison,
+                left,
+                right,
+            } => {
+                let left = Self::load_slot(builder, scratch, left);
+                let right = Self::load_slot(builder, scratch, right);
+                let result =
+                    ValueEmitter::emit_checked_int_compare(builder, left, right, comparison);
                 Self::store_slot(builder, scratch, dst, result.word());
                 builder.ins().band(is_fast, result.is_fast())
             }

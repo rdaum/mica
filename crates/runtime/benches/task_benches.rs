@@ -32,6 +32,8 @@ const INTEGER_LOOP_ITERATIONS: u64 = 16_384;
 const INTEGER_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 3) + 4;
 const COMPILER_COUNTER_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 7) + 6;
 const COMPILER_ACCUMULATOR_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 9) + 7;
+const COMPILER_COUNTDOWN_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 9) + 7;
+const COMPILER_ARITHMETIC_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 11) + 7;
 const REPEATED_DISPATCH_ITERATIONS: u64 = 1_024;
 const THREE_SITE_DISPATCH_ROUNDS: u64 = REPEATED_DISPATCH_ITERATIONS / 3;
 const THREE_SITE_DISPATCHES_PER_TASK: u64 = THREE_SITE_DISPATCH_ROUNDS * 3;
@@ -111,6 +113,14 @@ impl ColdCompilerLoopContext {
 
     fn accumulator() -> Self {
         Self::from_task_context(TaskBenchContext::compiler_accumulator_loop())
+    }
+
+    fn countdown() -> Self {
+        Self::from_task_context(TaskBenchContext::compiler_countdown_loop())
+    }
+
+    fn arithmetic() -> Self {
+        Self::from_task_context(TaskBenchContext::compiler_arithmetic_loop())
     }
 }
 
@@ -282,6 +292,59 @@ impl TaskBenchContext {
 
     fn interpreted_compiler_accumulator_loop() -> Self {
         let mut context = Self::compiler_accumulator_loop();
+        context.interpret_only = true;
+        context
+    }
+
+    fn compiler_countdown_loop() -> Self {
+        let source = format!(
+            "let i = {INTEGER_LOOP_ITERATIONS}\n\
+             let total = 0\n\
+             while i > 0\n\
+               total = total + i\n\
+               i = i - 1\n\
+             end\n\
+             return total",
+        );
+        let program = compile_source(&source, &CompileContext::new())
+            .unwrap()
+            .program;
+        Self::from_program(
+            RelationKernel::new(),
+            program,
+            Workload::task(COMPILER_COUNTDOWN_LOOP_BYTECODES),
+        )
+    }
+
+    fn interpreted_compiler_countdown_loop() -> Self {
+        let mut context = Self::compiler_countdown_loop();
+        context.interpret_only = true;
+        context
+    }
+
+    fn compiler_arithmetic_loop() -> Self {
+        let source = format!(
+            "let i = {INTEGER_LOOP_ITERATIONS}\n\
+             let total = 0\n\
+             while i > 0\n\
+               let scaled = i * 3\n\
+               total = total + scaled\n\
+               i = i - 1\n\
+             end\n\
+             return total",
+        );
+        let program = compile_source(&source, &CompileContext::new())
+            .unwrap()
+            .program;
+        Self::from_program(
+            RelationKernel::new(),
+            program,
+            Workload::task(COMPILER_ARITHMETIC_LOOP_BYTECODES),
+        )
+    }
+
+    fn interpreted_compiler_arithmetic_loop() -> Self {
+        let mut context = Self::compiler_arithmetic_loop();
         context.interpret_only = true;
         context
     }
@@ -1080,6 +1143,36 @@ benchmark_main!(
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_cranelift_compiler_accumulator_loop", run_tasks);
 
+            let interpreted_compiler_countdown =
+                || TaskBenchContext::interpreted_compiler_countdown_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_compiler_countdown)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_compiler_countdown_loop", run_tasks);
+
+            let cranelift_compiler_countdown = || TaskBenchContext::compiler_countdown_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_compiler_countdown)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_compiler_countdown_loop", run_tasks);
+
+            let interpreted_compiler_arithmetic =
+                || TaskBenchContext::interpreted_compiler_arithmetic_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&interpreted_compiler_arithmetic)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_interpreter_compiler_arithmetic_loop", run_tasks);
+
+            let cranelift_compiler_arithmetic = || TaskBenchContext::compiler_arithmetic_loop();
+            group
+                .throughput(Throughput::ops())
+                .factory(&cranelift_compiler_arithmetic)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_cranelift_compiler_arithmetic_loop", run_tasks);
+
             let read = || TaskBenchContext::indexed_relation_read();
             group
                 .throughput(Throughput::ops())
@@ -1140,6 +1233,24 @@ benchmark_main!(
                     "task_cranelift_compiler_accumulator_loop_cold",
                     run_cold_compiler_loop,
                 );
+
+            let countdown = || ColdCompilerLoopContext::countdown();
+            group
+                .throughput(Throughput::ops())
+                .factory(&countdown)
+                .bench(
+                    "task_cranelift_compiler_countdown_loop_cold",
+                    run_cold_compiler_loop,
+                );
+
+            let arithmetic = || ColdCompilerLoopContext::arithmetic();
+            group
+                .throughput(Throughput::ops())
+                .factory(&arithmetic)
+                .bench(
+                    "task_cranelift_compiler_arithmetic_loop_cold",
+                    run_cold_compiler_loop,
+                );
         });
 
         let single_worker = [ConcurrentWorker {
@@ -1185,6 +1296,26 @@ benchmark_main!(
         let cranelift_compiler_accumulator = |_| {
             ConcurrentTaskBenchContext::from_task_context(
                 TaskBenchContext::compiler_accumulator_loop(),
+            )
+        };
+        let interpreted_compiler_countdown = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::interpreted_compiler_countdown_loop(),
+            )
+        };
+        let cranelift_compiler_countdown = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::compiler_countdown_loop(),
+            )
+        };
+        let interpreted_compiler_arithmetic = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::interpreted_compiler_arithmetic_loop(),
+            )
+        };
+        let cranelift_compiler_arithmetic = |_| {
+            ConcurrentTaskBenchContext::from_task_context(
+                TaskBenchContext::compiler_arithmetic_loop(),
             )
         };
         let one_shot = |_| {
@@ -1334,6 +1465,94 @@ benchmark_main!(
                 .factory(&cranelift_compiler_accumulator)
                 .bench(
                     "task_concurrent_cranelift_compiler_accumulator_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler countdown loop")
+                .metadata("threads", "1")
+                .factory(&interpreted_compiler_countdown)
+                .bench(
+                    "task_concurrent_interpreter_compiler_countdown_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler countdown loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&interpreted_compiler_countdown)
+                .bench(
+                    "task_concurrent_interpreter_compiler_countdown_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler countdown loop")
+                .metadata("threads", "1")
+                .factory(&cranelift_compiler_countdown)
+                .bench(
+                    "task_concurrent_cranelift_compiler_countdown_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler countdown loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&cranelift_compiler_countdown)
+                .bench(
+                    "task_concurrent_cranelift_compiler_countdown_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler arithmetic loop")
+                .metadata("threads", "1")
+                .factory(&interpreted_compiler_arithmetic)
+                .bench(
+                    "task_concurrent_interpreter_compiler_arithmetic_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "interpreter")
+                .metadata("source", "compiler arithmetic loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&interpreted_compiler_arithmetic)
+                .bench(
+                    "task_concurrent_interpreter_compiler_arithmetic_loop_4_threads",
+                    &concurrent_integer_workers,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler arithmetic loop")
+                .metadata("threads", "1")
+                .factory(&cranelift_compiler_arithmetic)
+                .bench(
+                    "task_concurrent_cranelift_compiler_arithmetic_loop_1_thread",
+                    &single_integer_worker,
+                );
+            group
+                .sample_duration(Duration::from_millis(50))
+                .throughput(Throughput::per_operation(1, "bytecodes"))
+                .metadata("backend", "cranelift")
+                .metadata("source", "compiler arithmetic loop")
+                .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
+                .factory(&cranelift_compiler_arithmetic)
+                .bench(
+                    "task_concurrent_cranelift_compiler_arithmetic_loop_4_threads",
                     &concurrent_integer_workers,
                 );
             group

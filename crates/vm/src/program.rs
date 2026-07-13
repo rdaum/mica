@@ -22,7 +22,8 @@ use std::sync::Arc;
 use mica_var::abi::borrowed_value_bits;
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
-    CompiledIntegerLoop, CompiledNaturalLoop, NaturalLoopInstruction, NaturalLoopPlan,
+    CompiledIntegerLoop, CompiledNaturalLoop, IntegerComparison, NaturalLoopInstruction,
+    NaturalLoopPlan,
 };
 #[cfg(feature = "cranelift")]
 use std::collections::BTreeSet;
@@ -768,8 +769,9 @@ pub(crate) struct NaturalIntegerLoopSite {
     pub(crate) cycle_instruction_count: usize,
     pub(crate) registers: Box<[Register]>,
     pub(crate) current: Register,
-    pub(crate) step: i64,
+    pub(crate) delta: i64,
     pub(crate) limit: Register,
+    pub(crate) comparison: IntegerComparison,
     pub(crate) plan: NaturalLoopPlan,
     compiled: OnceLock<Result<Arc<CompiledNaturalLoop>, Box<str>>>,
 }
@@ -786,8 +788,9 @@ impl Debug for NaturalIntegerLoopSite {
             .field("cycle_instruction_count", &self.cycle_instruction_count)
             .field("registers", &self.registers)
             .field("current", &self.current)
-            .field("step", &self.step)
+            .field("delta", &self.delta)
             .field("limit", &self.limit)
+            .field("comparison", &self.comparison)
             .field("plan", &self.plan)
             .field("compiled", &self.compiled.get().is_some())
             .finish()
@@ -1038,7 +1041,7 @@ fn recognize_natural_integer_loop(
         header_plan,
     )
     .ok()?;
-    let (current, step, limit) =
+    let (current, delta, limit, comparison) =
         recognize_natural_loop_induction(header, body, constants, *condition)?;
     Some(NaturalIntegerLoopSite {
         header_ip,
@@ -1048,8 +1051,9 @@ fn recognize_natural_integer_loop(
         cycle_instruction_count: body.len() + header.len() + 2,
         registers,
         current,
-        step,
+        delta,
         limit,
+        comparison,
         plan,
         compiled: OnceLock::new(),
     })
@@ -1072,10 +1076,10 @@ fn collect_natural_loop_registers(
         }
         Opcode::Binary {
             dst,
-            op: RuntimeBinaryOp::Add | RuntimeBinaryOp::Lt,
+            op,
             left,
             right,
-        } => {
+        } if natural_binary_operation(*op).is_some() => {
             registers.insert(*dst);
             registers.insert(*left);
             registers.insert(*right);
@@ -1112,11 +1116,32 @@ fn natural_loop_instruction(
         }),
         Opcode::Binary {
             dst,
-            op: RuntimeBinaryOp::Lt,
+            op: RuntimeBinaryOp::Sub,
             left,
             right,
-        } => Some(NaturalLoopInstruction::LessThan {
+        } => Some(NaturalLoopInstruction::Subtract {
             dst: slot(*dst)?,
+            left: slot(*left)?,
+            right: slot(*right)?,
+        }),
+        Opcode::Binary {
+            dst,
+            op: RuntimeBinaryOp::Mul,
+            left,
+            right,
+        } => Some(NaturalLoopInstruction::Multiply {
+            dst: slot(*dst)?,
+            left: slot(*left)?,
+            right: slot(*right)?,
+        }),
+        Opcode::Binary {
+            dst,
+            op,
+            left,
+            right,
+        } => Some(NaturalLoopInstruction::Compare {
+            dst: slot(*dst)?,
+            comparison: integer_comparison(*op)?,
             left: slot(*left)?,
             right: slot(*right)?,
         }),
@@ -1130,14 +1155,14 @@ fn recognize_natural_loop_induction(
     body: &[Opcode],
     constants: &[Value],
     condition: Register,
-) -> Option<(Register, i64, Register)> {
-    let (current, limit) = header.iter().rev().find_map(|opcode| match opcode {
+) -> Option<(Register, i64, Register, IntegerComparison)> {
+    let (current, limit, comparison) = header.iter().rev().find_map(|opcode| match opcode {
         Opcode::Binary {
             dst,
-            op: RuntimeBinaryOp::Lt,
+            op,
             left,
             right,
-        } if *dst == condition => Some((*left, *right)),
+        } if *dst == condition => Some((*left, *right, integer_comparison(*op)?)),
         _ => None,
     })?;
     if current == limit || header.iter().any(|opcode| opcode_writes(opcode, current)) {
@@ -1153,33 +1178,33 @@ fn recognize_natural_loop_induction(
         return None;
     }
     let (write_index, write) = current_writes[0];
-    let (add_index, step_register) = match write {
+    let (arithmetic_index, step_register, direction) = match write {
         Opcode::Binary {
-            op: RuntimeBinaryOp::Add,
-            left,
-            right,
-            ..
-        } => (write_index, other_add_operand(*left, *right, current)?),
+            op, left, right, ..
+        } => {
+            let (step, direction) = induction_step(*op, *left, *right, current)?;
+            (write_index, step, direction)
+        }
         Opcode::Move { src, .. } => {
-            let (add_index, left, right) =
-                body[..write_index]
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(index, opcode)| match opcode {
-                        Opcode::Binary {
-                            dst,
-                            op: RuntimeBinaryOp::Add,
-                            left,
-                            right,
-                        } if dst == src => Some((index, *left, *right)),
-                        _ => None,
-                    })?;
-            (add_index, other_add_operand(left, right, current)?)
+            let (arithmetic_index, op, left, right) = body[..write_index]
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, opcode)| match opcode {
+                    Opcode::Binary {
+                        dst,
+                        op,
+                        left,
+                        right,
+                    } if dst == src => Some((index, *op, *left, *right)),
+                    _ => None,
+                })?;
+            let (step, direction) = induction_step(op, left, right, current)?;
+            (arithmetic_index, step, direction)
         }
         _ => return None,
     };
-    let step = body[..add_index]
+    let step = body[..arithmetic_index]
         .iter()
         .rev()
         .find_map(|opcode| match opcode {
@@ -1188,17 +1213,48 @@ fn recognize_natural_loop_induction(
             }
             _ => None,
         })?;
-    Some((current, step, limit))
+    let delta = if direction > 0 {
+        step
+    } else {
+        step.checked_neg()?
+    };
+    Some((current, delta, limit, comparison))
 }
 
 #[cfg(feature = "cranelift")]
-fn other_add_operand(left: Register, right: Register, current: Register) -> Option<Register> {
-    if left == current && right != current {
-        Some(right)
-    } else if right == current && left != current {
-        Some(left)
-    } else {
-        None
+fn induction_step(
+    operation: RuntimeBinaryOp,
+    left: Register,
+    right: Register,
+    current: Register,
+) -> Option<(Register, i8)> {
+    match operation {
+        RuntimeBinaryOp::Add if left == current && right != current => Some((right, 1)),
+        RuntimeBinaryOp::Add if right == current && left != current => Some((left, 1)),
+        RuntimeBinaryOp::Sub if left == current && right != current => Some((right, -1)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "cranelift")]
+fn natural_binary_operation(operation: RuntimeBinaryOp) -> Option<()> {
+    match operation {
+        RuntimeBinaryOp::Add | RuntimeBinaryOp::Sub | RuntimeBinaryOp::Mul => Some(()),
+        operation if integer_comparison(operation).is_some() => Some(()),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "cranelift")]
+fn integer_comparison(operation: RuntimeBinaryOp) -> Option<IntegerComparison> {
+    match operation {
+        RuntimeBinaryOp::Eq => Some(IntegerComparison::Equal),
+        RuntimeBinaryOp::Ne => Some(IntegerComparison::NotEqual),
+        RuntimeBinaryOp::Lt => Some(IntegerComparison::LessThan),
+        RuntimeBinaryOp::Le => Some(IntegerComparison::LessThanOrEqual),
+        RuntimeBinaryOp::Gt => Some(IntegerComparison::GreaterThan),
+        RuntimeBinaryOp::Ge => Some(IntegerComparison::GreaterThanOrEqual),
+        _ => None,
     }
 }
 
