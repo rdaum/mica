@@ -29,6 +29,7 @@ use std::time::Duration;
 
 const INTEGER_LOOP_ITERATIONS: u64 = 16_384;
 const INTEGER_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 3) + 4;
+const REPEATED_DISPATCH_ITERATIONS: u64 = 1_024;
 const MAX_CALL_DEPTH: usize = 64;
 
 #[derive(Clone, Copy)]
@@ -42,7 +43,8 @@ struct Workload {
     kernel_commits: u64,
     dispatch_cache_lookups: u64,
     method_program_cache_lookups: u64,
-    program_cache_lookups: u64,
+    vm_resolved_program_lookups: u64,
+    program_resolver_lookups: u64,
 }
 
 impl Workload {
@@ -55,7 +57,8 @@ impl Workload {
             kernel_commits: 0,
             dispatch_cache_lookups: 0,
             method_program_cache_lookups: 0,
-            program_cache_lookups: 0,
+            vm_resolved_program_lookups: 0,
+            program_resolver_lookups: 0,
         }
     }
 }
@@ -206,6 +209,94 @@ impl TaskBenchContext {
     }
 
     fn warm_positional_dispatch() -> Self {
+        let (kernel, relations, receiver, resolver) = Self::positional_dispatch_fixture();
+        let program = Arc::new(
+            Program::new(
+                1,
+                [
+                    Instruction::PositionalDispatch {
+                        dst: register(0),
+                        relations: relations.dispatch,
+                        program_relation: relations.method_program,
+                        program_bytes: relations.program_bytes,
+                        selector: value(Value::symbol(Symbol::intern("benchmark"))),
+                        args: vec![value(Value::identity(receiver))],
+                    },
+                    Instruction::Return { value: operand(0) },
+                ],
+            )
+            .unwrap(),
+        );
+        let mut workload = Workload::task(4);
+        workload.dispatch_cache_lookups = 1;
+        workload.method_program_cache_lookups = 1;
+        workload.vm_resolved_program_lookups = 1;
+        workload.program_resolver_lookups = 1;
+        Self::warm_dispatch_context(kernel, program, resolver, workload)
+    }
+
+    fn repeated_positional_dispatch() -> Self {
+        let (kernel, relations, receiver, resolver) = Self::positional_dispatch_fixture();
+        let program = Arc::new(
+            Program::new(
+                5,
+                [
+                    Instruction::Load {
+                        dst: register(0),
+                        value: int(0),
+                    },
+                    Instruction::Load {
+                        dst: register(1),
+                        value: int(1),
+                    },
+                    Instruction::Load {
+                        dst: register(2),
+                        value: int(REPEATED_DISPATCH_ITERATIONS as i64),
+                    },
+                    Instruction::PositionalDispatch {
+                        dst: register(3),
+                        relations: relations.dispatch,
+                        program_relation: relations.method_program,
+                        program_bytes: relations.program_bytes,
+                        selector: value(Value::symbol(Symbol::intern("benchmark"))),
+                        args: vec![value(Value::identity(receiver))],
+                    },
+                    Instruction::Binary {
+                        dst: register(0),
+                        op: RuntimeBinaryOp::Add,
+                        left: register(0),
+                        right: register(1),
+                    },
+                    Instruction::Binary {
+                        dst: register(4),
+                        op: RuntimeBinaryOp::Lt,
+                        left: register(0),
+                        right: register(2),
+                    },
+                    Instruction::Branch {
+                        condition: register(4),
+                        if_true: 3,
+                        if_false: 7,
+                    },
+                    Instruction::Return { value: operand(3) },
+                ],
+            )
+            .unwrap(),
+        );
+        let mut workload = Workload::task((REPEATED_DISPATCH_ITERATIONS * 6) + 4);
+        workload.dispatch_cache_lookups = REPEATED_DISPATCH_ITERATIONS;
+        workload.method_program_cache_lookups = REPEATED_DISPATCH_ITERATIONS;
+        workload.vm_resolved_program_lookups = REPEATED_DISPATCH_ITERATIONS;
+        workload.program_resolver_lookups = 1;
+        Self::warm_dispatch_context(kernel, program, resolver, workload)
+    }
+
+    fn positional_dispatch_fixture() -> (
+        RelationKernel,
+        MethodRelations,
+        Identity,
+        Arc<ProgramResolver>,
+    ) {
         let relations = method_relations();
         let method = identity(100);
         let method_program = identity(101);
@@ -249,27 +340,15 @@ impl TaskBenchContext {
         let resolver = Arc::new(
             ProgramResolver::new().with_program(installed.program, installed.compiled.program),
         );
-        let program = Arc::new(
-            Program::new(
-                1,
-                [
-                    Instruction::PositionalDispatch {
-                        dst: register(0),
-                        relations: relations.dispatch,
-                        program_relation: relations.method_program,
-                        program_bytes: relations.program_bytes,
-                        selector: value(Value::symbol(Symbol::intern("benchmark"))),
-                        args: vec![value(Value::identity(receiver))],
-                    },
-                    Instruction::Return { value: operand(0) },
-                ],
-            )
-            .unwrap(),
-        );
-        let mut workload = Workload::task(4);
-        workload.dispatch_cache_lookups = 1;
-        workload.method_program_cache_lookups = 1;
-        workload.program_cache_lookups = 1;
+        (kernel, relations, receiver, resolver)
+    }
+
+    fn warm_dispatch_context(
+        kernel: RelationKernel,
+        program: Arc<Program>,
+        resolver: Arc<ProgramResolver>,
+        workload: Workload,
+    ) -> Self {
         let mut context = Self {
             kernel,
             program,
@@ -365,8 +444,13 @@ fn workload_diagnostics(
             "lookups",
         ))
         .push_metric(MetricValue::integer(
-            "program_cache_lookups_per_task",
-            workload.program_cache_lookups as i64,
+            "vm_resolved_program_lookups_per_task",
+            workload.vm_resolved_program_lookups as i64,
+            "lookups",
+        ))
+        .push_metric(MetricValue::integer(
+            "program_resolver_lookups_per_task",
+            workload.program_resolver_lookups as i64,
             "lookups",
         )))
 }
@@ -508,6 +592,13 @@ benchmark_main!(
                 .factory(&dispatch)
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_warm_positional_dispatch", run_tasks);
+
+            let repeated_dispatch = || TaskBenchContext::repeated_positional_dispatch();
+            group
+                .throughput(Throughput::ops())
+                .factory(&repeated_dispatch)
+                .diagnostic_pass(workload_diagnostics)
+                .bench("task_repeated_positional_dispatch", run_tasks);
         });
     }
 );
