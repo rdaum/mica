@@ -1173,11 +1173,7 @@ fn recognize_natural_integer_loop(
         .filter_map(|opcode| match opcode {
             Opcode::CollectionKeyAt { collection, .. }
             | Opcode::CollectionValueAt { collection, .. } => Some(*collection),
-            Opcode::Index {
-                collection,
-                index: OperandRef::Register(_),
-                ..
-            } => Some(*collection),
+            Opcode::Index { collection, .. } => Some(*collection),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
@@ -1305,6 +1301,16 @@ fn collect_natural_loop_registers(
             registers.insert(*dst);
             registers.insert(*index);
         }
+        Opcode::Index {
+            dst,
+            index: OperandRef::Constant(index),
+            ..
+        } => {
+            if !value_is_immediate(borrowed_value_bits(constants.get(index.0 as usize)?)) {
+                return None;
+            }
+            registers.insert(*dst);
+        }
         Opcode::Jump { .. } => {}
         _ => return None,
     }
@@ -1384,10 +1390,19 @@ fn natural_loop_instruction(
             dst,
             collection,
             index: OperandRef::Register(index),
-        } => Some(NaturalLoopInstruction::ListValueAt {
+        } => Some(NaturalLoopInstruction::IndexValue {
             dst: slot(*dst)?,
             view: collection_view(*collection)?,
             index: slot(*index)?,
+        }),
+        Opcode::Index {
+            dst,
+            collection,
+            index: OperandRef::Constant(index),
+        } => Some(NaturalLoopInstruction::IndexValueImmediate {
+            dst: slot(*dst)?,
+            view: collection_view(*collection)?,
+            index: borrowed_value_bits(constants.get(index.0 as usize)?),
         }),
         Opcode::Binary {
             dst,

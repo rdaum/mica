@@ -14,14 +14,17 @@
 use crate::{ScalarComparison, ValueEmitter};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
-    AbiParam, InstBuilder, MemFlagsData, Signature, condcodes::IntCC, types,
+    AbiParam, InstBuilder, MemFlagsData, Signature,
+    condcodes::{FloatCC, IntCC},
+    types,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 use mica_var::Value;
 use mica_var::abi::{
-    VALUE_ABI_VERSION, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG, value_is_immediate,
+    VALUE_ABI_VERSION, VALUE_FLOAT_TAG, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG,
+    value_is_immediate,
 };
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -188,10 +191,15 @@ pub enum NaturalLoopInstruction {
         view: u16,
         index: u16,
     },
-    ListValueAt {
+    IndexValue {
         dst: u16,
         view: u16,
         index: u16,
+    },
+    IndexValueImmediate {
+        dst: u16,
+        view: u16,
+        index: u64,
     },
     Branch {
         condition: u16,
@@ -220,7 +228,8 @@ impl NaturalLoopInstruction {
             } => [Some(dst), Some(left), Some(right)],
             Self::CollectionValueAt { dst, index, .. }
             | Self::CollectionKeyAt { dst, index, .. }
-            | Self::ListValueAt { dst, index, .. } => [Some(dst), Some(index), None],
+            | Self::IndexValue { dst, index, .. } => [Some(dst), Some(index), None],
+            Self::IndexValueImmediate { dst, .. } => [Some(dst), None, None],
             Self::Branch { condition, .. } => [Some(condition), None, None],
             Self::Jump { .. } => [None, None, None],
         }
@@ -283,11 +292,19 @@ impl NaturalLoopPlan {
                 }
                 NaturalLoopInstruction::CollectionValueAt { view, .. }
                 | NaturalLoopInstruction::CollectionKeyAt { view, .. }
-                | NaturalLoopInstruction::ListValueAt { view, .. }
+                | NaturalLoopInstruction::IndexValue { view, .. }
+                | NaturalLoopInstruction::IndexValueImmediate { view, .. }
                     if view >= collection_view_count =>
                 {
                     return Err(NaturalLoopError(
                         "natural loop collection instruction references an invalid view".to_owned(),
+                    ));
+                }
+                NaturalLoopInstruction::IndexValueImmediate { index, .. }
+                    if !value_is_immediate(index) =>
+                {
+                    return Err(NaturalLoopError(
+                        "natural loop immediate index must be an immediate value".to_owned(),
                     ));
                 }
                 _ => {}
@@ -758,31 +775,17 @@ impl CompiledNaturalLoop {
                 Self::store_slot(builder, scratch, dst, value);
                 (is_fast, dst)
             }
-            NaturalLoopInstruction::ListValueAt { dst, view, index } => {
-                let index_word = Self::load_slot(builder, scratch, index);
-                let index_is_int = ValueEmitter::emit_is_int(builder, index_word);
-                let index = ValueEmitter::emit_unbox_int(builder, index_word);
-                let (kind, len, _, _, value_base, stride) =
-                    Self::load_collection_view(builder, collection_views, view);
-                let index_is_nonnegative =
-                    builder
-                        .ins()
-                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, index, 0);
-                let index_is_bounded = builder.ins().icmp(IntCC::UnsignedLessThan, index, len);
-                let index_is_valid = builder.ins().band(index_is_int, index_is_nonnegative);
-                let index_is_valid = builder.ins().band(index_is_valid, index_is_bounded);
-                let zero = builder.ins().iconst(types::I64, 0);
-                let safe_index = builder.ins().select(index_is_valid, index, zero);
-                let address_offset = builder.ins().imul(safe_index, stride);
-                let address = builder.ins().iadd(value_base, address_offset);
-                let value =
-                    builder
-                        .ins()
-                        .load(types::I64, MemFlagsData::new().with_readonly(), address, 0);
-                let is_list = builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, kind, COLLECTION_LIST as i64);
-                let is_fast = builder.ins().band(index_is_valid, is_list);
+            NaturalLoopInstruction::IndexValue { dst, view, index } => {
+                let index = Self::load_slot(builder, scratch, index);
+                let view = Self::load_collection_view(builder, collection_views, view);
+                let (value, is_fast) = Self::emit_index_value(builder, index, view);
+                Self::store_slot(builder, scratch, dst, value);
+                (is_fast, dst)
+            }
+            NaturalLoopInstruction::IndexValueImmediate { dst, view, index } => {
+                let index = builder.ins().iconst(types::I64, index as i64);
+                let view = Self::load_collection_view(builder, collection_views, view);
+                let (value, is_fast) = Self::emit_index_value(builder, index, view);
                 Self::store_slot(builder, scratch, dst, value);
                 (is_fast, dst)
             }
@@ -821,6 +824,173 @@ impl CompiledNaturalLoop {
             load(builder, offset_of!(NaturalLoopCollectionView, value_base)),
             load(builder, offset_of!(NaturalLoopCollectionView, stride)),
         )
+    }
+
+    /// Emits list ordinal lookup or canonical map-key binary search.
+    ///
+    /// Immediate map keys follow `Value::cmp`: kinds order by tag, integers
+    /// compare signed, finite canonical binary32 values compare numerically,
+    /// and the remaining immediate kinds compare by payload. Heap keys leave
+    /// the native path because their within-kind ordering requires dereference.
+    fn emit_index_value(
+        builder: &mut FunctionBuilder<'_>,
+        index_word: cranelift_codegen::ir::Value,
+        view: (
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+        ),
+    ) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
+        let list = builder.create_block();
+        let map_check = builder.create_block();
+        let map_loop = builder.create_block();
+        let map_probe = builder.create_block();
+        let map_update = builder.create_block();
+        let done = builder.create_block();
+        builder.append_block_param(map_loop, types::I64);
+        builder.append_block_param(map_loop, types::I64);
+        builder.append_block_param(map_probe, types::I64);
+        builder.append_block_param(map_probe, types::I64);
+        builder.append_block_param(map_update, types::I64);
+        builder.append_block_param(map_update, types::I64);
+        builder.append_block_param(map_update, types::I64);
+        builder.append_block_param(map_update, types::I8);
+        builder.append_block_param(done, types::I64);
+        builder.append_block_param(done, types::I8);
+
+        let (kind, len, _, key_base, value_base, stride) = view;
+        let nothing = builder.ins().iconst(types::I64, 0);
+        let false_value = builder.ins().iconst(types::I8, 0);
+        let true_value = builder.ins().iconst(types::I8, 1);
+        let is_list = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, kind, COLLECTION_LIST as i64);
+        builder.ins().brif(is_list, list, &[], map_check, &[]);
+
+        builder.switch_to_block(list);
+        let index_is_int = ValueEmitter::emit_is_int(builder, index_word);
+        let index = ValueEmitter::emit_unbox_int(builder, index_word);
+        let index_is_nonnegative =
+            builder
+                .ins()
+                .icmp_imm(IntCC::SignedGreaterThanOrEqual, index, 0);
+        let index_is_bounded = builder.ins().icmp(IntCC::UnsignedLessThan, index, len);
+        let index_is_valid = builder.ins().band(index_is_int, index_is_nonnegative);
+        let index_is_valid = builder.ins().band(index_is_valid, index_is_bounded);
+        let safe_index = builder.ins().select(index_is_valid, index, nothing);
+        let address_offset = builder.ins().imul(safe_index, stride);
+        let address = builder.ins().iadd(value_base, address_offset);
+        let value = builder
+            .ins()
+            .load(types::I64, MemFlagsData::new().with_readonly(), address, 0);
+        builder
+            .ins()
+            .jump(done, &[value.into(), index_is_valid.into()]);
+
+        builder.switch_to_block(map_check);
+        let is_map = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, kind, COLLECTION_MAP as i64);
+        let index_is_immediate = ValueEmitter::emit_is_immediate(builder, index_word);
+        let can_search = builder.ins().band(is_map, index_is_immediate);
+        builder.ins().brif(
+            can_search,
+            map_loop,
+            &[nothing.into(), len.into()],
+            done,
+            &[nothing.into(), false_value.into()],
+        );
+
+        builder.switch_to_block(map_loop);
+        let lower = builder.block_params(map_loop)[0];
+        let upper = builder.block_params(map_loop)[1];
+        let has_candidate = builder.ins().icmp(IntCC::UnsignedLessThan, lower, upper);
+        builder.ins().brif(
+            has_candidate,
+            map_probe,
+            &[lower.into(), upper.into()],
+            done,
+            &[nothing.into(), true_value.into()],
+        );
+
+        builder.switch_to_block(map_probe);
+        let lower = builder.block_params(map_probe)[0];
+        let upper = builder.block_params(map_probe)[1];
+        let width = builder.ins().isub(upper, lower);
+        let half_width = builder.ins().ushr_imm(width, 1);
+        let middle = builder.ins().iadd(lower, half_width);
+        let address_offset = builder.ins().imul(middle, stride);
+        let key_address = builder.ins().iadd(key_base, address_offset);
+        let value_address = builder.ins().iadd(value_base, address_offset);
+        let entry_key = builder.ins().load(
+            types::I64,
+            MemFlagsData::new().with_readonly(),
+            key_address,
+            0,
+        );
+        let entry_value = builder.ins().load(
+            types::I64,
+            MemFlagsData::new().with_readonly(),
+            value_address,
+            0,
+        );
+        let entry_tag = ValueEmitter::emit_tag(builder, entry_key);
+        let index_tag = ValueEmitter::emit_tag(builder, index_word);
+        let same_tag = builder.ins().icmp(IntCC::Equal, entry_tag, index_tag);
+        let equal = builder.ins().icmp(IntCC::Equal, entry_key, index_word);
+        let tag_less = builder
+            .ins()
+            .icmp(IntCC::UnsignedLessThan, entry_tag, index_tag);
+
+        let entry_payload = ValueEmitter::emit_payload(builder, entry_key);
+        let index_payload = ValueEmitter::emit_payload(builder, index_word);
+        let payload_less =
+            builder
+                .ins()
+                .icmp(IntCC::UnsignedLessThan, entry_payload, index_payload);
+        let entry_int = ValueEmitter::emit_unbox_int(builder, entry_key);
+        let index_int = ValueEmitter::emit_unbox_int(builder, index_word);
+        let int_less = builder
+            .ins()
+            .icmp(IntCC::SignedLessThan, entry_int, index_int);
+        let entry_float = ValueEmitter::emit_unbox_float(builder, entry_key);
+        let index_float = ValueEmitter::emit_unbox_float(builder, index_word);
+        let float_less = builder
+            .ins()
+            .fcmp(FloatCC::LessThan, entry_float, index_float);
+        let is_int = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, index_tag, i64::from(VALUE_INT_TAG));
+        let is_float = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, index_tag, i64::from(VALUE_FLOAT_TAG));
+        let same_kind_less = builder.ins().select(is_int, int_less, payload_less);
+        let same_kind_less = builder.ins().select(is_float, float_less, same_kind_less);
+        let entry_less = builder.ins().select(same_tag, same_kind_less, tag_less);
+        builder.ins().brif(
+            equal,
+            done,
+            &[entry_value.into(), true_value.into()],
+            map_update,
+            &[lower.into(), upper.into(), middle.into(), entry_less.into()],
+        );
+
+        builder.switch_to_block(map_update);
+        let lower = builder.block_params(map_update)[0];
+        let upper = builder.block_params(map_update)[1];
+        let middle = builder.block_params(map_update)[2];
+        let entry_less = builder.block_params(map_update)[3];
+        let one = builder.ins().iconst(types::I64, 1);
+        let after_middle = builder.ins().iadd(middle, one);
+        let lower = builder.ins().select(entry_less, after_middle, lower);
+        let upper = builder.ins().select(entry_less, upper, middle);
+        builder.ins().jump(map_loop, &[lower.into(), upper.into()]);
+
+        builder.switch_to_block(done);
+        (builder.block_params(done)[0], builder.block_params(done)[1])
     }
 
     fn load_slot(

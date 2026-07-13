@@ -11,8 +11,8 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use mica_var::Value;
 use mica_var::abi::{borrowed_value_bits, from_owned_value_bits};
+use mica_var::{Value, ValueRef};
 use mica_vm_cranelift::{
     CompiledNaturalLoop, NaturalLoopCollectionView, NaturalLoopInstruction, NaturalLoopOutcome,
     NaturalLoopPlan, ScalarComparison,
@@ -128,15 +128,29 @@ fn collection_key_plan() -> NaturalLoopPlan {
     .unwrap()
 }
 
-fn list_index_plan() -> NaturalLoopPlan {
+fn index_plan() -> NaturalLoopPlan {
     NaturalLoopPlan::new(
         2,
         1,
         0,
-        [NaturalLoopInstruction::ListValueAt {
+        [NaturalLoopInstruction::IndexValue {
             dst: 0,
             view: 0,
             index: 1,
+        }],
+    )
+    .unwrap()
+}
+
+fn immediate_index_plan(index: Value) -> NaturalLoopPlan {
+    NaturalLoopPlan::new(
+        1,
+        1,
+        0,
+        [NaturalLoopInstruction::IndexValueImmediate {
+            dst: 0,
+            view: 0,
+            index: borrowed_value_bits(&index),
         }],
     )
     .unwrap()
@@ -246,7 +260,7 @@ fn generated_list_access_emits_immediate_values_and_ordinals_without_helpers() {
 fn generated_list_index_emits_checked_values_without_helpers() {
     let values = [Value::int(4).unwrap(), Value::int(9).unwrap()];
     let view = [NaturalLoopCollectionView::list(&values)];
-    let compiled = CompiledNaturalLoop::compile(&list_index_plan()).unwrap();
+    let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
     let mut scratch = [bits(Value::nothing()), int_bits(1)];
 
     assert!(matches!(
@@ -263,6 +277,137 @@ fn generated_list_index_emits_checked_values_without_helpers() {
             NaturalLoopOutcome::SideExit,
         );
     }
+}
+
+#[test]
+fn generated_map_index_uses_canonical_immediate_key_order_without_helpers() {
+    let heap_value = Value::string("heap value");
+    let entries = [
+        (Value::int(-9).unwrap(), Value::int(1).unwrap()),
+        (Value::int(1).unwrap(), Value::int(2).unwrap()),
+        (Value::float(-3.5).unwrap(), Value::int(3).unwrap()),
+        (Value::float(1.0).unwrap(), heap_value.clone()),
+        (
+            Value::symbol(mica_var::Symbol::intern("map_index_key")),
+            Value::int(5).unwrap(),
+        ),
+    ];
+    let view = [NaturalLoopCollectionView::map(&entries)];
+    let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
+
+    for (key, expected) in [
+        (Value::int(-9).unwrap(), borrowed_value_bits(&entries[0].1)),
+        (Value::int(1).unwrap(), borrowed_value_bits(&entries[1].1)),
+        (
+            Value::float(-3.5).unwrap(),
+            borrowed_value_bits(&entries[2].1),
+        ),
+        (Value::float(1.0).unwrap(), borrowed_value_bits(&heap_value)),
+        (
+            Value::symbol(mica_var::Symbol::intern("map_index_key")),
+            borrowed_value_bits(&entries[4].1),
+        ),
+    ] {
+        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&key)];
+        assert_eq!(
+            compiled.run(&mut scratch, &view, 1),
+            NaturalLoopOutcome::Complete {
+                instructions: 1,
+                modified_slots: 1,
+            },
+        );
+        assert_eq!(scratch[0], expected);
+    }
+
+    for missing in [Value::int(0).unwrap(), Value::float(0.0).unwrap()] {
+        let mut scratch = [bits(Value::bool(true)), borrowed_value_bits(&missing)];
+        assert!(matches!(
+            compiled.run(&mut scratch, &view, 1),
+            NaturalLoopOutcome::Complete { .. }
+        ));
+        assert_eq!(scratch[0], bits(Value::nothing()));
+    }
+    assert_eq!(compiled.imported_helper_count(), 0);
+}
+
+#[test]
+fn generated_map_index_side_exits_for_heap_keys() {
+    let entry_key = Value::string("key");
+    let entries = [(entry_key.clone(), Value::int(7).unwrap())];
+    let view = [NaturalLoopCollectionView::map(&entries)];
+    let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
+    let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&entry_key)];
+
+    assert_eq!(
+        compiled.run(&mut scratch, &view, 1),
+        NaturalLoopOutcome::SideExit,
+    );
+}
+
+#[test]
+fn generated_map_index_matches_value_lookup_across_immediate_kinds() {
+    let keys = [
+        Value::nothing(),
+        Value::bool(false),
+        Value::bool(true),
+        Value::int(-7).unwrap(),
+        Value::int(3).unwrap(),
+        Value::float(-8.5).unwrap(),
+        Value::float(2.25).unwrap(),
+        Value::identity_raw(42).unwrap(),
+        Value::symbol(mica_var::Symbol::intern("map_index_symbol")),
+        Value::error_code(mica_var::Symbol::intern("E_MAP_INDEX")),
+        Value::string("heap key between immediate kinds"),
+        Value::capability_raw(7).unwrap(),
+        Value::function_raw(9).unwrap(),
+    ];
+    let map = Value::map(
+        keys.iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, key)| (key, Value::int(index as i64).unwrap())),
+    );
+    let ValueRef::Map(entries) = map.as_value_ref() else {
+        panic!("expected map value");
+    };
+    let view = [NaturalLoopCollectionView::map(entries)];
+    let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
+
+    for key in keys
+        .iter()
+        .filter(|key| key.is_immediate())
+        .cloned()
+        .chain([Value::int(99).unwrap(), Value::float(0.5).unwrap()])
+    {
+        let expected = map.map_get(&key).unwrap_or_else(Value::nothing);
+        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&key)];
+        assert!(matches!(
+            compiled.run(&mut scratch, &view, 1),
+            NaturalLoopOutcome::Complete { .. }
+        ));
+        assert_eq!(scratch[0], borrowed_value_bits(&expected), "key {key:?}");
+    }
+}
+
+#[test]
+fn generated_map_index_accepts_immediate_operands() {
+    let entries = [(
+        Value::symbol(mica_var::Symbol::intern("direct")),
+        Value::int(7).unwrap(),
+    )];
+    let view = [NaturalLoopCollectionView::map(&entries)];
+    let compiled = CompiledNaturalLoop::compile(&immediate_index_plan(Value::symbol(
+        mica_var::Symbol::intern("direct"),
+    )))
+    .unwrap();
+    let mut scratch = [bits(Value::nothing())];
+
+    assert!(matches!(
+        compiled.run(&mut scratch, &view, 1),
+        NaturalLoopOutcome::Complete { .. }
+    ));
+    assert_eq!(value(scratch[0]).as_int(), Some(7));
+    assert_eq!(compiled.imported_helper_count(), 0);
 }
 
 #[test]
