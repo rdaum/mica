@@ -126,14 +126,15 @@ impl<'a> Transaction<'a> {
         relations: DispatchRelations,
         selector: &Value,
         args: &[Value],
-    ) -> Result<Vec<Value>, KernelError> {
+    ) -> Result<Arc<[Value]>, KernelError> {
         if self.has_dispatch_writes(relations) {
             return crate::dispatch::applicable_positional_methods(
                 self,
                 relations,
                 selector.clone(),
                 args,
-            );
+            )
+            .map(Arc::from);
         }
         self.base
             .cached_applicable_positional_methods(relations, selector, args)
@@ -781,7 +782,7 @@ impl DispatchRead for Transaction<'_> {
         relations: DispatchRelations,
         selector: &Value,
         args: &[Value],
-    ) -> Result<Option<Vec<Value>>, KernelError> {
+    ) -> Result<Option<Arc<[Value]>>, KernelError> {
         self.cached_applicable_positional_methods(relations, selector, args)
             .map(Some)
     }

@@ -13,6 +13,7 @@
 
 use crate::{KernelError, RelationId, RelationRead, ScanControl, delegates_reaches};
 use mica_var::{FROB_PROTOTYPE, Identity, Value, primitive_prototype_for_value};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DispatchRelations {
@@ -65,7 +66,7 @@ pub trait DispatchRead: RelationRead {
         _relations: DispatchRelations,
         _selector: &Value,
         _args: &[Value],
-    ) -> Result<Option<Vec<Value>>, KernelError> {
+    ) -> Result<Option<Arc<[Value]>>, KernelError> {
         Ok(None)
     }
 }
@@ -231,13 +232,13 @@ pub fn applicable_positional_methods_cached(
     relations: DispatchRelations,
     selector: Value,
     args: &[Value],
-) -> Result<Vec<Value>, KernelError> {
+) -> Result<Arc<[Value]>, KernelError> {
     if let Some(methods) =
         reader.cached_applicable_positional_methods(relations, &selector, args)?
     {
         return Ok(methods);
     }
-    applicable_positional_methods(reader, relations, selector, args)
+    applicable_positional_methods(reader, relations, selector, args).map(Arc::from)
 }
 
 fn method_call_args_from_params(
@@ -1099,11 +1100,10 @@ mod tests {
             applicable_positional_methods(&tx, dispatch_relations(), sym("look"), &[]).unwrap(),
             vec![int(100)]
         );
-        assert_eq!(
+        let methods =
             applicable_positional_methods_cached(&tx, dispatch_relations(), sym("look"), &[])
-                .unwrap(),
-            vec![int(100)]
-        );
+                .unwrap();
+        assert_eq!(methods.as_ref(), &[int(100)]);
     }
 
     #[test]
@@ -1137,6 +1137,33 @@ mod tests {
                 args: Some(Vec::new())
             }]
         );
+        let methods =
+            applicable_positional_methods_cached(&reader, dispatch_relations(), sym("look"), &[])
+                .unwrap();
+        assert_eq!(methods.as_ref(), &[int(100)]);
+    }
+
+    #[test]
+    fn composed_positional_dispatch_shares_snapshot_cache_results() {
+        let kernel = kernel_with_dispatch_relations();
+        let mut seed = kernel.begin();
+        seed.assert(rel(40), Tuple::from([int(100), sym("look")]))
+            .unwrap();
+        seed.commit().unwrap();
+
+        let tx = kernel.begin();
+        let transient = TransientStore::new();
+        let reader = ComposedTransactionRead::new(&tx, &transient, &[]);
+
+        let first = reader
+            .cached_applicable_positional_methods(dispatch_relations(), &sym("look"), &[])
+            .unwrap()
+            .unwrap();
+        let second = reader
+            .cached_applicable_positional_methods(dispatch_relations(), &sym("look"), &[])
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[test]

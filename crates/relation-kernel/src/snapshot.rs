@@ -453,7 +453,7 @@ impl Snapshot {
         relations: DispatchRelations,
         selector: &Value,
         args: &[Value],
-    ) -> Result<Vec<Value>, KernelError> {
+    ) -> Result<Arc<[Value]>, KernelError> {
         if let Some(methods) = self
             .dispatch_cache
             .get_positional(relations, selector, args)
@@ -467,8 +467,9 @@ impl Snapshot {
             selector.clone(),
             args,
         )?;
+        let methods = Arc::from(methods);
         self.dispatch_cache
-            .insert_positional(relations, selector, args, methods.clone());
+            .insert_positional(relations, selector, args, Arc::clone(&methods));
         Ok(methods)
     }
 
@@ -583,7 +584,7 @@ impl DispatchRead for Snapshot {
         relations: DispatchRelations,
         selector: &Value,
         args: &[Value],
-    ) -> Result<Option<Vec<Value>>, KernelError> {
+    ) -> Result<Option<Arc<[Value]>>, KernelError> {
         self.cached_applicable_positional_methods(relations, selector, args)
             .map(Some)
     }

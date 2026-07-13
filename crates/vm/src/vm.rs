@@ -542,7 +542,7 @@ impl DispatchRead for VmHostContext<'_, '_> {
         relations: DispatchRelations,
         selector: &Value,
         args: &[Value],
-    ) -> Result<Option<Vec<Value>>, mica_relation_kernel::KernelError> {
+    ) -> Result<Option<Arc<[Value]>>, mica_relation_kernel::KernelError> {
         let start = self.trace.start();
         let methods = match &self.transient {
             Some(TransientAccess::Exclusive(transient)) => {
@@ -564,7 +564,7 @@ impl DispatchRead for VmHostContext<'_, '_> {
             "applicable_positional_methods",
             selector,
             args.len(),
-            methods.as_ref().map_or(0, Vec::len),
+            methods.as_ref().map_or(0, |methods| methods.len()),
             start,
         );
         Ok(methods)
@@ -1758,7 +1758,8 @@ impl RegisterVm {
                     selector.clone(),
                     &args,
                 )?;
-                let method = select_authorized_method(host.authority(), selector.clone(), methods)?;
+                let method =
+                    select_authorized_method(host.authority(), selector.clone(), &methods)?;
                 let program_id = method_program_id(host, spec.program_relation, &method)?
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
                         method: method.clone(),
@@ -1791,7 +1792,8 @@ impl RegisterVm {
                     selector.clone(),
                     &args,
                 )?;
-                let method = select_authorized_method(host.authority(), selector.clone(), methods)?;
+                let method =
+                    select_authorized_method(host.authority(), selector.clone(), &methods)?;
                 let program_id = method_program_id(host, spec.program_relation, &method)?
                     .ok_or_else(|| RuntimeError::MissingMethodProgram {
                         method: method.clone(),
@@ -2865,7 +2867,7 @@ fn normalize_spawn_roles(roles: &mut [(Symbol, Value)]) {
 fn select_authorized_method(
     authority: &AuthorityContext,
     selector: Value,
-    methods: Vec<Value>,
+    methods: &[Value],
 ) -> Result<Value, RuntimeError> {
     let mut selected = None;
     let mut ambiguous = Vec::new();
@@ -2873,11 +2875,11 @@ fn select_authorized_method(
     let mut unauthorized_count = 0usize;
     for method in methods {
         candidate_count += 1;
-        if !authority.can_invoke_method(&method) {
+        if !authority.can_invoke_method(method) {
             unauthorized_count += 1;
             continue;
         }
-        if let Some(previous) = selected.replace(method) {
+        if let Some(previous) = selected.replace(method.clone()) {
             if ambiguous.is_empty() {
                 ambiguous.push(previous);
             }

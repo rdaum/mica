@@ -20,6 +20,7 @@ use crate::{
 };
 use mica_var::{Identity, Value};
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Default)]
 pub struct TransientStore {
@@ -455,6 +456,20 @@ impl DispatchRead for ComposedTransactionRead<'_, '_> {
             return Ok(None);
         }
         self.tx.cached_method_program(relation, method).map(Some)
+    }
+
+    fn cached_applicable_positional_methods(
+        &self,
+        relations: DispatchRelations,
+        selector: &Value,
+        args: &[Value],
+    ) -> Result<Option<Arc<[Value]>>, KernelError> {
+        if self.dispatch_cache_is_transient(relations) {
+            return Ok(None);
+        }
+        self.tx
+            .cached_applicable_positional_methods(relations, selector, args)
+            .map(Some)
     }
 }
 
