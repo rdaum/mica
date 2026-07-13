@@ -22,8 +22,8 @@ use std::sync::Arc;
 use mica_var::abi::{borrowed_value_bits, value_is_immediate};
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
-    CompiledIntegerLoop, CompiledNaturalLoop, IntegerComparison, NaturalLoopInstruction,
-    NaturalLoopPlan,
+    CompiledFloatLoop, CompiledIntegerLoop, CompiledNaturalLoop, IntegerComparison,
+    NaturalLoopInstruction, NaturalLoopPlan,
 };
 #[cfg(feature = "cranelift")]
 use std::collections::BTreeSet;
@@ -801,6 +801,7 @@ impl Debug for NaturalIntegerLoopSite {
 struct NativeProgramCacheState {
     integer_loop_sites: Box<[IntegerLoopSite]>,
     natural_integer_loop_sites: Box<[NaturalIntegerLoopSite]>,
+    float_loop: OnceLock<Result<Arc<CompiledFloatLoop>, Box<str>>>,
     integer_loop: OnceLock<Result<Arc<CompiledIntegerLoop>, Box<str>>>,
     compile_attempts: AtomicUsize,
 }
@@ -826,6 +827,7 @@ impl NativeProgramCache {
         Some(Self(Arc::new(NativeProgramCacheState {
             integer_loop_sites,
             natural_integer_loop_sites,
+            float_loop: OnceLock::new(),
             integer_loop: OnceLock::new(),
             compile_attempts: AtomicUsize::new(0),
         })))
@@ -851,6 +853,26 @@ impl NativeProgramCache {
             .get_or_init(|| {
                 self.0.compile_attempts.fetch_add(1, Ordering::Relaxed);
                 CompiledIntegerLoop::compile()
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string().into_boxed_str())
+            })
+            .as_ref()
+            .ok()
+            .cloned()
+    }
+
+    fn compiled_float_loop(&self, compile: bool) -> Option<Arc<CompiledFloatLoop>> {
+        if let Some(compiled) = self.0.float_loop.get() {
+            return compiled.as_ref().ok().cloned();
+        }
+        if !compile {
+            return None;
+        }
+        self.0
+            .float_loop
+            .get_or_init(|| {
+                self.0.compile_attempts.fetch_add(1, Ordering::Relaxed);
+                CompiledFloatLoop::compile()
                     .map(Arc::new)
                     .map_err(|error| error.to_string().into_boxed_str())
             })
@@ -1466,6 +1488,11 @@ impl Program {
     #[cfg(feature = "cranelift")]
     pub(crate) fn compiled_integer_loop(&self, compile: bool) -> Option<Arc<CompiledIntegerLoop>> {
         self.native_cache.as_ref()?.compiled_integer_loop(compile)
+    }
+
+    #[cfg(feature = "cranelift")]
+    pub(crate) fn compiled_float_loop(&self, compile: bool) -> Option<Arc<CompiledFloatLoop>> {
+        self.native_cache.as_ref()?.compiled_float_loop(compile)
     }
 
     #[cfg(feature = "cranelift")]

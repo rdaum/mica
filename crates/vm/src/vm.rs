@@ -37,7 +37,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "cranelift")]
-use mica_vm_cranelift::{IntegerComparison, IntegerLoopOutcome, NaturalLoopOutcome};
+use mica_vm_cranelift::{
+    FloatLoopOutcome, IntegerComparison, IntegerLoopOutcome, NaturalLoopOutcome,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
@@ -1344,6 +1346,12 @@ impl RegisterVm {
                     {
                         return Ok(step);
                     }
+                    if target < ip
+                        && let Some(step) =
+                            self.execute_native_float_loop(program, ip, remaining_budget)
+                    {
+                        return Ok(step);
+                    }
                     if let Some(step) =
                         self.execute_native_natural_integer_loop(program, ip, remaining_budget)
                     {
@@ -1425,6 +1433,63 @@ impl RegisterVm {
                 iterations,
             } => (current, condition, iterations, site.entry_ip),
             IntegerLoopOutcome::SideExit => return None,
+        };
+        let iterations = usize::try_from(iterations).ok()?;
+        let native_instructions = iterations.checked_mul(3)?;
+        let instructions = native_instructions.checked_add(1)?;
+        if instructions > remaining_budget {
+            return None;
+        }
+        let program_index = self.current_frame_unchecked().program;
+        self.write_register_unchecked(site.current, current);
+        self.write_register_unchecked(site.condition, condition);
+        self.current_frame_mut_unchecked().ip = next_ip;
+        Some(VmStep {
+            response: VmHostResponse::Continue,
+            instructions,
+            native_trace: Some(NativeBudgetTrace {
+                program: program_index,
+                ip: site.entry_ip,
+                instructions: native_instructions,
+            }),
+        })
+    }
+
+    #[cfg(feature = "cranelift")]
+    fn execute_native_float_loop(
+        &mut self,
+        program: &Program,
+        branch_ip: usize,
+        remaining_budget: usize,
+    ) -> Option<VmStep> {
+        let max_iterations = remaining_budget.checked_sub(1)? / 3;
+        if max_iterations == 0 {
+            return None;
+        }
+        let site = program.integer_loop_site(branch_ip)?;
+        let current = Value::float(self.read_register_unchecked(site.current).as_float()?).ok()?;
+        let step = Value::float(self.read_register_unchecked(site.step).as_float()?).ok()?;
+        let limit = Value::float(self.read_register_unchecked(site.limit).as_float()?).ok()?;
+        let compile = native_float_loop_is_profitable(
+            current.as_float()?,
+            step.as_float()?,
+            limit.as_float()?,
+            max_iterations,
+        );
+        let compiled = program.compiled_float_loop(compile)?;
+        let outcome = compiled.run(&current, &step, &limit, u64::try_from(max_iterations).ok()?);
+        let (current, condition, iterations, next_ip) = match outcome {
+            FloatLoopOutcome::Complete {
+                current,
+                condition,
+                iterations,
+            } => (current, condition, iterations, site.exit_ip),
+            FloatLoopOutcome::BudgetExhausted {
+                current,
+                condition,
+                iterations,
+            } => (current, condition, iterations, site.entry_ip),
+            FloatLoopOutcome::SideExit => return None,
         };
         let iterations = usize::try_from(iterations).ok()?;
         let native_instructions = iterations.checked_mul(3)?;
@@ -2827,6 +2892,16 @@ fn native_integer_loop_is_profitable(
     let step = i128::from(step);
     let iterations = (distance + step - 1) / step;
     iterations >= MIN_NATIVE_INTEGER_LOOP_ITERATIONS as i128
+}
+
+#[cfg(feature = "cranelift")]
+fn native_float_loop_is_profitable(
+    current: f32,
+    step: f32,
+    limit: f32,
+    max_iterations: usize,
+) -> bool {
+    max_iterations >= MIN_NATIVE_INTEGER_LOOP_ITERATIONS && step > 0.0 && current < limit
 }
 
 #[cfg(feature = "cranelift")]

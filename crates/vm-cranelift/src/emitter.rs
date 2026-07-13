@@ -11,12 +11,17 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use cranelift_codegen::ir::{InstBuilder, Value as CraneliftValue, condcodes::IntCC, types};
+use cranelift_codegen::ir::{
+    InstBuilder, MemFlagsData, Value as CraneliftValue,
+    condcodes::{FloatCC, IntCC},
+    immediates::Ieee32,
+    types,
+};
 use cranelift_frontend::FunctionBuilder;
 use mica_var::abi::{
-    VALUE_BOOL_TAG, VALUE_CAPABILITY_TAG, VALUE_FUNCTION_TAG, VALUE_INT_MAX, VALUE_INT_MIN,
-    VALUE_INT_TAG, VALUE_LIST_TAG, VALUE_NOTHING_TAG, VALUE_PAYLOAD_MASK, VALUE_STRING_TAG,
-    VALUE_TAG_SHIFT,
+    VALUE_BOOL_TAG, VALUE_CAPABILITY_TAG, VALUE_FLOAT_TAG, VALUE_FUNCTION_TAG, VALUE_INT_MAX,
+    VALUE_INT_MIN, VALUE_INT_TAG, VALUE_LIST_TAG, VALUE_NOTHING_TAG, VALUE_PAYLOAD_MASK,
+    VALUE_STRING_TAG, VALUE_TAG_SHIFT,
 };
 
 /// A generated operation result and a predicate indicating whether it completed
@@ -50,6 +55,30 @@ impl IntegerComparison {
     }
 }
 
+/// Language comparison operations supported by the native binary32 path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FloatComparison {
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+}
+
+impl FloatComparison {
+    const fn condition_code(self) -> FloatCC {
+        match self {
+            Self::Equal => FloatCC::Equal,
+            Self::NotEqual => FloatCC::NotEqual,
+            Self::LessThan => FloatCC::LessThan,
+            Self::LessThanOrEqual => FloatCC::LessThanOrEqual,
+            Self::GreaterThan => FloatCC::GreaterThan,
+            Self::GreaterThanOrEqual => FloatCC::GreaterThanOrEqual,
+        }
+    }
+}
+
 impl EmittedValue {
     pub const fn word(self) -> CraneliftValue {
         self.word
@@ -78,6 +107,16 @@ impl ValueEmitter {
         builder
             .ins()
             .icmp_imm(IntCC::Equal, tag, i64::from(VALUE_INT_TAG))
+    }
+
+    pub fn emit_is_float(
+        builder: &mut FunctionBuilder<'_>,
+        word: CraneliftValue,
+    ) -> CraneliftValue {
+        let tag = Self::emit_tag(builder, word);
+        builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag, i64::from(VALUE_FLOAT_TAG))
     }
 
     pub fn emit_is_immediate(
@@ -125,6 +164,163 @@ impl ValueEmitter {
     ) -> CraneliftValue {
         let shifted = builder.ins().ishl_imm(word, 64 - VALUE_TAG_SHIFT as i64);
         builder.ins().sshr_imm(shifted, 64 - VALUE_TAG_SHIFT as i64)
+    }
+
+    /// Unboxes the low binary32 payload bits as an `F32`. Callers must first
+    /// prove that the word has the float tag.
+    pub fn emit_unbox_float(
+        builder: &mut FunctionBuilder<'_>,
+        word: CraneliftValue,
+    ) -> CraneliftValue {
+        let payload = Self::emit_payload(builder, word);
+        let bits = builder.ins().ireduce(types::I32, payload);
+        builder.ins().bitcast(types::F32, MemFlagsData::new(), bits)
+    }
+
+    /// Packs an `F32` result into a canonical finite Mica float word.
+    ///
+    /// The returned fast predicate rejects infinity and NaN. Negative zero is
+    /// selected to positive zero before its bits enter the value word.
+    pub fn emit_pack_checked_float(
+        builder: &mut FunctionBuilder<'_>,
+        value: CraneliftValue,
+    ) -> EmittedValue {
+        let zero = builder.ins().f32const(Ieee32::with_bits(0));
+        let is_zero = builder.ins().fcmp(FloatCC::Equal, value, zero);
+        let value = builder.ins().select(is_zero, zero, value);
+        let bits = builder
+            .ins()
+            .bitcast(types::I32, MemFlagsData::new(), value);
+        let magnitude_mask = builder.ins().iconst(types::I32, 0x7fff_ffff);
+        let magnitude = builder.ins().band(bits, magnitude_mask);
+        let is_finite = builder.ins().icmp_imm(
+            IntCC::UnsignedLessThan,
+            magnitude,
+            i64::from(0x7f80_0000u32),
+        );
+        let payload = builder.ins().uextend(types::I64, bits);
+
+        EmittedValue {
+            word: Self::emit_pack(builder, VALUE_FLOAT_TAG, payload),
+            is_fast: is_finite,
+        }
+    }
+
+    pub fn emit_checked_float_add(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        let left_is_float = Self::emit_is_float(builder, left);
+        let right_is_float = Self::emit_is_float(builder, right);
+        let left = Self::emit_unbox_float(builder, left);
+        let right = Self::emit_unbox_float(builder, right);
+        let value = builder.ins().fadd(left, right);
+        let result = Self::emit_pack_checked_float(builder, value);
+        Self::emit_float_result(builder, left_is_float, right_is_float, result, None)
+    }
+
+    pub fn emit_checked_float_sub(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        let left_is_float = Self::emit_is_float(builder, left);
+        let right_is_float = Self::emit_is_float(builder, right);
+        let left = Self::emit_unbox_float(builder, left);
+        let right = Self::emit_unbox_float(builder, right);
+        let value = builder.ins().fsub(left, right);
+        let result = Self::emit_pack_checked_float(builder, value);
+        Self::emit_float_result(builder, left_is_float, right_is_float, result, None)
+    }
+
+    pub fn emit_checked_float_mul(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        let left_is_float = Self::emit_is_float(builder, left);
+        let right_is_float = Self::emit_is_float(builder, right);
+        let left = Self::emit_unbox_float(builder, left);
+        let right = Self::emit_unbox_float(builder, right);
+        let value = builder.ins().fmul(left, right);
+        let result = Self::emit_pack_checked_float(builder, value);
+        Self::emit_float_result(builder, left_is_float, right_is_float, result, None)
+    }
+
+    pub fn emit_checked_float_div(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        let left_is_float = Self::emit_is_float(builder, left);
+        let right_is_float = Self::emit_is_float(builder, right);
+        let left = Self::emit_unbox_float(builder, left);
+        let right = Self::emit_unbox_float(builder, right);
+        let zero = builder.ins().f32const(Ieee32::with_bits(0));
+        let divisor_is_nonzero = builder.ins().fcmp(FloatCC::NotEqual, right, zero);
+        let one = builder.ins().f32const(Ieee32::with_bits(1.0f32.to_bits()));
+        let safe_right = builder.ins().select(divisor_is_nonzero, right, one);
+        let value = builder.ins().fdiv(left, safe_right);
+        let result = Self::emit_pack_checked_float(builder, value);
+        Self::emit_float_result(
+            builder,
+            left_is_float,
+            right_is_float,
+            result,
+            Some(divisor_is_nonzero),
+        )
+    }
+
+    pub fn emit_checked_float_neg(
+        builder: &mut FunctionBuilder<'_>,
+        value: CraneliftValue,
+    ) -> EmittedValue {
+        let is_float = Self::emit_is_float(builder, value);
+        let value = Self::emit_unbox_float(builder, value);
+        let value = builder.ins().fneg(value);
+        let result = Self::emit_pack_checked_float(builder, value);
+        EmittedValue {
+            word: result.word(),
+            is_fast: builder.ins().band(is_float, result.is_fast()),
+        }
+    }
+
+    pub fn emit_checked_float_compare(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+        comparison: FloatComparison,
+    ) -> EmittedValue {
+        let left_is_float = Self::emit_is_float(builder, left);
+        let right_is_float = Self::emit_is_float(builder, right);
+        let is_fast = builder.ins().band(left_is_float, right_is_float);
+        let left = Self::emit_unbox_float(builder, left);
+        let right = Self::emit_unbox_float(builder, right);
+        let result = builder.ins().fcmp(comparison.condition_code(), left, right);
+        EmittedValue {
+            word: Self::emit_bool(builder, result),
+            is_fast,
+        }
+    }
+
+    fn emit_float_result(
+        builder: &mut FunctionBuilder<'_>,
+        left_is_float: CraneliftValue,
+        right_is_float: CraneliftValue,
+        result: EmittedValue,
+        extra_guard: Option<CraneliftValue>,
+    ) -> EmittedValue {
+        let is_fast = builder.ins().band(left_is_float, right_is_float);
+        let is_fast = builder.ins().band(is_fast, result.is_fast());
+        let is_fast = match extra_guard {
+            Some(guard) => builder.ins().band(is_fast, guard),
+            None => is_fast,
+        };
+        EmittedValue {
+            word: result.word(),
+            is_fast,
+        }
     }
 
     pub fn emit_checked_int_add(
@@ -357,7 +553,7 @@ impl ValueEmitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmittedValue, IntegerComparison, ValueEmitter};
+    use super::{EmittedValue, FloatComparison, IntegerComparison, ValueEmitter};
     use cranelift_codegen::Context;
     use cranelift_codegen::ir::{
         AbiParam, InstBuilder, MemFlagsData, Signature, Value as CraneliftValue, types,
@@ -482,7 +678,10 @@ mod tests {
             probe.run(&Value::int(VALUE_INT_MAX).unwrap(), &Value::int(1).unwrap(),),
             None,
         );
-        assert_eq!(probe.run(&Value::float(1.0), &Value::int(1).unwrap()), None);
+        assert_eq!(
+            probe.run(&Value::float(1.0).unwrap(), &Value::int(1).unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -504,7 +703,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            subtract.run(&Value::float(1.0), &Value::int(1).unwrap()),
+            subtract.run(&Value::float(1.0).unwrap(), &Value::int(1).unwrap()),
             None,
         );
     }
@@ -527,11 +726,11 @@ mod tests {
         let min = Value::int(VALUE_INT_MIN).unwrap();
         assert_eq!(divide.run(&min, &Value::int(-1).unwrap()), None);
         assert_eq!(
-            divide.run(&Value::float(6.0), &Value::int(3).unwrap()),
+            divide.run(&Value::float(6.0).unwrap(), &Value::int(3).unwrap()),
             None,
         );
         assert_eq!(
-            remainder.run(&Value::float(6.0), &Value::int(3).unwrap()),
+            remainder.run(&Value::float(6.0).unwrap(), &Value::int(3).unwrap()),
             None,
         );
     }
@@ -544,7 +743,98 @@ mod tests {
             let value = Value::int(value).unwrap();
             assert_eq!(negate.run(&value, &Value::nothing()), value.checked_neg());
         }
-        assert_eq!(negate.run(&Value::float(1.0), &Value::nothing()), None,);
+        assert_eq!(
+            negate.run(&Value::float(1.0).unwrap(), &Value::nothing()),
+            None,
+        );
+    }
+
+    #[test]
+    fn emitted_checked_float_arithmetic_matches_value_arithmetic() {
+        let add = Probe::compile(ValueEmitter::emit_checked_float_add);
+        let subtract = Probe::compile(ValueEmitter::emit_checked_float_sub);
+        let multiply = Probe::compile(ValueEmitter::emit_checked_float_mul);
+        let divide = Probe::compile(ValueEmitter::emit_checked_float_div);
+
+        for left in [-31.5f32, -1.0, -0.0, 0.0, 0.1, 1.5, 31.5] {
+            for right in [-3.0f32, -0.5, 0.5, 2.0, 3.0] {
+                let left = Value::float(left).unwrap();
+                let right = Value::float(right).unwrap();
+                assert_eq!(add.run(&left, &right), left.checked_add(&right));
+                assert_eq!(subtract.run(&left, &right), left.checked_sub(&right));
+                assert_eq!(multiply.run(&left, &right), left.checked_mul(&right));
+                assert_eq!(divide.run(&left, &right), left.checked_div(&right));
+            }
+        }
+
+        let max = Value::float(f32::MAX).unwrap();
+        assert_eq!(multiply.run(&max, &max), None);
+        assert_eq!(
+            divide.run(&Value::float(1.0).unwrap(), &Value::float(0.0).unwrap()),
+            None,
+        );
+        assert_eq!(
+            add.run(&Value::int(1).unwrap(), &Value::float(1.0).unwrap()),
+            None,
+        );
+    }
+
+    #[test]
+    fn emitted_checked_float_negation_canonicalizes_zero() {
+        let negate = Probe::compile(|builder, value, _| {
+            ValueEmitter::emit_checked_float_neg(builder, value)
+        });
+        for value in [-31.5f32, -0.0, 0.0, 0.1, 31.5] {
+            let value = Value::float(value).unwrap();
+            assert_eq!(negate.run(&value, &Value::nothing()), value.checked_neg());
+        }
+        assert_eq!(
+            negate
+                .run(&Value::float(0.0).unwrap(), &Value::nothing())
+                .unwrap()
+                .as_float()
+                .unwrap()
+                .to_bits(),
+            0,
+        );
+        assert_eq!(negate.run(&Value::int(1).unwrap(), &Value::nothing()), None);
+    }
+
+    #[test]
+    fn emitted_float_comparisons_match_language_numeric_comparison() {
+        let comparisons = [
+            FloatComparison::Equal,
+            FloatComparison::NotEqual,
+            FloatComparison::LessThan,
+            FloatComparison::LessThanOrEqual,
+            FloatComparison::GreaterThan,
+            FloatComparison::GreaterThanOrEqual,
+        ];
+        for comparison in comparisons {
+            let probe = Probe::compile(|builder, left, right| {
+                ValueEmitter::emit_checked_float_compare(builder, left, right, comparison)
+            });
+            for left in [-31.5f32, -0.0, 0.0, 0.1, 1.5, 31.5] {
+                for right in [-3.0f32, -0.0, 0.5, 2.0, 3.0] {
+                    let left = Value::float(left).unwrap();
+                    let right = Value::float(right).unwrap();
+                    let ordering = mica_var::language_cmp::numeric_cmp(&left, &right);
+                    let expected = match comparison {
+                        FloatComparison::Equal => ordering.is_eq(),
+                        FloatComparison::NotEqual => !ordering.is_eq(),
+                        FloatComparison::LessThan => ordering.is_lt(),
+                        FloatComparison::LessThanOrEqual => ordering.is_le(),
+                        FloatComparison::GreaterThan => ordering.is_gt(),
+                        FloatComparison::GreaterThanOrEqual => ordering.is_ge(),
+                    };
+                    assert_eq!(probe.run(&left, &right), Some(Value::bool(expected)));
+                }
+            }
+            assert_eq!(
+                probe.run(&Value::int(1).unwrap(), &Value::float(1.0).unwrap()),
+                None,
+            );
+        }
     }
 
     #[test]
@@ -556,7 +846,7 @@ mod tests {
             Value::bool(true),
             Value::int(-1).unwrap(),
             Value::int(0).unwrap(),
-            Value::float(1.5),
+            Value::float(1.5).unwrap(),
             Value::identity_raw(1).unwrap(),
             Value::function_raw(1).unwrap(),
         ];
@@ -597,7 +887,10 @@ mod tests {
                     assert_eq!(probe.run(&left, &right), Some(Value::bool(expected)));
                 }
             }
-            assert_eq!(probe.run(&Value::float(1.0), &Value::int(1).unwrap()), None,);
+            assert_eq!(
+                probe.run(&Value::float(1.0).unwrap(), &Value::int(1).unwrap()),
+                None,
+            );
         }
     }
 
@@ -609,7 +902,7 @@ mod tests {
             (Value::bool(false), false),
             (Value::bool(true), true),
             (Value::int(0).unwrap(), true),
-            (Value::float(0.0), true),
+            (Value::float(0.0).unwrap(), true),
             (Value::string(""), true),
         ];
         for (value, expected) in cases {
@@ -629,7 +922,7 @@ mod tests {
             (Value::bool(false), true),
             (Value::bool(true), false),
             (Value::int(0).unwrap(), false),
-            (Value::float(0.0), false),
+            (Value::float(0.0).unwrap(), false),
             (Value::string(""), false),
         ];
         for (value, expected) in cases {

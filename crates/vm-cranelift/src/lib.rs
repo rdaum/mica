@@ -14,10 +14,12 @@
 //! Cranelift code generation for Mica's process-local value representation.
 
 mod emitter;
+mod float_loop;
 mod integer_loop;
 mod natural_loop;
 
-pub use emitter::{EmittedValue, IntegerComparison, ValueEmitter};
+pub use emitter::{EmittedValue, FloatComparison, IntegerComparison, ValueEmitter};
+pub use float_loop::{CompiledFloatLoop, FloatLoopError, FloatLoopOutcome};
 pub use integer_loop::{CompiledIntegerLoop, IntegerLoopError, IntegerLoopOutcome};
 pub use natural_loop::{
     CompiledNaturalLoop, NaturalLoopError, NaturalLoopInstruction, NaturalLoopOutcome,
