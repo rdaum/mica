@@ -63,9 +63,8 @@ impl RequestFactScope {
         let Some(tuples) = self.tuples.take() else {
             return Ok(0);
         };
-        let result = self.driver.retract_volatile_tuples_named(tuples);
-        self.driver.close_endpoint(self.endpoint);
-        result
+        self.driver
+            .close_endpoint_and_retract_volatile_tuples_named(self.endpoint, tuples)
     }
 }
 
@@ -211,15 +210,6 @@ pub(crate) async fn handle_in_process_request(
         Ok(endpoint) => endpoint,
         Err(error) => return internal_error_response(error, close),
     };
-    if let Err(error) = host.driver.open_endpoint_with_context(
-        request_endpoint,
-        Some(binding.principal),
-        effective_actor,
-        Symbol::intern("http-request"),
-    ) {
-        return internal_error_response(format_driver_error(&host.driver, error), close);
-    }
-
     let request_facts = request_facts(request_id, binding.principal, effective_actor, request);
     let request_tuples = request_facts
         .iter()
@@ -227,9 +217,14 @@ pub(crate) async fn handle_in_process_request(
         .collect::<Vec<_>>();
     if let Err(error) = host
         .driver
-        .assert_volatile_tuples_named(request_tuples.clone())
+        .open_endpoint_with_context_and_volatile_tuples_named(
+            request_endpoint,
+            Some(binding.principal),
+            effective_actor,
+            Symbol::intern("http-request"),
+            request_tuples.clone(),
+        )
     {
-        host.driver.close_endpoint(request_endpoint);
         return internal_error_response(format_driver_error(&host.driver, error), close);
     }
     let request_scope =

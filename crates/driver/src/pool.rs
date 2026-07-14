@@ -466,8 +466,35 @@ impl CompioTaskDriver {
             .map_err(DriverError::Source)
     }
 
+    pub fn open_endpoint_with_context_and_volatile_tuples_named(
+        &self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, DriverError> {
+        self.inner
+            .runner
+            .open_endpoint_with_context_and_volatile_tuples_named(
+                endpoint, principal, actor, protocol, tuples,
+            )
+            .map_err(DriverError::Source)
+    }
+
     pub fn close_endpoint(&self, endpoint: Identity) -> usize {
         self.inner.runner.close_endpoint(endpoint)
+    }
+
+    pub fn close_endpoint_and_retract_volatile_tuples_named(
+        &self,
+        endpoint: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, DriverError> {
+        self.inner
+            .runner
+            .close_endpoint_and_retract_volatile_tuples_named(endpoint, tuples)
+            .map_err(DriverError::Source)
     }
 
     pub fn assert_volatile_tuples_named(

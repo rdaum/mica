@@ -654,8 +654,33 @@ impl SourceRunner {
             .map_err(SourceTaskError::from)
     }
 
+    pub fn open_endpoint_with_context_and_volatile_tuples_named(
+        &mut self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        let tuples = volatile_tuple_relations_required(self.task_manager.kernel(), tuples)?;
+        self.task_manager
+            .open_endpoint_with_context_and_rows(endpoint, principal, actor, protocol, tuples)
+            .map_err(SourceTaskError::from)
+    }
+
     pub fn close_endpoint(&mut self, endpoint: Identity) -> usize {
         self.task_manager.close_endpoint(endpoint)
+    }
+
+    pub fn close_endpoint_and_retract_volatile_tuples_named(
+        &mut self,
+        endpoint: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        let tuples = volatile_tuple_relations_required(self.task_manager.kernel(), tuples)?;
+        self.task_manager
+            .close_endpoint_with_rows(endpoint, tuples)
+            .map_err(SourceTaskError::from)
     }
 
     pub fn assert_volatile_tuples_named(
@@ -1585,8 +1610,33 @@ impl SharedSourceRunner {
             .map_err(SourceTaskError::from)
     }
 
+    pub fn open_endpoint_with_context_and_volatile_tuples_named(
+        &self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        let tuples = volatile_tuple_relations_required(self.task_manager.kernel(), tuples)?;
+        self.task_manager
+            .open_endpoint_with_context_and_rows(endpoint, principal, actor, protocol, tuples)
+            .map_err(SourceTaskError::from)
+    }
+
     pub fn close_endpoint(&self, endpoint: Identity) -> usize {
         self.task_manager.close_endpoint(endpoint)
+    }
+
+    pub fn close_endpoint_and_retract_volatile_tuples_named(
+        &self,
+        endpoint: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        let tuples = volatile_tuple_relations_required(self.task_manager.kernel(), tuples)?;
+        self.task_manager
+            .close_endpoint_with_rows(endpoint, tuples)
+            .map_err(SourceTaskError::from)
     }
 
     pub fn assert_volatile_tuples_named(

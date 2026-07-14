@@ -1,7 +1,7 @@
 use super::{
     AuthorityContext, CompileError, Emission, Instruction, Operand, Program, RuntimeError,
     SYSTEM_ENDPOINT, SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind, TaskError,
-    TaskManagerError, TaskOutcome,
+    TaskManagerError, TaskOutcome, endpoint_open_relation,
 };
 use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
 use super::{relation_name_relation, subject_fact_relation};
@@ -2957,15 +2957,27 @@ fn runner_endpoint_invocation_uses_principal_authority_without_actor() {
     let web = runner.actor_identity(Symbol::intern("web")).unwrap();
     let endpoint = Identity::new(0x00ee_0000_0000_0011).unwrap();
     let request = Identity::new(0x00eb_0000_0000_0011).unwrap();
-    runner
-        .open_endpoint_with_context(endpoint, Some(web), None, Symbol::intern("http-request"))
-        .unwrap();
-    runner
-        .assert_volatile_tuples_named(vec![(
-            Symbol::intern("RequestPath"),
-            Tuple::from([Value::identity(request), Value::string("/hello")]),
-        )])
-        .unwrap();
+    let request_fact = (
+        Symbol::intern("RequestPath"),
+        Tuple::from([Value::identity(request), Value::string("/hello")]),
+    );
+    let version = runner.task_manager.kernel().snapshot().version();
+    assert_eq!(
+        runner
+            .open_endpoint_with_context_and_volatile_tuples_named(
+                endpoint,
+                Some(web),
+                None,
+                Symbol::intern("http-request"),
+                vec![request_fact.clone()],
+            )
+            .unwrap(),
+        5
+    );
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version + 1
+    );
 
     let submitted = runner
         .submit_invocation_for_endpoint(
@@ -2982,12 +2994,13 @@ fn runner_endpoint_invocation_uses_principal_authority_without_actor() {
     ));
     assert_eq!(
         runner
-            .retract_volatile_tuples_named(vec![(
-                Symbol::intern("RequestPath"),
-                Tuple::from([Value::identity(request), Value::string("/hello")]),
-            )])
+            .close_endpoint_and_retract_volatile_tuples_named(endpoint, vec![request_fact])
             .unwrap(),
-        1
+        5
+    );
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version + 2
     );
 }
 
@@ -3068,6 +3081,34 @@ fn runner_volatile_host_fact_batches_are_atomic() {
             .unwrap()
             .render()
             .contains("{}")
+    );
+
+    let endpoint = Identity::new(0x00ee_0000_0000_0012).unwrap();
+    let rejected = runner
+        .open_endpoint_with_context_and_volatile_tuples_named(
+            endpoint,
+            None,
+            None,
+            Symbol::intern("test"),
+            vec![(
+                Symbol::intern("DurableFact"),
+                Tuple::from([Value::identity(request)]),
+            )],
+        )
+        .unwrap_err();
+    assert!(format!("{rejected:?}").contains("relation DurableFact is not volatile"));
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version + 2
+    );
+    assert!(
+        runner
+            .task_manager
+            .kernel()
+            .snapshot()
+            .scan(endpoint_open_relation(), &[Some(Value::identity(endpoint))])
+            .unwrap()
+            .is_empty()
     );
 }
 
