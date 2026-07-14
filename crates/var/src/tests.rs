@@ -13,9 +13,9 @@
 
 use crate::abi::{
     VALUE_ABI_VERSION, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG, VALUE_PAYLOAD_MASK,
-    VALUE_TAG_SHIFT, borrowed_value_bits, borrowed_value_numeric_eq, clone_value_bits,
-    drop_value_bits, from_owned_value_bits, into_owned_value_bits, pack_value, value_is_immediate,
-    value_payload, value_tag,
+    VALUE_TAG_SHIFT, borrowed_value_bits, borrowed_value_cmp, borrowed_value_numeric_eq,
+    clone_value_bits, drop_value_bits, from_owned_value_bits, into_owned_value_bits, pack_value,
+    value_is_immediate, value_payload, value_tag,
 };
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
@@ -25,6 +25,7 @@ use crate::{
     encode_value_segments, encode_value_segments_with_options, encode_value_to_sink,
     encode_value_with_options,
 };
+use std::cmp::Ordering;
 use std::mem::{align_of, size_of};
 
 #[test]
@@ -122,6 +123,36 @@ fn process_local_value_abi_compares_borrowed_words_without_taking_ownership() {
     assert_eq!(left.heap_strong_count(), Some(1));
     assert_eq!(equal.heap_strong_count(), Some(1));
     assert_eq!(different.heap_strong_count(), Some(1));
+}
+
+#[test]
+fn process_local_value_abi_orders_borrowed_words_without_taking_ownership() {
+    let alpha = Value::string("alpha");
+    let beta = Value::string("beta");
+    let list = Value::list([Value::int(1).unwrap()]);
+    let map = Value::map([(Value::string("key"), Value::int(1).unwrap())]);
+
+    assert_eq!(
+        unsafe { borrowed_value_cmp(borrowed_value_bits(&alpha), borrowed_value_bits(&beta)) },
+        Ordering::Less,
+    );
+    assert_eq!(
+        unsafe { borrowed_value_cmp(borrowed_value_bits(&list), borrowed_value_bits(&map)) },
+        list.cmp(&map),
+    );
+    assert_ne!(
+        unsafe {
+            borrowed_value_cmp(
+                borrowed_value_bits(&Value::int(1).unwrap()),
+                borrowed_value_bits(&Value::float(1.0).unwrap()),
+            )
+        },
+        Ordering::Equal,
+    );
+
+    for value in [&alpha, &beta, &list, &map] {
+        assert_eq!(value.heap_strong_count(), Some(1));
+    }
 }
 
 #[test]

@@ -34,3 +34,8 @@ required-features = ["cranelift"]
 name = "string_compare_spike"
 harness = false
 required-features = ["cranelift"]
+
+[[bench]]
+name = "map_index_spike"
+harness = false
+required-features = ["cranelift"]

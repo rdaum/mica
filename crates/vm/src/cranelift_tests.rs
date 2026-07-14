@@ -1890,7 +1890,7 @@ fn native_map_index_accepts_immediate_constant_operands() {
 }
 
 #[test]
-fn native_map_index_heap_key_side_exit_is_atomic_and_sticky() {
+fn native_map_index_heap_key_uses_helper_without_side_exit() {
     let key = Value::string("heap key");
     let program = natural_repeated_map_index_program(
         Value::map([(key.clone(), Value::int(7).unwrap())]),
@@ -1909,7 +1909,7 @@ fn native_map_index_heap_key_side_exit_is_atomic_and_sticky() {
     );
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
-    assert_eq!(native.native_side_exit_count(), 1);
+    assert_eq!(native.native_side_exit_count(), 0);
 }
 
 #[test]

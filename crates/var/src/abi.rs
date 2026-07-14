@@ -22,6 +22,7 @@ use crate::value::{
     TAG_FUNCTION, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE, TAG_SHIFT, TAG_STRING,
 };
 use crate::{Value, ValueKind};
+use std::cmp::Ordering;
 use std::mem::ManuallyDrop;
 
 pub const VALUE_ABI_VERSION: u32 = 1;
@@ -79,6 +80,19 @@ pub unsafe fn borrowed_value_numeric_eq(left: u64, right: u64) -> bool {
     let left = ManuallyDrop::new(Value(left));
     let right = ManuallyDrop::new(Value(right));
     crate::language_cmp::numeric_eq(&left, &right)
+}
+
+/// Compares two borrowed process-local value words using canonical `Value`
+/// ordering without taking ownership of either word.
+///
+/// # Safety
+///
+/// Both words must denote valid live `Value`s for [`VALUE_ABI_VERSION`] for the
+/// duration of this call.
+pub unsafe fn borrowed_value_cmp(left: u64, right: u64) -> Ordering {
+    let left = ManuallyDrop::new(Value(left));
+    let right = ManuallyDrop::new(Value(right));
+    left.cmp(&right)
 }
 
 pub fn into_owned_value_bits(value: Value) -> u64 {
