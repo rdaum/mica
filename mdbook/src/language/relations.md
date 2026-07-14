@@ -47,9 +47,9 @@ Create a relation with a builtin:
 make_relation(:LocatedIn, 2)
 ```
 
-Named relations are durable by default: their facts survive a process restart when the runtime
-uses persistent storage. A relation whose facts are useful only while the current process is
-running can instead be declared volatile:
+Named relations are durable by default: their facts survive a process restart when the runtime uses
+persistent storage. A relation whose facts are useful only while the current process is running can
+instead be declared volatile:
 
 ```mica
 make_relation(:ActiveRequest, 1, :volatile)

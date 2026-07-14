@@ -20,10 +20,10 @@ Current value families include:
 - bytes;
 - ephemeral capability values.
 
-The value layer is intentionally small and regular. Named relations can store any persistable
-value, and verbs can accept ordinary values, identities, frobs, or relation values through the same
-role-binding mechanism. The language should not force authors to turn every structured value into
-a durable object just so it can be passed around.
+The value layer is intentionally small and regular. Named relations can store any persistable value,
+and verbs can accept ordinary values, identities, frobs, or relation values through the same
+role-binding mechanism. The language should not force authors to turn every structured value into a
+durable object just so it can be passed around.
 
 Bytes and relation values have source literals and can cross task, storage, RPC, and IPC value
 boundaries. A relation value is persistable when every cell it contains is persistable. Capability
@@ -43,9 +43,9 @@ E_PERMISSION
 ```
 
 `nothing` is the source alias for the zero-column empty relation. It is not a separate value kind,
-and it does not mean SQL `NULL`. It is equal to `[] {}` and is falsey because it has no rows.
-The zero-column unit relation `[] {[]}` contains one empty row and is truthy. An empty relation with
-a heading, such as `[:thing] {}`, is also falsey but remains distinct from `nothing` because its
+and it does not mean SQL `NULL`. It is equal to `[] {}` and is falsey because it has no rows. The
+zero-column unit relation `[] {[]}` contains one empty row and is truthy. An empty relation with a
+heading, such as `[:thing] {}`, is also falsey but remains distinct from `nothing` because its
 heading is part of the value.
 
 Relation literals have a symbol heading followed by a set of rows:
@@ -60,8 +60,9 @@ Relation literals have a symbol heading followed by a set of rows:
 Each row must match the heading arity. Heading names must be unique. Relations have set semantics,
 so duplicate rows are removed and row order is not observable.
 
-At the JSON boundary, JSON `null` maps to `nothing` and `nothing` maps back to `null`. Other relation
-values have no implicit JSON representation and must be projected into lists or maps explicitly.
+At the JSON boundary, JSON `null` maps to `nothing` and `nothing` maps back to `null`. Other
+relation values have no implicit JSON representation and must be projected into lists or maps
+explicitly.
 
 Indexing is strict. Reading an absent list position, relation row, or map key raises `E_INDEX`;
 invalid index types and out-of-range indexed assignments raise the same error. Optional bindings
