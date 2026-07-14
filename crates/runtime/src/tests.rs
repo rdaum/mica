@@ -3627,6 +3627,74 @@ fn runner_one_rejects_ambiguous_relation_values() {
 }
 
 #[test]
+fn runner_applies_relation_algebra_to_query_values() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "make_relation(:Left, 2)\n\
+             make_relation(:Right, 2)\n\
+             make_relation(:More, 1)\n\
+             assert Left(1, \"one\")\n\
+             assert Left(2, \"two\")\n\
+             assert Right(1, true)\n\
+             assert Right(3, false)\n\
+             assert More(2)\n\
+             assert More(3)\n\
+             let left = Left(?id, ?name)\n\
+             let right = Right(?id, ?active)\n\
+             let more = More(?id)\n\
+             let joined = natural_join(left, right)\n\
+             return [joined, project(joined, :name), union(project(left, :id), more), difference(project(left, :id), more)]",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                query_relation(
+                    ["id", "name", "active"],
+                    [[
+                        Value::int(1).unwrap(),
+                        Value::string("one"),
+                        Value::bool(true),
+                    ]],
+                ),
+                query_relation(["name"], [[Value::string("one")]]),
+                query_relation(
+                    ["id"],
+                    [
+                        [Value::int(1).unwrap()],
+                        [Value::int(2).unwrap()],
+                        [Value::int(3).unwrap()],
+                    ],
+                ),
+                query_relation(["id"], [[Value::int(1).unwrap()]]),
+            ])
+    ));
+}
+
+#[test]
+fn runner_relation_project_supports_zero_columns_and_reports_unknown_columns() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Number, 1)").unwrap();
+    runner.run_source("assert Number(1)").unwrap();
+
+    let unit = runner
+        .run_source("return project(Number(?number))")
+        .unwrap();
+    assert!(matches!(
+        unit.outcome,
+        TaskOutcome::Complete { value, .. } if value == query_relation([], [[]])
+    ));
+
+    let error = runner
+        .run_source("return project(Number(?number), :missing)")
+        .unwrap_err();
+    assert!(format!("{error:?}").contains("relation has no column :missing"));
+}
+
+#[test]
 fn runner_one_and_dot_read_project_functional_relations() {
     let mut runner = SourceRunner::new_empty();
     runner.run_source("make_identity(:thing)").unwrap();
