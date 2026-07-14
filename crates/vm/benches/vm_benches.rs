@@ -15,11 +15,13 @@ mod fixtures;
 
 use fixtures::{
     ALTERNATING_BRANCH_LOOP_INSTRUCTIONS, BUILTIN_CALL_INSTRUCTIONS, BenchmarkHost,
-    INTEGER_LOOP_INSTRUCTIONS, MAX_CALL_DEPTH, PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS,
-    ProgramFixture, SCALAR_LOOP_INSTRUCTIONS, STATIC_CALL_INSTRUCTIONS,
-    alternating_branch_loop_fixture, builtin_call_fixture, float_add_loop_fixture,
-    float_multiply_loop_fixture, integer_loop_fixture, predictable_branch_loop_fixture,
-    scalar_symbol_loop_fixture, static_call_fixture,
+    INTEGER_LOOP_INSTRUCTIONS, MAX_CALL_DEPTH, NATURAL_FLOAT_SUM_INSTRUCTIONS,
+    NATURAL_FLOAT_TRANSFORM_INSTRUCTIONS, NATURAL_MIXED_SCALE_INSTRUCTIONS,
+    PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS, ProgramFixture, SCALAR_LOOP_INSTRUCTIONS,
+    STATIC_CALL_INSTRUCTIONS, alternating_branch_loop_fixture, builtin_call_fixture,
+    float_add_loop_fixture, float_multiply_loop_fixture, integer_loop_fixture,
+    natural_float_sum_fixture, natural_float_transform_fixture, natural_mixed_scale_fixture,
+    predictable_branch_loop_fixture, scalar_symbol_loop_fixture, static_call_fixture,
 };
 use mica_vm::{RegisterVm, VmHostResponse};
 use micromeasure::{
@@ -185,6 +187,55 @@ fn native_float_multiply_loop_cold(_ctx: &mut NoContext, chunk_size: usize, _chu
     }
 }
 
+fn interpreter_natural_float_sum_cold(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    measured_loop_cold(chunk_size, false, natural_float_sum_fixture);
+}
+
+fn cranelift_natural_float_sum_cold(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    measured_loop_cold(chunk_size, true, natural_float_sum_fixture);
+}
+
+fn interpreter_natural_float_transform_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, false, natural_float_transform_fixture);
+}
+
+fn cranelift_natural_float_transform_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, true, natural_float_transform_fixture);
+}
+
+fn interpreter_natural_mixed_scale_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, false, natural_mixed_scale_fixture);
+}
+
+fn cranelift_natural_mixed_scale_cold(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    measured_loop_cold(chunk_size, true, natural_mixed_scale_fixture);
+}
+
+fn measured_loop_cold(chunk_size: usize, native: bool, fixture: fn() -> ProgramFixture) {
+    let mut host = BenchmarkHost::default();
+    for _ in 0..chunk_size {
+        let fixture = fixture();
+        let response = if native {
+            execute_fixture_native(&fixture, &mut host)
+        } else {
+            execute_fixture_interpreted(&fixture, &mut host)
+        };
+        black_box(response);
+    }
+}
+
 fn float_loop(ctx: &mut FloatLoopContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
         let response = if ctx.native {
@@ -242,7 +293,7 @@ fn run_concurrent_integer_loops(
 benchmark_main!(
     BenchmarkMainOptions {
         filter_help: Some(
-            "all, integer, float, scalar, branch, call, builtin, or any benchmark name substring"
+            "all, integer, float, natural_numeric, scalar, branch, call, builtin, or any benchmark name substring"
                 .to_string()
         ),
         runtime: micromeasure::BenchmarkRuntimeOptions {
@@ -327,6 +378,74 @@ benchmark_main!(
                     "cranelift_float_multiply_loop_cold",
                     native_float_multiply_loop_cold,
                 );
+        });
+
+        runner.group::<MeasuredLoopContext>("natural numeric warm", |group| {
+            for (fixture, instructions, workload_name) in [
+                (
+                    natural_float_sum_fixture as fn() -> ProgramFixture,
+                    NATURAL_FLOAT_SUM_INSTRUCTIONS,
+                    "float_sum",
+                ),
+                (
+                    natural_float_transform_fixture as fn() -> ProgramFixture,
+                    NATURAL_FLOAT_TRANSFORM_INSTRUCTIONS,
+                    "float_transform",
+                ),
+                (
+                    natural_mixed_scale_fixture as fn() -> ProgramFixture,
+                    NATURAL_MIXED_SCALE_INSTRUCTIONS,
+                    "mixed_scale",
+                ),
+            ] {
+                for (backend, native) in [("interpreter", false), ("cranelift", true)] {
+                    let factory = move || MeasuredLoopContext {
+                        fixture: fixture(),
+                        host: BenchmarkHost::default(),
+                        native,
+                    };
+                    group
+                        .throughput(Throughput::per_operation(
+                            instructions,
+                            "bytecode_instruction",
+                        ))
+                        .factory(&factory)
+                        .bench(&format!("{backend}_natural_numeric_{workload_name}"), measured_loop);
+                }
+            }
+        });
+
+        runner.group::<NoContext>("natural numeric cold", |group| {
+            for (name, bench) in [
+                (
+                    "interpreter_natural_numeric_float_sum_cold",
+                    interpreter_natural_float_sum_cold as fn(&mut NoContext, usize, usize),
+                ),
+                (
+                    "cranelift_natural_numeric_float_sum_cold",
+                    cranelift_natural_float_sum_cold,
+                ),
+                (
+                    "interpreter_natural_numeric_float_transform_cold",
+                    interpreter_natural_float_transform_cold,
+                ),
+                (
+                    "cranelift_natural_numeric_float_transform_cold",
+                    cranelift_natural_float_transform_cold,
+                ),
+                (
+                    "interpreter_natural_numeric_mixed_scale_cold",
+                    interpreter_natural_mixed_scale_cold,
+                ),
+                (
+                    "cranelift_natural_numeric_mixed_scale_cold",
+                    cranelift_natural_mixed_scale_cold,
+                ),
+            ] {
+                group
+                    .throughput(Throughput::per_operation(1, "task"))
+                    .bench(name, bench);
+            }
         });
 
         runner.group::<MeasuredLoopContext>("scalar", |group| {
@@ -519,6 +638,51 @@ benchmark_main!(
                         .metadata("threads", CONCURRENT_THREADS.to_string())
                         .factory(&four)
                         .bench(four_name, &four_threads);
+                }
+            }
+        });
+
+        runner.concurrent_group::<ConcurrentLoopContext>("natural numeric concurrent", |group| {
+            for (fixture, workload_name) in [
+                (
+                    natural_float_sum_fixture as fn() -> ProgramFixture,
+                    "float_sum",
+                ),
+                (
+                    natural_float_transform_fixture as fn() -> ProgramFixture,
+                    "float_transform",
+                ),
+                (
+                    natural_mixed_scale_fixture as fn() -> ProgramFixture,
+                    "mixed_scale",
+                ),
+            ] {
+                for (backend, native) in [("interpreter", false), ("cranelift", true)] {
+                    for (threads, workers) in [
+                        (1, &one_thread[..]),
+                        (CONCURRENT_THREADS, &four_threads[..]),
+                    ] {
+                        let factory = move |_| {
+                            let fixture = fixture();
+                            ConcurrentLoopContext {
+                                instruction_count: fixture.instruction_count,
+                                fixture,
+                                native,
+                            }
+                        };
+                        group
+                            .sample_duration(Duration::from_millis(50))
+                            .throughput(Throughput::per_operation(1, "bytecode_instruction"))
+                            .metadata("backend", backend)
+                            .metadata("threads", threads.to_string())
+                            .factory(&factory)
+                            .bench(
+                                &format!(
+                                    "{backend}_natural_numeric_{workload_name}_{threads}_threads"
+                                ),
+                                workers,
+                            );
+                    }
                 }
             }
         });

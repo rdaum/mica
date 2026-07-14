@@ -787,7 +787,7 @@ impl CompiledNaturalLoop {
             }
             NaturalLoopInstruction::Negate { dst, src } => {
                 let value = Self::load_slot(builder, scratch, src);
-                let result = ValueEmitter::emit_checked_int_neg(builder, value);
+                let result = ValueEmitter::emit_checked_numeric_neg(builder, value);
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }
@@ -800,21 +800,21 @@ impl CompiledNaturalLoop {
             NaturalLoopInstruction::Add { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
-                let result = ValueEmitter::emit_checked_int_add(builder, left, right);
+                let result = ValueEmitter::emit_checked_numeric_add(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Subtract { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
-                let result = ValueEmitter::emit_checked_int_sub(builder, left, right);
+                let result = ValueEmitter::emit_checked_numeric_sub(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Multiply { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
-                let result = ValueEmitter::emit_checked_int_mul(builder, left, right);
+                let result = ValueEmitter::emit_checked_numeric_mul(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }

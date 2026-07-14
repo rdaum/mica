@@ -145,6 +145,13 @@ impl EmittedValue {
 /// Emits operations over the process-local [`mica_var::Value`] word format.
 pub struct ValueEmitter;
 
+#[derive(Clone, Copy)]
+enum NumericArithmetic {
+    Add,
+    Subtract,
+    Multiply,
+}
+
 impl ValueEmitter {
     pub fn emit_tag(builder: &mut FunctionBuilder<'_>, word: CraneliftValue) -> CraneliftValue {
         builder.ins().ushr_imm(word, VALUE_TAG_SHIFT as i64)
@@ -374,6 +381,130 @@ impl ValueEmitter {
             word: result.word(),
             is_fast,
         }
+    }
+
+    pub fn emit_checked_numeric_add(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        Self::emit_checked_numeric_binary(builder, left, right, NumericArithmetic::Add)
+    }
+
+    pub fn emit_checked_numeric_sub(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        Self::emit_checked_numeric_binary(builder, left, right, NumericArithmetic::Subtract)
+    }
+
+    pub fn emit_checked_numeric_mul(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        Self::emit_checked_numeric_binary(builder, left, right, NumericArithmetic::Multiply)
+    }
+
+    fn emit_checked_numeric_binary(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+        operation: NumericArithmetic,
+    ) -> EmittedValue {
+        let left_is_int = Self::emit_is_int(builder, left);
+        let right_is_int = Self::emit_is_int(builder, right);
+        let both_int = builder.ins().band(left_is_int, right_is_int);
+
+        let int_block = builder.create_block();
+        let float_block = builder.create_block();
+        let done = builder.create_block();
+        builder.append_block_param(done, types::I64);
+        builder.append_block_param(done, types::I8);
+        builder
+            .ins()
+            .brif(both_int, int_block, &[], float_block, &[]);
+
+        builder.switch_to_block(int_block);
+        let int_result = match operation {
+            NumericArithmetic::Add => Self::emit_checked_int_add(builder, left, right),
+            NumericArithmetic::Subtract => Self::emit_checked_int_sub(builder, left, right),
+            NumericArithmetic::Multiply => Self::emit_checked_int_mul(builder, left, right),
+        };
+        builder.ins().jump(
+            done,
+            &[int_result.word().into(), int_result.is_fast().into()],
+        );
+
+        builder.switch_to_block(float_block);
+        let left_is_float = Self::emit_is_float(builder, left);
+        let right_is_float = Self::emit_is_float(builder, right);
+        let left_is_numeric = builder.ins().bor(left_is_int, left_is_float);
+        let right_is_numeric = builder.ins().bor(right_is_int, right_is_float);
+        let operands_are_numeric = builder.ins().band(left_is_numeric, right_is_numeric);
+
+        let left_int = Self::emit_unbox_int(builder, left);
+        let right_int = Self::emit_unbox_int(builder, right);
+        let left_int_float = builder.ins().fcvt_from_sint(types::F32, left_int);
+        let right_int_float = builder.ins().fcvt_from_sint(types::F32, right_int);
+        let left_float = Self::emit_unbox_float(builder, left);
+        let right_float = Self::emit_unbox_float(builder, right);
+        let left_float = builder
+            .ins()
+            .select(left_is_int, left_int_float, left_float);
+        let right_float = builder
+            .ins()
+            .select(right_is_int, right_int_float, right_float);
+        let float_value = match operation {
+            NumericArithmetic::Add => builder.ins().fadd(left_float, right_float),
+            NumericArithmetic::Subtract => builder.ins().fsub(left_float, right_float),
+            NumericArithmetic::Multiply => builder.ins().fmul(left_float, right_float),
+        };
+        let float_result = Self::emit_pack_checked_float(builder, float_value);
+        let float_is_fast = builder
+            .ins()
+            .band(operands_are_numeric, float_result.is_fast());
+        builder
+            .ins()
+            .jump(done, &[float_result.word().into(), float_is_fast.into()]);
+
+        builder.switch_to_block(done);
+        let word = builder.block_params(done)[0];
+        let is_fast = builder.block_params(done)[1];
+        EmittedValue { word, is_fast }
+    }
+
+    pub fn emit_checked_numeric_neg(
+        builder: &mut FunctionBuilder<'_>,
+        value: CraneliftValue,
+    ) -> EmittedValue {
+        let is_int = Self::emit_is_int(builder, value);
+        let int_block = builder.create_block();
+        let float_block = builder.create_block();
+        let done = builder.create_block();
+        builder.append_block_param(done, types::I64);
+        builder.append_block_param(done, types::I8);
+        builder.ins().brif(is_int, int_block, &[], float_block, &[]);
+
+        builder.switch_to_block(int_block);
+        let int_result = Self::emit_checked_int_neg(builder, value);
+        builder.ins().jump(
+            done,
+            &[int_result.word().into(), int_result.is_fast().into()],
+        );
+
+        builder.switch_to_block(float_block);
+        let float_result = Self::emit_checked_float_neg(builder, value);
+        builder.ins().jump(
+            done,
+            &[float_result.word().into(), float_result.is_fast().into()],
+        );
+
+        builder.switch_to_block(done);
+        let word = builder.block_params(done)[0];
+        let is_fast = builder.block_params(done)[1];
+        EmittedValue { word, is_fast }
     }
 
     pub fn emit_checked_int_add(
@@ -868,6 +999,62 @@ mod tests {
         );
         assert_eq!(
             add.run(&Value::int(1).unwrap(), &Value::float(1.0).unwrap()),
+            None,
+        );
+    }
+
+    #[test]
+    fn emitted_checked_numeric_arithmetic_matches_value_semantics() {
+        let add = Probe::compile(ValueEmitter::emit_checked_numeric_add);
+        let subtract = Probe::compile(ValueEmitter::emit_checked_numeric_sub);
+        let multiply = Probe::compile(ValueEmitter::emit_checked_numeric_mul);
+        let cases = [
+            (Value::int(7).unwrap(), Value::int(3).unwrap()),
+            (Value::float(7.25).unwrap(), Value::float(0.5).unwrap()),
+            (Value::int(7).unwrap(), Value::float(0.5).unwrap()),
+            (Value::float(-2.5).unwrap(), Value::int(4).unwrap()),
+            (Value::int(16_777_217).unwrap(), Value::float(1.0).unwrap()),
+        ];
+        for (left, right) in cases {
+            assert_eq!(add.run(&left, &right), left.checked_add(&right));
+            assert_eq!(subtract.run(&left, &right), left.checked_sub(&right));
+            assert_eq!(multiply.run(&left, &right), left.checked_mul(&right));
+        }
+
+        let max_int = Value::int(VALUE_INT_MAX).unwrap();
+        assert_eq!(add.run(&max_int, &Value::int(1).unwrap()), None);
+        assert_eq!(multiply.run(&max_int, &Value::int(2).unwrap()), None);
+        assert_eq!(
+            add.run(&Value::string("not numeric"), &Value::int(1).unwrap()),
+            None,
+        );
+        assert_eq!(
+            multiply.run(
+                &Value::float(f32::MAX).unwrap(),
+                &Value::float(2.0).unwrap(),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn emitted_checked_numeric_negation_matches_value_semantics() {
+        let negate = Probe::compile(|builder, value, _| {
+            ValueEmitter::emit_checked_numeric_neg(builder, value)
+        });
+        for value in [
+            Value::int(-7).unwrap(),
+            Value::float(3.5).unwrap(),
+            Value::float(0.0).unwrap(),
+        ] {
+            assert_eq!(negate.run(&value, &Value::nothing()), value.checked_neg());
+        }
+        assert_eq!(
+            negate.run(&Value::int(VALUE_INT_MIN).unwrap(), &Value::nothing()),
+            None,
+        );
+        assert_eq!(
+            negate.run(&Value::string("not numeric"), &Value::nothing()),
             None,
         );
     }
