@@ -15,8 +15,8 @@
 //!
 //! `Value` is intentionally one machine word wide. Immediate identities,
 //! symbols, error codes, booleans, small integers, and reduced-precision floats
-//! stay inline; strings, bytes, lists, and maps are immutable heap values shared
-//! with `Arc`.
+//! stay inline; strings, bytes, collections, and finite relations are immutable
+//! heap values shared with `Arc`.
 
 mod codec;
 mod heap;
@@ -39,13 +39,13 @@ pub use codec::{
 };
 pub use symbol::{Symbol, SymbolMetadata};
 pub use traits::OrderedKeySink;
-pub use tuple::Tuple;
+pub use tuple::{RelationValue, RelationValueError, Tuple};
 pub use value::{
     BOOL_PROTOTYPE, BYTES_PROTOTYPE, CAPABILITY_PROTOTYPE, CapabilityId, ERROR_CODE_PROTOTYPE,
     ERROR_PROTOTYPE, ErrorValue, FLOAT_PROTOTYPE, FROB_PROTOTYPE, FUNCTION_PROTOTYPE, FrobValue,
     FunctionId, IDENTITY_PROTOTYPE, INTEGER_PROTOTYPE, Identity, LIST_PROTOTYPE, MAP_PROTOTYPE,
-    NOTHING_PROTOTYPE, PRIMITIVE_PROTOTYPES, RANGE_PROTOTYPE, STRING_PROTOTYPE, SYMBOL_PROTOTYPE,
-    VALUE_ABI_VERSION, Value, ValueError, ValueKind, language_cmp, primitive_prototype_for_kind,
-    primitive_prototype_for_value,
+    NOTHING_PROTOTYPE, PRIMITIVE_PROTOTYPES, RANGE_PROTOTYPE, RELATION_PROTOTYPE, STRING_PROTOTYPE,
+    SYMBOL_PROTOTYPE, VALUE_ABI_VERSION, Value, ValueError, ValueKind, language_cmp,
+    primitive_prototype_for_kind, primitive_prototype_for_value,
 };
 pub use visit::{ValueRef, ValueVisitor, VisitDecision};

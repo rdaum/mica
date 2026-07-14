@@ -11,9 +11,10 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::RelationValue;
 use crate::value::{
     ErrorValue, FrobValue, TAG_BYTES, TAG_ERROR, TAG_FROB, TAG_LIST, TAG_MAP, TAG_RANGE,
-    TAG_STRING, Value,
+    TAG_RELATION, TAG_STRING, Value,
 };
 
 pub(crate) enum HeapValue {
@@ -21,6 +22,7 @@ pub(crate) enum HeapValue {
     Bytes(Box<[u8]>),
     List(Box<[Value]>),
     Map(Box<[(Value, Value)]>),
+    Relation(RelationValue),
     Range { start: Value, end: Option<Value> },
     Error(ErrorValue),
     Frob(FrobValue),
@@ -33,6 +35,7 @@ impl HeapValue {
             Self::Bytes(_) => TAG_BYTES,
             Self::List(_) => TAG_LIST,
             Self::Map(_) => TAG_MAP,
+            Self::Relation(_) => TAG_RELATION,
             Self::Range { .. } => TAG_RANGE,
             Self::Error(_) => TAG_ERROR,
             Self::Frob(_) => TAG_FROB,

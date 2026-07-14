@@ -13,7 +13,8 @@
 
 use crate::heap::HeapValue;
 use crate::value::{
-    TAG_BYTES, TAG_ERROR, TAG_FROB, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_STRING, Value, ValueKind,
+    TAG_BYTES, TAG_ERROR, TAG_FROB, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_RELATION, TAG_STRING, Value,
+    ValueKind,
 };
 use base64::{Engine, engine::general_purpose};
 use std::cmp::Ordering;
@@ -92,6 +93,22 @@ impl Value {
                     out.push_byte(0);
                 });
             }
+            ValueKind::Relation => {
+                let _ = self.with_relation(|relation| {
+                    for column in relation.heading() {
+                        out.push_byte(1);
+                        out.extend_from_slice(&(column.id() as u64).to_be_bytes());
+                    }
+                    out.push_byte(0);
+                    for row in relation.rows() {
+                        out.push_byte(1);
+                        for value in row.values() {
+                            value.encode_ordered_into(out);
+                        }
+                    }
+                    out.push_byte(0);
+                });
+            }
             ValueKind::Range => {
                 let _ = self.with_range(|start, end| {
                     start.encode_ordered_into(out);
@@ -156,6 +173,9 @@ impl PartialEq for Value {
                 .unwrap(),
             (ValueKind::Map, ValueKind::Map) => self
                 .with_map(|left| other.with_map(|right| left == right).unwrap())
+                .unwrap(),
+            (ValueKind::Relation, ValueKind::Relation) => self
+                .with_relation(|left| other.with_relation(|right| left == right).unwrap())
                 .unwrap(),
             (ValueKind::Range, ValueKind::Range) => self
                 .with_range(|left_start, left_end| {
@@ -225,6 +245,9 @@ impl Ord for Value {
             ValueKind::Map => self
                 .with_map(|left| other.with_map(|right| left.cmp(right)).unwrap())
                 .unwrap(),
+            ValueKind::Relation => self
+                .with_relation(|left| other.with_relation(|right| left.cmp(right)).unwrap())
+                .unwrap(),
             ValueKind::Range => self
                 .with_range(|left_start, left_end| {
                     other
@@ -281,6 +304,9 @@ impl Hash for Value {
             ValueKind::Map => {
                 let _ = self.with_map(|entries| entries.hash(state));
             }
+            ValueKind::Relation => {
+                let _ = self.with_relation(|relation| relation.hash(state));
+            }
             ValueKind::Range => {
                 let _ = self.with_range(|start, end| {
                     start.hash(state);
@@ -332,6 +358,14 @@ impl fmt::Debug for Value {
                         map.entry(key, value);
                     }
                     map.finish()
+                })
+                .unwrap(),
+            ValueKind::Relation => self
+                .with_relation(|relation| {
+                    f.debug_struct("Relation")
+                        .field("heading", &relation.heading())
+                        .field("rows", &relation.rows())
+                        .finish()
                 })
                 .unwrap(),
             ValueKind::Range => self
@@ -391,6 +425,11 @@ impl fmt::Display for Value {
                         write!(f, "{key}: {value}")?;
                     }
                     f.write_str("]")
+                })
+                .unwrap(),
+            ValueKind::Relation => self
+                .with_relation(|relation| {
+                    write!(f, "<relation {}x{}>", relation.len(), relation.arity())
                 })
                 .unwrap(),
             ValueKind::Range => self
@@ -459,6 +498,13 @@ const _: () = {
     }
     let _ = _heap_value_is_used;
     let _ = (
-        TAG_STRING, TAG_BYTES, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_ERROR, TAG_FROB,
+        TAG_STRING,
+        TAG_BYTES,
+        TAG_LIST,
+        TAG_MAP,
+        TAG_RANGE,
+        TAG_ERROR,
+        TAG_FROB,
+        TAG_RELATION,
     );
 };

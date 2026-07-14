@@ -19,7 +19,7 @@ use crate::abi::{
 };
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
-    CapabilityId, Identity, Symbol, SymbolEncoding, SymbolMetadata, Value, ValueCodecError,
+    CapabilityId, Identity, Symbol, SymbolEncoding, SymbolMetadata, Tuple, Value, ValueCodecError,
     ValueCodecOptions, ValueKind, ValueRef, ValueSegment, ValueSink, ValueVisitor, VisitDecision,
     decode_value, decode_value_exact, decode_value_exact_with_options, encode_value,
     encode_value_segments, encode_value_segments_with_options, encode_value_to_sink,
@@ -36,7 +36,7 @@ fn value_is_one_word() {
 
 #[test]
 fn process_local_value_abi_matches_value_layout() {
-    assert_eq!(VALUE_ABI_VERSION, 1);
+    assert_eq!(VALUE_ABI_VERSION, 2);
     assert_eq!(VALUE_TAG_SHIFT, 56);
     assert_eq!(VALUE_PAYLOAD_MASK, 0x00ff_ffff_ffff_ffff);
     assert_eq!(VALUE_INT_MIN, INT_MIN);
@@ -73,6 +73,11 @@ fn process_local_value_abi_classifies_heap_ownership() {
         Value::bytes([1, 2, 3]),
         Value::list([Value::int(1).unwrap()]),
         Value::map([(Value::bool(true), Value::int(1).unwrap())]),
+        Value::relation(
+            [Symbol::intern("value")],
+            [Tuple::from([Value::int(1).unwrap()])],
+        )
+        .unwrap(),
         Value::range(Value::int(1).unwrap(), Some(Value::int(2).unwrap())),
         Value::error(Symbol::intern("E_VALUE_ABI_HEAP"), None::<Box<str>>, None),
         Value::frob(Identity::new(1).unwrap(), Value::nothing()),
@@ -80,7 +85,10 @@ fn process_local_value_abi_classifies_heap_ownership() {
     for value in heap_values {
         assert!(!value_is_immediate(borrowed_value_bits(&value)));
     }
-    assert!(!value_is_immediate(pack_value(16, 0)));
+    assert!(!value_is_immediate(pack_value(
+        ValueKind::Relation as u8,
+        0
+    )));
 }
 
 #[test]
@@ -270,6 +278,36 @@ fn function_values_are_ephemeral() {
     assert_eq!(format!("{function:?}"), "<function>");
     assert!(!function.is_persistable());
     assert!(!Value::list([Value::int(1).unwrap(), function.clone()]).is_persistable());
+}
+
+#[test]
+fn relation_values_are_serializable_but_not_durable_cells() {
+    let name = Symbol::intern("name");
+    let score = Symbol::intern("score");
+    let relation = Value::relation(
+        [score, name],
+        [
+            Tuple::from([Value::float(8.0).unwrap(), Value::string("Grace")]),
+            Tuple::from([Value::float(9.5).unwrap(), Value::string("Ada")]),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(relation.kind(), ValueKind::Relation);
+    let expected_heading = if name < score {
+        vec![name, score]
+    } else {
+        vec![score, name]
+    };
+    assert_eq!(
+        relation.with_relation(|relation| relation.heading().to_vec()),
+        Some(expected_heading)
+    );
+    assert!(!relation.is_persistable());
+
+    let mut encoded = Vec::new();
+    encode_value(&relation, &mut encoded).unwrap();
+    assert_eq!(decode_value_exact(&encoded).unwrap(), relation);
 }
 
 #[test]
@@ -470,6 +508,20 @@ fn value_refs_borrow_immediate_and_heap_payloads() {
     }
     assert_eq!(list.as_value_ref().child_count(), 2);
 
+    let relation = Value::relation(
+        [Symbol::intern("payload")],
+        [Tuple::from([Value::string("row value")])],
+    )
+    .unwrap();
+    match relation.as_value_ref() {
+        ValueRef::Relation(relation) => {
+            assert_eq!(relation.len(), 1);
+            assert_eq!(relation.rows()[0].values()[0], Value::string("row value"));
+        }
+        value_ref => panic!("expected relation ref, got {value_ref:?}"),
+    }
+    assert_eq!(relation.as_value_ref().child_count(), 1);
+
     let frob = Value::frob(identity, Value::string("payload"));
     match frob.as_value_ref() {
         ValueRef::Frob { delegate, value } => {
@@ -548,6 +600,44 @@ fn value_walk_visits_frob_payload() {
 }
 
 #[test]
+fn value_walk_visits_relation_cells() {
+    struct KindCollector(Vec<ValueKind>);
+
+    impl ValueVisitor for KindCollector {
+        type Error = std::convert::Infallible;
+
+        fn visit_value(
+            &mut self,
+            _value: &Value,
+            value_ref: ValueRef<'_>,
+        ) -> Result<VisitDecision, Self::Error> {
+            self.0.push(value_ref.kind());
+            Ok(VisitDecision::Descend)
+        }
+    }
+
+    let value = Value::relation(
+        [Symbol::intern("payload")],
+        [Tuple::from([Value::list([
+            Value::int(1).unwrap(),
+            Value::bool(true),
+        ])])],
+    )
+    .unwrap();
+    let mut collector = KindCollector(Vec::new());
+    value.walk(&mut collector).unwrap();
+    assert_eq!(
+        collector.0,
+        vec![
+            ValueKind::Relation,
+            ValueKind::List,
+            ValueKind::Int,
+            ValueKind::Bool,
+        ]
+    );
+}
+
+#[test]
 fn value_walk_can_skip_children() {
     struct SkippingCollector(Vec<ValueKind>);
 
@@ -620,7 +710,7 @@ fn value_walk_pairs_enter_and_leave_events() {
 }
 
 #[test]
-fn value_codec_round_trips_persistable_values() {
+fn value_codec_round_trips_serializable_values() {
     let values = [
         Value::nothing(),
         Value::bool(true),
@@ -639,6 +729,14 @@ fn value_codec_round_trips_persistable_values() {
             Value::bool(false),
         ]),
         Value::map([(Value::symbol(Symbol::intern("k")), Value::string("v"))]),
+        Value::relation(
+            [Symbol::intern("name"), Symbol::intern("score")],
+            [
+                Tuple::from([Value::string("Ada"), Value::float(9.5).unwrap()]),
+                Tuple::from([Value::string("Grace"), Value::float(8.0).unwrap()]),
+            ],
+        )
+        .unwrap(),
         Value::range(Value::int(1).unwrap(), Some(Value::int(4).unwrap())),
         Value::range(Value::int(2).unwrap(), None),
         Value::error(
@@ -701,6 +799,11 @@ fn value_codec_sink_matches_vec_encoder() {
                 Some(Value::int(7).unwrap()),
             ),
         ]),
+        Value::relation(
+            [Symbol::intern("payload")],
+            [Tuple::from([Value::string("relation payload")])],
+        )
+        .unwrap(),
         Value::frob(Identity::new(42).unwrap(), Value::string("payload")),
     ];
 
@@ -729,6 +832,11 @@ fn value_codec_segments_match_vec_encoder_and_borrow_payloads() {
                 Some(Value::int(7).unwrap()),
             ),
         ]),
+        Value::relation(
+            [Symbol::intern("payload")],
+            [Tuple::from([Value::string("relation payload")])],
+        )
+        .unwrap(),
         Value::frob(Identity::new(42).unwrap(), Value::string("payload")),
     ];
 
@@ -761,6 +869,19 @@ fn value_codec_segments_match_vec_encoder_and_borrow_payloads() {
             ValueSegment::Borrowed([1, 2, 3, 4])
         ]
     ));
+
+    let relation = Value::relation(
+        [Symbol::intern("payload")],
+        [Tuple::from([Value::string("relation payload")])],
+    )
+    .unwrap();
+    let relation_segments = encode_value_segments(&relation).unwrap();
+    assert!(
+        relation_segments
+            .segments()
+            .iter()
+            .any(|segment| matches!(segment, ValueSegment::Borrowed(b"relation payload")))
+    );
 }
 
 #[test]
@@ -890,6 +1011,20 @@ fn value_codec_rejects_malformed_inline_words() {
 }
 
 #[test]
+fn value_codec_rejects_noncanonical_zero_arity_relation_count() {
+    let relation_header = ((0xff_u64) << 56) | ((ValueKind::Relation as u64) << 48);
+    let mut encoded = relation_header.to_le_bytes().to_vec();
+    encoded.extend_from_slice(&2_u64.to_le_bytes());
+
+    assert_eq!(
+        decode_value_exact(&encoded),
+        Err(ValueCodecError::InvalidValue(
+            "zero-arity relation has more than one row".to_owned()
+        ))
+    );
+}
+
+#[test]
 fn list_slices_return_new_list_values() {
     let list = Value::list([
         Value::int(10).unwrap(),
@@ -949,7 +1084,9 @@ fn indexed_updates_return_new_collection_values() {
 #[test]
 fn total_order_is_stable() {
     let values = vec![
+        Value::relation([], []).unwrap(),
         Value::map([]),
+        Value::function_raw(1).unwrap(),
         Value::capability_raw(1).unwrap(),
         Value::error(Symbol::intern("E_TEST"), None::<Box<str>>, None),
         Value::range(Value::int(1).unwrap(), None),
@@ -970,7 +1107,7 @@ fn total_order_is_stable() {
         assert!(pair[0] <= pair[1]);
     }
     assert_eq!(sorted.first(), Some(&Value::nothing()));
-    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Capability);
+    assert_eq!(sorted.last().unwrap().kind(), ValueKind::Relation);
 }
 
 #[test]

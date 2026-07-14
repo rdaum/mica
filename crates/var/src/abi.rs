@@ -19,13 +19,13 @@
 
 use crate::value::{
     INT_MAX, INT_MIN, PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_ERROR, TAG_FROB,
-    TAG_FUNCTION, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE, TAG_SHIFT, TAG_STRING,
+    TAG_FUNCTION, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE, TAG_RELATION, TAG_SHIFT, TAG_STRING,
 };
 use crate::{Value, ValueKind};
 use std::cmp::Ordering;
 use std::mem::ManuallyDrop;
 
-pub const VALUE_ABI_VERSION: u32 = 1;
+pub const VALUE_ABI_VERSION: u32 = 2;
 pub const VALUE_WORD_BYTES: usize = size_of::<Value>();
 pub const VALUE_TAG_SHIFT: u64 = TAG_SHIFT;
 pub const VALUE_PAYLOAD_MASK: u64 = PAYLOAD_MASK;
@@ -39,14 +39,16 @@ pub const VALUE_STRING_TAG: u8 = TAG_STRING;
 pub const VALUE_LIST_TAG: u8 = TAG_LIST;
 pub const VALUE_CAPABILITY_TAG: u8 = TAG_CAPABILITY;
 pub const VALUE_FUNCTION_TAG: u8 = TAG_FUNCTION;
+pub const VALUE_RELATION_TAG: u8 = TAG_RELATION;
 
-const HEAP_TAG_MASK: u16 = (1 << TAG_STRING)
+const HEAP_TAG_MASK: u32 = (1 << TAG_STRING)
     | (1 << TAG_BYTES)
     | (1 << TAG_LIST)
     | (1 << TAG_MAP)
     | (1 << TAG_RANGE)
     | (1 << TAG_ERROR)
-    | (1 << TAG_FROB);
+    | (1 << TAG_FROB)
+    | (1 << TAG_RELATION);
 
 pub const fn value_tag(bits: u64) -> u8 {
     (bits >> VALUE_TAG_SHIFT) as u8
@@ -58,7 +60,7 @@ pub const fn value_payload(bits: u64) -> u64 {
 
 pub const fn value_is_immediate(bits: u64) -> bool {
     let tag = value_tag(bits);
-    tag <= VALUE_FUNCTION_TAG && HEAP_TAG_MASK & (1 << tag) == 0
+    tag <= VALUE_RELATION_TAG && HEAP_TAG_MASK & (1 << tag) == 0
 }
 
 pub const fn pack_value(tag: u8, payload: u64) -> u64 {

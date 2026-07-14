@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::RelationValue;
 use crate::heap::HeapValue;
 use crate::symbol::Symbol;
 use crate::value::{CapabilityId, ErrorValue, FunctionId, Identity, Value, ValueKind};
@@ -32,6 +33,7 @@ pub enum ValueRef<'a> {
     Bytes(&'a [u8]),
     List(&'a [Value]),
     Map(&'a [(Value, Value)]),
+    Relation(&'a RelationValue),
     Range {
         start: &'a Value,
         end: Option<&'a Value>,
@@ -64,6 +66,7 @@ impl ValueRef<'_> {
             Self::Bytes(_) => ValueKind::Bytes,
             Self::List(_) => ValueKind::List,
             Self::Map(_) => ValueKind::Map,
+            Self::Relation(_) => ValueKind::Relation,
             Self::Range { .. } => ValueKind::Range,
             Self::Error { .. } => ValueKind::Error,
             Self::Capability(_) => ValueKind::Capability,
@@ -98,6 +101,7 @@ impl ValueRef<'_> {
         match self {
             Self::List(values) => values.len(),
             Self::Map(entries) => entries.len() * 2,
+            Self::Relation(relation) => relation.rows().iter().map(|row| row.arity()).sum(),
             Self::Range { end, .. } => 1 + usize::from(end.is_some()),
             Self::Error { value, .. } => usize::from(value.is_some()),
             Self::Frob { .. } => 1,
@@ -156,6 +160,7 @@ impl Value {
             | ValueKind::Bytes
             | ValueKind::List
             | ValueKind::Map
+            | ValueKind::Relation
             | ValueKind::Range
             | ValueKind::Error
             | ValueKind::Frob => self.heap_value_ref(),
@@ -174,6 +179,7 @@ impl Value {
             HeapValue::Bytes(value) => ValueRef::Bytes(value),
             HeapValue::List(values) => ValueRef::List(values),
             HeapValue::Map(entries) => ValueRef::Map(entries),
+            HeapValue::Relation(relation) => ValueRef::Relation(relation),
             HeapValue::Range { start, end } => ValueRef::Range {
                 start,
                 end: end.as_ref(),
@@ -221,6 +227,13 @@ fn walk_children<V: ValueVisitor>(
             for (key, value) in entries {
                 walk_value(key, visitor)?;
                 walk_value(value, visitor)?;
+            }
+        }
+        ValueRef::Relation(relation) => {
+            for row in relation.rows() {
+                for value in row.values() {
+                    walk_value(value, visitor)?;
+                }
             }
         }
         ValueRef::Range { start, end } => {
