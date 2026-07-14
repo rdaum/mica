@@ -210,3 +210,10 @@ of the language, and the runner, driver, and VM builtin context no longer expose
 APIs. Volatile facts use ordinary `assert` and `retract` statements inside tasks; trusted hosts use
 the checked batched volatile APIs for lifecycle-owned state. The remaining transient code is now an
 unreachable internal overlay, ready to be deleted without another producer migration.
+
+## Overlay Removal Checkpoint
+
+`TransientStore`, the composed snapshot and transaction readers, scope construction, cache-bypass
+branches, mutation metrics, and VM/task wiring have been deleted. Runtime relation reads now have a
+single transaction path: durable and volatile rows share the same MVCC snapshot and transaction
+semantics, while durability controls only commit-provider projection and restart recovery.

@@ -12,12 +12,10 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{AuthorityContext, CapabilityGrant, Emission, MailboxSend, RuntimeError};
-use mica_relation_kernel::{
-    RelationId, RelationKernel, RelationWorkspace, Transaction, TransientStore, Tuple,
-};
+use mica_relation_kernel::{RelationId, RelationKernel, RelationWorkspace, Transaction, Tuple};
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 const SYSTEM_ENDPOINT_ID: u64 = 0x00ef_0000_0000_0000;
 
@@ -82,11 +80,6 @@ pub trait MailboxRuntime {
     fn validate_mailbox_sender(&self, sender: &Value) -> Result<(), RuntimeError>;
 
     fn validate_mailbox_receiver(&self, receiver: &Value) -> Result<(), RuntimeError>;
-}
-
-pub(crate) enum TransientAccess<'ctx> {
-    Exclusive(&'ctx mut TransientStore),
-    Shared(&'ctx RwLock<TransientStore>),
 }
 
 impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {

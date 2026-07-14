@@ -12,14 +12,14 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::task_manager::MailboxRuntimeHandle;
-use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction, TransientStore};
-use mica_var::{Identity, Value};
+use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
+use mica_var::Value;
 use mica_vm::{
     AuthorityContext, BuiltinRegistry, Emission, MailboxRuntime, MailboxSend, Program,
     ProgramResolver, RegisterVm, RuntimeContext, RuntimeError, RuntimePorts, SuspendKind,
     VmHostContext, VmHostResponse, VmState,
 };
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub type TaskId = u64;
@@ -249,14 +249,6 @@ impl<'a> Task<'a> {
     }
 
     pub fn run(&mut self) -> Result<TaskOutcome, TaskError> {
-        self.run_with_transient(None, &[])
-    }
-
-    pub(crate) fn run_with_transient(
-        &mut self,
-        mut transient: Option<&mut TransientStore>,
-        transient_scopes: &[Identity],
-    ) -> Result<TaskOutcome, TaskError> {
         let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
         loop {
             let vm_start = trace_enabled.then(Instant::now);
@@ -278,9 +270,6 @@ impl<'a> Task<'a> {
                     &self.task_snapshot,
                     self.runtime_context,
                 );
-                if let Some(transient) = transient.as_deref_mut() {
-                    host = host.with_transient(transient, transient_scopes);
-                }
                 let response = self.vm.run_until_host_response(
                     &mut host,
                     self.limits.instruction_budget,
@@ -308,46 +297,6 @@ impl<'a> Task<'a> {
                 );
             }
             if let Some(outcome) = outcome {
-                return Ok(outcome);
-            }
-        }
-    }
-
-    pub(crate) fn run_with_shared_transient(
-        &mut self,
-        transient: &RwLock<TransientStore>,
-        transient_scopes: &[Identity],
-    ) -> Result<TaskOutcome, TaskError> {
-        loop {
-            let response = {
-                let tx = self.tx.as_mut().ok_or(TaskError::MissingTransaction)?;
-                let mailbox_runtime = self.mailbox_runtime.clone();
-                let mut host = VmHostContext::new(
-                    tx,
-                    &mut self.authority,
-                    &self.resolver,
-                    &self.builtins,
-                    RuntimePorts {
-                        pending_effects: &mut self.pending_effects,
-                        pending_mailbox_sends: &mut self.pending_mailbox_sends,
-                        mailbox_runtime: mailbox_runtime
-                            .as_ref()
-                            .map(|runtime| runtime as &dyn MailboxRuntime),
-                    },
-                    &self.task_snapshot,
-                    self.runtime_context,
-                )
-                .with_shared_transient(transient, transient_scopes);
-                let response = self.vm.run_until_host_response(
-                    &mut host,
-                    self.limits.instruction_budget,
-                    self.limits.max_call_depth,
-                );
-                host.emit_trace_summary(self.task_id);
-                response?
-            };
-
-            if let Some(outcome) = self.outcome_from_host_response(response)? {
                 return Ok(outcome);
             }
         }

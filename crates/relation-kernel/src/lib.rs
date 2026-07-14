@@ -43,7 +43,6 @@ pub mod relation_algebra;
 mod rules;
 mod snapshot;
 mod transaction;
-mod transient;
 mod tuple;
 mod workspace;
 
@@ -92,7 +91,6 @@ pub use rules::{
 };
 pub use snapshot::{CatalogChange, Commit, CommitResult, FactChange, FactChangeKind, Snapshot};
 pub use transaction::Transaction;
-pub use transient::{ComposedRelationRead, ComposedTransactionRead, TransientStore};
 pub use tuple::Tuple;
 pub use workspace::RelationWorkspace;
 

@@ -55,15 +55,6 @@ pub enum EndpointOperation {
     Close,
 }
 
-#[derive(Copy, Clone, Debug, DeriveLabel)]
-#[label_name = "operation"]
-pub enum TransientOperation {
-    Assert,
-    AssertMany,
-    Retract,
-    RetractMany,
-}
-
 #[derive(ExportMetrics)]
 #[metric_prefix = "mica_runtime"]
 pub struct RuntimeMetrics {
@@ -90,21 +81,6 @@ pub struct RuntimeMetrics {
 
     #[help = "Currently open runtime endpoints"]
     pub active_endpoints: Gauge,
-
-    #[help = "Transient relation mutations by operation"]
-    pub transient_operations: LabeledCounter<TransientOperation>,
-
-    #[help = "Transient scopes currently retained by the runtime"]
-    pub transient_scopes: Gauge,
-
-    #[help = "Transient tuples currently retained by the runtime"]
-    pub transient_tuples: Gauge,
-
-    #[help = "Transient tuples asserted"]
-    pub transient_tuples_asserted: Counter,
-
-    #[help = "Transient tuples retracted"]
-    pub transient_tuples_retracted: Counter,
 
     #[help = "Effects emitted by tasks"]
     pub task_effects: Counter,
@@ -148,11 +124,6 @@ impl RuntimeMetrics {
             completed_tasks: Gauge::new(),
             endpoint_operations: LabeledCounter::new(shard_count),
             active_endpoints: Gauge::new(),
-            transient_operations: LabeledCounter::new(shard_count),
-            transient_scopes: Gauge::new(),
-            transient_tuples: Gauge::new(),
-            transient_tuples_asserted: Counter::new(shard_count),
-            transient_tuples_retracted: Counter::new(shard_count),
             task_effects: Counter::new(shard_count),
             mailbox_sends: Counter::new(shard_count),
             mailboxes_created: Counter::new(shard_count),

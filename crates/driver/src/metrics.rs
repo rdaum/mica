@@ -45,7 +45,6 @@ pub enum DispatchOperation {
     Invoke,
     Spawn,
     Resume,
-    Transient,
 }
 
 #[derive(Copy, Clone, Debug, DeriveLabel)]
