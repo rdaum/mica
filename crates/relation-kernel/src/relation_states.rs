@@ -13,15 +13,18 @@
 
 use crate::RelationId;
 use crate::index::RelationState;
-use mica_var::Identity;
+use mica_var::{Identity, Symbol};
 use rart::{ArrayKey, VersionedAdaptiveRadixTree};
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 type RelationStateKey = ArrayKey<8>;
 
 #[derive(Clone)]
 pub(crate) struct RelationStates {
     entries: VersionedAdaptiveRadixTree<RelationStateKey, RelationState>,
+    names: Arc<HashMap<Symbol, RelationId>>,
     len: usize,
 }
 
@@ -38,6 +41,7 @@ impl RelationStates {
     pub(crate) fn new() -> Self {
         Self {
             entries: VersionedAdaptiveRadixTree::new(),
+            names: Arc::new(HashMap::new()),
             len: 0,
         }
     }
@@ -59,9 +63,23 @@ impl RelationStates {
     }
 
     pub(crate) fn insert(&mut self, relation: RelationId, state: RelationState) {
-        if !self.entries.insert(relation.raw(), state) {
-            self.len += 1;
+        let name = state.metadata().name();
+        if self.entries.insert(relation.raw(), state) {
+            self.rebuild_names();
+            return;
         }
+
+        self.len += 1;
+        Arc::make_mut(&mut self.names)
+            .entry(name)
+            .and_modify(|current| *current = (*current).min(relation))
+            .or_insert(relation);
+    }
+
+    pub(crate) fn get_named(&self, name: Symbol) -> Option<&RelationState> {
+        self.names
+            .get(&name)
+            .and_then(|relation| self.get(relation))
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &RelationState> {
@@ -74,6 +92,17 @@ impl RelationStates {
                 .expect("relation-state keys must contain valid identity words");
             (relation, state)
         })
+    }
+
+    fn rebuild_names(&mut self) {
+        let mut names = HashMap::with_capacity(self.len);
+        for (relation, state) in self.iter() {
+            names
+                .entry(state.metadata().name())
+                .and_modify(|current: &mut RelationId| *current = (*current).min(relation))
+                .or_insert(relation);
+        }
+        self.names = Arc::new(names);
     }
 }
 
@@ -133,6 +162,29 @@ mod tests {
         assert_eq!(
             changed.get(&id).unwrap().metadata().name(),
             Symbol::intern("After")
+        );
+        assert!(original.get_named(Symbol::intern("Before")).is_some());
+        assert!(original.get_named(Symbol::intern("After")).is_none());
+        assert!(changed.get_named(Symbol::intern("Before")).is_none());
+        assert!(changed.get_named(Symbol::intern("After")).is_some());
+    }
+
+    #[test]
+    fn duplicate_names_resolve_to_lowest_relation_identity() {
+        let (_, later) = relation(9, "Shared");
+        let (earlier_id, earlier) = relation(4, "Shared");
+        let mut states = RelationStates::new();
+
+        states.insert(later.metadata().id(), later);
+        states.insert(earlier_id, earlier);
+
+        assert_eq!(
+            states
+                .get_named(Symbol::intern("Shared"))
+                .unwrap()
+                .metadata()
+                .id(),
+            earlier_id
         );
     }
 }
