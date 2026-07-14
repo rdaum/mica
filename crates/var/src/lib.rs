@@ -22,6 +22,7 @@ mod codec;
 mod heap;
 mod symbol;
 mod traits;
+mod tuple;
 mod value;
 mod visit;
 
@@ -38,6 +39,7 @@ pub use codec::{
 };
 pub use symbol::{Symbol, SymbolMetadata};
 pub use traits::OrderedKeySink;
+pub use tuple::Tuple;
 pub use value::{
     BOOL_PROTOTYPE, BYTES_PROTOTYPE, CAPABILITY_PROTOTYPE, CapabilityId, ERROR_CODE_PROTOTYPE,
     ERROR_PROTOTYPE, ErrorValue, FLOAT_PROTOTYPE, FROB_PROTOTYPE, FUNCTION_PROTOTYPE, FrobValue,

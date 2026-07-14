@@ -51,7 +51,7 @@ impl RelationWriteOverlay {
     ) -> Result<(), E> {
         let mut touched_keys = BTreeMap::new();
         self.for_each(|tuple, _change| {
-            touched_keys.insert(tuple.project(positions), tuple.clone());
+            touched_keys.insert(TupleKey::project(tuple, positions), tuple.clone());
         });
         for (key, representative) in &touched_keys {
             visitor(key, representative)?;
