@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use mica_var::abi::{VALUE_INT_MAX, borrowed_value_bits, from_owned_value_bits};
+use mica_var::abi::{VALUE_INT_MAX, VALUE_INT_MIN, borrowed_value_bits, from_owned_value_bits};
 use mica_var::{Value, ValueRef};
 use mica_vm_cranelift::{
     CompiledNaturalLoop, NaturalLoopCollectionView, NaturalLoopInstruction, NaturalLoopOutcome,
@@ -194,6 +194,34 @@ fn numeric_arithmetic_plan() -> NaturalLoopPlan {
                 right: 1,
             },
         ],
+    )
+    .unwrap()
+}
+
+fn numeric_division_plan() -> NaturalLoopPlan {
+    NaturalLoopPlan::new(
+        3,
+        0,
+        0,
+        [NaturalLoopInstruction::Divide {
+            dst: 2,
+            left: 0,
+            right: 1,
+        }],
+    )
+    .unwrap()
+}
+
+fn numeric_remainder_plan() -> NaturalLoopPlan {
+    NaturalLoopPlan::new(
+        3,
+        0,
+        0,
+        [NaturalLoopInstruction::Remainder {
+            dst: 2,
+            left: 0,
+            right: 1,
+        }],
     )
     .unwrap()
 }
@@ -666,6 +694,103 @@ fn generated_numeric_arithmetic_side_exits_on_invalid_or_non_finite_results() {
 }
 
 #[test]
+fn generated_numeric_division_matches_value_semantics() {
+    let compiled = CompiledNaturalLoop::compile(&numeric_division_plan()).unwrap();
+    assert_eq!(compiled.imported_helper_count(), 0);
+    for (left, right) in [
+        (Value::int(8).unwrap(), Value::int(2).unwrap()),
+        (Value::int(7).unwrap(), Value::int(2).unwrap()),
+        (Value::int(-7).unwrap(), Value::int(2).unwrap()),
+        (Value::int(7).unwrap(), Value::float(2.0).unwrap()),
+        (Value::float(7.5).unwrap(), Value::int(2).unwrap()),
+    ] {
+        let mut scratch = [
+            borrowed_value_bits(&left),
+            borrowed_value_bits(&right),
+            bits(Value::nothing()),
+        ];
+        assert_eq!(
+            compiled.run(&mut scratch, &[], 1),
+            NaturalLoopOutcome::Complete {
+                instructions: 1,
+                modified_slots: 0x4,
+            },
+        );
+        assert_eq!(value(scratch[2]), left.checked_div(&right).unwrap());
+    }
+}
+
+#[test]
+fn generated_numeric_remainder_matches_value_semantics() {
+    let compiled = CompiledNaturalLoop::compile(&numeric_remainder_plan()).unwrap();
+    assert_eq!(compiled.imported_helper_count(), 1);
+    for (left, right) in [
+        (Value::int(7).unwrap(), Value::int(2).unwrap()),
+        (Value::int(-7).unwrap(), Value::int(2).unwrap()),
+        (Value::int(7).unwrap(), Value::float(2.0).unwrap()),
+        (Value::float(7.5).unwrap(), Value::int(2).unwrap()),
+        (Value::float(f32::MAX).unwrap(), Value::float(0.5).unwrap()),
+    ] {
+        let mut scratch = [
+            borrowed_value_bits(&left),
+            borrowed_value_bits(&right),
+            bits(Value::nothing()),
+        ];
+        assert_eq!(
+            compiled.run(&mut scratch, &[], 1),
+            NaturalLoopOutcome::Complete {
+                instructions: 1,
+                modified_slots: 0x4,
+            },
+        );
+        assert_eq!(value(scratch[2]), left.checked_rem(&right).unwrap());
+    }
+}
+
+#[test]
+fn generated_numeric_division_and_remainder_side_exit_on_errors() {
+    let divide = CompiledNaturalLoop::compile(&numeric_division_plan()).unwrap();
+    let remainder = CompiledNaturalLoop::compile(&numeric_remainder_plan()).unwrap();
+    let cases = [
+        (Value::int(1).unwrap(), Value::int(0).unwrap()),
+        (Value::int(1).unwrap(), Value::float(0.0).unwrap()),
+        (Value::string("not numeric"), Value::int(1).unwrap()),
+    ];
+    for compiled in [&divide, &remainder] {
+        for (left, right) in &cases {
+            let mut scratch = [
+                borrowed_value_bits(left),
+                borrowed_value_bits(right),
+                bits(Value::nothing()),
+            ];
+            assert_eq!(
+                compiled.run(&mut scratch, &[], 1),
+                NaturalLoopOutcome::SideExit,
+            );
+        }
+    }
+
+    let mut scratch = [
+        bits(Value::int(VALUE_INT_MIN).unwrap()),
+        bits(Value::int(-1).unwrap()),
+        bits(Value::nothing()),
+    ];
+    assert_eq!(
+        divide.run(&mut scratch, &[], 1),
+        NaturalLoopOutcome::SideExit,
+    );
+    let mut scratch = [
+        bits(Value::float(f32::MAX).unwrap()),
+        bits(Value::float(0.5).unwrap()),
+        bits(Value::nothing()),
+    ];
+    assert_eq!(
+        divide.run(&mut scratch, &[], 1),
+        NaturalLoopOutcome::SideExit,
+    );
+}
+
+#[test]
 fn generated_equality_calls_one_helper_for_heap_and_mixed_numeric_values() {
     let compiled = CompiledNaturalLoop::compile(&comparison_plan(ScalarComparison::Equal)).unwrap();
     let cases = [
@@ -887,6 +1012,41 @@ fn generated_mixed_numeric_arithmetic_executes_concurrently() {
                 NaturalLoopOutcome::Complete {
                     instructions: 4,
                     modified_slots: 0x3c,
+                },
+                Some(1.5),
+            ),
+        );
+    }
+}
+
+#[test]
+fn generated_float_remainder_helper_executes_concurrently() {
+    let compiled = Arc::new(CompiledNaturalLoop::compile(&numeric_remainder_plan()).unwrap());
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let compiled = Arc::clone(&compiled);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let left = Value::float(7.5).unwrap();
+            let right = Value::float(2.0).unwrap();
+            let mut scratch = [
+                borrowed_value_bits(&left),
+                borrowed_value_bits(&right),
+                bits(Value::nothing()),
+            ];
+            barrier.wait();
+            let outcome = compiled.run(&mut scratch, &[], 1);
+            (outcome, value(scratch[2]).as_float())
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            (
+                NaturalLoopOutcome::Complete {
+                    instructions: 1,
+                    modified_slots: 0x4,
                 },
                 Some(1.5),
             ),

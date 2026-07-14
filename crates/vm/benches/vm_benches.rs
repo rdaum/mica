@@ -17,11 +17,14 @@ use fixtures::{
     ALTERNATING_BRANCH_LOOP_INSTRUCTIONS, BUILTIN_CALL_INSTRUCTIONS, BenchmarkHost,
     INTEGER_LOOP_INSTRUCTIONS, MAX_CALL_DEPTH, NATURAL_FLOAT_SUM_INSTRUCTIONS,
     NATURAL_FLOAT_TRANSFORM_INSTRUCTIONS, NATURAL_MIXED_SCALE_INSTRUCTIONS,
-    PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS, ProgramFixture, SCALAR_LOOP_INSTRUCTIONS,
-    STATIC_CALL_INSTRUCTIONS, alternating_branch_loop_fixture, builtin_call_fixture,
-    float_add_loop_fixture, float_multiply_loop_fixture, integer_loop_fixture,
-    natural_float_sum_fixture, natural_float_transform_fixture, natural_mixed_scale_fixture,
-    predictable_branch_loop_fixture, scalar_symbol_loop_fixture, static_call_fixture,
+    NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS, PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS, ProgramFixture,
+    SCALAR_LOOP_INSTRUCTIONS, STATIC_CALL_INSTRUCTIONS, alternating_branch_loop_fixture,
+    builtin_call_fixture, float_add_loop_fixture, float_multiply_loop_fixture,
+    integer_loop_fixture, natural_exact_integer_division_fixture, natural_float_remainder_fixture,
+    natural_float_sum_fixture, natural_float_transform_fixture,
+    natural_fractional_integer_division_fixture, natural_mixed_division_fixture,
+    natural_mixed_scale_fixture, predictable_branch_loop_fixture, scalar_symbol_loop_fixture,
+    static_call_fixture,
 };
 use mica_vm::{RegisterVm, VmHostResponse};
 use micromeasure::{
@@ -223,6 +226,78 @@ fn cranelift_natural_mixed_scale_cold(_ctx: &mut NoContext, chunk_size: usize, _
     measured_loop_cold(chunk_size, true, natural_mixed_scale_fixture);
 }
 
+fn interpreter_natural_exact_integer_division_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, false, natural_exact_integer_division_fixture);
+}
+
+fn cranelift_natural_exact_integer_division_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, true, natural_exact_integer_division_fixture);
+}
+
+fn interpreter_natural_fractional_integer_division_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(
+        chunk_size,
+        false,
+        natural_fractional_integer_division_fixture,
+    );
+}
+
+fn cranelift_natural_fractional_integer_division_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(
+        chunk_size,
+        true,
+        natural_fractional_integer_division_fixture,
+    );
+}
+
+fn interpreter_natural_mixed_division_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, false, natural_mixed_division_fixture);
+}
+
+fn cranelift_natural_mixed_division_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, true, natural_mixed_division_fixture);
+}
+
+fn interpreter_natural_float_remainder_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, false, natural_float_remainder_fixture);
+}
+
+fn cranelift_natural_float_remainder_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, true, natural_float_remainder_fixture);
+}
+
 fn measured_loop_cold(chunk_size: usize, native: bool, fixture: fn() -> ProgramFixture) {
     let mut host = BenchmarkHost::default();
     for _ in 0..chunk_size {
@@ -397,6 +472,26 @@ benchmark_main!(
                     NATURAL_MIXED_SCALE_INSTRUCTIONS,
                     "mixed_scale",
                 ),
+                (
+                    natural_exact_integer_division_fixture as fn() -> ProgramFixture,
+                    NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS,
+                    "exact_integer_division",
+                ),
+                (
+                    natural_fractional_integer_division_fixture as fn() -> ProgramFixture,
+                    NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS,
+                    "fractional_integer_division",
+                ),
+                (
+                    natural_mixed_division_fixture as fn() -> ProgramFixture,
+                    NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS,
+                    "mixed_division",
+                ),
+                (
+                    natural_float_remainder_fixture as fn() -> ProgramFixture,
+                    NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS,
+                    "float_remainder",
+                ),
             ] {
                 for (backend, native) in [("interpreter", false), ("cranelift", true)] {
                     let factory = move || MeasuredLoopContext {
@@ -440,6 +535,38 @@ benchmark_main!(
                 (
                     "cranelift_natural_numeric_mixed_scale_cold",
                     cranelift_natural_mixed_scale_cold,
+                ),
+                (
+                    "interpreter_natural_numeric_exact_integer_division_cold",
+                    interpreter_natural_exact_integer_division_cold,
+                ),
+                (
+                    "cranelift_natural_numeric_exact_integer_division_cold",
+                    cranelift_natural_exact_integer_division_cold,
+                ),
+                (
+                    "interpreter_natural_numeric_fractional_integer_division_cold",
+                    interpreter_natural_fractional_integer_division_cold,
+                ),
+                (
+                    "cranelift_natural_numeric_fractional_integer_division_cold",
+                    cranelift_natural_fractional_integer_division_cold,
+                ),
+                (
+                    "interpreter_natural_numeric_mixed_division_cold",
+                    interpreter_natural_mixed_division_cold,
+                ),
+                (
+                    "cranelift_natural_numeric_mixed_division_cold",
+                    cranelift_natural_mixed_division_cold,
+                ),
+                (
+                    "interpreter_natural_numeric_float_remainder_cold",
+                    interpreter_natural_float_remainder_cold,
+                ),
+                (
+                    "cranelift_natural_numeric_float_remainder_cold",
+                    cranelift_natural_float_remainder_cold,
                 ),
             ] {
                 group
@@ -655,6 +782,22 @@ benchmark_main!(
                 (
                     natural_mixed_scale_fixture as fn() -> ProgramFixture,
                     "mixed_scale",
+                ),
+                (
+                    natural_exact_integer_division_fixture as fn() -> ProgramFixture,
+                    "exact_integer_division",
+                ),
+                (
+                    natural_fractional_integer_division_fixture as fn() -> ProgramFixture,
+                    "fractional_integer_division",
+                ),
+                (
+                    natural_mixed_division_fixture as fn() -> ProgramFixture,
+                    "mixed_division",
+                ),
+                (
+                    natural_float_remainder_fixture as fn() -> ProgramFixture,
+                    "float_remainder",
                 ),
             ] {
                 for (backend, native) in [("interpreter", false), ("cranelift", true)] {
