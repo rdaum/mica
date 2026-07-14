@@ -36,7 +36,7 @@ impl Workload {
 
     const fn name(self) -> &'static str {
         match self {
-            Self::Tuple => "transient_tuple_lifecycle",
+            Self::Tuple => "volatile_tuple_lifecycle",
             Self::Endpoint => "volatile_endpoint_lifecycle",
             Self::Request => "volatile_request_lifecycle",
         }
@@ -62,7 +62,7 @@ impl TransientBenchContext {
         let mut runner = SourceRunner::new_empty();
         runner
             .run_source(
-                "make_relation(:TransientProbe, 1)\n\
+                "make_relation(:VolatileProbe, 1, :volatile)\n\
                  make_relation(:HttpRequest, 1, :volatile)\n\
                  make_relation(:RequestMethod, 2, :volatile)\n\
                  make_relation(:RequestPath, 2, :volatile)\n\
@@ -94,19 +94,19 @@ impl TransientBenchContext {
     }
 
     fn run_tuple_lifecycle(&self) {
-        let scope = self.next_identity();
-        let tuple = Tuple::from([Value::identity(scope)]);
-        let relation = Symbol::intern("TransientProbe");
+        let identity = self.next_identity();
+        let tuple = Tuple::from([Value::identity(identity)]);
+        let relation = Symbol::intern("VolatileProbe");
         let inserted = self
             .runner
-            .assert_transient_tuple_named(scope, relation, tuple.clone())
-            .expect("transient tuple assertion should succeed");
-        debug_assert!(inserted);
+            .assert_volatile_tuples_named(vec![(relation, tuple.clone())])
+            .expect("volatile tuple assertion should succeed");
+        debug_assert_eq!(inserted, 1);
         let removed = self
             .runner
-            .retract_transient_tuple_named(scope, relation, &tuple)
-            .expect("transient tuple retraction should succeed");
-        debug_assert!(removed);
+            .retract_volatile_tuples_named(vec![(relation, tuple)])
+            .expect("volatile tuple retraction should succeed");
+        debug_assert_eq!(removed, 1);
         black_box((inserted, removed));
     }
 

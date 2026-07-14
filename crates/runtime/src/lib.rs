@@ -137,9 +137,6 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "endpoint",
     "assume_actor",
     "destroy_identity",
-    "assert_transient",
-    "retract_transient",
-    "drop_transient_scope",
     "frob",
     "frob_delegate",
     "frob_value",
@@ -673,70 +670,6 @@ impl SourceRunner {
         tuples: Vec<(Symbol, Tuple)>,
     ) -> Result<usize, SourceTaskError> {
         retract_volatile_tuples_named_in(self.task_manager.kernel(), tuples)
-    }
-
-    pub fn assert_transient_named(
-        &mut self,
-        scope: Identity,
-        relation: Symbol,
-        values: Vec<Value>,
-    ) -> Result<bool, SourceTaskError> {
-        self.assert_transient_tuple_named(scope, relation, Tuple::new(values))
-    }
-
-    pub fn assert_transient_tuple_named(
-        &mut self,
-        scope: Identity,
-        relation: Symbol,
-        tuple: Tuple,
-    ) -> Result<bool, SourceTaskError> {
-        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
-        self.task_manager
-            .assert_transient(scope, metadata, tuple)
-            .map_err(SourceTaskError::from)
-    }
-
-    pub fn assert_transient_tuples_named(
-        &mut self,
-        scope: Identity,
-        tuples: Vec<(Symbol, Tuple)>,
-    ) -> Result<usize, SourceTaskError> {
-        let tuples = transient_tuple_metadata_required(self.task_manager.kernel(), tuples)?;
-        self.task_manager
-            .assert_transient_many(scope, tuples)
-            .map_err(SourceTaskError::from)
-    }
-
-    pub fn retract_transient_named(
-        &mut self,
-        scope: Identity,
-        relation: Symbol,
-        values: Vec<Value>,
-    ) -> Result<bool, SourceTaskError> {
-        let tuple = Tuple::new(values);
-        self.retract_transient_tuple_named(scope, relation, &tuple)
-    }
-
-    pub fn retract_transient_tuple_named(
-        &mut self,
-        scope: Identity,
-        relation: Symbol,
-        tuple: &Tuple,
-    ) -> Result<bool, SourceTaskError> {
-        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
-        ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
-        self.task_manager
-            .retract_transient(scope, metadata.id(), tuple)
-            .map_err(SourceTaskError::from)
-    }
-
-    pub fn retract_transient_tuples_named(
-        &mut self,
-        scope: Identity,
-        tuples: Vec<(Symbol, Tuple)>,
-    ) -> Result<usize, SourceTaskError> {
-        let tuples = transient_tuple_relation_required(self.task_manager.kernel(), tuples)?;
-        Ok(self.task_manager.retract_transient_many(scope, tuples))
     }
 
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
@@ -1668,70 +1601,6 @@ impl SharedSourceRunner {
         tuples: Vec<(Symbol, Tuple)>,
     ) -> Result<usize, SourceTaskError> {
         retract_volatile_tuples_named_in(self.task_manager.kernel(), tuples)
-    }
-
-    pub fn assert_transient_named(
-        &self,
-        scope: Identity,
-        relation: Symbol,
-        values: Vec<Value>,
-    ) -> Result<bool, SourceTaskError> {
-        self.assert_transient_tuple_named(scope, relation, Tuple::new(values))
-    }
-
-    pub fn assert_transient_tuple_named(
-        &self,
-        scope: Identity,
-        relation: Symbol,
-        tuple: Tuple,
-    ) -> Result<bool, SourceTaskError> {
-        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
-        self.task_manager
-            .assert_transient(scope, metadata, tuple)
-            .map_err(SourceTaskError::from)
-    }
-
-    pub fn assert_transient_tuples_named(
-        &self,
-        scope: Identity,
-        tuples: Vec<(Symbol, Tuple)>,
-    ) -> Result<usize, SourceTaskError> {
-        let tuples = transient_tuple_metadata_required(self.task_manager.kernel(), tuples)?;
-        self.task_manager
-            .assert_transient_many(scope, tuples)
-            .map_err(SourceTaskError::from)
-    }
-
-    pub fn retract_transient_named(
-        &self,
-        scope: Identity,
-        relation: Symbol,
-        values: Vec<Value>,
-    ) -> Result<bool, SourceTaskError> {
-        let tuple = Tuple::new(values);
-        self.retract_transient_tuple_named(scope, relation, &tuple)
-    }
-
-    pub fn retract_transient_tuple_named(
-        &self,
-        scope: Identity,
-        relation: Symbol,
-        tuple: &Tuple,
-    ) -> Result<bool, SourceTaskError> {
-        let metadata = relation_metadata_required(self.task_manager.kernel(), relation)?;
-        ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
-        self.task_manager
-            .retract_transient(scope, metadata.id(), tuple)
-            .map_err(SourceTaskError::from)
-    }
-
-    pub fn retract_transient_tuples_named(
-        &self,
-        scope: Identity,
-        tuples: Vec<(Symbol, Tuple)>,
-    ) -> Result<usize, SourceTaskError> {
-        let tuples = transient_tuple_relation_required(self.task_manager.kernel(), tuples)?;
-        Ok(self.task_manager.retract_transient_many(scope, tuples))
     }
 
     pub fn drain_emissions(&self) -> Vec<Effect> {
@@ -3764,9 +3633,6 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
         .with_builtin("endpoint", endpoint_builtin)
         .with_builtin("assume_actor", assume_actor_builtin)
         .with_builtin("destroy_identity", destroy_identity_builtin)
-        .with_builtin("assert_transient", assert_transient_builtin)
-        .with_builtin("retract_transient", retract_transient_builtin)
-        .with_builtin("drop_transient_scope", drop_transient_scope_builtin)
         .with_builtin("frob", frob_builtin)
         .with_builtin("frob_delegate", frob_delegate_builtin)
         .with_builtin("frob_value", frob_value_builtin)
@@ -5015,89 +4881,6 @@ fn destroy_identity_builtin(
     })
 }
 
-fn assert_transient_builtin(
-    context: &mut BuiltinContext<'_, '_>,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
-    if args.len() != 3 {
-        return Err(invalid_builtin_call(
-            "assert_transient",
-            "expected assert_transient(#scope, :Relation, [values])",
-        ));
-    }
-    let scope = builtin_identity_arg("assert_transient", args, 0)?;
-    let metadata = builtin_relation_metadata_arg(context, "assert_transient", args, 1)?;
-    require_relation_write(context.authority(), metadata.id())?;
-    let tuple = builtin_tuple_arg("assert_transient", args, 2, metadata.arity())?;
-    Ok(Value::bool(
-        context.assert_transient(scope, metadata, tuple)?,
-    ))
-}
-
-fn retract_transient_builtin(
-    context: &mut BuiltinContext<'_, '_>,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
-    if args.len() != 3 {
-        return Err(invalid_builtin_call(
-            "retract_transient",
-            "expected retract_transient(#scope, :Relation, [values])",
-        ));
-    }
-    let scope = builtin_identity_arg("retract_transient", args, 0)?;
-    let metadata = builtin_relation_metadata_arg(context, "retract_transient", args, 1)?;
-    require_relation_write(context.authority(), metadata.id())?;
-    let tuple = builtin_tuple_arg("retract_transient", args, 2, metadata.arity())?;
-    Ok(Value::bool(context.retract_transient(
-        scope,
-        metadata.id(),
-        &tuple,
-    )?))
-}
-
-fn drop_transient_scope_builtin(
-    context: &mut BuiltinContext<'_, '_>,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
-    if args.len() != 1 {
-        return Err(invalid_builtin_call(
-            "drop_transient_scope",
-            "expected drop_transient_scope(#scope)",
-        ));
-    }
-    let scope = builtin_identity_arg("drop_transient_scope", args, 0)?;
-    require_transient_scope_drop(context, scope)?;
-    let dropped = context.drop_transient_scope(scope)?;
-    Value::int(dropped as i64).map_err(|_| {
-        invalid_builtin_call(
-            "drop_transient_scope",
-            "dropped tuple count is out of range",
-        )
-    })
-}
-
-fn require_transient_scope_drop(
-    context: &BuiltinContext<'_, '_>,
-    scope: Identity,
-) -> Result<(), RuntimeError> {
-    if context.authority().can_grant() {
-        return Ok(());
-    }
-    let runtime_context = context.runtime_context();
-    if runtime_context.endpoint() == scope
-        || [runtime_context.principal(), runtime_context.actor()]
-            .into_iter()
-            .flatten()
-            .any(|visible_scope| visible_scope == scope)
-    {
-        return Ok(());
-    }
-    Err(RuntimeError::PermissionDenied {
-        operation: "drop_transient_scope",
-        target: Value::identity(scope),
-    })
-}
-
 fn runtime_identity_builtin(
     name: &'static str,
     args: &[Value],
@@ -5462,34 +5245,6 @@ fn relation_metadata_required(
             format!("unknown relation {}", name.name().unwrap_or("<unnamed>")),
         )
     })
-}
-
-fn transient_tuple_metadata_required(
-    kernel: &RelationKernel,
-    tuples: Vec<(Symbol, Tuple)>,
-) -> Result<Vec<(RelationMetadata, Tuple)>, SourceTaskError> {
-    tuples
-        .into_iter()
-        .map(|(relation, tuple)| {
-            let metadata = relation_metadata_required(kernel, relation)?;
-            ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
-            Ok((metadata, tuple))
-        })
-        .collect()
-}
-
-fn transient_tuple_relation_required(
-    kernel: &RelationKernel,
-    tuples: Vec<(Symbol, Tuple)>,
-) -> Result<Vec<(Identity, Tuple)>, SourceTaskError> {
-    tuples
-        .into_iter()
-        .map(|(relation, tuple)| {
-            let metadata = relation_metadata_required(kernel, relation)?;
-            ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
-            Ok((metadata.id(), tuple))
-        })
-        .collect()
 }
 
 fn volatile_tuple_relations_required(
@@ -6588,54 +6343,6 @@ fn builtin_key_positions_arg(
         return Err(invalid_builtin_call(name, "expected key position list"));
     };
     positions
-}
-
-fn builtin_relation_metadata_arg(
-    context: &BuiltinContext<'_, '_>,
-    name: &str,
-    args: &[Value],
-    index: usize,
-) -> Result<RelationMetadata, RuntimeError> {
-    let relation_name = builtin_symbol_arg(name, args, index)?;
-    relation_metadata_named(context.kernel(), relation_name)
-        .ok_or_else(|| invalid_builtin_call(name, "unknown relation"))
-}
-
-fn builtin_tuple_arg(
-    name: &str,
-    args: &[Value],
-    index: usize,
-    arity: u16,
-) -> Result<Tuple, RuntimeError> {
-    let Some(value) = args.get(index) else {
-        return Err(invalid_builtin_call(name, "expected tuple value list"));
-    };
-    let Some(tuple) = value.with_list(|values| {
-        if values.len() != arity as usize {
-            return Err(invalid_builtin_call(
-                name,
-                "tuple arity does not match relation",
-            ));
-        }
-        Ok(Tuple::new(values.iter().cloned()))
-    }) else {
-        return Err(invalid_builtin_call(name, "expected tuple value list"));
-    };
-    tuple
-}
-
-fn require_relation_write(
-    authority: &AuthorityContext,
-    relation: Identity,
-) -> Result<(), RuntimeError> {
-    if authority.can_write_relation(relation) {
-        Ok(())
-    } else {
-        Err(RuntimeError::PermissionDenied {
-            operation: "write",
-            target: Value::identity(relation),
-        })
-    }
 }
 
 pub(crate) fn invalid_builtin_call(name: &str, message: impl Into<String>) -> RuntimeError {

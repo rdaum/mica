@@ -202,3 +202,11 @@ The checkpoint is stable at 0.55%, 1.04%, and 1.32% coefficient of variation. Fo
 batched, but the complete lifecycle still publishes four MVCC snapshots: endpoint open, request
 assertion, request retraction, and endpoint close. That publication count and the number of relation
 states copied per request are the next performance targets after the transient overlay is removed.
+
+## Public Surface Removal Checkpoint
+
+The `assert_transient`, `retract_transient`, and `drop_transient_scope` builtins are no longer part
+of the language, and the runner, driver, and VM builtin context no longer expose transient mutation
+APIs. Volatile facts use ordinary `assert` and `retract` statements inside tasks; trusted hosts use
+the checked batched volatile APIs for lifecycle-owned state. The remaining transient code is now an
+unreachable internal overlay, ready to be deleted without another producer migration.
