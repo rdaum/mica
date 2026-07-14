@@ -60,6 +60,12 @@ This keeps checks cheap in hot paths. A relation read should not need to run a f
 every time it scans a tuple. Instead, the runtime builds an authority context at a task or session
 boundary and uses that context for the task's operations.
 
+Read and write grants apply to a whole named relation. They do not filter rows according to the
+task's actor, principal, endpoint, or any specially named tuple position. This rule is the same for
+durable and volatile relations: an authorized unbound query can observe every fact currently in the
+relation. Applications that need ownership or isolation must store an explicit owner identity and
+bind it in their queries, or expose a derived relation whose rules enforce the intended policy.
+
 Capability values are ephemeral runtime tokens. They can authorize specific operations within the
 running task or session, but they are not durable policy facts and are not persistable values.
 
