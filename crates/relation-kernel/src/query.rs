@@ -18,7 +18,7 @@ use crate::relation_algebra::{
 };
 use crate::tuple::TupleKey;
 use crate::{ExecutionContext, KernelError, RelationId, Tuple};
-use mica_var::Value;
+use mica_var::{RelationValue, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -55,7 +55,7 @@ pub struct RelationCapabilities {
     pub supports_batch_export: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackedRelation {
     columns: Arc<[Arc<[Value]>]>,
     rows: Arc<[Tuple]>,
@@ -208,6 +208,9 @@ pub enum QueryPlan {
         relation: RelationId,
         bindings: Vec<Option<Value>>,
     },
+    Input {
+        relation: RelationValue,
+    },
     Project {
         input: Box<QueryPlan>,
         positions: Vec<u16>,
@@ -251,6 +254,10 @@ pub(crate) enum PhysicalQueryPlan {
         relation: RelationId,
         bindings: Vec<Option<Value>>,
     },
+    Input {
+        relation: RelationValue,
+        packed: Option<Arc<PackedRelation>>,
+    },
     Project {
         input: Box<PhysicalQueryPlan>,
         positions: Vec<u16>,
@@ -289,6 +296,14 @@ impl QueryPlan {
             relation,
             bindings: bindings.into_iter().collect(),
         }
+    }
+
+    /// Uses an immutable relation value as a query input.
+    ///
+    /// Query operators address columns by their canonical positions in the
+    /// relation value's heading.
+    pub fn input(relation: RelationValue) -> Self {
+        Self::Input { relation }
     }
 
     pub fn project(self, positions: impl IntoIterator<Item = u16>) -> Self {
@@ -390,6 +405,10 @@ fn compile_query(plan: &QueryPlan) -> PhysicalQueryPlan {
             relation: *relation,
             bindings: bindings.clone(),
         },
+        QueryPlan::Input { relation } => PhysicalQueryPlan::Input {
+            packed: pack_relation_input(relation),
+            relation: relation.clone(),
+        },
         QueryPlan::Project { input, positions } => {
             compile_projection(compile_query(input), positions)
         }
@@ -437,6 +456,19 @@ fn compile_query(plan: &QueryPlan) -> PhysicalQueryPlan {
     }
 }
 
+fn pack_relation_input(relation: &RelationValue) -> Option<Arc<PackedRelation>> {
+    if !matches!(relation.arity(), 1 | 2)
+        || relation
+            .rows()
+            .iter()
+            .flat_map(|row| row.values())
+            .any(|value| !value.is_immediate())
+    {
+        return None;
+    }
+    PackedRelation::from_canonical_tuples(relation.rows().to_vec(), relation.arity()).map(Arc::new)
+}
+
 fn compile_projection(input: PhysicalQueryPlan, positions: &[u16]) -> PhysicalQueryPlan {
     let PhysicalQueryPlan::Project {
         input,
@@ -461,6 +493,7 @@ fn execute_physical_query(
 ) -> Result<Vec<Tuple>, KernelError> {
     match plan {
         PhysicalQueryPlan::Scan { relation, bindings } => reader.scan_relation(*relation, bindings),
+        PhysicalQueryPlan::Input { relation, .. } => Ok(relation.rows().to_vec()),
         PhysicalQueryPlan::Project { input, positions } => {
             let rows = execute_physical_query(input, reader)?;
             Ok(project_tuple_rows(rows, positions))
@@ -763,7 +796,7 @@ fn validate_join_positions(left_positions: &[u16], right_positions: &[u16]) {
 mod tests {
     use super::*;
     use crate::{RelationKernel, RelationMetadata};
-    use mica_var::{Identity, Symbol, Value};
+    use mica_var::{Identity, RelationValue, Symbol, Value};
     use std::cell::Cell;
 
     fn rel(id: u64) -> RelationId {
@@ -1021,6 +1054,133 @@ mod tests {
         assert_eq!(
             query.execute(&tx, &ExecutionContext::serial()).unwrap(),
             prepared.execute(&tx, &ExecutionContext::serial()).unwrap()
+        );
+    }
+
+    #[test]
+    fn query_plan_uses_relation_values_as_canonical_positional_inputs() {
+        let a = Symbol::intern("query-input-a");
+        let z = Symbol::intern("query-input-z");
+        let relation = RelationValue::new(
+            [z, a],
+            [
+                Tuple::from([int(20), int(2)]),
+                Tuple::from([int(10), int(1)]),
+            ],
+        )
+        .unwrap();
+        assert_eq!(relation.heading(), [a, z]);
+
+        let kernel = RelationKernel::new();
+        let rows = QueryPlan::input(relation)
+            .project([1])
+            .execute(kernel.snapshot().as_ref(), &ExecutionContext::serial())
+            .unwrap();
+
+        assert_eq!(rows, vec![Tuple::from([int(10)]), Tuple::from([int(20)])]);
+    }
+
+    #[test]
+    fn relation_value_inputs_join_indexed_relation_scans() {
+        let kernel = kernel_with_edges();
+        let mut tx = kernel.begin();
+        tx.assert(rel(10), Tuple::from([int(1), int(3)])).unwrap();
+        tx.assert(rel(10), Tuple::from([int(2), int(4)])).unwrap();
+        tx.commit().unwrap();
+
+        let input = RelationValue::new(
+            [Symbol::intern("input-item"), Symbol::intern("input-key")],
+            [Tuple::from([int(8), int(2)]), Tuple::from([int(9), int(1)])],
+        )
+        .unwrap();
+        let query = QueryPlan::join_eq(
+            QueryPlan::input(input),
+            QueryPlan::scan(rel(10), [None, None]),
+            [1],
+            [0],
+        )
+        .project([0, 3]);
+
+        assert_eq!(
+            query
+                .execute(kernel.snapshot().as_ref(), &ExecutionContext::serial())
+                .unwrap(),
+            vec![Tuple::from([int(8), int(4)]), Tuple::from([int(9), int(3)])]
+        );
+    }
+
+    #[test]
+    fn packed_executor_accepts_large_immediate_relation_value_inputs() {
+        let relation = RelationValue::new(
+            [Symbol::intern("packed-input-value")],
+            (0..384).map(|row| Tuple::from([int(row)])),
+        )
+        .unwrap();
+        let prepared = QueryPlan::input(relation).prepare();
+        let kernel = RelationKernel::new();
+        let snapshot = kernel.snapshot();
+
+        let packed = crate::batch::execute_packed_query(
+            &prepared.root,
+            snapshot.as_ref(),
+            &ExecutionContext::serial(),
+        )
+        .unwrap()
+        .expect("large immediate relation input should select the packed executor");
+        let tuples = execute_physical_query(&prepared.root, snapshot.as_ref()).unwrap();
+
+        assert_eq!(packed, tuples);
+        assert_eq!(packed.len(), 384);
+    }
+
+    #[test]
+    fn packed_executor_combines_relation_values_with_stored_relations() {
+        let kernel = kernel_with_large_immediate_relations();
+        let snapshot = kernel.snapshot();
+        let input = RelationValue::new(
+            [Symbol::intern("mixed-packed-input-value")],
+            (380..390).map(|row| Tuple::from([int(row)])),
+        )
+        .unwrap();
+
+        assert_packed_matches_tuple(
+            QueryPlan::union(QueryPlan::scan(rel(100), [None]), QueryPlan::input(input)),
+            snapshot.as_ref(),
+        );
+    }
+
+    #[test]
+    fn relation_value_inputs_retain_tuple_fallbacks() {
+        let heap = RelationValue::new(
+            [Symbol::intern("heap-input-value")],
+            (0..300).map(|row| Tuple::from([Value::string(format!("value-{row}"))])),
+        )
+        .unwrap();
+        let heap = QueryPlan::input(heap).prepare();
+        let unit = RelationValue::new([], [Tuple::new([])]).unwrap();
+        let kernel = RelationKernel::new();
+        let snapshot = kernel.snapshot();
+
+        assert!(
+            crate::batch::execute_packed_query(
+                &heap.root,
+                snapshot.as_ref(),
+                &ExecutionContext::serial(),
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(
+            heap.execute(snapshot.as_ref(), &ExecutionContext::serial())
+                .unwrap()
+                .len(),
+            300
+        );
+        assert_eq!(
+            QueryPlan::input(unit)
+                .execute(snapshot.as_ref(), &ExecutionContext::serial())
+                .unwrap(),
+            vec![Tuple::new([])]
         );
     }
 

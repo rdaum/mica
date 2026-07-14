@@ -754,34 +754,42 @@ fn packed_plan_eligible(
     reader: &impl RelationRead,
 ) -> Result<bool, KernelError> {
     let mut has_large_input = false;
-    let eligible = visit_scans(plan, &mut |relation, bindings| {
-        if bindings.iter().any(Option::is_some) {
-            return Ok(false);
-        }
-        let capabilities = reader.relation_capabilities(relation)?;
-        has_large_input |= capabilities
-            .cardinality
-            .is_some_and(|rows| rows >= PACKED_ROW_THRESHOLD);
-        Ok(capabilities.supports_batch_export
-            && capabilities.immediate_only()
-            && matches!(capabilities.value_domains.len(), 1 | 2))
-    })?;
+    let eligible = packed_sources_eligible(plan, reader, &mut has_large_input)?;
     Ok(eligible && has_large_input)
 }
 
-fn visit_scans(
+fn packed_sources_eligible(
     plan: &PhysicalQueryPlan,
-    visit: &mut impl FnMut(crate::RelationId, &[Option<Value>]) -> Result<bool, KernelError>,
+    reader: &impl RelationRead,
+    has_large_input: &mut bool,
 ) -> Result<bool, KernelError> {
     match plan {
-        PhysicalQueryPlan::Scan { relation, bindings } => visit(*relation, bindings),
-        PhysicalQueryPlan::Project { input, .. } => visit_scans(input, visit),
+        PhysicalQueryPlan::Scan { relation, bindings } => {
+            if bindings.iter().any(Option::is_some) {
+                return Ok(false);
+            }
+            let capabilities = reader.relation_capabilities(*relation)?;
+            *has_large_input |= capabilities
+                .cardinality
+                .is_some_and(|rows| rows >= PACKED_ROW_THRESHOLD);
+            Ok(capabilities.supports_batch_export
+                && capabilities.immediate_only()
+                && matches!(capabilities.value_domains.len(), 1 | 2))
+        }
+        PhysicalQueryPlan::Input { relation, packed } => {
+            *has_large_input |= relation.len() >= PACKED_ROW_THRESHOLD;
+            Ok(packed.is_some())
+        }
+        PhysicalQueryPlan::Project { input, .. } => {
+            packed_sources_eligible(input, reader, has_large_input)
+        }
         PhysicalQueryPlan::JoinEq { left, right, .. }
         | PhysicalQueryPlan::SemiJoin { left, right, .. }
         | PhysicalQueryPlan::AntiJoin { left, right, .. }
         | PhysicalQueryPlan::Union { left, right }
         | PhysicalQueryPlan::Difference { left, right } => {
-            Ok(visit_scans(left, visit)? && visit_scans(right, visit)?)
+            Ok(packed_sources_eligible(left, reader, has_large_input)?
+                && packed_sources_eligible(right, reader, has_large_input)?)
         }
     }
 }
@@ -799,6 +807,9 @@ fn execute_batch(
             }
             let rows = reader.scan_relation(*relation, bindings)?;
             Ok(NativeBatch::from_tuples(rows, bindings.len()))
+        }
+        PhysicalQueryPlan::Input { packed, .. } => {
+            Ok(packed.as_deref().map(NativeBatch::from_packed))
         }
         PhysicalQueryPlan::Project { input, positions } => {
             let Some(input) = execute_batch(input, reader, execution_context, workspace)? else {
