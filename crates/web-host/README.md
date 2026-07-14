@@ -17,9 +17,9 @@ The same host now also exposes a browser DOM-sync SSE surface under `/sync`:
 - `GET /sync/events?session=<u64>` opens a chunked `text/event-stream`.
 - `POST /sync/input` accepts binary sync envelopes from the browser bootstrap.
 
-Each browser sync session keeps one Mica endpoint open for its lifetime, so durable MUD-style UI
-session facts can stay keyed by `endpoint()` across multiple HTTP requests without introducing
-Tokio or a web framework.
+Each browser sync session keeps one Mica endpoint open for its lifetime, so volatile MUD-style UI
+session facts can stay keyed by `endpoint()` across multiple HTTP requests and disappear on process
+restart without introducing Tokio or a web framework.
 
 Run the standalone host:
 
