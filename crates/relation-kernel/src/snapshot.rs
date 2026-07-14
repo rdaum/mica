@@ -15,7 +15,7 @@ use crate::computed::{ComputedRelationRead, ComputedRelationRegistry};
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
-use crate::tuple::union_ordered_tuple_rows;
+use crate::relation_algebra::union_ordered_tuple_rows;
 use crate::{
     ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, PackedRelation,
     RelationCapabilities, RelationId, RelationMetadata, RelationRead, RelationSource,
@@ -696,7 +696,7 @@ impl RelationRead for Snapshot {
 
         let left_rows = self.scan(left_relation, left_bindings)?;
         let right_rows = self.scan(right_relation, right_bindings)?;
-        Ok(Some(crate::query::join_eq(
+        Ok(Some(crate::relation_algebra::equality_join_tuple_rows(
             left_rows,
             right_rows,
             left_positions,

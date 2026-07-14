@@ -12,7 +12,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::ProjectedTupleIndex;
-use crate::tuple::{TupleKey, difference_tuple_rows, finish_tuple_rows};
+use crate::relation_algebra::{
+    difference_tuple_rows, equality_join_tuple_rows, finish_tuple_rows, project_tuple_rows,
+    union_tuple_rows,
+};
+use crate::tuple::TupleKey;
 use crate::{ExecutionContext, KernelError, RelationId, Tuple};
 use mica_var::Value;
 use std::collections::BTreeSet;
@@ -459,11 +463,7 @@ fn execute_physical_query(
         PhysicalQueryPlan::Scan { relation, bindings } => reader.scan_relation(*relation, bindings),
         PhysicalQueryPlan::Project { input, positions } => {
             let rows = execute_physical_query(input, reader)?;
-            Ok(finish_tuple_rows(
-                rows.into_iter()
-                    .map(|tuple| tuple.select(positions.iter().copied()))
-                    .collect(),
-            ))
+            Ok(project_tuple_rows(rows, positions))
         }
         PhysicalQueryPlan::JoinEq {
             left,
@@ -483,11 +483,10 @@ fn execute_physical_query(
             left_positions,
             right_positions,
         } => execute_semi_join(left, right, left_positions, right_positions, reader, false),
-        PhysicalQueryPlan::Union { left, right } => {
-            let mut rows = execute_physical_query(left, reader)?;
-            rows.extend(execute_physical_query(right, reader)?);
-            Ok(finish_tuple_rows(rows))
-        }
+        PhysicalQueryPlan::Union { left, right } => Ok(union_tuple_rows(
+            execute_physical_query(left, reader)?,
+            execute_physical_query(right, reader)?,
+        )),
         PhysicalQueryPlan::Difference { left, right } => Ok(difference_tuple_rows(
             execute_physical_query(left, reader)?,
             execute_physical_query(right, reader)?,
@@ -523,7 +522,7 @@ fn execute_join_eq(
     }
 
     let right_rows = execute_physical_query(right, reader)?;
-    Ok(join_eq(
+    Ok(equality_join_tuple_rows(
         left_rows,
         right_rows,
         left_positions,
@@ -700,21 +699,6 @@ fn probe_bindings(
         *binding = Some(value);
     }
     Some(probe_bindings)
-}
-
-pub(crate) fn join_eq(
-    left_rows: Vec<Tuple>,
-    right_rows: Vec<Tuple>,
-    left_positions: &[u16],
-    right_positions: &[u16],
-) -> Vec<Tuple> {
-    let left_index = ProjectedTupleIndex::from_rows(left_rows, left_positions);
-    let right_index = ProjectedTupleIndex::from_rows(right_rows, right_positions);
-    let mut out = Vec::new();
-    left_index.matching_row_pairs(&right_index, |left, right| {
-        out.push(left.concat(right));
-    });
-    finish_tuple_rows(out)
 }
 
 fn semi_join(

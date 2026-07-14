@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::RelationState;
+use crate::relation_algebra::union_ordered_tuple_rows;
 use crate::snapshot::{active_rules, build_derived_relations};
-use crate::tuple::union_ordered_tuple_rows;
 use crate::{
     CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, FactId, KernelError,
     RelationCapabilities, RelationId, RelationMetadata, RelationRead, RelationSource,

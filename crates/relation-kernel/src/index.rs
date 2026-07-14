@@ -14,7 +14,8 @@
 use crate::ScanControl;
 use crate::error::KernelError;
 use crate::metadata::RelationMetadata;
-use crate::tuple::{Tuple, TupleKey, finish_tuple_rows};
+use crate::relation_algebra::finish_tuple_rows;
+use crate::tuple::{Tuple, TupleKey};
 use mica_var::Value;
 pub(crate) use tuple_index::ProjectedTupleIndex;
 use tuple_index::TupleIndex;

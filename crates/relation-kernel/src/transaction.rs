@@ -16,12 +16,14 @@ mod overlay;
 use crate::computed::ComputedRelationRead;
 use crate::index::{RelationMutationKind, RelationState};
 use crate::metrics::{CommitOutcome, TransactionReadOperation, TransactionWriteOperation};
+use crate::relation_algebra::{
+    difference_ordered_tuple_rows, equality_join_tuple_rows, union_ordered_tuple_rows,
+};
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
     active_rules, build_derived_relations, empty_derived_cache, empty_dispatch_cache,
     empty_method_program_cache, empty_packed_cache, relation_has_active_rule_head,
 };
-use crate::tuple::{difference_ordered_tuple_rows, union_ordered_tuple_rows};
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRead, DispatchRelations,
     ExecutionContext, KernelError, PackedRelation, RelationCapabilities, RelationId,
@@ -1155,7 +1157,7 @@ impl RelationRead for Transaction<'_> {
 
         let left_rows = self.scan(left_relation, left_bindings)?;
         let right_rows = self.scan(right_relation, right_bindings)?;
-        Ok(Some(crate::query::join_eq(
+        Ok(Some(equality_join_tuple_rows(
             left_rows,
             right_rows,
             left_positions,
