@@ -982,11 +982,11 @@ end
 
 verb event/scene_at(event @ #event<_>, room @ #room)
   let payload = frob_value(event)
-  let bindings = payload[:bindings]
+  let bindings = index_or(payload, :bindings, nothing)
   if bindings == nothing
     bindings = {}
   end
-  if bindings[:location] == nothing
+  if index_or(bindings, :location, nothing) == nothing
     bindings[:location] = room
     payload[:bindings] = bindings
   end
@@ -1218,14 +1218,14 @@ end
 
 verb builder/parse_dig(spec @ #string)
   let tokens = words(lower(spec))
-  if tokens[0] == nothing || tokens[1] != "to"
+  if index_or(tokens, 0, nothing) == nothing || index_or(tokens, 1, nothing) != "to"
     return {:ok -> false}
   end
 
   let direction = tokens[0]
   let target_words = []
   let index = 2
-  while tokens[index] != nothing
+  while index_or(tokens, index, nothing) != nothing
     target_words = [@target_words, tokens[index]]
     index = index + 1
   end

@@ -1049,6 +1049,7 @@ fn opcode_name(opcode: &Opcode) -> &'static str {
         Opcode::Unary { .. } => "Unary",
         Opcode::Binary { .. } => "Binary",
         Opcode::BuildList { .. } => "BuildList",
+        Opcode::BuildRelation { .. } => "BuildRelation",
         Opcode::BuildMap { .. } => "BuildMap",
         Opcode::BuildMapDynamic { .. } => "BuildMapDynamic",
         Opcode::BuildRange { .. } => "BuildRange",
@@ -1670,6 +1671,44 @@ impl RegisterVm {
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
+            Opcode::BuildRelation {
+                dst,
+                heading,
+                cells,
+                row_count,
+            } => {
+                let heading = program
+                    .operands(*heading)
+                    .iter()
+                    .map(|operand| {
+                        let OperandRef::Constant(id) = operand else {
+                            unreachable!("validated relation headings contain constants");
+                        };
+                        program
+                            .constant(*id)
+                            .as_symbol()
+                            .expect("validated relation headings contain symbols")
+                    })
+                    .collect::<Vec<_>>();
+                let cells = self.resolve_operands(program, program.operands(*cells));
+                let arity = heading.len();
+                let rows = if arity == 0 {
+                    (0..usize::from(*row_count))
+                        .map(|_| Tuple::new([]))
+                        .collect::<Vec<_>>()
+                } else {
+                    cells
+                        .chunks_exact(arity)
+                        .map(|row| Tuple::new(row.iter().cloned()))
+                        .collect()
+                };
+                let value = Value::relation(heading, rows).map_err(|error| {
+                    RuntimeError::ProgramArtifact(format!("invalid relation literal: {error}"))
+                })?;
+                self.write_register_unchecked(*dst, value);
+                self.advance_ip_unchecked();
+                Ok(VmHostResponse::Continue)
+            }
             Opcode::BuildMap { dst, entries } => {
                 let entries = program
                     .map_entries(*entries)
@@ -1703,10 +1742,13 @@ impl RegisterVm {
                 collection,
                 index,
             } => {
-                let value = index_value(
+                let value = match index_value(
                     self.read_register_unchecked(*collection),
                     &self.resolve_operand_ref(program, *index),
-                );
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return self.begin_raise(error),
+                };
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
@@ -1717,11 +1759,14 @@ impl RegisterVm {
                 index,
                 value,
             } => {
-                let value = set_index_value(
+                let value = match set_index_value(
                     self.read_register_unchecked(*collection),
                     &self.resolve_operand_ref(program, *index),
                     self.resolve_operand_ref(program, *value),
-                );
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return self.begin_raise(error),
+                };
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
@@ -2896,7 +2941,6 @@ impl RegisterVm {
 
 fn truthy(value: &Value) -> bool {
     match value.kind() {
-        ValueKind::Nothing => false,
         ValueKind::Bool => value.as_bool().unwrap_or(false),
         ValueKind::List => value.list_len().is_some_and(|len| len > 0),
         ValueKind::Relation => value
@@ -3169,12 +3213,12 @@ fn arithmetic_error<const N: usize>(code: &str, message: &str, values: [&Value; 
     )
 }
 
-fn index_value(collection: &Value, index: &Value) -> Value {
+fn index_value(collection: &Value, index: &Value) -> Result<Value, Value> {
     if let Some((start, end)) = index.with_range(|start, end| (start.clone(), end.cloned()))
         && let Some(len) = collection.list_len()
     {
         return list_range_slice(collection, len, &start, end.as_ref())
-            .unwrap_or_else(Value::nothing);
+            .ok_or_else(|| index_error(collection, index));
     }
     if let Some(index) = index.as_int()
         && index >= 0
@@ -3184,9 +3228,11 @@ fn index_value(collection: &Value, index: &Value) -> Value {
                 .flatten()
         })
     {
-        return value;
+        return Ok(value);
     }
-    collection.map_get(index).unwrap_or_else(Value::nothing)
+    collection
+        .map_get(index)
+        .ok_or_else(|| index_error(collection, index))
 }
 
 fn list_range_slice(
@@ -3209,10 +3255,18 @@ fn list_range_slice(
     collection.list_slice(start, end_exclusive)
 }
 
-fn set_index_value(collection: &Value, index: &Value, value: Value) -> Value {
+fn set_index_value(collection: &Value, index: &Value, value: Value) -> Result<Value, Value> {
     collection
         .index_set(index, value)
-        .unwrap_or_else(Value::nothing)
+        .ok_or_else(|| index_error(collection, index))
+}
+
+fn index_error(collection: &Value, index: &Value) -> Value {
+    Value::error(
+        Symbol::intern("E_INDEX"),
+        Some("collection index is missing or invalid"),
+        Some(Value::list([collection.clone(), index.clone()])),
+    )
 }
 
 fn error_field_value(error: &Value, field: ErrorField) -> Value {
@@ -3251,7 +3305,7 @@ fn collection_len(collection: &Value) -> Value {
     i64::try_from(len)
         .ok()
         .and_then(|len| Value::int(len).ok())
-        .unwrap_or_else(Value::nothing)
+        .unwrap_or_else(|| Value::int(0).expect("zero is a valid Mica integer"))
 }
 
 #[cfg(feature = "cranelift")]
@@ -3564,7 +3618,7 @@ fn normalize_raised_error(
 ) -> Result<Value, RuntimeError> {
     let message = message
         .and_then(|message| {
-            if message.kind() == ValueKind::Nothing {
+            if message.is_empty_relation() {
                 None
             } else {
                 Some(error_message_text(message))

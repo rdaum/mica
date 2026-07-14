@@ -1060,9 +1060,9 @@ end
 verb ui/command_suggestions(actor @ #player, draft @ #string, show_empty @ #bool)
   let raw = trim(draft)
   let tokens = words(lower(raw))
-  let first = tokens[0]
-  let second = tokens[1]
-  let third = tokens[2]
+  let first = index_or(tokens, 0, nothing)
+  let second = index_or(tokens, 1, nothing)
+  let third = index_or(tokens, 2, nothing)
   let ends_space = false
   if draft != ""
     ends_space = string_slice(draft, string_len(draft) - 1, string_len(draft)) == " "

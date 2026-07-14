@@ -178,6 +178,7 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "openai_chat_completion_with_options",
     "llm_chat_stream",
     "map_pairs",
+    "index_or",
     "project",
     "union",
     "difference",
@@ -2950,8 +2951,10 @@ fn source_literal(
     identity_names: &BTreeMap<Identity, String>,
     relation_names: &BTreeMap<Identity, String>,
 ) -> String {
+    if value.is_empty_relation() {
+        return "nothing".to_owned();
+    }
     match value.kind() {
-        ValueKind::Nothing => "nothing".to_owned(),
         ValueKind::Bool => value.as_bool().unwrap().to_string(),
         ValueKind::Int => value.as_int().unwrap().to_string(),
         ValueKind::Float => float_to_literal(value.as_float().unwrap()),
@@ -3028,7 +3031,32 @@ fn source_literal(
             .unwrap(),
         ValueKind::Capability => "<cap>".to_owned(),
         ValueKind::Function => "<function>".to_owned(),
-        ValueKind::Relation => "<relation>".to_owned(),
+        ValueKind::Relation => value
+            .with_relation(|relation| {
+                let heading = render_sequence(
+                    "[",
+                    "]",
+                    relation
+                        .heading()
+                        .iter()
+                        .map(|column| render_symbol(*column, ":")),
+                );
+                let rows = render_sequence(
+                    "{",
+                    "}",
+                    relation.rows().iter().map(|row| {
+                        render_sequence(
+                            "[",
+                            "]",
+                            row.values()
+                                .iter()
+                                .map(|cell| source_literal(cell, identity_names, relation_names)),
+                        )
+                    }),
+                );
+                format!("{heading} {rows}")
+            })
+            .unwrap(),
         ValueKind::Frob => value
             .with_frob(|delegate, payload| {
                 format!(
@@ -3663,6 +3691,7 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
         .with_builtin("from_literal", from_literal_builtin)
         .with_builtin("to_symbol", to_symbol_builtin)
         .with_builtin("map_pairs", map_pairs_builtin)
+        .with_builtin("index_or", index_or_builtin)
         .with_builtin("project", project_builtin)
         .with_builtin("union", union_builtin)
         .with_builtin("difference", difference_builtin)
@@ -3967,6 +3996,62 @@ fn map_pairs_builtin(
     Ok(Value::list(pairs))
 }
 
+fn index_or_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    let [collection, index, default] = args else {
+        return Err(invalid_builtin_call(
+            "index_or",
+            "expected index_or(collection, index, default)",
+        ));
+    };
+
+    if collection.map_len().is_some() {
+        return Ok(collection.map_get(index).unwrap_or_else(|| default.clone()));
+    }
+
+    if collection.list_len().is_some() {
+        let Some(index) = index.as_int().and_then(|index| usize::try_from(index).ok()) else {
+            return Err(invalid_builtin_call(
+                "index_or",
+                "list indexes must be non-negative integers",
+            ));
+        };
+        return Ok(collection
+            .list_get(index)
+            .unwrap_or_else(|| default.clone()));
+    }
+
+    if collection.kind() == ValueKind::Relation {
+        let Some(index) = index.as_int().and_then(|index| usize::try_from(index).ok()) else {
+            return Err(invalid_builtin_call(
+                "index_or",
+                "relation indexes must be non-negative integers",
+            ));
+        };
+        return Ok(collection
+            .with_relation(|relation| {
+                relation.rows().get(index).map(|row| {
+                    Value::map(
+                        relation
+                            .heading()
+                            .iter()
+                            .zip(row.values())
+                            .map(|(column, value)| (Value::symbol(*column), value.clone())),
+                    )
+                })
+            })
+            .flatten()
+            .unwrap_or_else(|| default.clone()));
+    }
+
+    Err(invalid_builtin_call(
+        "index_or",
+        "expected a list, map, or relation collection",
+    ))
+}
+
 fn project_builtin(
     _context: &mut BuiltinContext<'_, '_>,
     args: &[Value],
@@ -4090,6 +4175,22 @@ fn value_from_literal_expr(
                 values.push(value);
             }
             Ok(Some(Value::list(values)))
+        }
+        Expr::Relation { heading, rows, .. } => {
+            let mut tuples = Vec::with_capacity(rows.len());
+            for row in rows {
+                let mut values = Vec::with_capacity(row.len());
+                for expr in row {
+                    let Some(value) = value_from_literal_expr(context, expr)? else {
+                        return Ok(None);
+                    };
+                    values.push(value);
+                }
+                tuples.push(mica_var::Tuple::new(values));
+            }
+            Value::relation(heading.iter().map(|column| Symbol::intern(column)), tuples)
+                .map(Some)
+                .map_err(|error| invalid_builtin_call("from_literal", error.to_string()))
         }
         Expr::Map { entries, .. } => {
             let mut values = Vec::with_capacity(entries.len());
@@ -5951,6 +6052,12 @@ fn validate_read_only_expr(
             }
             Ok(())
         }
+        HirExpr::Relation { rows, .. } => {
+            for expr in rows.iter().flatten() {
+                validate_read_only_expr(semantic, expr)?;
+            }
+            Ok(())
+        }
         HirExpr::Map { entries, .. } => {
             for (key, value) in entries {
                 validate_read_only_expr(semantic, key)?;
@@ -6175,6 +6282,7 @@ fn is_safe_read_only_builtin(name: &str) -> bool {
             | "to_literal"
             | "from_literal"
             | "to_symbol"
+            | "index_or"
             | "project"
             | "union"
             | "difference"
@@ -6752,8 +6860,10 @@ fn render_value(
     identity_names: &BTreeMap<Identity, String>,
     relation_names: &BTreeMap<Identity, String>,
 ) -> String {
+    if value.is_empty_relation() {
+        return "nothing".to_owned();
+    }
     match value.kind() {
-        ValueKind::Nothing => "nothing".to_owned(),
         ValueKind::Bool => value.as_bool().unwrap().to_string(),
         ValueKind::Int => value.as_int().unwrap().to_string(),
         ValueKind::Float => float_to_literal(value.as_float().unwrap()),
@@ -6830,16 +6940,16 @@ fn render_value(
         ValueKind::Relation => value
             .with_relation(|relation| {
                 let heading = render_sequence(
-                    "{",
-                    "}",
+                    "[",
+                    "]",
                     relation
                         .heading()
                         .iter()
                         .map(|column| render_symbol(*column, ":")),
                 );
                 let rows = render_sequence(
-                    "[",
-                    "]",
+                    "{",
+                    "}",
                     relation.rows().iter().map(|row| {
                         render_sequence(
                             "[",
@@ -6850,7 +6960,7 @@ fn render_value(
                         )
                     }),
                 );
-                format!("relation({heading}, {rows})")
+                format!("{heading} {rows}")
             })
             .unwrap(),
         ValueKind::Frob => value

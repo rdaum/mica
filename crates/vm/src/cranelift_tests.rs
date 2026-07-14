@@ -2037,7 +2037,7 @@ fn native_natural_map_index_loop_preserves_budget_remainders() {
 }
 
 #[test]
-fn native_map_index_preserves_canonical_keys_missing_values_and_heap_outputs() {
+fn native_map_index_preserves_canonical_keys_and_heap_outputs() {
     let map = Value::map([
         (Value::int(1).unwrap(), Value::int(10).unwrap()),
         (Value::float(1.0).unwrap(), Value::int(20).unwrap()),
@@ -2053,7 +2053,6 @@ fn native_map_index_preserves_canonical_keys_missing_values_and_heap_outputs() {
             Value::symbol(Symbol::intern("map_index_heap_value")),
             Value::string("heap output"),
         ),
-        (Value::int(2).unwrap(), Value::nothing()),
     ];
 
     for (key, expected) in cases {
@@ -2076,6 +2075,31 @@ fn native_map_index_preserves_canonical_keys_missing_values_and_heap_outputs() {
         assert_eq!(program.native_compile_attempts(), 1);
         assert_eq!(native.native_side_exit_count(), 0);
     }
+}
+
+#[test]
+fn native_missing_map_index_side_exits_to_the_interpreter_error() {
+    let map = Value::map([(Value::int(1).unwrap(), Value::int(10).unwrap())]);
+    let program = natural_repeated_map_index_program(map, Value::int(2).unwrap());
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let native_outcome = run(&mut native, NATURAL_REPEATED_MAP_INDEX_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(
+        native_outcome,
+        run(
+            &mut interpreted,
+            NATURAL_REPEATED_MAP_INDEX_INSTRUCTION_COUNT,
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        native_outcome,
+        VmHostResponse::Abort(error)
+            if error.error_code_symbol() == Some(Symbol::intern("E_INDEX"))
+    ));
+    assert!(program.native_compile_attempts() > 0);
+    assert!(native.native_side_exit_count() > 0);
 }
 
 #[test]

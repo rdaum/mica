@@ -393,11 +393,10 @@ fn generated_map_index_uses_native_canonical_order_for_immediate_keys() {
 
     for missing in [Value::int(0).unwrap(), Value::float(0.0).unwrap()] {
         let mut scratch = [bits(Value::bool(true)), borrowed_value_bits(&missing)];
-        assert!(matches!(
+        assert_eq!(
             compiled.run(&mut scratch, &view, 1),
-            NaturalLoopOutcome::Complete { .. }
-        ));
-        assert_eq!(scratch[0], bits(Value::nothing()));
+            NaturalLoopOutcome::SideExit,
+        );
     }
     assert_eq!(compiled.imported_helper_count(), 1);
 }
@@ -422,18 +421,21 @@ fn generated_map_index_uses_canonical_helper_for_heap_keys() {
     let view = [NaturalLoopCollectionView::map(entries)];
     let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
 
-    for key in keys
-        .iter()
-        .cloned()
-        .chain([Value::string("missing"), Value::list([])])
-    {
-        let expected = map.map_get(&key).unwrap_or_else(Value::nothing);
-        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&key)];
+    for key in &keys {
+        let expected = map.map_get(key).unwrap();
+        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(key)];
         assert!(matches!(
             compiled.run(&mut scratch, &view, 1),
             NaturalLoopOutcome::Complete { .. }
         ));
         assert_eq!(scratch[0], borrowed_value_bits(&expected), "key {key:?}");
+    }
+    for missing in [Value::string("missing"), Value::list([])] {
+        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&missing)];
+        assert_eq!(
+            compiled.run(&mut scratch, &view, 1),
+            NaturalLoopOutcome::SideExit,
+        );
     }
     assert_eq!(compiled.imported_helper_count(), 1);
 }
@@ -467,19 +469,21 @@ fn generated_map_index_matches_value_lookup_across_immediate_kinds() {
     let view = [NaturalLoopCollectionView::map(entries)];
     let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
 
-    for key in keys
-        .iter()
-        .filter(|key| key.is_immediate())
-        .cloned()
-        .chain([Value::int(99).unwrap(), Value::float(0.5).unwrap()])
-    {
-        let expected = map.map_get(&key).unwrap_or_else(Value::nothing);
-        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&key)];
+    for key in keys.iter().filter(|key| key.is_immediate()) {
+        let expected = map.map_get(key).unwrap();
+        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(key)];
         assert!(matches!(
             compiled.run(&mut scratch, &view, 1),
             NaturalLoopOutcome::Complete { .. }
         ));
         assert_eq!(scratch[0], borrowed_value_bits(&expected), "key {key:?}");
+    }
+    for missing in [Value::int(99).unwrap(), Value::float(0.5).unwrap()] {
+        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&missing)];
+        assert_eq!(
+            compiled.run(&mut scratch, &view, 1),
+            NaturalLoopOutcome::SideExit,
+        );
     }
 }
 

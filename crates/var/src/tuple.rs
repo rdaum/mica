@@ -13,7 +13,7 @@
 
 use crate::{Symbol, Value};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// An immutable row of Mica values.
 ///
@@ -63,9 +63,8 @@ impl<const N: usize> From<[Value; N]> for Tuple {
 
 /// An immutable finite relation with a named heading and canonical set of rows.
 ///
-/// Relation values use the generic value codec for task and host boundaries.
-/// They are not yet accepted as cells in durable named relations because Mica
-/// has no source syntax or fileout representation for them.
+/// Relation values use the generic value codec for task, storage, and host
+/// boundaries. Persistability is determined recursively from their cells.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct RelationValue {
     heading: Arc<[Symbol]>,
@@ -156,6 +155,13 @@ impl RelationValue {
     pub fn column_position(&self, column: Symbol) -> Option<usize> {
         self.heading.binary_search(&column).ok()
     }
+}
+
+pub(crate) fn empty_relation() -> &'static RelationValue {
+    static EMPTY: LazyLock<RelationValue> = LazyLock::new(|| {
+        RelationValue::new([], []).expect("the zero-column empty relation is valid")
+    });
+    &EMPTY
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -18,20 +18,21 @@
 //! process restart or a version change.
 
 use crate::value::{
-    INT_MAX, INT_MIN, PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_ERROR, TAG_FROB,
-    TAG_FUNCTION, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE, TAG_RELATION, TAG_SHIFT, TAG_STRING,
+    INT_MAX, INT_MIN, PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_EMPTY_RELATION,
+    TAG_ERROR, TAG_FROB, TAG_FUNCTION, TAG_LIST, TAG_MAP, TAG_RANGE, TAG_RELATION, TAG_SHIFT,
+    TAG_STRING,
 };
 use crate::{Value, ValueKind};
 use std::cmp::Ordering;
 use std::mem::ManuallyDrop;
 
-pub const VALUE_ABI_VERSION: u32 = 2;
+pub const VALUE_ABI_VERSION: u32 = 3;
 pub const VALUE_WORD_BYTES: usize = size_of::<Value>();
 pub const VALUE_TAG_SHIFT: u64 = TAG_SHIFT;
 pub const VALUE_PAYLOAD_MASK: u64 = PAYLOAD_MASK;
 pub const VALUE_INT_MIN: i64 = INT_MIN;
 pub const VALUE_INT_MAX: i64 = INT_MAX;
-pub const VALUE_NOTHING_TAG: u8 = TAG_NOTHING;
+pub const VALUE_EMPTY_RELATION_TAG: u8 = TAG_EMPTY_RELATION;
 pub const VALUE_BOOL_TAG: u8 = TAG_BOOL;
 pub const VALUE_INT_TAG: u8 = ValueKind::Int as u8;
 pub const VALUE_FLOAT_TAG: u8 = ValueKind::Float as u8;

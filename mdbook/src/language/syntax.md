@@ -63,10 +63,17 @@ retract LocatedIn(#coin, _)
 LocatedIn(#coin, #room)
 LocatedIn(?thing, #room)
 one Name(#lamp, ?name)
+
+[:thing, :owner] { [#coin, #alice], [#lamp, #bob] }
+[] {}
+[] {[]}
 ```
 
 `[0]` is a zero-based key-position list for a functional relation. `?thing` and `?name` are query
 variables that bind returned values. `_` is a wildcard that matches without binding.
+
+A relation literal has a unique symbol heading followed by rows of exactly that arity. `[] {}` is
+also spelled `nothing`; `[] {[]}` is the zero-column unit relation.
 
 `assert` and `retract` require relation atoms. `require` accepts any boolean condition:
 

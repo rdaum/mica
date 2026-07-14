@@ -118,6 +118,12 @@ pub enum Expr {
         span: Span,
         items: Vec<CollectionItem>,
     },
+    Relation {
+        id: NodeId,
+        span: Span,
+        heading: Vec<String>,
+        rows: Vec<Vec<Expr>>,
+    },
     Map {
         id: NodeId,
         span: Span,
@@ -281,6 +287,7 @@ impl Expr {
             | Self::Symbol { id, .. }
             | Self::Hole { id, .. }
             | Self::List { id, .. }
+            | Self::Relation { id, .. }
             | Self::Map { id, .. }
             | Self::Unary { id, .. }
             | Self::Binary { id, .. }
@@ -319,6 +326,7 @@ impl Expr {
             | Self::Symbol { span, .. }
             | Self::Hole { span, .. }
             | Self::List { span, .. }
+            | Self::Relation { span, .. }
             | Self::Map { span, .. }
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }

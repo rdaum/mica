@@ -186,6 +186,12 @@ pub enum Instruction {
         dst: Register,
         items: Vec<ListItem>,
     },
+    BuildRelation {
+        dst: Register,
+        heading: Vec<Symbol>,
+        cells: Vec<Operand>,
+        row_count: u16,
+    },
     BuildMap {
         dst: Register,
         entries: Vec<(Operand, Operand)>,
@@ -513,6 +519,12 @@ pub(crate) enum Opcode {
     BuildList {
         dst: Register,
         items: TableRange,
+    },
+    BuildRelation {
+        dst: Register,
+        heading: TableRange,
+        cells: TableRange,
+        row_count: u16,
     },
     BuildMap {
         dst: Register,
@@ -1932,6 +1944,32 @@ impl Program {
                 dst: *dst,
                 items: self.decode_list_items(*items),
             },
+            Opcode::BuildRelation {
+                dst,
+                heading,
+                cells,
+                row_count,
+            } => Instruction::BuildRelation {
+                dst: *dst,
+                heading: self
+                    .operands(*heading)
+                    .iter()
+                    .map(|operand| {
+                        let OperandRef::Constant(id) = operand else {
+                            unreachable!("relation headings contain constant symbols");
+                        };
+                        self.constant(*id)
+                            .as_symbol()
+                            .expect("relation headings contain symbols")
+                    })
+                    .collect(),
+                cells: self
+                    .operands(*cells)
+                    .iter()
+                    .map(|operand| self.decode_operand(*operand))
+                    .collect(),
+                row_count: *row_count,
+            },
             Opcode::BuildMap { dst, entries } => Instruction::BuildMap {
                 dst: *dst,
                 entries: self
@@ -2542,6 +2580,22 @@ impl ProgramBuilder {
             Instruction::BuildList { dst, items } => Opcode::BuildList {
                 dst,
                 items: self.list_items(items)?,
+            },
+            Instruction::BuildRelation {
+                dst,
+                heading,
+                cells,
+                row_count,
+            } => Opcode::BuildRelation {
+                dst,
+                heading: self.operands(
+                    heading
+                        .into_iter()
+                        .map(|column| Operand::Value(Value::symbol(column)))
+                        .collect(),
+                )?,
+                cells: self.operands(cells)?,
+                row_count,
             },
             Instruction::BuildMap { dst, entries } => Opcode::BuildMap {
                 dst,
@@ -3164,6 +3218,32 @@ fn validate_instruction(
             validate_register(register_count, *dst)?;
             validate_operands(register_count, items.iter().map(ListItem::operand))
         }
+        Instruction::BuildRelation {
+            dst,
+            heading,
+            cells,
+            row_count,
+        } => {
+            validate_register(register_count, *dst)?;
+            let expected = heading
+                .len()
+                .checked_mul(usize::from(*row_count))
+                .ok_or_else(|| artifact_error("relation literal cell count overflow"))?;
+            if cells.len() != expected {
+                return Err(artifact_error(format!(
+                    "relation literal has {} cells; expected {expected}",
+                    cells.len()
+                )));
+            }
+            let mut columns = heading.clone();
+            columns.sort_unstable();
+            if columns.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err(artifact_error(
+                    "relation literal heading contains duplicate columns",
+                ));
+            }
+            validate_operands(register_count, cells.iter())
+        }
         Instruction::BuildMap { dst, entries } => {
             validate_register(register_count, *dst)?;
             validate_operands(
@@ -3550,6 +3630,7 @@ const INST_SPAWN_POSITIONAL_DISPATCH_DYNAMIC: u8 = 52;
 const INST_BUILD_MAP_DYNAMIC: u8 = 53;
 const INST_SPAWN_DISPATCH_DYNAMIC: u8 = 54;
 const INST_EXTERNAL_REQUEST: u8 = 55;
+const INST_BUILD_RELATION: u8 = 56;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -3578,7 +3659,7 @@ const LIST_ITEM_SPLICE: u8 = 1;
 const MAP_ITEM_ENTRY: u8 = 0;
 const MAP_ITEM_SPLICE: u8 = 1;
 
-const VALUE_NOTHING: u8 = 0;
+const VALUE_EMPTY_RELATION: u8 = 0;
 const VALUE_BOOL: u8 = 1;
 const VALUE_INT: u8 = 2;
 const VALUE_FLOAT: u8 = 3;
@@ -3626,6 +3707,25 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_BUILD_LIST);
             write_register(out, *dst);
             write_list_items(out, items)
+        }
+        Instruction::BuildRelation {
+            dst,
+            heading,
+            cells,
+            row_count,
+        } => {
+            out.push(INST_BUILD_RELATION);
+            write_register(out, *dst);
+            write_u32(out, heading.len() as u32);
+            for column in heading {
+                write_value(out, &Value::symbol(*column))?;
+            }
+            write_u16(out, *row_count);
+            write_u32(out, cells.len() as u32);
+            for cell in cells {
+                write_operand(out, cell)?;
+            }
+            Ok(())
         }
         Instruction::BuildMap { dst, entries } => {
             out.push(INST_BUILD_MAP);
@@ -4326,8 +4426,8 @@ fn write_value(out: &mut Vec<u8>, value: &Value) -> Result<(), RuntimeError> {
         write_optional_value(out, error.value())
     }) {
         result?;
-    } else if value.kind() == mica_var::ValueKind::Nothing {
-        out.push(VALUE_NOTHING);
+    } else if value.is_empty_relation() {
+        out.push(VALUE_EMPTY_RELATION);
     } else if let Some(()) = value.with_str(|text| {
         out.push(VALUE_STRING);
         write_str(out, text);
@@ -4426,6 +4526,29 @@ impl<'a> ByteReader<'a> {
                 dst: self.read_register()?,
                 items: self.read_list_items()?,
             },
+            INST_BUILD_RELATION => {
+                let dst = self.read_register()?;
+                let heading_len = self.read_u32()? as usize;
+                let mut heading = Vec::with_capacity(heading_len);
+                for _ in 0..heading_len {
+                    let column = self.read_value()?.as_symbol().ok_or_else(|| {
+                        artifact_error("relation literal heading contains a non-symbol")
+                    })?;
+                    heading.push(column);
+                }
+                let row_count = self.read_u16()?;
+                let cell_count = self.read_u32()? as usize;
+                let mut cells = Vec::with_capacity(cell_count);
+                for _ in 0..cell_count {
+                    cells.push(self.read_operand()?);
+                }
+                Instruction::BuildRelation {
+                    dst,
+                    heading,
+                    cells,
+                    row_count,
+                }
+            }
             INST_BUILD_MAP => Instruction::BuildMap {
                 dst: self.read_register()?,
                 entries: self.read_map_entries()?,
@@ -4799,7 +4922,7 @@ impl<'a> ByteReader<'a> {
 
     fn read_value(&mut self) -> Result<Value, RuntimeError> {
         Ok(match self.read_u8()? {
-            VALUE_NOTHING => Value::nothing(),
+            VALUE_EMPTY_RELATION => Value::nothing(),
             VALUE_BOOL => Value::bool(self.read_u8()? != 0),
             VALUE_INT => Value::int(self.read_i64()?).map_err(|error| {
                 artifact_error(format!("invalid serialized integer value: {error:?}"))

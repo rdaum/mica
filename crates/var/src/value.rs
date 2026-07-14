@@ -13,13 +13,14 @@
 
 use crate::heap::HeapValue;
 use crate::symbol::Symbol;
+use crate::tuple::empty_relation;
 use crate::{RelationValue, RelationValueError, Tuple};
 use std::sync::Arc;
 
 pub(crate) const TAG_SHIFT: u64 = 56;
 pub(crate) const PAYLOAD_MASK: u64 = 0x00ff_ffff_ffff_ffff;
 
-pub(crate) const TAG_NOTHING: u8 = 0;
+pub(crate) const TAG_EMPTY_RELATION: u8 = 0;
 pub(crate) const TAG_BOOL: u8 = 1;
 pub(crate) const TAG_INT: u8 = 2;
 pub(crate) const TAG_FLOAT: u8 = 3;
@@ -46,8 +47,8 @@ pub(crate) const MAX_PAYLOAD: u64 = PAYLOAD_MASK;
 /// or invariants of `Value` change so that native code generators and external
 /// processes can detect compatibility.
 ///
-/// Version 2: first-class immutable relation heap values.
-pub const VALUE_ABI_VERSION: u32 = 2;
+/// Version 3: the immediate zero word denotes the zero-column empty relation.
+pub const VALUE_ABI_VERSION: u32 = 3;
 
 /// A compact Mica value.
 ///
@@ -179,7 +180,6 @@ impl FrobValue {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u8)]
 pub enum ValueKind {
-    Nothing = TAG_NOTHING,
     Bool = TAG_BOOL,
     Int = TAG_INT,
     Float = TAG_FLOAT,
@@ -198,7 +198,6 @@ pub enum ValueKind {
     Relation = TAG_RELATION,
 }
 
-pub const NOTHING_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0001);
 pub const BOOL_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0002);
 pub const INTEGER_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0003);
 pub const FLOAT_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0004);
@@ -217,7 +216,6 @@ pub const FUNCTION_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_001
 pub const RELATION_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0011);
 
 pub const PRIMITIVE_PROTOTYPES: &[(&str, Identity)] = &[
-    ("nothing", NOTHING_PROTOTYPE),
     ("bool", BOOL_PROTOTYPE),
     ("integer", INTEGER_PROTOTYPE),
     ("float", FLOAT_PROTOTYPE),
@@ -245,7 +243,6 @@ const fn primitive_identity(raw: u64) -> Identity {
 
 pub const fn primitive_prototype_for_kind(kind: ValueKind) -> Identity {
     match kind {
-        ValueKind::Nothing => NOTHING_PROTOTYPE,
         ValueKind::Bool => BOOL_PROTOTYPE,
         ValueKind::Int => INTEGER_PROTOTYPE,
         ValueKind::Float => FLOAT_PROTOTYPE,
@@ -287,7 +284,12 @@ impl Value {
 
     #[inline(always)]
     pub const fn nothing() -> Self {
-        Self::pack(TAG_NOTHING, 0)
+        Self::pack(TAG_EMPTY_RELATION, 0)
+    }
+
+    #[inline(always)]
+    pub const fn is_empty_relation(&self) -> bool {
+        self.0 == 0
     }
 
     #[inline(always)]
@@ -433,7 +435,7 @@ impl Value {
     #[inline(always)]
     pub const fn kind(&self) -> ValueKind {
         match self.tag() {
-            TAG_NOTHING => ValueKind::Nothing,
+            TAG_EMPTY_RELATION => ValueKind::Relation,
             TAG_BOOL => ValueKind::Bool,
             TAG_INT => ValueKind::Int,
             TAG_FLOAT => ValueKind::Float,
@@ -571,10 +573,17 @@ impl Value {
     }
 
     pub fn with_relation<R>(&self, f: impl FnOnce(&RelationValue) -> R) -> Option<R> {
-        self.with_heap(|heap| match heap {
-            HeapValue::Relation(relation) => Some(f(relation)),
+        self.relation_ref().map(f)
+    }
+
+    pub(crate) fn relation_ref(&self) -> Option<&RelationValue> {
+        if self.is_empty_relation() {
+            return Some(empty_relation());
+        }
+        match self.heap_ref()? {
+            HeapValue::Relation(relation) => Some(relation),
             _ => None,
-        })?
+        }
     }
 
     pub fn with_range<R>(&self, f: impl FnOnce(&Value, Option<&Value>) -> R) -> Option<R> {
@@ -616,7 +625,7 @@ impl Value {
 
     pub fn is_persistable(&self) -> bool {
         match self.kind() {
-            ValueKind::Capability | ValueKind::Function | ValueKind::Relation => false,
+            ValueKind::Capability | ValueKind::Function => false,
             ValueKind::List => self
                 .with_list(|values| values.iter().all(Self::is_persistable))
                 .unwrap_or(false),
@@ -637,6 +646,15 @@ impl Value {
                 .unwrap_or(false),
             ValueKind::Frob => self
                 .with_frob(|_, value| value.is_persistable())
+                .unwrap_or(false),
+            ValueKind::Relation => self
+                .with_relation(|relation| {
+                    relation
+                        .rows()
+                        .iter()
+                        .flat_map(|row| row.values())
+                        .all(Self::is_persistable)
+                })
                 .unwrap_or(false),
             _ => true,
         }
@@ -898,6 +916,9 @@ impl From<Identity> for Value {
 
 impl From<RelationValue> for Value {
     fn from(value: RelationValue) -> Self {
+        if value.arity() == 0 && value.is_empty() {
+            return Self::nothing();
+        }
         Self::heap(HeapValue::Relation(value))
     }
 }

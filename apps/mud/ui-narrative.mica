@@ -213,7 +213,7 @@ end
 
 verb ui/event_body_for(source @ #event/button<_>, viewer)
   let bindings = event/bindings(source)
-  let target = bindings[:target]
+  let target = index_or(bindings, :target, nothing)
   if target == nothing
     target = #red_button
   end
@@ -312,22 +312,22 @@ end
 verb ui/event_meta_node(source, seq)
   let chips = [ui/event_meta_chip_node("kind", ui/event_label(source))]
   let bindings = event/bindings(source)
-  let actor = bindings[:actor]
+  let actor = index_or(bindings, :actor, nothing)
   if actor != nothing
     chips = [@chips, ui/event_meta_chip_node("actor", ui/actor_name(actor))]
   end
 
-  let item = bindings[:item]
+  let item = index_or(bindings, :item, nothing)
   if item != nothing
     chips = [@chips, ui/event_meta_chip_node("item", ui/actor_name(item))]
   end
 
-  let container = bindings[:container]
+  let container = index_or(bindings, :container, nothing)
   if container != nothing
     chips = [@chips, ui/event_meta_chip_node("container", ui/actor_name(container))]
   end
 
-  let message = bindings[:message]
+  let message = index_or(bindings, :message, nothing)
   if message != nothing
     chips = [@chips, ui/event_meta_chip_node("message", message)]
   end

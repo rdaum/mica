@@ -23,8 +23,9 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 use mica_var::Value;
 use mica_var::abi::{
-    VALUE_ABI_VERSION, VALUE_FLOAT_TAG, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG,
-    borrowed_value_cmp, borrowed_value_numeric_cmp, borrowed_value_numeric_eq, value_is_immediate,
+    VALUE_ABI_VERSION, VALUE_EMPTY_RELATION_TAG, VALUE_FLOAT_TAG, VALUE_INT_MAX, VALUE_INT_MIN,
+    VALUE_INT_TAG, VALUE_RELATION_TAG, borrowed_value_cmp, borrowed_value_numeric_cmp,
+    borrowed_value_numeric_eq, value_is_immediate,
 };
 use std::cmp::Ordering;
 use std::error::Error;
@@ -1180,7 +1181,7 @@ impl CompiledNaturalLoop {
         builder.append_block_param(done, types::I8);
 
         let (kind, len, _, key_base, value_base, stride) = view;
-        let nothing = builder.ins().iconst(types::I64, 0);
+        let zero = builder.ins().iconst(types::I64, 0);
         let false_value = builder.ins().iconst(types::I8, 0);
         let true_value = builder.ins().iconst(types::I8, 1);
         let is_list = builder
@@ -1198,7 +1199,7 @@ impl CompiledNaturalLoop {
         let index_is_bounded = builder.ins().icmp(IntCC::UnsignedLessThan, index, len);
         let index_is_valid = builder.ins().band(index_is_int, index_is_nonnegative);
         let index_is_valid = builder.ins().band(index_is_valid, index_is_bounded);
-        let safe_index = builder.ins().select(index_is_valid, index, nothing);
+        let safe_index = builder.ins().select(index_is_valid, index, zero);
         let address_offset = builder.ins().imul(safe_index, stride);
         let address = builder.ins().iadd(value_base, address_offset);
         let value = builder
@@ -1221,9 +1222,9 @@ impl CompiledNaturalLoop {
         builder.ins().brif(
             can_search,
             map_loop,
-            &[nothing.into(), len.into()],
+            &[zero.into(), len.into()],
             done,
-            &[nothing.into(), false_value.into()],
+            &[zero.into(), false_value.into()],
         );
 
         builder.switch_to_block(map_loop);
@@ -1235,7 +1236,7 @@ impl CompiledNaturalLoop {
             map_probe,
             &[lower.into(), upper.into()],
             done,
-            &[nothing.into(), true_value.into()],
+            &[zero.into(), false_value.into()],
         );
 
         builder.switch_to_block(map_probe);
@@ -1261,11 +1262,33 @@ impl CompiledNaturalLoop {
         );
         let entry_tag = ValueEmitter::emit_tag(builder, entry_key);
         let index_tag = ValueEmitter::emit_tag(builder, index_word);
-        let same_tag = builder.ins().icmp(IntCC::Equal, entry_tag, index_tag);
-        let equal = builder.ins().icmp(IntCC::Equal, entry_key, index_word);
-        let tag_less = builder
+        let entry_is_empty_relation =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, entry_tag, i64::from(VALUE_EMPTY_RELATION_TAG));
+        let index_is_empty_relation =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, index_tag, i64::from(VALUE_EMPTY_RELATION_TAG));
+        let relation_tag = builder
             .ins()
-            .icmp(IntCC::UnsignedLessThan, entry_tag, index_tag);
+            .iconst(types::I64, i64::from(VALUE_RELATION_TAG));
+        let entry_order_tag =
+            builder
+                .ins()
+                .select(entry_is_empty_relation, relation_tag, entry_tag);
+        let index_order_tag =
+            builder
+                .ins()
+                .select(index_is_empty_relation, relation_tag, index_tag);
+        let same_kind = builder
+            .ins()
+            .icmp(IntCC::Equal, entry_order_tag, index_order_tag);
+        let equal = builder.ins().icmp(IntCC::Equal, entry_key, index_word);
+        let kind_less =
+            builder
+                .ins()
+                .icmp(IntCC::UnsignedLessThan, entry_order_tag, index_order_tag);
 
         let entry_payload = ValueEmitter::emit_payload(builder, entry_key);
         let index_payload = ValueEmitter::emit_payload(builder, index_word);
@@ -1291,7 +1314,15 @@ impl CompiledNaturalLoop {
             .icmp_imm(IntCC::Equal, index_tag, i64::from(VALUE_FLOAT_TAG));
         let same_kind_less = builder.ins().select(is_int, int_less, payload_less);
         let same_kind_less = builder.ins().select(is_float, float_less, same_kind_less);
-        let entry_less = builder.ins().select(same_tag, same_kind_less, tag_less);
+        let empty_relation_mismatch = builder
+            .ins()
+            .bxor(entry_is_empty_relation, index_is_empty_relation);
+        let same_kind_less = builder.ins().select(
+            empty_relation_mismatch,
+            entry_is_empty_relation,
+            same_kind_less,
+        );
+        let entry_less = builder.ins().select(same_kind, same_kind_less, kind_less);
         if let (Some(helper), Some(map_helper_compare), Some(map_compare_done)) = (
             canonical_compare_helper,
             map_helper_compare,

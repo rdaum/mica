@@ -36,7 +36,7 @@ fn value_is_one_word() {
 
 #[test]
 fn process_local_value_abi_matches_value_layout() {
-    assert_eq!(VALUE_ABI_VERSION, 2);
+    assert_eq!(VALUE_ABI_VERSION, 3);
     assert_eq!(VALUE_TAG_SHIFT, 56);
     assert_eq!(VALUE_PAYLOAD_MASK, 0x00ff_ffff_ffff_ffff);
     assert_eq!(VALUE_INT_MIN, INT_MIN);
@@ -189,7 +189,12 @@ fn process_local_value_abi_orders_borrowed_words_without_taking_ownership() {
 
 #[test]
 fn immediate_constructors_round_trip() {
-    assert_eq!(Value::nothing().kind(), ValueKind::Nothing);
+    let nothing = Value::nothing();
+    assert_eq!(nothing.kind(), ValueKind::Relation);
+    assert!(nothing.is_empty_relation());
+    assert_eq!(nothing.with_relation(|relation| relation.arity()), Some(0));
+    assert_eq!(nothing.with_relation(|relation| relation.len()), Some(0));
+    assert_eq!(Value::relation([], []).unwrap(), nothing);
     assert_eq!(Value::bool(true).as_bool(), Some(true));
     assert_eq!(Value::bool(false).as_bool(), Some(false));
     assert_eq!(Value::int(INT_MIN).unwrap().as_int(), Some(INT_MIN));
@@ -281,7 +286,7 @@ fn function_values_are_ephemeral() {
 }
 
 #[test]
-fn relation_values_are_serializable_but_not_durable_cells() {
+fn persistable_relation_values_are_serializable_and_durable() {
     let name = Symbol::intern("name");
     let score = Symbol::intern("score");
     let relation = Value::relation(
@@ -303,7 +308,7 @@ fn relation_values_are_serializable_but_not_durable_cells() {
         relation.with_relation(|relation| relation.heading().to_vec()),
         Some(expected_heading)
     );
-    assert!(!relation.is_persistable());
+    assert!(relation.is_persistable());
 
     let mut encoded = Vec::new();
     encode_value(&relation, &mut encoded).unwrap();
@@ -788,6 +793,7 @@ fn value_codec_sink_matches_vec_encoder() {
     }
 
     let values = [
+        Value::nothing(),
         Value::identity(Identity::new(42).unwrap()),
         Value::string("brass lamp"),
         Value::bytes([1, 2, 3, 4]),
@@ -1106,7 +1112,7 @@ fn total_order_is_stable() {
     for pair in sorted.windows(2) {
         assert!(pair[0] <= pair[1]);
     }
-    assert_eq!(sorted.first(), Some(&Value::nothing()));
+    assert_eq!(sorted.first(), Some(&Value::bool(true)));
     assert_eq!(sorted.last().unwrap().kind(), ValueKind::Relation);
 }
 

@@ -1,8 +1,9 @@
 // Browser-originated UI action routing for the server-owned MUD view.
 
 verb ui/sync_selected_entity(actor @ #player, line, fields)
-  if fields[:entity] != nothing
-    let selected = command/match_object(actor, lower(trim(fields[:entity])))
+  let entity = index_or(fields, :entity, nothing)
+  if entity != nothing
+    let selected = command/match_object(actor, lower(trim(entity)))
     if selected != nothing
       return selected
     end
@@ -27,7 +28,7 @@ verb ui/sync_action_source(action)
 end
 
 verb ui/form_text(fields, key)
-  let value = fields[key]
+  let value = index_or(fields, key, nothing)
   if value == nothing
     return ""
   end
@@ -36,7 +37,7 @@ verb ui/form_text(fields, key)
 end
 
 verb ui/form_raw_text(fields, key)
-  let value = fields[key]
+  let value = index_or(fields, key, nothing)
   if value == nothing
     return ""
   end
@@ -182,7 +183,7 @@ verb ui/handle_sync_action(source @ #ui/build_room_action<_>, endpoint, session,
     let direction = ui/form_text(fields, :direction)
     if direction != ""
       let source_room = current.locatedIn
-      let source_literal = fields[:source]
+      let source_literal = index_or(fields, :source, nothing)
       if source_literal != nothing && ui/form_text(fields, :source) != ""
         let parsed_source = ui/entity_from_literal(source_literal)
         if Delegates(parsed_source, #room, 0)
@@ -266,7 +267,7 @@ verb ui/handle_sync_action(source @ #ui/describe_passage_action<_>, endpoint, se
   end
 
   let room = current.locatedIn
-  let room_literal = fields[:room]
+  let room_literal = index_or(fields, :room, nothing)
   if room_literal != nothing && ui/form_text(fields, :room) != ""
     let parsed_room = ui/entity_from_literal(room_literal)
     if Delegates(parsed_room, #room, 0)
@@ -284,7 +285,7 @@ verb ui/handle_sync_action(source @ #ui/describe_passage_action<_>, endpoint, se
     return false
   end
 
-  let ambient = fields[:ambient] == "true"
+  let ambient = index_or(fields, :ambient, nothing) == "true"
   let updated = set_passage_side(current, passage, room, direction, description, ambient)
   ui/bump_revision(endpoint())
   return updated
@@ -308,8 +309,8 @@ verb ui/handle_sync_action(source @ #ui/edit_entity_action<_>, endpoint, session
   let name = ui/form_text(fields, :name)
   let aliases = ui/form_text(fields, :aliases)
   let description = ui/form_text(fields, :description)
-  let portable = fields[:portable] == "true"
-  let visible_here = fields[:visible_here] == "true"
+  let portable = index_or(fields, :portable, nothing) == "true"
+  let visible_here = index_or(fields, :visible_here, nothing) == "true"
   let updated = set_entity_attributes(current, entity, name, aliases, description, portable, visible_here)
   if updated
     endpoint().session/inspect = entity

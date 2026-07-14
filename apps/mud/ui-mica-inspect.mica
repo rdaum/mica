@@ -654,7 +654,7 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_action<_>, endpoint, sessio
   end
 
   let current = ui/current_actor()
-  if current == nothing || ui/can_program(current) == false || fields[:entity] == nothing
+  if current == nothing || ui/can_program(current) == false || index_or(fields, :entity, nothing) == nothing
     return false
   end
 

@@ -37,11 +37,11 @@ end
 
 verb llm/chat(model @ #string, messages, options, tools)
   let opts = llm/ensure_stream(options)
-  return llm_chat_stream(model, messages, opts, tools)
-end
-
-verb llm/chat(model, messages, options, tools @ #nothing)
-  return llm/chat(model, messages, options, [])
+  let request_tools = tools
+  if request_tools == nothing
+    request_tools = []
+  end
+  return llm_chat_stream(model, messages, opts, request_tools)
 end
 
 verb llm/ensure_stream(options)
