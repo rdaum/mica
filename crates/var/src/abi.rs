@@ -82,6 +82,19 @@ pub unsafe fn borrowed_value_numeric_eq(left: u64, right: u64) -> bool {
     crate::language_cmp::numeric_eq(&left, &right)
 }
 
+/// Compares two borrowed process-local value words using language numeric
+/// ordering without taking ownership of either word.
+///
+/// # Safety
+///
+/// Both words must denote valid live `Value`s for [`VALUE_ABI_VERSION`] for the
+/// duration of this call.
+pub unsafe fn borrowed_value_numeric_cmp(left: u64, right: u64) -> Ordering {
+    let left = ManuallyDrop::new(Value(left));
+    let right = ManuallyDrop::new(Value(right));
+    crate::language_cmp::numeric_cmp(&left, &right)
+}
+
 /// Compares two borrowed process-local value words using canonical `Value`
 /// ordering without taking ownership of either word.
 ///

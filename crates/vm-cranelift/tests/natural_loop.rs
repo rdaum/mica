@@ -156,7 +156,7 @@ fn immediate_index_plan(index: Value) -> NaturalLoopPlan {
     .unwrap()
 }
 
-fn equality_plan(comparison: ScalarComparison) -> NaturalLoopPlan {
+fn comparison_plan(comparison: ScalarComparison) -> NaturalLoopPlan {
     NaturalLoopPlan::new(
         3,
         0,
@@ -556,7 +556,9 @@ fn generated_natural_loop_completes_compiler_shaped_accumulation() {
     assert_eq!(value(scratch[CURRENT as usize]).as_int(), Some(16_384));
     assert_eq!(value(scratch[TOTAL as usize]).as_int(), Some(134_225_920),);
     assert_eq!(value(scratch[CONDITION as usize]).as_bool(), Some(false),);
-    assert_eq!(compiled.imported_helper_count(), 0);
+    // The plan imports ordering fallback support, although this integer loop
+    // remains entirely on the generated comparison path.
+    assert_eq!(compiled.imported_helper_count(), 1);
     assert!(compiled.code_size() > 0);
 }
 
@@ -591,7 +593,7 @@ fn generated_natural_loop_side_exits_on_mixed_arithmetic() {
 
 #[test]
 fn generated_equality_calls_one_helper_for_heap_and_mixed_numeric_values() {
-    let compiled = CompiledNaturalLoop::compile(&equality_plan(ScalarComparison::Equal)).unwrap();
+    let compiled = CompiledNaturalLoop::compile(&comparison_plan(ScalarComparison::Equal)).unwrap();
     let cases = [
         (Value::string("same"), Value::string("same"), true),
         (Value::string("same"), Value::string("different"), false),
@@ -636,7 +638,9 @@ fn generated_equality_calls_one_helper_for_heap_and_mixed_numeric_values() {
 }
 
 #[test]
-fn generated_heap_inequality_uses_helper_but_ordering_still_side_exits() {
+fn generated_language_ordering_calls_one_helper_for_heap_and_mixed_numeric_values() {
+    let not_equal =
+        CompiledNaturalLoop::compile(&comparison_plan(ScalarComparison::NotEqual)).unwrap();
     let left = Value::string("alpha");
     let right = Value::string("beta");
     let mut scratch = [
@@ -644,8 +648,6 @@ fn generated_heap_inequality_uses_helper_but_ordering_still_side_exits() {
         borrowed_value_bits(&right),
         bits(Value::nothing()),
     ];
-    let not_equal =
-        CompiledNaturalLoop::compile(&equality_plan(ScalarComparison::NotEqual)).unwrap();
     assert!(matches!(
         not_equal.run(&mut scratch, &[], 1),
         NaturalLoopOutcome::Complete { .. }
@@ -653,19 +655,64 @@ fn generated_heap_inequality_uses_helper_but_ordering_still_side_exits() {
     assert_eq!(value(scratch[2]).as_bool(), Some(true));
     assert_eq!(not_equal.imported_helper_count(), 1);
 
-    let less_than =
-        CompiledNaturalLoop::compile(&equality_plan(ScalarComparison::LessThan)).unwrap();
-    assert_eq!(
-        less_than.run(&mut scratch, &[], 1),
-        NaturalLoopOutcome::SideExit,
-    );
-    assert_eq!(less_than.imported_helper_count(), 0);
+    let cases = [
+        (Value::string("alpha"), Value::string("beta")),
+        (
+            Value::list([Value::int(1).unwrap()]),
+            Value::list([Value::int(2).unwrap()]),
+        ),
+        (
+            Value::map([(Value::string("key"), Value::int(1).unwrap())]),
+            Value::map([(Value::string("key"), Value::int(2).unwrap())]),
+        ),
+        (
+            Value::int(16_777_217).unwrap(),
+            Value::float(16_777_216.0).unwrap(),
+        ),
+        (Value::int(3).unwrap(), Value::float(3.5).unwrap()),
+        (
+            Value::float(2_f32.powi(55)).unwrap(),
+            Value::int((1_i64 << 55) - 1).unwrap(),
+        ),
+    ];
+    for comparison in [
+        ScalarComparison::LessThan,
+        ScalarComparison::LessThanOrEqual,
+        ScalarComparison::GreaterThan,
+        ScalarComparison::GreaterThanOrEqual,
+    ] {
+        let compiled = CompiledNaturalLoop::compile(&comparison_plan(comparison)).unwrap();
+        assert_eq!(compiled.imported_helper_count(), 1);
+        for (left, right) in &cases {
+            let ordering = mica_var::language_cmp::numeric_cmp(left, right);
+            let expected = match comparison {
+                ScalarComparison::LessThan => ordering.is_lt(),
+                ScalarComparison::LessThanOrEqual => ordering.is_le(),
+                ScalarComparison::GreaterThan => ordering.is_gt(),
+                ScalarComparison::GreaterThanOrEqual => ordering.is_ge(),
+                ScalarComparison::Equal | ScalarComparison::NotEqual => unreachable!(),
+            };
+            let mut scratch = [
+                borrowed_value_bits(left),
+                borrowed_value_bits(right),
+                bits(Value::nothing()),
+            ];
+            assert_eq!(
+                compiled.run(&mut scratch, &[], 1),
+                NaturalLoopOutcome::Complete {
+                    instructions: 1,
+                    modified_slots: 4,
+                },
+            );
+            assert_eq!(value(scratch[2]).as_bool(), Some(expected));
+        }
+    }
 }
 
 #[test]
 fn generated_heap_equality_helper_executes_concurrently() {
     let compiled =
-        Arc::new(CompiledNaturalLoop::compile(&equality_plan(ScalarComparison::Equal)).unwrap());
+        Arc::new(CompiledNaturalLoop::compile(&comparison_plan(ScalarComparison::Equal)).unwrap());
     let barrier = Arc::new(Barrier::new(4));
     let mut threads = Vec::new();
     for _ in 0..4 {
@@ -674,6 +721,43 @@ fn generated_heap_equality_helper_executes_concurrently() {
         threads.push(std::thread::spawn(move || {
             let left = Value::string("concurrent equality");
             let right = Value::string("concurrent equality");
+            let mut scratch = [
+                borrowed_value_bits(&left),
+                borrowed_value_bits(&right),
+                bits(Value::nothing()),
+            ];
+            barrier.wait();
+            let outcome = compiled.run(&mut scratch, &[], 1);
+            (outcome, value(scratch[2]).as_bool())
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            (
+                NaturalLoopOutcome::Complete {
+                    instructions: 1,
+                    modified_slots: 4,
+                },
+                Some(true),
+            ),
+        );
+    }
+}
+
+#[test]
+fn generated_language_ordering_helper_executes_concurrently() {
+    let compiled = Arc::new(
+        CompiledNaturalLoop::compile(&comparison_plan(ScalarComparison::LessThan)).unwrap(),
+    );
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let compiled = Arc::clone(&compiled);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let left = Value::list([Value::string("alpha")]);
+            let right = Value::list([Value::string("beta")]);
             let mut scratch = [
                 borrowed_value_bits(&left),
                 borrowed_value_bits(&right),

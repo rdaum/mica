@@ -24,7 +24,7 @@ use cranelift_module::{Linkage, Module, default_libcall_names};
 use mica_var::Value;
 use mica_var::abi::{
     VALUE_ABI_VERSION, VALUE_FLOAT_TAG, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG,
-    borrowed_value_cmp, borrowed_value_numeric_eq, value_is_immediate,
+    borrowed_value_cmp, borrowed_value_numeric_cmp, borrowed_value_numeric_eq, value_is_immediate,
 };
 use std::cmp::Ordering;
 use std::error::Error;
@@ -38,14 +38,23 @@ const STATUS_COMPLETE: u32 = 0;
 const STATUS_BUDGET_EXHAUSTED: u32 = 1;
 const STATUS_SIDE_EXIT: u32 = 2;
 const NUMERIC_EQUAL_HELPER: &str = "mica_borrowed_value_numeric_equal";
+const NUMERIC_COMPARE_HELPER: &str = "mica_borrowed_value_numeric_compare";
 const CANONICAL_COMPARE_HELPER: &str = "mica_borrowed_value_canonical_compare";
 
 unsafe extern "C" fn borrowed_value_numeric_equal(left: u64, right: u64) -> u64 {
     u64::from(unsafe { borrowed_value_numeric_eq(left, right) })
 }
 
+unsafe extern "C" fn borrowed_value_numeric_compare(left: u64, right: u64) -> i64 {
+    ordering_code(unsafe { borrowed_value_numeric_cmp(left, right) })
+}
+
 unsafe extern "C" fn borrowed_value_canonical_compare(left: u64, right: u64) -> i64 {
-    match unsafe { borrowed_value_cmp(left, right) } {
+    ordering_code(unsafe { borrowed_value_cmp(left, right) })
+}
+
+fn ordering_code(ordering: Ordering) -> i64 {
+    match ordering {
         Ordering::Less => -1,
         Ordering::Equal => 0,
         Ordering::Greater => 1,
@@ -349,6 +358,21 @@ impl NaturalLoopPlan {
         })
     }
 
+    fn requires_numeric_compare_helper(&self) -> bool {
+        self.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                NaturalLoopInstruction::Compare {
+                    comparison: ScalarComparison::LessThan
+                        | ScalarComparison::LessThanOrEqual
+                        | ScalarComparison::GreaterThan
+                        | ScalarComparison::GreaterThanOrEqual,
+                    ..
+                }
+            )
+        })
+    }
+
     fn requires_canonical_compare_helper(&self) -> bool {
         self.instructions
             .iter()
@@ -407,6 +431,12 @@ impl CompiledNaturalLoop {
                 borrowed_value_numeric_equal as *const u8,
             );
         }
+        if plan.requires_numeric_compare_helper() {
+            jit_builder.symbol(
+                NUMERIC_COMPARE_HELPER,
+                borrowed_value_numeric_compare as *const u8,
+            );
+        }
         if plan.requires_canonical_compare_helper() {
             jit_builder.symbol(
                 CANONICAL_COMPARE_HELPER,
@@ -446,6 +476,23 @@ impl CompiledNaturalLoop {
         } else {
             None
         };
+        let numeric_compare_helper = if plan.requires_numeric_compare_helper() {
+            let mut helper_signature = Signature::new(module.isa().default_call_conv());
+            helper_signature.params.push(AbiParam::new(types::I64));
+            helper_signature.params.push(AbiParam::new(types::I64));
+            helper_signature.returns.push(AbiParam::new(types::I64));
+            Some(
+                module
+                    .declare_function(NUMERIC_COMPARE_HELPER, Linkage::Import, &helper_signature)
+                    .map_err(|error| {
+                        NaturalLoopError(format!(
+                            "could not declare numeric comparison helper: {error}"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
         let canonical_compare_helper = if plan.requires_canonical_compare_helper() {
             let mut helper_signature = Signature::new(module.isa().default_call_conv());
             helper_signature.params.push(AbiParam::new(types::I64));
@@ -467,6 +514,8 @@ impl CompiledNaturalLoop {
         context.func.signature = signature;
         let numeric_equal_helper = numeric_equal_helper
             .map(|helper| module.declare_func_in_func(helper, &mut context.func));
+        let numeric_compare_helper = numeric_compare_helper
+            .map(|helper| module.declare_func_in_func(helper, &mut context.func));
         let canonical_compare_helper = canonical_compare_helper
             .map(|helper| module.declare_func_in_func(helper, &mut context.func));
         let mut builder_context = FunctionBuilderContext::new();
@@ -475,6 +524,7 @@ impl CompiledNaturalLoop {
             &mut context,
             &mut builder_context,
             numeric_equal_helper,
+            numeric_compare_helper,
             canonical_compare_helper,
         );
         let imported_helper_count = context.func.dfg.ext_funcs.len();
@@ -508,6 +558,7 @@ impl CompiledNaturalLoop {
         context: &mut Context,
         builder_context: &mut FunctionBuilderContext,
         numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
+        numeric_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
         canonical_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
     ) {
         let mut builder = FunctionBuilder::new(&mut context.func, builder_context);
@@ -640,6 +691,7 @@ impl CompiledNaturalLoop {
                         collection_views,
                         instruction,
                         numeric_equal_helper,
+                        numeric_compare_helper,
                         canonical_compare_helper,
                     );
                     let slot_bit = 1_u32 << dst;
@@ -718,6 +770,7 @@ impl CompiledNaturalLoop {
         collection_views: cranelift_codegen::ir::Value,
         instruction: NaturalLoopInstruction,
         numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
+        numeric_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
         canonical_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
     ) -> (cranelift_codegen::ir::Value, u16) {
         match instruction {
@@ -795,6 +848,14 @@ impl CompiledNaturalLoop {
                     comparison,
                     result,
                     numeric_equal_helper,
+                );
+                let result = Self::emit_numeric_compare_fallback(
+                    builder,
+                    left,
+                    right,
+                    comparison,
+                    result,
+                    numeric_compare_helper,
                 );
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
@@ -933,6 +994,67 @@ impl CompiledNaturalLoop {
             ScalarComparison::Equal => builder.ins().icmp_imm(IntCC::NotEqual, equal, 0),
             ScalarComparison::NotEqual => builder.ins().icmp_imm(IntCC::Equal, equal, 0),
             _ => unreachable!("only equality comparisons use the helper"),
+        };
+        let result = ValueEmitter::emit_bool(builder, result);
+        builder.ins().jump(done, &[result.into()]);
+
+        builder.switch_to_block(done);
+        let word = builder.block_params(done)[0];
+        crate::EmittedValue::always_fast(builder, word)
+    }
+
+    fn emit_numeric_compare_fallback(
+        builder: &mut FunctionBuilder<'_>,
+        left: cranelift_codegen::ir::Value,
+        right: cranelift_codegen::ir::Value,
+        comparison: ScalarComparison,
+        immediate: crate::EmittedValue,
+        numeric_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
+    ) -> crate::EmittedValue {
+        if matches!(
+            comparison,
+            ScalarComparison::Equal | ScalarComparison::NotEqual
+        ) {
+            return immediate;
+        }
+
+        let helper = numeric_compare_helper.expect("ordering plans import their helper");
+        let call_helper = builder.create_block();
+        let done = builder.create_block();
+        builder.append_block_param(done, types::I64);
+        builder.ins().brif(
+            immediate.is_fast(),
+            done,
+            &[immediate.word().into()],
+            call_helper,
+            &[],
+        );
+
+        builder.switch_to_block(call_helper);
+        let call = builder.ins().call(helper, &[left, right]);
+        let ordering = builder.inst_results(call)[0];
+        let result = match comparison {
+            ScalarComparison::LessThan => {
+                builder.ins().icmp_imm(IntCC::SignedLessThan, ordering, 0)
+            }
+            ScalarComparison::LessThanOrEqual => {
+                builder
+                    .ins()
+                    .icmp_imm(IntCC::SignedLessThanOrEqual, ordering, 0)
+            }
+            ScalarComparison::GreaterThan => {
+                builder
+                    .ins()
+                    .icmp_imm(IntCC::SignedGreaterThan, ordering, 0)
+            }
+            ScalarComparison::GreaterThanOrEqual => {
+                builder
+                    .ins()
+                    .icmp_imm(IntCC::SignedGreaterThanOrEqual, ordering, 0)
+            }
+            ScalarComparison::Equal | ScalarComparison::NotEqual => {
+                unreachable!("equality comparisons use their equality helper")
+            }
         };
         let result = ValueEmitter::emit_bool(builder, result);
         builder.ins().jump(done, &[result.into()]);

@@ -413,19 +413,21 @@ fn register(index: u16) -> Register {
 
 fn string_vm_fixture(case: WorkloadCase) -> ProgramFixture {
     let candidate = case.candidate();
-    equality_vm_fixture(
+    comparison_vm_fixture(
         (0..STRING_COUNT).map(|_| Value::string(&candidate)),
         Value::string(case.target()),
         case.expected_matches(),
+        RuntimeBinaryOp::Eq,
     )
 }
 
 fn list_vm_fixture() -> ProgramFixture {
     let make_list = || Value::list((0..16).map(|value| Value::int(value).unwrap()));
-    equality_vm_fixture(
+    comparison_vm_fixture(
         (0..STRING_COUNT).map(|_| make_list()),
         make_list(),
         STRING_COUNT as u64,
+        RuntimeBinaryOp::Eq,
     )
 }
 
@@ -436,13 +438,57 @@ fn map_vm_fixture() -> ProgramFixture {
             (Value::int(key).unwrap(), Value::int(value).unwrap())
         }))
     };
-    equality_vm_fixture((0..STRING_COUNT).map(|_| make_map(8)), make_map(7), 0)
+    comparison_vm_fixture(
+        (0..STRING_COUNT).map(|_| make_map(8)),
+        make_map(7),
+        0,
+        RuntimeBinaryOp::Eq,
+    )
 }
 
-fn equality_vm_fixture(
+fn string_ordering_vm_fixture() -> ProgramFixture {
+    comparison_vm_fixture(
+        (0..STRING_COUNT).map(|_| Value::string("mica-order-alpha")),
+        Value::string("mica-order-beta"),
+        STRING_COUNT as u64,
+        RuntimeBinaryOp::Lt,
+    )
+}
+
+fn list_ordering_vm_fixture() -> ProgramFixture {
+    let make_list = |last| {
+        Value::list((0..16).map(|index| {
+            Value::int(if index == 15 { last } else { index }).expect("benchmark list integer fits")
+        }))
+    };
+    comparison_vm_fixture(
+        (0..STRING_COUNT).map(|_| make_list(15)),
+        make_list(16),
+        STRING_COUNT as u64,
+        RuntimeBinaryOp::Lt,
+    )
+}
+
+fn map_ordering_vm_fixture() -> ProgramFixture {
+    let make_map = |last| {
+        Value::map((0..8).map(|key| {
+            let value = if key == 7 { last } else { key };
+            (Value::int(key).unwrap(), Value::int(value).unwrap())
+        }))
+    };
+    comparison_vm_fixture(
+        (0..STRING_COUNT).map(|_| make_map(7)),
+        make_map(8),
+        STRING_COUNT as u64,
+        RuntimeBinaryOp::Lt,
+    )
+}
+
+fn comparison_vm_fixture(
     values: impl IntoIterator<Item = Value>,
     target: Value,
     expected_matches: u64,
+    comparison: RuntimeBinaryOp,
 ) -> ProgramFixture {
     let collection = Value::list(values);
     let zero = Value::int(0).unwrap();
@@ -492,7 +538,7 @@ fn equality_vm_fixture(
             },
             Instruction::Binary {
                 dst: register(8),
-                op: RuntimeBinaryOp::Eq,
+                op: comparison,
                 left: register(7),
                 right: register(5),
             },
@@ -603,6 +649,33 @@ impl VmContext {
             native,
         }
     }
+
+    fn string_ordering(native: bool) -> Self {
+        Self {
+            fixture: string_ordering_vm_fixture(),
+            host: BenchmarkHost::default(),
+            expected_matches: STRING_COUNT as u64,
+            native,
+        }
+    }
+
+    fn list_ordering(native: bool) -> Self {
+        Self {
+            fixture: list_ordering_vm_fixture(),
+            host: BenchmarkHost::default(),
+            expected_matches: STRING_COUNT as u64,
+            native,
+        }
+    }
+
+    fn map_ordering(native: bool) -> Self {
+        Self {
+            fixture: map_ordering_vm_fixture(),
+            host: BenchmarkHost::default(),
+            expected_matches: STRING_COUNT as u64,
+            native,
+        }
+    }
 }
 
 impl BenchContext for CompiledContext {
@@ -669,6 +742,54 @@ fn bench_vm_cold(chunk_size: usize, native: bool) {
     }
 }
 
+fn bench_interpreter_string_ordering_cold(
+    _context: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    bench_vm_ordering_cold(chunk_size, false, string_ordering_vm_fixture);
+}
+
+fn bench_native_string_ordering_cold(
+    _context: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    bench_vm_ordering_cold(chunk_size, true, string_ordering_vm_fixture);
+}
+
+fn bench_interpreter_list_ordering_cold(
+    _context: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    bench_vm_ordering_cold(chunk_size, false, list_ordering_vm_fixture);
+}
+
+fn bench_native_list_ordering_cold(_context: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    bench_vm_ordering_cold(chunk_size, true, list_ordering_vm_fixture);
+}
+
+fn bench_interpreter_map_ordering_cold(
+    _context: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    bench_vm_ordering_cold(chunk_size, false, map_ordering_vm_fixture);
+}
+
+fn bench_native_map_ordering_cold(_context: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    bench_vm_ordering_cold(chunk_size, true, map_ordering_vm_fixture);
+}
+
+fn bench_vm_ordering_cold(chunk_size: usize, native: bool, workload: fn() -> ProgramFixture) {
+    for _ in 0..chunk_size {
+        let fixture = workload();
+        let mut host = BenchmarkHost::default();
+        assert_eq!(execute_vm(&fixture, &mut host, native), STRING_COUNT as u64,);
+    }
+}
+
 fn bench_helper_cold(_context: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
     bench_compiled_cold(chunk_size, CompiledBackend::Helper);
 }
@@ -716,7 +837,7 @@ fn run_concurrent(
 benchmark_main!(
     BenchmarkMainOptions {
         filter_help: Some(
-            "all, warm, cold, concurrent, interpreter, vm_helper, helper, native, list, map, or a case name"
+            "all, warm, cold, concurrent, interpreter, vm_helper, helper, native, equality, ordering, string, list, map, or a case name"
                 .to_owned()
         ),
         runtime: micromeasure::BenchmarkRuntimeOptions {
@@ -744,6 +865,25 @@ benchmark_main!(
             for (workload_name, workload) in [
                 ("list_equal", VmContext::list as fn(bool) -> VmContext),
                 ("map_late_mismatch", VmContext::map as fn(bool) -> VmContext),
+            ] {
+                for (backend_name, native) in [("interpreter", false), ("vm_helper", true)] {
+                    let factory = move || workload(native);
+                    group
+                        .throughput(Throughput::per_operation(STRING_COUNT as u64, "comparison"))
+                        .factory(&factory)
+                        .bench(&format!("{backend_name}_{workload_name}"), bench_vm);
+                }
+            }
+        });
+
+        runner.group::<VmContext>("collection ordering warm", |group| {
+            for (workload_name, workload) in [
+                (
+                    "string_less_than",
+                    VmContext::string_ordering as fn(bool) -> VmContext,
+                ),
+                ("list_less_than", VmContext::list_ordering),
+                ("map_less_than", VmContext::map_ordering),
             ] {
                 for (backend_name, native) in [("interpreter", false), ("vm_helper", true)] {
                     let factory = move || workload(native);
@@ -786,6 +926,40 @@ benchmark_main!(
             group
                 .throughput(Throughput::per_operation(1, "setup_and_run"))
                 .bench("native_medium_late_mismatch_cold", bench_native_cold);
+        });
+
+        runner.group::<NoContext>("collection ordering cold", |group| {
+            for (name, bench) in [
+                (
+                    "interpreter_string_less_than_cold",
+                    bench_interpreter_string_ordering_cold
+                        as fn(&mut NoContext, usize, usize),
+                ),
+                (
+                    "vm_helper_string_less_than_cold",
+                    bench_native_string_ordering_cold,
+                ),
+                (
+                    "interpreter_list_less_than_cold",
+                    bench_interpreter_list_ordering_cold,
+                ),
+                (
+                    "vm_helper_list_less_than_cold",
+                    bench_native_list_ordering_cold,
+                ),
+                (
+                    "interpreter_map_less_than_cold",
+                    bench_interpreter_map_ordering_cold,
+                ),
+                (
+                    "vm_helper_map_less_than_cold",
+                    bench_native_map_ordering_cold,
+                ),
+            ] {
+                group
+                    .throughput(Throughput::per_operation(1, "setup_and_run"))
+                    .bench(name, bench);
+            }
         });
 
         let one_thread = [ConcurrentWorker {
@@ -834,6 +1008,40 @@ benchmark_main!(
             for (workload_name, workload) in [
                 ("list_equal", VmContext::list as fn(bool) -> VmContext),
                 ("map_late_mismatch", VmContext::map as fn(bool) -> VmContext),
+            ] {
+                for (backend_name, native) in [("interpreter", false), ("vm_helper", true)] {
+                    for (threads, workers) in [(1, &one_thread[..]), (4, &four_threads[..])] {
+                        let factory = move |_| {
+                            let context = workload(native);
+                            ConcurrentContext::Vm {
+                                fixture: context.fixture,
+                                expected_matches: context.expected_matches,
+                                native,
+                            }
+                        };
+                        group
+                            .sample_duration(Duration::from_millis(50))
+                            .throughput(Throughput::per_operation(1, "comparison"))
+                            .metadata("backend", backend_name)
+                            .metadata("threads", threads.to_string())
+                            .factory(&factory)
+                            .bench(
+                                &format!("{backend_name}_{workload_name}_{threads}_threads"),
+                                workers,
+                            );
+                    }
+                }
+            }
+        });
+
+        runner.concurrent_group::<ConcurrentContext>("collection ordering concurrent", |group| {
+            for (workload_name, workload) in [
+                (
+                    "string_less_than",
+                    VmContext::string_ordering as fn(bool) -> VmContext,
+                ),
+                ("list_less_than", VmContext::list_ordering),
+                ("map_less_than", VmContext::map_ordering),
             ] {
                 for (backend_name, native) in [("interpreter", false), ("vm_helper", true)] {
                     for (threads, workers) in [(1, &one_thread[..]), (4, &four_threads[..])] {
