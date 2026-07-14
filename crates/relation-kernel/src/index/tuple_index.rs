@@ -326,40 +326,72 @@ impl TupleIndex {
     }
 }
 
-pub(crate) struct ProjectedTupleIndex {
-    entries: AdaptiveRadixTree<RadixTupleKey, TupleBucket>,
+enum RowPositionBucket {
+    One(usize),
+    Many(Vec<usize>),
 }
 
-impl ProjectedTupleIndex {
-    pub(crate) fn from_rows(rows: impl IntoIterator<Item = Tuple>, positions: &[u16]) -> Self {
-        let mut keyed_rows = Vec::new();
+impl RowPositionBucket {
+    fn from_positions(positions: impl IntoIterator<Item = usize>) -> Self {
+        let mut positions = positions.into_iter();
+        let first = positions
+            .next()
+            .expect("a projected tuple bucket is never empty");
+        let Some(second) = positions.next() else {
+            return Self::One(first);
+        };
+
+        let mut rows = Vec::with_capacity(2 + positions.size_hint().0);
+        rows.push(first);
+        rows.push(second);
+        rows.extend(positions);
+        Self::Many(rows)
+    }
+
+    fn positions(&self) -> &[usize] {
+        match self {
+            Self::One(position) => std::slice::from_ref(position),
+            Self::Many(positions) => positions,
+        }
+    }
+}
+
+pub(crate) struct ProjectedTupleIndex<'rows> {
+    rows: &'rows [Tuple],
+    entries: AdaptiveRadixTree<RadixTupleKey, RowPositionBucket>,
+}
+
+impl<'rows> ProjectedTupleIndex<'rows> {
+    pub(crate) fn from_rows(rows: &'rows [Tuple], positions: &[u16]) -> Self {
+        let mut keyed_rows = Vec::with_capacity(rows.len());
         let mut ordered = true;
 
-        for row in rows {
+        for (row_position, row) in rows.iter().enumerate() {
             let key = key_from_values(
                 positions
                     .iter()
                     .map(|position| &row.values()[*position as usize]),
             );
             if ordered
-                && keyed_rows.last().is_some_and(|(last_key, last_row)| {
-                    last_key > &key || (last_key == &key && last_row >= &row)
+                && keyed_rows.last().is_some_and(|(last_key, last_position)| {
+                    last_key > &key || (last_key == &key && rows[*last_position] >= *row)
                 })
             {
                 ordered = false;
             }
-            keyed_rows.push((key, row));
+            keyed_rows.push((key, row_position));
         }
 
         if !ordered {
-            keyed_rows.sort_by(|(left_key, left_tuple), (right_key, right_tuple)| {
+            keyed_rows.sort_by(|(left_key, left_position), (right_key, right_position)| {
                 left_key
                     .cmp(right_key)
-                    .then_with(|| left_tuple.cmp(right_tuple))
+                    .then_with(|| rows[*left_position].cmp(&rows[*right_position]))
             });
         }
 
         let mut index = Self {
+            rows,
             entries: AdaptiveRadixTree::new(),
         };
 
@@ -370,15 +402,18 @@ impl ProjectedTupleIndex {
                 end += 1;
             }
 
-            let mut group_rows = Vec::with_capacity(end - start);
-            for (_, row) in &keyed_rows[start..end] {
-                if group_rows.last() != Some(row) {
-                    group_rows.push(row.clone());
+            let mut group_positions = Vec::with_capacity(end - start);
+            for (_, row_position) in &keyed_rows[start..end] {
+                if group_positions
+                    .last()
+                    .is_none_or(|previous| rows[*previous] != rows[*row_position])
+                {
+                    group_positions.push(*row_position);
                 }
             }
             index.entries.insert_k(
                 &keyed_rows[start].0,
-                TupleBucket::from_sorted_unique(group_rows),
+                RowPositionBucket::from_positions(group_positions),
             );
             start = end;
         }
@@ -386,24 +421,36 @@ impl ProjectedTupleIndex {
         index
     }
 
-    fn intersect_values_with(&self, other: &Self, visit: impl FnMut(&TupleBucket, &TupleBucket)) {
+    fn intersect_values_with(
+        &self,
+        other: &ProjectedTupleIndex<'_>,
+        visit: impl FnMut(&RowPositionBucket, &RowPositionBucket),
+    ) {
         self.entries.intersect_values_with(&other.entries, visit);
     }
 
-    pub(crate) fn matching_row_pairs(&self, other: &Self, mut visit: impl FnMut(&Tuple, &Tuple)) {
+    pub(crate) fn matching_row_pairs(
+        &self,
+        other: &ProjectedTupleIndex<'_>,
+        mut visit: impl FnMut(&Tuple, &Tuple),
+    ) {
         self.intersect_values_with(other, |left, right| {
-            for left_tuple in left {
-                for right_tuple in right {
-                    visit(left_tuple, right_tuple);
+            for left_position in left.positions() {
+                for right_position in right.positions() {
+                    visit(&self.rows[*left_position], &other.rows[*right_position]);
                 }
             }
         });
     }
 
-    pub(crate) fn matching_left_rows(&self, other: &Self, mut visit: impl FnMut(&Tuple)) {
+    pub(crate) fn matching_left_rows(
+        &self,
+        other: &ProjectedTupleIndex<'_>,
+        mut visit: impl FnMut(&Tuple),
+    ) {
         self.intersect_values_with(other, |left, _right| {
-            for tuple in left {
-                visit(tuple);
+            for position in left.positions() {
+                visit(&self.rows[*position]);
             }
         });
     }
