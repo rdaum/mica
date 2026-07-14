@@ -1,4 +1,4 @@
-# Transient Relation Inventory
+# Relation Durability Migration
 
 This inventory captures the manager-scoped transient relation semantics before their replacement by
 transactional volatile named relations. It is an implementation checkpoint, not a compatibility
@@ -64,7 +64,7 @@ shape rather than depending on the previous ambient scope overlay.
 
 ## Baseline Harness
 
-`transient_relation_benches` measures three real layers:
+`relation_lifecycle_benches` measures three real layers:
 
 - one transient tuple assertion and retraction;
 - endpoint open, effect-route lookup, and close;
@@ -83,7 +83,7 @@ path using the same logical workloads.
 Command:
 
 ```sh
-cargo bench -p mica-runtime --bench transient_relation_benches -- all
+cargo bench -p mica-runtime --bench relation_lifecycle_benches -- all
 ```
 
 Environment: Linux 6.17 aarch64, Cortex-X925, fixed 3.9 GHz maximum frequency, Rust 1.95.0.
@@ -154,7 +154,7 @@ close also drops any remaining rows in that scope. That part disappears with req
 Command:
 
 ```sh
-cargo bench -p mica-runtime --bench transient_relation_benches -- endpoint_lifecycle
+cargo bench -p mica-runtime --bench relation_lifecycle_benches -- endpoint_lifecycle
 ```
 
 | Execution | Direct-store baseline | Volatile endpoint transactions | Change |
@@ -188,7 +188,7 @@ state is classified as volatile.
 Command:
 
 ```sh
-cargo bench -p mica-runtime --bench transient_relation_benches -- request_lifecycle
+cargo bench -p mica-runtime --bench relation_lifecycle_benches -- request_lifecycle
 ```
 
 | Execution | Direct-store baseline | Volatile request transactions | Change |
@@ -217,3 +217,40 @@ unreachable internal overlay, ready to be deleted without another producer migra
 branches, mutation metrics, and VM/task wiring have been deleted. Runtime relation reads now have a
 single transaction path: durable and volatile rows share the same MVCC snapshot and transaction
 semantics, while durability controls only commit-provider projection and restart recovery.
+
+## Final Measurement And Recovery
+
+Each workload below ran in a separate benchmark process. The one- and four-worker rows contain
+intentional concurrency within that one selected case; no benchmark cases overlapped.
+
+| Workload | Execution | Median lifecycle | Throughput |
+| --- | --- | ---: | ---: |
+| Volatile tuple | Serial | 14,896 ns | 130.95 k tuple mutations/s |
+| Volatile tuple | 1 worker | 18,697 ns | 107.09 k tuple mutations/s |
+| Volatile tuple | 4 workers | 30,617 ns | 65.09 k tuple mutations/s |
+| Volatile endpoint | Serial | 30,888 ns | 295.05 k tuple mutations/s |
+| Volatile endpoint | 1 worker | 33,035 ns | 306.15 k tuple mutations/s |
+| Volatile endpoint | 4 workers | 45,034 ns | 221.94 k tuple mutations/s |
+| Volatile request | Serial | 62,192 ns | 450.72 k tuple mutations/s |
+| Volatile request | 1 worker | 69,757 ns | 402.76 k tuple mutations/s |
+| Volatile request | 4 workers | 82,647 ns | 339.23 k tuple mutations/s |
+
+Removing the overlay is performance-neutral relative to the volatile migration checkpoints. The
+endpoint medians changed by +1.3%, +0.4%, and +2.4%; request medians changed by +0.4%, +0.8%, and
+-0.4% for serial, one-worker, and four-worker execution. These small mixed changes do not establish
+a performance effect. The material cost remains MVCC publication: two commits for the tuple and
+endpoint lifecycles, and four for the request lifecycle. That is the next optimization surface.
+
+The final isolated transaction medians are 2,752 ns, 3,392 ns, and 7,856 ns for durable rows and
+2,648 ns, 3,266 ns, and 7,057 ns for volatile rows under serial, one-worker, and four-worker
+execution. Volatility consistently avoids the commit-provider projection, but both paths retain the
+same publication and shared-snapshot contention shape.
+
+The persistent recovery test reopens a Fjall store after mixed durable and volatile commits. It
+confirms that durable rows remain, volatile rows are absent, volatile relation metadata remains,
+and a version gap caused by a volatile-only live commit does not prevent later durable recovery:
+
+```sh
+cargo test -p mica-relation-kernel --features fjall-provider \
+  fjall_provider_recovers_volatile_relations_without_their_rows
+```

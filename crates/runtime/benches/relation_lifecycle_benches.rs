@@ -51,13 +51,13 @@ impl Workload {
     }
 }
 
-struct TransientBenchContext {
+struct RelationLifecycleBenchContext {
     runner: SharedSourceRunner,
     next_identity: AtomicU64,
     workload: Workload,
 }
 
-impl TransientBenchContext {
+impl RelationLifecycleBenchContext {
     fn new(workload: Workload) -> Self {
         let mut runner = SourceRunner::new_empty();
         runner
@@ -207,7 +207,7 @@ impl TransientBenchContext {
     }
 }
 
-impl BenchContext for TransientBenchContext {
+impl BenchContext for RelationLifecycleBenchContext {
     fn prepare(_num_chunks: usize) -> Self {
         Self::new(Workload::Tuple)
     }
@@ -217,20 +217,20 @@ impl BenchContext for TransientBenchContext {
     }
 }
 
-impl ConcurrentBenchContext for TransientBenchContext {
+impl ConcurrentBenchContext for RelationLifecycleBenchContext {
     fn prepare(_num_threads: usize) -> Self {
         Self::new(Workload::Tuple)
     }
 }
 
-fn run_serial(context: &mut TransientBenchContext, chunk_size: usize, _chunk_num: usize) {
+fn run_serial(context: &mut RelationLifecycleBenchContext, chunk_size: usize, _chunk_num: usize) {
     for _ in 0..chunk_size {
         context.run_one();
     }
 }
 
 fn run_concurrent(
-    context: &TransientBenchContext,
+    context: &RelationLifecycleBenchContext,
     control: &ConcurrentBenchControl,
 ) -> ConcurrentWorkerResult {
     let mut lifecycles = 0_u64;
@@ -253,9 +253,9 @@ benchmark_main!(
         ..Default::default()
     },
     |runner| {
-        runner.group::<TransientBenchContext>("relation lifecycle migration", |group| {
+        runner.group::<RelationLifecycleBenchContext>("relation lifecycles", |group| {
             for workload in Workload::ALL {
-                let factory = move || TransientBenchContext::new(workload);
+                let factory = move || RelationLifecycleBenchContext::new(workload);
                 group
                     .throughput(Throughput::per_operation(
                         workload.mutations(),
@@ -276,15 +276,15 @@ benchmark_main!(
             threads: CONCURRENT_THREADS,
             run: run_concurrent,
         }];
-        runner.concurrent_group::<TransientBenchContext>(
-            "relation lifecycle migration concurrent",
+        runner.concurrent_group::<RelationLifecycleBenchContext>(
+            "relation lifecycles concurrent",
             |group| {
                 for workload in Workload::ALL {
                     for (threads, workers) in [
                         (1, one_worker.as_slice()),
                         (CONCURRENT_THREADS, four_workers.as_slice()),
                     ] {
-                        let factory = move |_| TransientBenchContext::new(workload);
+                        let factory = move |_| RelationLifecycleBenchContext::new(workload);
                         let name = format!("{}_{}_threads", workload.name(), threads);
                         group
                             .sample_duration(Duration::from_millis(50))

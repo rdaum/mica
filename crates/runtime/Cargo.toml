@@ -27,5 +27,5 @@ name = "task_benches"
 harness = false
 
 [[bench]]
-name = "transient_relation_benches"
+name = "relation_lifecycle_benches"
 harness = false
