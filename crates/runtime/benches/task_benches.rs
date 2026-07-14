@@ -16,8 +16,8 @@ use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Tuple,
 };
 use mica_runtime::{
-    BuiltinRegistry, Instruction, Operand, Program, ProgramResolver, Register, RuntimeBinaryOp,
-    Task, TaskLimits, TaskOutcome,
+    BuiltinRegistry, Instruction, Operand, Program, ProgramResolver, QueryBinding, Register,
+    RuntimeBinaryOp, Task, TaskLimits, TaskOutcome,
 };
 use mica_var::{Identity, Symbol, Value};
 use micromeasure::{
@@ -42,7 +42,23 @@ const THREE_SITE_DISPATCH_ROUNDS: u64 = REPEATED_DISPATCH_ITERATIONS / 3;
 const THREE_SITE_DISPATCHES_PER_TASK: u64 = THREE_SITE_DISPATCH_ROUNDS * 3;
 const CALL_PATH_INVOCATIONS: u64 = 8_192;
 const CONCURRENT_DISPATCH_THREADS: usize = 4;
+const RELATION_SCAN_ROWS: usize = 1_024;
 const MAX_CALL_DEPTH: usize = 64;
+
+#[derive(Clone, Copy)]
+enum ScanCellKind {
+    Immediate,
+    SharedHeap,
+}
+
+impl ScanCellKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Immediate => "immediate",
+            Self::SharedHeap => "shared_heap",
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum CallPath {
@@ -80,6 +96,7 @@ struct Workload {
     // Count calls that cross from the VM into the relation workspace. Kernel-internal index
     // probes performed by one host call are intentionally not separate operations here.
     relation_reads: u64,
+    relation_rows: u64,
     relation_writes: u64,
     commit_boundaries: u64,
     kernel_commits: u64,
@@ -95,6 +112,7 @@ impl Workload {
         Self {
             executed_bytecodes,
             relation_reads: 0,
+            relation_rows: 0,
             relation_writes: 0,
             commit_boundaries: 1,
             kernel_commits: 0,
@@ -125,6 +143,7 @@ struct ConcurrentTaskBenchContext {
     dispatches_per_task: u64,
     call_path_invocations_per_task: u64,
     bytecodes_per_task: u64,
+    relation_rows_per_task: u64,
     instruction_budget: usize,
     interpret_only: bool,
 }
@@ -201,6 +220,7 @@ impl ConcurrentTaskBenchContext {
             dispatches_per_task: context.workload.dispatch_cache_lookups,
             call_path_invocations_per_task: context.workload.call_path_invocations,
             bytecodes_per_task: context.workload.executed_bytecodes,
+            relation_rows_per_task: context.workload.relation_rows,
             instruction_budget: context.workload.executed_bytecodes as usize + 1,
             interpret_only: context.interpret_only,
         }
@@ -748,6 +768,62 @@ impl TaskBenchContext {
         .unwrap();
         let mut workload = Workload::task(2);
         workload.relation_reads = 1;
+        Self::from_program(kernel, program, workload)
+    }
+
+    fn relation_value_scan(rows: usize, cell_kind: ScanCellKind) -> Self {
+        let relation = relation_id(2);
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(
+                relation,
+                Symbol::intern("ScanBench"),
+                3,
+            ))
+            .unwrap();
+        let mut seed = kernel.begin();
+        for index in 0..rows {
+            let payload = match cell_kind {
+                ScanCellKind::Immediate => int(index as i64),
+                ScanCellKind::SharedHeap => Value::string(format!("scan-row-{index}")),
+            };
+            seed.assert(
+                relation,
+                Tuple::from([int(index as i64), payload, int((index % 32) as i64)]),
+            )
+            .unwrap();
+        }
+        seed.commit().unwrap();
+
+        let program = Program::new(
+            1,
+            [
+                Instruction::ScanBindings {
+                    dst: register(0),
+                    relation,
+                    bindings: vec![None, None, None],
+                    outputs: vec![
+                        QueryBinding {
+                            name: Symbol::intern("row"),
+                            position: 0,
+                        },
+                        QueryBinding {
+                            name: Symbol::intern("payload"),
+                            position: 1,
+                        },
+                        QueryBinding {
+                            name: Symbol::intern("bucket"),
+                            position: 2,
+                        },
+                    ],
+                },
+                Instruction::Return { value: operand(0) },
+            ],
+        )
+        .unwrap();
+        let mut workload = Workload::task(2);
+        workload.relation_reads = 1;
+        workload.relation_rows = rows as u64;
         Self::from_program(kernel, program, workload)
     }
 
@@ -1495,6 +1571,22 @@ fn run_concurrent_integer_tasks(
     ConcurrentWorkerResult::operations(bytecodes).with_counter("tasks", tasks)
 }
 
+fn run_concurrent_relation_scans(
+    context: &ConcurrentTaskBenchContext,
+    control: &ConcurrentBenchControl,
+) -> ConcurrentWorkerResult {
+    let mut task_id = ((control.thread_index() as u64) + 1) << 48;
+    let mut tasks = 0_u64;
+    let mut rows = 0_u64;
+    while !control.should_stop() {
+        context.run_one(task_id);
+        task_id = task_id.wrapping_add(1);
+        tasks = tasks.wrapping_add(1);
+        rows = rows.wrapping_add(context.relation_rows_per_task);
+    }
+    ConcurrentWorkerResult::operations(rows).with_counter("tasks", tasks)
+}
+
 fn workload_diagnostics(
     context: &mut TaskBenchContext,
     _chunk_size: usize,
@@ -1516,6 +1608,11 @@ fn workload_diagnostics(
             "relation_reads_per_task",
             workload.relation_reads as i64,
             "reads",
+        ))
+        .push_metric(MetricValue::integer(
+            "relation_rows_per_task",
+            workload.relation_rows as i64,
+            "rows",
         ))
         .push_metric(MetricValue::integer(
             "relation_writes_per_task",
@@ -1863,6 +1960,22 @@ benchmark_main!(
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_indexed_relation_read", run_tasks);
 
+            for rows in [32, RELATION_SCAN_ROWS] {
+                for cell_kind in [ScanCellKind::Immediate, ScanCellKind::SharedHeap] {
+                    let scan = move || TaskBenchContext::relation_value_scan(rows, cell_kind);
+                    let name = format!(
+                        "task_scan_bindings_relation_value_{}_{}_rows",
+                        cell_kind.name(),
+                        rows
+                    );
+                    group
+                        .throughput(Throughput::per_operation(rows as u64, "rows"))
+                        .factory(&scan)
+                        .diagnostic_pass(workload_diagnostics)
+                        .bench(&name, run_tasks);
+                }
+            }
+
             let write = || TaskBenchContext::read_modify_write();
             group
                 .throughput(Throughput::ops())
@@ -2147,6 +2260,16 @@ benchmark_main!(
             threads: CONCURRENT_DISPATCH_THREADS,
             run: run_concurrent_integer_tasks,
         }];
+        let single_relation_scan_worker = [ConcurrentWorker {
+            name: "relation scan",
+            threads: 1,
+            run: run_concurrent_relation_scans,
+        }];
+        let concurrent_relation_scan_workers = [ConcurrentWorker {
+            name: "relation scan",
+            threads: CONCURRENT_DISPATCH_THREADS,
+            run: run_concurrent_relation_scans,
+        }];
         let interpreted_integer = |_| {
             ConcurrentTaskBenchContext::from_task_context(
                 TaskBenchContext::interpreted_integer_loop(),
@@ -2240,6 +2363,43 @@ benchmark_main!(
                 TaskBenchContext::three_site_positional_dispatch(),
             )
         };
+        runner.concurrent_group::<ConcurrentTaskBenchContext>(
+            "relation scan construction concurrent",
+            |group| {
+                for cell_kind in [ScanCellKind::Immediate, ScanCellKind::SharedHeap] {
+                    let scan = move |_| {
+                        ConcurrentTaskBenchContext::from_task_context(
+                            TaskBenchContext::relation_value_scan(
+                                RELATION_SCAN_ROWS,
+                                cell_kind,
+                            ),
+                        )
+                    };
+                    for (threads, workers) in [
+                        (1, single_relation_scan_worker.as_slice()),
+                        (
+                            CONCURRENT_DISPATCH_THREADS,
+                            concurrent_relation_scan_workers.as_slice(),
+                        ),
+                    ] {
+                        let name = format!(
+                            "task_scan_bindings_relation_value_{}_{}_rows_concurrent_{}_threads",
+                            cell_kind.name(),
+                            RELATION_SCAN_ROWS,
+                            threads,
+                        );
+                        group
+                            .sample_duration(Duration::from_millis(50))
+                            .throughput(Throughput::per_operation(1, "rows"))
+                            .metadata("cell_kind", cell_kind.name())
+                            .metadata("rows", RELATION_SCAN_ROWS.to_string())
+                            .metadata("threads", threads.to_string())
+                            .factory(&scan)
+                            .bench(&name, workers);
+                    }
+                }
+            },
+        );
         runner.concurrent_group::<ConcurrentTaskBenchContext>("task concurrent", |group| {
             group
                 .sample_duration(Duration::from_millis(50))
