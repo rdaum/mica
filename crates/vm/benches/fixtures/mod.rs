@@ -31,6 +31,9 @@ pub const STATIC_CALL_COUNT: usize = 8_192;
 pub const STATIC_CALL_INSTRUCTIONS: u64 = (STATIC_CALL_COUNT as u64 * 2) + 1;
 pub const BUILTIN_CALL_COUNT: usize = 16_384;
 pub const BUILTIN_CALL_INSTRUCTIONS: u64 = BUILTIN_CALL_COUNT as u64 + 1;
+pub const NATURAL_FLOAT_SUM_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 7) + 8;
+pub const NATURAL_FLOAT_TRANSFORM_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 10) + 9;
+pub const NATURAL_MIXED_SCALE_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 9) + 9;
 pub const MAX_CALL_DEPTH: usize = 64;
 
 pub struct ProgramFixture {
@@ -80,6 +83,243 @@ pub fn float_multiply_loop_fixture() -> ProgramFixture {
         RuntimeBinaryOp::Lt,
         iterations,
     )
+}
+
+pub fn natural_float_sum_fixture() -> ProgramFixture {
+    let collection = Value::list((0..INTEGER_LOOP_ITERATIONS).map(|_| float(0.25)));
+    let program = Program::new(
+        8,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: collection,
+            },
+            Instruction::CollectionLen {
+                dst: reg(1),
+                collection: reg(0),
+            },
+            Instruction::Load {
+                dst: reg(2),
+                value: int(0),
+            },
+            Instruction::Load {
+                dst: reg(3),
+                value: float(0.0),
+            },
+            Instruction::Load {
+                dst: reg(4),
+                value: int(1),
+            },
+            Instruction::Binary {
+                dst: reg(5),
+                op: RuntimeBinaryOp::Lt,
+                left: reg(2),
+                right: reg(1),
+            },
+            Instruction::Branch {
+                condition: reg(5),
+                if_true: 7,
+                if_false: 12,
+            },
+            Instruction::CollectionValueAt {
+                dst: reg(6),
+                collection: reg(0),
+                index: reg(2),
+            },
+            Instruction::Binary {
+                dst: reg(7),
+                op: RuntimeBinaryOp::Add,
+                left: reg(3),
+                right: reg(6),
+            },
+            Instruction::Move {
+                dst: reg(3),
+                src: reg(7),
+            },
+            Instruction::Binary {
+                dst: reg(2),
+                op: RuntimeBinaryOp::Add,
+                left: reg(2),
+                right: reg(4),
+            },
+            Instruction::Jump { target: 5 },
+            Instruction::Return { value: r(3) },
+        ],
+    )
+    .unwrap();
+    ProgramFixture {
+        program: Arc::new(program),
+        instruction_count: NATURAL_FLOAT_SUM_INSTRUCTIONS,
+    }
+}
+
+pub fn natural_float_transform_fixture() -> ProgramFixture {
+    let collection = Value::list((0..INTEGER_LOOP_ITERATIONS).map(|_| float(2.0)));
+    let program = Program::new(
+        12,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: collection,
+            },
+            Instruction::CollectionLen {
+                dst: reg(1),
+                collection: reg(0),
+            },
+            Instruction::Load {
+                dst: reg(2),
+                value: int(0),
+            },
+            Instruction::Load {
+                dst: reg(3),
+                value: float(0.0),
+            },
+            Instruction::Load {
+                dst: reg(4),
+                value: int(1),
+            },
+            Instruction::Load {
+                dst: reg(5),
+                value: float(0.5),
+            },
+            Instruction::Binary {
+                dst: reg(6),
+                op: RuntimeBinaryOp::Lt,
+                left: reg(2),
+                right: reg(1),
+            },
+            Instruction::Branch {
+                condition: reg(6),
+                if_true: 8,
+                if_false: 16,
+            },
+            Instruction::CollectionValueAt {
+                dst: reg(7),
+                collection: reg(0),
+                index: reg(2),
+            },
+            Instruction::Unary {
+                dst: reg(8),
+                op: RuntimeUnaryOp::Neg,
+                src: reg(7),
+            },
+            Instruction::Binary {
+                dst: reg(9),
+                op: RuntimeBinaryOp::Mul,
+                left: reg(8),
+                right: reg(5),
+            },
+            Instruction::Binary {
+                dst: reg(10),
+                op: RuntimeBinaryOp::Sub,
+                left: reg(3),
+                right: reg(9),
+            },
+            Instruction::Move {
+                dst: reg(3),
+                src: reg(10),
+            },
+            Instruction::Binary {
+                dst: reg(11),
+                op: RuntimeBinaryOp::Add,
+                left: reg(2),
+                right: reg(4),
+            },
+            Instruction::Move {
+                dst: reg(2),
+                src: reg(11),
+            },
+            Instruction::Jump { target: 6 },
+            Instruction::Return { value: r(3) },
+        ],
+    )
+    .unwrap();
+    ProgramFixture {
+        program: Arc::new(program),
+        instruction_count: NATURAL_FLOAT_TRANSFORM_INSTRUCTIONS,
+    }
+}
+
+pub fn natural_mixed_scale_fixture() -> ProgramFixture {
+    let collection = Value::list((0..INTEGER_LOOP_ITERATIONS).map(|_| int(2)));
+    let program = Program::new(
+        11,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: collection,
+            },
+            Instruction::CollectionLen {
+                dst: reg(1),
+                collection: reg(0),
+            },
+            Instruction::Load {
+                dst: reg(2),
+                value: int(0),
+            },
+            Instruction::Load {
+                dst: reg(3),
+                value: float(0.0),
+            },
+            Instruction::Load {
+                dst: reg(4),
+                value: int(1),
+            },
+            Instruction::Load {
+                dst: reg(5),
+                value: float(0.5),
+            },
+            Instruction::Binary {
+                dst: reg(6),
+                op: RuntimeBinaryOp::Lt,
+                left: reg(2),
+                right: reg(1),
+            },
+            Instruction::Branch {
+                condition: reg(6),
+                if_true: 8,
+                if_false: 15,
+            },
+            Instruction::CollectionValueAt {
+                dst: reg(7),
+                collection: reg(0),
+                index: reg(2),
+            },
+            Instruction::Binary {
+                dst: reg(8),
+                op: RuntimeBinaryOp::Mul,
+                left: reg(7),
+                right: reg(5),
+            },
+            Instruction::Binary {
+                dst: reg(9),
+                op: RuntimeBinaryOp::Add,
+                left: reg(3),
+                right: reg(8),
+            },
+            Instruction::Move {
+                dst: reg(3),
+                src: reg(9),
+            },
+            Instruction::Binary {
+                dst: reg(10),
+                op: RuntimeBinaryOp::Add,
+                left: reg(2),
+                right: reg(4),
+            },
+            Instruction::Move {
+                dst: reg(2),
+                src: reg(10),
+            },
+            Instruction::Jump { target: 6 },
+            Instruction::Return { value: r(3) },
+        ],
+    )
+    .unwrap();
+    ProgramFixture {
+        program: Arc::new(program),
+        instruction_count: NATURAL_MIXED_SCALE_INSTRUCTIONS,
+    }
 }
 
 pub fn scalar_symbol_loop_fixture() -> ProgramFixture {

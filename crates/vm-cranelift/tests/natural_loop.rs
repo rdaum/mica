@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use mica_var::abi::{borrowed_value_bits, from_owned_value_bits};
+use mica_var::abi::{VALUE_INT_MAX, borrowed_value_bits, from_owned_value_bits};
 use mica_var::{Value, ValueRef};
 use mica_vm_cranelift::{
     CompiledNaturalLoop, NaturalLoopCollectionView, NaturalLoopInstruction, NaturalLoopOutcome,
@@ -167,6 +167,33 @@ fn comparison_plan(comparison: ScalarComparison) -> NaturalLoopPlan {
             left: 0,
             right: 1,
         }],
+    )
+    .unwrap()
+}
+
+fn numeric_arithmetic_plan() -> NaturalLoopPlan {
+    NaturalLoopPlan::new(
+        6,
+        0,
+        0,
+        [
+            NaturalLoopInstruction::Negate { dst: 2, src: 0 },
+            NaturalLoopInstruction::Add {
+                dst: 3,
+                left: 0,
+                right: 1,
+            },
+            NaturalLoopInstruction::Subtract {
+                dst: 4,
+                left: 0,
+                right: 1,
+            },
+            NaturalLoopInstruction::Multiply {
+                dst: 5,
+                left: 0,
+                right: 1,
+            },
+        ],
     )
     .unwrap()
 }
@@ -580,15 +607,62 @@ fn generated_natural_loop_stops_at_an_exact_instruction_budget() {
 }
 
 #[test]
-fn generated_natural_loop_side_exits_on_mixed_arithmetic() {
-    let compiled = CompiledNaturalLoop::compile(&plan(16_384)).unwrap();
-    let mut scratch = scratch(16_384);
-    let mixed = Value::string("not an integer");
-    scratch[TOTAL as usize] = borrowed_value_bits(&mixed);
-    assert_eq!(
-        compiled.run(&mut scratch, &[], 16_384 * 9),
-        NaturalLoopOutcome::SideExit,
-    );
+fn generated_numeric_arithmetic_matches_float_and_mixed_value_semantics() {
+    let compiled = CompiledNaturalLoop::compile(&numeric_arithmetic_plan()).unwrap();
+    for (left, right) in [
+        (Value::float(2.0).unwrap(), Value::float(0.5).unwrap()),
+        (Value::int(2).unwrap(), Value::float(0.5).unwrap()),
+        (Value::float(-2.5).unwrap(), Value::int(4).unwrap()),
+    ] {
+        let expected = [
+            left.checked_neg().unwrap(),
+            left.checked_add(&right).unwrap(),
+            left.checked_sub(&right).unwrap(),
+            left.checked_mul(&right).unwrap(),
+        ];
+        let mut scratch = [
+            borrowed_value_bits(&left),
+            borrowed_value_bits(&right),
+            bits(Value::nothing()),
+            bits(Value::nothing()),
+            bits(Value::nothing()),
+            bits(Value::nothing()),
+        ];
+        assert_eq!(
+            compiled.run(&mut scratch, &[], 4),
+            NaturalLoopOutcome::Complete {
+                instructions: 4,
+                modified_slots: 0x3c,
+            },
+        );
+        for (slot, expected) in (2..6).zip(expected) {
+            assert_eq!(value(scratch[slot]), expected);
+        }
+    }
+}
+
+#[test]
+fn generated_numeric_arithmetic_side_exits_on_invalid_or_non_finite_results() {
+    let compiled = CompiledNaturalLoop::compile(&numeric_arithmetic_plan()).unwrap();
+    let cases = [
+        (Value::string("not numeric"), Value::int(1).unwrap()),
+        (Value::int(VALUE_INT_MAX).unwrap(), Value::int(1).unwrap()),
+        (Value::float(f32::MAX).unwrap(), Value::float(2.0).unwrap()),
+    ];
+    for (left, right) in cases {
+        let mut scratch = [
+            borrowed_value_bits(&left),
+            borrowed_value_bits(&right),
+            bits(Value::nothing()),
+            bits(Value::nothing()),
+            bits(Value::nothing()),
+            bits(Value::nothing()),
+        ];
+        assert_eq!(
+            compiled.run(&mut scratch, &[], 4),
+            NaturalLoopOutcome::SideExit,
+        );
+    }
 }
 
 #[test]
@@ -777,6 +851,44 @@ fn generated_language_ordering_helper_executes_concurrently() {
                     modified_slots: 4,
                 },
                 Some(true),
+            ),
+        );
+    }
+}
+
+#[test]
+fn generated_mixed_numeric_arithmetic_executes_concurrently() {
+    let compiled = Arc::new(CompiledNaturalLoop::compile(&numeric_arithmetic_plan()).unwrap());
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let compiled = Arc::clone(&compiled);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let left = Value::int(3).unwrap();
+            let right = Value::float(0.5).unwrap();
+            let mut scratch = [
+                borrowed_value_bits(&left),
+                borrowed_value_bits(&right),
+                bits(Value::nothing()),
+                bits(Value::nothing()),
+                bits(Value::nothing()),
+                bits(Value::nothing()),
+            ];
+            barrier.wait();
+            let outcome = compiled.run(&mut scratch, &[], 4);
+            (outcome, value(scratch[5]).as_float())
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            (
+                NaturalLoopOutcome::Complete {
+                    instructions: 4,
+                    modified_slots: 0x3c,
+                },
+                Some(1.5),
             ),
         );
     }

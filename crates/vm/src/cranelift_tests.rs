@@ -240,6 +240,10 @@ fn natural_accumulator_program_with_limit(total: Value, limit: usize) -> Arc<Pro
 }
 
 fn natural_collection_program(collection: Value) -> Arc<Program> {
+    natural_numeric_collection_program(collection, Value::int(0).unwrap())
+}
+
+fn natural_numeric_collection_program(collection: Value, initial: Value) -> Arc<Program> {
     Arc::new(
         Program::new(
             9,
@@ -258,7 +262,7 @@ fn natural_collection_program(collection: Value) -> Arc<Program> {
                 },
                 Instruction::Load {
                     dst: register(3),
-                    value: Value::int(0).unwrap(),
+                    value: initial,
                 },
                 Instruction::Load {
                     dst: register(4),
@@ -1570,6 +1574,62 @@ fn native_natural_list_loop_matches_interpreter_completion() {
 }
 
 #[test]
+fn native_natural_float_and_mixed_collection_sums_match_interpreter() {
+    let cases = [
+        (
+            Value::list((0..ITERATIONS).map(|_| Value::float(0.25).unwrap())),
+            Value::float(0.0).unwrap(),
+            Value::float(4_096.0).unwrap(),
+        ),
+        (
+            Value::list((0..ITERATIONS).map(|_| Value::int(2).unwrap())),
+            Value::float(0.0).unwrap(),
+            Value::float(32_768.0).unwrap(),
+        ),
+    ];
+    for (collection, initial, expected) in cases {
+        let program = natural_numeric_collection_program(collection, initial);
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(Arc::clone(&program));
+
+        let interpreted_outcome = run(&mut interpreted, NATURAL_RANGE_INSTRUCTION_COUNT).unwrap();
+        let native_outcome = run(&mut native, NATURAL_RANGE_INSTRUCTION_COUNT).unwrap();
+        assert_eq!(native_outcome, interpreted_outcome);
+        assert_eq!(native_outcome, VmHostResponse::Complete(expected));
+        assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+        assert_eq!(program.native_compile_attempts(), 1);
+        assert_eq!(native.native_side_exit_count(), 0);
+    }
+}
+
+#[test]
+fn native_natural_float_collection_sum_executes_concurrently() {
+    let program = natural_numeric_collection_program(
+        Value::list((0..ITERATIONS).map(|_| Value::float(0.25).unwrap())),
+        Value::float(0.0).unwrap(),
+    );
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let program = Arc::clone(&program);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let mut vm = RegisterVm::new(program);
+            barrier.wait();
+            let outcome = run(&mut vm, NATURAL_RANGE_INSTRUCTION_COUNT).unwrap();
+            (outcome, vm.native_side_exit_count())
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            (VmHostResponse::Complete(Value::float(4_096.0).unwrap()), 0,),
+        );
+    }
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
 fn native_natural_indexed_range_loop_matches_interpreter_completion() {
     let program = natural_indexed_range_program();
     let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
@@ -2010,7 +2070,7 @@ fn native_natural_loop_preserves_budget_remainders() {
 }
 
 #[test]
-fn native_natural_loop_side_exit_is_atomic_and_sticky() {
+fn native_natural_loop_executes_float_accumulation_without_side_exits() {
     let program = natural_accumulator_program(Value::float(0.0).unwrap());
     let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
     let mut native = RegisterVm::new(Arc::clone(&program));
@@ -2020,7 +2080,7 @@ fn native_natural_loop_side_exit_is_atomic_and_sticky() {
     assert_eq!(native_outcome, interpreted_outcome);
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
-    assert_eq!(native.native_side_exit_count(), 1);
+    assert_eq!(native.native_side_exit_count(), 0);
 }
 
 #[test]
@@ -2144,7 +2204,7 @@ fn native_branch_loop_preserves_unequal_path_budget_boundaries() {
 }
 
 #[test]
-fn native_branch_loop_side_exits_atomically_from_either_arm() {
+fn native_branch_loop_executes_float_arithmetic_in_either_arm() {
     for (initial_flag, then_increment, else_increment) in [
         (
             Value::bool(true),
@@ -2167,7 +2227,7 @@ fn native_branch_loop_side_exits_atomically_from_either_arm() {
         );
         assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
         assert_eq!(program.native_compile_attempts(), 1);
-        assert_eq!(native.native_side_exit_count(), 1);
+        assert_eq!(native.native_side_exit_count(), 0);
     }
 }
 
