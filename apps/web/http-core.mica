@@ -1,18 +1,18 @@
 // Minimal HTTP surface for the in-process web host.
 //
-// Rust owns HTTP parsing and response encoding. Mica receives each request as a
-// transient identity with facts describing the request, then returns a response
-// value. Emissions are intentionally not used for ordinary request/response
+// Rust owns HTTP parsing and response encoding. Mica receives each request as
+// volatile facts keyed by a request identity, then returns a response value.
+// Emissions are intentionally not used for ordinary request/response
 // HTTP; they are for later streaming endpoints such as SSE or WebSocket.
 
-make_relation(:HttpRequest, 1)
-make_relation(:RequestMethod, 2)
-make_relation(:RequestPath, 2)
-make_relation(:RequestVersion, 2)
-make_relation(:RequestPrincipal, 2)
-make_relation(:RequestActor, 2)
-make_relation(:RequestHeader, 3)
-make_relation(:RequestBody, 2)
+make_relation(:HttpRequest, 1, :volatile)
+make_relation(:RequestMethod, 2, :volatile)
+make_relation(:RequestPath, 2, :volatile)
+make_relation(:RequestVersion, 2, :volatile)
+make_relation(:RequestPrincipal, 2, :volatile)
+make_relation(:RequestActor, 2, :volatile)
+make_relation(:RequestHeader, 3, :volatile)
+make_relation(:RequestBody, 2, :volatile)
 make_relation(:CanRead, 2)
 make_relation(:CanInvoke, 2)
 

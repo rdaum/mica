@@ -661,6 +661,20 @@ impl SourceRunner {
         self.task_manager.close_endpoint(endpoint)
     }
 
+    pub fn assert_volatile_tuples_named(
+        &mut self,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        assert_volatile_tuples_named_in(self.task_manager.kernel(), tuples)
+    }
+
+    pub fn retract_volatile_tuples_named(
+        &mut self,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        retract_volatile_tuples_named_in(self.task_manager.kernel(), tuples)
+    }
+
     pub fn assert_transient_named(
         &mut self,
         scope: Identity,
@@ -1640,6 +1654,20 @@ impl SharedSourceRunner {
 
     pub fn close_endpoint(&self, endpoint: Identity) -> usize {
         self.task_manager.close_endpoint(endpoint)
+    }
+
+    pub fn assert_volatile_tuples_named(
+        &self,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        assert_volatile_tuples_named_in(self.task_manager.kernel(), tuples)
+    }
+
+    pub fn retract_volatile_tuples_named(
+        &self,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, SourceTaskError> {
+        retract_volatile_tuples_named_in(self.task_manager.kernel(), tuples)
     }
 
     pub fn assert_transient_named(
@@ -5462,6 +5490,66 @@ fn transient_tuple_relation_required(
             Ok((metadata.id(), tuple))
         })
         .collect()
+}
+
+fn volatile_tuple_relations_required(
+    kernel: &RelationKernel,
+    tuples: Vec<(Symbol, Tuple)>,
+) -> Result<Vec<(Identity, Tuple)>, SourceTaskError> {
+    tuples
+        .into_iter()
+        .map(|(relation, tuple)| {
+            let metadata = relation_metadata_required(kernel, relation)?;
+            ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
+            if metadata.durability() != RelationDurability::Volatile {
+                return Err(unsupported_runner_error(
+                    NodeId(0),
+                    None,
+                    format!(
+                        "relation {} is not volatile",
+                        relation.name().unwrap_or("<unnamed>")
+                    ),
+                ));
+            }
+            Ok((metadata.id(), tuple))
+        })
+        .collect()
+}
+
+fn assert_volatile_tuples_named_in(
+    kernel: &RelationKernel,
+    tuples: Vec<(Symbol, Tuple)>,
+) -> Result<usize, SourceTaskError> {
+    let tuples = volatile_tuple_relations_required(kernel, tuples)?;
+    if tuples.is_empty() {
+        return Ok(0);
+    }
+    let mut transaction = kernel.begin();
+    for (relation, tuple) in tuples {
+        transaction
+            .assert(relation, tuple)
+            .map_err(CompileError::from)?;
+    }
+    let result = transaction.commit().map_err(CompileError::from)?;
+    Ok(result.commit().changes().len())
+}
+
+fn retract_volatile_tuples_named_in(
+    kernel: &RelationKernel,
+    tuples: Vec<(Symbol, Tuple)>,
+) -> Result<usize, SourceTaskError> {
+    let tuples = volatile_tuple_relations_required(kernel, tuples)?;
+    if tuples.is_empty() {
+        return Ok(0);
+    }
+    let mut transaction = kernel.begin();
+    for (relation, tuple) in tuples {
+        transaction
+            .retract(relation, tuple)
+            .map_err(CompileError::from)?;
+    }
+    let result = transaction.commit().map_err(CompileError::from)?;
+    Ok(result.commit().changes().len())
 }
 
 fn ensure_tuple_arity(

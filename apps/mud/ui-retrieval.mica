@@ -3,7 +3,7 @@
 make_identity(:ui/retrieval_action)
 make_identity(:retrieval/mud_world)
 
-make_functional_relation(:session/RetrievalPlan, 2, [0])
+make_functional_relation(:session/RetrievalPlan, 2, [0], :volatile)
 
 assert Delegates(#ui/retrieval_action, #ui/sync_action, 0)
 "mud_retrieve_related".ui/syncAction = #ui/retrieval_action

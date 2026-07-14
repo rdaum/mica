@@ -470,6 +470,26 @@ impl CompioTaskDriver {
         self.inner.runner.close_endpoint(endpoint)
     }
 
+    pub fn assert_volatile_tuples_named(
+        &self,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, DriverError> {
+        self.inner
+            .runner
+            .assert_volatile_tuples_named(tuples)
+            .map_err(DriverError::Source)
+    }
+
+    pub fn retract_volatile_tuples_named(
+        &self,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Result<usize, DriverError> {
+        self.inner
+            .runner
+            .retract_volatile_tuples_named(tuples)
+            .map_err(DriverError::Source)
+    }
+
     pub fn assert_transient_named(
         &self,
         scope: Identity,

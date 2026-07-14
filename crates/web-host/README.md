@@ -8,7 +8,7 @@ HTTP/3, TLS, and richer host protocol integration are deferred here; browser Web
 `crates/webtransport-host`.
 
 The standalone binary serves a tiny built-in health/root surface. When linked in process by
-`mica-daemon --web-bind`, parsed requests are installed as transient request facts and submitted to
+`mica-daemon --web-bind`, parsed requests are installed as volatile request facts and submitted to
 the Mica `:http_request(...)` verb. The daemon opens a request-scoped endpoint, derives handler
 authority from the configured web principal, and encodes the task return value as the HTTP response.
 
@@ -17,8 +17,9 @@ The same host now also exposes a browser DOM-sync SSE surface under `/sync`:
 - `GET /sync/events?session=<u64>` opens a chunked `text/event-stream`.
 - `POST /sync/input` accepts binary sync envelopes from the browser bootstrap.
 
-Each browser sync session gets a durable Mica endpoint, so MUD-style UI session facts can stay keyed
-by `endpoint()` across multiple HTTP requests without introducing Tokio or a web framework.
+Each browser sync session keeps one Mica endpoint open for its lifetime, so durable MUD-style UI
+session facts can stay keyed by `endpoint()` across multiple HTTP requests without introducing
+Tokio or a web framework.
 
 Run the standalone host:
 
