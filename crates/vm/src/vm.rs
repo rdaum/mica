@@ -34,7 +34,7 @@ use mica_var::ValueRef;
 use mica_var::abi::{
     borrowed_value_bits, clone_value_bits, from_owned_value_bits, value_is_immediate,
 };
-use mica_var::{FunctionId, Identity, Symbol, Value, ValueKind};
+use mica_var::{FunctionId, Identity, RelationValue, Symbol, Value, ValueKind};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -1803,26 +1803,8 @@ impl RegisterVm {
                     Err(error) => return self.raise_kernel_error(error),
                 };
                 let outputs = program.query_bindings(*outputs);
-                let mut result = Vec::with_capacity(rows.len());
-                'row: for row in rows {
-                    let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
-                    for output in outputs {
-                        let key = Value::symbol(output.name);
-                        let value = row.values()[output.position as usize].clone();
-                        if let Some((_, existing)) = entries
-                            .iter()
-                            .find(|(existing_key, _)| existing_key == &key)
-                        {
-                            if existing != &value {
-                                continue 'row;
-                            }
-                            continue;
-                        }
-                        entries.push((key, value));
-                    }
-                    result.push(Value::map(entries));
-                }
-                self.write_register_unchecked(*dst, Value::list(result));
+                let result = query_relation(rows, outputs, bindings.len())?;
+                self.write_register_unchecked(*dst, result);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
             }
@@ -1887,7 +1869,7 @@ impl RegisterVm {
                 let value = if outputs.is_empty() {
                     Value::bool(!rows.is_empty())
                 } else {
-                    Value::list(query_rows(rows, &outputs))
+                    query_relation(rows, &outputs, bindings.len())?
                 };
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
@@ -2917,6 +2899,9 @@ fn truthy(value: &Value) -> bool {
         ValueKind::Nothing => false,
         ValueKind::Bool => value.as_bool().unwrap_or(false),
         ValueKind::List => value.list_len().is_some_and(|len| len > 0),
+        ValueKind::Relation => value
+            .with_relation(|relation| !relation.is_empty())
+            .unwrap(),
         _ => true,
     }
 }
@@ -3193,7 +3178,11 @@ fn index_value(collection: &Value, index: &Value) -> Value {
     }
     if let Some(index) = index.as_int()
         && index >= 0
-        && let Some(value) = collection.list_get(index as usize)
+        && let Some(value) = collection.list_get(index as usize).or_else(|| {
+            collection
+                .with_relation(|relation| relation_row_value(relation, index as usize))
+                .flatten()
+        })
     {
         return value;
     }
@@ -3246,6 +3235,7 @@ fn collection_len(collection: &Value) -> Value {
     let len = collection
         .list_len()
         .or_else(|| collection.map_len())
+        .or_else(|| collection.with_relation(RelationValue::len))
         .or_else(|| {
             collection.with_range(|start, end| {
                 let start = start.as_int()?;
@@ -3277,34 +3267,58 @@ fn natural_loop_collection_view(collection: &Value) -> Option<NaturalLoopCollect
     }
 }
 
-fn query_rows(rows: Vec<Tuple>, outputs: &[QueryBinding]) -> Vec<Value> {
-    let mut result = Vec::with_capacity(rows.len());
-    'row: for row in rows {
-        let mut entries = Vec::<(Value, Value)>::with_capacity(outputs.len());
-        for output in outputs {
-            let key = Value::symbol(output.name);
-            let value = row.values()[output.position as usize].clone();
-            if let Some((_, existing)) = entries
-                .iter()
-                .find(|(existing_key, _)| existing_key == &key)
-            {
-                if existing != &value {
-                    continue 'row;
-                }
-                continue;
-            }
-            entries.push((key, value));
+fn query_relation(
+    rows: Vec<Tuple>,
+    outputs: &[QueryBinding],
+    source_arity: usize,
+) -> Result<Value, RuntimeError> {
+    let mut columns = Vec::<(Symbol, usize)>::with_capacity(outputs.len());
+    let mut equalities = Vec::new();
+    for output in outputs {
+        let position = usize::from(output.position);
+        if position >= source_arity {
+            return Err(RuntimeError::ProgramArtifact(
+                "query binding position is out of bounds".to_owned(),
+            ));
         }
-        result.push(Value::map(entries));
+        if let Some((_, first_position)) = columns.iter().find(|(name, _)| *name == output.name) {
+            equalities.push((*first_position, position));
+        } else {
+            columns.push((output.name, position));
+        }
     }
-    result
+
+    let mut result = Vec::with_capacity(rows.len());
+    for row in rows {
+        if equalities
+            .iter()
+            .any(|(left, right)| row.values()[*left] != row.values()[*right])
+        {
+            continue;
+        }
+        result.push(Tuple::new(
+            columns
+                .iter()
+                .map(|(_, position)| row.values()[*position].clone()),
+        ));
+    }
+
+    Value::relation(columns.into_iter().map(|(name, _)| name), result)
+        .map_err(|error| RuntimeError::ProgramArtifact(format!("invalid query relation: {error}")))
+}
+
+fn relation_row_value(relation: &RelationValue, index: usize) -> Option<Value> {
+    let row = relation.rows().get(index)?;
+    Some(Value::map(relation.heading().iter().zip(row.values()).map(
+        |(column, value)| (Value::symbol(*column), value.clone()),
+    )))
 }
 
 fn collection_key_at(collection: &Value, index: &Value) -> Value {
     let Some(index) = ordinal_index(index) else {
         return Value::nothing();
     };
-    if collection.list_len().is_some() {
+    if collection.list_len().is_some() || collection.kind() == ValueKind::Relation {
         return i64::try_from(index)
             .ok()
             .and_then(|index| Value::int(index).ok())
@@ -3329,6 +3343,11 @@ fn collection_value_at(collection: &Value, index: &Value) -> Value {
     collection
         .list_get(index)
         .or_else(|| {
+            collection
+                .with_relation(|relation| relation_row_value(relation, index))
+                .flatten()
+        })
+        .or_else(|| {
             collection.with_range(|start, end| {
                 let start = start.as_int()?;
                 let end = end.and_then(Value::as_int)?;
@@ -3352,6 +3371,15 @@ fn collection_value_at(collection: &Value, index: &Value) -> Value {
 }
 
 fn one_value(value: &Value) -> Result<Value, Value> {
+    if let Some(result) = value.with_relation(|relation| match relation.len() {
+        0 => Ok(Value::nothing()),
+        1 if relation.arity() == 1 => Ok(relation.rows()[0].values()[0].clone()),
+        1 => Ok(relation_row_value(relation, 0).unwrap()),
+        _ => Err(ambiguous_one(value)),
+    }) {
+        return result;
+    }
+
     let Some(len) = value.list_len() else {
         return Ok(Value::nothing());
     };
@@ -3366,12 +3394,16 @@ fn one_value(value: &Value) -> Result<Value, Value> {
             }
             Ok(row)
         }
-        _ => Err(Value::error(
-            Symbol::intern("E_AMBIGUOUS"),
-            Some("one expected at most one result"),
-            Some(value.clone()),
-        )),
+        _ => Err(ambiguous_one(value)),
     }
+}
+
+fn ambiguous_one(value: &Value) -> Value {
+    Value::error(
+        Symbol::intern("E_AMBIGUOUS"),
+        Some("one expected at most one result"),
+        Some(value.clone()),
+    )
 }
 
 fn select_authorized_method_call(

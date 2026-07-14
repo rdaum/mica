@@ -6723,7 +6723,32 @@ fn render_value(
             .unwrap(),
         ValueKind::Capability => "<cap>".to_owned(),
         ValueKind::Function => "<function>".to_owned(),
-        ValueKind::Relation => value.to_string(),
+        ValueKind::Relation => value
+            .with_relation(|relation| {
+                let heading = render_sequence(
+                    "{",
+                    "}",
+                    relation
+                        .heading()
+                        .iter()
+                        .map(|column| render_symbol(*column, ":")),
+                );
+                let rows = render_sequence(
+                    "[",
+                    "]",
+                    relation.rows().iter().map(|row| {
+                        render_sequence(
+                            "[",
+                            "]",
+                            row.values()
+                                .iter()
+                                .map(|cell| render_value(cell, identity_names, relation_names)),
+                        )
+                    }),
+                );
+                format!("relation({heading}, {rows})")
+            })
+            .unwrap(),
         ValueKind::Frob => value
             .with_frob(|delegate, payload| {
                 format!(

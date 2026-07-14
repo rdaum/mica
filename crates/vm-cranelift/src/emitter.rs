@@ -21,7 +21,7 @@ use cranelift_frontend::FunctionBuilder;
 use mica_var::abi::{
     VALUE_BOOL_TAG, VALUE_CAPABILITY_TAG, VALUE_FLOAT_TAG, VALUE_FUNCTION_TAG, VALUE_INT_MAX,
     VALUE_INT_MIN, VALUE_INT_TAG, VALUE_LIST_TAG, VALUE_NOTHING_TAG, VALUE_PAYLOAD_MASK,
-    VALUE_STRING_TAG, VALUE_TAG_SHIFT,
+    VALUE_RELATION_TAG, VALUE_STRING_TAG, VALUE_TAG_SHIFT,
 };
 
 /// A generated operation result and a predicate indicating whether it completed
@@ -876,12 +876,16 @@ impl ValueEmitter {
         let is_list = builder
             .ins()
             .icmp_imm(IntCC::Equal, tag, i64::from(VALUE_LIST_TAG));
+        let is_relation = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag, i64::from(VALUE_RELATION_TAG));
         let bool_payload = builder.ins().icmp_imm(IntCC::NotEqual, payload, 0);
         let truth = builder.ins().iconst(types::I8, 1);
         let false_value = builder.ins().iconst(types::I8, 0);
         let truth = builder.ins().select(is_bool, bool_payload, truth);
         let truth = builder.ins().select(is_nothing, false_value, truth);
-        let is_fast = builder.ins().icmp_imm(IntCC::Equal, is_list, 0);
+        let is_collection = builder.ins().bor(is_list, is_relation);
+        let is_fast = builder.ins().icmp_imm(IntCC::Equal, is_collection, 0);
 
         EmittedValue {
             word: Self::emit_bool(builder, truth),
@@ -1410,6 +1414,10 @@ mod tests {
             );
         }
         assert_eq!(probe.run(&Value::list([]), &Value::nothing()), None,);
+        assert_eq!(
+            probe.run(&Value::relation([], []).unwrap(), &Value::nothing()),
+            None,
+        );
     }
 
     #[test]
@@ -1430,5 +1438,9 @@ mod tests {
             );
         }
         assert_eq!(probe.run(&Value::list([]), &Value::nothing()), None);
+        assert_eq!(
+            probe.run(&Value::relation([], []).unwrap(), &Value::nothing()),
+            None,
+        );
     }
 }

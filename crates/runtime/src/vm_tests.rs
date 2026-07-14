@@ -1072,7 +1072,7 @@ fn binary_divide_by_zero_raises_catchable_error() {
 }
 
 #[test]
-fn scan_bindings_returns_query_binding_maps() {
+fn scan_bindings_returns_relation_values() {
     let kernel = kernel_with_world_relations();
     let thing = int(200);
     let room = int(300);
@@ -1100,7 +1100,7 @@ fn scan_bindings_returns_query_binding_maps() {
     assert_eq!(
         run_program(&kernel, program, 100).unwrap(),
         TaskOutcome::Complete {
-            value: Value::list([Value::map([(sym("room"), room)])]),
+            value: Value::relation([Symbol::intern("room")], [Tuple::from([room])]).unwrap(),
             effects: vec![],
             mailbox_sends: Vec::new(),
             retries: 0,
@@ -2231,7 +2231,7 @@ fn program_artifact_round_trips_dynamic_relation_splices() {
     assert_eq!(
         run_program(&kernel, restored, 100).unwrap(),
         TaskOutcome::Complete {
-            value: Value::list([Value::map([(sym("room"), ident(20))])]),
+            value: Value::relation([Symbol::intern("room")], [Tuple::from([ident(20)])],).unwrap(),
             effects: vec![],
             mailbox_sends: Vec::new(),
             retries: 0,
