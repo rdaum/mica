@@ -3619,28 +3619,42 @@ fn method_relation_metadata() -> Vec<RelationMetadata> {
 
 fn endpoint_relation_metadata() -> Vec<RelationMetadata> {
     vec![
-        RelationMetadata::new(endpoint_relation(), Symbol::intern("Endpoint"), 1),
+        RelationMetadata::new(endpoint_relation(), Symbol::intern("Endpoint"), 1)
+            .with_durability(RelationDurability::Volatile),
         RelationMetadata::new(
             endpoint_actor_relation(),
             Symbol::intern("EndpointActor"),
             2,
         )
         .with_index([1, 0])
-        .with_index([0]),
+        .with_index([0])
+        .with_conflict_policy(ConflictPolicy::Functional {
+            key_positions: vec![0],
+        })
+        .with_durability(RelationDurability::Volatile),
         RelationMetadata::new(
             endpoint_principal_relation(),
             Symbol::intern("EndpointPrincipal"),
             2,
         )
         .with_index([1, 0])
-        .with_index([0]),
+        .with_index([0])
+        .with_conflict_policy(ConflictPolicy::Functional {
+            key_positions: vec![0],
+        })
+        .with_durability(RelationDurability::Volatile),
         RelationMetadata::new(
             endpoint_protocol_relation(),
             Symbol::intern("EndpointProtocol"),
             2,
         )
-        .with_index([0]),
-        RelationMetadata::new(endpoint_open_relation(), Symbol::intern("EndpointOpen"), 1),
+        .with_index([0])
+        .with_conflict_policy(ConflictPolicy::Functional {
+            key_positions: vec![0],
+        })
+        .with_durability(RelationDurability::Volatile),
+        RelationMetadata::new(endpoint_open_relation(), Symbol::intern("EndpointOpen"), 1)
+            .with_durability(RelationDurability::Volatile),
     ]
 }
 
@@ -3697,12 +3711,6 @@ fn system_relation_metadata() -> Vec<RelationMetadata> {
         )
         .with_index([0]),
     ]
-}
-
-fn endpoint_metadata(relation: Identity) -> Option<RelationMetadata> {
-    endpoint_relation_metadata()
-        .into_iter()
-        .find(|metadata| metadata.id() == relation)
 }
 
 fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -> BuiltinRegistry {
@@ -4881,11 +4889,9 @@ fn require_endpoint_open(
     operation: &'static str,
 ) -> Result<(), RuntimeError> {
     let endpoint = context.runtime_context().endpoint();
-    let rows = context.scan_transient(
-        &[endpoint],
-        endpoint_open_relation(),
-        &[Some(Value::identity(endpoint))],
-    )?;
+    let rows = context
+        .tx()
+        .scan(endpoint_open_relation(), &[Some(Value::identity(endpoint))])?;
     if rows.is_empty() {
         return Err(RuntimeError::PermissionDenied {
             operation,
@@ -4938,19 +4944,8 @@ fn replace_endpoint_identity_binding(
     identity: Identity,
 ) -> Result<(), RuntimeError> {
     let endpoint = context.runtime_context().endpoint();
-    let rows = context.scan_transient(
-        &[endpoint],
+    context.tx().replace_functional(
         relation,
-        &[Some(Value::identity(endpoint)), None],
-    )?;
-    for row in rows {
-        context.retract_transient(endpoint, relation, &row)?;
-    }
-    let metadata = endpoint_metadata(relation)
-        .ok_or(RuntimeError::Kernel(KernelError::UnknownRelation(relation)))?;
-    context.assert_transient(
-        endpoint,
-        metadata,
         Tuple::from([Value::identity(endpoint), Value::identity(identity)]),
     )?;
     Ok(())

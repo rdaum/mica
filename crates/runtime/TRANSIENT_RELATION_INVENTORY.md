@@ -139,3 +139,34 @@ deliberately minimal two-commit lifecycle they are about eight times slower than
 with one worker and thirteen times slower with four workers. Endpoint and request migration must
 therefore batch each lifecycle's tuple changes into transactions and rerun the production-shaped
 benchmarks; volatility alone is not a performance win.
+
+## Endpoint Migration Checkpoint
+
+Endpoint relations are now volatile ordinary relations. Opening publishes `Endpoint`, optional
+`EndpointPrincipal`, optional `EndpointActor`, `EndpointProtocol`, and `EndpointOpen` together in
+one transaction. Closing retracts the endpoint's rows together in a second transaction. Context
+reconstruction and effect routing read ordinary snapshots, while `assume_actor` replaces the
+functional `EndpointActor` tuple in the task transaction and rolls back if the task aborts.
+
+Request facts still use an endpoint-keyed `TransientStore` scope at this checkpoint, so endpoint
+close also drops any remaining rows in that scope. That part disappears with request migration.
+
+Command:
+
+```sh
+cargo bench -p mica-runtime --bench transient_relation_benches -- endpoint_lifecycle
+```
+
+| Execution | Direct-store baseline | Volatile endpoint transactions | Change |
+| --- | ---: | ---: | ---: |
+| Serial | 6,824 ns | 30,480 ns | 4.47x slower |
+| 1 worker | 5,928 ns | 32,894 ns | 5.55x slower |
+| 4 workers | 7,182 ns | 43,986 ns | 6.12x slower |
+
+The serial checkpoint had 17.01% coefficient of variation; the one- and four-worker measurements
+were stable at 0.61% and 1.13%, respectively.
+
+The four-worker volatile path sustains 226.71 k tuple mutations/s, compared with 1.39 M/s for the
+direct store. The endpoint result is a semantic migration checkpoint, not a performance win: the
+runtime-sized kernel pays two MVCC snapshot publications per lifecycle. Final measurement must keep
+this regression visible while evaluating transaction publication and endpoint-state layout costs.
