@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::computed::{ComputedRelation, ComputedRelationRead};
-use crate::tuple::finish_tuple_rows;
+use crate::relation_algebra::finish_tuple_rows;
 use crate::{ConflictPolicy, KernelError, RelationMetadata, Snapshot, Tuple};
 use mica_var::{Identity, Symbol, Value};
 use std::sync::Arc;

@@ -39,6 +39,7 @@ mod projected;
 mod provider;
 mod query;
 mod radix_key;
+pub mod relation_algebra;
 mod rules;
 mod snapshot;
 mod transaction;
