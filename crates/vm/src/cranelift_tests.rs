@@ -34,7 +34,7 @@ const NATURAL_INDEXED_RANGE_INSTRUCTION_COUNT: usize = (ITERATIONS * 10) + 8;
 const NATURAL_LIST_INDEX_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 8;
 const NATURAL_REPEATED_MAP_INDEX_INSTRUCTION_COUNT: usize = (ITERATIONS * 6) + 8;
 const NATURAL_CONSTANT_MAP_INDEX_INSTRUCTION_COUNT: usize = (ITERATIONS * 6) + 7;
-const NATURAL_STRING_EQUALITY_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 9;
+const NATURAL_HEAP_COMPARISON_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 9;
 const MAX_CALL_DEPTH: usize = 8;
 
 #[derive(Default)]
@@ -675,8 +675,12 @@ fn natural_collection_count_program(collection: Value, bind_key: bool) -> Arc<Pr
     Arc::new(Program::new(9, instructions).unwrap())
 }
 
-fn natural_string_equality_program() -> Arc<Program> {
-    let collection = Value::list((0..ITERATIONS).map(|_| Value::string("compiled equality")));
+fn natural_heap_comparison_program(
+    candidate: Value,
+    target: Value,
+    op: RuntimeBinaryOp,
+) -> Arc<Program> {
+    let collection = Value::list((0..ITERATIONS).map(|_| candidate.clone()));
     Arc::new(
         Program::new(
             9,
@@ -703,7 +707,7 @@ fn natural_string_equality_program() -> Arc<Program> {
                 },
                 Instruction::Load {
                     dst: register(5),
-                    value: Value::string("compiled equality"),
+                    value: target,
                 },
                 Instruction::Binary {
                     dst: register(6),
@@ -723,7 +727,7 @@ fn natural_string_equality_program() -> Arc<Program> {
                 },
                 Instruction::Binary {
                     dst: register(8),
-                    op: RuntimeBinaryOp::Eq,
+                    op,
                     left: register(7),
                     right: register(5),
                 },
@@ -1914,22 +1918,68 @@ fn native_map_index_heap_key_uses_helper_without_side_exit() {
 
 #[test]
 fn native_string_equality_loop_calls_helper_without_side_exit() {
-    let program = natural_string_equality_program();
+    let value = Value::string("compiled equality");
+    let program = natural_heap_comparison_program(value.clone(), value, RuntimeBinaryOp::Eq);
     let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
     let mut native = RegisterVm::new(Arc::clone(&program));
 
     let expected = VmHostResponse::Complete(Value::int(ITERATIONS as i64).unwrap());
     assert_eq!(
-        run(&mut interpreted, NATURAL_STRING_EQUALITY_INSTRUCTION_COUNT).unwrap(),
+        run(&mut interpreted, NATURAL_HEAP_COMPARISON_INSTRUCTION_COUNT).unwrap(),
         expected,
     );
     assert_eq!(
-        run(&mut native, NATURAL_STRING_EQUALITY_INSTRUCTION_COUNT).unwrap(),
+        run(&mut native, NATURAL_HEAP_COMPARISON_INSTRUCTION_COUNT).unwrap(),
         expected,
     );
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
     assert_eq!(native.native_side_exit_count(), 0);
+}
+
+#[test]
+fn native_language_ordering_loops_call_helper_without_side_exit() {
+    let cases = [
+        (
+            Value::string("alpha"),
+            Value::string("beta"),
+            RuntimeBinaryOp::Lt,
+        ),
+        (
+            Value::list([Value::int(1).unwrap()]),
+            Value::list([Value::int(1).unwrap()]),
+            RuntimeBinaryOp::Le,
+        ),
+        (
+            Value::map([(Value::string("key"), Value::int(2).unwrap())]),
+            Value::map([(Value::string("key"), Value::int(1).unwrap())]),
+            RuntimeBinaryOp::Gt,
+        ),
+        (
+            Value::int(16_777_217).unwrap(),
+            Value::float(16_777_216.0).unwrap(),
+            RuntimeBinaryOp::Ge,
+        ),
+    ];
+
+    for (candidate, target, op) in cases {
+        let program = natural_heap_comparison_program(candidate, target, op);
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(Arc::clone(&program));
+        let expected = VmHostResponse::Complete(Value::int(ITERATIONS as i64).unwrap());
+
+        assert_eq!(
+            run(&mut interpreted, NATURAL_HEAP_COMPARISON_INSTRUCTION_COUNT).unwrap(),
+            expected,
+        );
+        assert_eq!(
+            run(&mut native, NATURAL_HEAP_COMPARISON_INSTRUCTION_COUNT).unwrap(),
+            expected,
+        );
+        assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+        assert_eq!(program.native_compile_attempts(), 1);
+        assert_eq!(native.native_side_exit_count(), 0);
+    }
 }
 
 #[test]

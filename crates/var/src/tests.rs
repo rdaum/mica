@@ -13,9 +13,9 @@
 
 use crate::abi::{
     VALUE_ABI_VERSION, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG, VALUE_PAYLOAD_MASK,
-    VALUE_TAG_SHIFT, borrowed_value_bits, borrowed_value_cmp, borrowed_value_numeric_eq,
-    clone_value_bits, drop_value_bits, from_owned_value_bits, into_owned_value_bits, pack_value,
-    value_is_immediate, value_payload, value_tag,
+    VALUE_TAG_SHIFT, borrowed_value_bits, borrowed_value_cmp, borrowed_value_numeric_cmp,
+    borrowed_value_numeric_eq, clone_value_bits, drop_value_bits, from_owned_value_bits,
+    into_owned_value_bits, pack_value, value_is_immediate, value_payload, value_tag,
 };
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
@@ -148,6 +148,30 @@ fn process_local_value_abi_orders_borrowed_words_without_taking_ownership() {
             )
         },
         Ordering::Equal,
+    );
+    assert_eq!(
+        unsafe {
+            borrowed_value_numeric_cmp(
+                borrowed_value_bits(&Value::int(16_777_217).unwrap()),
+                borrowed_value_bits(&Value::float(16_777_216.0).unwrap()),
+            )
+        },
+        Ordering::Greater,
+    );
+    assert_eq!(
+        unsafe {
+            borrowed_value_numeric_cmp(
+                borrowed_value_bits(&Value::int(1).unwrap()),
+                borrowed_value_bits(&Value::float(1.0).unwrap()),
+            )
+        },
+        Ordering::Equal,
+    );
+    assert_eq!(
+        unsafe {
+            borrowed_value_numeric_cmp(borrowed_value_bits(&alpha), borrowed_value_bits(&beta))
+        },
+        Ordering::Less,
     );
 
     for value in [&alpha, &beta, &list, &map] {
