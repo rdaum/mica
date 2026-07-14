@@ -3604,6 +3604,58 @@ fn runner_relation_durability_is_explicit_metadata() {
 }
 
 #[test]
+fn runner_volatile_relation_authority_is_relation_wide() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source(
+            "make_identity(:alice)\n\
+             make_identity(:bob)\n\
+             make_identity(:lamp)\n\
+             make_identity(:book)\n\
+             make_relation(:LiveSelection, 2, :volatile)\n\
+             make_relation(:CanRead, 2)\n\
+             assert CanRead(#alice, :LiveSelection)\n\
+             assert CanRead(#bob, :LiveSelection)\n\
+             assert LiveSelection(#alice, #lamp)\n\
+             assert LiveSelection(#bob, #book)\n\
+             return true",
+        )
+        .unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let bob = runner.actor_identity(Symbol::intern("bob")).unwrap();
+    let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+    let book = runner.actor_identity(Symbol::intern("book")).unwrap();
+    let alice_endpoint = Identity::new(0x00ee_0000_0000_0020).unwrap();
+    let bob_endpoint = Identity::new(0x00ee_0000_0000_0021).unwrap();
+
+    for (actor, endpoint) in [(alice, alice_endpoint), (bob, bob_endpoint)] {
+        let report = runner
+            .submit_source_as(actor, endpoint, "return LiveSelection(?owner, ?item)")
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == query_relation(
+                    ["owner", "item"],
+                    [
+                        [Value::identity(alice), Value::identity(lamp)],
+                        [Value::identity(bob), Value::identity(book)],
+                    ],
+                )
+        ));
+    }
+
+    let own = runner
+        .submit_source_as(alice, alice_endpoint, "return LiveSelection(#alice, ?item)")
+        .unwrap();
+    assert!(matches!(
+        own.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == query_relation(["item"], [[Value::identity(lamp)]])
+    ));
+}
+
+#[test]
 fn runner_rejects_relation_durability_mismatch() {
     let mut runner = SourceRunner::new_empty();
     runner

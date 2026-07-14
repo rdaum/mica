@@ -49,14 +49,18 @@ The host relations above must instead be declared volatile. Any other mixed exte
 migration must be classified explicitly; volatile named relations do not preserve mixed durability
 inside one relation.
 
-## Isolation Contract To Resolve
+## Isolation Contract
 
-The scope overlay currently prevents one request endpoint from observing another request's rows,
-even through an unbound query, because each task receives only its own endpoint scope plus its
-principal and actor scopes. Explicit request and endpoint columns prevent accidental joins but do
-not themselves enforce row visibility. Before migration, adversarial two-endpoint tests must decide
-whether authorized unbound queries may see all live rows or whether an immutable invocation context
-is a required security boundary.
+Volatility controls storage lifetime only. Authority remains relation-wide: an authorized unbound
+query may see all live rows, regardless of its actor, principal, or endpoint context. Endpoint and
+request relations therefore keep their explicit owner identity at position 0, and application code
+must bind that identity when it needs one lifecycle's rows. Mica does not add implicit row-level
+security or a task-context filter to volatile scans.
+
+The runtime has an adversarial two-actor test for this contract: both actors have `CanRead` for one
+volatile relation, both write owners are present, and each actor's unbound query sees both rows.
+Binding the owner narrows the result. Endpoint and request migration must preserve that explicit
+shape rather than depending on the previous ambient scope overlay.
 
 ## Baseline Harness
 
