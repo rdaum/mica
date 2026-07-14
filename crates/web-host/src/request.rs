@@ -332,6 +332,81 @@ fn request_facts(
 mod tests {
     use super::*;
     use mica_runtime::{SYSTEM_ENDPOINT, SourceRunner, TaskOutcome};
+    use std::cell::Cell;
+    use std::future::pending;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    fn test_host(source: &str) -> (Arc<InProcessWebHost>, Identity) {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_filein(source).unwrap();
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let driver = CompioTaskDriver::spawn(runner).unwrap();
+        (Arc::new(InProcessWebHost::new(driver)), web)
+    }
+
+    fn test_request(path: &str) -> HttpRequest {
+        HttpRequest {
+            method: "GET".to_owned(),
+            path: path.to_owned(),
+            version: 1,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    fn open_request_scope(
+        host: &Arc<InProcessWebHost>,
+        binding: &RequestBinding,
+        request: &HttpRequest,
+    ) -> (Identity, RequestFactScope) {
+        let request_id = host.allocate_request().unwrap();
+        let endpoint = host.allocate_endpoint().unwrap();
+        let facts = request_facts(request_id, binding.principal, binding.actor, request);
+        let tuples = facts
+            .into_iter()
+            .map(|fact| (fact.relation, fact.tuple))
+            .collect::<Vec<_>>();
+        host.driver
+            .open_endpoint_with_context_and_volatile_tuples_named(
+                endpoint,
+                Some(binding.principal),
+                binding.actor,
+                Symbol::intern("http-request"),
+                tuples.clone(),
+            )
+            .unwrap();
+        let scope = RequestFactScope::new(Arc::clone(&host.driver), endpoint, tuples);
+        (request_id, scope)
+    }
+
+    async fn query_as(host: &InProcessWebHost, actor: Identity, source: &str) -> Value {
+        let request = mica_runtime::TaskRequest {
+            actor: Some(actor),
+            ..SourceRunner::root_source_request(source)
+        };
+        let submitted = host
+            .driver
+            .submit_source(SYSTEM_ENDPOINT, request)
+            .await
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = submitted.outcome else {
+            panic!("lifecycle query did not complete")
+        };
+        value
+    }
+
+    async fn assert_request_lifecycle_empty(host: &InProcessWebHost, actor: Identity) {
+        for (source, heading) in [
+            ("return HttpRequest(?request)", "request"),
+            ("return EndpointOpen(?endpoint)", "endpoint"),
+        ] {
+            assert_eq!(
+                query_as(host, actor, source).await,
+                Value::relation([Symbol::intern(heading)], std::iter::empty::<Tuple>(),).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn request_facts_include_core_request_neighbourhood() {
@@ -411,28 +486,16 @@ mod tests {
     }
 
     #[test]
-    fn in_process_request_retracts_volatile_facts_and_closes_endpoint() {
+    fn in_process_request_cleans_lifecycle_before_returning_response() {
         compio::runtime::Runtime::new().unwrap().block_on(async {
-            let mut runner = SourceRunner::new_empty();
-            runner
-                .run_filein(include_str!("../../../apps/web/http-core.mica"))
-                .unwrap();
-            let web = runner.named_identity(Symbol::intern("web")).unwrap();
-            let driver = CompioTaskDriver::spawn(runner).unwrap();
-            let host = InProcessWebHost::new(driver);
+            let (host, web) = test_host(include_str!("../../../apps/web/http-core.mica"));
             let response = handle_in_process_request(
                 &host,
                 &RequestBinding {
                     principal: web,
                     actor: Some(web),
                 },
-                &HttpRequest {
-                    method: "GET".to_owned(),
-                    path: "/hello".to_owned(),
-                    version: 1,
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                },
+                &test_request("/hello"),
                 false,
             )
             .await;
@@ -443,31 +506,132 @@ mod tests {
                     .named_identity(Symbol::intern("endpoint:0"))
                     .is_err()
             );
+            assert_request_lifecycle_empty(&host, web).await;
+        });
+    }
 
-            for (source, heading) in [
-                ("return HttpRequest(?request)", "request"),
-                ("return EndpointOpen(?endpoint)", "endpoint"),
-            ] {
-                let request = mica_runtime::TaskRequest {
+    #[test]
+    fn aborted_handler_cleans_request_lifecycle() {
+        const ABORTING_HTTP: &str = r#"
+            make_relation(:HttpRequest, 1, :volatile)
+            make_relation(:RequestMethod, 2, :volatile)
+            make_relation(:RequestPath, 2, :volatile)
+            make_relation(:RequestVersion, 2, :volatile)
+            make_relation(:RequestPrincipal, 2, :volatile)
+            make_relation(:RequestActor, 2, :volatile)
+            make_relation(:RequestHeader, 3, :volatile)
+            make_relation(:RequestBody, 2, :volatile)
+            make_relation(:CanRead, 2)
+            make_relation(:CanInvoke, 2)
+            make_identity(:web)
+
+            grant #web
+              read:
+                :HttpRequest
+                :RequestMethod
+                :RequestPath
+                :RequestVersion
+                :RequestPrincipal
+                :RequestActor
+                :RequestHeader
+                :RequestBody
+              invoke:
+                :http_request
+            end
+
+            verb http_request(request)
+              raise E_INVARG, "request failed"
+            end
+        "#;
+
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (host, web) = test_host(ABORTING_HTTP);
+            let response = handle_in_process_request(
+                &host,
+                &RequestBinding {
+                    principal: web,
                     actor: Some(web),
-                    ..SourceRunner::root_source_request(source)
-                };
-                let submitted = host
-                    .driver
-                    .submit_source(SYSTEM_ENDPOINT, request)
-                    .await
-                    .unwrap();
-                assert!(matches!(
-                    submitted.outcome,
-                    TaskOutcome::Complete { value, .. }
-                        if value
-                            == Value::relation(
-                                [Symbol::intern(heading)],
-                                std::iter::empty::<Tuple>(),
-                            )
-                            .unwrap()
-                ));
+                },
+                &test_request("/abort"),
+                false,
+            )
+            .await;
+
+            assert_eq!(response.status, 500);
+            assert!(String::from_utf8_lossy(&response.body).contains("request failed"));
+            assert_request_lifecycle_empty(&host, web).await;
+        });
+    }
+
+    #[test]
+    fn cancelled_request_scope_cleans_only_its_owned_rows() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (host, web) = test_host(include_str!("../../../apps/web/http-core.mica"));
+            let binding = RequestBinding {
+                principal: web,
+                actor: Some(web),
+            };
+            let (cancelled_request, cancelled_scope) =
+                open_request_scope(&host, &binding, &test_request("/cancelled"));
+            let (live_request, live_scope) =
+                open_request_scope(&host, &binding, &test_request("/live"));
+            let started = Rc::new(Cell::new(false));
+            let task_started = Rc::clone(&started);
+            let task = compio::runtime::spawn(async move {
+                let _scope = cancelled_scope;
+                task_started.set(true);
+                pending::<()>().await;
+            });
+            while !started.get() {
+                compio::time::sleep(Duration::from_millis(1)).await;
             }
+
+            assert!(task.cancel().await.is_none());
+            assert_eq!(
+                query_as(&host, web, "return HttpRequest(?request)").await,
+                Value::relation(
+                    [Symbol::intern("request")],
+                    [Tuple::from([Value::identity(live_request)])],
+                )
+                .unwrap()
+            );
+            assert_ne!(cancelled_request, live_request);
+
+            drop(live_scope);
+            assert_request_lifecycle_empty(&host, web).await;
+        });
+    }
+
+    #[test]
+    fn concurrent_requests_keep_their_lifecycle_rows_independent() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let (host, web) = test_host(include_str!("../../../apps/web/http-core.mica"));
+            let binding = RequestBinding {
+                principal: web,
+                actor: Some(web),
+            };
+            let first_host = Arc::clone(&host);
+            let first_binding = binding.clone();
+            let first = compio::runtime::spawn(async move {
+                handle_in_process_request(&first_host, &first_binding, &test_request("/"), false)
+                    .await
+            });
+            let second_host = Arc::clone(&host);
+            let second = compio::runtime::spawn(async move {
+                handle_in_process_request(&second_host, &binding, &test_request("/hello"), false)
+                    .await
+            });
+
+            let first = first.await.unwrap();
+            let second = second.await.unwrap();
+            assert_eq!(first.status, 200);
+            assert_eq!(
+                first.body,
+                b"<!doctype html><title>Mica</title><h1>Mica</h1><p>Hello from Mica.</p>"
+            );
+            assert_eq!(second.status, 200);
+            assert_eq!(second.body, b"hello from mica");
+            assert_request_lifecycle_empty(&host, web).await;
         });
     }
 }
