@@ -13,6 +13,7 @@
 
 use crate::heap::HeapValue;
 use crate::symbol::Symbol;
+use crate::{RelationValue, RelationValueError, Tuple};
 use std::sync::Arc;
 
 pub(crate) const TAG_SHIFT: u64 = 56;
@@ -34,6 +35,7 @@ pub(crate) const TAG_ERROR: u8 = 12;
 pub(crate) const TAG_CAPABILITY: u8 = 13;
 pub(crate) const TAG_FROB: u8 = 14;
 pub(crate) const TAG_FUNCTION: u8 = 15;
+pub(crate) const TAG_RELATION: u8 = 16;
 
 pub(crate) const INT_BITS: u32 = 56;
 pub(crate) const INT_MIN: i64 = -(1i64 << (INT_BITS - 1));
@@ -44,9 +46,8 @@ pub(crate) const MAX_PAYLOAD: u64 = PAYLOAD_MASK;
 /// or invariants of `Value` change so that native code generators and external
 /// processes can detect compatibility.
 ///
-/// Version 1: binary32 float payload, finite-value invariant, positive-zero
-/// canonicalization.
-pub const VALUE_ABI_VERSION: u32 = 1;
+/// Version 2: first-class immutable relation heap values.
+pub const VALUE_ABI_VERSION: u32 = 2;
 
 /// A compact Mica value.
 ///
@@ -194,6 +195,7 @@ pub enum ValueKind {
     Capability = TAG_CAPABILITY,
     Frob = TAG_FROB,
     Function = TAG_FUNCTION,
+    Relation = TAG_RELATION,
 }
 
 pub const NOTHING_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0001);
@@ -212,6 +214,7 @@ pub const ERROR_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000d);
 pub const CAPABILITY_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000e);
 pub const FROB_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_000f);
 pub const FUNCTION_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0010);
+pub const RELATION_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0011);
 
 pub const PRIMITIVE_PROTOTYPES: &[(&str, Identity)] = &[
     ("nothing", NOTHING_PROTOTYPE),
@@ -230,6 +233,7 @@ pub const PRIMITIVE_PROTOTYPES: &[(&str, Identity)] = &[
     ("capability", CAPABILITY_PROTOTYPE),
     ("frob", FROB_PROTOTYPE),
     ("function", FUNCTION_PROTOTYPE),
+    ("relation", RELATION_PROTOTYPE),
 ];
 
 const fn primitive_identity(raw: u64) -> Identity {
@@ -257,6 +261,7 @@ pub const fn primitive_prototype_for_kind(kind: ValueKind) -> Identity {
         ValueKind::Capability => CAPABILITY_PROTOTYPE,
         ValueKind::Frob => FROB_PROTOTYPE,
         ValueKind::Function => FUNCTION_PROTOTYPE,
+        ValueKind::Relation => RELATION_PROTOTYPE,
     }
 }
 
@@ -409,6 +414,13 @@ impl Value {
         Self::heap(HeapValue::Map(canonical.into_boxed_slice()))
     }
 
+    pub fn relation(
+        heading: impl IntoIterator<Item = Symbol>,
+        rows: impl IntoIterator<Item = Tuple>,
+    ) -> Result<Self, RelationValueError> {
+        RelationValue::new(heading, rows).map(Self::from)
+    }
+
     pub fn range(start: Value, end: Option<Value>) -> Self {
         Self::heap(HeapValue::Range { start, end })
     }
@@ -437,6 +449,7 @@ impl Value {
             TAG_CAPABILITY => ValueKind::Capability,
             TAG_FROB => ValueKind::Frob,
             TAG_FUNCTION => ValueKind::Function,
+            TAG_RELATION => ValueKind::Relation,
             _ => unreachable!(),
         }
     }
@@ -445,7 +458,14 @@ impl Value {
     pub const fn is_immediate(&self) -> bool {
         !matches!(
             self.tag(),
-            TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR | TAG_FROB
+            TAG_STRING
+                | TAG_BYTES
+                | TAG_LIST
+                | TAG_MAP
+                | TAG_RANGE
+                | TAG_ERROR
+                | TAG_FROB
+                | TAG_RELATION
         )
     }
 
@@ -550,6 +570,13 @@ impl Value {
         })?
     }
 
+    pub fn with_relation<R>(&self, f: impl FnOnce(&RelationValue) -> R) -> Option<R> {
+        self.with_heap(|heap| match heap {
+            HeapValue::Relation(relation) => Some(f(relation)),
+            _ => None,
+        })?
+    }
+
     pub fn with_range<R>(&self, f: impl FnOnce(&Value, Option<&Value>) -> R) -> Option<R> {
         self.with_heap(|heap| match heap {
             HeapValue::Range { start, end } => Some(f(start, end.as_ref())),
@@ -589,7 +616,7 @@ impl Value {
 
     pub fn is_persistable(&self) -> bool {
         match self.kind() {
-            ValueKind::Capability | ValueKind::Function => false,
+            ValueKind::Capability | ValueKind::Function | ValueKind::Relation => false,
             ValueKind::List => self
                 .with_list(|values| values.iter().all(Self::is_persistable))
                 .unwrap_or(false),
@@ -866,6 +893,12 @@ impl From<Symbol> for Value {
 impl From<Identity> for Value {
     fn from(value: Identity) -> Self {
         Self::identity(value)
+    }
+}
+
+impl From<RelationValue> for Value {
+    fn from(value: RelationValue) -> Self {
+        Self::heap(HeapValue::Relation(value))
     }
 }
 

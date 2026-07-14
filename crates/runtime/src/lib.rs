@@ -3024,6 +3024,7 @@ fn source_literal(
             .unwrap(),
         ValueKind::Capability => "<cap>".to_owned(),
         ValueKind::Function => "<function>".to_owned(),
+        ValueKind::Relation => "<relation>".to_owned(),
         ValueKind::Frob => value
             .with_frob(|delegate, payload| {
                 format!(
@@ -3879,7 +3880,7 @@ fn to_literal_builtin(
     if !args[0].is_persistable() {
         return Err(invalid_builtin_call(
             "to_literal",
-            "capability values do not have source literals",
+            "this value does not have a source literal",
         ));
     }
 
@@ -6722,6 +6723,7 @@ fn render_value(
             .unwrap(),
         ValueKind::Capability => "<cap>".to_owned(),
         ValueKind::Function => "<function>".to_owned(),
+        ValueKind::Relation => value.to_string(),
         ValueKind::Frob => value
             .with_frob(|delegate, payload| {
                 format!(

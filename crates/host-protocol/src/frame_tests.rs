@@ -13,7 +13,7 @@
 
 use super::*;
 use crate::{HostMessage, MAGIC};
-use mica_var::{Identity, Symbol, Value};
+use mica_var::{Identity, Symbol, Tuple, Value};
 
 fn id(raw: u64) -> Identity {
     Identity::new(raw).unwrap()
@@ -102,6 +102,35 @@ fn segmented_encoder_uses_value_segments_for_heap_payloads() {
         })
         .any(|bytes| bytes == b"payload");
     assert!(borrowed_value_payload);
+}
+
+#[test]
+fn task_completion_segments_round_trip_relation_values() {
+    let relation = Value::relation(
+        [Symbol::intern("payload")],
+        [Tuple::from([Value::string("relation payload")])],
+    )
+    .unwrap();
+    let message = HostMessage::TaskCompleted {
+        task_id: 7,
+        value: relation,
+    };
+
+    let contiguous = encoded_frame(&message).unwrap();
+    let segments = encode_frame_segments(&message).unwrap();
+
+    assert_eq!(segments.to_vec(), contiguous);
+    assert_eq!(decode_frame(&contiguous).unwrap(), message);
+    assert!(
+        segments
+            .segments
+            .iter()
+            .filter_map(|&segment| match segment {
+                FrameSegment::ValueBorrowed { .. } => Some(segments.segment_bytes(segment)),
+                _ => None,
+            })
+            .any(|bytes| bytes == b"relation payload")
+    );
 }
 
 #[test]
@@ -242,7 +271,14 @@ fn round_trips_endpoint_task_and_output_messages() {
         },
         HostMessage::TaskCompleted {
             task_id: 10,
-            value: Value::bool(true),
+            value: Value::relation(
+                [Symbol::intern("name"), Symbol::intern("score")],
+                [Tuple::from([
+                    Value::string("Ada"),
+                    Value::float(9.5).unwrap(),
+                ])],
+            )
+            .unwrap(),
         },
         HostMessage::TaskFailed {
             task_id: 11,

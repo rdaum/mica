@@ -14,7 +14,7 @@
 use crate::value::{
     PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_ERROR, TAG_ERROR_CODE, TAG_FLOAT,
     TAG_FROB, TAG_FUNCTION, TAG_IDENTITY, TAG_INT, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE,
-    TAG_SHIFT, TAG_STRING, TAG_SYMBOL,
+    TAG_RELATION, TAG_SHIFT, TAG_STRING, TAG_SYMBOL,
 };
 use crate::{CapabilityId, Identity, Symbol, Value, ValueRef};
 use std::fmt;
@@ -261,6 +261,22 @@ pub fn encode_value_to_sink<S: ValueSink>(
                 encode_value_to_sink(value, sink, options)?;
             }
         }
+        ValueRef::Relation(relation) => {
+            write_extended_header(sink, TAG_RELATION, len_aux(relation.arity())?)?;
+            for column in relation.heading() {
+                encode_symbol_value(TAG_SYMBOL, *column, sink, options)?;
+            }
+            write_word(
+                sink,
+                u64::try_from(relation.len())
+                    .map_err(|_| ValueCodecError::LengthTooLarge(relation.len()))?,
+            )?;
+            for row in relation.rows() {
+                for value in row.values() {
+                    encode_value_to_sink(value, sink, options)?;
+                }
+            }
+        }
         ValueRef::Range { start, end } => {
             let flags = if end.is_some() { RANGE_HAS_END } else { 0 };
             write_extended_header(sink, TAG_RANGE, flags)?;
@@ -410,6 +426,24 @@ fn encode_value_to_segments<'a>(
             for (key, value) in entries {
                 encode_value_to_segments(key, segments, options)?;
                 encode_value_to_segments(value, segments, options)?;
+            }
+        }
+        ValueRef::Relation(relation) => {
+            segments.push_scratch_word(extended_header_word(
+                TAG_RELATION,
+                len_aux(relation.arity())?,
+            ));
+            for column in relation.heading() {
+                encode_symbol_to_segments(TAG_SYMBOL, *column, segments, options)?;
+            }
+            segments.push_scratch_word(
+                u64::try_from(relation.len())
+                    .map_err(|_| ValueCodecError::LengthTooLarge(relation.len()))?,
+            );
+            for row in relation.rows() {
+                for value in row.values() {
+                    encode_value_to_segments(value, segments, options)?;
+                }
             }
         }
         ValueRef::Range { start, end } => {
@@ -614,6 +648,7 @@ impl<'a> ValueReader<'a> {
                 let value = self.read_value()?;
                 Ok(Value::frob(delegate, value))
             }
+            TAG_RELATION => self.read_relation(aux),
             TAG_CAPABILITY => Err(ValueCodecError::CapabilityNotDecodable),
             TAG_FUNCTION => Err(ValueCodecError::FunctionNotDecodable),
             TAG_NOTHING | TAG_BOOL | TAG_INT | TAG_FLOAT | TAG_IDENTITY => {
@@ -633,6 +668,49 @@ impl<'a> ValueReader<'a> {
             return Err(ValueCodecError::InvalidExtendedAux { kind, aux: len });
         }
         Ok(constructor(Symbol::intern(&self.read_string_payload(len)?)))
+    }
+
+    fn read_relation(&mut self, arity: u64) -> Result<Value, ValueCodecError> {
+        let arity = self.read_count(arity)?;
+        let mut heading = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            let column = self.read_value()?.as_symbol().ok_or_else(|| {
+                ValueCodecError::InvalidValue("relation column is not a symbol".to_owned())
+            })?;
+            heading.push(column);
+        }
+
+        let row_count = self.read_word()?;
+        let row_count = self.len_to_usize(row_count)?;
+        if arity == 0 && row_count > 1 {
+            return Err(ValueCodecError::InvalidValue(
+                "zero-arity relation has more than one row".to_owned(),
+            ));
+        }
+        let cell_count = row_count
+            .checked_mul(arity)
+            .ok_or(ValueCodecError::OffsetOverflow)?;
+        let minimum_bytes = cell_count
+            .checked_mul(8)
+            .ok_or(ValueCodecError::OffsetOverflow)?;
+        if self.bytes.len().saturating_sub(self.offset) < minimum_bytes {
+            return Err(ValueCodecError::UnexpectedEnd {
+                needed: minimum_bytes,
+                offset: self.offset,
+                len: self.bytes.len(),
+            });
+        }
+
+        let mut rows = Vec::with_capacity(row_count);
+        for _ in 0..row_count {
+            let mut values = Vec::with_capacity(arity);
+            for _ in 0..arity {
+                values.push(self.read_value()?);
+            }
+            rows.push(crate::Tuple::new(values));
+        }
+        Value::relation(heading, rows)
+            .map_err(|error| ValueCodecError::InvalidValue(error.to_string()))
     }
 
     fn read_string_payload(&mut self, len: u64) -> Result<String, ValueCodecError> {
@@ -746,9 +824,8 @@ fn decode_inline_word(word: u64, options: ValueCodecOptions) -> Result<Value, Va
                 Err(ValueCodecError::InvalidSymbolPayload(payload))
             }
         }
-        TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR | TAG_FROB => {
-            Err(ValueCodecError::InlineHeapValue(tag))
-        }
+        TAG_STRING | TAG_BYTES | TAG_LIST | TAG_MAP | TAG_RANGE | TAG_ERROR | TAG_FROB
+        | TAG_RELATION => Err(ValueCodecError::InlineHeapValue(tag)),
         TAG_CAPABILITY => {
             if !options.allow_capabilities {
                 return Err(ValueCodecError::CapabilityNotDecodable);
