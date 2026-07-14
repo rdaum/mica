@@ -15,10 +15,10 @@ use crate::{
     Atom, CatalogChange, CatalogFact, CatalogPredicate, Commit, CommitProvider,
     ComposedRelationRead, ComposedTransactionRead, ComputedRelation, Conflict, ConflictKind,
     ConflictPolicy, DispatchRelations, ExecutionContext, Fact, FactChange, FactChangeKind,
-    InMemoryCommitProvider, KernelError, MentionedFact, ProjectedStore, QueryPlan, RelationId,
-    RelationKernel, RelationMetadata, RelationRead, RelationSource, RelationWorkspace, Rule,
-    RuleBodyItem, RuleComparisonOp, RuleGuard, SubjectFact, Term, TransientStore, Tuple,
-    ValueDomain, applicable_positional_methods_cached, method_program_id,
+    InMemoryCommitProvider, KernelError, MentionedFact, ProjectedStore, QueryPlan,
+    RelationDurability, RelationId, RelationKernel, RelationMetadata, RelationRead, RelationSource,
+    RelationWorkspace, Rule, RuleBodyItem, RuleComparisonOp, RuleGuard, SubjectFact, Term,
+    TransientStore, Tuple, ValueDomain, applicable_positional_methods_cached, method_program_id,
 };
 #[cfg(feature = "fjall-provider")]
 use crate::{FjallDurabilityMode, FjallFormatStatus, FjallStateProvider};
@@ -198,7 +198,8 @@ fn catalog_facts_expose_relation_metadata_as_relations() {
                 .with_index([0, 2, 1])
                 .with_conflict_policy(ConflictPolicy::Functional {
                     key_positions: vec![0, 2],
-                }),
+                })
+                .with_durability(RelationDurability::Volatile),
         )
         .unwrap();
 
@@ -216,6 +217,13 @@ fn catalog_facts_expose_relation_metadata_as_relations() {
             Value::identity(rel(77)),
             int(1),
             Value::symbol(Symbol::intern("proto")),
+        ]),
+    }));
+    assert!(facts.contains(&CatalogFact {
+        predicate: CatalogPredicate::RelationDurability,
+        tuple: Tuple::from([
+            Value::identity(rel(77)),
+            Value::symbol(Symbol::intern("volatile")),
         ]),
     }));
     assert!(facts.contains(&CatalogFact {
@@ -2098,7 +2106,8 @@ fn fjall_provider_persists_and_loads_canonical_state() {
                     .with_index([2, 0])
                     .with_conflict_policy(ConflictPolicy::Functional {
                         key_positions: vec![2],
-                    }),
+                    })
+                    .with_durability(RelationDurability::Volatile),
             )
             .unwrap();
         kernel
@@ -2148,6 +2157,15 @@ fn fjall_provider_persists_and_loads_canonical_state() {
             .unwrap();
 
     assert_eq!(loaded.snapshot().version(), 5);
+    assert_eq!(
+        loaded
+            .snapshot()
+            .relation_metadata()
+            .find(|metadata| metadata.id() == rel(10))
+            .unwrap()
+            .durability(),
+        RelationDurability::Volatile
+    );
     assert_eq!(
         loaded.snapshot().scan(rel(10), &vec![None; 13]).unwrap(),
         vec![values_tuple]

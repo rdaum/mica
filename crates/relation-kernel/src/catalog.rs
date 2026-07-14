@@ -22,6 +22,7 @@ pub enum CatalogPredicate {
     Relation,
     RelationName,
     Arity,
+    RelationDurability,
     Rule,
     RuleHead,
     RuleSource,
@@ -40,6 +41,7 @@ impl CatalogPredicate {
             Self::Relation => Symbol::intern("Relation"),
             Self::RelationName => Symbol::intern("RelationName"),
             Self::Arity => Symbol::intern("Arity"),
+            Self::RelationDurability => Symbol::intern("RelationDurability"),
             Self::Rule => Symbol::intern("Rule"),
             Self::RuleHead => Symbol::intern("RuleHead"),
             Self::RuleSource => Symbol::intern("RuleSource"),
@@ -83,6 +85,13 @@ pub(crate) fn catalog_facts(reader: &dyn ComputedRelationRead) -> Vec<CatalogFac
             [
                 Value::identity(relation_id),
                 Value::int(metadata.arity() as i64).unwrap(),
+            ],
+        ));
+        facts.push(catalog_fact(
+            CatalogPredicate::RelationDurability,
+            [
+                Value::identity(relation_id),
+                Value::symbol(metadata.durability().symbol()),
             ],
         ));
         for position in 0..metadata.arity() {
@@ -241,6 +250,7 @@ fn system_catalog_predicate(metadata: &RelationMetadata) -> Option<CatalogPredic
         "Relation" => (CatalogPredicate::Relation, 1),
         "RelationName" => (CatalogPredicate::RelationName, 2),
         "Arity" => (CatalogPredicate::Arity, 2),
+        "RelationDurability" => (CatalogPredicate::RelationDurability, 2),
         "Rule" => (CatalogPredicate::Rule, 1),
         "RuleHead" => (CatalogPredicate::RuleHead, 2),
         "RuleSource" => (CatalogPredicate::RuleSource, 2),

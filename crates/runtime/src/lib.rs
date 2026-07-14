@@ -65,7 +65,8 @@ use mica_host_protocol::{
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
-    RelationId, RelationKernel, RelationMetadata, RelationRead, relation_algebra,
+    RelationDurability, RelationId, RelationKernel, RelationMetadata, RelationRead,
+    relation_algebra,
 };
 use mica_var::{Identity, PRIMITIVE_PROTOTYPES, RelationValue, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -109,6 +110,7 @@ const INDEX_STORAGE_KIND_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe4;
 const SUBJECT_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe3;
 const MENTIONED_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe2;
 const EXTENSIONAL_MENTIONED_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe1;
+const RELATION_DURABILITY_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe0;
 
 const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "emit",
@@ -2560,49 +2562,81 @@ fn collect_declaration_expr(expr: &HirExpr, declarations: &mut SourceDeclaration
     let HirExpr::ExternalRef { name, .. } = callee.as_ref() else {
         return;
     };
-    match (name.as_str(), args.as_slice()) {
-        ("make_identity", [arg]) => {
+    match name.as_str() {
+        "make_identity" => {
+            let [arg] = args.as_slice() else {
+                return;
+            };
             if let HirExpr::Symbol { name, .. } = &arg.value {
                 declarations.identities.insert(name.clone());
             }
         }
-        ("make_relation", [name_arg, arity_arg]) => {
-            let (HirExpr::Symbol { name, .. }, HirExpr::Literal { value, .. }) =
-                (&name_arg.value, &arity_arg.value)
+        "make_relation" => {
+            if !matches!(args.len(), 2 | 3) {
+                return;
+            }
+            let Some((name, arity)) = hir_relation_name_and_arity(args) else {
+                return;
+            };
+            let Some(durability) = hir_relation_durability(args.get(2).map(|arg| &arg.value))
             else {
                 return;
             };
-            let Literal::Int(arity) = value else {
-                return;
-            };
-            if let Ok(arity) = arity.parse::<u16>() {
-                declarations.relations.push(SourceRelationDeclaration {
-                    name: name.clone(),
-                    arity,
-                    conflict_policy: ConflictPolicy::Set,
-                });
-            }
+            declarations.relations.push(SourceRelationDeclaration {
+                name,
+                arity,
+                conflict_policy: ConflictPolicy::Set,
+                durability,
+            });
         }
-        ("make_functional_relation", [name_arg, arity_arg, key_arg]) => {
-            let (HirExpr::Symbol { name, .. }, HirExpr::Literal { value, .. }) =
-                (&name_arg.value, &arity_arg.value)
+        "make_functional_relation" => {
+            if !matches!(args.len(), 3 | 4) {
+                return;
+            }
+            let Some((name, arity)) = hir_relation_name_and_arity(args) else {
+                return;
+            };
+            let Some(key_positions) = hir_key_positions(&args[2].value, arity) else {
+                return;
+            };
+            let Some(durability) = hir_relation_durability(args.get(3).map(|arg| &arg.value))
             else {
                 return;
             };
-            let Literal::Int(arity) = value else {
-                return;
-            };
-            if let Ok(arity) = arity.parse::<u16>()
-                && let Some(key_positions) = hir_key_positions(&key_arg.value, arity)
-            {
-                declarations.relations.push(SourceRelationDeclaration {
-                    name: name.clone(),
-                    arity,
-                    conflict_policy: ConflictPolicy::Functional { key_positions },
-                });
-            }
+            declarations.relations.push(SourceRelationDeclaration {
+                name,
+                arity,
+                conflict_policy: ConflictPolicy::Functional { key_positions },
+                durability,
+            });
         }
         _ => {}
+    }
+}
+
+fn hir_relation_name_and_arity(args: &[HirArg]) -> Option<(String, u16)> {
+    let (HirExpr::Symbol { name, .. }, HirExpr::Literal { value, .. }) =
+        (&args.first()?.value, &args.get(1)?.value)
+    else {
+        return None;
+    };
+    let Literal::Int(arity) = value else {
+        return None;
+    };
+    Some((name.clone(), arity.parse().ok()?))
+}
+
+fn hir_relation_durability(expr: Option<&HirExpr>) -> Option<RelationDurability> {
+    let Some(expr) = expr else {
+        return Some(RelationDurability::Durable);
+    };
+    let HirExpr::Symbol { name, .. } = expr else {
+        return None;
+    };
+    match name.as_str() {
+        "durable" => Some(RelationDurability::Durable),
+        "volatile" => Some(RelationDurability::Volatile),
+        _ => None,
     }
 }
 
@@ -2669,6 +2703,7 @@ fn is_read_only_system_relation(relation: Identity) -> bool {
             | SUBJECT_FACT_RELATION_ID
             | MENTIONED_FACT_RELATION_ID
             | EXTENSIONAL_MENTIONED_FACT_RELATION_ID
+            | RELATION_DURABILITY_RELATION_ID
     )
 }
 
@@ -2906,10 +2941,14 @@ fn fileout_unit_source(kernel: &RelationKernel, unit: Symbol) -> Result<String, 
 
 fn relation_declaration_source(metadata: &RelationMetadata) -> Option<String> {
     let name = metadata.name().name()?;
+    let durability = match metadata.durability() {
+        RelationDurability::Durable => "",
+        RelationDurability::Volatile => ", :volatile",
+    };
     Some(match metadata.conflict_policy() {
-        ConflictPolicy::Set => format!("make_relation(:{name}, {})", metadata.arity()),
+        ConflictPolicy::Set => format!("make_relation(:{name}, {}{durability})", metadata.arity()),
         ConflictPolicy::Functional { key_positions } => format!(
-            "make_functional_relation(:{name}, {}, [{}])",
+            "make_functional_relation(:{name}, {}, [{}]{durability})",
             metadata.arity(),
             key_positions
                 .iter()
@@ -2917,7 +2956,9 @@ fn relation_declaration_source(metadata: &RelationMetadata) -> Option<String> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        ConflictPolicy::EventAppend => format!("make_relation(:{name}, {})", metadata.arity()),
+        ConflictPolicy::EventAppend => {
+            format!("make_relation(:{name}, {}{durability})", metadata.arity())
+        }
     })
 }
 
@@ -3273,6 +3314,7 @@ fn ensure_declared_relation(
     if let Some(metadata) = relation_metadata_named(kernel, name) {
         if metadata.arity() == declaration.arity
             && metadata.conflict_policy() == &declaration.conflict_policy
+            && metadata.durability() == declaration.durability
         {
             return Ok(metadata.id());
         }
@@ -3297,7 +3339,8 @@ fn ensure_declared_relation(
         };
         next_relation_id += 1;
         let metadata = RelationMetadata::new(relation, name, declaration.arity)
-            .with_conflict_policy(declaration.conflict_policy.clone());
+            .with_conflict_policy(declaration.conflict_policy.clone())
+            .with_durability(declaration.durability);
         match kernel.create_relation(metadata) {
             Ok(_) => return Ok(relation),
             Err(KernelError::RelationAlreadyExists(_)) => continue,
@@ -3607,6 +3650,11 @@ fn system_relation_metadata() -> Vec<RelationMetadata> {
         RelationMetadata::new(relation_name_relation(), Symbol::intern("RelationName"), 2)
             .with_index([1, 0]),
         RelationMetadata::new(arity_relation(), Symbol::intern("Arity"), 2),
+        RelationMetadata::new(
+            relation_durability_relation(),
+            Symbol::intern("RelationDurability"),
+            2,
+        ),
         RelationMetadata::new(rule_relation(), Symbol::intern("Rule"), 1),
         RelationMetadata::new(rule_head_relation(), Symbol::intern("RuleHead"), 2)
             .with_index([1, 0]),
@@ -5209,23 +5257,27 @@ impl Builtin for MakeRelationBuiltin {
         context: &mut BuiltinContext<'_, '_>,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
-        let name = builtin_symbol_arg("make_relation", args, 0)?;
-        let arity = builtin_arity_arg("make_relation", args, 1)?;
-        if args.len() != 2 {
+        if !matches!(args.len(), 2 | 3) {
             return Err(invalid_builtin_call(
                 "make_relation",
-                "expected make_relation(:Name, arity)",
+                "expected make_relation(:Name, arity[, :durability])",
             ));
         }
+        let name = builtin_symbol_arg("make_relation", args, 0)?;
+        let arity = builtin_arity_arg("make_relation", args, 1)?;
+        let durability = builtin_relation_durability_arg("make_relation", args, 2)?;
         require_admin_builtin(context, "make_relation")?;
 
-        if let Some((relation, existing_arity)) = relation_named(context.kernel(), name) {
-            if existing_arity == arity {
-                return Ok(Value::identity(relation));
+        if let Some(metadata) = relation_metadata_named(context.kernel(), name) {
+            if metadata.arity() == arity
+                && metadata.conflict_policy() == &ConflictPolicy::Set
+                && metadata.durability() == durability
+            {
+                return Ok(Value::identity(metadata.id()));
             }
             return Err(invalid_builtin_call(
                 "make_relation",
-                "relation name already exists with different arity",
+                "relation name already exists with different metadata",
             ));
         }
 
@@ -5238,7 +5290,7 @@ impl Builtin for MakeRelationBuiltin {
                     "generated relation identity exhausted",
                 ));
             };
-            let metadata = RelationMetadata::new(relation, name, arity);
+            let metadata = RelationMetadata::new(relation, name, arity).with_durability(durability);
             match context.kernel().create_relation(metadata) {
                 Ok(_) => return Ok(Value::identity(relation)),
                 Err(KernelError::RelationAlreadyExists(_)) => continue,
@@ -5254,15 +5306,16 @@ impl Builtin for MakeFunctionalRelationBuiltin {
         context: &mut BuiltinContext<'_, '_>,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
+        if !matches!(args.len(), 3 | 4) {
+            return Err(invalid_builtin_call(
+                "make_functional_relation",
+                "expected make_functional_relation(:Name, arity, [key_positions][, :durability])",
+            ));
+        }
         let name = builtin_symbol_arg("make_functional_relation", args, 0)?;
         let arity = builtin_arity_arg("make_functional_relation", args, 1)?;
         let key_positions = builtin_key_positions_arg("make_functional_relation", args, 2, arity)?;
-        if args.len() != 3 {
-            return Err(invalid_builtin_call(
-                "make_functional_relation",
-                "expected make_functional_relation(:Name, arity, [key_positions])",
-            ));
-        }
+        let durability = builtin_relation_durability_arg("make_functional_relation", args, 3)?;
         require_admin_builtin(context, "make_functional_relation")?;
 
         if let Some(metadata) = relation_metadata_named(context.kernel(), name) {
@@ -5271,6 +5324,7 @@ impl Builtin for MakeFunctionalRelationBuiltin {
                     == &(ConflictPolicy::Functional {
                         key_positions: key_positions.clone(),
                     })
+                && metadata.durability() == durability
             {
                 return Ok(Value::identity(metadata.id()));
             }
@@ -5289,11 +5343,11 @@ impl Builtin for MakeFunctionalRelationBuiltin {
                     "generated relation identity exhausted",
                 ));
             };
-            let metadata = RelationMetadata::new(relation, name, arity).with_conflict_policy(
-                ConflictPolicy::Functional {
+            let metadata = RelationMetadata::new(relation, name, arity)
+                .with_conflict_policy(ConflictPolicy::Functional {
                     key_positions: key_positions.clone(),
-                },
-            );
+                })
+                .with_durability(durability);
             match context.kernel().create_relation(metadata) {
                 Ok(_) => return Ok(Value::identity(relation)),
                 Err(KernelError::RelationAlreadyExists(_)) => continue,
@@ -5914,6 +5968,10 @@ fn arity_relation() -> Identity {
     Identity::new(ARITY_RELATION_ID).unwrap()
 }
 
+fn relation_durability_relation() -> Identity {
+    Identity::new(RELATION_DURABILITY_RELATION_ID).unwrap()
+}
+
 fn rule_relation() -> Identity {
     Identity::new(RULE_RELATION_ID).unwrap()
 }
@@ -6396,6 +6454,24 @@ fn builtin_arity_arg(name: &str, args: &[Value], index: usize) -> Result<u16, Ru
         return Err(invalid_builtin_call(name, "expected integer arity"));
     };
     u16::try_from(arity).map_err(|_| invalid_builtin_call(name, "arity must fit in u16"))
+}
+
+fn builtin_relation_durability_arg(
+    name: &str,
+    args: &[Value],
+    index: usize,
+) -> Result<RelationDurability, RuntimeError> {
+    let Some(value) = args.get(index) else {
+        return Ok(RelationDurability::Durable);
+    };
+    match value.as_symbol().and_then(Symbol::name) {
+        Some("durable") => Ok(RelationDurability::Durable),
+        Some("volatile") => Ok(RelationDurability::Volatile),
+        _ => Err(invalid_builtin_call(
+            name,
+            "relation durability must be :durable or :volatile",
+        )),
+    }
 }
 
 fn builtin_key_positions_arg(

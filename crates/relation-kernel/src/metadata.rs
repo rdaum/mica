@@ -47,6 +47,7 @@ pub struct RelationMetadata {
     schema: RelationSchema,
     pub(crate) indexes: Vec<TupleIndexSpec>,
     conflict_policy: ConflictPolicy,
+    durability: RelationDurability,
 }
 
 impl RelationMetadata {
@@ -57,6 +58,7 @@ impl RelationMetadata {
             schema: RelationSchema::new(arity),
             indexes: vec![TupleIndexSpec::all_positions(arity)],
             conflict_policy: ConflictPolicy::Set,
+            durability: RelationDurability::Durable,
         }
     }
 
@@ -82,6 +84,11 @@ impl RelationMetadata {
         self
     }
 
+    pub fn with_durability(mut self, durability: RelationDurability) -> Self {
+        self.durability = durability;
+        self
+    }
+
     pub fn id(&self) -> RelationId {
         self.id
     }
@@ -104,6 +111,26 @@ impl RelationMetadata {
 
     pub fn conflict_policy(&self) -> &ConflictPolicy {
         &self.conflict_policy
+    }
+
+    pub fn durability(&self) -> RelationDurability {
+        self.durability
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RelationDurability {
+    #[default]
+    Durable,
+    Volatile,
+}
+
+impl RelationDurability {
+    pub fn symbol(self) -> Symbol {
+        match self {
+            Self::Durable => Symbol::intern("durable"),
+            Self::Volatile => Symbol::intern("volatile"),
+        }
     }
 }
 
