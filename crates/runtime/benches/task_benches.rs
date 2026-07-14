@@ -40,8 +40,39 @@ const RANGE_ADMISSION_CONCURRENT_ITERATIONS: [u64; 2] = [8_192, 16_384];
 const REPEATED_DISPATCH_ITERATIONS: u64 = 1_024;
 const THREE_SITE_DISPATCH_ROUNDS: u64 = REPEATED_DISPATCH_ITERATIONS / 3;
 const THREE_SITE_DISPATCHES_PER_TASK: u64 = THREE_SITE_DISPATCH_ROUNDS * 3;
+const CALL_PATH_INVOCATIONS: u64 = 8_192;
 const CONCURRENT_DISPATCH_THREADS: usize = 4;
 const MAX_CALL_DEPTH: usize = 64;
+
+#[derive(Clone, Copy)]
+enum CallPath {
+    Dispatch,
+    DirectCall,
+    InterpretedInline,
+    NativeInline,
+}
+
+impl CallPath {
+    const ALL: [Self; 4] = [
+        Self::Dispatch,
+        Self::DirectCall,
+        Self::InterpretedInline,
+        Self::NativeInline,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Dispatch => "dispatch",
+            Self::DirectCall => "direct_call",
+            Self::InterpretedInline => "interpreted_inline",
+            Self::NativeInline => "native_enabled_inline",
+        }
+    }
+
+    const fn interpret_only(self) -> bool {
+        matches!(self, Self::InterpretedInline)
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Workload {
@@ -56,6 +87,7 @@ struct Workload {
     method_program_cache_lookups: u64,
     vm_resolved_program_lookups: u64,
     program_resolver_lookups: u64,
+    call_path_invocations: u64,
 }
 
 impl Workload {
@@ -70,6 +102,7 @@ impl Workload {
             method_program_cache_lookups: 0,
             vm_resolved_program_lookups: 0,
             program_resolver_lookups: 0,
+            call_path_invocations: 0,
         }
     }
 }
@@ -90,6 +123,7 @@ struct ConcurrentTaskBenchContext {
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
     dispatches_per_task: u64,
+    call_path_invocations_per_task: u64,
     bytecodes_per_task: u64,
     instruction_budget: usize,
     interpret_only: bool,
@@ -165,6 +199,7 @@ impl ConcurrentTaskBenchContext {
             resolver: context.resolver,
             builtins: context.builtins,
             dispatches_per_task: context.workload.dispatch_cache_lookups,
+            call_path_invocations_per_task: context.workload.call_path_invocations,
             bytecodes_per_task: context.workload.executed_bytecodes,
             instruction_budget: context.workload.executed_bytecodes as usize + 1,
             interpret_only: context.interpret_only,
@@ -841,6 +876,84 @@ impl TaskBenchContext {
         Self::warm_dispatch_context(kernel, program, resolver, workload)
     }
 
+    fn repeated_call_path(path: CallPath) -> Self {
+        let (kernel, relations, receiver, resolver) = Self::positional_dispatch_fixture();
+        let callee = constant_return_program(7);
+        let invocation = match path {
+            CallPath::Dispatch => Instruction::PositionalDispatch {
+                dst: register(3),
+                relations: relations.dispatch,
+                program_relation: relations.method_program,
+                program_bytes: relations.program_bytes,
+                selector: value(Value::symbol(Symbol::intern("benchmark"))),
+                args: vec![value(Value::identity(receiver))],
+            },
+            CallPath::DirectCall => Instruction::Call {
+                dst: register(3),
+                program: callee,
+                args: vec![value(Value::identity(receiver))],
+            },
+            CallPath::InterpretedInline | CallPath::NativeInline => Instruction::Load {
+                dst: register(3),
+                value: int(7),
+            },
+        };
+        let program = Arc::new(
+            Program::new(
+                5,
+                [
+                    Instruction::Load {
+                        dst: register(0),
+                        value: int(0),
+                    },
+                    Instruction::Load {
+                        dst: register(1),
+                        value: int(1),
+                    },
+                    Instruction::Load {
+                        dst: register(2),
+                        value: int(CALL_PATH_INVOCATIONS as i64),
+                    },
+                    invocation,
+                    Instruction::Binary {
+                        dst: register(0),
+                        op: RuntimeBinaryOp::Add,
+                        left: register(0),
+                        right: register(1),
+                    },
+                    Instruction::Binary {
+                        dst: register(4),
+                        op: RuntimeBinaryOp::Lt,
+                        left: register(0),
+                        right: register(2),
+                    },
+                    Instruction::Branch {
+                        condition: register(4),
+                        if_true: 3,
+                        if_false: 7,
+                    },
+                    Instruction::Return { value: operand(3) },
+                ],
+            )
+            .unwrap(),
+        );
+        let bytecodes_per_invocation = match path {
+            CallPath::Dispatch | CallPath::DirectCall => 6,
+            CallPath::InterpretedInline | CallPath::NativeInline => 4,
+        };
+        let mut workload = Workload::task((CALL_PATH_INVOCATIONS * bytecodes_per_invocation) + 4);
+        workload.call_path_invocations = CALL_PATH_INVOCATIONS;
+        if matches!(path, CallPath::Dispatch) {
+            workload.dispatch_cache_lookups = CALL_PATH_INVOCATIONS;
+            workload.method_program_cache_lookups = CALL_PATH_INVOCATIONS;
+            workload.vm_resolved_program_lookups = CALL_PATH_INVOCATIONS;
+            workload.program_resolver_lookups = 1;
+        }
+        let mut context = Self::warm_dispatch_context(kernel, program, resolver, workload);
+        context.interpret_only = path.interpret_only();
+        context
+    }
+
     fn alternating_positional_dispatch() -> Self {
         let (kernel, relations, receiver, resolver) =
             Self::alternating_positional_dispatch_fixture();
@@ -905,6 +1018,105 @@ impl TaskBenchContext {
         workload.vm_resolved_program_lookups = REPEATED_DISPATCH_ITERATIONS;
         workload.program_resolver_lookups = 2;
         Self::warm_dispatch_context(kernel, program, resolver, workload)
+    }
+
+    fn alternating_call_path(path: CallPath) -> Self {
+        let (kernel, relations, receiver, resolver) =
+            Self::alternating_positional_dispatch_fixture();
+        let first = match path {
+            CallPath::Dispatch => Instruction::PositionalDispatch {
+                dst: register(3),
+                relations: relations.dispatch,
+                program_relation: relations.method_program,
+                program_bytes: relations.program_bytes,
+                selector: value(Value::symbol(Symbol::intern("benchmark_a"))),
+                args: vec![value(Value::identity(receiver))],
+            },
+            CallPath::DirectCall => Instruction::Call {
+                dst: register(3),
+                program: constant_return_program(7),
+                args: vec![value(Value::identity(receiver))],
+            },
+            CallPath::InterpretedInline | CallPath::NativeInline => Instruction::Load {
+                dst: register(3),
+                value: int(7),
+            },
+        };
+        let second = match path {
+            CallPath::Dispatch => Instruction::PositionalDispatch {
+                dst: register(3),
+                relations: relations.dispatch,
+                program_relation: relations.method_program,
+                program_bytes: relations.program_bytes,
+                selector: value(Value::symbol(Symbol::intern("benchmark_b"))),
+                args: vec![value(Value::identity(receiver))],
+            },
+            CallPath::DirectCall => Instruction::Call {
+                dst: register(3),
+                program: constant_return_program(8),
+                args: vec![value(Value::identity(receiver))],
+            },
+            CallPath::InterpretedInline | CallPath::NativeInline => Instruction::Load {
+                dst: register(3),
+                value: int(8),
+            },
+        };
+        let rounds = CALL_PATH_INVOCATIONS / 2;
+        let program = Arc::new(
+            Program::new(
+                5,
+                [
+                    Instruction::Load {
+                        dst: register(0),
+                        value: int(0),
+                    },
+                    Instruction::Load {
+                        dst: register(1),
+                        value: int(1),
+                    },
+                    Instruction::Load {
+                        dst: register(2),
+                        value: int(rounds as i64),
+                    },
+                    first,
+                    second,
+                    Instruction::Binary {
+                        dst: register(0),
+                        op: RuntimeBinaryOp::Add,
+                        left: register(0),
+                        right: register(1),
+                    },
+                    Instruction::Binary {
+                        dst: register(4),
+                        op: RuntimeBinaryOp::Lt,
+                        left: register(0),
+                        right: register(2),
+                    },
+                    Instruction::Branch {
+                        condition: register(4),
+                        if_true: 3,
+                        if_false: 8,
+                    },
+                    Instruction::Return { value: operand(3) },
+                ],
+            )
+            .unwrap(),
+        );
+        let bytecodes_per_round = match path {
+            CallPath::Dispatch | CallPath::DirectCall => 9,
+            CallPath::InterpretedInline | CallPath::NativeInline => 5,
+        };
+        let mut workload = Workload::task((rounds * bytecodes_per_round) + 4);
+        workload.call_path_invocations = CALL_PATH_INVOCATIONS;
+        if matches!(path, CallPath::Dispatch) {
+            workload.dispatch_cache_lookups = CALL_PATH_INVOCATIONS;
+            workload.method_program_cache_lookups = CALL_PATH_INVOCATIONS;
+            workload.vm_resolved_program_lookups = CALL_PATH_INVOCATIONS;
+            workload.program_resolver_lookups = 2;
+        }
+        let mut context = Self::warm_dispatch_context(kernel, program, resolver, workload);
+        context.interpret_only = path.interpret_only();
+        context
     }
 
     fn three_site_positional_dispatch() -> Self {
@@ -1251,6 +1463,22 @@ fn run_concurrent_tasks(
     ConcurrentWorkerResult::operations(dispatches).with_counter("tasks", tasks)
 }
 
+fn run_concurrent_call_path(
+    context: &ConcurrentTaskBenchContext,
+    control: &ConcurrentBenchControl,
+) -> ConcurrentWorkerResult {
+    let mut task_id = ((control.thread_index() as u64) + 1) << 48;
+    let mut tasks = 0_u64;
+    let mut invocations = 0_u64;
+    while !control.should_stop() {
+        context.run_one(task_id);
+        task_id = task_id.wrapping_add(1);
+        tasks = tasks.wrapping_add(1);
+        invocations = invocations.wrapping_add(context.call_path_invocations_per_task);
+    }
+    ConcurrentWorkerResult::operations(invocations).with_counter("tasks", tasks)
+}
+
 fn run_concurrent_integer_tasks(
     context: &ConcurrentTaskBenchContext,
     control: &ConcurrentBenchControl,
@@ -1413,10 +1641,26 @@ fn int(value: i64) -> Value {
     Value::int(value).unwrap()
 }
 
+fn constant_return_program(result: i64) -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            2,
+            [
+                Instruction::Load {
+                    dst: register(1),
+                    value: int(result),
+                },
+                Instruction::Return { value: operand(1) },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
 benchmark_main!(
     BenchmarkMainOptions {
         filter_help: Some(
-            "all, minimal, integer, read, write, dispatch, or a benchmark name substring"
+            "all, minimal, integer, read, write, dispatch, call_path, or a benchmark name substring"
                 .to_owned(),
         ),
         runtime: micromeasure::BenchmarkRuntimeOptions {
@@ -1655,6 +1899,32 @@ benchmark_main!(
                 .bench("task_three_site_positional_dispatch", run_tasks);
         });
 
+        runner.group::<TaskBenchContext>("verb call path experiment warm", |group| {
+            for (shape, context) in [
+                (
+                    "repeated",
+                    TaskBenchContext::repeated_call_path as fn(CallPath) -> TaskBenchContext,
+                ),
+                (
+                    "alternating",
+                    TaskBenchContext::alternating_call_path as fn(CallPath) -> TaskBenchContext,
+                ),
+            ] {
+                for path in CallPath::ALL {
+                    let factory = move || context(path);
+                    let name = format!("verb_call_path_{shape}_{}", path.name());
+                    group
+                        .throughput(Throughput::per_operation(
+                            CALL_PATH_INVOCATIONS,
+                            "invocations",
+                        ))
+                        .factory(&factory)
+                        .diagnostic_pass(workload_diagnostics)
+                        .bench(&name, run_tasks);
+                }
+            }
+        });
+
         runner.group::<TaskBenchContext>("range JIT admission warm", |group| {
             for iterations in RANGE_ADMISSION_ITERATIONS {
                 let interpreted = || {
@@ -1856,6 +2126,16 @@ benchmark_main!(
             name: "dispatch",
             threads: CONCURRENT_DISPATCH_THREADS,
             run: run_concurrent_tasks,
+        }];
+        let single_call_path_worker = [ConcurrentWorker {
+            name: "call path",
+            threads: 1,
+            run: run_concurrent_call_path,
+        }];
+        let concurrent_call_path_workers = [ConcurrentWorker {
+            name: "call path",
+            threads: CONCURRENT_DISPATCH_THREADS,
+            run: run_concurrent_call_path,
         }];
         let single_integer_worker = [ConcurrentWorker {
             name: "integer loop",
@@ -2408,6 +2688,49 @@ benchmark_main!(
                     &concurrent_workers,
                 );
         });
+
+        runner.concurrent_group::<ConcurrentTaskBenchContext>(
+            "verb call path experiment concurrent",
+            |group| {
+                for (shape, sites, context) in [
+                    (
+                        "repeated",
+                        1,
+                        TaskBenchContext::repeated_call_path as fn(CallPath) -> TaskBenchContext,
+                    ),
+                    (
+                        "alternating",
+                        2,
+                        TaskBenchContext::alternating_call_path as fn(CallPath) -> TaskBenchContext,
+                    ),
+                ] {
+                    for path in CallPath::ALL {
+                        let factory =
+                            move |_| ConcurrentTaskBenchContext::from_task_context(context(path));
+                        for (threads, workers) in [
+                            (1, single_call_path_worker.as_slice()),
+                            (
+                                CONCURRENT_DISPATCH_THREADS,
+                                concurrent_call_path_workers.as_slice(),
+                            ),
+                        ] {
+                            let name = format!(
+                                "verb_call_path_{shape}_{}_concurrent_{threads}_threads",
+                                path.name()
+                            );
+                            group
+                                .sample_duration(Duration::from_millis(50))
+                                .throughput(Throughput::per_operation(1, "invocations"))
+                                .metadata("call_path", path.name())
+                                .metadata("sites", sites.to_string())
+                                .metadata("threads", threads.to_string())
+                                .factory(&factory)
+                                .bench(&name, workers);
+                        }
+                    }
+                }
+            },
+        );
 
         runner.concurrent_group::<ConcurrentTaskBenchContext>(
             "collection loop concurrent",
