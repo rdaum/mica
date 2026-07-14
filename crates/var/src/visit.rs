@@ -22,7 +22,6 @@ use crate::value::{CapabilityId, ErrorValue, FunctionId, Identity, Value, ValueK
 /// values without first constructing a parallel DTO tree.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ValueRef<'a> {
-    Nothing,
     Bool(bool),
     Int(i64),
     Float(f32),
@@ -55,7 +54,6 @@ impl ValueRef<'_> {
     #[inline(always)]
     pub const fn kind(&self) -> ValueKind {
         match self {
-            Self::Nothing => ValueKind::Nothing,
             Self::Bool(_) => ValueKind::Bool,
             Self::Int(_) => ValueKind::Int,
             Self::Float(_) => ValueKind::Float,
@@ -79,8 +77,7 @@ impl ValueRef<'_> {
     pub const fn is_immediate(&self) -> bool {
         matches!(
             self,
-            Self::Nothing
-                | Self::Bool(_)
+            Self::Bool(_)
                 | Self::Int(_)
                 | Self::Float(_)
                 | Self::Identity(_)
@@ -147,7 +144,6 @@ impl Value {
     #[inline(always)]
     pub fn as_value_ref(&self) -> ValueRef<'_> {
         match self.kind() {
-            ValueKind::Nothing => ValueRef::Nothing,
             ValueKind::Bool => ValueRef::Bool(self.as_bool().unwrap()),
             ValueKind::Int => ValueRef::Int(self.as_int().unwrap()),
             ValueKind::Float => ValueRef::Float(self.as_float().unwrap()),
@@ -156,11 +152,11 @@ impl Value {
             ValueKind::ErrorCode => ValueRef::ErrorCode(self.as_error_code().unwrap()),
             ValueKind::Capability => ValueRef::Capability(self.as_capability().unwrap()),
             ValueKind::Function => ValueRef::Function(self.as_function().unwrap()),
+            ValueKind::Relation => ValueRef::Relation(self.relation_ref().unwrap()),
             ValueKind::String
             | ValueKind::Bytes
             | ValueKind::List
             | ValueKind::Map
-            | ValueKind::Relation
             | ValueKind::Range
             | ValueKind::Error
             | ValueKind::Frob => self.heap_value_ref(),

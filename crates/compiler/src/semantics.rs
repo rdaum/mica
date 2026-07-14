@@ -339,6 +339,11 @@ impl<'a> Analyzer<'a> {
                     }
                 }
             }
+            HirExpr::Relation { rows, .. } => {
+                for expr in rows.iter().flatten() {
+                    self.validate_supported_surface_expr(expr, false);
+                }
+            }
             HirExpr::Map { entries, .. } => {
                 for (key, value) in entries {
                     self.validate_supported_surface_expr(key, false);
@@ -830,6 +835,20 @@ impl<'a> Analyzer<'a> {
                         CollectionItem::Splice(expr) => {
                             HirCollectionItem::Splice(self.lower_expr(expr, scope))
                         }
+                    })
+                    .collect(),
+            },
+            Expr::Relation {
+                id, heading, rows, ..
+            } => HirExpr::Relation {
+                id: *id,
+                heading: heading.clone(),
+                rows: rows
+                    .iter()
+                    .map(|row| {
+                        row.iter()
+                            .map(|expr| self.lower_expr(expr, scope))
+                            .collect()
                     })
                     .collect(),
             },
@@ -1452,6 +1471,11 @@ fn collect_expr_span(expr: &Expr, spans: &mut HashMap<NodeId, Span>) {
                         collect_expr_span(expr, spans);
                     }
                 }
+            }
+        }
+        Expr::Relation { rows, .. } => {
+            for expr in rows.iter().flatten() {
+                collect_expr_span(expr, spans);
             }
         }
         Expr::Map { entries, .. } => {

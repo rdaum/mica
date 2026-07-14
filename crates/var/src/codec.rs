@@ -12,9 +12,9 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::value::{
-    PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_ERROR, TAG_ERROR_CODE, TAG_FLOAT,
-    TAG_FROB, TAG_FUNCTION, TAG_IDENTITY, TAG_INT, TAG_LIST, TAG_MAP, TAG_NOTHING, TAG_RANGE,
-    TAG_RELATION, TAG_SHIFT, TAG_STRING, TAG_SYMBOL,
+    PAYLOAD_MASK, TAG_BOOL, TAG_BYTES, TAG_CAPABILITY, TAG_EMPTY_RELATION, TAG_ERROR,
+    TAG_ERROR_CODE, TAG_FLOAT, TAG_FROB, TAG_FUNCTION, TAG_IDENTITY, TAG_INT, TAG_LIST, TAG_MAP,
+    TAG_RANGE, TAG_RELATION, TAG_SHIFT, TAG_STRING, TAG_SYMBOL,
 };
 use crate::{CapabilityId, Identity, Symbol, Value, ValueRef};
 use std::fmt;
@@ -230,12 +230,11 @@ pub fn encode_value_to_sink<S: ValueSink>(
     sink: &mut S,
     options: ValueCodecOptions,
 ) -> Result<(), ValueCodecError> {
+    if value.is_empty_relation() {
+        return write_word(sink, value.raw_bits());
+    }
     match value.as_value_ref() {
-        ValueRef::Nothing
-        | ValueRef::Bool(_)
-        | ValueRef::Int(_)
-        | ValueRef::Float(_)
-        | ValueRef::Identity(_) => {
+        ValueRef::Bool(_) | ValueRef::Int(_) | ValueRef::Float(_) | ValueRef::Identity(_) => {
             write_word(sink, value.raw_bits())?;
         }
         ValueRef::Symbol(symbol) => encode_symbol_value(TAG_SYMBOL, symbol, sink, options)?,
@@ -393,12 +392,12 @@ fn encode_value_to_segments<'a>(
     segments: &mut ValueSegments<'a>,
     options: ValueCodecOptions,
 ) -> Result<(), ValueCodecError> {
+    if value.is_empty_relation() {
+        segments.push_scratch_word(value.raw_bits());
+        return Ok(());
+    }
     match value.as_value_ref() {
-        ValueRef::Nothing
-        | ValueRef::Bool(_)
-        | ValueRef::Int(_)
-        | ValueRef::Float(_)
-        | ValueRef::Identity(_) => {
+        ValueRef::Bool(_) | ValueRef::Int(_) | ValueRef::Float(_) | ValueRef::Identity(_) => {
             segments.push_scratch_word(value.raw_bits());
         }
         ValueRef::Symbol(symbol) => {
@@ -651,7 +650,7 @@ impl<'a> ValueReader<'a> {
             TAG_RELATION => self.read_relation(aux),
             TAG_CAPABILITY => Err(ValueCodecError::CapabilityNotDecodable),
             TAG_FUNCTION => Err(ValueCodecError::FunctionNotDecodable),
-            TAG_NOTHING | TAG_BOOL | TAG_INT | TAG_FLOAT | TAG_IDENTITY => {
+            TAG_EMPTY_RELATION | TAG_BOOL | TAG_INT | TAG_FLOAT | TAG_IDENTITY => {
                 Err(ValueCodecError::InvalidExtendedAux { kind, aux })
             }
             tag => Err(ValueCodecError::UnknownValueTag(tag)),
@@ -775,12 +774,12 @@ fn decode_inline_word(word: u64, options: ValueCodecOptions) -> Result<Value, Va
     let tag = word_tag(word);
     let payload = word & PAYLOAD_MASK;
     match tag {
-        TAG_NOTHING => {
+        TAG_EMPTY_RELATION => {
             if payload == 0 {
                 Ok(Value(word))
             } else {
                 Err(ValueCodecError::InvalidValue(
-                    "nothing value has non-zero payload".to_owned(),
+                    "empty relation value has non-zero payload".to_owned(),
                 ))
             }
         }

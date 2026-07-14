@@ -38,8 +38,8 @@ The positions in a relation are ordinal. `LocatedIn(#coin, #room)` means positio
 position 1 is `#room`. The positions do not have stored column names. Names come from the relation
 and from how queries bind variables.
 
-Mica values are ordinary values when stored in relations. `nothing` is a value; it is not SQL
-`NULL`, and Mica does not use SQL's three-valued logic.
+Mica values are ordinary values when stored in relations. `nothing` denotes the zero-column empty
+relation; it is not SQL `NULL`, and Mica does not use SQL's three-valued logic.
 
 Create a relation with a builtin:
 
@@ -63,15 +63,15 @@ Query with free variables:
 return LocatedIn(?thing, #room)
 ```
 
-The `?thing` part is a query variable. The result is a relation value:
+The `?thing` part is a query variable. The result is a relation value whose source form is:
 
-```text
-relation({:thing}, [[#coin], [#lamp]])
+```mica
+[:thing] { [#coin], [#lamp] }
 ```
 
-The heading names the free variables and each row contains their values. This display form is not a
-source literal. Relation values are canonical sets, so projection removes duplicate answer rows and
-programs must not depend on row order.
+The heading names the free variables and each row contains their values. Relation values are
+canonical sets, so projection removes duplicate answer rows and programs must not depend on row
+order.
 
 Relation values are iterable. Each observed row is exposed as a binding map, so existing row access
 remains direct without allocating a map for every answer up front:
@@ -133,10 +133,10 @@ rather than adding another competing fact.
 `one` projects at most one result. It is useful for relations such as `Name`, where the program
 expects a single value and should fail loudly if the data is ambiguous.
 
-If the query produces zero results, `one` returns `nothing`. If it produces more than one result,
-`one` raises `E_AMBIGUOUS`. If the single result has exactly one free variable, `one` returns that
-variable's value. If the single result has multiple free variables, the result shape is a binding
-map.
+If the query produces zero results, `one` returns `nothing`, the zero-column empty relation. If it
+produces more than one result, `one` raises `E_AMBIGUOUS`. If the single result has exactly one free
+variable, `one` returns that variable's value. If the single result has multiple free variables, the
+result shape is a binding map.
 
 ## Relation Value Algebra
 
@@ -158,8 +158,16 @@ headings. `natural_join` matches every shared column name; with no shared column
 Cartesian product. Join keys use canonical value identity, so an integer and float do not join
 merely because language numeric equality considers them equal.
 
-Relation values can be returned from tasks and carried across RPC or IPC value boundaries. They do
-not yet have literal syntax and cannot yet be stored as cells in durable named relations.
+Relation values can be returned from tasks, carried across RPC or IPC value boundaries, and stored
+as cells in durable named relations when all nested cells are persistable. Literal syntax uses a
+symbol heading followed by rows:
+
+```mica
+[:person, :name] { [#alice, "Alice"], [#bob, "Bob"] }
+```
+
+`nothing` is exactly `[] {}`. The zero-column unit relation is `[] {[]}`. These are different
+values: the former has no rows and is falsey, while the latter has one empty row and is truthy.
 
 Dot sugar is only valid for declared functional binary relations:
 

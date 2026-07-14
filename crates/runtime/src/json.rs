@@ -40,8 +40,10 @@ impl std::error::Error for JsonValueError {}
 /// Float values are widened to `f64` at this boundary because JSON has no
 /// binary32 type. This is a permanent boundary conversion, not an adapter.
 pub fn json_from_value(value: &Value) -> Result<serde_json::Value, JsonValueError> {
+    if value.is_empty_relation() {
+        return Ok(serde_json::Value::Null);
+    }
     match value.kind() {
-        ValueKind::Nothing => Ok(serde_json::Value::Null),
         ValueKind::Bool => Ok(serde_json::Value::Bool(value.as_bool().unwrap())),
         ValueKind::Int => Ok(serde_json::Value::Number(value.as_int().unwrap().into())),
         ValueKind::Float => {

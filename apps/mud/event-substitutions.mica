@@ -398,7 +398,7 @@ verb template/conjugation(binding, verb_name @ #string)
 end
 
 verb template/binding_name(bindings @ #map, binding, viewer)
-  let value = bindings[binding]
+  let value = index_or(bindings, binding, nothing)
   if value == nothing
     return "<no-binding>"
   end
@@ -425,33 +425,33 @@ end
 
 verb template/binding_value(bindings @ #map, binding)
   if binding == :actor
-    return bindings[:actor]
+    return index_or(bindings, :actor, nothing)
   elseif binding == :this
-    let value = bindings[:this]
+    let value = index_or(bindings, :this, nothing)
     if value == nothing
-      value = bindings[:target]
+      value = index_or(bindings, :target, nothing)
     end
     return value
   elseif binding == :dobj
-    let value = bindings[:dobj]
+    let value = index_or(bindings, :dobj, nothing)
     if value == nothing
-      value = bindings[:item]
+      value = index_or(bindings, :item, nothing)
     end
     if value == nothing
-      value = bindings[:target]
+      value = index_or(bindings, :target, nothing)
     end
     return value
   elseif binding == :iobj
-    let value = bindings[:iobj]
+    let value = index_or(bindings, :iobj, nothing)
     if value == nothing
-      value = bindings[:container]
+      value = index_or(bindings, :container, nothing)
     end
     return value
   elseif binding == :location
-    return bindings[:location]
+    return index_or(bindings, :location, nothing)
   end
 
-  return bindings[binding]
+  return index_or(bindings, binding, nothing)
 end
 
 verb template/reference_text(value, viewer, binding, cap)

@@ -44,8 +44,8 @@ pub use value::{
     BOOL_PROTOTYPE, BYTES_PROTOTYPE, CAPABILITY_PROTOTYPE, CapabilityId, ERROR_CODE_PROTOTYPE,
     ERROR_PROTOTYPE, ErrorValue, FLOAT_PROTOTYPE, FROB_PROTOTYPE, FUNCTION_PROTOTYPE, FrobValue,
     FunctionId, IDENTITY_PROTOTYPE, INTEGER_PROTOTYPE, Identity, LIST_PROTOTYPE, MAP_PROTOTYPE,
-    NOTHING_PROTOTYPE, PRIMITIVE_PROTOTYPES, RANGE_PROTOTYPE, RELATION_PROTOTYPE, STRING_PROTOTYPE,
-    SYMBOL_PROTOTYPE, VALUE_ABI_VERSION, Value, ValueError, ValueKind, language_cmp,
-    primitive_prototype_for_kind, primitive_prototype_for_value,
+    PRIMITIVE_PROTOTYPES, RANGE_PROTOTYPE, RELATION_PROTOTYPE, STRING_PROTOTYPE, SYMBOL_PROTOTYPE,
+    VALUE_ABI_VERSION, Value, ValueError, ValueKind, language_cmp, primitive_prototype_for_kind,
+    primitive_prototype_for_value,
 };
 pub use visit::{ValueRef, ValueVisitor, VisitDecision};

@@ -70,7 +70,8 @@ for key, value in properties
 end
 ```
 
-Relation queries are also iterable because they return lists of binding maps:
+Relation queries are also iterable because they return relation values. Each observed row is exposed
+as a binding map:
 
 ```mica
 for found in Contents(container, ?item)

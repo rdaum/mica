@@ -15,7 +15,8 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 use mica_var::Value;
 use mica_var::abi::{
-    VALUE_ABI_VERSION, VALUE_NOTHING_TAG, borrowed_value_bits, from_owned_value_bits, pack_value,
+    VALUE_ABI_VERSION, VALUE_EMPTY_RELATION_TAG, borrowed_value_bits, from_owned_value_bits,
+    pack_value,
 };
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -321,10 +322,10 @@ impl CompiledFloatLoop {
         if self.value_abi_version != VALUE_ABI_VERSION {
             return FloatLoopOutcome::SideExit;
         }
-        let nothing = pack_value(VALUE_NOTHING_TAG, 0);
+        let empty_relation = pack_value(VALUE_EMPTY_RELATION_TAG, 0);
         let mut output = RawFloatLoopOutcome {
-            current: nothing,
-            condition: nothing,
+            current: empty_relation,
+            condition: empty_relation,
             iterations: 0,
         };
         let status = unsafe {

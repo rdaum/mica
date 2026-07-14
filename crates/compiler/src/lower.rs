@@ -202,6 +202,7 @@ impl<'a> Lower<'a> {
                 span: node.span.clone(),
             },
             SyntaxKind::ListExpr => self.lower_list(node),
+            SyntaxKind::RelationExpr => self.lower_relation(node),
             SyntaxKind::MapExpr => self.lower_map(node),
             SyntaxKind::UnaryExpr => self.lower_unary(node),
             SyntaxKind::BinaryExpr => self.lower_binary(node),
@@ -489,6 +490,74 @@ impl<'a> Lower<'a> {
             id: self.node_id(),
             span: node.span.clone(),
             items,
+        }
+    }
+
+    fn lower_relation(&mut self, node: &CstNode) -> Expr {
+        let heading = self
+            .node_children(node)
+            .find(|child| child.kind == SyntaxKind::RelationHeading)
+            .into_iter()
+            .flat_map(|heading| self.node_children(heading))
+            .filter(|child| child.kind == SyntaxKind::SymbolExpr)
+            .filter_map(|symbol| {
+                let tokens = self.token_children(symbol).collect::<Vec<_>>();
+                let colon = tokens
+                    .iter()
+                    .position(|token| token.kind == SyntaxKind::Colon)?;
+                qualified_name_from_tokens(self.source, &tokens, colon + 1)
+            })
+            .collect::<Vec<_>>();
+        let rows = self
+            .node_children(node)
+            .filter(|child| child.kind == SyntaxKind::RelationRow)
+            .map(|row| {
+                let items = self
+                    .node_children(row)
+                    .filter(|child| child.kind == SyntaxKind::ListItem)
+                    .collect::<Vec<_>>();
+                for item in &items {
+                    if self
+                        .token_children(item)
+                        .any(|token| token.kind == SyntaxKind::At)
+                    {
+                        self.error(item, "relation rows do not support splices");
+                    }
+                }
+                let exprs = items
+                    .into_iter()
+                    .filter_map(|item| self.node_children(item).next())
+                    .collect::<Vec<_>>();
+                exprs
+                    .into_iter()
+                    .map(|expr| self.lower_expr(expr))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        for (index, column) in heading.iter().enumerate() {
+            if heading[..index].contains(column) {
+                self.error(node, &format!("duplicate relation column :{column}"));
+            }
+        }
+        for row in &rows {
+            if row.len() != heading.len() {
+                self.error(
+                    node,
+                    &format!(
+                        "relation row arity mismatch: expected {}, got {}",
+                        heading.len(),
+                        row.len()
+                    ),
+                );
+            }
+        }
+
+        Expr::Relation {
+            id: self.node_id(),
+            span: node.span.clone(),
+            heading,
+            rows,
         }
     }
 
@@ -1380,6 +1449,7 @@ fn is_expr_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::IndexExpr
             | SyntaxKind::FieldExpr
             | SyntaxKind::ListExpr
+            | SyntaxKind::RelationExpr
             | SyntaxKind::MapExpr
             | SyntaxKind::GroupExpr
             | SyntaxKind::LiteralExpr
@@ -1882,6 +1952,46 @@ mod tests {
     }
 
     #[test]
+    fn lowers_relation_literal_heading_and_rows() {
+        let ast = parse_ast("return [:thing, :count] { [#coin, 1], [#lamp, 2] }");
+        assert_eq!(ast.errors, vec![]);
+        let Item::Expr {
+            expr: Expr::Return {
+                value: Some(value), ..
+            },
+            ..
+        } = &ast.items[0]
+        else {
+            panic!("expected return expression");
+        };
+        let Expr::Relation { heading, rows, .. } = &**value else {
+            panic!("expected relation literal");
+        };
+        assert_eq!(heading, &["thing", "count"]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].len(), 2);
+    }
+
+    #[test]
+    fn rejects_malformed_relation_literal_shapes() {
+        let duplicate = parse_ast("return [:thing, :thing] {}");
+        assert!(
+            duplicate
+                .errors
+                .iter()
+                .any(|error| error.message == "duplicate relation column :thing")
+        );
+
+        let wrong_arity = parse_ast("return [:thing, :count] { [#coin] }");
+        assert!(
+            wrong_arity
+                .errors
+                .iter()
+                .any(|error| { error.message == "relation row arity mismatch: expected 2, got 1" })
+        );
+    }
+
+    #[test]
     fn rejects_invalid_bytes_literal_base64() {
         let ast = parse_ast("b\"SGVsbG8\"");
         assert!(
@@ -1952,6 +2062,11 @@ mod tests {
                             collect_expr_ids(expr, ids);
                         }
                     }
+                }
+            }
+            Expr::Relation { rows, .. } => {
+                for expr in rows.iter().flatten() {
+                    collect_expr_ids(expr, ids);
                 }
             }
             Expr::Map { entries, .. } => {

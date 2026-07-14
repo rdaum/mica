@@ -9,7 +9,7 @@ verb ui/sync_action_source(action)
 end
 
 verb ui/form_text(fields, key)
-  let value = fields[key]
+  let value = index_or(fields, key, nothing)
   if value == nothing
     return ""
   end
@@ -17,7 +17,7 @@ verb ui/form_text(fields, key)
 end
 
 verb ui/form_raw_text(fields, key)
-  let value = fields[key]
+  let value = index_or(fields, key, nothing)
   if value == nothing
     return ""
   end
@@ -141,7 +141,7 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
 
   agent/append_message(current, "user", line)
 
-  let selected = ui/entity_from_literal(fields[:entity])
+  let selected = ui/entity_from_literal(index_or(fields, :entity, nothing))
   if selected != nothing && ui/can_inspect_entity(current, selected)
     endpoint().session/inspect = selected
     endpoint.session/inspect = selected

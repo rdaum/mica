@@ -541,6 +541,21 @@ fn runner_to_literal_renders_parseable_value_source() {
         runner.run_source("return to_literal(b\"3q2-7w==\")").unwrap().outcome,
         TaskOutcome::Complete { value, .. } if value == Value::string("b\"3q2-7w==\"")
     ));
+    assert!(matches!(
+        runner
+            .run_source("return to_literal([:thing] { [2], [1], [1] })")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("[:thing] {[1], [2]}")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return to_literal([:world/thing] { [1] })")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::string("[:world/thing] {[1]}")
+    ));
 }
 
 #[test]
@@ -560,6 +575,16 @@ fn runner_from_literal_parses_to_literal_output() {
     ));
     assert!(matches!(
         runner
+            .run_source(
+                "let value = [:outer] { [[:inner] { [1] }] }
+                 return from_literal(to_literal(value)) == value"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner
             .run_source("return from_literal(to_literal(#take_event<[\"coin\"]>))")
             .unwrap()
             .outcome,
@@ -568,6 +593,16 @@ fn runner_from_literal_parses_to_literal_output() {
                 runner.named_identity(Symbol::intern("take_event")).unwrap(),
                 Value::list([Value::string("coin")])
             )
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "let value = [:thing, :count] { [#take_event, 2], [#take_event, 1] }
+                 return from_literal(to_literal(value)) == value"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
     ));
     assert!(matches!(
         runner
@@ -582,6 +617,96 @@ fn runner_from_literal_parses_to_literal_output() {
             .unwrap()
             .outcome,
         TaskOutcome::Complete { value, .. } if value == Value::int(7).unwrap()
+    ));
+}
+
+#[test]
+fn relation_literals_construct_dynamic_empty_and_unit_relations() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "let count = 1
+             return [[:thing, :count] { [7, count + 1], [7, count + 1] }, nothing == [] {}, [] {} == [] {[]}, not (not [] {}), not (not [] {[]})]",
+        )
+        .unwrap();
+
+    let relation = query_relation(
+        ["thing", "count"],
+        [[Value::int(7).unwrap(), Value::int(2).unwrap()]],
+    );
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                relation,
+                Value::bool(true),
+                Value::bool(false),
+                Value::bool(false),
+                Value::bool(true),
+            ])
+    ));
+}
+
+#[test]
+fn missing_or_invalid_indexes_raise_catchable_errors() {
+    let mut runner = SourceRunner::new_empty();
+    for source in [
+        "return [1][1]",
+        "return {:present -> 1}[:missing]",
+        "return [:value] { [1] }[1]",
+        "return [1][-1]",
+        "return 1[0]",
+    ] {
+        let report = runner
+            .run_source(&format!(
+                "try\n  {source}\ncatch E_INDEX as err\n  return err.value\nend"
+            ))
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value.with_list(|values| values.len() == 2) == Some(true)
+        ));
+    }
+}
+
+#[test]
+fn invalid_indexed_assignment_raises_a_catchable_error() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "let values = [1]
+             try
+               values[1] = 2
+             catch E_INDEX as err
+               return err.code
+             end
+             return false",
+        )
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::error_code(Symbol::intern("E_INDEX"))
+    ));
+}
+
+#[test]
+fn index_or_makes_optional_lookup_explicit() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "return [index_or([1], 4, 9), index_or({:a -> 1}, :b, 9), index_or([:a] { [1] }, 4, 9)]",
+        )
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::int(9).unwrap(),
+                Value::int(9).unwrap(),
+                Value::int(9).unwrap(),
+            ])
     ));
 }
 
@@ -3379,7 +3504,7 @@ fn runner_same_source_body_can_use_declared_relation() {
 
     assert_eq!(
         report.render(),
-        "task 1 complete: relation({:value}, [[1]]) (retries: 0)"
+        "task 1 complete: [:value] {[1]} (retries: 0)"
     );
 }
 
@@ -3516,7 +3641,7 @@ fn runner_relation_calls_with_query_vars_return_relation_values() {
 
     assert_eq!(
         report.render(),
-        "task 5 complete: relation({:room}, [[#room]]) (retries: 0)"
+        "task 5 complete: [:room] {[#room]} (retries: 0)"
     );
 }
 
@@ -3532,7 +3657,7 @@ fn runner_relation_queries_allow_all_positions_free() {
 
     assert_eq!(
         report.render(),
-        "task 5 complete: relation({:what, :where}, [[#thing, #room]]) (retries: 0)"
+        "task 5 complete: [:what, :where] {[#thing, #room]} (retries: 0)"
     );
 }
 
@@ -3789,7 +3914,7 @@ fn runner_root_source_can_mix_rule_definition_and_task_code() {
 
     assert_eq!(
         report.render(),
-        "task 9 complete: relation({:obj}, [[#alice], [#lamp]]) (retries: 0)"
+        "task 9 complete: [:obj] {[#alice], [#lamp]} (retries: 0)"
     );
 }
 
@@ -3814,7 +3939,7 @@ fn runner_installs_relation_rules_and_queries_derived_tuples() {
     assert_eq!(rule.render(), "task 3 complete: #rule1 (retries: 0)");
     assert_eq!(
         query.render(),
-        "task 9 complete: relation({:obj}, [[#alice], [#lamp]]) (retries: 0)"
+        "task 9 complete: [:obj] {[#alice], [#lamp]} (retries: 0)"
     );
 }
 
@@ -3844,7 +3969,7 @@ fn runner_installs_relation_rules_with_comparison_guards() {
 
     assert_eq!(
         report.render(),
-        "task 13 complete: relation({:file}, [[#file_b]]) (retries: 0)"
+        "task 13 complete: [:file] {[#file_b]} (retries: 0)"
     );
 }
 
@@ -3879,10 +4004,7 @@ fn runner_inspects_and_disables_rules() {
         "task 10 complete: \"VisibleTo(actor, obj) :-\\n  LocatedIn(actor, room),\\n  LocatedIn(obj, room)\" (retries: 0)"
     );
     assert_eq!(disabled.render(), "task 11 complete: nothing (retries: 0)");
-    assert_eq!(
-        query.render(),
-        "task 12 complete: relation({:obj}, []) (retries: 0)"
-    );
+    assert_eq!(query.render(), "task 12 complete: [:obj] {} (retries: 0)");
 }
 
 #[test]
@@ -4067,11 +4189,7 @@ fn runner_filein_unit_fileout_round_trips_readable_source() {
         .unwrap();
     let query = imported.run_source("return Name(#lamp, ?name)").unwrap();
     let dispatch = imported.run_source("return :look(actor: #room)").unwrap();
-    assert!(
-        query
-            .render()
-            .contains("relation({:name}, [[\"brass lamp\"]])")
-    );
+    assert!(query.render().contains("[:name] {[\"brass lamp\"]}"));
     assert!(dispatch.render().contains("\"ok\""));
 }
 
@@ -4145,11 +4263,7 @@ fn runner_fileout_preserves_slash_qualified_names() {
     let dispatch = imported
         .run_source("return :ui/look(actor: #ui/alice, item: #ui/lamp)")
         .unwrap();
-    assert!(
-        query
-            .render()
-            .contains("relation({:name}, [[\"brass lamp\"]])")
-    );
+    assert!(query.render().contains("[:name] {[\"brass lamp\"]}"));
     assert!(dispatch.render().contains("\"brass lamp\""));
 }
 
@@ -4289,11 +4403,7 @@ fn runner_filein_replace_removes_facts_no_longer_in_source_unit() {
     let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
     let source = runner.fileout_unit(unit).unwrap();
 
-    assert!(
-        query
-            .render()
-            .contains("relation({:name}, [[\"golden lamp\"]])")
-    );
+    assert!(query.render().contains("[:name] {[\"golden lamp\"]}"));
     assert!(source.contains("assert Name(#lamp, \"golden lamp\")"));
     assert!(!source.contains("brass lamp"));
 }
@@ -4323,11 +4433,7 @@ fn runner_fjall_store_reopens_state() {
             SourceRunner::open_fjall(&path, mica_relation_kernel::FjallDurabilityMode::Strict)
                 .unwrap();
         let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
-        assert!(
-            query
-                .render()
-                .contains("relation({:name}, [[\"brass lamp\"]])")
-        );
+        assert!(query.render().contains("[:name] {[\"brass lamp\"]}"));
     }
 
     let _ = std::fs::remove_dir_all(&path);
@@ -4359,7 +4465,7 @@ fn runner_installs_rules_with_surface_negation() {
 
     assert_eq!(
         query.render(),
-        "task 11 complete: relation({:obj}, [[#alice]]) (retries: 0)"
+        "task 11 complete: [:obj] {[#alice]} (retries: 0)"
     );
 }
 
@@ -4433,11 +4539,11 @@ fn runner_filein_installs_mud_verbs_and_invokes_dispatch() {
     assert_eq!(reports[22].render(), "task 23 complete: true (retries: 0)");
     assert_eq!(
         reports[23].render(),
-        "task 24 complete: relation({:container}, [[#box]]) (retries: 0)"
+        "task 24 complete: [:container] {[#box]} (retries: 0)"
     );
     assert_eq!(
         reports[24].render(),
-        "task 25 complete: relation({:item}, [[#coin]]) (retries: 0)"
+        "task 25 complete: [:item] {[#coin]} (retries: 0)"
     );
 }
 

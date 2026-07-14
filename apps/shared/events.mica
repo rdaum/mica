@@ -31,12 +31,7 @@ verb event/render(event @ #event<_>, viewer)
 end
 
 verb event/metadata(event @ #event<_>, key, default)
-  let value = frob_value(event)[key]
-  if value == nothing
-    return default
-  end
-
-  return value
+  return index_or(frob_value(event), key, default)
 end
 
 verb event/with_metadata(event @ #event<_>, key, value)

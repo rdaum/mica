@@ -49,9 +49,8 @@ impl Value {
     }
 
     pub fn encode_ordered_into(&self, out: &mut impl OrderedKeySink) {
-        out.push_byte(self.tag());
+        out.push_byte(self.kind() as u8);
         match self.kind() {
-            ValueKind::Nothing => {}
             ValueKind::Bool => out.push_byte(self.payload() as u8),
             ValueKind::Int => {
                 let normalized = self.as_int().unwrap() ^ i64::MIN;
@@ -153,7 +152,6 @@ impl Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self.kind(), other.kind()) {
-            (ValueKind::Nothing, ValueKind::Nothing) => true,
             (ValueKind::Bool, ValueKind::Bool)
             | (ValueKind::Int, ValueKind::Int)
             | (ValueKind::Float, ValueKind::Float)
@@ -220,7 +218,6 @@ impl Ord for Value {
         }
 
         match left_kind {
-            ValueKind::Nothing => Ordering::Equal,
             ValueKind::Bool => self.as_bool().cmp(&other.as_bool()),
             ValueKind::Int => self.as_int().cmp(&other.as_int()),
             ValueKind::Float => {
@@ -281,7 +278,6 @@ impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.kind().hash(state);
         match self.kind() {
-            ValueKind::Nothing => {}
             ValueKind::Bool
             | ValueKind::Int
             | ValueKind::Float
@@ -329,7 +325,6 @@ impl Hash for Value {
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
-            ValueKind::Nothing => f.write_str("nothing"),
             ValueKind::Bool => write!(f, "{:?}", self.as_bool().unwrap()),
             ValueKind::Int => write!(f, "{:?}", self.as_int().unwrap()),
             ValueKind::Float => write!(f, "{:?}", self.as_float().unwrap()),
@@ -360,6 +355,7 @@ impl fmt::Debug for Value {
                     map.finish()
                 })
                 .unwrap(),
+            ValueKind::Relation if self.is_empty_relation() => f.write_str("nothing"),
             ValueKind::Relation => self
                 .with_relation(|relation| {
                     f.debug_struct("Relation")
@@ -384,7 +380,6 @@ impl fmt::Debug for Value {
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
-            ValueKind::Nothing => f.write_str("nothing"),
             ValueKind::Bool => write!(f, "{}", self.as_bool().unwrap()),
             ValueKind::Int => write!(f, "{}", self.as_int().unwrap()),
             ValueKind::Float => write!(f, "{}", self.as_float().unwrap()),
@@ -427,6 +422,7 @@ impl fmt::Display for Value {
                     f.write_str("]")
                 })
                 .unwrap(),
+            ValueKind::Relation if self.is_empty_relation() => f.write_str("nothing"),
             ValueKind::Relation => self
                 .with_relation(|relation| {
                     write!(f, "<relation {}x{}>", relation.len(), relation.arity())

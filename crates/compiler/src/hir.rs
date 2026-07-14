@@ -82,6 +82,11 @@ pub enum HirExpr {
         id: NodeId,
         items: Vec<HirCollectionItem>,
     },
+    Relation {
+        id: NodeId,
+        heading: Vec<String>,
+        rows: Vec<Vec<HirExpr>>,
+    },
     Map {
         id: NodeId,
         entries: Vec<(HirExpr, HirExpr)>,

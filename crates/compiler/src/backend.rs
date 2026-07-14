@@ -577,6 +577,11 @@ impl<'a> ContextValidator<'a> {
                     }
                 }
             }
+            HirExpr::Relation { rows, .. } => {
+                for expr in rows.iter().flatten() {
+                    self.validate_expr(expr, external_locals, ExprUse::Value);
+                }
+            }
             HirExpr::Map { entries, .. } => {
                 for (key, value) in entries {
                     self.validate_expr(key, external_locals, ExprUse::Value);
@@ -1496,6 +1501,7 @@ impl<'a> ProgramCompiler<'a> {
                 }
             }
             HirExpr::List { id, items } => self.compile_list(*id, items),
+            HirExpr::Relation { id, heading, rows } => self.compile_relation(*id, heading, rows),
             HirExpr::Map { entries, .. } => self.compile_map(entries),
             HirExpr::Index {
                 id,
@@ -1785,6 +1791,38 @@ impl<'a> ProgramCompiler<'a> {
         Ok(dst)
     }
 
+    fn compile_relation(
+        &mut self,
+        id: NodeId,
+        heading: &[String],
+        rows: &[Vec<HirExpr>],
+    ) -> Result<Register, CompileError> {
+        let row_count = u16::try_from(rows.len())
+            .map_err(|_| self.unsupported(id, "relation literals support at most 65535 rows"))?;
+        let mut cells = Vec::with_capacity(
+            heading
+                .len()
+                .checked_mul(rows.len())
+                .ok_or_else(|| self.unsupported(id, "relation literal is too large"))?,
+        );
+        for row in rows {
+            for cell in row {
+                cells.push(self.compile_expr_for_operand(cell)?);
+            }
+        }
+        let dst = self.alloc_register();
+        self.emit(Instruction::BuildRelation {
+            dst,
+            heading: heading
+                .iter()
+                .map(|column| Symbol::intern(column))
+                .collect(),
+            cells,
+            row_count,
+        });
+        Ok(dst)
+    }
+
     fn compile_empty_list(&mut self) -> Register {
         let dst = self.alloc_register();
         self.emit(Instruction::BuildList {
@@ -1876,11 +1914,7 @@ impl<'a> ProgramCompiler<'a> {
         id: NodeId,
         default: Option<&HirExpr>,
     ) -> Result<Register, CompileError> {
-        let dst = self.compile_collection_slot(collection, position, id)?;
-        let Some(default) = default else {
-            return Ok(dst);
-        };
-
+        let dst = self.alloc_register();
         let pos = self.load_usize(position, id)?;
         let condition = self.alloc_register();
         self.emit(Instruction::Binary {
@@ -1891,13 +1925,26 @@ impl<'a> ProgramCompiler<'a> {
         });
         let branch = self.emit_branch(condition, 0, 0);
         let true_target = self.instructions.len();
-        self.emit_jump(0);
+        self.emit(Instruction::Index {
+            dst,
+            collection,
+            index: self.usize_operand(position, id)?,
+        });
+        let jump = self.emit_jump(0);
         let false_target = self.instructions.len();
-        let default = self.compile_expr_for_value(default)?;
-        self.emit(Instruction::Move { dst, src: default });
+        match default {
+            Some(default) => {
+                let default = self.compile_expr_for_value(default)?;
+                self.emit(Instruction::Move { dst, src: default });
+            }
+            None => self.emit(Instruction::Load {
+                dst,
+                value: Value::nothing(),
+            }),
+        }
         let end = self.instructions.len();
         self.patch_branch(branch, true_target, false_target)?;
-        self.patch_jump(true_target, end)?;
+        self.patch_jump(jump, end)?;
         Ok(dst)
     }
 
@@ -4412,6 +4459,7 @@ fn expr_id(expr: &HirExpr) -> NodeId {
         | HirExpr::QueryVar { id, .. }
         | HirExpr::Hole { id }
         | HirExpr::List { id, .. }
+        | HirExpr::Relation { id, .. }
         | HirExpr::Map { id, .. }
         | HirExpr::Unary { id, .. }
         | HirExpr::Binary { id, .. }
@@ -5032,7 +5080,7 @@ mod tests {
         let mut task_manager = TaskManager::new(kernel);
         let submitted = submit_source_task(
             "let [head, ?middle = 10, @tail] = [1]\n\
-             return (head == 1) and (middle == 10) and (tail[0] == nothing)",
+             return (head == 1) and (middle == 10) and (tail == [])",
             &context,
             &mut task_manager,
         )

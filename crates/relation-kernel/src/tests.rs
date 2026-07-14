@@ -553,6 +553,42 @@ fn transaction_rejects_capability_values_in_tuples() {
 }
 
 #[test]
+fn transaction_accepts_persistable_relation_value_cells() {
+    let kernel = kernel_with_located();
+    let nested = Value::relation(
+        [Symbol::intern("value")],
+        [Tuple::from([Value::string("nested")])],
+    )
+    .unwrap();
+    let tuple = Tuple::from([int(10), nested]);
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(1), tuple.clone()).unwrap();
+    tx.commit().unwrap();
+
+    assert_eq!(
+        kernel.snapshot().scan(rel(1), &[None, None]).unwrap(),
+        vec![tuple]
+    );
+}
+
+#[test]
+fn transaction_rejects_capabilities_nested_in_relation_values() {
+    let kernel = kernel_with_located();
+    let nested = Value::relation([Symbol::intern("value")], [Tuple::from([cap(1)])]).unwrap();
+    let tuple = Tuple::from([int(10), nested]);
+
+    let mut tx = kernel.begin();
+    assert_eq!(
+        tx.assert(rel(1), tuple.clone()).unwrap_err(),
+        KernelError::NonPersistentValue {
+            relation: rel(1),
+            tuple,
+        }
+    );
+}
+
+#[test]
 fn installed_rules_derive_tuples_as_relation_reads() {
     let kernel = RelationKernel::new();
     kernel

@@ -4,15 +4,17 @@
 relation kernel, runtime, compiler, and runner.
 
 The central type is `Value`, a one-word tagged value. Immediate values such as identities, symbols,
-booleans, small integers, reduced-precision floats, error codes, and `nothing` stay inline. Larger
-immutable data such as strings, bytes, lists, and maps live on the heap and are shared with `Arc`.
+booleans, small integers, reduced-precision floats, and error codes stay inline. The zero-column
+empty relation, spelled `nothing` in source, also has an immediate representation. Larger immutable
+data such as strings, bytes, lists, maps, and finite relations live on the heap and are shared with
+`Arc`.
 
 ## What's Here
 
 - `src/value.rs`: `Value`, `ValueKind`, `Identity`, `ErrorValue`, encoding, constructors, accessors,
   display, and ordering.
 - `src/codec.rs`: owned value encoding and decoding for storage and transport records.
-- `src/heap.rs`: immutable heap-backed strings, bytes, lists, and maps.
+- `src/heap.rs`: immutable heap-backed strings, bytes, lists, maps, and relations.
 - `src/symbol.rs`: interned symbol representation and symbol metadata.
 - `src/traits.rs`: common conversion and helper traits.
 - `src/visit.rs`: borrowed `ValueRef` views and depth-first value traversal.

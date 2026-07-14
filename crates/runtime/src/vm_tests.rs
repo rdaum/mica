@@ -1867,6 +1867,37 @@ fn dynamic_builtin_call_expands_argument_splices() {
 }
 
 #[test]
+fn relation_construction_round_trips_through_program_artifacts() {
+    let heading = vec![Symbol::intern("thing"), Symbol::intern("count")];
+    let program = Program::new(
+        1,
+        [
+            Instruction::BuildRelation {
+                dst: reg(0),
+                heading: heading.clone(),
+                cells: vec![v(ident(7)), v(int(2)), v(ident(7)), v(int(2))],
+                row_count: 2,
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    let expected = Value::relation(heading, [Tuple::from([ident(7), int(2)])]).unwrap();
+    assert_eq!(
+        run_program(&kernel_with_world_relations(), restored, 100).unwrap(),
+        TaskOutcome::Complete {
+            value: expected,
+            effects: Vec::new(),
+            mailbox_sends: Vec::new(),
+            retries: 0,
+        }
+    );
+}
+
+#[test]
 fn dynamic_function_value_call_expands_argument_splices() {
     let kernel = kernel_with_world_relations();
     let callee = Arc::new(

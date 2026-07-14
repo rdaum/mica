@@ -19,9 +19,9 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use mica_var::abi::{
-    VALUE_BOOL_TAG, VALUE_CAPABILITY_TAG, VALUE_FLOAT_TAG, VALUE_FUNCTION_TAG, VALUE_INT_MAX,
-    VALUE_INT_MIN, VALUE_INT_TAG, VALUE_LIST_TAG, VALUE_NOTHING_TAG, VALUE_PAYLOAD_MASK,
-    VALUE_RELATION_TAG, VALUE_STRING_TAG, VALUE_TAG_SHIFT,
+    VALUE_BOOL_TAG, VALUE_CAPABILITY_TAG, VALUE_EMPTY_RELATION_TAG, VALUE_FLOAT_TAG,
+    VALUE_FUNCTION_TAG, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG, VALUE_LIST_TAG,
+    VALUE_PAYLOAD_MASK, VALUE_RELATION_TAG, VALUE_STRING_TAG, VALUE_TAG_SHIFT,
 };
 
 /// A generated operation result and a predicate indicating whether it completed
@@ -840,9 +840,31 @@ impl ValueEmitter {
         let not_mixed_numeric = builder.ins().icmp_imm(IntCC::Equal, mixed_numeric, 0);
         let is_fast = builder.ins().band(is_fast, not_mixed_numeric);
 
-        let scalar_result = builder
+        let left_tag = Self::emit_tag(builder, left);
+        let right_tag = Self::emit_tag(builder, right);
+        let left_is_empty_relation =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, left_tag, i64::from(VALUE_EMPTY_RELATION_TAG));
+        let right_is_empty_relation =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, right_tag, i64::from(VALUE_EMPTY_RELATION_TAG));
+        let relation_order_word = builder
             .ins()
-            .icmp(comparison.unsigned_condition_code(), left, right);
+            .iconst(types::I64, i64::from(VALUE_RELATION_TAG) << VALUE_TAG_SHIFT);
+        let scalar_left = builder
+            .ins()
+            .select(left_is_empty_relation, relation_order_word, left);
+        let scalar_right =
+            builder
+                .ins()
+                .select(right_is_empty_relation, relation_order_word, right);
+        let scalar_result = builder.ins().icmp(
+            comparison.unsigned_condition_code(),
+            scalar_left,
+            scalar_right,
+        );
         let left_int = Self::emit_unbox_int(builder, left);
         let right_int = Self::emit_unbox_int(builder, right);
         let int_result =
@@ -867,9 +889,10 @@ impl ValueEmitter {
     pub fn emit_truthy(builder: &mut FunctionBuilder<'_>, word: CraneliftValue) -> EmittedValue {
         let tag = Self::emit_tag(builder, word);
         let payload = Self::emit_payload(builder, word);
-        let is_nothing = builder
-            .ins()
-            .icmp_imm(IntCC::Equal, tag, i64::from(VALUE_NOTHING_TAG));
+        let is_empty_relation =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, tag, i64::from(VALUE_EMPTY_RELATION_TAG));
         let is_bool = builder
             .ins()
             .icmp_imm(IntCC::Equal, tag, i64::from(VALUE_BOOL_TAG));
@@ -883,7 +906,7 @@ impl ValueEmitter {
         let truth = builder.ins().iconst(types::I8, 1);
         let false_value = builder.ins().iconst(types::I8, 0);
         let truth = builder.ins().select(is_bool, bool_payload, truth);
-        let truth = builder.ins().select(is_nothing, false_value, truth);
+        let truth = builder.ins().select(is_empty_relation, false_value, truth);
         let is_collection = builder.ins().bor(is_list, is_relation);
         let is_fast = builder.ins().icmp_imm(IntCC::Equal, is_collection, 0);
 
@@ -915,7 +938,7 @@ mod tests {
     use cranelift_jit::{JITBuilder, JITModule};
     use cranelift_module::{Linkage, Module, default_libcall_names};
     use mica_var::abi::{
-        VALUE_INT_MAX, VALUE_INT_MIN, VALUE_NOTHING_TAG, borrowed_value_bits,
+        VALUE_EMPTY_RELATION_TAG, VALUE_INT_MAX, VALUE_INT_MIN, borrowed_value_bits,
         from_owned_value_bits, pack_value,
     };
     use mica_var::{Symbol, Value, ValueKind};
@@ -1001,7 +1024,7 @@ mod tests {
         }
 
         fn run(&self, left: &Value, right: &Value) -> Option<Value> {
-            let mut output = pack_value(VALUE_NOTHING_TAG, 0);
+            let mut output = pack_value(VALUE_EMPTY_RELATION_TAG, 0);
             let status = unsafe {
                 (self.function)(
                     borrowed_value_bits(left),
@@ -1415,7 +1438,10 @@ mod tests {
         }
         assert_eq!(probe.run(&Value::list([]), &Value::nothing()), None,);
         assert_eq!(
-            probe.run(&Value::relation([], []).unwrap(), &Value::nothing()),
+            probe.run(
+                &Value::relation([Symbol::intern("value")], []).unwrap(),
+                &Value::nothing(),
+            ),
             None,
         );
     }
@@ -1439,7 +1465,10 @@ mod tests {
         }
         assert_eq!(probe.run(&Value::list([]), &Value::nothing()), None);
         assert_eq!(
-            probe.run(&Value::relation([], []).unwrap(), &Value::nothing()),
+            probe.run(
+                &Value::relation([Symbol::intern("value")], []).unwrap(),
+                &Value::nothing(),
+            ),
             None,
         );
     }

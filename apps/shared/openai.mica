@@ -24,7 +24,7 @@ verb openai/chat_with_options(model @ #string, messages, options @ #map)
 end
 
 verb openai/assistant_text(response @ #map)
-  let choices = response[:choices]
+  let choices = index_or(response, :choices, nothing)
   if choices == nothing || choices == []
     return nothing
   end
@@ -34,12 +34,12 @@ verb openai/assistant_text(response @ #map)
     return nothing
   end
 
-  let message = first[:message]
+  let message = index_or(first, :message, nothing)
   if message == nothing
     return nothing
   end
 
-  return message[:content]
+  return index_or(message, :content, nothing)
 end
 
 verb openai/assistant_text(response)
@@ -47,7 +47,7 @@ verb openai/assistant_text(response)
 end
 
 verb openai/assistant_reasoning(response @ #map)
-  let choices = response[:choices]
+  let choices = index_or(response, :choices, nothing)
   if choices == nothing || choices == []
     return nothing
   end
@@ -57,22 +57,22 @@ verb openai/assistant_reasoning(response @ #map)
     return nothing
   end
 
-  let message = first[:message]
+  let message = index_or(first, :message, nothing)
   if message == nothing
     return nothing
   end
 
-  let reasoning = message[:reasoning]
+  let reasoning = index_or(message, :reasoning, nothing)
   if reasoning != nothing && reasoning != ""
     return reasoning
   end
 
-  reasoning = message[:reasoning_content]
+  reasoning = index_or(message, :reasoning_content, nothing)
   if reasoning != nothing && reasoning != ""
     return reasoning
   end
 
-  let reasoning_details = message[:reasoning_details]
+  let reasoning_details = index_or(message, :reasoning_details, nothing)
   if reasoning_details != nothing && reasoning_details != []
     return to_literal(reasoning_details)
   end

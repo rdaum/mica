@@ -242,6 +242,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::RequireKw => self.parse_effect_expr(SyntaxKind::RequireExpr),
             SyntaxKind::Bang | SyntaxKind::NotKw | SyntaxKind::Minus => self.parse_unary_expr(),
             SyntaxKind::LParen => self.parse_group_expr(),
+            SyntaxKind::LBracket if self.looks_like_relation_expr() => self.parse_relation_expr(),
             SyntaxKind::LBracket => self.parse_list_expr(),
             SyntaxKind::LBrace if self.looks_like_brace_lambda() => self.parse_brace_lambda_expr(),
             SyntaxKind::LBrace => self.parse_map_expr(),
@@ -542,6 +543,49 @@ impl<'a> Parser<'a> {
         self.parse_delimited_items(SyntaxKind::RBracket, SyntaxKind::ListItem, &mut children);
         children.push(self.expect_token(SyntaxKind::RBracket, "expected ']'"));
         CstNode::new(SyntaxKind::ListExpr, children)
+    }
+
+    fn parse_relation_expr(&mut self) -> CstNode {
+        let mut children = vec![CstElement::Node(self.parse_relation_heading())];
+        self.consume_separators();
+        children.push(self.expect_token(SyntaxKind::LBrace, "expected '{' after relation heading"));
+        self.consume_separators();
+        while !matches!(self.current_kind(), SyntaxKind::RBrace | SyntaxKind::Eof) {
+            children.push(CstElement::Node(self.parse_relation_row()));
+            self.consume_separators();
+            if self.current_kind() != SyntaxKind::Comma {
+                break;
+            }
+            children.push(self.bump_element());
+            self.consume_separators();
+        }
+        children.push(self.expect_token(SyntaxKind::RBrace, "expected '}' after relation rows"));
+        CstNode::new(SyntaxKind::RelationExpr, children)
+    }
+
+    fn parse_relation_heading(&mut self) -> CstNode {
+        let mut children = vec![self.expect_token(SyntaxKind::LBracket, "expected '['")];
+        self.consume_separators();
+        while !matches!(self.current_kind(), SyntaxKind::RBracket | SyntaxKind::Eof) {
+            children.push(CstElement::Node(self.parse_symbol_or_role_call()));
+            self.consume_separators();
+            if self.current_kind() != SyntaxKind::Comma {
+                break;
+            }
+            children.push(self.bump_element());
+            self.consume_separators();
+        }
+        children
+            .push(self.expect_token(SyntaxKind::RBracket, "expected ']' after relation heading"));
+        CstNode::new(SyntaxKind::RelationHeading, children)
+    }
+
+    fn parse_relation_row(&mut self) -> CstNode {
+        let mut children =
+            vec![self.expect_token(SyntaxKind::LBracket, "expected '[' to start relation row")];
+        self.parse_delimited_items(SyntaxKind::RBracket, SyntaxKind::ListItem, &mut children);
+        children.push(self.expect_token(SyntaxKind::RBracket, "expected ']' after relation row"));
+        CstNode::new(SyntaxKind::RelationRow, children)
     }
 
     fn parse_map_expr(&mut self) -> CstNode {
@@ -1028,6 +1072,52 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn looks_like_relation_expr(&self) -> bool {
+        let mut index = self.pos;
+        let next = |index: &mut usize| {
+            while self
+                .tokens
+                .get(*index)
+                .is_some_and(|token| token.kind.is_trivia())
+            {
+                *index += 1;
+            }
+            let token = self
+                .tokens
+                .get(*index)
+                .or_else(|| self.tokens.last())
+                .expect("lexer always emits EOF");
+            *index += usize::from(token.kind != SyntaxKind::Eof);
+            token.kind
+        };
+
+        if next(&mut index) != SyntaxKind::LBracket {
+            return false;
+        }
+        let mut kind = next(&mut index);
+        if kind == SyntaxKind::RBracket {
+            return next(&mut index) == SyntaxKind::LBrace;
+        }
+        loop {
+            if kind != SyntaxKind::Colon || next(&mut index) != SyntaxKind::Ident {
+                return false;
+            }
+            kind = next(&mut index);
+            while kind == SyntaxKind::Slash {
+                if next(&mut index) != SyntaxKind::Ident {
+                    return false;
+                }
+                kind = next(&mut index);
+            }
+            match kind {
+                SyntaxKind::Comma => kind = next(&mut index),
+                SyntaxKind::RBracket => break,
+                _ => return false,
+            }
+        }
+        next(&mut index) == SyntaxKind::LBrace
+    }
+
     fn consume_separators(&mut self) {
         while matches!(self.current_kind(), SyntaxKind::Semi | SyntaxKind::Newline) {
             self.pos += 1;
@@ -1286,6 +1376,19 @@ mod tests {
         assert!(contains(&parse.root, SyntaxKind::ListExpr));
         assert!(contains(&parse.root, SyntaxKind::MapExpr));
         assert!(contains(&parse.root, SyntaxKind::MapEntry));
+    }
+
+    #[test]
+    fn parses_relation_literals_without_reserving_a_keyword() {
+        let parsed = parse("return [:thing, :player] {\n  [#coin, #alice],\n  [#lamp, #bob],\n}");
+        assert_eq!(parsed.errors, vec![]);
+        assert!(contains(&parsed.root, SyntaxKind::RelationExpr));
+        assert!(contains(&parsed.root, SyntaxKind::RelationHeading));
+        assert!(contains(&parsed.root, SyntaxKind::RelationRow));
+
+        let zero_arity = parse("return [] {[]}");
+        assert_eq!(zero_arity.errors, vec![]);
+        assert!(contains(&zero_arity.root, SyntaxKind::RelationExpr));
     }
 
     #[test]
