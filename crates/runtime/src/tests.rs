@@ -1459,7 +1459,7 @@ fn shared_runner_executes_invocations_from_multiple_threads() {
 }
 
 #[test]
-fn shared_runner_reads_endpoint_transient_state_from_multiple_threads() {
+fn shared_runner_reads_endpoint_state_from_multiple_threads() {
     let mut runner = SourceRunner::new_empty();
     runner.run_source("make_identity(:alice)").unwrap();
     let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
@@ -3126,14 +3126,41 @@ fn runner_derived_relations_can_read_transient_facts() {
 }
 
 #[test]
-fn runner_endpoint_facts_are_transient_and_endpoint_scoped() {
+fn runner_endpoint_facts_are_volatile_and_relation_wide() {
     let mut runner = SourceRunner::new_empty();
     runner.run_source("make_identity(:alice)").unwrap();
     let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
     let endpoint = Identity::new(0x00ee_0000_0000_0010).unwrap();
+    let version_before_open = runner.task_manager.kernel().snapshot().version();
     runner
         .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
         .unwrap();
+    let snapshot = runner.task_manager.kernel().snapshot();
+    for name in [
+        "Endpoint",
+        "EndpointPrincipal",
+        "EndpointActor",
+        "EndpointProtocol",
+        "EndpointOpen",
+    ] {
+        let metadata = snapshot
+            .relation_metadata()
+            .find(|metadata| metadata.name().name() == Some(name))
+            .unwrap();
+        assert_eq!(metadata.durability(), RelationDurability::Volatile);
+    }
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version_before_open + 1
+    );
+    let duplicate = runner
+        .open_endpoint(endpoint, Some(alice), Symbol::intern("telnet"))
+        .unwrap_err();
+    assert!(format!("{duplicate:?}").contains("endpoint is already open"));
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version_before_open + 1
+    );
 
     let visible = runner
         .submit_source(TaskRequest {
@@ -3155,10 +3182,15 @@ fn runner_endpoint_facts_are_transient_and_endpoint_scoped() {
         .unwrap();
     assert!(matches!(
         root.outcome,
-        TaskOutcome::Complete { value, .. } if value == query_relation(["endpoint"], [])
+        TaskOutcome::Complete { value, .. }
+            if value == query_relation(["endpoint"], [[Value::identity(endpoint)]])
     ));
 
     assert_eq!(runner.close_endpoint(endpoint), 4);
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version_before_open + 2
+    );
     let closed = runner
         .submit_source(TaskRequest {
             principal: None,
@@ -3266,6 +3298,53 @@ fn runner_assume_actor_requires_principal_specific_policy() {
     assert!(matches!(
         actor.outcome,
         TaskOutcome::Complete { value, .. } if value == Value::identity(bob)
+    ));
+}
+
+#[test]
+fn runner_assume_actor_rolls_back_with_aborted_task() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:account)").unwrap();
+    runner.run_source("make_identity(:alice)").unwrap();
+    runner.run_source("make_identity(:bob)").unwrap();
+    runner
+        .run_source(
+            "make_relation(:session/CanAssumeActor, 2)\n\
+             assert session/CanAssumeActor(#account, #bob)",
+        )
+        .unwrap();
+    let account = runner.actor_identity(Symbol::intern("account")).unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let endpoint = Identity::new(0x00ee_0000_0000_0014).unwrap();
+    runner
+        .open_endpoint_with_context(
+            endpoint,
+            Some(account),
+            Some(alice),
+            Symbol::intern("telnet"),
+        )
+        .unwrap();
+
+    let request = runner
+        .source_request_for_endpoint(
+            endpoint,
+            "assume_actor(#bob)\nraise E_INVARG, \"roll back actor\"",
+        )
+        .unwrap();
+    let aborted = runner.submit_source(request).unwrap();
+    assert!(matches!(
+        aborted.outcome,
+        TaskOutcome::Aborted { error, .. }
+            if error.error_code_symbol() == Some(Symbol::intern("E_INVARG"))
+    ));
+
+    let actor_request = runner
+        .source_request_for_endpoint(endpoint, "return actor()")
+        .unwrap();
+    let actor = runner.submit_source(actor_request).unwrap();
+    assert!(matches!(
+        actor.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::identity(alice)
     ));
 }
 
@@ -4533,6 +4612,17 @@ fn runner_fjall_store_reopens_state() {
         runner
             .run_source("assert Name(#lamp, \"brass lamp\")")
             .unwrap();
+        let lamp = runner.actor_identity(Symbol::intern("lamp")).unwrap();
+        let endpoint = Identity::new(0x00ee_0000_0000_0030).unwrap();
+        runner
+            .open_endpoint(endpoint, Some(lamp), Symbol::intern("test"))
+            .unwrap();
+        let endpoints = runner.run_source("return EndpointOpen(?endpoint)").unwrap();
+        assert!(matches!(
+            endpoints.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == query_relation(["endpoint"], [[Value::identity(endpoint)]])
+        ));
     }
 
     {
@@ -4541,6 +4631,12 @@ fn runner_fjall_store_reopens_state() {
                 .unwrap();
         let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
         assert!(query.render().contains("[:name] {[\"brass lamp\"]}"));
+        let endpoints = runner.run_source("return EndpointOpen(?endpoint)").unwrap();
+        assert!(matches!(
+            endpoints.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == query_relation(["endpoint"], [])
+        ));
     }
 
     let _ = std::fs::remove_dir_all(&path);

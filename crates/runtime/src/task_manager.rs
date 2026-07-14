@@ -14,11 +14,11 @@
 use crate::{
     Task, TaskError, TaskId, TaskLimits, TaskOutcome, endpoint_actor_relation,
     endpoint_open_relation, endpoint_principal_relation, endpoint_protocol_relation,
-    endpoint_relation, endpoint_relation_metadata,
+    endpoint_relation,
 };
 use mica_relation_kernel::{
-    ExecutionContext, KernelError, RelationId, RelationKernel, RelationMetadata, TransientStore,
-    Tuple,
+    ExecutionContext, KernelError, RelationId, RelationKernel, RelationMetadata, RelationRead,
+    Transaction, TransientStore, Tuple,
 };
 use mica_var::{CapabilityId, Identity, Symbol, Value};
 use mica_vm::{
@@ -418,32 +418,11 @@ impl TaskManager {
         actor: Option<Identity>,
         protocol: Symbol,
     ) -> Result<(), TaskManagerError> {
-        self.assert_endpoint_fact(
-            endpoint,
-            endpoint_relation(),
-            Tuple::from([Value::identity(endpoint)]),
-        )?;
-        if let Some(principal) = principal {
-            self.replace_endpoint_binding(endpoint, endpoint_principal_relation(), principal)?;
-        }
-        if let Some(actor) = actor {
-            self.replace_endpoint_binding(endpoint, endpoint_actor_relation(), actor)?;
-        }
-        self.assert_endpoint_fact(
-            endpoint,
-            endpoint_protocol_relation(),
-            Tuple::from([Value::identity(endpoint), Value::symbol(protocol)]),
-        )?;
-        self.assert_endpoint_fact(
-            endpoint,
-            endpoint_open_relation(),
-            Tuple::from([Value::identity(endpoint)]),
-        )?;
+        open_endpoint_in(&self.kernel, endpoint, principal, actor, protocol)?;
         crate::metrics::metrics()
             .endpoint_operations
             .inc(crate::metrics::EndpointOperation::Open);
         crate::metrics::endpoint_opened();
-        record_transient_metrics(&self.transient);
         Ok(())
     }
 
@@ -451,8 +430,10 @@ impl TaskManager {
         &self,
         endpoint: Identity,
     ) -> Result<RuntimeContext, TaskManagerError> {
-        let principal = self.endpoint_binding(endpoint, endpoint_principal_relation())?;
-        let actor = self.endpoint_binding(endpoint, endpoint_actor_relation())?;
+        let snapshot = self.kernel.snapshot();
+        let principal =
+            endpoint_binding_in(snapshot.as_ref(), endpoint, endpoint_principal_relation())?;
+        let actor = endpoint_binding_in(snapshot.as_ref(), endpoint, endpoint_actor_relation())?;
         Ok(RuntimeContext::new(principal, actor, endpoint))
     }
 
@@ -460,12 +441,15 @@ impl TaskManager {
         crate::metrics::metrics()
             .endpoint_operations
             .inc(crate::metrics::EndpointOperation::Close);
-        let removed = self.transient.drop_scope(endpoint);
-        if removed > 0 {
+        let endpoint_rows = close_endpoint_in(&self.kernel, endpoint);
+        let transient_rows = self.transient.drop_scope(endpoint);
+        if transient_rows > 0 {
+            record_transient_metrics(&self.transient);
+        }
+        if endpoint_rows > 0 {
             crate::metrics::endpoint_closed();
         }
-        record_transient_metrics(&self.transient);
-        removed
+        endpoint_rows + transient_rows
     }
 
     pub fn assert_transient(
@@ -803,34 +787,9 @@ impl TaskManager {
             .set(self.completed.len() as i64);
     }
 
-    fn assert_endpoint_fact(
-        &mut self,
-        scope: Identity,
-        relation: RelationId,
-        tuple: Tuple,
-    ) -> Result<(), TaskManagerError> {
-        assert_endpoint_fact_in(&mut self.transient, scope, relation, tuple)
-    }
-
-    fn replace_endpoint_binding(
-        &mut self,
-        endpoint: Identity,
-        relation: RelationId,
-        identity: Identity,
-    ) -> Result<(), TaskManagerError> {
-        replace_endpoint_binding_in(&mut self.transient, endpoint, relation, identity)
-    }
-
-    fn endpoint_binding(
-        &self,
-        endpoint: Identity,
-        relation: RelationId,
-    ) -> Result<Option<Identity>, TaskManagerError> {
-        endpoint_binding_in(&self.transient, endpoint, relation)
-    }
-
     fn route_effect_targets_result(&self, target: Identity) -> Result<Vec<Identity>, KernelError> {
-        route_effect_targets_in(&self.transient, target)
+        let snapshot = self.kernel.snapshot();
+        route_effect_targets_in(snapshot.as_ref(), target)
     }
 }
 
@@ -998,46 +957,11 @@ impl SharedTaskManager {
         actor: Option<Identity>,
         protocol: Symbol,
     ) -> Result<(), TaskManagerError> {
-        let mut transient = self.transient.write().unwrap();
-        assert_endpoint_fact_in(
-            &mut transient,
-            endpoint,
-            endpoint_relation(),
-            Tuple::from([Value::identity(endpoint)]),
-        )?;
-        if let Some(principal) = principal {
-            replace_endpoint_binding_in(
-                &mut transient,
-                endpoint,
-                endpoint_principal_relation(),
-                principal,
-            )?;
-        }
-        if let Some(actor) = actor {
-            replace_endpoint_binding_in(
-                &mut transient,
-                endpoint,
-                endpoint_actor_relation(),
-                actor,
-            )?;
-        }
-        assert_endpoint_fact_in(
-            &mut transient,
-            endpoint,
-            endpoint_protocol_relation(),
-            Tuple::from([Value::identity(endpoint), Value::symbol(protocol)]),
-        )?;
-        assert_endpoint_fact_in(
-            &mut transient,
-            endpoint,
-            endpoint_open_relation(),
-            Tuple::from([Value::identity(endpoint)]),
-        )?;
+        open_endpoint_in(&self.kernel, endpoint, principal, actor, protocol)?;
         crate::metrics::metrics()
             .endpoint_operations
             .inc(crate::metrics::EndpointOperation::Open);
         crate::metrics::endpoint_opened();
-        record_transient_metrics(&transient);
         Ok(())
     }
 
@@ -1045,9 +969,10 @@ impl SharedTaskManager {
         &self,
         endpoint: Identity,
     ) -> Result<RuntimeContext, TaskManagerError> {
-        let transient = self.transient.read().unwrap();
-        let principal = endpoint_binding_in(&transient, endpoint, endpoint_principal_relation())?;
-        let actor = endpoint_binding_in(&transient, endpoint, endpoint_actor_relation())?;
+        let snapshot = self.kernel.snapshot();
+        let principal =
+            endpoint_binding_in(snapshot.as_ref(), endpoint, endpoint_principal_relation())?;
+        let actor = endpoint_binding_in(snapshot.as_ref(), endpoint, endpoint_actor_relation())?;
         Ok(RuntimeContext::new(principal, actor, endpoint))
     }
 
@@ -1055,13 +980,19 @@ impl SharedTaskManager {
         crate::metrics::metrics()
             .endpoint_operations
             .inc(crate::metrics::EndpointOperation::Close);
-        let mut transient = self.transient.write().unwrap();
-        let removed = transient.drop_scope(endpoint);
-        if removed > 0 {
+        let endpoint_rows = close_endpoint_in(&self.kernel, endpoint);
+        let transient_rows = {
+            let mut transient = self.transient.write().unwrap();
+            let removed = transient.drop_scope(endpoint);
+            if removed > 0 {
+                record_transient_metrics(&transient);
+            }
+            removed
+        };
+        if endpoint_rows > 0 {
             crate::metrics::endpoint_closed();
         }
-        record_transient_metrics(&transient);
-        removed
+        endpoint_rows + transient_rows
     }
 
     pub fn assert_transient(
@@ -1234,15 +1165,9 @@ impl SharedTaskManager {
     }
 
     fn route_effect_targets_result(&self, target: Identity) -> Result<Vec<Identity>, KernelError> {
-        let transient = self.transient.read().unwrap();
-        route_effect_targets_in(&transient, target)
+        let snapshot = self.kernel.snapshot();
+        route_effect_targets_in(snapshot.as_ref(), target)
     }
-}
-
-fn endpoint_metadata(relation: RelationId) -> Option<RelationMetadata> {
-    endpoint_relation_metadata()
-        .into_iter()
-        .find(|metadata| metadata.id() == relation)
 }
 
 fn suspended_state(outcome: &TaskOutcome, task: &Task<'_>) -> Option<crate::task::TaskState> {
@@ -1262,55 +1187,109 @@ fn record_transient_metrics(transient: &TransientStore) {
         .set(transient.len() as i64);
 }
 
-fn assert_endpoint_fact_in(
-    transient: &mut TransientStore,
-    scope: Identity,
-    relation: RelationId,
-    tuple: Tuple,
+fn open_endpoint_in(
+    kernel: &RelationKernel,
+    endpoint: Identity,
+    principal: Option<Identity>,
+    actor: Option<Identity>,
+    protocol: Symbol,
 ) -> Result<(), TaskManagerError> {
-    let metadata = endpoint_metadata(relation).ok_or_else(|| {
-        TaskManagerError::Task(TaskError::Runtime(mica_vm::RuntimeError::Kernel(
-            KernelError::UnknownRelation(relation),
-        )))
-    })?;
-    transient
-        .assert(scope, metadata, tuple)
-        .map(|_| ())
-        .map_err(TaskError::from)
-        .map_err(TaskManagerError::from)
+    let mut transaction = kernel.begin();
+    if !transaction
+        .scan(endpoint_open_relation(), &[Some(Value::identity(endpoint))])?
+        .is_empty()
+    {
+        return Err(TaskManagerError::Task(TaskError::Runtime(
+            RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("open_endpoint"),
+                message: "endpoint is already open".to_owned(),
+            },
+        )));
+    }
+    transaction.assert(
+        endpoint_relation(),
+        Tuple::from([Value::identity(endpoint)]),
+    )?;
+    if let Some(principal) = principal {
+        transaction.assert(
+            endpoint_principal_relation(),
+            Tuple::from([Value::identity(endpoint), Value::identity(principal)]),
+        )?;
+    }
+    if let Some(actor) = actor {
+        transaction.assert(
+            endpoint_actor_relation(),
+            Tuple::from([Value::identity(endpoint), Value::identity(actor)]),
+        )?;
+    }
+    transaction.assert(
+        endpoint_protocol_relation(),
+        Tuple::from([Value::identity(endpoint), Value::symbol(protocol)]),
+    )?;
+    transaction.assert(
+        endpoint_open_relation(),
+        Tuple::from([Value::identity(endpoint)]),
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
-fn replace_endpoint_binding_in(
-    transient: &mut TransientStore,
-    endpoint: Identity,
-    relation: RelationId,
-    identity: Identity,
-) -> Result<(), TaskManagerError> {
-    for row in transient.scan(
-        &[endpoint],
-        relation,
-        &[Some(Value::identity(endpoint)), None],
-    )? {
-        transient.retract(endpoint, relation, &row);
+fn close_endpoint_in(kernel: &RelationKernel, endpoint: Identity) -> usize {
+    loop {
+        let mut transaction = kernel.begin();
+        let removed = retract_endpoint_rows(&mut transaction, endpoint)
+            .expect("runtime endpoint relations must remain readable");
+        if removed == 0 {
+            return 0;
+        }
+        match transaction.commit() {
+            Ok(_) => return removed,
+            Err(KernelError::Conflict(_)) => continue,
+            Err(error) => panic!("endpoint close transaction failed: {error:?}"),
+        }
     }
-    assert_endpoint_fact_in(
-        transient,
-        endpoint,
-        relation,
-        Tuple::from([Value::identity(endpoint), Value::identity(identity)]),
-    )
+}
+
+fn retract_endpoint_rows(
+    transaction: &mut Transaction<'_>,
+    endpoint: Identity,
+) -> Result<usize, KernelError> {
+    let endpoint = Value::identity(endpoint);
+    if transaction
+        .scan(endpoint_open_relation(), &[Some(endpoint.clone())])?
+        .is_empty()
+    {
+        return Ok(0);
+    }
+    let mut rows = vec![
+        (endpoint_relation(), Tuple::from([endpoint.clone()])),
+        (endpoint_open_relation(), Tuple::from([endpoint.clone()])),
+    ];
+    for relation in [
+        endpoint_principal_relation(),
+        endpoint_actor_relation(),
+        endpoint_protocol_relation(),
+    ] {
+        rows.extend(
+            transaction
+                .scan(relation, &[Some(endpoint.clone()), None])?
+                .into_iter()
+                .map(|tuple| (relation, tuple)),
+        );
+    }
+    let removed = rows.len();
+    for (relation, tuple) in rows {
+        transaction.retract(relation, tuple)?;
+    }
+    Ok(removed)
 }
 
 fn endpoint_binding_in(
-    transient: &TransientStore,
+    relations: &impl RelationRead,
     endpoint: Identity,
     relation: RelationId,
 ) -> Result<Option<Identity>, TaskManagerError> {
-    let rows = transient.scan(
-        &[endpoint],
-        relation,
-        &[Some(Value::identity(endpoint)), None],
-    )?;
+    let rows = relations.scan_relation(relation, &[Some(Value::identity(endpoint)), None])?;
     let mut bindings = rows
         .iter()
         .filter_map(|row| row.values().get(1).and_then(Value::as_identity))
@@ -1330,24 +1309,22 @@ fn endpoint_binding_in(
 }
 
 fn route_effect_targets_in(
-    transient: &TransientStore,
+    relations: &impl RelationRead,
     target: Identity,
 ) -> Result<Vec<Identity>, KernelError> {
-    let scopes = transient.scopes().collect::<Vec<_>>();
     let mut endpoints = BTreeSet::new();
-    for row in transient.scan(
-        &scopes,
+    for row in relations.scan_relation(
         endpoint_actor_relation(),
         &[None, Some(Value::identity(target))],
     )? {
         let Some(endpoint) = row.values().first().and_then(Value::as_identity) else {
             continue;
         };
-        if endpoint_is_open_in(transient, endpoint)? {
+        if endpoint_is_open_in(relations, endpoint)? {
             endpoints.insert(endpoint);
         }
     }
-    if endpoint_is_open_in(transient, target)? {
+    if endpoint_is_open_in(relations, target)? {
         endpoints.insert(target);
     }
     if endpoints.is_empty() {
@@ -1358,15 +1335,11 @@ fn route_effect_targets_in(
 }
 
 fn endpoint_is_open_in(
-    transient: &TransientStore,
+    relations: &impl RelationRead,
     endpoint: Identity,
 ) -> Result<bool, KernelError> {
-    Ok(!transient
-        .scan(
-            &[endpoint],
-            endpoint_open_relation(),
-            &[Some(Value::identity(endpoint))],
-        )?
+    Ok(!relations
+        .scan_relation(endpoint_open_relation(), &[Some(Value::identity(endpoint))])?
         .is_empty())
 }
 
