@@ -19,9 +19,18 @@ mica-vm-cranelift = { workspace = true, optional = true }
 tracing.workspace = true
 
 [dev-dependencies]
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-jit.workspace = true
+cranelift-module.workspace = true
 micromeasure.workspace = true
 
 [[bench]]
 name = "vm_benches"
+harness = false
+required-features = ["cranelift"]
+
+[[bench]]
+name = "string_compare_spike"
 harness = false
 required-features = ["cranelift"]

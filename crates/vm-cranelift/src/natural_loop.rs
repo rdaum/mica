@@ -24,7 +24,7 @@ use cranelift_module::{Linkage, Module, default_libcall_names};
 use mica_var::Value;
 use mica_var::abi::{
     VALUE_ABI_VERSION, VALUE_FLOAT_TAG, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG,
-    value_is_immediate,
+    borrowed_value_numeric_eq, value_is_immediate,
 };
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -36,6 +36,11 @@ use std::sync::Mutex;
 const STATUS_COMPLETE: u32 = 0;
 const STATUS_BUDGET_EXHAUSTED: u32 = 1;
 const STATUS_SIDE_EXIT: u32 = 2;
+const NUMERIC_EQUAL_HELPER: &str = "mica_borrowed_value_numeric_equal";
+
+unsafe extern "C" fn borrowed_value_numeric_equal(left: u64, right: u64) -> u64 {
+    u64::from(unsafe { borrowed_value_numeric_eq(left, right) })
+}
 
 type NaturalLoopFunction = unsafe extern "C" fn(
     *mut u64,
@@ -321,6 +326,18 @@ impl NaturalLoopPlan {
     pub const fn slot_count(&self) -> u16 {
         self.slot_count
     }
+
+    fn requires_numeric_equal_helper(&self) -> bool {
+        self.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                NaturalLoopInstruction::Compare {
+                    comparison: ScalarComparison::Equal | ScalarComparison::NotEqual,
+                    ..
+                }
+            )
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -364,11 +381,17 @@ pub struct CompiledNaturalLoop {
 
 impl CompiledNaturalLoop {
     pub fn compile(plan: &NaturalLoopPlan) -> Result<Self, NaturalLoopError> {
-        let builder = JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names())
-            .map_err(|error| {
-                NaturalLoopError(format!("could not initialize Cranelift: {error}"))
-            })?;
-        let mut module = JITModule::new(builder);
+        let mut jit_builder =
+            JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names()).map_err(
+                |error| NaturalLoopError(format!("could not initialize Cranelift: {error}")),
+            )?;
+        if plan.requires_numeric_equal_helper() {
+            jit_builder.symbol(
+                NUMERIC_EQUAL_HELPER,
+                borrowed_value_numeric_equal as *const u8,
+            );
+        }
+        let mut module = JITModule::new(jit_builder);
         let pointer_type = module.target_config().pointer_type();
         let mut signature = Signature::new(module.isa().default_call_conv());
         signature.params.push(AbiParam::new(pointer_type));
@@ -384,10 +407,34 @@ impl CompiledNaturalLoop {
             .map_err(|error| {
                 NaturalLoopError(format!("could not declare natural loop: {error}"))
             })?;
+        let numeric_equal_helper = if plan.requires_numeric_equal_helper() {
+            let mut helper_signature = Signature::new(module.isa().default_call_conv());
+            helper_signature.params.push(AbiParam::new(types::I64));
+            helper_signature.params.push(AbiParam::new(types::I64));
+            helper_signature.returns.push(AbiParam::new(types::I64));
+            Some(
+                module
+                    .declare_function(NUMERIC_EQUAL_HELPER, Linkage::Import, &helper_signature)
+                    .map_err(|error| {
+                        NaturalLoopError(format!(
+                            "could not declare numeric equality helper: {error}"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
         let mut context = Context::new();
         context.func.signature = signature;
+        let numeric_equal_helper = numeric_equal_helper
+            .map(|helper| module.declare_func_in_func(helper, &mut context.func));
         let mut builder_context = FunctionBuilderContext::new();
-        Self::build_function(plan, &mut context, &mut builder_context);
+        Self::build_function(
+            plan,
+            &mut context,
+            &mut builder_context,
+            numeric_equal_helper,
+        );
         let imported_helper_count = context.func.dfg.ext_funcs.len();
         module
             .define_function(function_id, &mut context)
@@ -418,6 +465,7 @@ impl CompiledNaturalLoop {
         plan: &NaturalLoopPlan,
         context: &mut Context,
         builder_context: &mut FunctionBuilderContext,
+        numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
     ) {
         let mut builder = FunctionBuilder::new(&mut context.func, builder_context);
         let entry = builder.create_block();
@@ -548,6 +596,7 @@ impl CompiledNaturalLoop {
                         scratch,
                         collection_views,
                         instruction,
+                        numeric_equal_helper,
                     );
                     let slot_bit = 1_u32 << dst;
                     let slot_bit = builder.ins().iconst(types::I32, i64::from(slot_bit));
@@ -624,6 +673,7 @@ impl CompiledNaturalLoop {
         scratch: cranelift_codegen::ir::Value,
         collection_views: cranelift_codegen::ir::Value,
         instruction: NaturalLoopInstruction,
+        numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
     ) -> (cranelift_codegen::ir::Value, u16) {
         match instruction {
             NaturalLoopInstruction::Load { dst, value } => {
@@ -693,6 +743,14 @@ impl CompiledNaturalLoop {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
                 let result = ValueEmitter::emit_scalar_compare(builder, left, right, comparison);
+                let result = Self::emit_numeric_equal_fallback(
+                    builder,
+                    left,
+                    right,
+                    comparison,
+                    result,
+                    numeric_equal_helper,
+                );
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }
@@ -793,6 +851,49 @@ impl CompiledNaturalLoop {
                 unreachable!("control-flow instructions are emitted by build_function")
             }
         }
+    }
+
+    fn emit_numeric_equal_fallback(
+        builder: &mut FunctionBuilder<'_>,
+        left: cranelift_codegen::ir::Value,
+        right: cranelift_codegen::ir::Value,
+        comparison: ScalarComparison,
+        immediate: crate::EmittedValue,
+        numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
+    ) -> crate::EmittedValue {
+        if !matches!(
+            comparison,
+            ScalarComparison::Equal | ScalarComparison::NotEqual
+        ) {
+            return immediate;
+        }
+
+        let helper = numeric_equal_helper.expect("equality plans import their helper");
+        let call_helper = builder.create_block();
+        let done = builder.create_block();
+        builder.append_block_param(done, types::I64);
+        builder.ins().brif(
+            immediate.is_fast(),
+            done,
+            &[immediate.word().into()],
+            call_helper,
+            &[],
+        );
+
+        builder.switch_to_block(call_helper);
+        let call = builder.ins().call(helper, &[left, right]);
+        let equal = builder.inst_results(call)[0];
+        let result = match comparison {
+            ScalarComparison::Equal => builder.ins().icmp_imm(IntCC::NotEqual, equal, 0),
+            ScalarComparison::NotEqual => builder.ins().icmp_imm(IntCC::Equal, equal, 0),
+            _ => unreachable!("only equality comparisons use the helper"),
+        };
+        let result = ValueEmitter::emit_bool(builder, result);
+        builder.ins().jump(done, &[result.into()]);
+
+        builder.switch_to_block(done);
+        let word = builder.block_params(done)[0];
+        crate::EmittedValue::always_fast(builder, word)
     }
 
     fn load_collection_view(

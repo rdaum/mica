@@ -3698,6 +3698,10 @@ name = "mica-vm"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-jit",
+ "cranelift-module",
  "fast-telemetry",
  "mica-relation-kernel",
  "mica-var",

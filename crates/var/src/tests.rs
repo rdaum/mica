@@ -13,8 +13,9 @@
 
 use crate::abi::{
     VALUE_ABI_VERSION, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG, VALUE_PAYLOAD_MASK,
-    VALUE_TAG_SHIFT, borrowed_value_bits, clone_value_bits, drop_value_bits, from_owned_value_bits,
-    into_owned_value_bits, pack_value, value_is_immediate, value_payload, value_tag,
+    VALUE_TAG_SHIFT, borrowed_value_bits, borrowed_value_numeric_eq, clone_value_bits,
+    drop_value_bits, from_owned_value_bits, into_owned_value_bits, pack_value, value_is_immediate,
+    value_payload, value_tag,
 };
 use crate::value::{INT_MAX, INT_MIN};
 use crate::{
@@ -99,6 +100,28 @@ fn process_local_value_abi_preserves_heap_reference_ownership() {
         Some("owned value word")
     );
     assert_eq!(reconstructed.heap_strong_count(), Some(1));
+}
+
+#[test]
+fn process_local_value_abi_compares_borrowed_words_without_taking_ownership() {
+    let left = Value::string("borrowed equality");
+    let equal = Value::string("borrowed equality");
+    let different = Value::string("different");
+    assert!(unsafe {
+        borrowed_value_numeric_eq(borrowed_value_bits(&left), borrowed_value_bits(&equal))
+    });
+    assert!(!unsafe {
+        borrowed_value_numeric_eq(borrowed_value_bits(&left), borrowed_value_bits(&different))
+    });
+    assert!(unsafe {
+        borrowed_value_numeric_eq(
+            borrowed_value_bits(&Value::int(1).unwrap()),
+            borrowed_value_bits(&Value::float(1.0).unwrap()),
+        )
+    });
+    assert_eq!(left.heap_strong_count(), Some(1));
+    assert_eq!(equal.heap_strong_count(), Some(1));
+    assert_eq!(different.heap_strong_count(), Some(1));
 }
 
 #[test]

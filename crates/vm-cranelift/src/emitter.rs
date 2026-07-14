@@ -133,6 +133,13 @@ impl EmittedValue {
     pub const fn is_fast(self) -> CraneliftValue {
         self.is_fast
     }
+
+    pub(crate) fn always_fast(builder: &mut FunctionBuilder<'_>, word: CraneliftValue) -> Self {
+        Self {
+            word,
+            is_fast: builder.ins().iconst(types::I8, 1),
+        }
+    }
 }
 
 /// Emits operations over the process-local [`mica_var::Value`] word format.
