@@ -14,6 +14,7 @@
 use crate::query::RelationRead;
 use crate::{KernelError, RelationId, RelationMetadata, RuleDefinition, Tuple, Version};
 use mica_var::{Symbol, Value};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -63,13 +64,31 @@ pub trait ComputedRelation: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ComputedRelationRegistry {
     relations: Vec<Arc<dyn ComputedRelation>>,
+    bindings: HashMap<RelationId, Option<usize>>,
 }
 
 impl ComputedRelationRegistry {
     pub fn new(relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>) -> Self {
         Self {
             relations: relations.into_iter().collect(),
+            bindings: HashMap::new(),
         }
+    }
+
+    pub(crate) fn bind_relations<'a>(
+        mut self,
+        metadata: impl IntoIterator<Item = &'a RelationMetadata>,
+    ) -> Self {
+        for metadata in metadata {
+            self.bind_relation(metadata);
+        }
+        self
+    }
+
+    pub(crate) fn with_relation(&self, metadata: &RelationMetadata) -> Self {
+        let mut next = self.clone();
+        next.bind_relation(metadata);
+        next
     }
 
     pub fn is_computed_relation(&self, metadata: &RelationMetadata) -> bool {
@@ -102,9 +121,22 @@ impl ComputedRelationRegistry {
     }
 
     fn find(&self, metadata: &RelationMetadata) -> Option<&Arc<dyn ComputedRelation>> {
-        self.relations
+        match self.bindings.get(&metadata.id()) {
+            Some(Some(index)) => self.relations.get(*index),
+            Some(None) => None,
+            None => self
+                .relations
+                .iter()
+                .find(|relation| relation.matches(metadata)),
+        }
+    }
+
+    fn bind_relation(&mut self, metadata: &RelationMetadata) {
+        let index = self
+            .relations
             .iter()
-            .find(|relation| relation.matches(metadata))
+            .position(|relation| relation.matches(metadata));
+        self.bindings.insert(metadata.id(), index);
     }
 }
 
@@ -168,4 +200,95 @@ fn validate_bindings(
         relation: metadata.id(),
         positions: missing,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mica_var::Identity;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingRelation {
+        name: Symbol,
+        matches: Arc<AtomicUsize>,
+    }
+
+    impl ComputedRelation for CountingRelation {
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+
+        fn matches(&self, metadata: &RelationMetadata) -> bool {
+            self.matches.fetch_add(1, Ordering::Relaxed);
+            metadata.name() == self.name
+        }
+
+        fn scan(
+            &self,
+            _reader: &dyn ComputedRelationRead,
+            _metadata: &RelationMetadata,
+            _bindings: &[Option<Value>],
+        ) -> Result<Vec<Tuple>, KernelError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn relation(id: u64, name: &str) -> RelationMetadata {
+        RelationMetadata::new(
+            Identity::new(id).expect("test relation identities must be valid"),
+            Symbol::intern(name),
+            1,
+        )
+    }
+
+    #[test]
+    fn bound_relations_do_not_repeat_provider_matching() {
+        let matches = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn ComputedRelation> = Arc::new(CountingRelation {
+            name: Symbol::intern("Computed"),
+            matches: matches.clone(),
+        });
+        let computed = relation(1, "Computed");
+        let ordinary = relation(2, "Ordinary");
+
+        let registry =
+            ComputedRelationRegistry::new([provider]).bind_relations([&computed, &ordinary]);
+        assert_eq!(matches.load(Ordering::Relaxed), 2);
+
+        for _ in 0..4 {
+            assert!(registry.is_computed_relation(&computed));
+            assert!(!registry.is_computed_relation(&ordinary));
+        }
+        assert_eq!(matches.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn newly_bound_relation_uses_cached_provider_match() {
+        let matches = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn ComputedRelation> = Arc::new(CountingRelation {
+            name: Symbol::intern("Computed"),
+            matches: matches.clone(),
+        });
+        let metadata = relation(3, "Computed");
+        let registry = ComputedRelationRegistry::new([provider]).with_relation(&metadata);
+        assert_eq!(matches.load(Ordering::Relaxed), 1);
+
+        assert!(registry.is_computed_relation(&metadata));
+        assert_eq!(matches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unbound_registry_matches_relations_dynamically() {
+        let matches = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn ComputedRelation> = Arc::new(CountingRelation {
+            name: Symbol::intern("Computed"),
+            matches: matches.clone(),
+        });
+        let metadata = relation(4, "Computed");
+        let registry = ComputedRelationRegistry::new([provider]);
+
+        assert!(registry.is_computed_relation(&metadata));
+        assert!(registry.is_computed_relation(&metadata));
+        assert_eq!(matches.load(Ordering::Relaxed), 2);
+    }
 }

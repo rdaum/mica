@@ -16,13 +16,14 @@ use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
 use crate::relation_algebra::union_ordered_tuple_rows;
+use crate::relation_states::RelationStates;
 use crate::{
     ApplicableMethodCall, DispatchRead, DispatchRelations, KernelError, PackedRelation,
     RelationCapabilities, RelationId, RelationMetadata, RelationRead, RelationSource,
     RuleDefinition, RuleEvalError, RuleSet, ScanControl, Tuple, ValueDomain, Version,
 };
 use mica_var::{Identity, Symbol, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) type DerivedCache =
@@ -148,7 +149,7 @@ impl CommitResult {
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub(crate) version: Version,
-    pub(crate) relations: HashMap<RelationId, RelationState>,
+    pub(crate) relations: RelationStates,
     pub(crate) rules: Vec<RuleDefinition>,
     pub(crate) computed_relations: Arc<ComputedRelationRegistry>,
     pub(crate) derived_cache: DerivedCache,
@@ -217,15 +218,22 @@ impl Snapshot {
         metadata.into_iter()
     }
 
+    pub fn relation_metadata_named(&self, name: Symbol) -> Option<&RelationMetadata> {
+        self.relations
+            .values()
+            .map(RelationState::metadata)
+            .find(|metadata| metadata.name() == name)
+    }
+
     pub fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {
         let mut facts = Vec::new();
-        for (relation_id, relation) in &self.relations {
+        for (relation_id, relation) in self.relations.iter() {
             let bindings = vec![None; relation.metadata().arity() as usize];
             facts.extend(
                 relation
                     .scan(&bindings)?
                     .into_iter()
-                    .map(|tuple| (*relation_id, tuple)),
+                    .map(|tuple| (relation_id, tuple)),
             );
         }
         facts.sort();
@@ -490,7 +498,7 @@ impl Snapshot {
 }
 
 pub(crate) fn build_derived_relations(
-    relations: &HashMap<RelationId, RelationState>,
+    relations: &RelationStates,
     derived: BTreeMap<RelationId, Vec<Tuple>>,
 ) -> Result<BTreeMap<RelationId, RelationState>, KernelError> {
     derived

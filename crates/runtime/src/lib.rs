@@ -5284,27 +5284,24 @@ fn relation_metadata_named(kernel: &RelationKernel, name: Symbol) -> Option<Rela
         .cloned()
 }
 
-fn relation_metadata_required(
-    kernel: &RelationKernel,
-    name: Symbol,
-) -> Result<RelationMetadata, SourceTaskError> {
-    relation_metadata_named(kernel, name).ok_or_else(|| {
-        unsupported_runner_error(
-            NodeId(0),
-            None,
-            format!("unknown relation {}", name.name().unwrap_or("<unnamed>")),
-        )
-    })
-}
-
 fn volatile_tuple_relations_required(
     kernel: &RelationKernel,
     tuples: Vec<(Symbol, Tuple)>,
 ) -> Result<Vec<(Identity, Tuple)>, SourceTaskError> {
+    let snapshot = kernel.snapshot();
     tuples
         .into_iter()
         .map(|(relation, tuple)| {
-            let metadata = relation_metadata_required(kernel, relation)?;
+            let metadata = snapshot.relation_metadata_named(relation).ok_or_else(|| {
+                unsupported_runner_error(
+                    NodeId(0),
+                    None,
+                    format!(
+                        "unknown relation {}",
+                        relation.name().unwrap_or("<unnamed>")
+                    ),
+                )
+            })?;
             ensure_tuple_arity(metadata.id(), metadata.arity(), tuple.arity())?;
             if metadata.durability() != RelationDurability::Volatile {
                 return Err(unsupported_runner_error(
