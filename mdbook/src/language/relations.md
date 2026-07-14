@@ -62,6 +62,10 @@ are omitted from persistent commits and the relation starts empty after recovery
 storage-lifetime property, not an ambient visibility boundary; include an explicit owner such as a
 request or endpoint identity in a tuple when its lifetime or access must be scoped.
 
+Volatile facts do not expire automatically while the process is running. A host that installs
+request or session facts must retract those facts when that lifecycle ends; volatility only defines
+what recovery does after a restart.
+
 Assert facts into it:
 
 ```mica

@@ -37,8 +37,8 @@ impl Workload {
     const fn name(self) -> &'static str {
         match self {
             Self::Tuple => "transient_tuple_lifecycle",
-            Self::Endpoint => "transient_endpoint_lifecycle",
-            Self::Request => "transient_request_lifecycle",
+            Self::Endpoint => "volatile_endpoint_lifecycle",
+            Self::Request => "volatile_request_lifecycle",
         }
     }
 
@@ -63,14 +63,14 @@ impl TransientBenchContext {
         runner
             .run_source(
                 "make_relation(:TransientProbe, 1)\n\
-                 make_relation(:HttpRequest, 1)\n\
-                 make_relation(:RequestMethod, 2)\n\
-                 make_relation(:RequestPath, 2)\n\
-                 make_relation(:RequestVersion, 2)\n\
-                 make_relation(:RequestPrincipal, 2)\n\
-                 make_relation(:RequestActor, 2)\n\
-                 make_relation(:RequestHeader, 3)\n\
-                 make_relation(:RequestBody, 2)",
+                 make_relation(:HttpRequest, 1, :volatile)\n\
+                 make_relation(:RequestMethod, 2, :volatile)\n\
+                 make_relation(:RequestPath, 2, :volatile)\n\
+                 make_relation(:RequestVersion, 2, :volatile)\n\
+                 make_relation(:RequestPrincipal, 2, :volatile)\n\
+                 make_relation(:RequestActor, 2, :volatile)\n\
+                 make_relation(:RequestHeader, 3, :volatile)\n\
+                 make_relation(:RequestBody, 2, :volatile)",
             )
             .expect("benchmark relation declarations should install");
         Self {
@@ -193,12 +193,17 @@ impl TransientBenchContext {
         ];
         let inserted = self
             .runner
-            .assert_transient_tuples_named(endpoint, rows)
+            .assert_volatile_tuples_named(rows.clone())
             .expect("request facts should install");
         debug_assert_eq!(inserted, 9);
+        let retracted = self
+            .runner
+            .retract_volatile_tuples_named(rows)
+            .expect("request facts should retract");
+        debug_assert_eq!(retracted, 9);
         let removed = self.runner.close_endpoint(endpoint);
-        debug_assert_eq!(removed, 14);
-        black_box((inserted, removed));
+        debug_assert_eq!(removed, 5);
+        black_box((inserted, retracted, removed));
     }
 }
 
@@ -248,7 +253,7 @@ benchmark_main!(
         ..Default::default()
     },
     |runner| {
-        runner.group::<TransientBenchContext>("transient relation lifecycle", |group| {
+        runner.group::<TransientBenchContext>("relation lifecycle migration", |group| {
             for workload in Workload::ALL {
                 let factory = move || TransientBenchContext::new(workload);
                 group
@@ -262,17 +267,17 @@ benchmark_main!(
         });
 
         let one_worker = [ConcurrentWorker {
-            name: "transient lifecycle",
+            name: "relation lifecycle",
             threads: 1,
             run: run_concurrent,
         }];
         let four_workers = [ConcurrentWorker {
-            name: "transient lifecycle",
+            name: "relation lifecycle",
             threads: CONCURRENT_THREADS,
             run: run_concurrent,
         }];
         runner.concurrent_group::<TransientBenchContext>(
-            "transient relation lifecycle concurrent",
+            "relation lifecycle migration concurrent",
             |group| {
                 for workload in Workload::ALL {
                     for (threads, workers) in [

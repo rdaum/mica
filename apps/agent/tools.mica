@@ -1,18 +1,18 @@
 // Agent tools: read-only source tools + tool-call execution.
 
 // Streaming flag set by agent/run_loop while the loop is in progress.
-make_functional_relation(:session/IsStreaming, 2, [0])
+make_functional_relation(:session/IsStreaming, 2, [0], :volatile)
 
 // Loop phase: "thinking" (LLM call in progress), "executing" (tool
 // execution), "idle" (not running). Drives the activity panel.
-make_functional_relation(:session/LoopPhase, 2, [0])
+make_functional_relation(:session/LoopPhase, 2, [0], :volatile)
 
 // Stage 4: steering and follow-up queues, keyed by endpoint.
 // Steering messages interrupt the loop mid-turn; follow-up messages
 // extend it after it would otherwise stop. Stored as list-valued
 // functional relations.
-make_functional_relation(:session/SteeringQueue, 2, [0])
-make_functional_relation(:session/FollowUpQueue, 2, [0])
+make_functional_relation(:session/SteeringQueue, 2, [0], :volatile)
+make_functional_relation(:session/FollowUpQueue, 2, [0], :volatile)
 
 // Tool relations.
 make_identity(:tool)

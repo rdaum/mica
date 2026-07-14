@@ -170,3 +170,35 @@ The four-worker volatile path sustains 226.71 k tuple mutations/s, compared with
 direct store. The endpoint result is a semantic migration checkpoint, not a performance win: the
 runtime-sized kernel pays two MVCC snapshot publications per lifecycle. Final measurement must keep
 this regression visible while evaluating transaction publication and endpoint-state layout costs.
+
+## Request Migration Checkpoint
+
+The web host declares all eight request relations volatile. It validates and asserts the complete
+request fact set in one ordinary transaction, then retracts the same fact set in one transaction
+before closing the request endpoint. A host-side ownership guard performs the retraction and close
+when the async request future is cancelled as well as on explicit success and error paths. The
+ordinary host API rejects durable relation metadata, preventing lifecycle cleanup code from
+silently treating durable application facts as request state.
+
+The agent and MUD `session/*` relations are also volatile. They are keyed by endpoint identities
+allocated by the web host and must not survive a process restart, where the host's endpoint identity
+sequence starts again. Durable world and conversation facts remain durable; only endpoint-owned UI
+state is classified as volatile.
+
+Command:
+
+```sh
+cargo bench -p mica-runtime --bench transient_relation_benches -- request_lifecycle
+```
+
+| Execution | Direct-store baseline | Volatile request transactions | Change |
+| --- | ---: | ---: | ---: |
+| Serial | 11,120 ns | 61,944 ns | 5.57x slower |
+| 1 worker | 11,259 ns | 69,187 ns | 6.15x slower |
+| 4 workers | 15,386 ns | 82,962 ns | 5.39x slower |
+
+The checkpoint is stable at 0.55%, 1.04%, and 1.32% coefficient of variation. Four workers sustain
+337.07 k tuple mutations/s, compared with the 1.82 M/s direct-store baseline. Request facts are
+batched, but the complete lifecycle still publishes four MVCC snapshots: endpoint open, request
+assertion, request retraction, and endpoint close. That publication count and the number of relation
+states copied per request are the next performance targets after the transient overlay is removed.

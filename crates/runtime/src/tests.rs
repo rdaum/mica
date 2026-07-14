@@ -3212,7 +3212,7 @@ fn runner_endpoint_invocation_uses_principal_authority_without_actor() {
     runner
         .run_filein(
             "make_identity(:web)\n\
-                 make_relation(:RequestPath, 2)\n\
+                 make_relation(:RequestPath, 2, :volatile)\n\
                  make_relation(:CanRead, 2)\n\
                  make_relation(:CanInvoke, 2)\n\
                  assert CanRead(#web, :RequestPath)\n\
@@ -3229,11 +3229,10 @@ fn runner_endpoint_invocation_uses_principal_authority_without_actor() {
         .open_endpoint_with_context(endpoint, Some(web), None, Symbol::intern("http-request"))
         .unwrap();
     runner
-        .assert_transient_named(
-            endpoint,
+        .assert_volatile_tuples_named(vec![(
             Symbol::intern("RequestPath"),
-            vec![Value::identity(request), Value::string("/hello")],
-        )
+            Tuple::from([Value::identity(request), Value::string("/hello")]),
+        )])
         .unwrap();
 
     let submitted = runner
@@ -3249,6 +3248,95 @@ fn runner_endpoint_invocation_uses_principal_authority_without_actor() {
         TaskOutcome::Complete { value, .. }
             if value.with_str(|text| text == "/hello").unwrap_or(false)
     ));
+    assert_eq!(
+        runner
+            .retract_volatile_tuples_named(vec![(
+                Symbol::intern("RequestPath"),
+                Tuple::from([Value::identity(request), Value::string("/hello")]),
+            )])
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn runner_volatile_host_fact_batches_are_atomic() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source(
+            "make_relation(:RequestPath, 2, :volatile)\n\
+             make_relation(:RequestHeader, 3, :volatile)\n\
+             make_relation(:DurableFact, 1)",
+        )
+        .unwrap();
+    let request = Identity::new(0x00eb_0000_0000_0012).unwrap();
+    let facts = vec![
+        (
+            Symbol::intern("RequestPath"),
+            Tuple::from([Value::identity(request), Value::string("/hello")]),
+        ),
+        (
+            Symbol::intern("RequestHeader"),
+            Tuple::from([
+                Value::identity(request),
+                Value::string("accept"),
+                Value::bytes(b"text/plain"),
+            ]),
+        ),
+    ];
+    let version = runner.task_manager.kernel().snapshot().version();
+
+    assert_eq!(
+        runner.assert_volatile_tuples_named(facts.clone()).unwrap(),
+        2
+    );
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version + 1
+    );
+    assert!(
+        runner
+            .run_source("return RequestPath(?request, ?path)")
+            .unwrap()
+            .render()
+            .contains("/hello")
+    );
+
+    assert_eq!(
+        runner.retract_volatile_tuples_named(facts.clone()).unwrap(),
+        2
+    );
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version + 2
+    );
+    let rows = runner
+        .run_source("return RequestPath(?request, ?path)")
+        .unwrap();
+    assert!(matches!(
+        rows.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == query_relation(["request", "path"], [])
+    ));
+
+    let rejected = runner
+        .assert_volatile_tuples_named(vec![(
+            Symbol::intern("DurableFact"),
+            Tuple::from([Value::identity(request)]),
+        )])
+        .unwrap_err();
+    assert!(format!("{rejected:?}").contains("relation DurableFact is not volatile"));
+    assert_eq!(
+        runner.task_manager.kernel().snapshot().version(),
+        version + 2
+    );
+    assert!(
+        runner
+            .run_source("return DurableFact(?request)")
+            .unwrap()
+            .render()
+            .contains("{}")
+    );
 }
 
 #[test]

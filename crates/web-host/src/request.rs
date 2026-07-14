@@ -16,9 +16,10 @@ use crate::response::{
     internal_error_response, is_sync_client_path, response_from_submitted, route_request,
 };
 use crate::{InProcessWebHost, RequestBinding, format_driver_error};
+use mica_driver::{CompioTaskDriver, DriverError};
 use mica_runtime::Tuple;
 use mica_var::{Identity, Symbol, Value};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone, Debug)]
 pub(crate) struct RequestFact {
@@ -31,6 +32,51 @@ impl RequestFact {
         Self {
             relation,
             tuple: Tuple::new(values),
+        }
+    }
+}
+
+struct RequestFactScope {
+    driver: Arc<CompioTaskDriver>,
+    endpoint: Identity,
+    tuples: Option<Vec<(Symbol, Tuple)>>,
+}
+
+impl RequestFactScope {
+    fn new(
+        driver: Arc<CompioTaskDriver>,
+        endpoint: Identity,
+        tuples: Vec<(Symbol, Tuple)>,
+    ) -> Self {
+        Self {
+            driver,
+            endpoint,
+            tuples: Some(tuples),
+        }
+    }
+
+    fn close(mut self) -> Result<usize, DriverError> {
+        self.cleanup()
+    }
+
+    fn cleanup(&mut self) -> Result<usize, DriverError> {
+        let Some(tuples) = self.tuples.take() else {
+            return Ok(0);
+        };
+        let result = self.driver.retract_volatile_tuples_named(tuples);
+        self.driver.close_endpoint(self.endpoint);
+        result
+    }
+}
+
+impl Drop for RequestFactScope {
+    fn drop(&mut self) {
+        if let Err(error) = self.cleanup() {
+            tracing::warn!(
+                endpoint = self.endpoint.raw(),
+                error = %self.driver.format_error(&error),
+                "failed to clean up volatile request facts"
+            );
         }
     }
 }
@@ -175,17 +221,19 @@ pub(crate) async fn handle_in_process_request(
     }
 
     let request_facts = request_facts(request_id, binding.principal, effective_actor, request);
-    let transient_tuples = request_facts
+    let request_tuples = request_facts
         .iter()
         .map(|fact| (fact.relation, fact.tuple.clone()))
-        .collect();
+        .collect::<Vec<_>>();
     if let Err(error) = host
         .driver
-        .assert_transient_tuples_named(request_endpoint, transient_tuples)
+        .assert_volatile_tuples_named(request_tuples.clone())
     {
         host.driver.close_endpoint(request_endpoint);
         return internal_error_response(format_driver_error(&host.driver, error), close);
     }
+    let request_scope =
+        RequestFactScope::new(Arc::clone(&host.driver), request_endpoint, request_tuples);
 
     let submitted = host
         .driver
@@ -195,7 +243,9 @@ pub(crate) async fn handle_in_process_request(
             vec![(Symbol::intern("request"), Value::identity(request_id))],
         )
         .await;
-    host.driver.close_endpoint(request_endpoint);
+    if let Err(error) = request_scope.close() {
+        return internal_error_response(format_driver_error(&host.driver, error), close);
+    }
 
     match submitted {
         Ok(submitted) => response_from_submitted(submitted, close),
@@ -286,6 +336,7 @@ fn request_facts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mica_runtime::{SYSTEM_ENDPOINT, SourceRunner, TaskOutcome};
 
     #[test]
     fn request_facts_include_core_request_neighbourhood() {
@@ -362,5 +413,66 @@ mod tests {
                     && fact.tuple.values()
                         == [Value::identity(request_id), Value::identity(actor)])
         );
+    }
+
+    #[test]
+    fn in_process_request_retracts_volatile_facts_and_closes_endpoint() {
+        compio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut runner = SourceRunner::new_empty();
+            runner
+                .run_filein(include_str!("../../../apps/web/http-core.mica"))
+                .unwrap();
+            let web = runner.named_identity(Symbol::intern("web")).unwrap();
+            let driver = CompioTaskDriver::spawn(runner).unwrap();
+            let host = InProcessWebHost::new(driver);
+            let response = handle_in_process_request(
+                &host,
+                &RequestBinding {
+                    principal: web,
+                    actor: Some(web),
+                },
+                &HttpRequest {
+                    method: "GET".to_owned(),
+                    path: "/hello".to_owned(),
+                    version: 1,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+                false,
+            )
+            .await;
+            assert_eq!(response.status, 200);
+            assert!(
+                host.driver
+                    .inner_runner()
+                    .named_identity(Symbol::intern("endpoint:0"))
+                    .is_err()
+            );
+
+            for (source, heading) in [
+                ("return HttpRequest(?request)", "request"),
+                ("return EndpointOpen(?endpoint)", "endpoint"),
+            ] {
+                let request = mica_runtime::TaskRequest {
+                    actor: Some(web),
+                    ..SourceRunner::root_source_request(source)
+                };
+                let submitted = host
+                    .driver
+                    .submit_source(SYSTEM_ENDPOINT, request)
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    submitted.outcome,
+                    TaskOutcome::Complete { value, .. }
+                        if value
+                            == Value::relation(
+                                [Symbol::intern(heading)],
+                                std::iter::empty::<Tuple>(),
+                            )
+                            .unwrap()
+                ));
+            }
+        });
     }
 }

@@ -1,21 +1,21 @@
 // Relational HTTP routing demo for the in-process web host.
 //
 // Use this instead of apps/web/http-core.mica when starting mica-daemon. Rust
-// parses HTTP and asserts transient request facts; this file keeps route
+// parses HTTP and asserts volatile request facts; this file keeps route
 // selection and access policy in ordinary Mica relations and rules.
 
 make_identity(:alice)
 make_identity(:bob)
 make_identity(:web)
 
-make_relation(:HttpRequest, 1)
-make_relation(:RequestMethod, 2)
-make_relation(:RequestPath, 2)
-make_relation(:RequestVersion, 2)
-make_relation(:RequestPrincipal, 2)
-make_relation(:RequestActor, 2)
-make_relation(:RequestHeader, 3)
-make_relation(:RequestBody, 2)
+make_relation(:HttpRequest, 1, :volatile)
+make_relation(:RequestMethod, 2, :volatile)
+make_relation(:RequestPath, 2, :volatile)
+make_relation(:RequestVersion, 2, :volatile)
+make_relation(:RequestPrincipal, 2, :volatile)
+make_relation(:RequestActor, 2, :volatile)
+make_relation(:RequestHeader, 3, :volatile)
+make_relation(:RequestBody, 2, :volatile)
 make_relation(:CanRead, 2)
 make_relation(:CanInvoke, 2)
 
