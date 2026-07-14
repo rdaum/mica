@@ -125,9 +125,9 @@ Mica has two numeric value families: integers and floats.
   valid Mica values; operations that would produce them return `E_ARITH` or `E_DIV` instead.
   Negative zero canonicalizes to positive zero.
 
-Mica `Float` has less integer precision than Mica `Int`. Binary32 can represent every integer up
-to `2^24` exactly, but above that some integers round to the nearest representable float. A 56-bit
-Mica integer always carries more precision than a binary32 float.
+Mica `Float` has less integer precision than Mica `Int`. Binary32 can represent every integer up to
+`2^24` exactly, but above that some integers round to the nearest representable float. A 56-bit Mica
+integer always carries more precision than a binary32 float.
 
 ### Numeric Equality And Key Identity
 
@@ -138,8 +138,8 @@ Mica has two distinct comparison concepts:
    value rather than by value kind. Therefore `1 == 1.0` is true.
 
 2. **Canonical value order** is the total, type-sensitive order used by maps, relation tuples,
-   indexes, hashing, and persistence. An integer and a float remain distinct stored values even
-   when numerically equal, and may be distinct keys.
+   indexes, hashing, and persistence. An integer and a float remain distinct stored values even when
+   numerically equal, and may be distinct keys.
 
 ```mica
 1 == 1.0          -- true: language numeric equality
