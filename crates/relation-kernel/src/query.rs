@@ -759,11 +759,11 @@ fn semi_join_with_right_key_set(
 ) -> Vec<Tuple> {
     let right_keys = right_rows
         .iter()
-        .map(|row| row.project(right_positions))
+        .map(|row| TupleKey::project(row, right_positions))
         .collect::<BTreeSet<TupleKey>>();
     left_rows
         .into_iter()
-        .filter(|row| right_keys.contains(&row.project(left_positions)) == keep_matches)
+        .filter(|row| right_keys.contains(&TupleKey::project(row, left_positions)) == keep_matches)
         .collect()
 }
 
