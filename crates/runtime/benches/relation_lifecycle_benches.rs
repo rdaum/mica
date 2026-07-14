@@ -136,14 +136,6 @@ impl RelationLifecycleBenchContext {
         let request = self.next_identity();
         let principal = self.next_identity();
         let actor = self.next_identity();
-        self.runner
-            .open_endpoint_with_context(
-                endpoint,
-                Some(principal),
-                Some(actor),
-                Symbol::intern("http-request"),
-            )
-            .expect("request endpoint should open");
         let request_value = Value::identity(request);
         let rows = vec![
             (
@@ -193,17 +185,21 @@ impl RelationLifecycleBenchContext {
         ];
         let inserted = self
             .runner
-            .assert_volatile_tuples_named(rows.clone())
-            .expect("request facts should install");
-        debug_assert_eq!(inserted, 9);
-        let retracted = self
+            .open_endpoint_with_context_and_volatile_tuples_named(
+                endpoint,
+                Some(principal),
+                Some(actor),
+                Symbol::intern("http-request"),
+                rows.clone(),
+            )
+            .expect("request endpoint and facts should install");
+        debug_assert_eq!(inserted, 14);
+        let removed = self
             .runner
-            .retract_volatile_tuples_named(rows)
-            .expect("request facts should retract");
-        debug_assert_eq!(retracted, 9);
-        let removed = self.runner.close_endpoint(endpoint);
-        debug_assert_eq!(removed, 5);
-        black_box((inserted, retracted, removed));
+            .close_endpoint_and_retract_volatile_tuples_named(endpoint, rows)
+            .expect("request endpoint and facts should retract");
+        debug_assert_eq!(removed, 14);
+        black_box((inserted, removed));
     }
 }
 

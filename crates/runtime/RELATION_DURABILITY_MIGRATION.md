@@ -238,8 +238,8 @@ intentional concurrency within that one selected case; no benchmark cases overla
 Removing the overlay is performance-neutral relative to the volatile migration checkpoints. The
 endpoint medians changed by +1.3%, +0.4%, and +2.4%; request medians changed by +0.4%, +0.8%, and
 -0.4% for serial, one-worker, and four-worker execution. These small mixed changes do not establish
-a performance effect. The material cost remains MVCC publication: two commits for the tuple and
-endpoint lifecycles, and four for the request lifecycle. That is the next optimization surface.
+a performance effect. At this checkpoint, the material cost remained MVCC publication: two commits
+for the tuple and endpoint lifecycles, and four for the request lifecycle.
 
 The final isolated transaction medians are 2,752 ns, 3,392 ns, and 7,856 ns for durable rows and
 2,648 ns, 3,266 ns, and 7,057 ns for volatile rows under serial, one-worker, and four-worker
@@ -254,3 +254,31 @@ and a version gap caused by a volatile-only live commit does not prevent later d
 cargo test -p mica-relation-kernel --features fjall-provider \
   fjall_provider_recovers_volatile_relations_without_their_rows
 ```
+
+## Fused Request Lifecycle Optimization
+
+The web host now opens the request endpoint and asserts its request facts in one transaction. Its
+normal and cancellation cleanup paths likewise retract the request facts and close the endpoint in
+one transaction. Validation of every supplied relation as volatile happens before either
+transaction begins, so a rejected request-fact batch cannot leave an open endpoint. The request
+lifecycle therefore publishes two MVCC snapshots instead of four while retaining the same 28 tuple
+mutations and the endpoint's visibility during invocation.
+
+Command:
+
+```sh
+cargo bench -p mica-runtime --bench relation_lifecycle_benches -- volatile_request_lifecycle
+```
+
+| Execution | Four-publication median | Two-publication median | Latency change | Throughput |
+| --- | ---: | ---: | ---: | ---: |
+| Serial | 62,192 ns | 48,880 ns | -21.4% | 572.83 k tuple mutations/s |
+| 1 worker | 69,757 ns | 53,694 ns | -23.0% | 521.47 k tuple mutations/s |
+| 4 workers | 82,647 ns | 60,025 ns | -27.4% | 466.76 k tuple mutations/s |
+
+Two consecutive optimized runs produced medians of 49,121/53,107/62,022 ns and
+48,880/53,694/60,025 ns for serial, one-worker, and four-worker execution. The four-worker case
+remains noisy at 7.7--11.2% coefficient of variation, but both runs show a material improvement over
+the 82,647 ns checkpoint. Publication count is therefore a demonstrated request-path cost. The
+remaining four-worker backend-stall rate and variability point to shared snapshot publication and
+per-relation state copying as the next relation-kernel optimization surface.

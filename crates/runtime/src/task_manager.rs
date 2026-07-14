@@ -414,6 +414,23 @@ impl TaskManager {
         Ok(())
     }
 
+    pub fn open_endpoint_with_context_and_rows(
+        &mut self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+        rows: Vec<(RelationId, Tuple)>,
+    ) -> Result<usize, TaskManagerError> {
+        let changes =
+            open_endpoint_with_rows_in(&self.kernel, endpoint, principal, actor, protocol, &rows)?;
+        crate::metrics::metrics()
+            .endpoint_operations
+            .inc(crate::metrics::EndpointOperation::Open);
+        crate::metrics::endpoint_opened();
+        Ok(changes)
+    }
+
     pub fn endpoint_runtime_context(
         &self,
         endpoint: Identity,
@@ -434,6 +451,21 @@ impl TaskManager {
             crate::metrics::endpoint_closed();
         }
         removed
+    }
+
+    pub fn close_endpoint_with_rows(
+        &mut self,
+        endpoint: Identity,
+        rows: Vec<(RelationId, Tuple)>,
+    ) -> Result<usize, TaskManagerError> {
+        crate::metrics::metrics()
+            .endpoint_operations
+            .inc(crate::metrics::EndpointOperation::Close);
+        let (changes, endpoint_rows) = close_endpoint_with_rows_in(&self.kernel, endpoint, &rows)?;
+        if endpoint_rows > 0 {
+            crate::metrics::endpoint_closed();
+        }
+        Ok(changes)
     }
 
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
@@ -855,6 +887,23 @@ impl SharedTaskManager {
         Ok(())
     }
 
+    pub fn open_endpoint_with_context_and_rows(
+        &self,
+        endpoint: Identity,
+        principal: Option<Identity>,
+        actor: Option<Identity>,
+        protocol: Symbol,
+        rows: Vec<(RelationId, Tuple)>,
+    ) -> Result<usize, TaskManagerError> {
+        let changes =
+            open_endpoint_with_rows_in(&self.kernel, endpoint, principal, actor, protocol, &rows)?;
+        crate::metrics::metrics()
+            .endpoint_operations
+            .inc(crate::metrics::EndpointOperation::Open);
+        crate::metrics::endpoint_opened();
+        Ok(changes)
+    }
+
     pub fn endpoint_runtime_context(
         &self,
         endpoint: Identity,
@@ -875,6 +924,21 @@ impl SharedTaskManager {
             crate::metrics::endpoint_closed();
         }
         removed
+    }
+
+    pub fn close_endpoint_with_rows(
+        &self,
+        endpoint: Identity,
+        rows: Vec<(RelationId, Tuple)>,
+    ) -> Result<usize, TaskManagerError> {
+        crate::metrics::metrics()
+            .endpoint_operations
+            .inc(crate::metrics::EndpointOperation::Close);
+        let (changes, endpoint_rows) = close_endpoint_with_rows_in(&self.kernel, endpoint, &rows)?;
+        if endpoint_rows > 0 {
+            crate::metrics::endpoint_closed();
+        }
+        Ok(changes)
     }
 
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
@@ -986,6 +1050,17 @@ fn open_endpoint_in(
     actor: Option<Identity>,
     protocol: Symbol,
 ) -> Result<(), TaskManagerError> {
+    open_endpoint_with_rows_in(kernel, endpoint, principal, actor, protocol, &[]).map(|_| ())
+}
+
+fn open_endpoint_with_rows_in(
+    kernel: &RelationKernel,
+    endpoint: Identity,
+    principal: Option<Identity>,
+    actor: Option<Identity>,
+    protocol: Symbol,
+    rows: &[(RelationId, Tuple)],
+) -> Result<usize, TaskManagerError> {
     let mut transaction = kernel.begin();
     if !transaction
         .scan(endpoint_open_relation(), &[Some(Value::identity(endpoint))])?
@@ -1022,8 +1097,11 @@ fn open_endpoint_in(
         endpoint_open_relation(),
         Tuple::from([Value::identity(endpoint)]),
     )?;
-    transaction.commit()?;
-    Ok(())
+    for (relation, tuple) in rows {
+        transaction.assert(*relation, tuple.clone())?;
+    }
+    let result = transaction.commit()?;
+    Ok(result.commit().changes().len())
 }
 
 fn close_endpoint_in(kernel: &RelationKernel, endpoint: Identity) -> usize {
@@ -1038,6 +1116,25 @@ fn close_endpoint_in(kernel: &RelationKernel, endpoint: Identity) -> usize {
             Ok(_) => return removed,
             Err(KernelError::Conflict(_)) => continue,
             Err(error) => panic!("endpoint close transaction failed: {error:?}"),
+        }
+    }
+}
+
+fn close_endpoint_with_rows_in(
+    kernel: &RelationKernel,
+    endpoint: Identity,
+    rows: &[(RelationId, Tuple)],
+) -> Result<(usize, usize), TaskManagerError> {
+    loop {
+        let mut transaction = kernel.begin();
+        for (relation, tuple) in rows {
+            transaction.retract(*relation, tuple.clone())?;
+        }
+        let endpoint_rows = retract_endpoint_rows(&mut transaction, endpoint)?;
+        match transaction.commit() {
+            Ok(result) => return Ok((result.commit().changes().len(), endpoint_rows)),
+            Err(KernelError::Conflict(_)) => continue,
+            Err(error) => return Err(error.into()),
         }
     }
 }
