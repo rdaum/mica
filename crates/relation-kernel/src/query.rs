@@ -31,7 +31,6 @@ pub enum RelationSource {
     Snapshot,
     TransactionOverlay,
     Projected,
-    Transient,
     Computed,
     DerivedFull,
     DerivedDelta,

@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::builtin::{RuntimePorts, TransientAccess};
+use crate::builtin::RuntimePorts;
 use crate::metrics::RelationOperation;
 use crate::program::{CompactListItem, CompactMapItem, CompactRelationArg, Opcode, OperandRef};
 #[cfg(feature = "cranelift")]
@@ -23,10 +23,10 @@ use crate::{
     SpawnRequest, SpawnTarget, SuspendKind,
 };
 use mica_relation_kernel::{
-    ApplicableMethodCall, ComposedTransactionRead, DispatchRead, DispatchRelations, RelationId,
-    RelationMetadata, RelationRead, RelationWorkspace, ScanControl, Transaction, TransientStore,
-    Tuple, applicable_method_calls_normalized, applicable_positional_methods_cached,
-    method_program_id, normalize_dispatch_roles, system_row_source_relation,
+    ApplicableMethodCall, DispatchRead, DispatchRelations, RelationId, RelationMetadata,
+    RelationRead, RelationWorkspace, ScanControl, Transaction, Tuple,
+    applicable_method_calls_normalized, applicable_positional_methods_cached, method_program_id,
+    normalize_dispatch_roles, system_row_source_relation,
 };
 #[cfg(feature = "cranelift")]
 use mica_var::ValueRef;
@@ -37,7 +37,7 @@ use mica_var::abi::{
 use mica_var::{FunctionId, Identity, RelationValue, Symbol, Value, ValueKind};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "cranelift")]
@@ -198,8 +198,6 @@ pub struct VmHostContext<'ctx, 'kernel> {
     ports: RuntimePorts<'ctx>,
     task_snapshot: &'ctx [Value],
     runtime_context: RuntimeContext,
-    transient: Option<TransientAccess<'ctx>>,
-    transient_scopes: &'ctx [Identity],
     trace: VmHostTrace,
 }
 
@@ -361,30 +359,8 @@ impl<'ctx, 'kernel> VmHostContext<'ctx, 'kernel> {
             ports,
             task_snapshot,
             runtime_context,
-            transient: None,
-            transient_scopes: &[],
             trace: VmHostTrace::new(),
         }
-    }
-
-    pub fn with_transient(
-        mut self,
-        transient: &'ctx mut TransientStore,
-        transient_scopes: &'ctx [Identity],
-    ) -> Self {
-        self.transient = Some(TransientAccess::Exclusive(transient));
-        self.transient_scopes = transient_scopes;
-        self
-    }
-
-    pub fn with_shared_transient(
-        mut self,
-        transient: &'ctx RwLock<TransientStore>,
-        transient_scopes: &'ctx [Identity],
-    ) -> Self {
-        self.transient = Some(TransientAccess::Shared(transient));
-        self.transient_scopes = transient_scopes;
-        self
     }
 
     pub fn emit_trace_summary(&self, task_id: u64) {
@@ -417,20 +393,7 @@ impl RelationRead for VmHostContext<'_, '_> {
     ) -> Result<Vec<Tuple>, mica_relation_kernel::KernelError> {
         let metrics_start = Instant::now();
         let trace_start = self.trace.start();
-        let rows = match &self.transient {
-            Some(TransientAccess::Exclusive(transient)) => {
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
-                reader.scan_relation(relation, bindings)
-            }
-            Some(TransientAccess::Shared(transient)) => {
-                let transient = transient.read().unwrap();
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
-                reader.scan_relation(relation, bindings)
-            }
-            None => self.tx.scan_relation(relation, bindings),
-        }?;
+        let rows = self.tx.scan_relation(relation, bindings)?;
         let rows = self.filter_authorized_system_rows(relation, rows);
         let metadata = self.relation_metadata(relation);
         crate::metrics::record_relation_operation(
@@ -458,44 +421,13 @@ impl RelationRead for VmHostContext<'_, '_> {
         let trace_start = self.trace.start();
         let mut rows = 0usize;
         let metadata = self.relation_metadata(relation);
-        let result = match &self.transient {
-            Some(TransientAccess::Exclusive(transient)) => {
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
-                reader.visit_relation(relation, bindings, &mut |tuple| {
-                    if !self.system_row_allowed(metadata.as_ref(), tuple) {
-                        return Ok(ScanControl::Continue);
-                    }
-                    rows += 1;
-                    visitor(tuple)
-                })
+        let result = self.tx.visit_relation(relation, bindings, &mut |tuple| {
+            if !self.system_row_allowed(metadata.as_ref(), tuple) {
+                return Ok(ScanControl::Continue);
             }
-            Some(TransientAccess::Shared(transient)) => {
-                let tuples = {
-                    let transient = transient.read().unwrap();
-                    let reader =
-                        ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
-                    reader.scan_relation(relation, bindings)?
-                };
-                for tuple in tuples {
-                    if !self.system_row_allowed(metadata.as_ref(), &tuple) {
-                        continue;
-                    }
-                    rows += 1;
-                    if visitor(&tuple)? == ScanControl::Stop {
-                        break;
-                    }
-                }
-                Ok(())
-            }
-            None => self.tx.visit_relation(relation, bindings, &mut |tuple| {
-                if !self.system_row_allowed(metadata.as_ref(), tuple) {
-                    return Ok(ScanControl::Continue);
-                }
-                rows += 1;
-                visitor(tuple)
-            }),
-        };
+            rows += 1;
+            visitor(tuple)
+        });
         if result.is_ok() {
             crate::metrics::record_relation_operation(
                 RelationOperation::Visit,
@@ -522,22 +454,8 @@ impl DispatchRead for VmHostContext<'_, '_> {
         roles: &[(Value, Value)],
     ) -> Result<Option<Vec<ApplicableMethodCall>>, mica_relation_kernel::KernelError> {
         let start = self.trace.start();
-        let calls = match &self.transient {
-            Some(TransientAccess::Exclusive(transient)) => {
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
-                reader.cached_applicable_method_calls(relations, selector, roles)
-            }
-            Some(TransientAccess::Shared(transient)) => {
-                let transient = transient.read().unwrap();
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
-                reader.cached_applicable_method_calls(relations, selector, roles)
-            }
-            None => {
-                DispatchRead::cached_applicable_method_calls(&*self.tx, relations, selector, roles)
-            }
-        }?;
+        let calls =
+            DispatchRead::cached_applicable_method_calls(&*self.tx, relations, selector, roles)?;
         self.trace.record_dispatch(
             "applicable_methods",
             selector,
@@ -554,20 +472,7 @@ impl DispatchRead for VmHostContext<'_, '_> {
         method: &Value,
     ) -> Result<Option<Option<Value>>, mica_relation_kernel::KernelError> {
         let start = self.trace.start();
-        let program = match &self.transient {
-            Some(TransientAccess::Exclusive(transient)) => {
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
-                reader.cached_method_program(relation, method)
-            }
-            Some(TransientAccess::Shared(transient)) => {
-                let transient = transient.read().unwrap();
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
-                reader.cached_method_program(relation, method)
-            }
-            None => DispatchRead::cached_method_program(&*self.tx, relation, method),
-        }?;
+        let program = DispatchRead::cached_method_program(&*self.tx, relation, method)?;
         self.trace
             .record_method_program(relation, method, program.is_some(), start);
         Ok(program)
@@ -580,22 +485,9 @@ impl DispatchRead for VmHostContext<'_, '_> {
         args: &[Value],
     ) -> Result<Option<Arc<[Value]>>, mica_relation_kernel::KernelError> {
         let start = self.trace.start();
-        let methods = match &self.transient {
-            Some(TransientAccess::Exclusive(transient)) => {
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, transient, self.transient_scopes);
-                reader.cached_applicable_positional_methods(relations, selector, args)
-            }
-            Some(TransientAccess::Shared(transient)) => {
-                let transient = transient.read().unwrap();
-                let reader =
-                    ComposedTransactionRead::new(&*self.tx, &transient, self.transient_scopes);
-                reader.cached_applicable_positional_methods(relations, selector, args)
-            }
-            None => DispatchRead::cached_applicable_positional_methods(
-                &*self.tx, relations, selector, args,
-            ),
-        }?;
+        let methods = DispatchRead::cached_applicable_positional_methods(
+            &*self.tx, relations, selector, args,
+        )?;
         self.trace.record_dispatch(
             "applicable_positional_methods",
             selector,

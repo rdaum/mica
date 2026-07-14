@@ -17,8 +17,7 @@ use crate::{
     endpoint_relation,
 };
 use mica_relation_kernel::{
-    ExecutionContext, KernelError, RelationId, RelationKernel, RelationMetadata, RelationRead,
-    Transaction, TransientStore, Tuple,
+    ExecutionContext, KernelError, RelationId, RelationKernel, RelationRead, Transaction, Tuple,
 };
 use mica_var::{CapabilityId, Identity, Symbol, Value};
 use mica_vm::{
@@ -27,7 +26,7 @@ use mica_vm::{
 };
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,7 +285,6 @@ pub struct TaskManager {
     suspended: HashMap<TaskId, SuspendedTask>,
     completed: HashMap<TaskId, TaskOutcome>,
     effects: EffectLog,
-    transient: TransientStore,
     mailboxes: MailboxRuntimeHandle,
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
@@ -297,7 +295,6 @@ pub struct SharedTaskManager {
     kernel: Arc<RelationKernel>,
     next_task_id: AtomicU64,
     state: Mutex<SharedTaskState>,
-    transient: RwLock<TransientStore>,
     mailboxes: MailboxRuntimeHandle,
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
@@ -319,7 +316,6 @@ impl TaskManager {
             suspended: HashMap::new(),
             completed: HashMap::new(),
             effects: EffectLog::default(),
-            transient: TransientStore::new(),
             mailboxes: MailboxRuntimeHandle::new(),
             limits: TaskLimits::default(),
             resolver: Arc::new(ProgramResolver::new()),
@@ -357,14 +353,6 @@ impl TaskManager {
 
     pub fn effects_mut(&mut self) -> &mut EffectLog {
         &mut self.effects
-    }
-
-    pub fn transient(&self) -> &TransientStore {
-        &self.transient
-    }
-
-    pub fn transient_mut(&mut self) -> &mut TransientStore {
-        &mut self.transient
     }
 
     pub fn drain_mailbox(&self, receiver: Value) -> Result<Vec<Value>, RuntimeError> {
@@ -441,94 +429,11 @@ impl TaskManager {
         crate::metrics::metrics()
             .endpoint_operations
             .inc(crate::metrics::EndpointOperation::Close);
-        let endpoint_rows = close_endpoint_in(&self.kernel, endpoint);
-        let transient_rows = self.transient.drop_scope(endpoint);
-        if transient_rows > 0 {
-            record_transient_metrics(&self.transient);
-        }
-        if endpoint_rows > 0 {
+        let removed = close_endpoint_in(&self.kernel, endpoint);
+        if removed > 0 {
             crate::metrics::endpoint_closed();
         }
-        endpoint_rows + transient_rows
-    }
-
-    pub fn assert_transient(
-        &mut self,
-        scope: Identity,
-        metadata: RelationMetadata,
-        tuple: Tuple,
-    ) -> Result<bool, TaskManagerError> {
-        let result = self
-            .transient
-            .assert(scope, metadata, tuple)
-            .map_err(TaskError::from)
-            .map_err(TaskManagerError::from);
-        if result.as_ref().is_ok_and(|inserted| *inserted) {
-            crate::metrics::metrics()
-                .transient_operations
-                .inc(crate::metrics::TransientOperation::Assert);
-            crate::metrics::metrics().transient_tuples_asserted.inc();
-            record_transient_metrics(&self.transient);
-        }
-        result
-    }
-
-    pub fn assert_transient_many(
-        &mut self,
-        scope: Identity,
-        tuples: Vec<(RelationMetadata, Tuple)>,
-    ) -> Result<usize, TaskManagerError> {
-        let result = self
-            .transient
-            .assert_many(scope, tuples)
-            .map_err(TaskError::from)
-            .map_err(TaskManagerError::from);
-        match result {
-            Ok(count) => {
-                crate::metrics::metrics()
-                    .transient_operations
-                    .inc(crate::metrics::TransientOperation::AssertMany);
-                crate::metrics::metrics()
-                    .transient_tuples_asserted
-                    .add(count as isize);
-                record_transient_metrics(&self.transient);
-                Ok(count)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    pub fn retract_transient(
-        &mut self,
-        scope: Identity,
-        relation: RelationId,
-        tuple: &Tuple,
-    ) -> Result<bool, TaskManagerError> {
-        let retracted = self.transient.retract(scope, relation, tuple);
-        if retracted {
-            crate::metrics::metrics()
-                .transient_operations
-                .inc(crate::metrics::TransientOperation::Retract);
-            crate::metrics::metrics().transient_tuples_retracted.inc();
-            record_transient_metrics(&self.transient);
-        }
-        Ok(retracted)
-    }
-
-    pub fn retract_transient_many(
-        &mut self,
-        scope: Identity,
-        tuples: Vec<(RelationId, Tuple)>,
-    ) -> usize {
-        let count = self.transient.retract_many(scope, tuples);
-        crate::metrics::metrics()
-            .transient_operations
-            .inc(crate::metrics::TransientOperation::RetractMany);
-        crate::metrics::metrics()
-            .transient_tuples_retracted
-            .add(count as isize);
-        record_transient_metrics(&self.transient);
-        count
+        removed
     }
 
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
@@ -553,7 +458,6 @@ impl TaskManager {
                 completed: self.completed.into_keys().collect(),
                 effects: self.effects,
             }),
-            transient: RwLock::new(self.transient),
             mailboxes: self.mailboxes,
             limits: self.limits,
             resolver: self.resolver,
@@ -606,9 +510,8 @@ impl TaskManager {
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
         task.set_mailbox_runtime(self.mailboxes.clone());
-        let transient_scopes = transient_scopes(runtime_context);
         let start = Instant::now();
-        let result = task.run_with_transient(Some(&mut self.transient), &transient_scopes);
+        let result = task.run();
         crate::metrics::record_task_result(
             crate::metrics::TaskOperation::Submit,
             start.elapsed(),
@@ -683,9 +586,8 @@ impl TaskManager {
         task.set_runtime_context(runtime_context);
         task.set_mailbox_runtime(self.mailboxes.clone());
         task.resume_with(value)?;
-        let transient_scopes = transient_scopes(runtime_context);
         let start = Instant::now();
-        let result = task.run_with_transient(Some(&mut self.transient), &transient_scopes);
+        let result = task.run();
         crate::metrics::record_task_result(
             crate::metrics::TaskOperation::Resume,
             start.elapsed(),
@@ -828,14 +730,8 @@ impl SharedTaskManager {
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
         task.set_mailbox_runtime(self.mailboxes.clone());
-        let transient_scopes = transient_scopes(runtime_context);
-        let use_transient = !self.transient.read().unwrap().is_empty();
         let start = Instant::now();
-        let result = if use_transient {
-            task.run_with_shared_transient(&self.transient, &transient_scopes)
-        } else {
-            task.run()
-        };
+        let result = task.run();
         crate::metrics::record_task_result(
             crate::metrics::TaskOperation::Submit,
             start.elapsed(),
@@ -886,14 +782,8 @@ impl SharedTaskManager {
         task.set_runtime_context(runtime_context);
         task.set_mailbox_runtime(self.mailboxes.clone());
         task.resume_with(value)?;
-        let transient_scopes = transient_scopes(runtime_context);
-        let use_transient = !self.transient.read().unwrap().is_empty();
         let start = Instant::now();
-        let result = if use_transient {
-            task.run_with_shared_transient(&self.transient, &transient_scopes)
-        } else {
-            task.run()
-        };
+        let result = task.run();
         crate::metrics::record_task_result(
             crate::metrics::TaskOperation::Resume,
             start.elapsed(),
@@ -980,100 +870,11 @@ impl SharedTaskManager {
         crate::metrics::metrics()
             .endpoint_operations
             .inc(crate::metrics::EndpointOperation::Close);
-        let endpoint_rows = close_endpoint_in(&self.kernel, endpoint);
-        let transient_rows = {
-            let mut transient = self.transient.write().unwrap();
-            let removed = transient.drop_scope(endpoint);
-            if removed > 0 {
-                record_transient_metrics(&transient);
-            }
-            removed
-        };
-        if endpoint_rows > 0 {
+        let removed = close_endpoint_in(&self.kernel, endpoint);
+        if removed > 0 {
             crate::metrics::endpoint_closed();
         }
-        endpoint_rows + transient_rows
-    }
-
-    pub fn assert_transient(
-        &self,
-        scope: Identity,
-        metadata: RelationMetadata,
-        tuple: Tuple,
-    ) -> Result<bool, TaskManagerError> {
-        let mut transient = self.transient.write().unwrap();
-        let result = transient
-            .assert(scope, metadata, tuple)
-            .map_err(TaskError::from)
-            .map_err(TaskManagerError::from);
-        if result.as_ref().is_ok_and(|inserted| *inserted) {
-            crate::metrics::metrics()
-                .transient_operations
-                .inc(crate::metrics::TransientOperation::Assert);
-            crate::metrics::metrics().transient_tuples_asserted.inc();
-            record_transient_metrics(&transient);
-        }
-        result
-    }
-
-    pub fn assert_transient_many(
-        &self,
-        scope: Identity,
-        tuples: Vec<(RelationMetadata, Tuple)>,
-    ) -> Result<usize, TaskManagerError> {
-        let mut transient = self.transient.write().unwrap();
-        let result = transient
-            .assert_many(scope, tuples)
-            .map_err(TaskError::from)
-            .map_err(TaskManagerError::from);
-        match result {
-            Ok(count) => {
-                crate::metrics::metrics()
-                    .transient_operations
-                    .inc(crate::metrics::TransientOperation::AssertMany);
-                crate::metrics::metrics()
-                    .transient_tuples_asserted
-                    .add(count as isize);
-                record_transient_metrics(&transient);
-                Ok(count)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    pub fn retract_transient(
-        &self,
-        scope: Identity,
-        relation: RelationId,
-        tuple: &Tuple,
-    ) -> Result<bool, TaskManagerError> {
-        let mut transient = self.transient.write().unwrap();
-        let retracted = transient.retract(scope, relation, tuple);
-        if retracted {
-            crate::metrics::metrics()
-                .transient_operations
-                .inc(crate::metrics::TransientOperation::Retract);
-            crate::metrics::metrics().transient_tuples_retracted.inc();
-            record_transient_metrics(&transient);
-        }
-        Ok(retracted)
-    }
-
-    pub fn retract_transient_many(
-        &self,
-        scope: Identity,
-        tuples: Vec<(RelationId, Tuple)>,
-    ) -> usize {
-        let mut transient = self.transient.write().unwrap();
-        let count = transient.retract_many(scope, tuples);
-        crate::metrics::metrics()
-            .transient_operations
-            .inc(crate::metrics::TransientOperation::RetractMany);
-        crate::metrics::metrics()
-            .transient_tuples_retracted
-            .add(count as isize);
-        record_transient_metrics(&transient);
-        count
+        removed
     }
 
     pub fn route_effect_targets(&self, target: Identity) -> Vec<Identity> {
@@ -1176,15 +977,6 @@ fn suspended_state(outcome: &TaskOutcome, task: &Task<'_>) -> Option<crate::task
     } else {
         None
     }
-}
-
-fn record_transient_metrics(transient: &TransientStore) {
-    crate::metrics::metrics()
-        .transient_scopes
-        .set(transient.scope_count() as i64);
-    crate::metrics::metrics()
-        .transient_tuples
-        .set(transient.len() as i64);
 }
 
 fn open_endpoint_in(
@@ -1352,20 +1144,6 @@ fn task_status_value(task_id: TaskId, state: Symbol) -> Value {
         (Value::symbol(Symbol::intern("id")), task_id),
         (Value::symbol(Symbol::intern("state")), Value::symbol(state)),
     ])
-}
-
-fn transient_scopes(runtime_context: RuntimeContext) -> Vec<Identity> {
-    let mut scopes = Vec::with_capacity(3);
-    for scope in [runtime_context.principal(), runtime_context.actor()]
-        .into_iter()
-        .flatten()
-        .chain(std::iter::once(runtime_context.endpoint()))
-    {
-        if !scopes.contains(&scope) {
-            scopes.push(scope);
-        }
-    }
-    scopes
 }
 
 pub struct SuspendedTask {

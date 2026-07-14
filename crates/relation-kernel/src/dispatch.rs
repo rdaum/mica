@@ -586,10 +586,7 @@ fn identity_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Atom, ComposedTransactionRead, RelationKernel, RelationMetadata, Rule, Term,
-        TransientStore, Tuple,
-    };
+    use crate::{Atom, RelationKernel, RelationMetadata, Rule, Term, Tuple};
     use mica_var::{Identity, STRING_PROTOTYPE, Symbol, Value};
 
     fn rel(id: u64) -> RelationId {
@@ -1228,44 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn composed_dispatch_bypasses_snapshot_cache_for_transient_dispatch_facts() {
-        let kernel = kernel_with_dispatch_relations();
-        let snapshot = kernel.snapshot();
-        assert!(
-            applicable_method_calls(&*snapshot, dispatch_relations(), sym("look"), &[])
-                .unwrap()
-                .is_empty()
-        );
-
-        let tx = kernel.begin();
-        let mut transient = TransientStore::new();
-        let scope = rel(90);
-        transient
-            .assert(
-                scope,
-                RelationMetadata::new(rel(40), Symbol::intern("MethodSelector"), 2)
-                    .with_index([1, 0]),
-                Tuple::from([int(100), sym("look")]),
-            )
-            .unwrap();
-        let scopes = [scope];
-        let reader = ComposedTransactionRead::new(&tx, &transient, &scopes);
-
-        assert_eq!(
-            applicable_method_calls(&reader, dispatch_relations(), sym("look"), &[]).unwrap(),
-            vec![ApplicableMethodCall {
-                method: int(100),
-                args: Some(Vec::new())
-            }]
-        );
-        let methods =
-            applicable_positional_methods_cached(&reader, dispatch_relations(), sym("look"), &[])
-                .unwrap();
-        assert_eq!(methods.as_ref(), &[int(100)]);
-    }
-
-    #[test]
-    fn composed_positional_dispatch_shares_snapshot_cache_results() {
+    fn positional_dispatch_shares_snapshot_cache_results() {
         let kernel = kernel_with_dispatch_relations();
         let mut seed = kernel.begin();
         seed.assert(rel(40), Tuple::from([int(100), sym("look")]))
@@ -1273,16 +1233,11 @@ mod tests {
         seed.commit().unwrap();
 
         let tx = kernel.begin();
-        let transient = TransientStore::new();
-        let reader = ComposedTransactionRead::new(&tx, &transient, &[]);
-
-        let first = reader
+        let first = tx
             .cached_applicable_positional_methods(dispatch_relations(), &sym("look"), &[])
-            .unwrap()
             .unwrap();
-        let second = reader
+        let second = tx
             .cached_applicable_positional_methods(dispatch_relations(), &sym("look"), &[])
-            .unwrap()
             .unwrap();
         assert!(Arc::ptr_eq(&first, &second));
     }

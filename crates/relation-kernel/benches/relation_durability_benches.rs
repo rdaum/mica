@@ -12,16 +12,15 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_relation_kernel::{
-    Commit, CommitProvider, RelationDurability, RelationKernel, RelationMetadata, TransientStore,
-    Tuple,
+    Commit, CommitProvider, RelationDurability, RelationKernel, RelationMetadata, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use micromeasure::{
     BenchContext, BenchmarkMainOptions, ConcurrentBenchContext, ConcurrentBenchControl,
     ConcurrentWorker, ConcurrentWorkerResult, Throughput, benchmark_main, black_box,
 };
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 const CONCURRENT_THREADS: usize = 4;
@@ -31,17 +30,15 @@ const FIRST_VALUE: u64 = 1_000_000;
 enum StoragePath {
     Durable,
     Volatile,
-    Transient,
 }
 
 impl StoragePath {
-    const ALL: [Self; 3] = [Self::Durable, Self::Volatile, Self::Transient];
+    const ALL: [Self; 2] = [Self::Durable, Self::Volatile];
 
     const fn name(self) -> &'static str {
         match self {
             Self::Durable => "durable_transaction_lifecycle",
             Self::Volatile => "volatile_transaction_lifecycle",
-            Self::Transient => "transient_store_lifecycle",
         }
     }
 }
@@ -63,10 +60,8 @@ impl CommitProvider for CountingProvider {
 
 struct DurabilityBenchContext {
     kernel: Arc<RelationKernel>,
-    transient: RwLock<TransientStore>,
     metadata: RelationMetadata,
     next_value: AtomicU64,
-    path: StoragePath,
 }
 
 impl DurabilityBenchContext {
@@ -74,7 +69,7 @@ impl DurabilityBenchContext {
         let relation = Identity::new(1).unwrap();
         let durability = match path {
             StoragePath::Volatile => RelationDurability::Volatile,
-            StoragePath::Durable | StoragePath::Transient => RelationDurability::Durable,
+            StoragePath::Durable => RelationDurability::Durable,
         };
         let metadata =
             RelationMetadata::new(relation, Symbol::intern("Probe"), 1).with_durability(durability);
@@ -82,10 +77,8 @@ impl DurabilityBenchContext {
         kernel.create_relation(metadata.clone()).unwrap();
         Self {
             kernel: Arc::new(kernel),
-            transient: RwLock::new(TransientStore::new()),
             metadata,
             next_value: AtomicU64::new(FIRST_VALUE),
-            path,
         }
     }
 
@@ -95,42 +88,28 @@ impl DurabilityBenchContext {
                 .expect("benchmark values stay within the Mica identity range"),
         );
         let tuple = Tuple::from([value.clone()]);
-        match self.path {
-            StoragePath::Durable | StoragePath::Volatile => {
-                let mut assert = self.kernel.begin();
-                assert.assert(self.metadata.id(), tuple.clone()).unwrap();
-                let assert_result = assert.commit().unwrap();
-                debug_assert_eq!(
-                    assert_result
-                        .snapshot()
-                        .scan(self.metadata.id(), &[Some(value.clone())])
-                        .unwrap()
-                        .len(),
-                    1
-                );
-                let mut retract = self.kernel.begin();
-                retract.retract(self.metadata.id(), tuple).unwrap();
-                let retract_result = retract.commit().unwrap();
-                debug_assert!(
-                    retract_result
-                        .snapshot()
-                        .scan(self.metadata.id(), &[Some(value)])
-                        .unwrap()
-                        .is_empty()
-                );
-                black_box((assert_result, retract_result));
-            }
-            StoragePath::Transient => {
-                let scope = value.as_identity().unwrap();
-                let mut transient = self.transient.write().unwrap();
-                let inserted = transient
-                    .assert(scope, self.metadata.clone(), tuple.clone())
-                    .unwrap();
-                let removed = transient.retract(scope, self.metadata.id(), &tuple);
-                debug_assert!(inserted && removed);
-                black_box((inserted, removed));
-            }
-        }
+        let mut assert = self.kernel.begin();
+        assert.assert(self.metadata.id(), tuple.clone()).unwrap();
+        let assert_result = assert.commit().unwrap();
+        debug_assert_eq!(
+            assert_result
+                .snapshot()
+                .scan(self.metadata.id(), &[Some(value.clone())])
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut retract = self.kernel.begin();
+        retract.retract(self.metadata.id(), tuple).unwrap();
+        let retract_result = retract.commit().unwrap();
+        debug_assert!(
+            retract_result
+                .snapshot()
+                .scan(self.metadata.id(), &[Some(value)])
+                .unwrap()
+                .is_empty()
+        );
+        black_box((assert_result, retract_result));
     }
 }
 

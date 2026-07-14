@@ -248,7 +248,6 @@ pub fn metrics_snapshot_json() -> JsonValue {
             "task_outcomes": labeled_counter_snapshot(&mica_runtime::metrics::metrics().task_outcomes),
             "active_endpoints": mica_runtime::metrics::metrics().active_endpoints.get(),
             "suspended_tasks": mica_runtime::metrics::metrics().suspended_tasks.get(),
-            "transient_tuples": mica_runtime::metrics::metrics().transient_tuples.get(),
         },
         "mica_vm": {
             "relation_operations": labeled_counter_snapshot(&mica_runtime::vm_metrics::metrics().relation_operations),
