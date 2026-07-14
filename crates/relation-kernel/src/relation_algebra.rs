@@ -133,8 +133,8 @@ pub fn natural_join(
             .map(|position| right.heading()[*position as usize]),
     );
     let rows = join_tuple_rows_with(
-        left.rows().to_vec(),
-        right.rows().to_vec(),
+        left.rows(),
+        right.rows(),
         &left_positions,
         &right_positions,
         |left, right| {
@@ -240,8 +240,8 @@ pub(crate) fn equality_join_tuple_rows(
     right_positions: &[u16],
 ) -> Vec<Tuple> {
     join_tuple_rows_with(
-        left_rows,
-        right_rows,
+        &left_rows,
+        &right_rows,
         left_positions,
         right_positions,
         Tuple::concat,
@@ -249,8 +249,8 @@ pub(crate) fn equality_join_tuple_rows(
 }
 
 fn join_tuple_rows_with(
-    left_rows: Vec<Tuple>,
-    right_rows: Vec<Tuple>,
+    left_rows: &[Tuple],
+    right_rows: &[Tuple],
     left_positions: &[u16],
     right_positions: &[u16],
     mut combine: impl FnMut(&Tuple, &Tuple) -> Tuple,
@@ -258,8 +258,8 @@ fn join_tuple_rows_with(
     debug_assert_eq!(left_positions.len(), right_positions.len());
     let mut out = Vec::new();
     if left_positions.is_empty() {
-        for left in &left_rows {
-            for right in &right_rows {
+        for left in left_rows {
+            for right in right_rows {
                 out.push(combine(left, right));
             }
         }

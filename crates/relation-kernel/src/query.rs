@@ -722,8 +722,8 @@ fn semi_join(
         );
     }
 
-    let left_index = ProjectedTupleIndex::from_rows(left_rows.iter().cloned(), left_positions);
-    let right_index = ProjectedTupleIndex::from_rows(right_rows, right_positions);
+    let left_index = ProjectedTupleIndex::from_rows(&left_rows, left_positions);
+    let right_index = ProjectedTupleIndex::from_rows(&right_rows, right_positions);
     let mut matches = BTreeSet::new();
     left_index.matching_left_rows(&right_index, |tuple| {
         matches.insert(tuple.clone());
