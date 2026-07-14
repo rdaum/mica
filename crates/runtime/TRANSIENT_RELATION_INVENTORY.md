@@ -102,3 +102,36 @@ The four-worker endpoint and request cases already regress relative to one worke
 independent lifecycles. That is the contention signature the volatile path must eliminate or
 materially improve; the final comparison must use this same harness rather than a separately shaped
 microbenchmark.
+
+## Transactional Storage Checkpoint
+
+`relation_durability_benches` isolates one assertion commit followed by one retraction commit. It
+compares durable and volatile ordinary transactions against the current `TransientStore` mutation
+path. The durable case uses a non-accumulating commit provider so the difference from volatile
+storage is the persistence projection and provider call, not an ever-growing in-memory log.
+
+Command, run once per storage path so benchmark processes do not overlap:
+
+```sh
+cargo bench -p mica-relation-kernel --bench relation_durability_benches -- durable_transaction_lifecycle
+cargo bench -p mica-relation-kernel --bench relation_durability_benches -- volatile_transaction_lifecycle
+cargo bench -p mica-relation-kernel --bench relation_durability_benches -- transient_store_lifecycle
+```
+
+| Storage path | Execution | Median lifecycle | Throughput |
+| --- | --- | ---: | ---: |
+| Durable transaction | Serial | 2,680 ns | 743.22 k tuple mutations/s |
+| Durable transaction | 1 worker | 3,357 ns | 596.02 k tuple mutations/s |
+| Durable transaction | 4 workers | 7,284 ns | 275.52 k tuple mutations/s |
+| Volatile transaction | Serial | 2,584 ns | 771.60 k tuple mutations/s |
+| Volatile transaction | 1 worker | 3,265 ns | 610.45 k tuple mutations/s |
+| Volatile transaction | 4 workers | 6,729 ns | 297.50 k tuple mutations/s |
+| `TransientStore` | Serial | 368 ns | 4.99 M tuple mutations/s |
+| `TransientStore` | 1 worker | 335 ns | 5.96 M tuple mutations/s |
+| `TransientStore` | 4 workers | 505 ns | 3.96 M tuple mutations/s |
+
+Volatile transactions avoid persistence work but retain the ordinary MVCC commit cost. In this
+deliberately minimal two-commit lifecycle they are about eight times slower than `TransientStore`
+with one worker and thirteen times slower with four workers. Endpoint and request migration must
+therefore batch each lifecycle's tuple changes into transactions and rerun the production-shaped
+benchmarks; volatility alone is not a performance win.

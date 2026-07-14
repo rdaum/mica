@@ -757,6 +757,63 @@ fn transaction_derived_cache_invalidates_after_local_write() {
 }
 
 #[test]
+fn volatile_rows_participate_in_rules_until_recovery() {
+    let provider = Arc::new(InMemoryCommitProvider::new());
+    let kernel = RelationKernel::with_provider(provider.clone());
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(1), Symbol::intern("VolatileBase"), 1)
+                .with_durability(RelationDurability::Volatile),
+        )
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(rel(2), Symbol::intern("Derived"), 1))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(2),
+                [var("item")],
+                [Atom::positive(rel(1), [var("item")])],
+            ),
+            "Derived(item) :- VolatileBase(item)",
+        )
+        .unwrap();
+
+    let mut transaction = kernel.begin();
+    transaction.assert(rel(1), Tuple::from([int(42)])).unwrap();
+    assert_eq!(
+        transaction.scan(rel(2), &[None]).unwrap(),
+        vec![Tuple::from([int(42)])]
+    );
+    transaction.commit().unwrap();
+    assert_eq!(
+        kernel.snapshot().scan(rel(2), &[None]).unwrap(),
+        vec![Tuple::from([int(42)])]
+    );
+
+    let recovered = RelationKernel::load_from_commit_log(
+        provider.commits(),
+        Arc::new(InMemoryCommitProvider::new()),
+    )
+    .unwrap();
+    assert!(
+        recovered
+            .snapshot()
+            .scan(rel(1), &[None])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        recovered
+            .snapshot()
+            .scan(rel(2), &[None])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn installed_rules_have_catalog_facts_and_can_be_disabled() {
     let kernel = RelationKernel::new();
     kernel
@@ -1976,6 +2033,93 @@ fn successful_commits_are_persisted_as_fact_change_batches() {
 }
 
 #[test]
+fn volatile_changes_publish_live_without_entering_persistent_commits() {
+    let provider = Arc::new(InMemoryCommitProvider::new());
+    let kernel = RelationKernel::with_provider(provider.clone());
+    kernel
+        .create_relation(RelationMetadata::new(rel(1), Symbol::intern("Durable"), 1))
+        .unwrap();
+    kernel
+        .create_relation(
+            RelationMetadata::new(rel(2), Symbol::intern("Volatile"), 1)
+                .with_durability(RelationDurability::Volatile),
+        )
+        .unwrap();
+
+    let mut mixed = kernel.begin();
+    mixed.assert(rel(1), Tuple::from([int(10)])).unwrap();
+    mixed.assert(rel(2), Tuple::from([int(20)])).unwrap();
+    let result = mixed.commit().unwrap();
+    assert_eq!(result.commit().changes().len(), 2);
+    assert_eq!(
+        kernel.snapshot().scan(rel(2), &[None]).unwrap(),
+        vec![Tuple::from([int(20)])]
+    );
+
+    let persisted_after_mixed = provider.commits();
+    assert_eq!(persisted_after_mixed.len(), 3);
+    assert_eq!(persisted_after_mixed[2].version(), 3);
+    assert_eq!(persisted_after_mixed[2].changes().len(), 1);
+    assert_eq!(persisted_after_mixed[2].changes()[0].relation, rel(1));
+
+    let mut volatile_only = kernel.begin();
+    volatile_only
+        .assert(rel(2), Tuple::from([int(21)]))
+        .unwrap();
+    assert_eq!(volatile_only.commit().unwrap().commit().version(), 4);
+    assert_eq!(provider.commits().len(), 3);
+
+    let mut durable_after_gap = kernel.begin();
+    durable_after_gap
+        .assert(rel(1), Tuple::from([int(11)]))
+        .unwrap();
+    assert_eq!(durable_after_gap.commit().unwrap().commit().version(), 5);
+    let persisted = provider.commits();
+    assert_eq!(persisted.last().unwrap().version(), 5);
+
+    let recovered =
+        RelationKernel::load_from_commit_log(persisted, Arc::new(InMemoryCommitProvider::new()))
+            .unwrap();
+    assert_eq!(
+        recovered.snapshot().scan(rel(1), &[None]).unwrap(),
+        vec![Tuple::from([int(10)]), Tuple::from([int(11)])]
+    );
+    assert!(
+        recovered
+            .snapshot()
+            .scan(rel(2), &[None])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn persisted_state_loader_discards_volatile_facts() {
+    let state = crate::PersistedKernelState {
+        version: 7,
+        relations: vec![
+            RelationMetadata::new(rel(1), Symbol::intern("Durable"), 1),
+            RelationMetadata::new(rel(2), Symbol::intern("Volatile"), 1)
+                .with_durability(RelationDurability::Volatile),
+        ],
+        rules: Vec::new(),
+        facts: vec![
+            (rel(1), Tuple::from([int(10)])),
+            (rel(2), Tuple::from([int(20)])),
+        ],
+    };
+
+    let kernel =
+        RelationKernel::load_from_state(state, Arc::new(InMemoryCommitProvider::new())).unwrap();
+
+    assert_eq!(
+        kernel.snapshot().scan(rel(1), &[None]).unwrap(),
+        vec![Tuple::from([int(10)])]
+    );
+    assert!(kernel.snapshot().scan(rel(2), &[None]).unwrap().is_empty());
+}
+
+#[test]
 fn failed_persistence_does_not_publish_live_snapshot() {
     let provider = Arc::new(FailAfterCommitProvider::new(0));
     let kernel = RelationKernel::with_provider(provider);
@@ -2106,8 +2250,7 @@ fn fjall_provider_persists_and_loads_canonical_state() {
                     .with_index([2, 0])
                     .with_conflict_policy(ConflictPolicy::Functional {
                         key_positions: vec![2],
-                    })
-                    .with_durability(RelationDurability::Volatile),
+                    }),
             )
             .unwrap();
         kernel
@@ -2115,6 +2258,12 @@ fn fjall_provider_persists_and_loads_canonical_state() {
             .unwrap();
         kernel
             .create_relation(RelationMetadata::new(rel(12), Symbol::intern("Derived"), 1))
+            .unwrap();
+        kernel
+            .create_relation(
+                RelationMetadata::new(rel(13), Symbol::intern("VolatileScratch"), 1)
+                    .with_durability(RelationDurability::Volatile),
+            )
             .unwrap();
         kernel
             .install_rule(
@@ -2150,18 +2299,18 @@ fn fjall_provider_persists_and_loads_canonical_state() {
 
     let provider = FjallStateProvider::open(store.path()).unwrap();
     let persisted = provider.load_state().unwrap();
-    assert_eq!(persisted.version, 5);
-    assert_eq!(provider.load_commits().unwrap().len(), 5);
+    assert_eq!(persisted.version, 6);
+    assert_eq!(provider.load_commits().unwrap().len(), 6);
     let loaded =
         RelationKernel::load_from_state(persisted, Arc::new(InMemoryCommitProvider::new()))
             .unwrap();
 
-    assert_eq!(loaded.snapshot().version(), 5);
+    assert_eq!(loaded.snapshot().version(), 6);
     assert_eq!(
         loaded
             .snapshot()
             .relation_metadata()
-            .find(|metadata| metadata.id() == rel(10))
+            .find(|metadata| metadata.id() == rel(13))
             .unwrap()
             .durability(),
         RelationDurability::Volatile
@@ -2173,6 +2322,67 @@ fn fjall_provider_persists_and_loads_canonical_state() {
     assert_eq!(
         loaded.snapshot().scan(rel(12), &[None]).unwrap(),
         vec![Tuple::from([int(77)])]
+    );
+}
+
+#[cfg(feature = "fjall-provider")]
+#[test]
+fn fjall_provider_recovers_volatile_relations_without_their_rows() {
+    let store = TempStore::new("volatile-recovery");
+    {
+        let provider = Arc::new(FjallStateProvider::open_strict(store.path()).unwrap());
+        let kernel = RelationKernel::with_provider(provider.clone());
+        kernel
+            .create_relation(RelationMetadata::new(rel(1), Symbol::intern("Durable"), 1))
+            .unwrap();
+        kernel
+            .create_relation(
+                RelationMetadata::new(rel(2), Symbol::intern("Volatile"), 1)
+                    .with_durability(RelationDurability::Volatile),
+            )
+            .unwrap();
+
+        let mut mixed = kernel.begin();
+        mixed.assert(rel(1), Tuple::from([int(10)])).unwrap();
+        mixed.assert(rel(2), Tuple::from([int(20)])).unwrap();
+        mixed.commit().unwrap();
+        assert_eq!(provider.completed_version(), 3);
+
+        let mut volatile_only = kernel.begin();
+        volatile_only
+            .assert(rel(2), Tuple::from([int(21)]))
+            .unwrap();
+        volatile_only.commit().unwrap();
+        assert_eq!(kernel.snapshot().version(), 4);
+        assert_eq!(provider.completed_version(), 3);
+
+        let mut durable_after_gap = kernel.begin();
+        durable_after_gap
+            .assert(rel(1), Tuple::from([int(11)]))
+            .unwrap();
+        durable_after_gap.commit().unwrap();
+        assert_eq!(provider.completed_version(), 5);
+    }
+
+    let provider = FjallStateProvider::open_strict(store.path()).unwrap();
+    let state = provider.load_state().unwrap();
+    assert_eq!(state.version, 5);
+    assert_eq!(provider.load_commits().unwrap().len(), 4);
+    let kernel =
+        RelationKernel::load_from_state(state, Arc::new(InMemoryCommitProvider::new())).unwrap();
+    assert_eq!(
+        kernel.snapshot().scan(rel(1), &[None]).unwrap(),
+        vec![Tuple::from([int(10)]), Tuple::from([int(11)])]
+    );
+    assert!(kernel.snapshot().scan(rel(2), &[None]).unwrap().is_empty());
+    assert_eq!(
+        kernel
+            .snapshot()
+            .relation_metadata()
+            .find(|metadata| metadata.id() == rel(2))
+            .unwrap()
+            .durability(),
+        RelationDurability::Volatile
     );
 }
 
