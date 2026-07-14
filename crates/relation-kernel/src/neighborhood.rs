@@ -33,7 +33,7 @@ impl Snapshot {
     pub fn subject_facts(&self, subject: &Value) -> Result<Vec<SubjectFact>, KernelError> {
         let mut facts = Vec::new();
         let mut relations = self.relations.iter().collect::<Vec<_>>();
-        relations.sort_by_key(|(relation, _)| **relation);
+        relations.sort_by_key(|(relation, _)| *relation);
         for (relation, state) in relations {
             if state.metadata().arity() == 0 {
                 continue;
@@ -42,7 +42,7 @@ impl Snapshot {
             bindings[0] = Some(subject.clone());
             facts.extend(state.scan(&bindings)?.into_iter().map(|tuple| SubjectFact {
                 subject: subject.clone(),
-                relation: *relation,
+                relation,
                 tuple,
             }));
         }
@@ -52,7 +52,7 @@ impl Snapshot {
     pub fn mentioned_facts(&self, identity: &Value) -> Result<Vec<MentionedFact>, KernelError> {
         let mut facts = Vec::new();
         let mut relations = self.relations.iter().collect::<Vec<_>>();
-        relations.sort_by_key(|(relation, _)| **relation);
+        relations.sort_by_key(|(relation, _)| *relation);
         for (relation, state) in relations {
             for position in 0..state.metadata().arity() {
                 let mut bindings = vec![None; state.metadata().arity() as usize];
@@ -63,7 +63,7 @@ impl Snapshot {
                         .into_iter()
                         .map(|tuple| MentionedFact {
                             identity: identity.clone(),
-                            relation: *relation,
+                            relation,
                             position,
                             tuple,
                         }),
@@ -78,7 +78,7 @@ impl Transaction<'_> {
     pub fn subject_facts(&self, subject: &Value) -> Result<Vec<SubjectFact>, KernelError> {
         let mut facts = Vec::new();
         let mut relations = self.base.relations.iter().collect::<Vec<_>>();
-        relations.sort_by_key(|(relation, _)| **relation);
+        relations.sort_by_key(|(relation, _)| *relation);
         for (relation, state) in relations {
             if state.metadata().arity() == 0 {
                 continue;
@@ -86,11 +86,11 @@ impl Transaction<'_> {
             let mut bindings = vec![None; state.metadata().arity() as usize];
             bindings[0] = Some(subject.clone());
             facts.extend(
-                self.scan(*relation, &bindings)?
+                self.scan(relation, &bindings)?
                     .into_iter()
                     .map(|tuple| SubjectFact {
                         subject: subject.clone(),
-                        relation: *relation,
+                        relation,
                         tuple,
                     }),
             );
@@ -101,15 +101,15 @@ impl Transaction<'_> {
     pub fn mentioned_facts(&self, identity: &Value) -> Result<Vec<MentionedFact>, KernelError> {
         let mut facts = Vec::new();
         let mut relations = self.base.relations.iter().collect::<Vec<_>>();
-        relations.sort_by_key(|(relation, _)| **relation);
+        relations.sort_by_key(|(relation, _)| *relation);
         for (relation, state) in relations {
             for position in 0..state.metadata().arity() {
                 let mut bindings = vec![None; state.metadata().arity() as usize];
                 bindings[position as usize] = Some(identity.clone());
-                facts.extend(self.scan(*relation, &bindings)?.into_iter().map(|tuple| {
+                facts.extend(self.scan(relation, &bindings)?.into_iter().map(|tuple| {
                     MentionedFact {
                         identity: identity.clone(),
-                        relation: *relation,
+                        relation,
                         position,
                         tuple,
                     }
@@ -125,21 +125,19 @@ impl Transaction<'_> {
     ) -> Result<Vec<MentionedFact>, KernelError> {
         let mut facts = Vec::new();
         let mut relations = self.base.relations.iter().collect::<Vec<_>>();
-        relations.sort_by_key(|(relation, _)| **relation);
+        relations.sort_by_key(|(relation, _)| *relation);
         for (relation, state) in relations {
             for position in 0..state.metadata().arity() {
                 let mut bindings = vec![None; state.metadata().arity() as usize];
                 bindings[position as usize] = Some(identity.clone());
-                facts.extend(
-                    self.scan_extensional(*relation, &bindings)?
-                        .into_iter()
-                        .map(|tuple| MentionedFact {
-                            identity: identity.clone(),
-                            relation: *relation,
-                            position,
-                            tuple,
-                        }),
-                );
+                facts.extend(self.scan_extensional(relation, &bindings)?.into_iter().map(
+                    |tuple| MentionedFact {
+                        identity: identity.clone(),
+                        relation,
+                        position,
+                        tuple,
+                    },
+                ));
             }
         }
         Ok(facts)

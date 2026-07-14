@@ -13,6 +13,7 @@
 
 use crate::index::RelationState;
 use crate::relation_algebra::union_ordered_tuple_rows;
+use crate::relation_states::RelationStates;
 use crate::snapshot::{active_rules, build_derived_relations};
 use crate::{
     CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, FactId, KernelError,
@@ -21,7 +22,7 @@ use crate::{
 };
 use mica_var::Value;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 type ProjectedDerivedCache =
     RefCell<Option<Result<BTreeMap<RelationId, RelationState>, KernelError>>>;
@@ -29,7 +30,7 @@ type ProjectedDerivedCache =
 #[derive(Clone, Debug, Default)]
 pub struct ProjectedStore {
     version: Version,
-    relations: HashMap<RelationId, RelationState>,
+    relations: RelationStates,
     rules: Vec<RuleDefinition>,
     derived_cache: ProjectedDerivedCache,
 }
@@ -368,14 +369,14 @@ impl RelationRead for ExtensionalProjectedReader<'_> {
 }
 
 pub(crate) fn validate_rule_definition_against_relations(
-    relations: &HashMap<RelationId, RelationState>,
+    relations: &RelationStates,
     definition: &RuleDefinition,
 ) -> Result<(), KernelError> {
     validate_rule_against_relations(relations, definition.rule())
 }
 
 pub(crate) fn validate_rule_against_relations(
-    relations: &HashMap<RelationId, RelationState>,
+    relations: &RelationStates,
     rule: &Rule,
 ) -> Result<(), KernelError> {
     validate_rule_atom(relations, rule.head_relation(), rule.head_terms())?;
@@ -408,7 +409,7 @@ pub(crate) fn disable_rule_in(
 }
 
 fn validate_rule_atom(
-    relations: &HashMap<RelationId, RelationState>,
+    relations: &RelationStates,
     relation: RelationId,
     terms: &[crate::Term],
 ) -> Result<(), KernelError> {

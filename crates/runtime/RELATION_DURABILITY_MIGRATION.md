@@ -282,3 +282,39 @@ remains noisy at 7.7--11.2% coefficient of variation, but both runs show a mater
 the 82,647 ns checkpoint. Publication count is therefore a demonstrated request-path cost. The
 remaining four-worker backend-stall rate and variability point to shared snapshot publication and
 per-relation state copying as the next relation-kernel optimization surface.
+
+## Shared Snapshot State Optimization
+
+Profiles of the two-publication request lifecycle identified three independent costs: cloning the
+complete relation-state hash map for every publication, allocating and sorting the relation
+catalogue repeatedly while validating host tuples, and dynamically testing every computed-relation
+provider for every asserted or retracted tuple. The relation-state catalogue now uses a persistent
+adaptive radix tree, so snapshots share unchanged paths and copy only paths changed by a
+transaction. Host tuple validation reads relation metadata from one snapshot without materializing
+and sorting the complete catalogue for every tuple, and computed-relation providers are bound to
+relation identities when catalogue metadata is loaded or created.
+
+An intermediate design that placed each relation state behind a separate `Arc` was rejected. It
+reduced serial copying, but concurrent snapshot clones updated the same per-relation reference-count
+cache lines and made the four-worker result unstable. The persistent tree provides structural
+sharing without adding one shared atomic counter per relation lookup or snapshot clone.
+
+Two consecutive request-lifecycle runs produced these median ranges:
+
+| Execution | Two-publication median | Optimized median range | Conservative change | Throughput |
+| --- | ---: | ---: | ---: | ---: |
+| Serial | 48,880 ns | 29,368--29,520 ns | -39.6% | 948.51 k tuple mutations/s |
+| 1 worker | 53,694 ns | 30,013--30,288 ns | -43.6% | 924.45 k tuple mutations/s |
+| 4 workers | 60,025 ns | 44,303--46,203 ns | -23.0% | 606.03 k tuple mutations/s |
+
+The conservative comparison uses the slower optimized result in each row. The persistent catalogue
+also passed the production read-path gate: `production_low_cardinality_indexed_visit` moved from
+414.4 ns to 416.0 ns, a 0.4% difference within the benchmark's noise.
+
+The optimized request path remains 2.65x, 2.69x, and 3.00x slower than the original direct transient
+store for serial, one-worker, and four-worker execution. Relative to the overlay-removal checkpoint,
+however, the work so far has removed 64.0%, 67.5%, and 54.2% of the excess latency over that direct
+store. The final profile attributes the largest remaining user-space cost to relation-index
+copy-on-write mutation and destruction. Repeated name lookup through the persistent-tree iterator is
+also still visible, alongside transaction publication and lock contention; computed-provider name
+matching is no longer a hot-path cost.

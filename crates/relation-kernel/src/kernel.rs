@@ -12,6 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::index::RelationState;
+use crate::relation_states::RelationStates;
 use crate::snapshot::{
     CommitHistory, active_rules, empty_derived_cache, empty_dispatch_cache,
     empty_method_program_cache, empty_packed_cache,
@@ -22,7 +23,6 @@ use crate::{
     RuleDefinition, RuleSet, Snapshot, Transaction,
 };
 use arc_swap::ArcSwap;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub(crate) const GENERATED_RULE_ID_START: u64 = 0x00d0_0000_0000_0000;
@@ -50,7 +50,7 @@ impl RelationKernel {
         let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
         let snapshot = Arc::new(Snapshot {
             version: 0,
-            relations: HashMap::new(),
+            relations: RelationStates::new(),
             rules: Vec::new(),
             computed_relations: computed_relations.clone(),
             derived_cache: empty_derived_cache(),
@@ -82,11 +82,10 @@ impl RelationKernel {
         provider: Arc<dyn CommitProvider>,
         computed_relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>,
     ) -> Result<Self, KernelError> {
-        let mut states = HashMap::new();
+        let mut states = RelationStates::new();
         for metadata in relations {
             states.insert(metadata.id(), RelationState::empty(metadata)?);
         }
-        let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
 
         let commits = commits.into_iter().collect::<Vec<_>>();
         let mut rules = Vec::new();
@@ -125,6 +124,10 @@ impl RelationKernel {
             }
         }
 
+        let computed_relations = Arc::new(
+            ComputedRelationRegistry::new(computed_relations)
+                .bind_relations(states.values().map(RelationState::metadata)),
+        );
         let version = commits.last().map_or(0, Commit::version);
         let snapshot = Arc::new(Snapshot {
             version,
@@ -159,9 +162,8 @@ impl RelationKernel {
         computed_relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>,
     ) -> Result<Self, KernelError> {
         let commits = commits.into_iter().collect::<Vec<_>>();
-        let mut states = HashMap::new();
+        let mut states = RelationStates::new();
         let mut rules = Vec::new();
-        let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
 
         for commit in &commits {
             for change in commit.catalog_changes() {
@@ -204,6 +206,10 @@ impl RelationKernel {
             }
         }
 
+        let computed_relations = Arc::new(
+            ComputedRelationRegistry::new(computed_relations)
+                .bind_relations(states.values().map(RelationState::metadata)),
+        );
         let version = commits.last().map_or(0, Commit::version);
         let snapshot = Arc::new(Snapshot {
             version,
@@ -237,11 +243,10 @@ impl RelationKernel {
         provider: Arc<dyn CommitProvider>,
         computed_relations: impl IntoIterator<Item = Arc<dyn ComputedRelation>>,
     ) -> Result<Self, KernelError> {
-        let mut states = HashMap::new();
+        let mut states = RelationStates::new();
         for metadata in state.relations {
             states.insert(metadata.id(), RelationState::empty(metadata)?);
         }
-        let computed_relations = Arc::new(ComputedRelationRegistry::new(computed_relations));
 
         for rule in &state.rules {
             validate_rule_definition_against_relations(&states, rule)?;
@@ -267,6 +272,10 @@ impl RelationKernel {
             relation.insert(tuple);
         }
 
+        let computed_relations = Arc::new(
+            ComputedRelationRegistry::new(computed_relations)
+                .bind_relations(states.values().map(RelationState::metadata)),
+        );
         let snapshot = Arc::new(Snapshot {
             version: state.version,
             relations: states,
@@ -309,6 +318,7 @@ impl RelationKernel {
 
         let mut next = (*current).clone();
         next.relations.insert(metadata.id(), relation);
+        next.computed_relations = Arc::new(current.computed_relations.with_relation(&metadata));
         next.derived_cache = empty_derived_cache();
         next.packed_cache = empty_packed_cache();
         next.dispatch_cache = empty_dispatch_cache();
@@ -474,14 +484,14 @@ impl RelationKernel {
 }
 
 fn validate_rule_definition_against_relations(
-    relations: &HashMap<crate::RelationId, RelationState>,
+    relations: &RelationStates,
     definition: &RuleDefinition,
 ) -> Result<(), KernelError> {
     validate_rule_against_relations(relations, definition.rule())
 }
 
 fn validate_rule_against_relations(
-    relations: &HashMap<crate::RelationId, RelationState>,
+    relations: &RelationStates,
     rule: &Rule,
 ) -> Result<(), KernelError> {
     validate_rule_atom(relations, rule.head_relation(), rule.head_terms())?;
@@ -514,7 +524,7 @@ fn disable_rule_in(
 }
 
 fn validate_rule_atom(
-    relations: &HashMap<crate::RelationId, RelationState>,
+    relations: &RelationStates,
     relation: crate::RelationId,
     terms: &[crate::Term],
 ) -> Result<(), KernelError> {
