@@ -25,3 +25,7 @@ micromeasure.workspace = true
 [[bench]]
 name = "task_benches"
 harness = false
+
+[[bench]]
+name = "transient_relation_benches"
+harness = false
