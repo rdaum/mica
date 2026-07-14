@@ -5,7 +5,7 @@ use super::{
 };
 use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
 use super::{relation_name_relation, subject_fact_relation};
-use mica_var::{Identity, Symbol, Value};
+use mica_var::{Identity, Symbol, Tuple, Value};
 use std::sync::{Arc, Mutex, OnceLock};
 
 // Tests that mutate process-global environment variables (MICA_SOURCE_ROOT)
@@ -26,6 +26,17 @@ fn assert_relation_query_is_true(report: &super::RunReport) {
         "unexpected query result: {}",
         report.render()
     );
+}
+
+fn query_relation<const COLUMNS: usize, const ROWS: usize>(
+    heading: [&str; COLUMNS],
+    rows: [[Value; COLUMNS]; ROWS],
+) -> Value {
+    Value::relation(
+        heading.map(Symbol::intern),
+        rows.into_iter().map(Tuple::from),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -2746,8 +2757,7 @@ fn runner_transient_facts_are_visible_to_runtime_scopes() {
     assert!(matches!(
         inserted.outcome,
         TaskOutcome::Complete { value, .. }
-            if value.with_list(<[Value]>::to_vec).unwrap()
-                == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+            if value == query_relation(["item"], [[Value::identity(lamp)]])
     ));
 
     let visible = runner
@@ -2762,14 +2772,13 @@ fn runner_transient_facts_are_visible_to_runtime_scopes() {
     assert!(matches!(
         visible.outcome,
         TaskOutcome::Complete { value, .. }
-            if value.with_list(<[Value]>::to_vec).unwrap()
-                == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+            if value == query_relation(["item"], [[Value::identity(lamp)]])
     ));
 
     let root = runner.run_source("return Selected(?item)").unwrap();
     assert!(matches!(
         root.outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::list([])
+        TaskOutcome::Complete { value, .. } if value == query_relation(["item"], [])
     ));
 }
 
@@ -2824,7 +2833,7 @@ fn runner_transient_retract_and_scope_drop_update_visibility() {
         .unwrap();
     assert!(matches!(
         alice_visible.outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::list([])
+        TaskOutcome::Complete { value, .. } if value == query_relation(["item"], [])
     ));
 
     let dropped = runner
@@ -2852,7 +2861,7 @@ fn runner_transient_retract_and_scope_drop_update_visibility() {
         .unwrap();
     assert!(matches!(
         bob_visible.outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::list([])
+        TaskOutcome::Complete { value, .. } if value == query_relation(["item"], [])
     ));
 }
 
@@ -2902,7 +2911,7 @@ fn runner_can_drop_own_transient_scope_without_admin_authority() {
         .unwrap();
     assert!(matches!(
         visible.outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::list([])
+        TaskOutcome::Complete { value, .. } if value == query_relation(["item"], [])
     ));
 }
 
@@ -2952,8 +2961,7 @@ fn runner_cannot_drop_another_actor_transient_scope_without_admin_authority() {
     assert!(matches!(
         visible.outcome,
         TaskOutcome::Complete { value, .. }
-            if value.with_list(<[Value]>::to_vec).unwrap()
-                == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+            if value == query_relation(["item"], [[Value::identity(lamp)]])
     ));
 }
 
@@ -2987,8 +2995,7 @@ fn runner_derived_relations_can_read_transient_facts() {
     assert!(matches!(
         visible.outcome,
         TaskOutcome::Complete { value, .. }
-            if value.with_list(<[Value]>::to_vec).unwrap()
-                == vec![Value::map([(Value::symbol(Symbol::intern("item")), Value::identity(lamp))])]
+            if value == query_relation(["item"], [[Value::identity(lamp)]])
     ));
 }
 
@@ -3014,8 +3021,7 @@ fn runner_endpoint_facts_are_transient_and_endpoint_scoped() {
     assert!(matches!(
         visible.outcome,
         TaskOutcome::Complete { value, .. }
-            if value.with_list(<[Value]>::to_vec).unwrap()
-                == vec![Value::map([(Value::symbol(Symbol::intern("endpoint")), Value::identity(endpoint))])]
+            if value == query_relation(["endpoint"], [[Value::identity(endpoint)]])
     ));
 
     let root = runner
@@ -3023,7 +3029,7 @@ fn runner_endpoint_facts_are_transient_and_endpoint_scoped() {
         .unwrap();
     assert!(matches!(
         root.outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::list([])
+        TaskOutcome::Complete { value, .. } if value == query_relation(["endpoint"], [])
     ));
 
     assert_eq!(runner.close_endpoint(endpoint), 4);
@@ -3038,7 +3044,7 @@ fn runner_endpoint_facts_are_transient_and_endpoint_scoped() {
         .unwrap();
     assert!(matches!(
         closed.outcome,
-        TaskOutcome::Complete { value, .. } if value == Value::list([])
+        TaskOutcome::Complete { value, .. } if value == query_relation(["endpoint"], [])
     ));
 }
 
@@ -3373,7 +3379,7 @@ fn runner_same_source_body_can_use_declared_relation() {
 
     assert_eq!(
         report.render(),
-        "task 1 complete: [[:value: 1]] (retries: 0)"
+        "task 1 complete: relation({:value}, [[1]]) (retries: 0)"
     );
 }
 
@@ -3499,7 +3505,7 @@ fn source_task_error_renders_named_identity_values() {
 }
 
 #[test]
-fn runner_relation_calls_with_query_vars_return_binding_maps() {
+fn runner_relation_calls_with_query_vars_return_relation_values() {
     let mut runner = SourceRunner::new_empty();
     runner.run_source("make_identity(:thing)").unwrap();
     runner.run_source("make_identity(:room)").unwrap();
@@ -3510,7 +3516,7 @@ fn runner_relation_calls_with_query_vars_return_binding_maps() {
 
     assert_eq!(
         report.render(),
-        "task 5 complete: [[:room: #room]] (retries: 0)"
+        "task 5 complete: relation({:room}, [[#room]]) (retries: 0)"
     );
 }
 
@@ -3526,8 +3532,98 @@ fn runner_relation_queries_allow_all_positions_free() {
 
     assert_eq!(
         report.render(),
-        "task 5 complete: [[:what: #thing, :where: #room]] (retries: 0)"
+        "task 5 complete: relation({:what, :where}, [[#thing, #room]]) (retries: 0)"
     );
+}
+
+#[test]
+fn runner_relation_queries_unify_repeated_variables() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Pair, 2)").unwrap();
+    runner.run_source("assert Pair(1, 1)").unwrap();
+    runner.run_source("assert Pair(1, 2)").unwrap();
+
+    let report = runner.run_source("return Pair(?same, ?same)").unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == query_relation(["same"], [[Value::int(1).unwrap()]])
+    ));
+}
+
+#[test]
+fn runner_iterates_relation_rows_as_binding_maps() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:thing)").unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner.run_source("make_relation(:Location, 2)").unwrap();
+    runner.run_source("assert Location(#thing, #room)").unwrap();
+
+    let report = runner
+        .run_source(
+            "let found = []\n\
+             for row in Location(?thing, ?room)\n\
+               found = [@found, row[:thing], row[:room]]\n\
+             end\n\
+             return found",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::identity(runner.actor_identity(Symbol::intern("thing")).unwrap()),
+                Value::identity(runner.actor_identity(Symbol::intern("room")).unwrap()),
+            ])
+    ));
+}
+
+#[test]
+fn runner_one_returns_a_map_for_multi_column_relation_rows() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_identity(:thing)").unwrap();
+    runner.run_source("make_identity(:room)").unwrap();
+    runner.run_source("make_relation(:Location, 2)").unwrap();
+    runner.run_source("assert Location(#thing, #room)").unwrap();
+    let thing = runner.actor_identity(Symbol::intern("thing")).unwrap();
+    let room = runner.actor_identity(Symbol::intern("room")).unwrap();
+
+    let report = runner
+        .run_source("return one Location(?thing, ?room)")
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::map([
+                (Value::symbol(Symbol::intern("thing")), Value::identity(thing)),
+                (Value::symbol(Symbol::intern("room")), Value::identity(room)),
+            ])
+    ));
+}
+
+#[test]
+fn runner_one_rejects_ambiguous_relation_values() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Number, 1)").unwrap();
+    runner.run_source("assert Number(1)").unwrap();
+    runner.run_source("assert Number(2)").unwrap();
+
+    let report = runner.run_source("return one Number(?number)").unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Aborted { error, .. }
+            if error.error_code_symbol() == Some(Symbol::intern("E_AMBIGUOUS"))
+                && error.with_error(|error| {
+                    error.value() == Some(&query_relation(
+                        ["number"],
+                        [[Value::int(1).unwrap()], [Value::int(2).unwrap()]],
+                    ))
+                }) == Some(true)
+    ));
 }
 
 #[test]
@@ -3625,7 +3721,7 @@ fn runner_root_source_can_mix_rule_definition_and_task_code() {
 
     assert_eq!(
         report.render(),
-        "task 9 complete: [[:obj: #alice], [:obj: #lamp]] (retries: 0)"
+        "task 9 complete: relation({:obj}, [[#alice], [#lamp]]) (retries: 0)"
     );
 }
 
@@ -3650,7 +3746,7 @@ fn runner_installs_relation_rules_and_queries_derived_tuples() {
     assert_eq!(rule.render(), "task 3 complete: #rule1 (retries: 0)");
     assert_eq!(
         query.render(),
-        "task 9 complete: [[:obj: #alice], [:obj: #lamp]] (retries: 0)"
+        "task 9 complete: relation({:obj}, [[#alice], [#lamp]]) (retries: 0)"
     );
 }
 
@@ -3680,7 +3776,7 @@ fn runner_installs_relation_rules_with_comparison_guards() {
 
     assert_eq!(
         report.render(),
-        "task 13 complete: [[:file: #file_b]] (retries: 0)"
+        "task 13 complete: relation({:file}, [[#file_b]]) (retries: 0)"
     );
 }
 
@@ -3715,7 +3811,10 @@ fn runner_inspects_and_disables_rules() {
         "task 10 complete: \"VisibleTo(actor, obj) :-\\n  LocatedIn(actor, room),\\n  LocatedIn(obj, room)\" (retries: 0)"
     );
     assert_eq!(disabled.render(), "task 11 complete: nothing (retries: 0)");
-    assert_eq!(query.render(), "task 12 complete: [] (retries: 0)");
+    assert_eq!(
+        query.render(),
+        "task 12 complete: relation({:obj}, []) (retries: 0)"
+    );
 }
 
 #[test]
@@ -3823,8 +3922,8 @@ fn runner_filters_reflection_rows_by_underlying_relation_authority() {
     value
         .with_list(|results| {
             assert_eq!(results.len(), 2);
-            assert_eq!(results[0].list_len(), Some(1));
-            assert_eq!(results[1].list_len(), Some(0));
+            assert_eq!(results[0].with_relation(|relation| relation.len()), Some(1));
+            assert_eq!(results[1].with_relation(|relation| relation.len()), Some(0));
         })
         .expect("expected result list");
 }
@@ -3900,7 +3999,11 @@ fn runner_filein_unit_fileout_round_trips_readable_source() {
         .unwrap();
     let query = imported.run_source("return Name(#lamp, ?name)").unwrap();
     let dispatch = imported.run_source("return :look(actor: #room)").unwrap();
-    assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+    assert!(
+        query
+            .render()
+            .contains("relation({:name}, [[\"brass lamp\"]])")
+    );
     assert!(dispatch.render().contains("\"ok\""));
 }
 
@@ -3974,7 +4077,11 @@ fn runner_fileout_preserves_slash_qualified_names() {
     let dispatch = imported
         .run_source("return :ui/look(actor: #ui/alice, item: #ui/lamp)")
         .unwrap();
-    assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+    assert!(
+        query
+            .render()
+            .contains("relation({:name}, [[\"brass lamp\"]])")
+    );
     assert!(dispatch.render().contains("\"brass lamp\""));
 }
 
@@ -4114,7 +4221,11 @@ fn runner_filein_replace_removes_facts_no_longer_in_source_unit() {
     let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
     let source = runner.fileout_unit(unit).unwrap();
 
-    assert!(query.render().contains("[[:name: \"golden lamp\"]]"));
+    assert!(
+        query
+            .render()
+            .contains("relation({:name}, [[\"golden lamp\"]])")
+    );
     assert!(source.contains("assert Name(#lamp, \"golden lamp\")"));
     assert!(!source.contains("brass lamp"));
 }
@@ -4144,7 +4255,11 @@ fn runner_fjall_store_reopens_state() {
             SourceRunner::open_fjall(&path, mica_relation_kernel::FjallDurabilityMode::Strict)
                 .unwrap();
         let query = runner.run_source("return Name(#lamp, ?name)").unwrap();
-        assert!(query.render().contains("[[:name: \"brass lamp\"]]"));
+        assert!(
+            query
+                .render()
+                .contains("relation({:name}, [[\"brass lamp\"]])")
+        );
     }
 
     let _ = std::fs::remove_dir_all(&path);
@@ -4176,7 +4291,7 @@ fn runner_installs_rules_with_surface_negation() {
 
     assert_eq!(
         query.render(),
-        "task 11 complete: [[:obj: #alice]] (retries: 0)"
+        "task 11 complete: relation({:obj}, [[#alice]]) (retries: 0)"
     );
 }
 
@@ -4250,11 +4365,11 @@ fn runner_filein_installs_mud_verbs_and_invokes_dispatch() {
     assert_eq!(reports[22].render(), "task 23 complete: true (retries: 0)");
     assert_eq!(
         reports[23].render(),
-        "task 24 complete: [[:container: #box]] (retries: 0)"
+        "task 24 complete: relation({:container}, [[#box]]) (retries: 0)"
     );
     assert_eq!(
         reports[24].render(),
-        "task 25 complete: [[:item: #coin]] (retries: 0)"
+        "task 25 complete: relation({:item}, [[#coin]]) (retries: 0)"
     );
 }
 
