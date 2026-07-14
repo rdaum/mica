@@ -40,6 +40,7 @@ const STATUS_SIDE_EXIT: u32 = 2;
 const NUMERIC_EQUAL_HELPER: &str = "mica_borrowed_value_numeric_equal";
 const NUMERIC_COMPARE_HELPER: &str = "mica_borrowed_value_numeric_compare";
 const CANONICAL_COMPARE_HELPER: &str = "mica_borrowed_value_canonical_compare";
+const FLOAT_REMAINDER_HELPER: &str = "mica_f32_remainder";
 
 unsafe extern "C" fn borrowed_value_numeric_equal(left: u64, right: u64) -> u64 {
     u64::from(unsafe { borrowed_value_numeric_eq(left, right) })
@@ -51,6 +52,10 @@ unsafe extern "C" fn borrowed_value_numeric_compare(left: u64, right: u64) -> i6
 
 unsafe extern "C" fn borrowed_value_canonical_compare(left: u64, right: u64) -> i64 {
     ordering_code(unsafe { borrowed_value_cmp(left, right) })
+}
+
+unsafe extern "C" fn f32_remainder(left: f32, right: f32) -> f32 {
+    left % right
 }
 
 fn ordering_code(ordering: Ordering) -> i64 {
@@ -69,6 +74,14 @@ type NaturalLoopFunction = unsafe extern "C" fn(
     *mut u32,
     *mut u32,
 ) -> u32;
+
+#[derive(Clone, Copy)]
+struct ImportedHelpers {
+    numeric_equal: Option<cranelift_codegen::ir::FuncRef>,
+    numeric_compare: Option<cranelift_codegen::ir::FuncRef>,
+    canonical_compare: Option<cranelift_codegen::ir::FuncRef>,
+    float_remainder: Option<cranelift_codegen::ir::FuncRef>,
+}
 
 const COLLECTION_RANGE: u64 = 0;
 const COLLECTION_LIST: u64 = 1;
@@ -378,6 +391,12 @@ impl NaturalLoopPlan {
             .iter()
             .any(|instruction| matches!(instruction, NaturalLoopInstruction::IndexValue { .. }))
     }
+
+    fn requires_float_remainder_helper(&self) -> bool {
+        self.instructions
+            .iter()
+            .any(|instruction| matches!(instruction, NaturalLoopInstruction::Remainder { .. }))
+    }
 }
 
 #[derive(Debug)]
@@ -405,7 +424,7 @@ pub enum NaturalLoopOutcome {
     SideExit,
 }
 
-/// Generated execution for a compiler-shaped integer loop.
+/// Generated execution for a compiler-shaped natural loop.
 ///
 /// The caller supplies scratch value words. Generated code may mutate that
 /// scratch before a side exit, but never touches VM-owned values directly.
@@ -443,6 +462,9 @@ impl CompiledNaturalLoop {
                 borrowed_value_canonical_compare as *const u8,
             );
         }
+        if plan.requires_float_remainder_helper() {
+            jit_builder.symbol(FLOAT_REMAINDER_HELPER, f32_remainder as *const u8);
+        }
         let mut module = JITModule::new(jit_builder);
         let pointer_type = module.target_config().pointer_type();
         let mut signature = Signature::new(module.isa().default_call_conv());
@@ -455,7 +477,7 @@ impl CompiledNaturalLoop {
         signature.returns.push(AbiParam::new(types::I32));
 
         let function_id = module
-            .declare_function("mica_natural_integer_loop", Linkage::Local, &signature)
+            .declare_function("mica_natural_loop", Linkage::Local, &signature)
             .map_err(|error| {
                 NaturalLoopError(format!("could not declare natural loop: {error}"))
             })?;
@@ -510,6 +532,23 @@ impl CompiledNaturalLoop {
         } else {
             None
         };
+        let float_remainder_helper = if plan.requires_float_remainder_helper() {
+            let mut helper_signature = Signature::new(module.isa().default_call_conv());
+            helper_signature.params.push(AbiParam::new(types::F32));
+            helper_signature.params.push(AbiParam::new(types::F32));
+            helper_signature.returns.push(AbiParam::new(types::F32));
+            Some(
+                module
+                    .declare_function(FLOAT_REMAINDER_HELPER, Linkage::Import, &helper_signature)
+                    .map_err(|error| {
+                        NaturalLoopError(format!(
+                            "could not declare float remainder helper: {error}"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
         let mut context = Context::new();
         context.func.signature = signature;
         let numeric_equal_helper = numeric_equal_helper
@@ -518,15 +557,16 @@ impl CompiledNaturalLoop {
             .map(|helper| module.declare_func_in_func(helper, &mut context.func));
         let canonical_compare_helper = canonical_compare_helper
             .map(|helper| module.declare_func_in_func(helper, &mut context.func));
+        let float_remainder_helper = float_remainder_helper
+            .map(|helper| module.declare_func_in_func(helper, &mut context.func));
         let mut builder_context = FunctionBuilderContext::new();
-        Self::build_function(
-            plan,
-            &mut context,
-            &mut builder_context,
-            numeric_equal_helper,
-            numeric_compare_helper,
-            canonical_compare_helper,
-        );
+        let helpers = ImportedHelpers {
+            numeric_equal: numeric_equal_helper,
+            numeric_compare: numeric_compare_helper,
+            canonical_compare: canonical_compare_helper,
+            float_remainder: float_remainder_helper,
+        };
+        Self::build_function(plan, &mut context, &mut builder_context, helpers);
         let imported_helper_count = context.func.dfg.ext_funcs.len();
         module
             .define_function(function_id, &mut context)
@@ -557,9 +597,7 @@ impl CompiledNaturalLoop {
         plan: &NaturalLoopPlan,
         context: &mut Context,
         builder_context: &mut FunctionBuilderContext,
-        numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
-        numeric_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
-        canonical_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
+        helpers: ImportedHelpers,
     ) {
         let mut builder = FunctionBuilder::new(&mut context.func, builder_context);
         let entry = builder.create_block();
@@ -690,9 +728,7 @@ impl CompiledNaturalLoop {
                         scratch,
                         collection_views,
                         instruction,
-                        numeric_equal_helper,
-                        numeric_compare_helper,
-                        canonical_compare_helper,
+                        helpers,
                     );
                     let slot_bit = 1_u32 << dst;
                     let slot_bit = builder.ins().iconst(types::I32, i64::from(slot_bit));
@@ -769,9 +805,7 @@ impl CompiledNaturalLoop {
         scratch: cranelift_codegen::ir::Value,
         collection_views: cranelift_codegen::ir::Value,
         instruction: NaturalLoopInstruction,
-        numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
-        numeric_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
-        canonical_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
+        helpers: ImportedHelpers,
     ) -> (cranelift_codegen::ir::Value, u16) {
         match instruction {
             NaturalLoopInstruction::Load { dst, value } => {
@@ -821,14 +855,21 @@ impl CompiledNaturalLoop {
             NaturalLoopInstruction::Divide { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
-                let result = ValueEmitter::emit_checked_int_div(builder, left, right);
+                let result = ValueEmitter::emit_checked_numeric_div(builder, left, right);
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }
             NaturalLoopInstruction::Remainder { dst, left, right } => {
                 let left = Self::load_slot(builder, scratch, left);
                 let right = Self::load_slot(builder, scratch, right);
-                let result = ValueEmitter::emit_checked_int_rem(builder, left, right);
+                let result = ValueEmitter::emit_checked_numeric_rem(
+                    builder,
+                    left,
+                    right,
+                    helpers
+                        .float_remainder
+                        .expect("remainder plans import their helper"),
+                );
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
             }
@@ -847,7 +888,7 @@ impl CompiledNaturalLoop {
                     right,
                     comparison,
                     result,
-                    numeric_equal_helper,
+                    helpers.numeric_equal,
                 );
                 let result = Self::emit_numeric_compare_fallback(
                     builder,
@@ -855,7 +896,7 @@ impl CompiledNaturalLoop {
                     right,
                     comparison,
                     result,
-                    numeric_compare_helper,
+                    helpers.numeric_compare,
                 );
                 Self::store_slot(builder, scratch, dst, result.word());
                 (result.is_fast(), dst)
@@ -943,7 +984,7 @@ impl CompiledNaturalLoop {
                 let index = Self::load_slot(builder, scratch, index);
                 let view = Self::load_collection_view(builder, collection_views, view);
                 let (value, is_fast) =
-                    Self::emit_index_value(builder, index, view, canonical_compare_helper);
+                    Self::emit_index_value(builder, index, view, helpers.canonical_compare);
                 Self::store_slot(builder, scratch, dst, value);
                 (is_fast, dst)
             }

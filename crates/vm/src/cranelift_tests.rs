@@ -30,6 +30,7 @@ const NATURAL_SCALAR_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 7;
 const PREDICTABLE_BRANCH_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 10;
 const ALTERNATING_BRANCH_INSTRUCTION_COUNT: usize = (ITERATIONS / 2 * 17) + 10;
 const NATURAL_RANGE_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 8;
+const NATURAL_DIV_REM_INSTRUCTION_COUNT: usize = (ITERATIONS * 9) + 9;
 const NATURAL_INDEXED_RANGE_INSTRUCTION_COUNT: usize = (ITERATIONS * 10) + 8;
 const NATURAL_LIST_INDEX_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 8;
 const NATURAL_REPEATED_MAP_INDEX_INSTRUCTION_COUNT: usize = (ITERATIONS * 6) + 8;
@@ -305,6 +306,92 @@ fn natural_numeric_collection_program(collection: Value, initial: Value) -> Arc<
                     src: register(8),
                 },
                 Instruction::Jump { target: 5 },
+                Instruction::Return {
+                    value: Operand::Register(register(3)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
+fn natural_div_rem_collection_program(
+    element: Value,
+    divisor: Value,
+    operation: RuntimeBinaryOp,
+) -> Arc<Program> {
+    let collection = Value::list((0..ITERATIONS).map(|_| element.clone()));
+    Arc::new(
+        Program::new(
+            11,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: collection,
+                },
+                Instruction::CollectionLen {
+                    dst: register(1),
+                    collection: register(0),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::float(0.0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(5),
+                    value: divisor,
+                },
+                Instruction::Binary {
+                    dst: register(6),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(2),
+                    right: register(1),
+                },
+                Instruction::Branch {
+                    condition: register(6),
+                    if_true: 8,
+                    if_false: 15,
+                },
+                Instruction::CollectionValueAt {
+                    dst: register(7),
+                    collection: register(0),
+                    index: register(2),
+                },
+                Instruction::Binary {
+                    dst: register(8),
+                    op: operation,
+                    left: register(7),
+                    right: register(5),
+                },
+                Instruction::Binary {
+                    dst: register(9),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(3),
+                    right: register(8),
+                },
+                Instruction::Move {
+                    dst: register(3),
+                    src: register(9),
+                },
+                Instruction::Binary {
+                    dst: register(10),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(2),
+                    right: register(4),
+                },
+                Instruction::Move {
+                    dst: register(2),
+                    src: register(10),
+                },
+                Instruction::Jump { target: 6 },
                 Instruction::Return {
                     value: Operand::Register(register(3)),
                 },
@@ -1630,6 +1717,72 @@ fn native_natural_float_collection_sum_executes_concurrently() {
 }
 
 #[test]
+fn native_natural_division_and_remainder_match_interpreter() {
+    for (element, divisor, operation) in [
+        (
+            Value::int(3).unwrap(),
+            Value::int(2).unwrap(),
+            RuntimeBinaryOp::Div,
+        ),
+        (
+            Value::int(3).unwrap(),
+            Value::float(2.0).unwrap(),
+            RuntimeBinaryOp::Div,
+        ),
+        (
+            Value::float(5.5).unwrap(),
+            Value::float(2.0).unwrap(),
+            RuntimeBinaryOp::Rem,
+        ),
+    ] {
+        let program = natural_div_rem_collection_program(element, divisor, operation);
+        let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+        let mut native = RegisterVm::new(Arc::clone(&program));
+        let expected = VmHostResponse::Complete(Value::float(24_576.0).unwrap());
+
+        assert_eq!(
+            run(&mut interpreted, NATURAL_DIV_REM_INSTRUCTION_COUNT).unwrap(),
+            expected,
+        );
+        assert_eq!(
+            run(&mut native, NATURAL_DIV_REM_INSTRUCTION_COUNT).unwrap(),
+            expected,
+        );
+        assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+        assert_eq!(program.native_compile_attempts(), 1);
+        assert_eq!(native.native_side_exit_count(), 0);
+    }
+}
+
+#[test]
+fn native_natural_float_remainder_executes_concurrently() {
+    let program = natural_div_rem_collection_program(
+        Value::float(5.5).unwrap(),
+        Value::float(2.0).unwrap(),
+        RuntimeBinaryOp::Rem,
+    );
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let program = Arc::clone(&program);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let mut vm = RegisterVm::new(program);
+            barrier.wait();
+            let outcome = run(&mut vm, NATURAL_DIV_REM_INSTRUCTION_COUNT).unwrap();
+            (outcome, vm.native_side_exit_count())
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            (VmHostResponse::Complete(Value::float(24_576.0).unwrap()), 0,),
+        );
+    }
+    assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
 fn native_natural_indexed_range_loop_matches_interpreter_completion() {
     let program = natural_indexed_range_program();
     let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
@@ -2316,7 +2469,7 @@ fn native_natural_integer_surface_preserves_budget_remainders() {
 }
 
 #[test]
-fn native_natural_division_side_exit_is_atomic_and_sticky() {
+fn native_natural_fractional_division_executes_without_side_exits() {
     let program = natural_integer_surface_program(Value::int(4).unwrap());
     let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
     let mut native = RegisterVm::new(Arc::clone(&program));
@@ -2327,7 +2480,7 @@ fn native_natural_division_side_exit_is_atomic_and_sticky() {
     );
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
-    assert_eq!(native.native_side_exit_count(), 1);
+    assert_eq!(native.native_side_exit_count(), 0);
 }
 
 #[test]

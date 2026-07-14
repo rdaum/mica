@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use cranelift_codegen::ir::{
-    InstBuilder, MemFlagsData, Value as CraneliftValue,
+    FuncRef, InstBuilder, MemFlagsData, Value as CraneliftValue,
     condcodes::{FloatCC, IntCC},
     immediates::Ieee32,
     types,
@@ -150,6 +150,12 @@ enum NumericArithmetic {
     Add,
     Subtract,
     Multiply,
+}
+
+#[derive(Clone, Copy)]
+enum NumericQuotient {
+    Divide,
+    Remainder,
 }
 
 impl ValueEmitter {
@@ -407,6 +413,29 @@ impl ValueEmitter {
         Self::emit_checked_numeric_binary(builder, left, right, NumericArithmetic::Multiply)
     }
 
+    pub fn emit_checked_numeric_div(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+    ) -> EmittedValue {
+        Self::emit_checked_numeric_quotient(builder, left, right, NumericQuotient::Divide, None)
+    }
+
+    pub fn emit_checked_numeric_rem(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+        float_remainder_helper: FuncRef,
+    ) -> EmittedValue {
+        Self::emit_checked_numeric_quotient(
+            builder,
+            left,
+            right,
+            NumericQuotient::Remainder,
+            Some(float_remainder_helper),
+        )
+    }
+
     fn emit_checked_numeric_binary(
         builder: &mut FunctionBuilder<'_>,
         left: CraneliftValue,
@@ -468,6 +497,102 @@ impl ValueEmitter {
         builder
             .ins()
             .jump(done, &[float_result.word().into(), float_is_fast.into()]);
+
+        builder.switch_to_block(done);
+        let word = builder.block_params(done)[0];
+        let is_fast = builder.block_params(done)[1];
+        EmittedValue { word, is_fast }
+    }
+
+    fn emit_checked_numeric_quotient(
+        builder: &mut FunctionBuilder<'_>,
+        left: CraneliftValue,
+        right: CraneliftValue,
+        operation: NumericQuotient,
+        float_remainder_helper: Option<FuncRef>,
+    ) -> EmittedValue {
+        let int_result = match operation {
+            NumericQuotient::Divide => Self::emit_checked_int_div(builder, left, right),
+            NumericQuotient::Remainder => Self::emit_checked_int_rem(builder, left, right),
+        };
+        let fallback = builder.create_block();
+        let float_block = builder.create_block();
+        let done = builder.create_block();
+        builder.append_block_param(done, types::I64);
+        builder.append_block_param(done, types::I8);
+        builder.ins().brif(
+            int_result.is_fast(),
+            done,
+            &[int_result.word().into(), int_result.is_fast().into()],
+            fallback,
+            &[],
+        );
+
+        builder.switch_to_block(fallback);
+        let left_is_int = Self::emit_is_int(builder, left);
+        let right_is_int = Self::emit_is_int(builder, right);
+        let both_int = builder.ins().band(left_is_int, right_is_int);
+        let left_is_float = Self::emit_is_float(builder, left);
+        let right_is_float = Self::emit_is_float(builder, right);
+        let left_is_numeric = builder.ins().bor(left_is_int, left_is_float);
+        let right_is_numeric = builder.ins().bor(right_is_int, right_is_float);
+        let operands_are_numeric = builder.ins().band(left_is_numeric, right_is_numeric);
+        let not_both_int = builder.ins().icmp_imm(IntCC::Equal, both_int, 0);
+        let mixed_or_float = builder.ins().band(operands_are_numeric, not_both_int);
+        let use_float = match operation {
+            NumericQuotient::Divide => {
+                let left_int = Self::emit_unbox_int(builder, left);
+                let right_int = Self::emit_unbox_int(builder, right);
+                let divisor_is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, right_int, 0);
+                let one = builder.ins().iconst(types::I64, 1);
+                let safe_right = builder.ins().select(divisor_is_nonzero, right_int, one);
+                let remainder = builder.ins().srem(left_int, safe_right);
+                let is_fractional = builder.ins().icmp_imm(IntCC::NotEqual, remainder, 0);
+                let fractional_int = builder.ins().band(both_int, divisor_is_nonzero);
+                let fractional_int = builder.ins().band(fractional_int, is_fractional);
+                builder.ins().bor(mixed_or_float, fractional_int)
+            }
+            NumericQuotient::Remainder => mixed_or_float,
+        };
+        builder.ins().brif(
+            use_float,
+            float_block,
+            &[],
+            done,
+            &[int_result.word().into(), int_result.is_fast().into()],
+        );
+
+        builder.switch_to_block(float_block);
+        let left_int = Self::emit_unbox_int(builder, left);
+        let right_int = Self::emit_unbox_int(builder, right);
+        let left_int_float = builder.ins().fcvt_from_sint(types::F32, left_int);
+        let right_int_float = builder.ins().fcvt_from_sint(types::F32, right_int);
+        let left_float = Self::emit_unbox_float(builder, left);
+        let right_float = Self::emit_unbox_float(builder, right);
+        let left_float = builder
+            .ins()
+            .select(left_is_int, left_int_float, left_float);
+        let right_float = builder
+            .ins()
+            .select(right_is_int, right_int_float, right_float);
+        let zero = builder.ins().f32const(Ieee32::with_bits(0));
+        let divisor_is_nonzero = builder.ins().fcmp(FloatCC::NotEqual, right_float, zero);
+        let one = builder.ins().f32const(Ieee32::with_bits(1.0f32.to_bits()));
+        let safe_right = builder.ins().select(divisor_is_nonzero, right_float, one);
+        let float_value = match operation {
+            NumericQuotient::Divide => builder.ins().fdiv(left_float, safe_right),
+            NumericQuotient::Remainder => {
+                let helper = float_remainder_helper.expect("remainder emission requires a helper");
+                let call = builder.ins().call(helper, &[left_float, safe_right]);
+                builder.inst_results(call)[0]
+            }
+        };
+        let float_result = Self::emit_pack_checked_float(builder, float_value);
+        let is_fast = builder.ins().band(operands_are_numeric, divisor_is_nonzero);
+        let is_fast = builder.ins().band(is_fast, float_result.is_fast());
+        builder
+            .ins()
+            .jump(done, &[float_result.word().into(), is_fast.into()]);
 
         builder.switch_to_block(done);
         let word = builder.block_params(done)[0];
@@ -1055,6 +1180,42 @@ mod tests {
         );
         assert_eq!(
             negate.run(&Value::string("not numeric"), &Value::nothing()),
+            None,
+        );
+    }
+
+    #[test]
+    fn emitted_checked_numeric_division_matches_value_semantics() {
+        let divide = Probe::compile(ValueEmitter::emit_checked_numeric_div);
+        for (left, right) in [
+            (Value::int(8).unwrap(), Value::int(2).unwrap()),
+            (Value::int(7).unwrap(), Value::int(2).unwrap()),
+            (Value::int(-7).unwrap(), Value::int(2).unwrap()),
+            (Value::int(7).unwrap(), Value::float(2.0).unwrap()),
+            (Value::float(7.5).unwrap(), Value::int(2).unwrap()),
+        ] {
+            assert_eq!(divide.run(&left, &right), left.checked_div(&right));
+        }
+
+        let min = Value::int(VALUE_INT_MIN).unwrap();
+        assert_eq!(divide.run(&min, &Value::int(-1).unwrap()), None);
+        assert_eq!(
+            divide.run(&Value::int(1).unwrap(), &Value::int(0).unwrap()),
+            None
+        );
+        assert_eq!(
+            divide.run(&Value::int(1).unwrap(), &Value::float(0.0).unwrap()),
+            None,
+        );
+        assert_eq!(
+            divide.run(&Value::string("not numeric"), &Value::int(1).unwrap()),
+            None,
+        );
+        assert_eq!(
+            divide.run(
+                &Value::float(f32::MAX).unwrap(),
+                &Value::float(0.5).unwrap(),
+            ),
             None,
         );
     }

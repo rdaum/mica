@@ -34,6 +34,7 @@ pub const BUILTIN_CALL_INSTRUCTIONS: u64 = BUILTIN_CALL_COUNT as u64 + 1;
 pub const NATURAL_FLOAT_SUM_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 7) + 8;
 pub const NATURAL_FLOAT_TRANSFORM_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 10) + 9;
 pub const NATURAL_MIXED_SCALE_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 9) + 9;
+pub const NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 9) + 9;
 pub const MAX_CALL_DEPTH: usize = 64;
 
 pub struct ProgramFixture {
@@ -319,6 +320,109 @@ pub fn natural_mixed_scale_fixture() -> ProgramFixture {
     ProgramFixture {
         program: Arc::new(program),
         instruction_count: NATURAL_MIXED_SCALE_INSTRUCTIONS,
+    }
+}
+
+pub fn natural_exact_integer_division_fixture() -> ProgramFixture {
+    natural_numeric_div_rem_fixture(int(4), int(2), int(0), RuntimeBinaryOp::Div)
+}
+
+pub fn natural_fractional_integer_division_fixture() -> ProgramFixture {
+    natural_numeric_div_rem_fixture(int(3), int(2), float(0.0), RuntimeBinaryOp::Div)
+}
+
+pub fn natural_mixed_division_fixture() -> ProgramFixture {
+    natural_numeric_div_rem_fixture(int(3), float(2.0), float(0.0), RuntimeBinaryOp::Div)
+}
+
+pub fn natural_float_remainder_fixture() -> ProgramFixture {
+    natural_numeric_div_rem_fixture(float(5.5), float(2.0), float(0.0), RuntimeBinaryOp::Rem)
+}
+
+fn natural_numeric_div_rem_fixture(
+    element: Value,
+    divisor: Value,
+    initial: Value,
+    operation: RuntimeBinaryOp,
+) -> ProgramFixture {
+    let collection = Value::list((0..INTEGER_LOOP_ITERATIONS).map(|_| element.clone()));
+    let program = Program::new(
+        11,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: collection,
+            },
+            Instruction::CollectionLen {
+                dst: reg(1),
+                collection: reg(0),
+            },
+            Instruction::Load {
+                dst: reg(2),
+                value: int(0),
+            },
+            Instruction::Load {
+                dst: reg(3),
+                value: initial,
+            },
+            Instruction::Load {
+                dst: reg(4),
+                value: int(1),
+            },
+            Instruction::Load {
+                dst: reg(5),
+                value: divisor,
+            },
+            Instruction::Binary {
+                dst: reg(6),
+                op: RuntimeBinaryOp::Lt,
+                left: reg(2),
+                right: reg(1),
+            },
+            Instruction::Branch {
+                condition: reg(6),
+                if_true: 8,
+                if_false: 15,
+            },
+            Instruction::CollectionValueAt {
+                dst: reg(7),
+                collection: reg(0),
+                index: reg(2),
+            },
+            Instruction::Binary {
+                dst: reg(8),
+                op: operation,
+                left: reg(7),
+                right: reg(5),
+            },
+            Instruction::Binary {
+                dst: reg(9),
+                op: RuntimeBinaryOp::Add,
+                left: reg(3),
+                right: reg(8),
+            },
+            Instruction::Move {
+                dst: reg(3),
+                src: reg(9),
+            },
+            Instruction::Binary {
+                dst: reg(10),
+                op: RuntimeBinaryOp::Add,
+                left: reg(2),
+                right: reg(4),
+            },
+            Instruction::Move {
+                dst: reg(2),
+                src: reg(10),
+            },
+            Instruction::Jump { target: 6 },
+            Instruction::Return { value: r(3) },
+        ],
+    )
+    .unwrap();
+    ProgramFixture {
+        program: Arc::new(program),
+        instruction_count: NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS,
     }
 }
 
