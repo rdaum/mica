@@ -100,6 +100,7 @@ impl RelationValue {
             .all(|(canonical, original)| canonical == *original);
 
         let mut canonical_rows = Vec::new();
+        let mut rows_are_strictly_ordered = true;
         for row in rows {
             if row.arity() != heading.len() {
                 return Err(RelationValueError::ArityMismatch {
@@ -107,14 +108,24 @@ impl RelationValue {
                     actual: row.arity(),
                 });
             }
-            canonical_rows.push(if already_ordered {
+            let row = if already_ordered {
                 row
             } else {
                 row.select(order.iter().map(|position| *position as u16))
-            });
+            };
+            if rows_are_strictly_ordered
+                && canonical_rows
+                    .last()
+                    .is_some_and(|previous| previous >= &row)
+            {
+                rows_are_strictly_ordered = false;
+            }
+            canonical_rows.push(row);
         }
-        canonical_rows.sort();
-        canonical_rows.dedup();
+        if !rows_are_strictly_ordered {
+            canonical_rows.sort();
+            canonical_rows.dedup();
+        }
 
         Ok(Self {
             heading: canonical_heading,
