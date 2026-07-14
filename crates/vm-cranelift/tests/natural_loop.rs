@@ -272,7 +272,7 @@ fn generated_list_access_emits_immediate_values_and_ordinals_without_helpers() {
 }
 
 #[test]
-fn generated_list_index_emits_checked_values_without_helpers() {
+fn generated_list_index_emits_checked_values_without_calling_map_helper() {
     let values = [Value::int(4).unwrap(), Value::int(9).unwrap()];
     let view = [NaturalLoopCollectionView::list(&values)];
     let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
@@ -283,7 +283,9 @@ fn generated_list_index_emits_checked_values_without_helpers() {
         NaturalLoopOutcome::Complete { .. }
     ));
     assert_eq!(value(scratch[0]).as_int(), Some(9));
-    assert_eq!(compiled.imported_helper_count(), 0);
+    // Dynamic indexing imports the map comparison helper, but list lookup does
+    // not call it.
+    assert_eq!(compiled.imported_helper_count(), 1);
 
     for index in [int_bits(-1), int_bits(2), bits(Value::float(0.0).unwrap())] {
         let mut scratch = [bits(Value::nothing()), index];
@@ -295,7 +297,7 @@ fn generated_list_index_emits_checked_values_without_helpers() {
 }
 
 #[test]
-fn generated_map_index_uses_canonical_immediate_key_order_without_helpers() {
+fn generated_map_index_uses_native_canonical_order_for_immediate_keys() {
     let heap_value = Value::string("heap value");
     let entries = [
         (Value::int(-9).unwrap(), Value::int(1).unwrap()),
@@ -342,21 +344,43 @@ fn generated_map_index_uses_canonical_immediate_key_order_without_helpers() {
         ));
         assert_eq!(scratch[0], bits(Value::nothing()));
     }
-    assert_eq!(compiled.imported_helper_count(), 0);
+    assert_eq!(compiled.imported_helper_count(), 1);
 }
 
 #[test]
-fn generated_map_index_side_exits_for_heap_keys() {
-    let entry_key = Value::string("key");
-    let entries = [(entry_key.clone(), Value::int(7).unwrap())];
-    let view = [NaturalLoopCollectionView::map(&entries)];
-    let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
-    let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&entry_key)];
-
-    assert_eq!(
-        compiled.run(&mut scratch, &view, 1),
-        NaturalLoopOutcome::SideExit,
+fn generated_map_index_uses_canonical_helper_for_heap_keys() {
+    let keys = [
+        Value::string("alpha"),
+        Value::string("omega"),
+        Value::list([Value::int(1).unwrap(), Value::string("nested")]),
+        Value::map([(Value::string("nested"), Value::bool(true))]),
+    ];
+    let map = Value::map(
+        keys.iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, key)| (key, Value::int(index as i64).unwrap())),
     );
+    let ValueRef::Map(entries) = map.as_value_ref() else {
+        panic!("expected map value");
+    };
+    let view = [NaturalLoopCollectionView::map(entries)];
+    let compiled = CompiledNaturalLoop::compile(&index_plan()).unwrap();
+
+    for key in keys
+        .iter()
+        .cloned()
+        .chain([Value::string("missing"), Value::list([])])
+    {
+        let expected = map.map_get(&key).unwrap_or_else(Value::nothing);
+        let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&key)];
+        assert!(matches!(
+            compiled.run(&mut scratch, &view, 1),
+            NaturalLoopOutcome::Complete { .. }
+        ));
+        assert_eq!(scratch[0], borrowed_value_bits(&expected), "key {key:?}");
+    }
+    assert_eq!(compiled.imported_helper_count(), 1);
 }
 
 #[test]
@@ -423,6 +447,45 @@ fn generated_map_index_accepts_immediate_operands() {
     ));
     assert_eq!(value(scratch[0]).as_int(), Some(7));
     assert_eq!(compiled.imported_helper_count(), 0);
+}
+
+#[test]
+fn generated_heap_map_index_helper_executes_concurrently() {
+    let compiled = Arc::new(CompiledNaturalLoop::compile(&index_plan()).unwrap());
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let compiled = Arc::clone(&compiled);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let key = Value::string("concurrent key");
+            let map = Value::map([
+                (Value::string("alpha"), Value::int(1).unwrap()),
+                (key.clone(), Value::int(7).unwrap()),
+                (Value::string("omega"), Value::int(9).unwrap()),
+            ]);
+            let ValueRef::Map(entries) = map.as_value_ref() else {
+                panic!("expected map value");
+            };
+            let view = [NaturalLoopCollectionView::map(entries)];
+            let mut scratch = [bits(Value::nothing()), borrowed_value_bits(&key)];
+            barrier.wait();
+            let outcome = compiled.run(&mut scratch, &view, 1);
+            (outcome, scratch[0])
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            (
+                NaturalLoopOutcome::Complete {
+                    instructions: 1,
+                    modified_slots: 1,
+                },
+                int_bits(7),
+            ),
+        );
+    }
 }
 
 #[test]

@@ -24,8 +24,9 @@ use cranelift_module::{Linkage, Module, default_libcall_names};
 use mica_var::Value;
 use mica_var::abi::{
     VALUE_ABI_VERSION, VALUE_FLOAT_TAG, VALUE_INT_MAX, VALUE_INT_MIN, VALUE_INT_TAG,
-    borrowed_value_numeric_eq, value_is_immediate,
+    borrowed_value_cmp, borrowed_value_numeric_eq, value_is_immediate,
 };
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
@@ -37,9 +38,18 @@ const STATUS_COMPLETE: u32 = 0;
 const STATUS_BUDGET_EXHAUSTED: u32 = 1;
 const STATUS_SIDE_EXIT: u32 = 2;
 const NUMERIC_EQUAL_HELPER: &str = "mica_borrowed_value_numeric_equal";
+const CANONICAL_COMPARE_HELPER: &str = "mica_borrowed_value_canonical_compare";
 
 unsafe extern "C" fn borrowed_value_numeric_equal(left: u64, right: u64) -> u64 {
     u64::from(unsafe { borrowed_value_numeric_eq(left, right) })
+}
+
+unsafe extern "C" fn borrowed_value_canonical_compare(left: u64, right: u64) -> i64 {
+    match unsafe { borrowed_value_cmp(left, right) } {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    }
 }
 
 type NaturalLoopFunction = unsafe extern "C" fn(
@@ -338,6 +348,12 @@ impl NaturalLoopPlan {
             )
         })
     }
+
+    fn requires_canonical_compare_helper(&self) -> bool {
+        self.instructions
+            .iter()
+            .any(|instruction| matches!(instruction, NaturalLoopInstruction::IndexValue { .. }))
+    }
 }
 
 #[derive(Debug)]
@@ -391,6 +407,12 @@ impl CompiledNaturalLoop {
                 borrowed_value_numeric_equal as *const u8,
             );
         }
+        if plan.requires_canonical_compare_helper() {
+            jit_builder.symbol(
+                CANONICAL_COMPARE_HELPER,
+                borrowed_value_canonical_compare as *const u8,
+            );
+        }
         let mut module = JITModule::new(jit_builder);
         let pointer_type = module.target_config().pointer_type();
         let mut signature = Signature::new(module.isa().default_call_conv());
@@ -424,9 +446,28 @@ impl CompiledNaturalLoop {
         } else {
             None
         };
+        let canonical_compare_helper = if plan.requires_canonical_compare_helper() {
+            let mut helper_signature = Signature::new(module.isa().default_call_conv());
+            helper_signature.params.push(AbiParam::new(types::I64));
+            helper_signature.params.push(AbiParam::new(types::I64));
+            helper_signature.returns.push(AbiParam::new(types::I64));
+            Some(
+                module
+                    .declare_function(CANONICAL_COMPARE_HELPER, Linkage::Import, &helper_signature)
+                    .map_err(|error| {
+                        NaturalLoopError(format!(
+                            "could not declare canonical comparison helper: {error}"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
         let mut context = Context::new();
         context.func.signature = signature;
         let numeric_equal_helper = numeric_equal_helper
+            .map(|helper| module.declare_func_in_func(helper, &mut context.func));
+        let canonical_compare_helper = canonical_compare_helper
             .map(|helper| module.declare_func_in_func(helper, &mut context.func));
         let mut builder_context = FunctionBuilderContext::new();
         Self::build_function(
@@ -434,6 +475,7 @@ impl CompiledNaturalLoop {
             &mut context,
             &mut builder_context,
             numeric_equal_helper,
+            canonical_compare_helper,
         );
         let imported_helper_count = context.func.dfg.ext_funcs.len();
         module
@@ -466,6 +508,7 @@ impl CompiledNaturalLoop {
         context: &mut Context,
         builder_context: &mut FunctionBuilderContext,
         numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
+        canonical_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
     ) {
         let mut builder = FunctionBuilder::new(&mut context.func, builder_context);
         let entry = builder.create_block();
@@ -597,6 +640,7 @@ impl CompiledNaturalLoop {
                         collection_views,
                         instruction,
                         numeric_equal_helper,
+                        canonical_compare_helper,
                     );
                     let slot_bit = 1_u32 << dst;
                     let slot_bit = builder.ins().iconst(types::I32, i64::from(slot_bit));
@@ -674,6 +718,7 @@ impl CompiledNaturalLoop {
         collection_views: cranelift_codegen::ir::Value,
         instruction: NaturalLoopInstruction,
         numeric_equal_helper: Option<cranelift_codegen::ir::FuncRef>,
+        canonical_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
     ) -> (cranelift_codegen::ir::Value, u16) {
         match instruction {
             NaturalLoopInstruction::Load { dst, value } => {
@@ -836,14 +881,15 @@ impl CompiledNaturalLoop {
             NaturalLoopInstruction::IndexValue { dst, view, index } => {
                 let index = Self::load_slot(builder, scratch, index);
                 let view = Self::load_collection_view(builder, collection_views, view);
-                let (value, is_fast) = Self::emit_index_value(builder, index, view);
+                let (value, is_fast) =
+                    Self::emit_index_value(builder, index, view, canonical_compare_helper);
                 Self::store_slot(builder, scratch, dst, value);
                 (is_fast, dst)
             }
             NaturalLoopInstruction::IndexValueImmediate { dst, view, index } => {
                 let index = builder.ins().iconst(types::I64, index as i64);
                 let view = Self::load_collection_view(builder, collection_views, view);
-                let (value, is_fast) = Self::emit_index_value(builder, index, view);
+                let (value, is_fast) = Self::emit_index_value(builder, index, view, None);
                 Self::store_slot(builder, scratch, dst, value);
                 (is_fast, dst)
             }
@@ -929,10 +975,11 @@ impl CompiledNaturalLoop {
 
     /// Emits list ordinal lookup or canonical map-key binary search.
     ///
-    /// Immediate map keys follow `Value::cmp`: kinds order by tag, integers
-    /// compare signed, finite canonical binary32 values compare numerically,
-    /// and the remaining immediate kinds compare by payload. Heap keys leave
-    /// the native path because their within-kind ordering requires dereference.
+    /// Immediate map keys follow `Value::cmp` entirely in generated code: kinds
+    /// order by tag, integers compare signed, finite canonical binary32 values
+    /// compare numerically, and the remaining immediate kinds compare by
+    /// payload. Dynamic heap keys use the borrowed canonical comparison helper
+    /// at each binary-search probe.
     fn emit_index_value(
         builder: &mut FunctionBuilder<'_>,
         index_word: cranelift_codegen::ir::Value,
@@ -944,17 +991,24 @@ impl CompiledNaturalLoop {
             cranelift_codegen::ir::Value,
             cranelift_codegen::ir::Value,
         ),
+        canonical_compare_helper: Option<cranelift_codegen::ir::FuncRef>,
     ) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
         let list = builder.create_block();
         let map_check = builder.create_block();
         let map_loop = builder.create_block();
         let map_probe = builder.create_block();
+        let map_helper_compare = canonical_compare_helper.map(|_| builder.create_block());
+        let map_compare_done = canonical_compare_helper.map(|_| builder.create_block());
         let map_update = builder.create_block();
         let done = builder.create_block();
         builder.append_block_param(map_loop, types::I64);
         builder.append_block_param(map_loop, types::I64);
         builder.append_block_param(map_probe, types::I64);
         builder.append_block_param(map_probe, types::I64);
+        if let Some(map_compare_done) = map_compare_done {
+            builder.append_block_param(map_compare_done, types::I8);
+            builder.append_block_param(map_compare_done, types::I8);
+        }
         builder.append_block_param(map_update, types::I64);
         builder.append_block_param(map_update, types::I64);
         builder.append_block_param(map_update, types::I64);
@@ -996,7 +1050,11 @@ impl CompiledNaturalLoop {
             .ins()
             .icmp_imm(IntCC::Equal, kind, COLLECTION_MAP as i64);
         let index_is_immediate = ValueEmitter::emit_is_immediate(builder, index_word);
-        let can_search = builder.ins().band(is_map, index_is_immediate);
+        let can_search = if canonical_compare_helper.is_some() {
+            is_map
+        } else {
+            builder.ins().band(is_map, index_is_immediate)
+        };
         builder.ins().brif(
             can_search,
             map_loop,
@@ -1071,13 +1129,47 @@ impl CompiledNaturalLoop {
         let same_kind_less = builder.ins().select(is_int, int_less, payload_less);
         let same_kind_less = builder.ins().select(is_float, float_less, same_kind_less);
         let entry_less = builder.ins().select(same_tag, same_kind_less, tag_less);
-        builder.ins().brif(
-            equal,
-            done,
-            &[entry_value.into(), true_value.into()],
-            map_update,
-            &[lower.into(), upper.into(), middle.into(), entry_less.into()],
-        );
+        if let (Some(helper), Some(map_helper_compare), Some(map_compare_done)) = (
+            canonical_compare_helper,
+            map_helper_compare,
+            map_compare_done,
+        ) {
+            builder.ins().brif(
+                index_is_immediate,
+                map_compare_done,
+                &[equal.into(), entry_less.into()],
+                map_helper_compare,
+                &[],
+            );
+
+            builder.switch_to_block(map_helper_compare);
+            let call = builder.ins().call(helper, &[entry_key, index_word]);
+            let comparison = builder.inst_results(call)[0];
+            let equal = builder.ins().icmp_imm(IntCC::Equal, comparison, 0);
+            let entry_less = builder.ins().icmp_imm(IntCC::SignedLessThan, comparison, 0);
+            builder
+                .ins()
+                .jump(map_compare_done, &[equal.into(), entry_less.into()]);
+
+            builder.switch_to_block(map_compare_done);
+            let equal = builder.block_params(map_compare_done)[0];
+            let entry_less = builder.block_params(map_compare_done)[1];
+            builder.ins().brif(
+                equal,
+                done,
+                &[entry_value.into(), true_value.into()],
+                map_update,
+                &[lower.into(), upper.into(), middle.into(), entry_less.into()],
+            );
+        } else {
+            builder.ins().brif(
+                equal,
+                done,
+                &[entry_value.into(), true_value.into()],
+                map_update,
+                &[lower.into(), upper.into(), middle.into(), entry_less.into()],
+            );
+        }
 
         builder.switch_to_block(map_update);
         let lower = builder.block_params(map_update)[0];
