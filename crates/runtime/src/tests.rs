@@ -5,6 +5,7 @@ use super::{
 };
 use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
 use super::{relation_name_relation, subject_fact_relation};
+use mica_relation_kernel::RelationDurability;
 use mica_var::{Identity, Symbol, Tuple, Value};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -3562,6 +3563,60 @@ fn runner_make_relation_is_idempotent_for_matching_arity() {
 }
 
 #[test]
+fn runner_relation_durability_is_explicit_metadata() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source(
+            "make_relation(:Scratch, 1, :volatile)\n\
+             make_functional_relation(:Cache, 2, [0], :volatile)\n\
+             return true",
+        )
+        .unwrap();
+
+    let snapshot = runner.task_manager.kernel().snapshot();
+    for name in ["Scratch", "Cache"] {
+        let metadata = snapshot
+            .relation_metadata()
+            .find(|metadata| metadata.name().name() == Some(name))
+            .unwrap();
+        assert_eq!(metadata.durability(), RelationDurability::Volatile);
+    }
+    let relation_durability = snapshot
+        .relation_metadata()
+        .find(|metadata| metadata.name().name() == Some("RelationDurability"))
+        .unwrap();
+    let scratch = snapshot
+        .relation_metadata()
+        .find(|metadata| metadata.name().name() == Some("Scratch"))
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .scan(
+                relation_durability.id(),
+                &[Some(Value::identity(scratch.id())), None],
+            )
+            .unwrap(),
+        vec![Tuple::from([
+            Value::identity(scratch.id()),
+            Value::symbol(Symbol::intern("volatile")),
+        ])]
+    );
+}
+
+#[test]
+fn runner_rejects_relation_durability_mismatch() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source("return make_relation(:Scratch, 1, :volatile)")
+        .unwrap();
+    let error = runner
+        .run_source("return make_relation(:Scratch, 1, :durable)")
+        .unwrap_err();
+
+    assert!(format!("{error:?}").contains("relation name already exists with different metadata"));
+}
+
+#[test]
 fn runner_make_identity_refreshes_compile_context() {
     let mut runner = SourceRunner::new_empty();
     runner.run_source("make_relation(:Object, 1)").unwrap();
@@ -4730,6 +4785,24 @@ fn runner_fileout_preserves_functional_relation_declarations() {
     let source = runner.fileout_unit(Symbol::intern("schema")).unwrap();
 
     assert!(source.contains("make_functional_relation(:Name, 2, [0])"));
+}
+
+#[test]
+fn runner_fileout_preserves_volatile_relation_declarations() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein_with_unit(
+            Symbol::intern("schema"),
+            "make_relation(:Scratch, 1, :volatile)\n\
+             make_functional_relation(:Cache, 2, [0], :volatile)",
+            FileinMode::Add,
+        )
+        .unwrap();
+
+    let source = runner.fileout_unit(Symbol::intern("schema")).unwrap();
+
+    assert!(source.contains("make_relation(:Scratch, 1, :volatile)"));
+    assert!(source.contains("make_functional_relation(:Cache, 2, [0], :volatile)"));
 }
 
 #[test]

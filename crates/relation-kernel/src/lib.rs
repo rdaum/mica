@@ -74,7 +74,9 @@ pub use execution::{
 pub use fact::Fact;
 pub use kernel::RelationKernel;
 pub use materialized::materialize_rule_set;
-pub use metadata::{ConflictPolicy, RelationMetadata, RelationSchema, TupleIndexSpec};
+pub use metadata::{
+    ConflictPolicy, RelationDurability, RelationMetadata, RelationSchema, TupleIndexSpec,
+};
 pub use neighborhood::{MentionedFact, SubjectFact};
 pub use projected::{ProjectedDelta, ProjectedStore};
 pub use provider::{CommitProvider, InMemoryCommitProvider, PersistedKernelState};

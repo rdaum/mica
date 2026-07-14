@@ -12,8 +12,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    Atom, CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, RelationId,
-    RelationMetadata, Rule, RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleGuard, Term, Tuple,
+    Atom, CatalogChange, Commit, ConflictPolicy, FactChange, FactChangeKind, RelationDurability,
+    RelationId, RelationMetadata, Rule, RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleGuard,
+    Term, Tuple,
 };
 use mica_var::{
     Identity, Symbol, Value, decode_value as decode_persisted_value,
@@ -105,7 +106,7 @@ pub(super) fn decode_commit(bytes: &[u8]) -> Result<Commit, String> {
 }
 
 fn write_magic(out: &mut Vec<u8>) {
-    out.extend_from_slice(b"MICACMT1");
+    out.extend_from_slice(b"MICACMT2");
 }
 
 fn encode_catalog_change(change: &CatalogChange, out: &mut Vec<u8>) -> Result<(), String> {
@@ -130,6 +131,10 @@ fn encode_relation_metadata(metadata: &RelationMetadata, out: &mut Vec<u8>) -> R
     write_identity(out, metadata.id());
     write_symbol(out, metadata.name())?;
     write_u16(out, metadata.arity());
+    out.push(match metadata.durability() {
+        RelationDurability::Durable => 0,
+        RelationDurability::Volatile => 1,
+    });
     for position in 0..metadata.arity() {
         write_optional_symbol(out, metadata.argument_name(position))?;
     }
@@ -294,7 +299,7 @@ impl<'a> Reader<'a> {
 
     fn expect_magic(&mut self) -> Result<(), String> {
         let magic = self.read_exact(8)?;
-        if magic == b"MICACMT1" {
+        if magic == b"MICACMT2" {
             Ok(())
         } else {
             Err("invalid mica commit record magic".to_owned())
@@ -325,7 +330,12 @@ impl<'a> Reader<'a> {
         let id = self.read_identity()?;
         let name = self.read_symbol()?;
         let arity = self.read_u16()?;
-        let mut metadata = RelationMetadata::new(id, name, arity);
+        let durability = match self.read_u8()? {
+            0 => RelationDurability::Durable,
+            1 => RelationDurability::Volatile,
+            tag => return Err(format!("unknown relation durability tag {tag}")),
+        };
+        let mut metadata = RelationMetadata::new(id, name, arity).with_durability(durability);
         for position in 0..arity {
             if let Some(name) = self.read_optional_symbol()? {
                 metadata = metadata.with_argument_name(position, name);

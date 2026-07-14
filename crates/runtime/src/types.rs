@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_compiler::{CompileContext, CompileError, HostRequestFunction};
-use mica_relation_kernel::{ConflictPolicy, RelationMetadata, Tuple};
+use mica_relation_kernel::{ConflictPolicy, RelationDurability, RelationMetadata, Tuple};
 use mica_var::{Identity, Symbol, Value};
 use mica_vm::AuthorityContext;
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,6 +53,7 @@ pub(crate) struct SourceRelationDeclaration {
     pub(crate) name: String,
     pub(crate) arity: u16,
     pub(crate) conflict_policy: ConflictPolicy,
+    pub(crate) durability: RelationDurability,
 }
 
 pub struct SourceRunner {
