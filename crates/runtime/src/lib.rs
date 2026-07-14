@@ -65,9 +65,9 @@ use mica_host_protocol::{
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
-    RelationId, RelationKernel, RelationMetadata, RelationRead,
+    RelationId, RelationKernel, RelationMetadata, RelationRead, relation_algebra,
 };
-use mica_var::{Identity, PRIMITIVE_PROTOTYPES, Symbol, Value, ValueKind};
+use mica_var::{Identity, PRIMITIVE_PROTOTYPES, RelationValue, Symbol, Value, ValueKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufReader;
 use std::path::Path;
@@ -178,6 +178,10 @@ const DEFAULT_BUILTIN_NAMES: &[&str] = &[
     "openai_chat_completion_with_options",
     "llm_chat_stream",
     "map_pairs",
+    "project",
+    "union",
+    "difference",
+    "natural_join",
     "os_getenv",
 ];
 
@@ -3659,6 +3663,10 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
         .with_builtin("from_literal", from_literal_builtin)
         .with_builtin("to_symbol", to_symbol_builtin)
         .with_builtin("map_pairs", map_pairs_builtin)
+        .with_builtin("project", project_builtin)
+        .with_builtin("union", union_builtin)
+        .with_builtin("difference", difference_builtin)
+        .with_builtin("natural_join", natural_join_builtin)
         .with_builtin("json_encode", json_encode_builtin)
         .with_builtin("json_decode", json_decode_builtin)
         .with_builtin("dom_text", dom_text_builtin)
@@ -3957,6 +3965,98 @@ fn map_pairs_builtin(
         return Err(invalid_builtin_call("map_pairs", "expected a map argument"));
     };
     Ok(Value::list(pairs))
+}
+
+fn project_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    let Some((relation, columns)) = args.split_first() else {
+        return Err(invalid_builtin_call(
+            "project",
+            "expected project(relation, :column, ...)",
+        ));
+    };
+    let columns = columns
+        .iter()
+        .map(|column| {
+            column
+                .as_symbol()
+                .ok_or_else(|| invalid_builtin_call("project", "expected symbol column arguments"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(result) =
+        relation.with_relation(|relation| relation_algebra::project(relation, columns))
+    else {
+        return Err(invalid_builtin_call(
+            "project",
+            "expected relation argument",
+        ));
+    };
+    result
+        .map(Value::from)
+        .map_err(|error| invalid_builtin_call("project", error.to_string()))
+}
+
+fn union_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    relation_binary_builtin(
+        "union",
+        "expected union(left, right)",
+        args,
+        relation_algebra::union,
+    )
+}
+
+fn difference_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    relation_binary_builtin(
+        "difference",
+        "expected difference(left, right)",
+        args,
+        relation_algebra::difference,
+    )
+}
+
+fn natural_join_builtin(
+    _context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    relation_binary_builtin(
+        "natural_join",
+        "expected natural_join(left, right)",
+        args,
+        relation_algebra::natural_join,
+    )
+}
+
+fn relation_binary_builtin(
+    name: &str,
+    expected: &str,
+    args: &[Value],
+    operation: fn(
+        &RelationValue,
+        &RelationValue,
+    ) -> Result<RelationValue, relation_algebra::RelationAlgebraError>,
+) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(invalid_builtin_call(name, expected));
+    }
+    let Some(result) =
+        args[0].with_relation(|left| args[1].with_relation(|right| operation(left, right)))
+    else {
+        return Err(invalid_builtin_call(name, "expected relation argument"));
+    };
+    let Some(result) = result else {
+        return Err(invalid_builtin_call(name, "expected relation argument"));
+    };
+    result
+        .map(Value::from)
+        .map_err(|error| invalid_builtin_call(name, error.to_string()))
 }
 
 fn value_from_literal_expr(
@@ -6075,6 +6175,10 @@ fn is_safe_read_only_builtin(name: &str) -> bool {
             | "to_literal"
             | "from_literal"
             | "to_symbol"
+            | "project"
+            | "union"
+            | "difference"
+            | "natural_join"
             | "json_encode"
             | "json_decode"
             | "dom_text"

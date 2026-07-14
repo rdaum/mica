@@ -31,9 +31,8 @@ in the same relation has the same shape.
 ## Relation Semantics
 
 Relations have set semantics. A fact is either present or absent; asserting the same fact twice does
-not create two logical copies. There is no meaningful tuple order inside the relation. When a query
-returns a list, that list is the language-level representation of the answer set, not a promise that
-the logical relation is ordered.
+not create two logical copies. There is no meaningful tuple order inside the relation. Query results
+preserve these set semantics as immutable relation values.
 
 The positions in a relation are ordinal. `LocatedIn(#coin, #room)` means position 0 is `#coin` and
 position 1 is `#room`. The positions do not have stored column names. Names come from the relation
@@ -64,15 +63,24 @@ Query with free variables:
 return LocatedIn(?thing, #room)
 ```
 
-The `?thing` part is a query variable. The result is a list of binding maps:
+The `?thing` part is a query variable. The result is a relation value:
 
-```mica
-[{:thing -> #coin}, {:thing -> #lamp}]
+```text
+relation({:thing}, [[#coin], [#lamp]])
 ```
 
-Logically, the query result is a set of answers. In task code, Mica returns those answers as a list
-of maps so ordinary code can iterate over them. Do not write code that depends on result ordering
-unless the language surface explicitly promises an order for that operation.
+The heading names the free variables and each row contains their values. This display form is not a
+source literal. Relation values are canonical sets, so projection removes duplicate answer rows and
+programs must not depend on row order.
+
+Relation values are iterable. Each observed row is exposed as a binding map, so existing row access
+remains direct without allocating a map for every answer up front:
+
+```mica
+for row in LocatedIn(?thing, ?place)
+  emit(#observer, row[:thing])
+end
+```
 
 A relation call with no free variables is a predicate test:
 
@@ -88,7 +96,7 @@ You can also leave multiple positions open:
 return LocatedIn(?thing, ?place)
 ```
 
-That returns one binding map per matching fact.
+That returns a relation value with `:thing` and `:place` columns.
 
 Repeated query variables require equality:
 
@@ -130,6 +138,29 @@ If the query produces zero results, `one` returns `nothing`. If it produces more
 variable's value. If the single result has multiple free variables, the result shape is a binding
 map.
 
+## Relation Value Algebra
+
+Query results compose through four initial relational operations:
+
+```mica
+let people = Person(?person, ?name)
+let active = Active(?person)
+
+let names = project(people, :name)
+let active_people = natural_join(people, active)
+let either = union(Current(?person), Pending(?person))
+let remaining = difference(Current(?person), Removed(?person))
+```
+
+`project` keeps the named columns and removes duplicate rows. It accepts zero columns, producing the
+zero-column unit relation when the input is non-empty. `union` and `difference` require identical
+headings. `natural_join` matches every shared column name; with no shared columns it produces a
+Cartesian product. Join keys use canonical value identity, so an integer and float do not join
+merely because language numeric equality considers them equal.
+
+Relation values can be returned from tasks and carried across RPC or IPC value boundaries. They do
+not yet have literal syntax and cannot yet be stored as cells in durable named relations.
+
 Dot sugar is only valid for declared functional binary relations:
 
 ```mica
@@ -145,6 +176,7 @@ single-result projection such as `one Name(#lamp, ?name)`. If there is no matchi
 is `nothing`. If more than one tuple matches a non-functional backing relation, the read raises
 `E_AMBIGUOUS`. There is no fallback to hidden object storage.
 
-Mica relation calls are closer to Datalog predicates than SQL `SELECT` statements. Relations have no
-implicit row ids, no implicit column names, and no SQL `NULL`. Query variables and binding maps are
-the bridge between the logical relation and ordinary Mica values.
+Mica relation calls are closer to Datalog predicates than SQL `SELECT` statements. Named relations
+have no implicit row ids, no stored column names, and no SQL `NULL`. Query variables provide the
+heading of a first-class answer relation; row maps are produced only when code observes individual
+rows.

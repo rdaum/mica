@@ -16,18 +16,21 @@ Current value families include:
 - identity values such as `#alice`;
 - lists such as `[1, 2, 3]`;
 - maps such as `{:name -> "lamp"}`;
+- immutable relation values returned by queries;
 - frobs such as `#event<{:actor -> #alice}>`;
 - bytes;
 - ephemeral capability values.
 
-The value layer is intentionally small and regular. Relations can store any persistable value, and
-verbs can accept ordinary values, identities, or frobs through the same role-binding mechanism. The
-language should not force authors to turn every structured value into a durable object just so it
-can be passed around.
+The value layer is intentionally small and regular. Named relations can store any persistable
+value, and verbs can accept ordinary values, identities, frobs, or relation values through the same
+role-binding mechanism. The language should not force authors to turn every structured value into
+a durable object just so it can be passed around.
 
-Not every value family has a source literal. Bytes and capability values are created by builtins,
-host interfaces, or runtime operations. Capability values are deliberately not persistable source
-values.
+Not every value family has a source literal. Bytes, relation values, and capability values are
+created by queries, builtins, host interfaces, or runtime operations. Relation values are
+serializable task results and may cross host protocol boundaries, but they are not yet accepted as
+cells in durable named relations. Capability values are deliberately neither serializable nor
+persistable.
 
 Primitive values behave like values in most dynamic languages:
 

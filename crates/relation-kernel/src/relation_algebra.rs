@@ -66,9 +66,9 @@ impl From<RelationValueError> for RelationAlgebraError {
 /// eliminates rows that become duplicates.
 pub fn project(
     relation: &RelationValue,
-    columns: impl IntoIterator<Item = Symbol>,
+    columns: impl AsRef<[Symbol]>,
 ) -> Result<RelationValue, RelationAlgebraError> {
-    let columns = columns.into_iter().collect::<Vec<_>>();
+    let columns = columns.as_ref();
     let positions = columns
         .iter()
         .map(|column| {
@@ -79,7 +79,7 @@ pub fn project(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let rows = project_tuple_rows(relation.rows().iter().cloned(), &positions);
-    RelationValue::new(columns, rows).map_err(Into::into)
+    RelationValue::new(columns.iter().copied(), rows).map_err(Into::into)
 }
 
 /// Returns the union of two relations with identical headings.
