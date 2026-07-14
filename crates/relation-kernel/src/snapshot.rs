@@ -219,10 +219,7 @@ impl Snapshot {
     }
 
     pub fn relation_metadata_named(&self, name: Symbol) -> Option<&RelationMetadata> {
-        self.relations
-            .values()
-            .map(RelationState::metadata)
-            .find(|metadata| metadata.name() == name)
+        self.relations.get_named(name).map(RelationState::metadata)
     }
 
     pub fn extensional_facts(&self) -> Result<Vec<(RelationId, Tuple)>, KernelError> {

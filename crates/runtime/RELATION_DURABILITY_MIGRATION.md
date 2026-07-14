@@ -318,3 +318,22 @@ store. The final profile attributes the largest remaining user-space cost to rel
 copy-on-write mutation and destruction. Repeated name lookup through the persistent-tree iterator is
 also still visible, alongside transaction publication and lock contention; computed-provider name
 matching is no longer a hot-path cost.
+
+## Snapshot Relation-Name Index
+
+`RelationStates` now retains an immutable name-to-identity index shared by snapshots. Ordinary fact
+transactions increment one snapshot-level reference count instead of walking the relation ART for
+every host tuple; catalogue insertion uses copy-on-write and remains off the request path. Duplicate
+names retain the previous lowest-relation-identity lookup behaviour.
+
+Two consecutive request-lifecycle runs produced medians of 26,728/27,193/43,035 ns and
+26,840/27,099/42,373 ns for serial, one-worker, and four-worker execution. Compared with the
+immediately preceding ranges of 29,368--29,520 ns, 30,013--30,288 ns, and 44,303--46,203 ns, the
+name index improves every execution mode without introducing the per-relation reference-count
+bouncing rejected above. The optimized path is now 2.41x, 2.42x, and 2.80x slower than the direct
+transient-store baseline and has removed 69.2%, 72.8%, and 58.9% of the overlay-removal checkpoint's
+excess latency. The production indexed-visit read gate returned to its original 414.4 ns median.
+
+The follow-up profile no longer contains relation-name catalogue traversal. Relation-state ART
+copy-on-write, relation-state destruction, tuple-index mutation, allocator traffic, and snapshot
+publication atomics are now the visible costs.
