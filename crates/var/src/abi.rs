@@ -68,6 +68,19 @@ pub const fn borrowed_value_bits(value: &Value) -> u64 {
     value.raw_bits()
 }
 
+/// Compares two borrowed process-local value words using language numeric
+/// equality without taking ownership of either word.
+///
+/// # Safety
+///
+/// Both words must denote valid live `Value`s for [`VALUE_ABI_VERSION`] for the
+/// duration of this call.
+pub unsafe fn borrowed_value_numeric_eq(left: u64, right: u64) -> bool {
+    let left = ManuallyDrop::new(Value(left));
+    let right = ManuallyDrop::new(Value(right));
+    crate::language_cmp::numeric_eq(&left, &right)
+}
+
 pub fn into_owned_value_bits(value: Value) -> u64 {
     let value = ManuallyDrop::new(value);
     value.raw_bits()

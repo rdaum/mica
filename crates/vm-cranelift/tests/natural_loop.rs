@@ -156,6 +156,21 @@ fn immediate_index_plan(index: Value) -> NaturalLoopPlan {
     .unwrap()
 }
 
+fn equality_plan(comparison: ScalarComparison) -> NaturalLoopPlan {
+    NaturalLoopPlan::new(
+        3,
+        0,
+        0,
+        [NaturalLoopInstruction::Compare {
+            dst: 2,
+            comparison,
+            left: 0,
+            right: 1,
+        }],
+    )
+    .unwrap()
+}
+
 #[test]
 fn generated_range_value_at_emits_checked_integer_values_without_helpers() {
     let compiled = CompiledNaturalLoop::compile(&collection_value_plan()).unwrap();
@@ -509,6 +524,115 @@ fn generated_natural_loop_side_exits_on_mixed_arithmetic() {
         compiled.run(&mut scratch, &[], 16_384 * 9),
         NaturalLoopOutcome::SideExit,
     );
+}
+
+#[test]
+fn generated_equality_calls_one_helper_for_heap_and_mixed_numeric_values() {
+    let compiled = CompiledNaturalLoop::compile(&equality_plan(ScalarComparison::Equal)).unwrap();
+    let cases = [
+        (Value::string("same"), Value::string("same"), true),
+        (Value::string("same"), Value::string("different"), false),
+        (
+            Value::list([Value::int(1).unwrap(), Value::string("nested")]),
+            Value::list([Value::int(1).unwrap(), Value::string("nested")]),
+            true,
+        ),
+        (
+            Value::map([(Value::string("key"), Value::int(7).unwrap())]),
+            Value::map([(Value::string("key"), Value::int(8).unwrap())]),
+            false,
+        ),
+        (
+            Value::int(16_777_216).unwrap(),
+            Value::float(16_777_216.0).unwrap(),
+            true,
+        ),
+        (
+            Value::int(16_777_217).unwrap(),
+            Value::float(16_777_216.0).unwrap(),
+            false,
+        ),
+    ];
+
+    for (left, right, expected) in cases {
+        let mut scratch = [
+            borrowed_value_bits(&left),
+            borrowed_value_bits(&right),
+            bits(Value::nothing()),
+        ];
+        assert_eq!(
+            compiled.run(&mut scratch, &[], 1),
+            NaturalLoopOutcome::Complete {
+                instructions: 1,
+                modified_slots: 4,
+            },
+        );
+        assert_eq!(value(scratch[2]).as_bool(), Some(expected));
+    }
+    assert_eq!(compiled.imported_helper_count(), 1);
+}
+
+#[test]
+fn generated_heap_inequality_uses_helper_but_ordering_still_side_exits() {
+    let left = Value::string("alpha");
+    let right = Value::string("beta");
+    let mut scratch = [
+        borrowed_value_bits(&left),
+        borrowed_value_bits(&right),
+        bits(Value::nothing()),
+    ];
+    let not_equal =
+        CompiledNaturalLoop::compile(&equality_plan(ScalarComparison::NotEqual)).unwrap();
+    assert!(matches!(
+        not_equal.run(&mut scratch, &[], 1),
+        NaturalLoopOutcome::Complete { .. }
+    ));
+    assert_eq!(value(scratch[2]).as_bool(), Some(true));
+    assert_eq!(not_equal.imported_helper_count(), 1);
+
+    let less_than =
+        CompiledNaturalLoop::compile(&equality_plan(ScalarComparison::LessThan)).unwrap();
+    assert_eq!(
+        less_than.run(&mut scratch, &[], 1),
+        NaturalLoopOutcome::SideExit,
+    );
+    assert_eq!(less_than.imported_helper_count(), 0);
+}
+
+#[test]
+fn generated_heap_equality_helper_executes_concurrently() {
+    let compiled =
+        Arc::new(CompiledNaturalLoop::compile(&equality_plan(ScalarComparison::Equal)).unwrap());
+    let barrier = Arc::new(Barrier::new(4));
+    let mut threads = Vec::new();
+    for _ in 0..4 {
+        let compiled = Arc::clone(&compiled);
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            let left = Value::string("concurrent equality");
+            let right = Value::string("concurrent equality");
+            let mut scratch = [
+                borrowed_value_bits(&left),
+                borrowed_value_bits(&right),
+                bits(Value::nothing()),
+            ];
+            barrier.wait();
+            let outcome = compiled.run(&mut scratch, &[], 1);
+            (outcome, value(scratch[2]).as_bool())
+        }));
+    }
+    for thread in threads {
+        assert_eq!(
+            thread.join().unwrap(),
+            (
+                NaturalLoopOutcome::Complete {
+                    instructions: 1,
+                    modified_slots: 4,
+                },
+                Some(true),
+            ),
+        );
+    }
 }
 
 #[test]

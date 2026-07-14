@@ -34,6 +34,7 @@ const NATURAL_INDEXED_RANGE_INSTRUCTION_COUNT: usize = (ITERATIONS * 10) + 8;
 const NATURAL_LIST_INDEX_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 8;
 const NATURAL_REPEATED_MAP_INDEX_INSTRUCTION_COUNT: usize = (ITERATIONS * 6) + 8;
 const NATURAL_CONSTANT_MAP_INDEX_INSTRUCTION_COUNT: usize = (ITERATIONS * 6) + 7;
+const NATURAL_STRING_EQUALITY_INSTRUCTION_COUNT: usize = (ITERATIONS * 8) + 9;
 const MAX_CALL_DEPTH: usize = 8;
 
 #[derive(Default)]
@@ -672,6 +673,85 @@ fn natural_collection_count_program(collection: Value, bind_key: bool) -> Arc<Pr
         },
     ]);
     Arc::new(Program::new(9, instructions).unwrap())
+}
+
+fn natural_string_equality_program() -> Arc<Program> {
+    let collection = Value::list((0..ITERATIONS).map(|_| Value::string("compiled equality")));
+    Arc::new(
+        Program::new(
+            9,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: collection,
+                },
+                Instruction::CollectionLen {
+                    dst: register(1),
+                    collection: register(0),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(5),
+                    value: Value::string("compiled equality"),
+                },
+                Instruction::Binary {
+                    dst: register(6),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(2),
+                    right: register(1),
+                },
+                Instruction::Branch {
+                    condition: register(6),
+                    if_true: 8,
+                    if_false: 14,
+                },
+                Instruction::CollectionValueAt {
+                    dst: register(7),
+                    collection: register(0),
+                    index: register(2),
+                },
+                Instruction::Binary {
+                    dst: register(8),
+                    op: RuntimeBinaryOp::Eq,
+                    left: register(7),
+                    right: register(5),
+                },
+                Instruction::Branch {
+                    condition: register(8),
+                    if_true: 11,
+                    if_false: 12,
+                },
+                Instruction::Binary {
+                    dst: register(3),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(3),
+                    right: register(4),
+                },
+                Instruction::Binary {
+                    dst: register(2),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(2),
+                    right: register(4),
+                },
+                Instruction::Jump { target: 6 },
+                Instruction::Return {
+                    value: Operand::Register(register(3)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
 }
 
 fn natural_countdown_program(iterations: usize) -> Arc<Program> {
@@ -1830,6 +1910,26 @@ fn native_map_index_heap_key_side_exit_is_atomic_and_sticky() {
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
     assert_eq!(native.native_side_exit_count(), 1);
+}
+
+#[test]
+fn native_string_equality_loop_calls_helper_without_side_exit() {
+    let program = natural_string_equality_program();
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+
+    let expected = VmHostResponse::Complete(Value::int(ITERATIONS as i64).unwrap());
+    assert_eq!(
+        run(&mut interpreted, NATURAL_STRING_EQUALITY_INSTRUCTION_COUNT).unwrap(),
+        expected,
+    );
+    assert_eq!(
+        run(&mut native, NATURAL_STRING_EQUALITY_INSTRUCTION_COUNT).unwrap(),
+        expected,
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+    assert_eq!(native.native_side_exit_count(), 0);
 }
 
 #[test]
