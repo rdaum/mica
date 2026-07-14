@@ -36,3 +36,7 @@ harness = false
 [[bench]]
 name = "transaction_overlay_benches"
 harness = false
+
+[[bench]]
+name = "relation_durability_benches"
+harness = false

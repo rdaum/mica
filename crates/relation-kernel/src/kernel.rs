@@ -18,8 +18,8 @@ use crate::snapshot::{
 };
 use crate::{
     CatalogChange, Commit, CommitProvider, ComputedRelation, ComputedRelationRegistry,
-    ExecutionContext, FactChangeKind, KernelError, RelationMetadata, Rule, RuleDefinition, RuleSet,
-    Snapshot, Transaction,
+    ExecutionContext, FactChangeKind, KernelError, RelationDurability, RelationMetadata, Rule,
+    RuleDefinition, RuleSet, Snapshot, Transaction,
 };
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
@@ -108,6 +108,9 @@ impl RelationKernel {
                 let relation = states
                     .get_mut(&change.relation)
                     .ok_or(KernelError::UnknownRelation(change.relation))?;
+                if relation.metadata().durability() == RelationDurability::Volatile {
+                    continue;
+                }
                 if relation.metadata().arity() as usize != change.tuple.arity() {
                     return Err(KernelError::ArityMismatch {
                         relation: change.relation,
@@ -184,6 +187,9 @@ impl RelationKernel {
                 let relation = states
                     .get_mut(&change.relation)
                     .ok_or(KernelError::UnknownRelation(change.relation))?;
+                if relation.metadata().durability() == RelationDurability::Volatile {
+                    continue;
+                }
                 if relation.metadata().arity() as usize != change.tuple.arity() {
                     return Err(KernelError::ArityMismatch {
                         relation: change.relation,
@@ -248,6 +254,9 @@ impl RelationKernel {
             let relation = states
                 .get_mut(&relation_id)
                 .ok_or(KernelError::UnknownRelation(relation_id))?;
+            if relation.metadata().durability() == RelationDurability::Volatile {
+                continue;
+            }
             if relation.metadata().arity() as usize != tuple.arity() {
                 return Err(KernelError::ArityMismatch {
                     relation: relation_id,
@@ -428,8 +437,34 @@ impl RelationKernel {
     }
 
     pub(crate) fn persist_commit(&self, commit: &Commit) -> Result<(), KernelError> {
+        let snapshot = self.snapshot();
+        let changes = commit
+            .changes()
+            .iter()
+            .map(|change| {
+                let relation = snapshot
+                    .relations
+                    .get(&change.relation)
+                    .ok_or(KernelError::UnknownRelation(change.relation))?;
+                Ok(
+                    (relation.metadata().durability() == RelationDurability::Durable)
+                        .then(|| change.clone()),
+                )
+            })
+            .collect::<Result<Vec<_>, KernelError>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if commit.catalog_changes().is_empty() && changes.is_empty() {
+            return Ok(());
+        }
+        let persistent_commit = Commit {
+            version: commit.version(),
+            catalog_changes: commit.catalog_changes.clone(),
+            changes: changes.into(),
+        };
         self.provider
-            .persist_commit(commit)
+            .persist_commit(&persistent_commit)
             .map_err(KernelError::Persistence)
     }
 

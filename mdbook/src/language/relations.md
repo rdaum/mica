@@ -47,6 +47,21 @@ Create a relation with a builtin:
 make_relation(:LocatedIn, 2)
 ```
 
+Named relations are durable by default: their facts survive a process restart when the runtime
+uses persistent storage. A relation whose facts are useful only while the current process is
+running can instead be declared volatile:
+
+```mica
+make_relation(:ActiveRequest, 1, :volatile)
+make_functional_relation(:RequestPath, 2, [0], :volatile)
+```
+
+Volatile relations otherwise use the same transactions, indexes, rules, constraints, queries, and
+authority checks as durable relations. Their metadata remains part of the catalogue, but their facts
+are omitted from persistent commits and the relation starts empty after recovery. Volatility is a
+storage-lifetime property, not an ambient visibility boundary; include an explicit owner such as a
+request or endpoint identity in a tuple when its lifetime or access must be scoped.
+
 Assert facts into it:
 
 ```mica
