@@ -13,8 +13,7 @@
 
 use crate::{AuthorityContext, CapabilityGrant, Emission, MailboxSend, RuntimeError};
 use mica_relation_kernel::{
-    RelationId, RelationKernel, RelationMetadata, RelationWorkspace, Transaction, TransientStore,
-    Tuple,
+    RelationId, RelationKernel, RelationWorkspace, Transaction, TransientStore, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
@@ -69,7 +68,6 @@ pub struct BuiltinContext<'ctx, 'kernel> {
     ports: RuntimePorts<'ctx>,
     task_snapshot: &'ctx [Value],
     runtime_context: RuntimeContext,
-    transient: Option<TransientAccess<'ctx>>,
 }
 
 pub struct RuntimePorts<'ctx> {
@@ -99,7 +97,6 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         ports: RuntimePorts<'ctx>,
         task_snapshot: &'ctx [Value],
         runtime_context: RuntimeContext,
-        transient: Option<TransientAccess<'ctx>>,
     ) -> Self {
         Self {
             kernel,
@@ -108,7 +105,6 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
             ports,
             task_snapshot,
             runtime_context,
-            transient,
         }
     }
 
@@ -175,87 +171,6 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
             .pending_mailbox_sends
             .push(MailboxSend { sender, value });
         Ok(())
-    }
-
-    pub fn assert_transient(
-        &mut self,
-        scope: Identity,
-        metadata: RelationMetadata,
-        tuple: Tuple,
-    ) -> Result<bool, RuntimeError> {
-        let Some(transient) = self.transient.as_mut() else {
-            return Err(RuntimeError::InvalidBuiltinCall {
-                name: Symbol::intern("assert_transient"),
-                message: "transient store is not available".to_owned(),
-            });
-        };
-        match transient {
-            TransientAccess::Exclusive(transient) => transient
-                .assert(scope, metadata, tuple)
-                .map_err(RuntimeError::Kernel),
-            TransientAccess::Shared(transient) => transient
-                .write()
-                .unwrap()
-                .assert(scope, metadata, tuple)
-                .map_err(RuntimeError::Kernel),
-        }
-    }
-
-    pub fn retract_transient(
-        &mut self,
-        scope: Identity,
-        relation: mica_relation_kernel::RelationId,
-        tuple: &Tuple,
-    ) -> Result<bool, RuntimeError> {
-        let Some(transient) = self.transient.as_mut() else {
-            return Err(RuntimeError::InvalidBuiltinCall {
-                name: Symbol::intern("retract_transient"),
-                message: "transient store is not available".to_owned(),
-            });
-        };
-        Ok(match transient {
-            TransientAccess::Exclusive(transient) => transient.retract(scope, relation, tuple),
-            TransientAccess::Shared(transient) => {
-                transient.write().unwrap().retract(scope, relation, tuple)
-            }
-        })
-    }
-
-    pub fn scan_transient(
-        &mut self,
-        scopes: &[Identity],
-        relation: mica_relation_kernel::RelationId,
-        bindings: &[Option<Value>],
-    ) -> Result<Vec<Tuple>, RuntimeError> {
-        let Some(transient) = self.transient.as_mut() else {
-            return Err(RuntimeError::InvalidBuiltinCall {
-                name: Symbol::intern("scan_transient"),
-                message: "transient store is not available".to_owned(),
-            });
-        };
-        match transient {
-            TransientAccess::Exclusive(transient) => transient
-                .scan(scopes, relation, bindings)
-                .map_err(RuntimeError::Kernel),
-            TransientAccess::Shared(transient) => transient
-                .read()
-                .unwrap()
-                .scan(scopes, relation, bindings)
-                .map_err(RuntimeError::Kernel),
-        }
-    }
-
-    pub fn drop_transient_scope(&mut self, scope: Identity) -> Result<usize, RuntimeError> {
-        let Some(transient) = self.transient.as_mut() else {
-            return Err(RuntimeError::InvalidBuiltinCall {
-                name: Symbol::intern("drop_transient_scope"),
-                message: "transient store is not available".to_owned(),
-            });
-        };
-        Ok(match transient {
-            TransientAccess::Exclusive(transient) => transient.drop_scope(scope),
-            TransientAccess::Shared(transient) => transient.write().unwrap().drop_scope(scope),
-        })
     }
 }
 

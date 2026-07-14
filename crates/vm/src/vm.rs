@@ -874,13 +874,6 @@ impl VmHost for VmHostContext<'_, '_> {
             .builtins
             .get(name)
             .ok_or(RuntimeError::UnknownBuiltin { name })?;
-        let transient = match self.transient.as_mut() {
-            Some(TransientAccess::Exclusive(transient)) => {
-                Some(TransientAccess::Exclusive(transient))
-            }
-            Some(TransientAccess::Shared(transient)) => Some(TransientAccess::Shared(transient)),
-            None => None,
-        };
         let mut context = crate::BuiltinContext::new(
             self.tx.kernel(),
             self.tx,
@@ -892,7 +885,6 @@ impl VmHost for VmHostContext<'_, '_> {
             },
             self.task_snapshot,
             self.runtime_context,
-            transient,
         );
         builtin.call(&mut context, args)
     }
