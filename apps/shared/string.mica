@@ -20,10 +20,10 @@
 // The higher-level operations below are ordinary Mica verbs. Calls such as
 // split("a b") dispatch against the #string primitive prototype.
 
-verb trim(text @ #string)
-  let chars = string_chars(text)
-  let start = 0
-  let end_index = string_len(text)
+verb trim(text @ #string: string) -> string
+  let chars: list = string_chars(text)
+  let start: int = 0
+  let end_index: int = string_len(text)
 
   while start < end_index && chars[start] == " "
     start = start + 1
@@ -33,11 +33,12 @@ verb trim(text @ #string)
     end_index = end_index - 1
   end
 
-  return string_slice(text, start, end_index)
+  let trimmed: string = string_slice(text, start, end_index)
+  return trimmed
 end
 
-verb split(text @ #string)
-  let words = []
+verb split(text @ #string: string) -> list
+  let words: list = []
   let current = []
 
   for ch in string_chars(trim(text))
@@ -58,11 +59,11 @@ verb split(text @ #string)
   return words
 end
 
-verb join(parts @ #list, separator @ #string)
+verb join(parts @ #list: list, separator @ #string: string) -> string
   let out = []
   let first = true
 
-  for part in parts
+  for part: string in parts
     if first
       first = false
     else
@@ -76,15 +77,16 @@ verb join(parts @ #list, separator @ #string)
     end
   end
 
-  return string_from_chars(out)
+  let joined: string = string_from_chars(out)
+  return joined
 end
 
-verb starts_with(text @ #string, prefix @ #string)
+verb starts_with(text @ #string: string, prefix @ #string: string) -> bool
   string_len(prefix) <= string_len(text) || return false
   return string_slice(text, 0, string_len(prefix)) == prefix
 end
 
-verb strip_prefix(text @ #string, prefix @ #string)
+verb strip_prefix(text @ #string: string, prefix @ #string: string)
   if starts_with(text, prefix)
     return string_slice(text, string_len(prefix), string_len(text))
   end

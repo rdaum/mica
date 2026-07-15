@@ -434,6 +434,81 @@ fn runner_string_filein_installs_primitive_prototype_verbs() {
             .outcome,
         TaskOutcome::Complete { value, .. } if value == Value::string("rth")
     ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "try
+                   return join([\"a\", 2], \"-\")
+                 catch E_TYPE as err
+                   return [err.message, err.value]
+                 end"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::string("binding `part` requires string, got int"),
+                Value::int(2).unwrap(),
+            ])
+    ));
+}
+
+#[test]
+fn runner_chat_filein_enforces_value_kind_contracts() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_filein(include_str!("../../../apps/shared/sync-host.mica"))
+        .unwrap();
+    runner
+        .run_filein(include_str!("../../../apps/chat/sync.mica"))
+        .unwrap();
+    runner.run_source("make_identity(:chat_endpoint)").unwrap();
+
+    assert!(matches!(
+        runner
+            .run_source("return [chat_room_revision(1), sync_view_revision(11)]")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([Value::int(1).unwrap(), Value::int(1).unwrap()])
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return sync_view_tree(11, 1)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value.kind() == ValueKind::Map
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "return sync_event(#chat_endpoint, #chat_endpoint, 11, \"submit\", \"chat-composer\", \"chat_post\", {:actor -> \"bob\", :text -> \"hello\"})"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::bool(true)
+    ));
+    assert!(matches!(
+        runner.run_source("return chat_room_revision(1)").unwrap().outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(2).unwrap()
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "try
+                   return sync_event(#chat_endpoint, #chat_endpoint, 11, \"submit\", \"chat-composer\", \"chat_post\", {:actor -> 7, :text -> \"hello\"})
+                 catch E_TYPE as err
+                   return [err.message, err.value]
+                 end"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::string("parameter `actor` requires string, got int"),
+                Value::int(7).unwrap(),
+            ])
+    ));
 }
 
 #[test]
