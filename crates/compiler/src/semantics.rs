@@ -1233,7 +1233,7 @@ impl<'a> Analyzer<'a> {
                     ParamMode::Rest => LocalKind::RestParam,
                 };
                 let declared_kind =
-                    self.resolve_kind_ref(param.annotation.as_ref(), param.id, "parameters", false);
+                    self.resolve_kind_ref(param.annotation.as_ref(), param.id, "parameters", true);
                 let binding = self.declare(
                     scope,
                     param.name.clone(),
@@ -1725,10 +1725,15 @@ fn collect_arg_spans(args: &[Arg], spans: &mut HashMap<NodeId, Span>) {
 
 fn collect_param_spans(params: &[Param], spans: &mut HashMap<NodeId, Span>) {
     for param in params {
-        let span = param
-            .default
-            .as_ref()
-            .map_or_else(|| 0..0, |default| default.span().clone());
+        let span = param.default.as_ref().map_or_else(
+            || {
+                param
+                    .annotation
+                    .as_ref()
+                    .map_or(0..0, |annotation| annotation.span.clone())
+            },
+            |default| default.span().clone(),
+        );
         spans.insert(param.id, span);
         if let Some(default) = &param.default {
             collect_expr_span(default, spans);
@@ -1840,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn enables_result_kind_metadata_while_parameters_remain_unsupported() {
+    fn enables_parameter_and_result_kind_metadata() {
         let program = parse_ok("fn convert(value: float) -> string => value");
 
         let HirItem::Expr {
@@ -1857,15 +1862,7 @@ mod tests {
         };
         assert_eq!(params[0].declared_kind, Some(ValueKind::Float));
         assert_eq!(*result_kind, Some(ValueKind::String));
-        assert_eq!(program.diagnostics.len(), 1);
-        assert_eq!(
-            program.diagnostics[0].code,
-            DiagnosticCode::UnsupportedValueKindAnnotation
-        );
-        assert_eq!(
-            program.diagnostics[0].message,
-            "value-kind annotations on parameters are not yet enforced"
-        );
+        assert_eq!(program.diagnostics, vec![]);
     }
 
     #[test]
