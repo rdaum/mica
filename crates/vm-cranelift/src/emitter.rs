@@ -251,6 +251,20 @@ impl ValueEmitter {
         builder: &mut FunctionBuilder<'_>,
         value: CraneliftValue,
     ) -> EmittedValue {
+        let (_, bits, is_finite) = Self::emit_canonical_float(builder, value);
+        let payload = builder.ins().uextend(types::I64, bits);
+
+        EmittedValue {
+            word: Self::emit_pack(builder, VALUE_FLOAT_TAG, payload),
+            is_fast: is_finite,
+        }
+    }
+
+    /// Returns a canonical binary32 value, its bits, and a finite predicate.
+    pub(crate) fn emit_canonical_float(
+        builder: &mut FunctionBuilder<'_>,
+        value: CraneliftValue,
+    ) -> (CraneliftValue, CraneliftValue, CraneliftValue) {
         let zero = builder.ins().f32const(Ieee32::with_bits(0));
         let is_zero = builder.ins().fcmp(FloatCC::Equal, value, zero);
         let value = builder.ins().select(is_zero, zero, value);
@@ -264,12 +278,7 @@ impl ValueEmitter {
             magnitude,
             i64::from(0x7f80_0000u32),
         );
-        let payload = builder.ins().uextend(types::I64, bits);
-
-        EmittedValue {
-            word: Self::emit_pack(builder, VALUE_FLOAT_TAG, payload),
-            is_fast: is_finite,
-        }
+        (value, bits, is_finite)
     }
 
     pub fn emit_checked_float_add(

@@ -26,6 +26,7 @@ const CONDITION: u16 = 3;
 const STEP: u16 = 4;
 const NEXT: u16 = 5;
 const NEXT_TOTAL: u16 = 6;
+const ELEMENT: u16 = 7;
 
 fn bits(value: Value) -> u64 {
     borrowed_value_bits(&value)
@@ -93,7 +94,7 @@ fn unboxed_integer_plan(limit: i64) -> NaturalLoopPlan {
         | (1_u32 << NEXT_TOTAL);
     let entry_slots = (1_u32 << CURRENT) | (1_u32 << TOTAL);
     plan(limit)
-        .with_unboxed_integer_slots(integer_slots, entry_slots)
+        .with_unboxed_slots(integer_slots, entry_slots, 0, 0)
         .unwrap()
 }
 
@@ -103,6 +104,167 @@ fn scratch(limit: i64) -> [u64; 7] {
         int_bits(0),
         int_bits(limit),
         bits(Value::bool(true)),
+        bits(Value::nothing()),
+        bits(Value::nothing()),
+        bits(Value::nothing()),
+    ]
+}
+
+fn float_collection_plan(unboxed: bool) -> NaturalLoopPlan {
+    let plan = NaturalLoopPlan::new(
+        8,
+        1,
+        2,
+        [
+            NaturalLoopInstruction::Compare {
+                dst: CONDITION,
+                comparison: ScalarComparison::LessThan,
+                left: CURRENT,
+                right: LIMIT,
+            },
+            NaturalLoopInstruction::Branch {
+                condition: CONDITION,
+                if_true: 2,
+                if_false: 9,
+            },
+            NaturalLoopInstruction::CollectionValueAt {
+                dst: ELEMENT,
+                view: 0,
+                index: CURRENT,
+            },
+            NaturalLoopInstruction::CheckKind {
+                value: ELEMENT,
+                expected: mica_var::ValueKind::Float,
+            },
+            NaturalLoopInstruction::Add {
+                dst: NEXT_TOTAL,
+                left: TOTAL,
+                right: ELEMENT,
+            },
+            NaturalLoopInstruction::Move {
+                dst: TOTAL,
+                src: NEXT_TOTAL,
+            },
+            NaturalLoopInstruction::Add {
+                dst: NEXT,
+                left: CURRENT,
+                right: STEP,
+            },
+            NaturalLoopInstruction::Move {
+                dst: CURRENT,
+                src: NEXT,
+            },
+            NaturalLoopInstruction::Jump { target: 0 },
+        ],
+    )
+    .unwrap();
+    if !unboxed {
+        return plan;
+    }
+    let integer_slots = (1_u32 << CURRENT) | (1_u32 << LIMIT) | (1_u32 << STEP) | (1_u32 << NEXT);
+    let entry_integer_slots = (1_u32 << CURRENT) | (1_u32 << LIMIT) | (1_u32 << STEP);
+    let float_slots = (1_u32 << TOTAL) | (1_u32 << NEXT_TOTAL) | (1_u32 << ELEMENT);
+    plan.with_unboxed_slots(
+        integer_slots,
+        entry_integer_slots,
+        float_slots,
+        1_u32 << TOTAL,
+    )
+    .unwrap()
+}
+
+fn float_collection_scratch(limit: usize) -> [u64; 8] {
+    [
+        int_bits(0),
+        bits(Value::float(0.0).unwrap()),
+        int_bits(limit as i64),
+        bits(Value::bool(true)),
+        int_bits(1),
+        bits(Value::nothing()),
+        bits(Value::nothing()),
+        bits(Value::nothing()),
+    ]
+}
+
+fn float_arithmetic_plan(unboxed: bool, factor: f32) -> NaturalLoopPlan {
+    let plan = NaturalLoopPlan::new(
+        8,
+        0,
+        2,
+        [
+            NaturalLoopInstruction::Compare {
+                dst: CONDITION,
+                comparison: ScalarComparison::LessThan,
+                left: CURRENT,
+                right: LIMIT,
+            },
+            NaturalLoopInstruction::Branch {
+                condition: CONDITION,
+                if_true: 2,
+                if_false: 11,
+            },
+            NaturalLoopInstruction::Load {
+                dst: ELEMENT,
+                value: bits(Value::float(factor).unwrap()),
+            },
+            NaturalLoopInstruction::Multiply {
+                dst: NEXT_TOTAL,
+                left: TOTAL,
+                right: ELEMENT,
+            },
+            NaturalLoopInstruction::Negate {
+                dst: NEXT_TOTAL,
+                src: NEXT_TOTAL,
+            },
+            NaturalLoopInstruction::Subtract {
+                dst: NEXT_TOTAL,
+                left: NEXT_TOTAL,
+                right: ELEMENT,
+            },
+            NaturalLoopInstruction::Divide {
+                dst: NEXT_TOTAL,
+                left: NEXT_TOTAL,
+                right: ELEMENT,
+            },
+            NaturalLoopInstruction::Move {
+                dst: TOTAL,
+                src: NEXT_TOTAL,
+            },
+            NaturalLoopInstruction::Add {
+                dst: NEXT,
+                left: CURRENT,
+                right: STEP,
+            },
+            NaturalLoopInstruction::Move {
+                dst: CURRENT,
+                src: NEXT,
+            },
+            NaturalLoopInstruction::Jump { target: 0 },
+        ],
+    )
+    .unwrap();
+    if !unboxed {
+        return plan;
+    }
+    let integer_slots = (1_u32 << CURRENT) | (1_u32 << LIMIT) | (1_u32 << STEP) | (1_u32 << NEXT);
+    let entry_integer_slots = (1_u32 << CURRENT) | (1_u32 << LIMIT) | (1_u32 << STEP);
+    let float_slots = (1_u32 << TOTAL) | (1_u32 << NEXT_TOTAL) | (1_u32 << ELEMENT);
+    plan.with_unboxed_slots(
+        integer_slots,
+        entry_integer_slots,
+        float_slots,
+        1_u32 << TOTAL,
+    )
+    .unwrap()
+}
+
+fn float_arithmetic_scratch(limit: i64) -> [u64; 8] {
+    [
+        int_bits(0),
+        bits(Value::float(2.0).unwrap()),
+        int_bits(limit),
+        bits(Value::bool(true)),
+        int_bits(1),
         bits(Value::nothing()),
         bits(Value::nothing()),
         bits(Value::nothing()),
@@ -267,12 +429,12 @@ fn unboxed_integer_accumulator_matches_tagged_execution_without_helpers() {
 fn unboxed_integer_plan_rejects_overlapping_integer_and_boolean_state() {
     let integer_slots = unboxed_integer_plan(4_096).unboxed_integer_slots();
     let error = plan(4_096)
-        .with_unboxed_integer_slots(integer_slots | (1_u32 << CONDITION), 1_u32 << CURRENT)
+        .with_unboxed_slots(integer_slots | (1_u32 << CONDITION), 1_u32 << CURRENT, 0, 0)
         .unwrap_err();
 
     assert_eq!(
         error.to_string(),
-        "natural loop cannot use the unboxed integer representation",
+        "natural loop has overlapping unboxed slot kinds",
     );
 }
 
@@ -302,6 +464,121 @@ fn unboxed_integer_overflow_side_exits_atomically() {
         NaturalLoopOutcome::SideExit,
     );
     assert_eq!(values, original);
+}
+
+#[test]
+fn unboxed_float_collection_state_matches_tagged_execution() {
+    let values = (0..4_096)
+        .map(|_| Value::float(0.25).unwrap())
+        .collect::<Vec<_>>();
+    let views = [NaturalLoopCollectionView::list(&values)];
+    let tagged = CompiledNaturalLoop::compile(&float_collection_plan(false)).unwrap();
+    let unboxed_plan = float_collection_plan(true);
+    assert_ne!(unboxed_plan.unboxed_integer_slots(), 0);
+    assert_ne!(unboxed_plan.unboxed_float_slots(), 0);
+    assert_eq!(unboxed_plan.unboxed_boolean_slots(), 1_u32 << CONDITION);
+    let unboxed = CompiledNaturalLoop::compile(&unboxed_plan).unwrap();
+    let mut tagged_scratch = float_collection_scratch(values.len());
+    let mut unboxed_scratch = tagged_scratch;
+    let budget = (values.len() as u64 * 9) + 2;
+
+    assert_eq!(
+        unboxed.run(&mut unboxed_scratch, &views, budget),
+        tagged.run(&mut tagged_scratch, &views, budget),
+    );
+    assert_eq!(unboxed_scratch, tagged_scratch);
+    assert_eq!(
+        value(unboxed_scratch[TOTAL as usize]).as_float(),
+        Some(1_024.0)
+    );
+    assert_eq!(unboxed.imported_helper_count(), 0);
+    assert!(unboxed.code_size() < tagged.code_size());
+}
+
+#[test]
+fn unboxed_float_collection_state_preserves_every_budget_boundary() {
+    let values = (0..3)
+        .map(|_| Value::float(0.25).unwrap())
+        .collect::<Vec<_>>();
+    let views = [NaturalLoopCollectionView::list(&values)];
+    let tagged = CompiledNaturalLoop::compile(&float_collection_plan(false)).unwrap();
+    let unboxed = CompiledNaturalLoop::compile(&float_collection_plan(true)).unwrap();
+
+    for budget in 0..=(values.len() as u64 * 9) + 2 {
+        let mut tagged_scratch = float_collection_scratch(values.len());
+        let mut unboxed_scratch = tagged_scratch;
+        let tagged_outcome = tagged.run(&mut tagged_scratch, &views, budget);
+        let unboxed_outcome = unboxed.run(&mut unboxed_scratch, &views, budget);
+        assert_eq!(unboxed_outcome, tagged_outcome, "budget {budget}",);
+        let modified_slots = match tagged_outcome {
+            NaturalLoopOutcome::Complete { modified_slots, .. }
+            | NaturalLoopOutcome::BudgetExhausted { modified_slots, .. } => modified_slots,
+            NaturalLoopOutcome::SideExit => unreachable!("uniform float input stays native"),
+        };
+        for slot in 0..unboxed_scratch.len() {
+            if modified_slots & (1_u32 << slot) != 0 {
+                assert_eq!(
+                    unboxed_scratch[slot], tagged_scratch[slot],
+                    "budget {budget}, slot {slot}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unboxed_float_collection_guards_and_arithmetic_side_exit_atomically() {
+    let cases = [
+        vec![Value::float(0.25).unwrap(), Value::int(1).unwrap()],
+        vec![
+            Value::float(f32::MAX).unwrap(),
+            Value::float(f32::MAX).unwrap(),
+        ],
+    ];
+    let compiled = CompiledNaturalLoop::compile(&float_collection_plan(true)).unwrap();
+
+    for values in cases {
+        let views = [NaturalLoopCollectionView::list(&values)];
+        let mut scratch = float_collection_scratch(values.len());
+        let original = scratch;
+        assert_eq!(
+            compiled.run(&mut scratch, &views, u64::MAX),
+            NaturalLoopOutcome::SideExit,
+        );
+        assert_eq!(scratch, original);
+    }
+}
+
+#[test]
+fn unboxed_float_state_supports_negate_subtract_multiply_and_divide() {
+    let tagged = CompiledNaturalLoop::compile(&float_arithmetic_plan(false, 1.5)).unwrap();
+    let unboxed = CompiledNaturalLoop::compile(&float_arithmetic_plan(true, 1.5)).unwrap();
+    let mut tagged_scratch = float_arithmetic_scratch(3);
+    let mut unboxed_scratch = tagged_scratch;
+
+    assert_eq!(
+        unboxed.run(&mut unboxed_scratch, &[], u64::MAX),
+        tagged.run(&mut tagged_scratch, &[], u64::MAX),
+    );
+    assert_eq!(unboxed_scratch, tagged_scratch);
+    assert_eq!(
+        value(unboxed_scratch[TOTAL as usize]).as_float(),
+        Some(-3.0)
+    );
+    assert_eq!(unboxed.imported_helper_count(), 0);
+}
+
+#[test]
+fn unboxed_float_division_by_zero_side_exits_atomically() {
+    let compiled = CompiledNaturalLoop::compile(&float_arithmetic_plan(true, 0.0)).unwrap();
+    let mut scratch = float_arithmetic_scratch(1);
+    let original = scratch;
+
+    assert_eq!(
+        compiled.run(&mut scratch, &[], u64::MAX),
+        NaturalLoopOutcome::SideExit,
+    );
+    assert_eq!(scratch, original);
 }
 
 #[test]

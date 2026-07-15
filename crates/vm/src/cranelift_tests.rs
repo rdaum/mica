@@ -392,6 +392,83 @@ fn natural_numeric_collection_program(collection: Value, initial: Value) -> Arc<
     )
 }
 
+fn checked_float_collection_program(collection: Value) -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            9,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: collection,
+                },
+                Instruction::CollectionLen {
+                    dst: register(1),
+                    collection: register(0),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::float(0.0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(4),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(5),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(2),
+                    right: register(1),
+                },
+                Instruction::Branch {
+                    condition: register(5),
+                    if_true: 7,
+                    if_false: 14,
+                },
+                Instruction::CollectionValueAt {
+                    dst: register(6),
+                    collection: register(0),
+                    index: register(2),
+                },
+                Instruction::CheckKind {
+                    value: register(6),
+                    expected: mica_var::ValueKind::Float,
+                    site: KindCheckSite::Binding,
+                    subject: Symbol::intern("element"),
+                },
+                Instruction::Binary {
+                    dst: register(7),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(3),
+                    right: register(6),
+                },
+                Instruction::Move {
+                    dst: register(3),
+                    src: register(7),
+                },
+                Instruction::Binary {
+                    dst: register(8),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(2),
+                    right: register(4),
+                },
+                Instruction::Move {
+                    dst: register(2),
+                    src: register(8),
+                },
+                Instruction::Jump { target: 5 },
+                Instruction::Return {
+                    value: Operand::Register(register(3)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
 fn natural_div_rem_collection_program(
     element: Value,
     divisor: Value,
@@ -1676,7 +1753,8 @@ fn natural_integer_accumulators_select_unboxed_region_state() {
     let float_site = float
         .natural_integer_loop_site(5)
         .expect("float accumulator has a natural loop");
-    assert_eq!(float_site.plan.unboxed_integer_slots(), 0);
+    assert_ne!(float_site.plan.unboxed_integer_slots(), 0);
+    assert_ne!(float_site.plan.unboxed_float_slots(), 0);
 }
 
 #[test]
@@ -1786,6 +1864,11 @@ fn native_natural_float_and_mixed_collection_sums_match_interpreter() {
     ];
     for (collection, initial, expected) in cases {
         let program = natural_numeric_collection_program(collection, initial);
+        let site = program
+            .natural_integer_loop_site(6)
+            .expect("numeric collection sum has a natural loop");
+        assert_ne!(site.plan.unboxed_integer_slots(), 0);
+        assert_ne!(site.plan.unboxed_float_slots(), 0);
         let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
         let mut native = RegisterVm::new(Arc::clone(&program));
 
@@ -1824,6 +1907,26 @@ fn native_natural_float_collection_sum_executes_concurrently() {
         );
     }
     assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn checked_collection_ingress_feeds_native_float_state_and_preserves_type_errors() {
+    let collection = Value::list((0..ITERATIONS).map(|_| Value::string("not a float")));
+    let program = checked_float_collection_program(collection);
+    let site = program
+        .natural_integer_loop_site(6)
+        .expect("checked collection loop has a natural loop");
+    assert_ne!(site.plan.unboxed_float_slots(), 0);
+
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+    let interpreted_outcome = run(&mut interpreted, NATURAL_INSTRUCTION_COUNT).unwrap();
+    let native_outcome = run(&mut native, NATURAL_INSTRUCTION_COUNT).unwrap();
+    assert_eq!(native_outcome, interpreted_outcome);
+    assert!(matches!(native_outcome, VmHostResponse::Abort(_)));
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(program.native_compile_attempts(), 1);
+    assert_eq!(native.native_side_exit_count(), 1);
 }
 
 #[test]

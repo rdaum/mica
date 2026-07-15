@@ -16,17 +16,18 @@ use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     AbiParam, InstBuilder, MemFlagsData, Signature,
     condcodes::{FloatCC, IntCC},
+    immediates::Ieee32,
     types,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module, default_libcall_names};
-use mica_var::Value;
 use mica_var::abi::{
     VALUE_ABI_VERSION, VALUE_EMPTY_RELATION_TAG, VALUE_FLOAT_TAG, VALUE_INT_MAX, VALUE_INT_MIN,
     VALUE_INT_TAG, VALUE_RELATION_TAG, borrowed_value_cmp, borrowed_value_numeric_cmp,
     borrowed_value_numeric_eq, value_is_immediate, value_tag,
 };
+use mica_var::{Value, ValueKind};
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -213,6 +214,10 @@ pub enum NaturalLoopInstruction {
         left: u16,
         right: u16,
     },
+    CheckKind {
+        value: u16,
+        expected: ValueKind,
+    },
     Compare {
         dst: u16,
         comparison: ScalarComparison,
@@ -264,6 +269,7 @@ impl NaturalLoopInstruction {
             | Self::Compare {
                 dst, left, right, ..
             } => [Some(dst), Some(left), Some(right)],
+            Self::CheckKind { value, .. } => [Some(value), None, None],
             Self::CollectionValueAt { dst, index, .. }
             | Self::CollectionKeyAt { dst, index, .. }
             | Self::IndexValue { dst, index, .. } => [Some(dst), Some(index), None],
@@ -281,8 +287,10 @@ pub struct NaturalLoopPlan {
     entry: u16,
     instructions: Box<[NaturalLoopInstruction]>,
     unboxed_integer_slots: u32,
+    unboxed_float_slots: u32,
     unboxed_boolean_slots: u32,
     entry_integer_slots: u32,
+    entry_float_slots: u32,
 }
 
 impl NaturalLoopPlan {
@@ -348,6 +356,13 @@ impl NaturalLoopPlan {
                         "natural loop immediate index must be an immediate value".to_owned(),
                     ));
                 }
+                NaturalLoopInstruction::CheckKind { expected, .. }
+                    if !matches!(expected, ValueKind::Int | ValueKind::Float) =>
+                {
+                    return Err(NaturalLoopError(
+                        "natural loop kind checks support only native numeric kinds".to_owned(),
+                    ));
+                }
                 _ => {}
             }
         }
@@ -357,42 +372,61 @@ impl NaturalLoopPlan {
             entry,
             instructions,
             unboxed_integer_slots: 0,
+            unboxed_float_slots: 0,
             unboxed_boolean_slots: 0,
             entry_integer_slots: 0,
+            entry_float_slots: 0,
         })
     }
 
-    /// Keeps the selected integer slots as native `i64` block state.
+    /// Keeps selected numeric slots as native Cranelift block state.
     ///
     /// This deliberately accepts only a single-header, single-backedge loop
-    /// composed of integer loads, moves, additions, and comparisons. Other
-    /// plans retain the general tagged representation.
-    pub fn with_unboxed_integer_slots(
+    /// whose instructions have one stable numeric representation. Other plans
+    /// retain the general tagged representation.
+    pub fn with_unboxed_slots(
         mut self,
-        slots: u32,
-        entry_slots: u32,
+        integer_slots: u32,
+        entry_integer_slots: u32,
+        float_slots: u32,
+        entry_float_slots: u32,
     ) -> Result<Self, NaturalLoopError> {
         let valid_slots = if self.slot_count == 32 {
             u32::MAX
         } else {
             (1_u32 << self.slot_count) - 1
         };
-        if slots == 0 || slots & !valid_slots != 0 || entry_slots & !slots != 0 {
+        let numeric_slots = integer_slots | float_slots;
+        if numeric_slots == 0
+            || numeric_slots & !valid_slots != 0
+            || integer_slots & float_slots != 0
+            || entry_integer_slots & !integer_slots != 0
+            || entry_float_slots & !float_slots != 0
+        {
             return Err(NaturalLoopError(
-                "natural loop has an invalid unboxed integer slot layout".to_owned(),
+                "natural loop has an invalid unboxed slot layout".to_owned(),
             ));
         }
-        let boolean_slots = self.validate_unboxed_integer_instructions(slots, entry_slots)?;
-        self.unboxed_integer_slots = slots;
+        let boolean_slots = self.validate_unboxed_instructions(
+            integer_slots,
+            entry_integer_slots,
+            float_slots,
+            entry_float_slots,
+        )?;
+        self.unboxed_integer_slots = integer_slots;
+        self.unboxed_float_slots = float_slots;
         self.unboxed_boolean_slots = boolean_slots;
-        self.entry_integer_slots = entry_slots;
+        self.entry_integer_slots = entry_integer_slots;
+        self.entry_float_slots = entry_float_slots;
         Ok(self)
     }
 
-    fn validate_unboxed_integer_instructions(
+    fn validate_unboxed_instructions(
         &self,
         integer_slots: u32,
-        entry_slots: u32,
+        entry_integer_slots: u32,
+        float_slots: u32,
+        entry_float_slots: u32,
     ) -> Result<u32, NaturalLoopError> {
         let exit = u16::try_from(self.instructions.len()).expect("plan length is validated");
         let boolean_slots = self
@@ -403,26 +437,54 @@ impl NaturalLoopPlan {
                 _ => None,
             })
             .fold(0_u32, |slots, slot| slots | slot);
+        if boolean_slots & (integer_slots | float_slots) != 0 {
+            return Err(NaturalLoopError(
+                "natural loop has overlapping unboxed slot kinds".to_owned(),
+            ));
+        }
+        let is_integer = |slot: u16| integer_slots & (1_u32 << slot) != 0;
+        let is_float = |slot: u16| float_slots & (1_u32 << slot) != 0;
+        let is_numeric = |slot: u16| is_integer(slot) || is_float(slot);
+        let same_numeric_kind = |left: u16, right: u16| {
+            (is_integer(left) && is_integer(right)) || (is_float(left) && is_float(right))
+        };
         for (index, instruction) in self.instructions.iter().enumerate() {
             let valid = match *instruction {
-                NaturalLoopInstruction::Load { dst, value } => {
-                    integer_slots & (1_u32 << dst) != 0 && value_tag(value) == VALUE_INT_TAG
+                NaturalLoopInstruction::Load { dst, value } => match value_tag(value) {
+                    VALUE_INT_TAG => is_integer(dst),
+                    VALUE_FLOAT_TAG => is_float(dst),
+                    _ => false,
+                },
+                NaturalLoopInstruction::Move { dst, src }
+                | NaturalLoopInstruction::Negate { dst, src } => same_numeric_kind(dst, src),
+                NaturalLoopInstruction::Add { dst, left, right }
+                | NaturalLoopInstruction::Subtract { dst, left, right }
+                | NaturalLoopInstruction::Multiply { dst, left, right } => {
+                    is_numeric(left)
+                        && is_numeric(right)
+                        && if is_integer(left) && is_integer(right) {
+                            is_integer(dst)
+                        } else {
+                            is_float(dst)
+                        }
                 }
-                NaturalLoopInstruction::Move { dst, src } => {
-                    integer_slots & (1_u32 << dst) != 0 && integer_slots & (1_u32 << src) != 0
-                }
-                NaturalLoopInstruction::Add { dst, left, right } => {
-                    integer_slots & (1_u32 << dst) != 0
-                        && integer_slots & (1_u32 << left) != 0
-                        && integer_slots & (1_u32 << right) != 0
+                NaturalLoopInstruction::Divide { dst, left, right } => {
+                    is_numeric(left)
+                        && is_numeric(right)
+                        && (is_float(left) || is_float(right))
+                        && is_float(dst)
                 }
                 NaturalLoopInstruction::Compare {
                     dst, left, right, ..
-                } => {
-                    boolean_slots & (1_u32 << dst) != 0
-                        && integer_slots & (1_u32 << dst) == 0
-                        && integer_slots & (1_u32 << left) != 0
-                        && integer_slots & (1_u32 << right) != 0
+                } => boolean_slots & (1_u32 << dst) != 0 && same_numeric_kind(left, right),
+                NaturalLoopInstruction::CheckKind { value, expected } => match expected {
+                    ValueKind::Int => is_integer(value),
+                    ValueKind::Float => is_float(value),
+                    _ => false,
+                },
+                NaturalLoopInstruction::CollectionValueAt { dst, index, .. }
+                | NaturalLoopInstruction::CollectionKeyAt { dst, index, .. } => {
+                    is_numeric(dst) && is_integer(index)
                 }
                 NaturalLoopInstruction::Branch {
                     condition,
@@ -441,35 +503,48 @@ impl NaturalLoopPlan {
             };
             if !valid {
                 return Err(NaturalLoopError(
-                    "natural loop cannot use the unboxed integer representation".to_owned(),
+                    "natural loop cannot use the unboxed representation".to_owned(),
                 ));
             }
         }
 
-        let mut defined = entry_slots;
+        let mut defined = entry_integer_slots | entry_float_slots;
         for index in
             (usize::from(self.entry)..self.instructions.len()).chain(0..usize::from(self.entry))
         {
             let instruction = self.instructions[index];
             let reads = match instruction {
-                NaturalLoopInstruction::Move { src, .. } => 1_u32 << src,
+                NaturalLoopInstruction::Move { src, .. }
+                | NaturalLoopInstruction::Negate { src, .. } => 1_u32 << src,
                 NaturalLoopInstruction::Add { left, right, .. }
+                | NaturalLoopInstruction::Subtract { left, right, .. }
+                | NaturalLoopInstruction::Multiply { left, right, .. }
+                | NaturalLoopInstruction::Divide { left, right, .. }
                 | NaturalLoopInstruction::Compare { left, right, .. } => {
                     (1_u32 << left) | (1_u32 << right)
                 }
+                NaturalLoopInstruction::CheckKind { value, .. } => 1_u32 << value,
+                NaturalLoopInstruction::CollectionValueAt { index, .. }
+                | NaturalLoopInstruction::CollectionKeyAt { index, .. } => 1_u32 << index,
                 NaturalLoopInstruction::Branch { condition, .. } => 1_u32 << condition,
                 _ => 0,
             };
             if reads & !defined != 0 {
                 return Err(NaturalLoopError(
-                    "unboxed integer slot is read before it is defined".to_owned(),
+                    "unboxed slot is read before it is defined".to_owned(),
                 ));
             }
             let write = match instruction {
                 NaturalLoopInstruction::Load { dst, .. }
                 | NaturalLoopInstruction::Move { dst, .. }
+                | NaturalLoopInstruction::Negate { dst, .. }
                 | NaturalLoopInstruction::Add { dst, .. }
+                | NaturalLoopInstruction::Subtract { dst, .. }
+                | NaturalLoopInstruction::Multiply { dst, .. }
+                | NaturalLoopInstruction::Divide { dst, .. }
                 | NaturalLoopInstruction::Compare { dst, .. } => 1_u32 << dst,
+                NaturalLoopInstruction::CollectionValueAt { dst, .. }
+                | NaturalLoopInstruction::CollectionKeyAt { dst, .. } => 1_u32 << dst,
                 _ => 0,
             };
             defined |= write;
@@ -489,12 +564,16 @@ impl NaturalLoopPlan {
         self.unboxed_integer_slots
     }
 
+    pub const fn unboxed_float_slots(&self) -> u32 {
+        self.unboxed_float_slots
+    }
+
     pub const fn unboxed_boolean_slots(&self) -> u32 {
         self.unboxed_boolean_slots
     }
 
     fn requires_numeric_equal_helper(&self) -> bool {
-        if self.unboxed_integer_slots != 0 {
+        if self.unboxed_integer_slots | self.unboxed_float_slots != 0 {
             return false;
         }
         self.instructions.iter().any(|instruction| {
@@ -509,7 +588,7 @@ impl NaturalLoopPlan {
     }
 
     fn requires_numeric_compare_helper(&self) -> bool {
-        if self.unboxed_integer_slots != 0 {
+        if self.unboxed_integer_slots | self.unboxed_float_slots != 0 {
             return false;
         }
         self.instructions.iter().any(|instruction| {
@@ -562,6 +641,20 @@ pub enum NaturalLoopOutcome {
         modified_slots: u32,
     },
     SideExit,
+}
+
+#[derive(Clone, Copy)]
+struct UnboxedSlots<'a> {
+    integers: &'a [u16],
+    floats: &'a [u16],
+    booleans: &'a [u16],
+}
+
+#[derive(Clone, Copy)]
+struct UnboxedState<'a> {
+    integers: &'a [cranelift_codegen::ir::Value],
+    floats: &'a [cranelift_codegen::ir::Value],
+    booleans: &'a [cranelift_codegen::ir::Value],
 }
 
 /// Generated execution for a compiler-shaped natural loop.
@@ -739,8 +832,8 @@ impl CompiledNaturalLoop {
         builder_context: &mut FunctionBuilderContext,
         helpers: ImportedHelpers,
     ) {
-        if plan.unboxed_integer_slots != 0 {
-            Self::build_unboxed_integer_function(plan, context, builder_context);
+        if plan.unboxed_integer_slots | plan.unboxed_float_slots != 0 {
+            Self::build_unboxed_function(plan, context, builder_context);
             return;
         }
         let mut builder = FunctionBuilder::new(&mut context.func, builder_context);
@@ -866,6 +959,26 @@ impl CompiledNaturalLoop {
                         .ins()
                         .jump(target, &[instructions.into(), modified_slots.into()]);
                 }
+                NaturalLoopInstruction::CheckKind { value, expected } => {
+                    let word = Self::load_slot(&mut builder, scratch, value);
+                    let is_fast = match expected {
+                        ValueKind::Int => ValueEmitter::emit_is_int(&mut builder, word),
+                        ValueKind::Float => ValueEmitter::emit_is_float(&mut builder, word),
+                        _ => unreachable!("natural loop plan validates numeric checks"),
+                    };
+                    let next = Self::target_block(
+                        &instruction_blocks,
+                        complete,
+                        u16::try_from(index + 1).expect("plan length validated"),
+                    );
+                    builder.ins().brif(
+                        is_fast,
+                        next,
+                        &[instructions.into(), modified_slots.into()],
+                        side_exit,
+                        &[],
+                    );
+                }
                 instruction => {
                     let (is_fast, dst) = Self::emit_instruction(
                         &mut builder,
@@ -933,7 +1046,7 @@ impl CompiledNaturalLoop {
         builder.finalize();
     }
 
-    fn build_unboxed_integer_function(
+    fn build_unboxed_function(
         plan: &NaturalLoopPlan,
         context: &mut Context,
         builder_context: &mut FunctionBuilderContext,
@@ -960,6 +1073,9 @@ impl CompiledNaturalLoop {
         let integer_slots = (0..plan.slot_count)
             .filter(|slot| plan.unboxed_integer_slots & (1_u32 << slot) != 0)
             .collect::<Vec<_>>();
+        let float_slots = (0..plan.slot_count)
+            .filter(|slot| plan.unboxed_float_slots & (1_u32 << slot) != 0)
+            .collect::<Vec<_>>();
         let boolean_slots = (0..plan.slot_count)
             .filter(|slot| plan.unboxed_boolean_slots & (1_u32 << slot) != 0)
             .collect::<Vec<_>>();
@@ -968,6 +1084,12 @@ impl CompiledNaturalLoop {
                 .iter()
                 .position(|candidate| *candidate == slot)
                 .expect("unboxed instruction references an integer slot")
+        };
+        let float_index = |slot: u16| {
+            float_slots
+                .iter()
+                .position(|candidate| *candidate == slot)
+                .expect("unboxed instruction references a float slot")
         };
         let boolean_index = |slot: u16| {
             boolean_slots
@@ -983,6 +1105,9 @@ impl CompiledNaturalLoop {
             for _ in &integer_slots {
                 builder.append_block_param(*block, types::I64);
             }
+            for _ in &float_slots {
+                builder.append_block_param(*block, types::F32);
+            }
             for _ in &boolean_slots {
                 builder.append_block_param(*block, types::I8);
             }
@@ -991,6 +1116,9 @@ impl CompiledNaturalLoop {
         builder.append_block_param(complete, types::I32);
         for _ in &integer_slots {
             builder.append_block_param(complete, types::I64);
+        }
+        for _ in &float_slots {
+            builder.append_block_param(complete, types::F32);
         }
         for _ in &boolean_slots {
             builder.append_block_param(complete, types::I8);
@@ -1001,6 +1129,9 @@ impl CompiledNaturalLoop {
         for _ in &integer_slots {
             builder.append_block_param(budget_exhausted, types::I64);
         }
+        for _ in &float_slots {
+            builder.append_block_param(budget_exhausted, types::F32);
+        }
         for _ in &boolean_slots {
             builder.append_block_param(budget_exhausted, types::I8);
         }
@@ -1008,6 +1139,7 @@ impl CompiledNaturalLoop {
         builder.switch_to_block(entry);
         let params = builder.block_params(entry).to_vec();
         let scratch = params[0];
+        let collection_views = params[1];
         let instruction_budget = params[2];
         let instructions_out = params[3];
         let resume_out = params[4];
@@ -1025,6 +1157,18 @@ impl CompiledNaturalLoop {
                 ValueEmitter::emit_unbox_int(&mut builder, word)
             })
             .collect::<Vec<_>>();
+        let float_state = float_slots
+            .iter()
+            .map(|slot| {
+                if plan.entry_float_slots & (1_u32 << slot) == 0 {
+                    return builder.ins().f32const(Ieee32::with_bits(0));
+                }
+                let word = Self::load_slot(&mut builder, scratch, *slot);
+                let is_float = ValueEmitter::emit_is_float(&mut builder, word);
+                entry_is_fast = builder.ins().band(entry_is_fast, is_float);
+                ValueEmitter::emit_unbox_float(&mut builder, word)
+            })
+            .collect::<Vec<_>>();
         let boolean_state = boolean_slots
             .iter()
             .map(|_| builder.ins().iconst(types::I8, 0))
@@ -1032,7 +1176,12 @@ impl CompiledNaturalLoop {
         let zero_instructions = builder.ins().iconst(types::I64, 0);
         let zero_slots = builder.ins().iconst(types::I32, 0);
         let mut entry_args = vec![zero_instructions.into(), zero_slots.into()];
-        Self::append_unboxed_state_args(&mut entry_args, &integer_state, &boolean_state);
+        Self::append_unboxed_state_args(
+            &mut entry_args,
+            &integer_state,
+            &float_state,
+            &boolean_state,
+        );
         builder.ins().brif(
             entry_is_fast,
             instruction_blocks[usize::from(plan.entry)],
@@ -1050,16 +1199,28 @@ impl CompiledNaturalLoop {
             let modified_slots = block_params[1];
             let integer_end = 2 + integer_slots.len();
             let integer_state = block_params[2..integer_end].to_vec();
-            let boolean_state = block_params[integer_end..].to_vec();
+            let float_end = integer_end + float_slots.len();
+            let float_state = block_params[integer_end..float_end].to_vec();
+            let boolean_state = block_params[float_end..].to_vec();
             let has_budget =
                 builder
                     .ins()
                     .icmp(IntCC::UnsignedLessThan, instructions, instruction_budget);
             let resume = builder.ins().iconst(types::I32, index as i64);
             let mut execute_args = vec![instructions.into(), modified_slots.into()];
-            Self::append_unboxed_state_args(&mut execute_args, &integer_state, &boolean_state);
+            Self::append_unboxed_state_args(
+                &mut execute_args,
+                &integer_state,
+                &float_state,
+                &boolean_state,
+            );
             let mut budget_args = vec![instructions.into(), resume.into(), modified_slots.into()];
-            Self::append_unboxed_state_args(&mut budget_args, &integer_state, &boolean_state);
+            Self::append_unboxed_state_args(
+                &mut budget_args,
+                &integer_state,
+                &float_state,
+                &boolean_state,
+            );
             builder.ins().brif(
                 has_budget,
                 execute_block,
@@ -1074,7 +1235,9 @@ impl CompiledNaturalLoop {
             let modified_slots = block_params[1];
             let integer_end = 2 + integer_slots.len();
             let mut integer_state = block_params[2..integer_end].to_vec();
-            let mut boolean_state = block_params[integer_end..].to_vec();
+            let float_end = integer_end + float_slots.len();
+            let mut float_state = block_params[integer_end..float_end].to_vec();
+            let mut boolean_state = block_params[float_end..].to_vec();
             let one = builder.ins().iconst(types::I64, 1);
             let instructions = builder.ins().iadd(instructions, one);
 
@@ -1088,6 +1251,7 @@ impl CompiledNaturalLoop {
                     Self::append_unboxed_state_args(
                         &mut target_args,
                         &integer_state,
+                        &float_state,
                         &boolean_state,
                     );
                     let if_true = Self::target_block(&instruction_blocks, complete, if_true);
@@ -1103,71 +1267,175 @@ impl CompiledNaturalLoop {
                 NaturalLoopInstruction::Jump { target } => {
                     let target = Self::target_block(&instruction_blocks, complete, target);
                     let mut args = vec![instructions.into(), modified_slots.into()];
-                    Self::append_unboxed_state_args(&mut args, &integer_state, &boolean_state);
+                    Self::append_unboxed_state_args(
+                        &mut args,
+                        &integer_state,
+                        &float_state,
+                        &boolean_state,
+                    );
                     builder.ins().jump(target, &args);
                 }
                 NaturalLoopInstruction::Load { dst, value } => {
                     let word = builder.ins().iconst(types::I64, value as i64);
-                    integer_state[integer_index(dst)] =
-                        ValueEmitter::emit_unbox_int(&mut builder, word);
+                    if plan.unboxed_integer_slots & (1_u32 << dst) != 0 {
+                        integer_state[integer_index(dst)] =
+                            ValueEmitter::emit_unbox_int(&mut builder, word);
+                    } else {
+                        float_state[float_index(dst)] =
+                            ValueEmitter::emit_unbox_float(&mut builder, word);
+                    }
                     let is_fast = builder.ins().iconst(types::I8, 1);
                     Self::finish_unboxed_instruction(
                         &mut builder,
                         &instruction_blocks,
                         complete,
                         index,
-                        dst,
+                        Some(dst),
                         instructions,
                         modified_slots,
                         &integer_state,
+                        &float_state,
                         &boolean_state,
                         is_fast,
                         side_exit,
                     );
                 }
                 NaturalLoopInstruction::Move { dst, src } => {
-                    integer_state[integer_index(dst)] = integer_state[integer_index(src)];
+                    if plan.unboxed_integer_slots & (1_u32 << dst) != 0 {
+                        integer_state[integer_index(dst)] = integer_state[integer_index(src)];
+                    } else {
+                        float_state[float_index(dst)] = float_state[float_index(src)];
+                    }
                     let is_fast = builder.ins().iconst(types::I8, 1);
                     Self::finish_unboxed_instruction(
                         &mut builder,
                         &instruction_blocks,
                         complete,
                         index,
-                        dst,
+                        Some(dst),
                         instructions,
                         modified_slots,
                         &integer_state,
+                        &float_state,
                         &boolean_state,
                         is_fast,
                         side_exit,
                     );
                 }
-                NaturalLoopInstruction::Add { dst, left, right } => {
-                    let sum = builder.ins().iadd(
-                        integer_state[integer_index(left)],
-                        integer_state[integer_index(right)],
-                    );
-                    let above_min =
-                        builder
-                            .ins()
-                            .icmp_imm(IntCC::SignedGreaterThanOrEqual, sum, VALUE_INT_MIN);
-                    let below_max =
-                        builder
-                            .ins()
-                            .icmp_imm(IntCC::SignedLessThanOrEqual, sum, VALUE_INT_MAX);
-                    let in_range = builder.ins().band(above_min, below_max);
-                    integer_state[integer_index(dst)] = sum;
+                NaturalLoopInstruction::Negate { dst, src } => {
+                    let is_fast = if plan.unboxed_integer_slots & (1_u32 << dst) != 0 {
+                        let value = builder.ins().ineg(integer_state[integer_index(src)]);
+                        integer_state[integer_index(dst)] = value;
+                        Self::emit_unboxed_int_in_range(&mut builder, value)
+                    } else {
+                        let value = builder.ins().fneg(float_state[float_index(src)]);
+                        let (value, _, is_finite) =
+                            ValueEmitter::emit_canonical_float(&mut builder, value);
+                        float_state[float_index(dst)] = value;
+                        is_finite
+                    };
                     Self::finish_unboxed_instruction(
                         &mut builder,
                         &instruction_blocks,
                         complete,
                         index,
-                        dst,
+                        Some(dst),
                         instructions,
                         modified_slots,
                         &integer_state,
+                        &float_state,
                         &boolean_state,
-                        in_range,
+                        is_fast,
+                        side_exit,
+                    );
+                }
+                instruction @ (NaturalLoopInstruction::Add { .. }
+                | NaturalLoopInstruction::Subtract { .. }
+                | NaturalLoopInstruction::Multiply { .. }
+                | NaturalLoopInstruction::Divide { .. }) => {
+                    let (dst, left, right) = match instruction {
+                        NaturalLoopInstruction::Add { dst, left, right }
+                        | NaturalLoopInstruction::Subtract { dst, left, right }
+                        | NaturalLoopInstruction::Multiply { dst, left, right }
+                        | NaturalLoopInstruction::Divide { dst, left, right } => (dst, left, right),
+                        _ => unreachable!(),
+                    };
+                    let is_fast = if plan.unboxed_integer_slots & (1_u32 << dst) != 0 {
+                        let left = integer_state[integer_index(left)];
+                        let right = integer_state[integer_index(right)];
+                        let (value, no_overflow) = match instruction {
+                            NaturalLoopInstruction::Add { .. } => {
+                                (builder.ins().iadd(left, right), None)
+                            }
+                            NaturalLoopInstruction::Subtract { .. } => {
+                                (builder.ins().isub(left, right), None)
+                            }
+                            NaturalLoopInstruction::Multiply { .. } => {
+                                let (value, overflow) = builder.ins().smul_overflow(left, right);
+                                let no_overflow = builder.ins().icmp_imm(IntCC::Equal, overflow, 0);
+                                (value, Some(no_overflow))
+                            }
+                            _ => unreachable!("integer division is not an exact native kind"),
+                        };
+                        integer_state[integer_index(dst)] = value;
+                        let in_range = Self::emit_unboxed_int_in_range(&mut builder, value);
+                        no_overflow
+                            .map(|guard| builder.ins().band(guard, in_range))
+                            .unwrap_or(in_range)
+                    } else {
+                        let slots = UnboxedSlots {
+                            integers: &integer_slots,
+                            floats: &float_slots,
+                            booleans: &boolean_slots,
+                        };
+                        let state = UnboxedState {
+                            integers: &integer_state,
+                            floats: &float_state,
+                            booleans: &boolean_state,
+                        };
+                        let left =
+                            Self::emit_unboxed_numeric_as_float(&mut builder, left, slots, state);
+                        let right =
+                            Self::emit_unboxed_numeric_as_float(&mut builder, right, slots, state);
+                        let (value, divisor_is_nonzero) = match instruction {
+                            NaturalLoopInstruction::Add { .. } => {
+                                (builder.ins().fadd(left, right), None)
+                            }
+                            NaturalLoopInstruction::Subtract { .. } => {
+                                (builder.ins().fsub(left, right), None)
+                            }
+                            NaturalLoopInstruction::Multiply { .. } => {
+                                (builder.ins().fmul(left, right), None)
+                            }
+                            NaturalLoopInstruction::Divide { .. } => {
+                                let zero = builder.ins().f32const(Ieee32::with_bits(0));
+                                let nonzero = builder.ins().fcmp(FloatCC::NotEqual, right, zero);
+                                let one =
+                                    builder.ins().f32const(Ieee32::with_bits(1.0_f32.to_bits()));
+                                let safe_right = builder.ins().select(nonzero, right, one);
+                                (builder.ins().fdiv(left, safe_right), Some(nonzero))
+                            }
+                            _ => unreachable!(),
+                        };
+                        let (value, _, is_finite) =
+                            ValueEmitter::emit_canonical_float(&mut builder, value);
+                        float_state[float_index(dst)] = value;
+                        divisor_is_nonzero
+                            .map(|guard| builder.ins().band(guard, is_finite))
+                            .unwrap_or(is_finite)
+                    };
+                    Self::finish_unboxed_instruction(
+                        &mut builder,
+                        &instruction_blocks,
+                        complete,
+                        index,
+                        Some(dst),
+                        instructions,
+                        modified_slots,
+                        &integer_state,
+                        &float_state,
+                        &boolean_state,
+                        is_fast,
                         side_exit,
                     );
                 }
@@ -1177,18 +1445,35 @@ impl CompiledNaturalLoop {
                     left,
                     right,
                 } => {
-                    let predicate = builder.ins().icmp(
-                        match comparison {
-                            ScalarComparison::Equal => IntCC::Equal,
-                            ScalarComparison::NotEqual => IntCC::NotEqual,
-                            ScalarComparison::LessThan => IntCC::SignedLessThan,
-                            ScalarComparison::LessThanOrEqual => IntCC::SignedLessThanOrEqual,
-                            ScalarComparison::GreaterThan => IntCC::SignedGreaterThan,
-                            ScalarComparison::GreaterThanOrEqual => IntCC::SignedGreaterThanOrEqual,
-                        },
-                        integer_state[integer_index(left)],
-                        integer_state[integer_index(right)],
-                    );
+                    let predicate = if plan.unboxed_integer_slots & (1_u32 << left) != 0 {
+                        builder.ins().icmp(
+                            match comparison {
+                                ScalarComparison::Equal => IntCC::Equal,
+                                ScalarComparison::NotEqual => IntCC::NotEqual,
+                                ScalarComparison::LessThan => IntCC::SignedLessThan,
+                                ScalarComparison::LessThanOrEqual => IntCC::SignedLessThanOrEqual,
+                                ScalarComparison::GreaterThan => IntCC::SignedGreaterThan,
+                                ScalarComparison::GreaterThanOrEqual => {
+                                    IntCC::SignedGreaterThanOrEqual
+                                }
+                            },
+                            integer_state[integer_index(left)],
+                            integer_state[integer_index(right)],
+                        )
+                    } else {
+                        builder.ins().fcmp(
+                            match comparison {
+                                ScalarComparison::Equal => FloatCC::Equal,
+                                ScalarComparison::NotEqual => FloatCC::NotEqual,
+                                ScalarComparison::LessThan => FloatCC::LessThan,
+                                ScalarComparison::LessThanOrEqual => FloatCC::LessThanOrEqual,
+                                ScalarComparison::GreaterThan => FloatCC::GreaterThan,
+                                ScalarComparison::GreaterThanOrEqual => FloatCC::GreaterThanOrEqual,
+                            },
+                            float_state[float_index(left)],
+                            float_state[float_index(right)],
+                        )
+                    };
                     boolean_state[boolean_index(dst)] = predicate;
                     let is_fast = builder.ins().iconst(types::I8, 1);
                     Self::finish_unboxed_instruction(
@@ -1196,16 +1481,80 @@ impl CompiledNaturalLoop {
                         &instruction_blocks,
                         complete,
                         index,
-                        dst,
+                        Some(dst),
                         instructions,
                         modified_slots,
                         &integer_state,
+                        &float_state,
                         &boolean_state,
                         is_fast,
                         side_exit,
                     );
                 }
-                _ => unreachable!("unboxed integer plans contain only supported instructions"),
+                NaturalLoopInstruction::CheckKind { .. } => {
+                    let is_fast = builder.ins().iconst(types::I8, 1);
+                    Self::finish_unboxed_instruction(
+                        &mut builder,
+                        &instruction_blocks,
+                        complete,
+                        index,
+                        None,
+                        instructions,
+                        modified_slots,
+                        &integer_state,
+                        &float_state,
+                        &boolean_state,
+                        is_fast,
+                        side_exit,
+                    );
+                }
+                NaturalLoopInstruction::CollectionValueAt {
+                    dst,
+                    view,
+                    index: ordinal,
+                }
+                | NaturalLoopInstruction::CollectionKeyAt {
+                    dst,
+                    view,
+                    index: ordinal,
+                } => {
+                    let ordinal = integer_state[integer_index(ordinal)];
+                    let key = matches!(instruction, NaturalLoopInstruction::CollectionKeyAt { .. });
+                    let (word, collection_is_fast) = Self::emit_unboxed_collection_at(
+                        &mut builder,
+                        collection_views,
+                        view,
+                        ordinal,
+                        key,
+                    );
+                    let kind_is_fast = if plan.unboxed_integer_slots & (1_u32 << dst) != 0 {
+                        let is_int = ValueEmitter::emit_is_int(&mut builder, word);
+                        integer_state[integer_index(dst)] =
+                            ValueEmitter::emit_unbox_int(&mut builder, word);
+                        is_int
+                    } else {
+                        let is_float = ValueEmitter::emit_is_float(&mut builder, word);
+                        float_state[float_index(dst)] =
+                            ValueEmitter::emit_unbox_float(&mut builder, word);
+                        is_float
+                    };
+                    let is_fast = builder.ins().band(collection_is_fast, kind_is_fast);
+                    Self::finish_unboxed_instruction(
+                        &mut builder,
+                        &instruction_blocks,
+                        complete,
+                        index,
+                        Some(dst),
+                        instructions,
+                        modified_slots,
+                        &integer_state,
+                        &float_state,
+                        &boolean_state,
+                        is_fast,
+                        side_exit,
+                    );
+                }
+                _ => unreachable!("unboxed plans contain only supported instructions"),
             }
         }
 
@@ -1215,14 +1564,22 @@ impl CompiledNaturalLoop {
         let complete_params = builder.block_params(complete).to_vec();
         let integer_end = 2 + integer_slots.len();
         let integer_state = &complete_params[2..integer_end];
-        let boolean_state = &complete_params[integer_end..];
+        let float_end = integer_end + float_slots.len();
+        let float_state = &complete_params[integer_end..float_end];
+        let boolean_state = &complete_params[float_end..];
         Self::flush_unboxed_state(
             &mut builder,
             scratch,
-            &integer_slots,
-            integer_state,
-            &boolean_slots,
-            boolean_state,
+            UnboxedSlots {
+                integers: &integer_slots,
+                floats: &float_slots,
+                booleans: &boolean_slots,
+            },
+            UnboxedState {
+                integers: integer_state,
+                floats: float_state,
+                booleans: boolean_state,
+            },
         );
         builder
             .ins()
@@ -1240,14 +1597,22 @@ impl CompiledNaturalLoop {
         let modified_slots = block_params[2];
         let integer_end = 3 + integer_slots.len();
         let integer_state = &block_params[3..integer_end];
-        let boolean_state = &block_params[integer_end..];
+        let float_end = integer_end + float_slots.len();
+        let float_state = &block_params[integer_end..float_end];
+        let boolean_state = &block_params[float_end..];
         Self::flush_unboxed_state(
             &mut builder,
             scratch,
-            &integer_slots,
-            integer_state,
-            &boolean_slots,
-            boolean_state,
+            UnboxedSlots {
+                integers: &integer_slots,
+                floats: &float_slots,
+                booleans: &boolean_slots,
+            },
+            UnboxedState {
+                integers: integer_state,
+                floats: float_state,
+                booleans: boolean_state,
+            },
         );
         builder
             .ins()
@@ -1273,41 +1638,138 @@ impl CompiledNaturalLoop {
         builder.finalize();
     }
 
+    fn emit_unboxed_int_in_range(
+        builder: &mut FunctionBuilder<'_>,
+        value: cranelift_codegen::ir::Value,
+    ) -> cranelift_codegen::ir::Value {
+        let above_min =
+            builder
+                .ins()
+                .icmp_imm(IntCC::SignedGreaterThanOrEqual, value, VALUE_INT_MIN);
+        let below_max = builder
+            .ins()
+            .icmp_imm(IntCC::SignedLessThanOrEqual, value, VALUE_INT_MAX);
+        builder.ins().band(above_min, below_max)
+    }
+
+    fn emit_unboxed_numeric_as_float(
+        builder: &mut FunctionBuilder<'_>,
+        slot: u16,
+        slots: UnboxedSlots<'_>,
+        state: UnboxedState<'_>,
+    ) -> cranelift_codegen::ir::Value {
+        if let Some(index) = slots
+            .integers
+            .iter()
+            .position(|candidate| *candidate == slot)
+        {
+            return builder
+                .ins()
+                .fcvt_from_sint(types::F32, state.integers[index]);
+        }
+        state.floats[Self::unboxed_state_index(slots.floats, slot)]
+    }
+
+    fn unboxed_state_index(slots: &[u16], slot: u16) -> usize {
+        slots
+            .iter()
+            .position(|candidate| *candidate == slot)
+            .expect("validated unboxed instruction references typed state")
+    }
+
+    fn emit_unboxed_collection_at(
+        builder: &mut FunctionBuilder<'_>,
+        collection_views: cranelift_codegen::ir::Value,
+        view: u16,
+        index: cranelift_codegen::ir::Value,
+        key: bool,
+    ) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
+        let (kind, len, start, key_base, value_base, stride) =
+            Self::load_collection_view(builder, collection_views, view);
+        let index_is_nonnegative =
+            builder
+                .ins()
+                .icmp_imm(IntCC::SignedGreaterThanOrEqual, index, 0);
+        let index_is_bounded = builder.ins().icmp(IntCC::UnsignedLessThan, index, len);
+        let index_is_valid = builder.ins().band(index_is_nonnegative, index_is_bounded);
+        let zero = builder.ins().iconst(types::I64, 0);
+        let safe_index = builder.ins().select(index_is_valid, index, zero);
+        let is_range = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, kind, COLLECTION_RANGE as i64);
+        let is_list = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, kind, COLLECTION_LIST as i64);
+        let is_map = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, kind, COLLECTION_MAP as i64);
+        let ordinal_kind = builder.ins().bor(is_range, is_list);
+        let kind_is_valid = builder.ins().bor(ordinal_kind, is_map);
+        let value = if key {
+            let address_offset = builder.ins().imul(safe_index, stride);
+            let address = builder.ins().iadd(key_base, address_offset);
+            let map_key =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new().with_readonly(), address, 0);
+            let ordinal = ValueEmitter::emit_pack(builder, VALUE_INT_TAG, safe_index);
+            builder.ins().select(is_map, map_key, ordinal)
+        } else {
+            let range_value = builder.ins().iadd(start, safe_index);
+            let range_value = ValueEmitter::emit_pack(builder, VALUE_INT_TAG, range_value);
+            let address_offset = builder.ins().imul(safe_index, stride);
+            let address = builder.ins().iadd(value_base, address_offset);
+            let collection_value =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlagsData::new().with_readonly(), address, 0);
+            builder
+                .ins()
+                .select(is_range, range_value, collection_value)
+        };
+        let is_fast = builder.ins().band(index_is_valid, kind_is_valid);
+        (value, is_fast)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn finish_unboxed_instruction(
         builder: &mut FunctionBuilder<'_>,
         instruction_blocks: &[cranelift_codegen::ir::Block],
         complete: cranelift_codegen::ir::Block,
         index: usize,
-        dst: u16,
+        modified_slot: Option<u16>,
         instructions: cranelift_codegen::ir::Value,
         modified_slots: cranelift_codegen::ir::Value,
         integer_state: &[cranelift_codegen::ir::Value],
+        float_state: &[cranelift_codegen::ir::Value],
         boolean_state: &[cranelift_codegen::ir::Value],
         is_fast: cranelift_codegen::ir::Value,
         side_exit: cranelift_codegen::ir::Block,
     ) {
-        let slot_bit = 1_u32 << dst;
-        let slot_bit = builder.ins().iconst(types::I32, i64::from(slot_bit));
-        let modified_slots = builder.ins().bor(modified_slots, slot_bit);
+        let modified_slots = modified_slot.map_or(modified_slots, |slot| {
+            let slot_bit = builder.ins().iconst(types::I32, i64::from(1_u32 << slot));
+            builder.ins().bor(modified_slots, slot_bit)
+        });
         let next = Self::target_block(
             instruction_blocks,
             complete,
             u16::try_from(index + 1).expect("plan length validated"),
         );
         let mut args = vec![instructions.into(), modified_slots.into()];
-        Self::append_unboxed_state_args(&mut args, integer_state, boolean_state);
+        Self::append_unboxed_state_args(&mut args, integer_state, float_state, boolean_state);
         builder.ins().brif(is_fast, next, &args, side_exit, &[]);
     }
 
     fn append_unboxed_state_args(
         args: &mut Vec<cranelift_codegen::ir::BlockArg>,
         integer_state: &[cranelift_codegen::ir::Value],
+        float_state: &[cranelift_codegen::ir::Value],
         boolean_state: &[cranelift_codegen::ir::Value],
     ) {
         args.extend(
             integer_state
                 .iter()
+                .chain(float_state)
                 .chain(boolean_state)
                 .copied()
                 .map(cranelift_codegen::ir::BlockArg::from),
@@ -1317,23 +1779,32 @@ impl CompiledNaturalLoop {
     fn flush_unboxed_state(
         builder: &mut FunctionBuilder<'_>,
         scratch: cranelift_codegen::ir::Value,
-        integer_slots: &[u16],
-        integer_state: &[cranelift_codegen::ir::Value],
-        boolean_slots: &[u16],
-        boolean_state: &[cranelift_codegen::ir::Value],
+        slots: UnboxedSlots<'_>,
+        state: UnboxedState<'_>,
     ) {
-        for (slot, value) in integer_slots
+        for (slot, value) in slots
+            .integers
             .iter()
             .copied()
-            .zip(integer_state.iter().copied())
+            .zip(state.integers.iter().copied())
         {
             let value = ValueEmitter::emit_pack(builder, VALUE_INT_TAG, value);
             Self::store_slot(builder, scratch, slot, value);
         }
-        for (slot, value) in boolean_slots
+        for (slot, value) in slots
+            .floats
             .iter()
             .copied()
-            .zip(boolean_state.iter().copied())
+            .zip(state.floats.iter().copied())
+        {
+            let value = ValueEmitter::emit_pack_checked_float(builder, value).word();
+            Self::store_slot(builder, scratch, slot, value);
+        }
+        for (slot, value) in slots
+            .booleans
+            .iter()
+            .copied()
+            .zip(state.booleans.iter().copied())
         {
             let value = ValueEmitter::emit_bool(builder, value);
             Self::store_slot(builder, scratch, slot, value);
@@ -1546,7 +2017,9 @@ impl CompiledNaturalLoop {
                 Self::store_slot(builder, scratch, dst, value);
                 (is_fast, dst)
             }
-            NaturalLoopInstruction::Branch { .. } | NaturalLoopInstruction::Jump { .. } => {
+            NaturalLoopInstruction::CheckKind { .. }
+            | NaturalLoopInstruction::Branch { .. }
+            | NaturalLoopInstruction::Jump { .. } => {
                 unreachable!("control-flow instructions are emitted by build_function")
             }
         }

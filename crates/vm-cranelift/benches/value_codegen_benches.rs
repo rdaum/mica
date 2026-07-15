@@ -388,7 +388,7 @@ fn natural_integer_loop_plan(unboxed: bool) -> NaturalLoopPlan {
     )
     .unwrap();
     if unboxed {
-        plan.with_unboxed_integer_slots(integer_slots, entry_slots)
+        plan.with_unboxed_slots(integer_slots, entry_slots, 0, 0)
             .unwrap()
     } else {
         plan
