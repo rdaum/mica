@@ -209,8 +209,8 @@ pub enum Expr {
     For {
         id: NodeId,
         span: Span,
-        key: String,
-        value: Option<String>,
+        key: LoopBinding,
+        value: Option<LoopBinding>,
         iter: Box<Expr>,
         body: Vec<Item>,
     },
@@ -392,7 +392,25 @@ pub enum BindingKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BindingPattern {
     Name(String),
-    Scatter(Vec<Param>),
+    Scatter(Vec<ScatterBinding>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoopBinding {
+    pub id: NodeId,
+    pub name: String,
+    pub annotation: Option<ValueKindRef>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScatterBinding {
+    pub id: NodeId,
+    pub name: String,
+    pub mode: ParamMode,
+    pub annotation: Option<ValueKindRef>,
+    pub default: Option<Expr>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

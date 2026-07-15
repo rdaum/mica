@@ -13,10 +13,10 @@
 
 use crate::{
     Arg, Ast, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
-    FunctionBody, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam,
-    HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem, HirRuleGuard,
-    HirScatterBinding, Item, NodeId, Param, ParamMode, ParseError, RecoveryClause, Span,
-    ValueKindRef, parse_ast,
+    FunctionBody, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem,
+    HirLoopBinding, HirParam, HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem,
+    HirRuleGuard, HirScatterBinding, Item, NodeId, Param, ParamMode, ParseError, RecoveryClause,
+    Span, ValueKindRef, parse_ast,
 };
 use mica_var::ValueKind;
 use std::collections::{BTreeSet, HashMap};
@@ -988,11 +988,17 @@ impl<'a> Analyzer<'a> {
                         )),
                         Vec::new(),
                     ),
-                    BindingPattern::Scatter(params) => (
+                    BindingPattern::Scatter(bindings) => (
                         None,
-                        params
+                        bindings
                             .iter()
                             .map(|param| {
+                                let declared_kind = self.resolve_kind_ref(
+                                    param.annotation.as_ref(),
+                                    param.id,
+                                    "scatter bindings",
+                                    true,
+                                );
                                 let local_kind = match kind {
                                     BindingKind::Let => LocalKind::Let,
                                     BindingKind::Const => LocalKind::Const,
@@ -1001,9 +1007,9 @@ impl<'a> Analyzer<'a> {
                                     scope,
                                     param.name.clone(),
                                     local_kind,
-                                    None,
+                                    declared_kind,
                                     param.id,
-                                    span,
+                                    &param.span,
                                 );
                                 let default = param
                                     .default
@@ -1013,6 +1019,7 @@ impl<'a> Analyzer<'a> {
                                     id: param.id,
                                     binding,
                                     mode: param.mode.clone(),
+                                    declared_kind,
                                     default,
                                 }
                             })
@@ -1059,17 +1066,47 @@ impl<'a> Analyzer<'a> {
             }
             Expr::For {
                 id,
-                span,
                 key,
                 value,
                 iter,
                 body,
+                ..
             } => {
                 let iter = self.lower_expr(iter, scope);
                 let loop_scope = self.alloc_scope(Some(scope), Some(*id));
-                let key = self.declare(loop_scope, key.clone(), LocalKind::Loop, None, *id, span);
+                let key_kind =
+                    self.resolve_kind_ref(key.annotation.as_ref(), key.id, "loop bindings", true);
+                let key = HirLoopBinding {
+                    id: key.id,
+                    binding: self.declare(
+                        loop_scope,
+                        key.name.clone(),
+                        LocalKind::Loop,
+                        key_kind,
+                        key.id,
+                        &key.span,
+                    ),
+                    declared_kind: key_kind,
+                };
                 let value = value.as_ref().map(|value| {
-                    self.declare(loop_scope, value.clone(), LocalKind::Loop, None, *id, span)
+                    let declared_kind = self.resolve_kind_ref(
+                        value.annotation.as_ref(),
+                        value.id,
+                        "loop bindings",
+                        true,
+                    );
+                    HirLoopBinding {
+                        id: value.id,
+                        binding: self.declare(
+                            loop_scope,
+                            value.name.clone(),
+                            LocalKind::Loop,
+                            declared_kind,
+                            value.id,
+                            &value.span,
+                        ),
+                        declared_kind,
+                    }
                 });
                 HirExpr::For {
                     id: *id,
@@ -1631,8 +1668,13 @@ fn collect_expr_span(expr: &Expr, spans: &mut HashMap<NodeId, Span>) {
         }
         Expr::Field { base, .. } => collect_expr_span(base, spans),
         Expr::Binding { pattern, value, .. } => {
-            if let BindingPattern::Scatter(params) = pattern {
-                collect_param_spans(params, spans);
+            if let BindingPattern::Scatter(bindings) = pattern {
+                for binding in bindings {
+                    spans.insert(binding.id, binding.span.clone());
+                    if let Some(default) = &binding.default {
+                        collect_expr_span(default, spans);
+                    }
+                }
             }
             if let Some(value) = value {
                 collect_expr_span(value, spans);
@@ -1655,17 +1697,18 @@ fn collect_expr_span(expr: &Expr, spans: &mut HashMap<NodeId, Span>) {
         }
         Expr::Block { items, .. } => collect_item_spans(items, spans),
         Expr::For {
+            key,
+            value,
             iter,
             body,
-            span,
-            key: _,
-            value: _,
             ..
         } => {
+            spans.insert(key.id, key.span.clone());
+            if let Some(value) = value {
+                spans.insert(value.id, value.span.clone());
+            }
             collect_expr_span(iter, spans);
             collect_item_spans(body, spans);
-            // Loop variables do not have their own source-span field yet.
-            spans.entry(expr.id()).or_insert_with(|| span.clone());
         }
         Expr::While {
             condition, body, ..
@@ -1863,6 +1906,57 @@ mod tests {
         assert_eq!(params[0].declared_kind, Some(ValueKind::Float));
         assert_eq!(*result_kind, Some(ValueKind::String));
         assert_eq!(program.diagnostics, vec![]);
+    }
+
+    #[test]
+    fn resolves_collection_binding_kind_metadata() {
+        let program = parse_ok(
+            "let [head: int, ?label: string = \"\", @tail: list] = [1]\n\
+             for index: int, value: int in 1..2\nend",
+        );
+
+        assert_eq!(program.diagnostics, vec![]);
+        let HirItem::Expr {
+            expr: HirExpr::Binding { scatter, .. },
+            ..
+        } = &program.hir.items[0]
+        else {
+            panic!("expected scatter binding");
+        };
+        assert_eq!(scatter[0].declared_kind, Some(ValueKind::Int));
+        assert_eq!(scatter[1].declared_kind, Some(ValueKind::String));
+        assert_eq!(scatter[2].declared_kind, Some(ValueKind::List));
+
+        let HirItem::Expr {
+            expr:
+                HirExpr::For {
+                    key,
+                    value: Some(value),
+                    ..
+                },
+            ..
+        } = &program.hir.items[1]
+        else {
+            panic!("expected two-binding loop");
+        };
+        assert_eq!(key.declared_kind, Some(ValueKind::Int));
+        assert_eq!(value.declared_kind, Some(ValueKind::Int));
+        for (name, kind) in [
+            ("head", ValueKind::Int),
+            ("label", ValueKind::String),
+            ("tail", ValueKind::List),
+            ("index", ValueKind::Int),
+            ("value", ValueKind::Int),
+        ] {
+            assert_eq!(
+                program
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.name == name)
+                    .and_then(|binding| binding.declared_kind),
+                Some(kind)
+            );
+        }
     }
 
     #[test]

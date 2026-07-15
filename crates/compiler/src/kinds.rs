@@ -73,6 +73,50 @@ impl KindSet {
     }
 }
 
+pub(crate) fn iteration_binding_kinds(
+    collection: KindSet,
+    two_bindings: bool,
+) -> (KindSet, Option<KindSet>) {
+    let may_be = |kind| !collection.is_disjoint(KindSet::exact(kind));
+    let int = KindSet::exact(ValueKind::Int);
+    let map = KindSet::exact(ValueKind::Map);
+
+    if !two_bindings {
+        if may_be(ValueKind::List) || may_be(ValueKind::Map) {
+            return (KindSet::ALL, None);
+        }
+        let mut item = KindSet::EMPTY;
+        if may_be(ValueKind::Range) {
+            item = item.union(int);
+        }
+        if may_be(ValueKind::Relation) {
+            item = item.union(map);
+        }
+        return (item, None);
+    }
+
+    let key = if may_be(ValueKind::Map) {
+        KindSet::ALL
+    } else if may_be(ValueKind::Range) || may_be(ValueKind::List) || may_be(ValueKind::Relation) {
+        int
+    } else {
+        KindSet::EMPTY
+    };
+    let value = if may_be(ValueKind::List) || may_be(ValueKind::Map) {
+        KindSet::ALL
+    } else {
+        let mut value = KindSet::EMPTY;
+        if may_be(ValueKind::Range) {
+            value = value.union(int);
+        }
+        if may_be(ValueKind::Relation) {
+            value = value.union(map);
+        }
+        value
+    };
+    (key, Some(value))
+}
+
 pub(crate) struct KindInference<'a> {
     bindings: &'a [Binding],
     direct_result: &'a dyn Fn(BindingId) -> Option<KindSet>,
@@ -606,6 +650,44 @@ mod tests {
         assert_eq!(
             arithmetic_kinds(BinaryOp::Add, KindSet::ALL, int),
             int.union(float)
+        );
+    }
+
+    #[test]
+    fn iteration_binding_kinds_follow_collection_shapes() {
+        let int = KindSet::exact(ValueKind::Int);
+        let map = KindSet::exact(ValueKind::Map);
+
+        assert_eq!(
+            iteration_binding_kinds(KindSet::exact(ValueKind::Range), false),
+            (int, None)
+        );
+        assert_eq!(
+            iteration_binding_kinds(KindSet::exact(ValueKind::Range), true),
+            (int, Some(int))
+        );
+        assert_eq!(
+            iteration_binding_kinds(KindSet::exact(ValueKind::List), true),
+            (int, Some(KindSet::ALL))
+        );
+        assert_eq!(
+            iteration_binding_kinds(KindSet::exact(ValueKind::Map), true),
+            (KindSet::ALL, Some(KindSet::ALL))
+        );
+        assert_eq!(
+            iteration_binding_kinds(KindSet::exact(ValueKind::Relation), false),
+            (map, None)
+        );
+        assert_eq!(
+            iteration_binding_kinds(KindSet::exact(ValueKind::Relation), true),
+            (int, Some(map))
+        );
+        assert_eq!(
+            iteration_binding_kinds(
+                KindSet::exact(ValueKind::Range).union(KindSet::exact(ValueKind::Relation)),
+                true,
+            ),
+            (int, Some(int.union(map)))
         );
     }
 }

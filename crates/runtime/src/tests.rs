@@ -702,6 +702,86 @@ fn annotated_optional_and_rest_parameters_bind_function_value_arguments() {
 }
 
 #[test]
+fn annotated_loop_bindings_preserve_collection_iteration_shapes() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "let rows = [:item] { [7], [9] }
+             let total: int = 0
+             for row: map in rows
+               total = total + row[:item]
+             end
+             for index: int, row: map in rows
+               total = total + index + row[:item]
+             end
+             return total",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(33).unwrap()
+    ));
+}
+
+#[test]
+fn annotated_collection_bindings_raise_catchable_type_errors() {
+    let mut runner = SourceRunner::new_empty();
+    for (source, subject) in [
+        (
+            "try
+               for value: int in [1, \"wrong\"]
+               end
+             catch E_TYPE as err
+               return [err.message, err.value]
+             end",
+            "value",
+        ),
+        (
+            "try
+               let [head: int] = [\"wrong\"]
+             catch E_TYPE as err
+               return [err.message, err.value]
+             end",
+            "head",
+        ),
+    ] {
+        let report = runner.run_source(source).unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([
+                    Value::string(format!(
+                        "binding `{subject}` requires int, got string"
+                    )),
+                    Value::string("wrong"),
+                ])
+        ));
+    }
+}
+
+#[test]
+fn annotated_scatter_bindings_handle_defaults_and_rest_values() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "let [head: int, ?middle: int = 2, @tail: list] = [1]
+             return [head, middle, tail]",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::int(1).unwrap(),
+                Value::int(2).unwrap(),
+                Value::list([]),
+            ])
+    ));
+}
+
+#[test]
 fn annotated_relation_bindings_accept_dynamic_immediate_and_heap_values() {
     let mut runner = SourceRunner::new_empty();
 
