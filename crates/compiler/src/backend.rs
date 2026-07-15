@@ -435,6 +435,13 @@ pub enum CompileError {
         expected: ValueKind,
         inferred: String,
     },
+    FunctionResultKindMismatch {
+        node: NodeId,
+        span: Option<Span>,
+        function: Option<String>,
+        expected: ValueKind,
+        inferred: String,
+    },
     Runtime(RuntimeError),
     Kernel(mica_relation_kernel::KernelError),
 }
@@ -1318,6 +1325,7 @@ struct FunctionInfo {
     captures: Vec<BindingId>,
     min_arity: usize,
     max_arity: Option<usize>,
+    result_kinds: KindSet,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2219,9 +2227,10 @@ impl<'a> ProgramCompiler<'a> {
 
     fn compile_function(&self, expr: &HirExpr) -> Result<FunctionInfo, CompileError> {
         let HirExpr::Function {
-            id: _,
-            name: _,
+            id,
+            name,
             params,
+            result_kind,
             captures,
             body,
             ..
@@ -2268,6 +2277,27 @@ impl<'a> ProgramCompiler<'a> {
             }
         }
 
+        let direct_result = |_| None;
+        let inferred =
+            KindInference::new(&self.semantic.bindings, &direct_result).function_result(body);
+        if let Some(expected) = result_kind
+            && !inferred.is_subset(KindSet::exact(*expected))
+        {
+            let function = name.and_then(|binding| {
+                self.semantic
+                    .bindings
+                    .get(binding.as_u32() as usize)
+                    .map(|binding| binding.name.clone())
+            });
+            return Err(CompileError::FunctionResultKindMismatch {
+                node: *id,
+                span: self.span(*id),
+                function,
+                expected: *expected,
+                inferred: inferred.names(),
+            });
+        }
+
         let mut compiler = ProgramCompiler::new(self.semantic, self.context);
         compiler.next_register = (captures.len() + params.len()) as u16;
         for (idx, capture) in captures.iter().enumerate() {
@@ -2309,6 +2339,7 @@ impl<'a> ProgramCompiler<'a> {
             captures: captures.clone(),
             min_arity,
             max_arity,
+            result_kinds: inferred,
         })
     }
 
@@ -4461,7 +4492,12 @@ impl<'a> ProgramCompiler<'a> {
         let Some(expected) = binding.declared_kind else {
             return Ok(());
         };
-        let inferred = KindInference::new(&self.semantic.bindings).expr(source);
+        let direct_result = |binding| {
+            self.functions
+                .get(&binding)
+                .map(|function| function.result_kinds)
+        };
+        let inferred = KindInference::new(&self.semantic.bindings, &direct_result).expr(source);
         let declared = KindSet::exact(expected);
         if inferred.is_subset(declared) {
             return Ok(());
@@ -5613,6 +5649,193 @@ mod tests {
                 },
                 Instruction::Return { .. }
             ] if *subject == Symbol::intern("grant")
+        ));
+    }
+
+    #[test]
+    fn function_results_prove_explicit_expression_and_implicit_exits() {
+        let compiled = compile_source(
+            "fn explicit() -> int
+               return 1
+             end
+             let expression = fn() -> int => 2
+             let implicit = fn() -> int
+               3
+             end
+             return explicit() + expression() + implicit()",
+            &CompileContext::new(),
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+    }
+
+    #[test]
+    fn function_results_cover_branches_bare_returns_and_loop_fallthrough() {
+        let compiled = compile_source(
+            "fn choose(flag) -> int
+               if flag
+                 1
+               else
+                 2
+               end
+             end
+             fn empty() -> relation
+               if true
+                 return
+               end
+               while false
+               end
+             end
+             return choose(true)",
+            &CompileContext::new(),
+        )
+        .unwrap();
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+
+        assert!(matches!(
+            compile_source(
+                "fn incomplete(flag) -> int\nif flag\n1\nend\nend",
+                &CompileContext::new()
+            ),
+            Err(CompileError::FunctionResultKindMismatch {
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if inferred == "int or relation"
+        ));
+        assert!(matches!(
+            compile_source("fn bare() -> int\nreturn\nend", &CompileContext::new()),
+            Err(CompileError::FunctionResultKindMismatch { inferred, .. })
+                if inferred == "relation"
+        ));
+        assert!(matches!(
+            compile_source(
+                "fn loop_result() -> int\nwhile false\nend\nend",
+                &CompileContext::new()
+            ),
+            Err(CompileError::FunctionResultKindMismatch { inferred, .. })
+                if inferred == "relation"
+        ));
+    }
+
+    #[test]
+    fn function_results_cover_recovery_try_and_finally_paths() {
+        let compiled = compile_source(
+            "fn recovered() -> int => recover raise E_TEST catch E_TEST => 1 end
+             fn guarded() -> int
+               try
+                 return 2
+               catch E_TEST
+                 return 3
+               finally
+                 true
+               end
+             end
+             return recovered() + guarded()",
+            &CompileContext::new(),
+        )
+        .unwrap();
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+
+        assert!(matches!(
+            compile_source(
+                "fn overridden() -> int\ntry\nreturn 1\nfinally\nreturn 1.0\nend\nend",
+                &CompileContext::new()
+            ),
+            Err(CompileError::FunctionResultKindMismatch {
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if inferred == "float"
+        ));
+    }
+
+    #[test]
+    fn function_results_reject_dynamic_and_mixed_numeric_exits() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        assert!(matches!(
+            compile_source("fn dynamic() -> int => opaque()", &context),
+            Err(CompileError::FunctionResultKindMismatch { inferred, .. })
+                if inferred == "any value kind"
+        ));
+        assert!(matches!(
+            compile_source("fn quotient() -> int => 3 / 2", &context),
+            Err(CompileError::FunctionResultKindMismatch { inferred, .. })
+                if inferred == "int or float"
+        ));
+        assert!(matches!(
+            compile_source(
+                "fn mixed(flag) -> int\nif flag\n1\nelse\n1.0\nend\nend",
+                &context
+            ),
+            Err(CompileError::FunctionResultKindMismatch { inferred, .. })
+                if inferred == "int or float"
+        ));
+    }
+
+    #[test]
+    fn annotated_locals_establish_dynamic_function_results_without_exit_checks() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let compiled = compile_source(
+            "fn checked() -> int
+               let result: int = opaque()
+               return result
+             end
+             return checked()",
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 1);
+    }
+
+    #[test]
+    fn nested_returns_do_not_create_unreachable_binding_mismatches() {
+        let compiled = compile_source(
+            "fn nested() -> int
+               let unreachable: string = [return 1]
+               return 2
+             end
+             return nested()",
+            &CompileContext::new(),
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+    }
+
+    #[test]
+    fn known_direct_calls_reuse_annotated_and_inferred_result_facts() {
+        let compiled = compile_source(
+            "fn declared() -> int => 1
+             fn inferred() => 2
+             let left: int = declared()
+             let right: int = inferred()
+             return left + right",
+            &CompileContext::new(),
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+    }
+
+    #[test]
+    fn function_outer_kinds_do_not_imply_callable_result_facts() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let compiled = compile_source(
+            "let callback: function = opaque()
+             let value: int = callback()
+             return value",
+            &context,
+        )
+        .unwrap();
+        assert_eq!(count_kind_checks(&compiled.program), 2);
+
+        assert!(matches!(
+            compile_source("fn invoke(callback) -> int => callback()", &context),
+            Err(CompileError::FunctionResultKindMismatch { inferred, .. })
+                if inferred == "any value kind"
         ));
     }
 

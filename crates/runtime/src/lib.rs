@@ -2223,6 +2223,19 @@ fn shift_compile_error(error: CompileError, offset: usize) -> CompileError {
             expected,
             inferred,
         },
+        CompileError::FunctionResultKindMismatch {
+            node,
+            span,
+            function,
+            expected,
+            inferred,
+        } => CompileError::FunctionResultKindMismatch {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            function,
+            expected,
+            inferred,
+        },
         CompileError::Runtime(error) => CompileError::Runtime(error),
         CompileError::Kernel(error) => CompileError::Kernel(error),
     }
