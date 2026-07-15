@@ -1,28 +1,92 @@
 use crate::{
-    BuiltinContext, BuiltinRegistry, RuntimeError, builtin_char_list_arg, builtin_string_arg,
-    builtin_usize_arg, invalid_builtin_call, raised_builtin_error,
+    BuiltinContext, BuiltinRegistry, BuiltinResultKind, RuntimeError, builtin_char_list_arg,
+    builtin_string_arg, builtin_usize_arg, invalid_builtin_call, raised_builtin_error,
 };
-use mica_var::Value;
+use mica_var::{Value, ValueKind};
 
 pub(crate) fn install(registry: BuiltinRegistry) -> BuiltinRegistry {
     registry
-        .with_builtin("string_len", string_len_builtin)
-        .with_builtin("string_chars", string_chars_builtin)
-        .with_builtin("string_slice", string_slice_builtin)
-        .with_builtin("string_from_chars", string_from_chars_builtin)
-        .with_builtin("string_concat", string_concat_builtin)
-        .with_builtin("string_join", string_join_builtin)
-        .with_builtin("url_encode_component", url_encode_component_builtin)
-        .with_builtin("url_decode_component", url_decode_component_builtin)
-        .with_builtin("sort", sort_builtin)
-        .with_builtin("words", words_builtin)
-        .with_builtin("string_starts_with", string_starts_with_builtin)
-        .with_builtin("string_contains", string_contains_builtin)
-        .with_builtin("string_equal_fold", string_equal_fold_builtin)
-        .with_builtin("edit_distance", edit_distance_builtin)
-        .with_builtin("parse_ordinal", parse_ordinal_builtin)
-        .with_builtin("lower", lower_builtin)
-        .with_builtin("os_getenv", os_getenv_builtin)
+        .with_builtin(
+            "string_len",
+            BuiltinResultKind::Exact(ValueKind::Int),
+            string_len_builtin,
+        )
+        .with_builtin(
+            "string_chars",
+            BuiltinResultKind::Exact(ValueKind::List),
+            string_chars_builtin,
+        )
+        .with_builtin(
+            "string_slice",
+            BuiltinResultKind::Exact(ValueKind::String),
+            string_slice_builtin,
+        )
+        .with_builtin(
+            "string_from_chars",
+            BuiltinResultKind::Exact(ValueKind::String),
+            string_from_chars_builtin,
+        )
+        .with_builtin(
+            "string_concat",
+            BuiltinResultKind::Exact(ValueKind::String),
+            string_concat_builtin,
+        )
+        .with_builtin(
+            "string_join",
+            BuiltinResultKind::Exact(ValueKind::String),
+            string_join_builtin,
+        )
+        .with_builtin(
+            "url_encode_component",
+            BuiltinResultKind::Exact(ValueKind::String),
+            url_encode_component_builtin,
+        )
+        .with_builtin(
+            "url_decode_component",
+            BuiltinResultKind::Exact(ValueKind::String),
+            url_decode_component_builtin,
+        )
+        .with_builtin(
+            "sort",
+            BuiltinResultKind::Exact(ValueKind::List),
+            sort_builtin,
+        )
+        .with_builtin(
+            "words",
+            BuiltinResultKind::Exact(ValueKind::List),
+            words_builtin,
+        )
+        .with_builtin(
+            "string_starts_with",
+            BuiltinResultKind::Exact(ValueKind::Bool),
+            string_starts_with_builtin,
+        )
+        .with_builtin(
+            "string_contains",
+            BuiltinResultKind::Exact(ValueKind::Bool),
+            string_contains_builtin,
+        )
+        .with_builtin(
+            "string_equal_fold",
+            BuiltinResultKind::Exact(ValueKind::Bool),
+            string_equal_fold_builtin,
+        )
+        .with_builtin(
+            "edit_distance",
+            BuiltinResultKind::Exact(ValueKind::Int),
+            edit_distance_builtin,
+        )
+        .with_builtin(
+            "parse_ordinal",
+            BuiltinResultKind::Dynamic,
+            parse_ordinal_builtin,
+        )
+        .with_builtin(
+            "lower",
+            BuiltinResultKind::Exact(ValueKind::String),
+            lower_builtin,
+        )
+        .with_builtin("os_getenv", BuiltinResultKind::Dynamic, os_getenv_builtin)
 }
 
 fn string_len_builtin(

@@ -13,7 +13,7 @@
 
 use crate::{AuthorityContext, CapabilityGrant, Emission, MailboxSend, RuntimeError};
 use mica_relation_kernel::{RelationId, RelationKernel, RelationWorkspace, Transaction, Tuple};
-use mica_var::{Identity, Symbol, Value};
+use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -298,9 +298,26 @@ where
     }
 }
 
+/// Successful result-kind contract for a host builtin.
+///
+/// Raised errors do not contribute to this contract. `Exact` results are validated by the VM
+/// before the destination register receives the value; `Dynamic` makes no successful-result claim.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BuiltinResultKind {
+    #[default]
+    Dynamic,
+    Exact(ValueKind),
+}
+
+#[derive(Clone)]
+struct BuiltinEntry {
+    result_kind: BuiltinResultKind,
+    implementation: Arc<dyn Builtin>,
+}
+
 #[derive(Clone, Default)]
 pub struct BuiltinRegistry {
-    builtins: BTreeMap<Symbol, Arc<dyn Builtin>>,
+    builtins: BTreeMap<Symbol, BuiltinEntry>,
 }
 
 impl BuiltinRegistry {
@@ -308,18 +325,45 @@ impl BuiltinRegistry {
         Self::default()
     }
 
-    pub fn with_builtin(mut self, name: impl AsRef<str>, builtin: impl Builtin + 'static) -> Self {
-        self.insert(name, builtin);
+    pub fn with_builtin(
+        mut self,
+        name: impl AsRef<str>,
+        result_kind: BuiltinResultKind,
+        builtin: impl Builtin + 'static,
+    ) -> Self {
+        self.insert(name, result_kind, builtin);
         self
     }
 
-    pub fn insert(&mut self, name: impl AsRef<str>, builtin: impl Builtin + 'static) {
-        self.builtins
-            .insert(Symbol::intern(name.as_ref()), Arc::new(builtin));
+    pub fn insert(
+        &mut self,
+        name: impl AsRef<str>,
+        result_kind: BuiltinResultKind,
+        builtin: impl Builtin + 'static,
+    ) {
+        self.builtins.insert(
+            Symbol::intern(name.as_ref()),
+            BuiltinEntry {
+                result_kind,
+                implementation: Arc::new(builtin),
+            },
+        );
     }
 
     pub fn get(&self, name: Symbol) -> Option<Arc<dyn Builtin>> {
-        self.builtins.get(&name).cloned()
+        self.builtins
+            .get(&name)
+            .map(|entry| Arc::clone(&entry.implementation))
+    }
+
+    pub fn result_kind(&self, name: Symbol) -> Option<BuiltinResultKind> {
+        self.builtins.get(&name).map(|entry| entry.result_kind)
+    }
+
+    pub fn result_kinds(&self) -> impl Iterator<Item = (Symbol, BuiltinResultKind)> + '_ {
+        self.builtins
+            .iter()
+            .map(|(name, entry)| (*name, entry.result_kind))
     }
 
     pub fn contains(&self, name: Symbol) -> bool {

@@ -340,11 +340,13 @@ pub enum Instruction {
     BuiltinCall {
         dst: Register,
         name: Symbol,
+        result_kind: Option<ValueKind>,
         args: Vec<Operand>,
     },
     BuiltinCallDynamic {
         dst: Register,
         name: Symbol,
+        result_kind: Option<ValueKind>,
         args: Vec<ListItem>,
     },
     Dispatch {
@@ -680,11 +682,13 @@ pub(crate) enum Opcode {
     BuiltinCall {
         dst: Register,
         name: Symbol,
+        result_kind: Option<ValueKind>,
         args: TableRange,
     },
     BuiltinCallDynamic {
         dst: Register,
         name: Symbol,
+        result_kind: Option<ValueKind>,
         args: TableRange,
     },
     Dispatch {
@@ -974,6 +978,8 @@ fn infer_opcode_kind(
         }
         Opcode::CollectionLen { .. } => Some(ValueKind::Int),
         Opcode::LoadFunction { .. } => Some(ValueKind::Function),
+        Opcode::BuiltinCall { result_kind, .. }
+        | Opcode::BuiltinCallDynamic { result_kind, .. } => *result_kind,
         _ => None,
     }
 }
@@ -2383,7 +2389,7 @@ impl Program {
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Vec::new();
-        out.extend_from_slice(b"MICAPRG3");
+        out.extend_from_slice(b"MICAPRG4");
         write_u32(&mut out, self.register_count as u32);
         write_u32(&mut out, self.opcodes.len() as u32);
         for instruction in self.instructions() {
@@ -2397,7 +2403,7 @@ impl Program {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, RuntimeError> {
         let mut input = ByteReader::new(bytes);
-        input.expect_magic(b"MICAPRG3")?;
+        input.expect_magic(b"MICAPRG4")?;
         let register_count = input.read_u32()? as usize;
         let instruction_count = input.read_u32()? as usize;
         let mut instructions = Vec::with_capacity(instruction_count);
@@ -2757,18 +2763,30 @@ impl Program {
                     .map(|operand| self.decode_operand(*operand))
                     .collect(),
             },
-            Opcode::BuiltinCall { dst, name, args } => Instruction::BuiltinCall {
+            Opcode::BuiltinCall {
+                dst,
+                name,
+                result_kind,
+                args,
+            } => Instruction::BuiltinCall {
                 dst: *dst,
                 name: *name,
+                result_kind: *result_kind,
                 args: self
                     .operands(*args)
                     .iter()
                     .map(|operand| self.decode_operand(*operand))
                     .collect(),
             },
-            Opcode::BuiltinCallDynamic { dst, name, args } => Instruction::BuiltinCallDynamic {
+            Opcode::BuiltinCallDynamic {
+                dst,
+                name,
+                result_kind,
+                args,
+            } => Instruction::BuiltinCallDynamic {
                 dst: *dst,
                 name: *name,
+                result_kind: *result_kind,
                 args: self.decode_list_items(*args),
             },
             Opcode::Dispatch {
@@ -3349,14 +3367,26 @@ impl ProgramBuilder {
                 program: self.program(program)?,
                 args: self.operands(args)?,
             },
-            Instruction::BuiltinCall { dst, name, args } => Opcode::BuiltinCall {
+            Instruction::BuiltinCall {
                 dst,
                 name,
+                result_kind,
+                args,
+            } => Opcode::BuiltinCall {
+                dst,
+                name,
+                result_kind,
                 args: self.operands(args)?,
             },
-            Instruction::BuiltinCallDynamic { dst, name, args } => Opcode::BuiltinCallDynamic {
+            Instruction::BuiltinCallDynamic {
                 dst,
                 name,
+                result_kind,
+                args,
+            } => Opcode::BuiltinCallDynamic {
+                dst,
+                name,
+                result_kind,
                 args: self.list_items(args)?,
             },
             Instruction::Dispatch {
@@ -4785,22 +4815,34 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             write_bytes(out, &program.to_bytes()?);
             write_operands(out, args)
         }
-        Instruction::BuiltinCall { dst, name, args } => {
+        Instruction::BuiltinCall {
+            dst,
+            name,
+            result_kind,
+            args,
+        } => {
             let Some(name) = name.name() else {
                 return Err(artifact_error("cannot serialize unnamed builtin symbol"));
             };
             out.push(INST_BUILTIN_CALL);
             write_register(out, *dst);
             write_str(out, name);
+            write_optional_value_kind(out, *result_kind);
             write_operands(out, args)
         }
-        Instruction::BuiltinCallDynamic { dst, name, args } => {
+        Instruction::BuiltinCallDynamic {
+            dst,
+            name,
+            result_kind,
+            args,
+        } => {
             let Some(name) = name.name() else {
                 return Err(artifact_error("cannot serialize unnamed builtin symbol"));
             };
             out.push(INST_BUILTIN_CALL_DYNAMIC);
             write_register(out, *dst);
             write_str(out, name);
+            write_optional_value_kind(out, *result_kind);
             write_list_items(out, args)
         }
     }
@@ -5307,11 +5349,13 @@ impl<'a> ByteReader<'a> {
             INST_BUILTIN_CALL => Instruction::BuiltinCall {
                 dst: self.read_register()?,
                 name: Symbol::intern(&self.read_string()?),
+                result_kind: self.read_optional_value_kind()?,
                 args: self.read_operands()?,
             },
             INST_BUILTIN_CALL_DYNAMIC => Instruction::BuiltinCallDynamic {
                 dst: self.read_register()?,
                 name: Symbol::intern(&self.read_string()?),
+                result_kind: self.read_optional_value_kind()?,
                 args: self.read_list_items()?,
             },
             INST_ASSERT => Instruction::Assert {

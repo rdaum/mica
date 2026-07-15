@@ -25,11 +25,11 @@ use mica_relation_kernel::{
 };
 use mica_var::{Identity, Symbol, Value, ValueError, ValueKind};
 use mica_vm::{
-    CatchHandler, ErrorField, Instruction, KindCheckSite, ListItem, MapItem, Operand, Program,
-    ProgramBuilder, QueryBinding, Register, RelationArg, RuntimeBinaryOp, RuntimeError,
-    RuntimeUnaryOp,
+    BuiltinResultKind, CatchHandler, ErrorField, Instruction, KindCheckSite, ListItem, MapItem,
+    Operand, Program, ProgramBuilder, QueryBinding, Register, RelationArg, RuntimeBinaryOp,
+    RuntimeError, RuntimeUnaryOp,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub fn compile_source(
@@ -263,7 +263,7 @@ pub struct CompileContext {
     dot_relations: HashMap<String, DotRelation>,
     identities: HashMap<String, Identity>,
     program_identities: HashMap<String, Identity>,
-    runtime_functions: HashSet<String>,
+    runtime_functions: HashMap<String, BuiltinResultKind>,
     host_request_functions: HashMap<String, HostRequestFunction>,
     method_relations: Option<MethodRelations>,
 }
@@ -299,7 +299,16 @@ impl CompileContext {
     }
 
     pub fn with_runtime_function(mut self, name: impl Into<String>) -> Self {
-        self.define_runtime_function(name);
+        self.define_runtime_function(name, BuiltinResultKind::Dynamic);
+        self
+    }
+
+    pub fn with_runtime_function_result(
+        mut self,
+        name: impl Into<String>,
+        result: BuiltinResultKind,
+    ) -> Self {
+        self.define_runtime_function(name, result);
         self
     }
 
@@ -341,8 +350,8 @@ impl CompileContext {
         self.program_identities.insert(method.into(), id);
     }
 
-    pub fn define_runtime_function(&mut self, name: impl Into<String>) {
-        self.runtime_functions.insert(name.into());
+    pub fn define_runtime_function(&mut self, name: impl Into<String>, result: BuiltinResultKind) {
+        self.runtime_functions.insert(name.into(), result);
     }
 
     pub fn define_host_request_function(
@@ -351,7 +360,8 @@ impl CompileContext {
         function: HostRequestFunction,
     ) {
         let name = name.into();
-        self.runtime_functions.insert(name.clone());
+        self.runtime_functions
+            .insert(name.clone(), BuiltinResultKind::Dynamic);
         self.host_request_functions.insert(name, function);
     }
 
@@ -376,7 +386,11 @@ impl CompileContext {
     }
 
     pub fn is_runtime_function(&self, name: &str) -> bool {
-        self.runtime_functions.contains(name)
+        self.runtime_functions.contains_key(name)
+    }
+
+    pub fn runtime_function_result(&self, name: &str) -> Option<BuiltinResultKind> {
+        self.runtime_functions.get(name).copied()
     }
 
     pub fn host_request_function(&self, name: &str) -> Option<&HostRequestFunction> {
@@ -1121,8 +1135,10 @@ fn compile_installed_method(
 
     if let Some(expected) = result_kind {
         let no_direct_result = |_| None;
+        let runtime_result = |name: &str| runtime_result_kinds(context, name);
         let inferred_result =
-            KindInference::new(&semantic.bindings, &no_direct_result).block_result(body);
+            KindInference::new(&semantic.bindings, &no_direct_result, &runtime_result)
+                .block_result(body);
         if !inferred_result.is_subset(KindSet::exact(*expected)) {
             return Err(CompileError::VerbResultKindMismatch {
                 node: *id,
@@ -1748,6 +1764,7 @@ impl<'a> ProgramCompiler<'a> {
         self.emit(Instruction::BuiltinCall {
             dst,
             name: Symbol::intern("frob"),
+            result_kind: Some(ValueKind::Frob),
             args: vec![Operand::Value(Value::identity(delegate)), value],
         });
         Ok(dst)
@@ -2310,8 +2327,10 @@ impl<'a> ProgramCompiler<'a> {
                     (param.declared_kind, param.default.as_ref())
             {
                 let no_direct_result = |_| None;
+                let runtime_result = |name: &str| runtime_result_kinds(self.context, name);
                 let inferred =
-                    KindInference::new(&self.semantic.bindings, &no_direct_result).expr(default);
+                    KindInference::new(&self.semantic.bindings, &no_direct_result, &runtime_result)
+                        .expr(default);
                 if inferred.is_disjoint(KindSet::exact(expected)) {
                     return Err(CompileError::ParameterDefaultKindMismatch {
                         node: expr_id(default),
@@ -2325,8 +2344,9 @@ impl<'a> ProgramCompiler<'a> {
         }
 
         let direct_result = |_| None;
-        let inferred =
-            KindInference::new(&self.semantic.bindings, &direct_result).function_result(body);
+        let runtime_result = |name: &str| runtime_result_kinds(self.context, name);
+        let inferred = KindInference::new(&self.semantic.bindings, &direct_result, &runtime_result)
+            .function_result(body);
         if let Some(expected) = result_kind
             && !inferred.is_subset(KindSet::exact(*expected))
         {
@@ -2631,16 +2651,30 @@ impl<'a> ProgramCompiler<'a> {
             return Err(self.unsupported(id, "builtin calls only support positional arguments"));
         }
         let dst = self.alloc_register();
+        let result_kind = match self.context.runtime_function_result(name) {
+            Some(BuiltinResultKind::Exact(kind)) => Some(kind),
+            Some(BuiltinResultKind::Dynamic) | None => None,
+        };
         let name = Symbol::intern(name);
         if args.iter().any(|arg| arg.splice) {
             let args = self.compile_arg_items(args)?;
-            self.emit(Instruction::BuiltinCallDynamic { dst, name, args });
+            self.emit(Instruction::BuiltinCallDynamic {
+                dst,
+                name,
+                result_kind,
+                args,
+            });
         } else {
             let args = args
                 .iter()
                 .map(|arg| self.compile_arg_operand(arg))
                 .collect::<Result<Vec<_>, _>>()?;
-            self.emit(Instruction::BuiltinCall { dst, name, args });
+            self.emit(Instruction::BuiltinCall {
+                dst,
+                name,
+                result_kind,
+                args,
+            });
         }
         Ok(dst)
     }
@@ -4700,7 +4734,8 @@ impl<'a> ProgramCompiler<'a> {
                 .get(&binding)
                 .map(|function| function.result_kinds)
         };
-        KindInference::new(&self.semantic.bindings, &direct_result).expr(source)
+        let runtime_result = |name: &str| runtime_result_kinds(self.context, name);
+        KindInference::new(&self.semantic.bindings, &direct_result, &runtime_result).expr(source)
     }
 
     fn unsupported(&self, node: NodeId, message: impl Into<String>) -> CompileError {
@@ -4713,6 +4748,13 @@ impl<'a> ProgramCompiler<'a> {
 
     fn span(&self, node: NodeId) -> Option<Span> {
         self.semantic.span(node).cloned()
+    }
+}
+
+fn runtime_result_kinds(context: &CompileContext, name: &str) -> Option<KindSet> {
+    match context.runtime_function_result(name)? {
+        BuiltinResultKind::Dynamic => None,
+        BuiltinResultKind::Exact(kind) => Some(KindSet::exact(kind)),
     }
 }
 
@@ -5741,6 +5783,74 @@ mod tests {
     }
 
     #[test]
+    fn exact_builtin_results_elide_binding_checks_and_feed_kind_facts() {
+        let context = CompileContext::new().with_runtime_function_result(
+            "string_slice",
+            BuiltinResultKind::Exact(ValueKind::String),
+        );
+        let compiled = compile_source(
+            "let trimmed: string = string_slice(\"abc\", 0, 1)\nreturn trimmed",
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+        let (instruction, dst) = compiled
+            .program
+            .instructions()
+            .iter()
+            .enumerate()
+            .find_map(|(instruction, opcode)| match opcode {
+                Instruction::BuiltinCall {
+                    dst,
+                    name,
+                    result_kind: Some(ValueKind::String),
+                    ..
+                } if *name == Symbol::intern("string_slice") => Some((instruction, *dst)),
+                _ => None,
+            })
+            .expect("compiled exact builtin call");
+        assert_eq!(
+            compiled.program.kind_fact_after(instruction),
+            Some((dst, ValueKind::String))
+        );
+
+        assert!(matches!(
+            compile_source("let value: int = string_slice(\"abc\", 0, 1)", &context),
+            Err(CompileError::ValueKindMismatch {
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if inferred == "string"
+        ));
+    }
+
+    #[test]
+    fn exact_builtin_results_survive_argument_splices() {
+        let context = CompileContext::new().with_runtime_function_result(
+            "string_slice",
+            BuiltinResultKind::Exact(ValueKind::String),
+        );
+        let compiled = compile_source(
+            "let trimmed: string = string_slice(@[\"abc\", 0, 1])\nreturn trimmed",
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+        assert!(compiled.program.instructions().iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::BuiltinCallDynamic {
+                    name,
+                    result_kind: Some(ValueKind::String),
+                    ..
+                } if *name == Symbol::intern("string_slice")
+            )
+        }));
+    }
+
+    #[test]
     fn indexed_assignment_expressions_infer_the_updated_collection_kind() {
         let compiled = compile_source(
             "let items: list = [1]\n\
@@ -6410,7 +6520,11 @@ mod tests {
             .with_identity("target", id(99))
             .with_runtime_function("emit_first_arg");
         let kernel = RelationKernel::new();
-        let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
+        let builtins = BuiltinRegistry::new().with_builtin(
+            "emit_first_arg",
+            BuiltinResultKind::Dynamic,
+            emit_first_arg,
+        );
         let mut task_manager = TaskManager::new(kernel).with_builtins(Arc::new(builtins));
         let submitted = submit_source_task(
             "let value = emit_first_arg(#target, \"hello\")\n\
@@ -6437,7 +6551,11 @@ mod tests {
             .with_identity("target", id(99))
             .with_runtime_function("emit_first_arg");
         let kernel = RelationKernel::new();
-        let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
+        let builtins = BuiltinRegistry::new().with_builtin(
+            "emit_first_arg",
+            BuiltinResultKind::Dynamic,
+            emit_first_arg,
+        );
         let mut task_manager = TaskManager::new(kernel).with_builtins(Arc::new(builtins));
         let submitted = submit_source_task(
             "let args = [#target, \"hello\"]\n\
@@ -7822,10 +7940,14 @@ mod tests {
             .with_method_relations(dispatch_relations())
             .with_identity("endpoint_probe", method)
             .with_program_identity("endpoint_probe", program)
-            .with_runtime_function("endpoint");
+            .with_runtime_function_result(
+                "endpoint",
+                BuiltinResultKind::Exact(ValueKind::Identity),
+            );
         let mut semantic = parse_semantic(
             "verb probe(endpoint)\n\
-               return [endpoint, endpoint()]\n\
+               let current: identity = endpoint()\n\
+               return [endpoint, current]\n\
              end",
         );
         assign_test_method_identity(&mut semantic, "endpoint_probe");
@@ -7840,9 +7962,17 @@ mod tests {
                 .iter()
                 .any(|instruction| matches!(
                     instruction,
-                    Instruction::BuiltinCall { name, .. }
+                    Instruction::BuiltinCall {
+                        name,
+                        result_kind: Some(ValueKind::Identity),
+                        ..
+                    }
                         if *name == Symbol::intern("endpoint")
                 ))
+        );
+        assert_eq!(
+            count_kind_checks(&installation.methods[0].compiled.program),
+            0
         );
     }
 

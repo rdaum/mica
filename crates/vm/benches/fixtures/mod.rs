@@ -737,6 +737,7 @@ pub fn builtin_call_fixture() -> ProgramFixture {
         instructions.push(Instruction::BuiltinCall {
             dst: reg(0),
             name,
+            result_kind: None,
             args: Vec::new(),
         });
     }
