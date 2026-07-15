@@ -40,10 +40,10 @@ assert MessageSeq(#msg_1, 1)
 assert MessageAuthor(#msg_1, "alice")
 assert MessageText(#msg_1, "hello")
 
-verb chat_room_revision(room)
-  let revision = 0
+verb chat_room_revision(room: int) -> int
+  let revision: int = 0
   for found in ChatMessage(room, ?message)
-    let seq = one MessageSeq(found[:message], ?seq)
+    let seq: int = one MessageSeq(found[:message], ?seq)
     if seq > revision
       revision = seq
     end
@@ -52,24 +52,28 @@ verb chat_room_revision(room)
   return revision
 end
 
-verb chat_message_node(message)
-  let author = one MessageAuthor(message, ?author)
-  let text = one MessageText(message, ?text)
-  return dom <li data-sync-key={to_literal(message)}>
+// Seeded message keys are identities while posted message keys are frobs, so this boundary remains
+// dynamic.
+verb chat_message_node(message) -> map
+  let author: string = one MessageAuthor(message, ?author)
+  let text: string = one MessageText(message, ?text)
+  let node: map = dom <li data-sync-key={to_literal(message)}>
     <span class="author">{author}</span>: {text}
   </li>
+  return node
 end
 
-verb chat_composer_node()
-  return from_xml("<form id='chat-composer' data-sync-event='submit' data-sync-action='chat_post'><input id='actor' name='actor' autocomplete='name' value='browser' aria-label='Actor'/><input id='message' name='text' autocomplete='off' placeholder='Message' aria-label='Message'/><button id='send' type='submit'>Send</button></form>")
+verb chat_composer_node() -> map
+  let composer: map = from_xml("<form id='chat-composer' data-sync-event='submit' data-sync-action='chat_post'><input id='actor' name='actor' autocomplete='name' value='browser' aria-label='Actor'/><input id='message' name='text' autocomplete='off' placeholder='Message' aria-label='Message'/><button id='send' type='submit'>Send</button></form>")
+  return composer
 end
 
-verb chat_post(endpoint, room, actor, text)
+verb chat_post(endpoint: identity, room: int, actor: string, text: string) -> bool
   if string_len(text) == 0
     return false
   end
 
-  let seq = chat_room_revision(room) + 1
+  let seq: int = chat_room_revision(room) + 1
   let message = #chat_message<[room, seq]>
 
   assert ChatMessage(room, message)
@@ -80,32 +84,35 @@ verb chat_post(endpoint, room, actor, text)
   return true
 end
 
-verb sync_event(endpoint, session, view, event, target, action, fields)
+verb sync_event(endpoint: identity, session: identity, view: int, event: string, target: string, action: string, fields: map) -> bool
   if event == "submit" && target == "chat-composer" && action == "chat_post"
-    let room = one ChatView(view, ?room)
-    return chat_post(endpoint, room, fields[:actor], fields[:text])
+    let room: int = one ChatView(view, ?room)
+    let posted: bool = chat_post(endpoint, room, fields[:actor], fields[:text])
+    return posted
   end
 
   return false
 end
 
-verb sync_view_revision(view)
-  let room = one ChatView(view, ?room)
-  return chat_room_revision(room)
+verb sync_view_revision(view: int) -> int
+  let room: int = one ChatView(view, ?room)
+  let revision: int = chat_room_revision(room)
+  return revision
 end
 
-verb sync_view_tree(view, revision)
-  let room = one ChatView(view, ?room)
+verb sync_view_tree(view: int, revision: int) -> map
+  let room: int = one ChatView(view, ?room)
   let messages = []
   for found in ChatMessage(room, ?message)
-    let seq = one MessageSeq(found[:message], ?seq)
+    let seq: int = one MessageSeq(found[:message], ?seq)
     if seq <= revision
       messages = [@messages, chat_message_node(found[:message])]
     end
   end
 
-  return dom <main id="chat-root">
+  let tree: map = dom <main id="chat-root">
     <ul id="messages">{@messages}</ul>
     {chat_composer_node()}
   </main>
+  return tree
 end
