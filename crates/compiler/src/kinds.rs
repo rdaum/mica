@@ -145,6 +145,11 @@ impl<'a> KindInference<'a> {
         flow.normal.union(flow.returns)
     }
 
+    pub(crate) fn block_result(&self, items: &[HirItem]) -> KindSet {
+        let flow = self.items(items);
+        flow.normal.union(flow.returns)
+    }
+
     fn flow(&self, expr: &HirExpr) -> KindFlow {
         match expr {
             HirExpr::Literal { value, .. } => KindFlow::value(KindSet::exact(literal_kind(value))),

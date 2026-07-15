@@ -13,10 +13,11 @@
 
 use crate::kinds::{KindInference, KindSet, iteration_binding_kinds};
 use crate::{
-    BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCatch, HirCollectionItem, HirExpr,
-    HirFunctionBody, HirItem, HirLoopBinding, HirPlace, HirProgram, HirRecovery, HirRelationAtom,
-    HirRuleBodyItem, HirRuleGuard, HirScatterBinding, Literal, LocalKind, NodeId, ParamMode,
-    ParseError, SemanticProgram, Span, UnaryOp, parse_semantic,
+    BinaryOp, BindingId, Diagnostic, DispatchRestriction, EffectKind, HirArg, HirCatch,
+    HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirLoopBinding, HirMethodParam, HirPlace,
+    HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem, HirRuleGuard, HirScatterBinding,
+    Literal, LocalKind, NodeId, ParamMode, ParseError, SemanticProgram, Span, UnaryOp,
+    parse_semantic,
 };
 use mica_relation_kernel::{
     Atom, ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Rule,
@@ -442,6 +443,13 @@ pub enum CompileError {
         expected: ValueKind,
         inferred: String,
     },
+    VerbResultKindMismatch {
+        node: NodeId,
+        span: Option<Span>,
+        selector: String,
+        expected: ValueKind,
+        inferred: String,
+    },
     ParameterKindMismatch {
         node: NodeId,
         span: Option<Span>,
@@ -511,7 +519,7 @@ fn context_errors(semantic: &SemanticProgram, context: &CompileContext) -> Vec<C
         context,
         errors: Vec::new(),
     };
-    validator.validate_items(&semantic.hir.items, &HashSet::new());
+    validator.validate_items(&semantic.hir.items);
     validator.errors
 }
 
@@ -522,15 +530,15 @@ struct ContextValidator<'a> {
 }
 
 impl<'a> ContextValidator<'a> {
-    fn validate_items(&mut self, items: &[HirItem], external_locals: &HashSet<String>) {
+    fn validate_items(&mut self, items: &[HirItem]) {
         for item in items {
-            self.validate_item(item, external_locals);
+            self.validate_item(item);
         }
     }
 
-    fn validate_item(&mut self, item: &HirItem, external_locals: &HashSet<String>) {
+    fn validate_item(&mut self, item: &HirItem) {
         match item {
-            HirItem::Expr { expr, .. } => self.validate_expr(expr, external_locals, ExprUse::Value),
+            HirItem::Expr { expr, .. } => self.validate_expr(expr, ExprUse::Value),
             HirItem::RelationRule { head, body, .. } => {
                 self.validate_rule_atom(head);
                 for item in body {
@@ -556,28 +564,17 @@ impl<'a> ContextValidator<'a> {
                     self.validate_method_identity(*id, identity);
                     self.validate_method_program_identity(*id, identity);
                 }
-                let mut method_locals = external_locals.clone();
                 for param in params {
-                    method_locals.insert(param.name.clone());
                     if let Some(restriction) = &param.restriction {
-                        self.validate_param_restriction(
-                            *id,
-                            param.restriction_span.as_ref(),
-                            restriction,
-                        );
+                        self.validate_param_restriction(param.id, restriction);
                     }
                 }
-                self.validate_items(body, &method_locals);
+                self.validate_items(body);
             }
         }
     }
 
-    fn validate_expr(
-        &mut self,
-        expr: &HirExpr,
-        external_locals: &HashSet<String>,
-        expr_use: ExprUse,
-    ) {
+    fn validate_expr(&mut self, expr: &HirExpr, expr_use: ExprUse) {
         match expr {
             HirExpr::Literal { .. }
             | HirExpr::LocalRef { .. }
@@ -589,7 +586,6 @@ impl<'a> ContextValidator<'a> {
             | HirExpr::Error { .. } => {}
             HirExpr::ExternalRef { id, name } => {
                 if expr_use == ExprUse::Value
-                    && !external_locals.contains(name)
                     && !is_compiler_builtin(name)
                     && !self.context.is_runtime_function(name)
                 {
@@ -607,46 +603,46 @@ impl<'a> ContextValidator<'a> {
                 value,
             } => {
                 self.validate_identity(*id, delegate);
-                self.validate_expr(value, external_locals, ExprUse::Value);
+                self.validate_expr(value, ExprUse::Value);
             }
             HirExpr::List { items, .. } => {
                 for item in items {
                     match item {
                         HirCollectionItem::Expr(expr) | HirCollectionItem::Splice(expr) => {
-                            self.validate_expr(expr, external_locals, ExprUse::Value);
+                            self.validate_expr(expr, ExprUse::Value);
                         }
                     }
                 }
             }
             HirExpr::Relation { rows, .. } => {
                 for expr in rows.iter().flatten() {
-                    self.validate_expr(expr, external_locals, ExprUse::Value);
+                    self.validate_expr(expr, ExprUse::Value);
                 }
             }
             HirExpr::Map { entries, .. } => {
                 for (key, value) in entries {
-                    self.validate_expr(key, external_locals, ExprUse::Value);
-                    self.validate_expr(value, external_locals, ExprUse::Value);
+                    self.validate_expr(key, ExprUse::Value);
+                    self.validate_expr(value, ExprUse::Value);
                 }
             }
             HirExpr::Unary { expr, .. } => {
-                self.validate_expr(expr, external_locals, ExprUse::Value);
+                self.validate_expr(expr, ExprUse::Value);
             }
             HirExpr::Binary { left, right, .. } => {
-                self.validate_expr(left, external_locals, ExprUse::Value);
-                self.validate_expr(right, external_locals, ExprUse::Value);
+                self.validate_expr(left, ExprUse::Value);
+                self.validate_expr(right, ExprUse::Value);
             }
             HirExpr::Assign { target, value, .. } => {
-                self.validate_place(target, external_locals);
-                self.validate_expr(value, external_locals, ExprUse::Value);
+                self.validate_place(target);
+                self.validate_expr(value, ExprUse::Value);
             }
             HirExpr::Call { callee, args, .. } => {
-                self.validate_expr(callee, external_locals, ExprUse::Callee);
-                self.validate_args(args, external_locals);
+                self.validate_expr(callee, ExprUse::Callee);
+                self.validate_args(args);
             }
             HirExpr::RoleDispatch { selector, args, .. } => {
-                self.validate_expr(selector, external_locals, ExprUse::Value);
-                self.validate_args(args, external_locals);
+                self.validate_expr(selector, ExprUse::Value);
+                self.validate_args(args);
             }
             HirExpr::ReceiverDispatch {
                 receiver,
@@ -654,43 +650,43 @@ impl<'a> ContextValidator<'a> {
                 args,
                 ..
             } => {
-                self.validate_expr(receiver, external_locals, ExprUse::Value);
-                self.validate_expr(selector, external_locals, ExprUse::Value);
-                self.validate_args(args, external_locals);
+                self.validate_expr(receiver, ExprUse::Value);
+                self.validate_expr(selector, ExprUse::Value);
+                self.validate_args(args);
             }
             HirExpr::Spawn { target, delay, .. } => {
-                self.validate_expr(target, external_locals, ExprUse::Value);
+                self.validate_expr(target, ExprUse::Value);
                 if let Some(delay) = delay {
-                    self.validate_expr(delay, external_locals, ExprUse::Value);
+                    self.validate_expr(delay, ExprUse::Value);
                 }
             }
-            HirExpr::RelationAtom(atom) => self.validate_relation_atom(atom, external_locals),
-            HirExpr::FactChange { atom, .. } => self.validate_relation_atom(atom, external_locals),
+            HirExpr::RelationAtom(atom) => self.validate_relation_atom(atom),
+            HirExpr::FactChange { atom, .. } => self.validate_relation_atom(atom),
             HirExpr::Require { condition, .. }
             | HirExpr::One {
                 expr: condition, ..
             } => {
-                self.validate_expr(condition, external_locals, ExprUse::Value);
+                self.validate_expr(condition, ExprUse::Value);
             }
             HirExpr::Index {
                 collection, index, ..
             } => {
-                self.validate_expr(collection, external_locals, ExprUse::Value);
+                self.validate_expr(collection, ExprUse::Value);
                 if let Some(index) = index {
-                    self.validate_expr(index, external_locals, ExprUse::Value);
+                    self.validate_expr(index, ExprUse::Value);
                 }
             }
             HirExpr::Field { base, .. } => {
-                self.validate_expr(base, external_locals, ExprUse::Value);
+                self.validate_expr(base, ExprUse::Value);
             }
             HirExpr::Binding { scatter, value, .. } => {
                 for binding in scatter {
                     if let Some(default) = &binding.default {
-                        self.validate_expr(default, external_locals, ExprUse::Value);
+                        self.validate_expr(default, ExprUse::Value);
                     }
                 }
                 if let Some(value) = value {
-                    self.validate_expr(value, external_locals, ExprUse::Value);
+                    self.validate_expr(value, ExprUse::Value);
                 }
             }
             HirExpr::If {
@@ -700,28 +696,28 @@ impl<'a> ContextValidator<'a> {
                 else_items,
                 ..
             } => {
-                self.validate_expr(condition, external_locals, ExprUse::Value);
-                self.validate_items(then_items, external_locals);
+                self.validate_expr(condition, ExprUse::Value);
+                self.validate_items(then_items);
                 for (condition, items) in elseif {
-                    self.validate_expr(condition, external_locals, ExprUse::Value);
-                    self.validate_items(items, external_locals);
+                    self.validate_expr(condition, ExprUse::Value);
+                    self.validate_items(items);
                 }
-                self.validate_items(else_items, external_locals);
+                self.validate_items(else_items);
             }
-            HirExpr::Block { items, .. } => self.validate_items(items, external_locals),
+            HirExpr::Block { items, .. } => self.validate_items(items),
             HirExpr::For { iter, body, .. } => {
-                self.validate_expr(iter, external_locals, ExprUse::Value);
-                self.validate_items(body, external_locals);
+                self.validate_expr(iter, ExprUse::Value);
+                self.validate_items(body);
             }
             HirExpr::While {
                 condition, body, ..
             } => {
-                self.validate_expr(condition, external_locals, ExprUse::Value);
-                self.validate_items(body, external_locals);
+                self.validate_expr(condition, ExprUse::Value);
+                self.validate_items(body);
             }
             HirExpr::Return { value, .. } => {
                 if let Some(value) = value {
-                    self.validate_expr(value, external_locals, ExprUse::Value);
+                    self.validate_expr(value, ExprUse::Value);
                 }
             }
             HirExpr::Raise {
@@ -730,21 +726,21 @@ impl<'a> ContextValidator<'a> {
                 value,
                 ..
             } => {
-                self.validate_expr(error, external_locals, ExprUse::Value);
+                self.validate_expr(error, ExprUse::Value);
                 if let Some(message) = message {
-                    self.validate_expr(message, external_locals, ExprUse::Value);
+                    self.validate_expr(message, ExprUse::Value);
                 }
                 if let Some(value) = value {
-                    self.validate_expr(value, external_locals, ExprUse::Value);
+                    self.validate_expr(value, ExprUse::Value);
                 }
             }
             HirExpr::Recover { expr, catches, .. } => {
-                self.validate_expr(expr, external_locals, ExprUse::Value);
+                self.validate_expr(expr, ExprUse::Value);
                 for catch in catches {
                     if let Some(condition) = &catch.condition {
-                        self.validate_expr(condition, external_locals, ExprUse::Value);
+                        self.validate_expr(condition, ExprUse::Value);
                     }
-                    self.validate_expr(&catch.value, external_locals, ExprUse::Value);
+                    self.validate_expr(&catch.value, ExprUse::Value);
                 }
             }
             HirExpr::Try {
@@ -753,59 +749,55 @@ impl<'a> ContextValidator<'a> {
                 finally,
                 ..
             } => {
-                self.validate_items(body, external_locals);
+                self.validate_items(body);
                 for catch in catches {
                     if let Some(condition) = &catch.condition {
-                        self.validate_expr(condition, external_locals, ExprUse::Value);
+                        self.validate_expr(condition, ExprUse::Value);
                     }
-                    self.validate_items(&catch.body, external_locals);
+                    self.validate_items(&catch.body);
                 }
-                self.validate_items(finally, external_locals);
+                self.validate_items(finally);
             }
             HirExpr::Function { params, body, .. } => {
                 for param in params {
                     if let Some(default) = &param.default {
-                        self.validate_expr(default, external_locals, ExprUse::Value);
+                        self.validate_expr(default, ExprUse::Value);
                     }
                 }
                 match body {
                     HirFunctionBody::Expr(expr) => {
-                        self.validate_expr(expr, external_locals, ExprUse::Value);
+                        self.validate_expr(expr, ExprUse::Value);
                     }
-                    HirFunctionBody::Block(items) => self.validate_items(items, external_locals),
+                    HirFunctionBody::Block(items) => self.validate_items(items),
                 }
             }
         }
     }
 
-    fn validate_args(&mut self, args: &[HirArg], external_locals: &HashSet<String>) {
+    fn validate_args(&mut self, args: &[HirArg]) {
         for arg in args {
-            self.validate_expr(&arg.value, external_locals, ExprUse::Value);
+            self.validate_expr(&arg.value, ExprUse::Value);
         }
     }
 
-    fn validate_place(&mut self, place: &HirPlace, external_locals: &HashSet<String>) {
+    fn validate_place(&mut self, place: &HirPlace) {
         match place {
             HirPlace::Local { .. } | HirPlace::Invalid { .. } => {}
             HirPlace::Index {
                 collection, index, ..
             } => {
-                self.validate_expr(collection, external_locals, ExprUse::Value);
+                self.validate_expr(collection, ExprUse::Value);
                 if let Some(index) = index {
-                    self.validate_expr(index, external_locals, ExprUse::Value);
+                    self.validate_expr(index, ExprUse::Value);
                 }
             }
             HirPlace::Dot { base, .. } => {
-                self.validate_expr(base, external_locals, ExprUse::Value);
+                self.validate_expr(base, ExprUse::Value);
             }
         }
     }
 
-    fn validate_relation_atom(
-        &mut self,
-        atom: &HirRelationAtom,
-        external_locals: &HashSet<String>,
-    ) {
+    fn validate_relation_atom(&mut self, atom: &HirRelationAtom) {
         if self.context.relation(&atom.name).is_none() {
             self.errors.push(CompileError::UnknownRelation {
                 node: atom.id,
@@ -813,7 +805,7 @@ impl<'a> ContextValidator<'a> {
                 name: atom.name.clone(),
             });
         }
-        self.validate_args(&atom.args, external_locals);
+        self.validate_args(&atom.args);
     }
 
     fn validate_rule_atom(&mut self, atom: &HirRelationAtom) {
@@ -870,17 +862,12 @@ impl<'a> ContextValidator<'a> {
         }
     }
 
-    fn validate_param_restriction(&mut self, id: NodeId, span: Option<&Span>, restriction: &str) {
-        let restriction_name = restriction.trim().trim_start_matches('#').trim();
-        let name = restriction_name
-            .strip_suffix("<_>")
-            .map(str::trim)
-            .unwrap_or(restriction_name);
-        if self.context.identity(name).is_none() {
+    fn validate_param_restriction(&mut self, id: NodeId, restriction: &DispatchRestriction) {
+        if self.context.identity(&restriction.prototype).is_none() {
             self.errors.push(CompileError::UnknownIdentity {
                 node: id,
-                span: span.cloned().or_else(|| self.span(id)),
-                name: name.to_owned(),
+                span: Some(restriction.span.clone()),
+                name: restriction.prototype.clone(),
             });
         }
     }
@@ -1086,8 +1073,8 @@ fn compile_installed_method(
         id,
         identity,
         selector,
-        clauses,
-        params,
+        params: hir_params,
+        result_kind,
         body,
         ..
     } = item
@@ -1124,14 +1111,35 @@ fn compile_installed_method(
             name: format!("{identity_name} program"),
         })
         .map(Value::identity)?;
-    let params = lower_installed_params(*id, semantic, context, params, clauses)?;
+    let params = compile_installed_params(*id, semantic, context, hir_params)?;
+    let param_registers =
+        u16::try_from(hir_params.len()).map_err(|_| CompileError::Unsupported {
+            node: *id,
+            span: semantic.span(*id).cloned(),
+            message: "method parameter count exceeds supported limit".to_owned(),
+        })?;
+
+    if let Some(expected) = result_kind {
+        let no_direct_result = |_| None;
+        let inferred_result =
+            KindInference::new(&semantic.bindings, &no_direct_result).block_result(body);
+        if !inferred_result.is_subset(KindSet::exact(*expected)) {
+            return Err(CompileError::VerbResultKindMismatch {
+                node: *id,
+                span: semantic.span(*id).cloned(),
+                selector: selector.clone(),
+                expected: *expected,
+                inferred: inferred_result.names(),
+            });
+        }
+    }
 
     let mut compiler = ProgramCompiler::new(semantic, context);
-    compiler.next_register = params.len() as u16;
-    for (idx, param) in params.iter().enumerate() {
-        compiler
-            .external_locals
-            .insert(param.name.clone(), Register(idx as u16));
+    compiler.next_register = param_registers;
+    for (idx, param) in hir_params.iter().enumerate() {
+        let register = Register(idx as u16);
+        compiler.locals.insert(param.binding, register);
+        compiler.emit_method_parameter_check(param, register);
     }
     let compiled_program = compiler.compile_items(body)?;
     Ok(InstalledMethod {
@@ -1146,105 +1154,49 @@ fn compile_installed_method(
     })
 }
 
-fn lower_installed_params(
+fn compile_installed_params(
     id: NodeId,
     semantic: &SemanticProgram,
     context: &CompileContext,
-    params: &[crate::MethodParam],
-    clauses: &[String],
+    params: &[HirMethodParam],
 ) -> Result<Vec<InstalledParam>, CompileError> {
-    if !params.is_empty() {
-        return params
-            .iter()
-            .enumerate()
-            .map(|(position, param)| {
-                let restriction = match &param.restriction {
-                    Some(restriction) => compile_param_restriction(
-                        id,
-                        param.restriction_span.as_ref(),
-                        semantic,
-                        context,
-                        restriction,
-                    )?,
-                    None => Value::nothing(),
-                };
-                Ok(InstalledParam {
-                    name: param.name.clone(),
-                    role: Value::symbol(Symbol::intern(&param.name)),
-                    restriction,
-                    position: u16::try_from(position).map_err(|_| CompileError::Unsupported {
-                        node: id,
-                        span: semantic.span(id).cloned(),
-                        message: "method parameter count exceeds supported limit".to_owned(),
-                    })?,
-                })
-            })
-            .collect();
-    }
-
-    let mut installed = Vec::new();
-    for clause in clauses {
-        let clause = clause.trim();
-        let clause = clause.strip_prefix("roles").unwrap_or(clause).trim();
-        if clause.is_empty() {
-            continue;
-        }
-        for part in clause
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-        {
-            if part.contains(':') {
-                continue;
-            }
-            let (name, restriction) = match part.split_once('@') {
-                Some((name, restriction)) => {
-                    let restriction =
-                        compile_param_restriction(id, None, semantic, context, restriction)?;
-                    (name.trim(), restriction)
-                }
-                None => (part, Value::nothing()),
+    params
+        .iter()
+        .enumerate()
+        .map(|(position, param)| {
+            let binding = &semantic.bindings[param.binding.as_u32() as usize];
+            let restriction = match &param.restriction {
+                Some(restriction) => compile_param_restriction(param.id, context, restriction)?,
+                None => Value::nothing(),
             };
-            if name.is_empty() {
-                continue;
-            }
-            installed.push(InstalledParam {
-                name: name.to_owned(),
-                role: Value::symbol(Symbol::intern(name)),
+            Ok(InstalledParam {
+                name: binding.name.clone(),
+                role: Value::symbol(Symbol::intern(&binding.name)),
                 restriction,
-                position: u16::try_from(installed.len()).map_err(|_| {
-                    CompileError::Unsupported {
-                        node: id,
-                        span: semantic.span(id).cloned(),
-                        message: "method parameter count exceeds supported limit".to_owned(),
-                    }
+                position: u16::try_from(position).map_err(|_| CompileError::Unsupported {
+                    node: id,
+                    span: semantic.span(id).cloned(),
+                    message: "method parameter count exceeds supported limit".to_owned(),
                 })?,
-            });
-        }
-    }
-    Ok(installed)
+            })
+        })
+        .collect()
 }
 
 fn compile_param_restriction(
     id: NodeId,
-    span: Option<&Span>,
-    semantic: &SemanticProgram,
     context: &CompileContext,
-    restriction: &str,
+    restriction: &DispatchRestriction,
 ) -> Result<Value, CompileError> {
-    let restriction_name = restriction.trim().trim_start_matches('#').trim();
-    let (name, frob_only) = match restriction_name.strip_suffix("<_>") {
-        Some(name) => (name.trim(), true),
-        None => (restriction_name, false),
-    };
-    let identity = context
-        .identity(name)
-        .ok_or_else(|| CompileError::UnknownIdentity {
-            node: id,
-            span: span.cloned().or_else(|| semantic.span(id).cloned()),
-            name: name.to_owned(),
-        })?;
-    if frob_only {
+    let identity =
+        context
+            .identity(&restriction.prototype)
+            .ok_or_else(|| CompileError::UnknownIdentity {
+                node: id,
+                span: Some(restriction.span.clone()),
+                name: restriction.prototype.clone(),
+            })?;
+    if restriction.frob_only {
         Ok(Value::frob(identity, Value::nothing()))
     } else {
         Ok(Value::identity(identity))
@@ -1337,7 +1289,6 @@ struct ProgramCompiler<'a> {
     instructions: ProgramBuilder,
     next_register: u16,
     locals: HashMap<BindingId, Register>,
-    external_locals: HashMap<String, Register>,
     functions: HashMap<BindingId, FunctionInfo>,
     loops: Vec<LoopContext>,
     returned: bool,
@@ -1377,7 +1328,6 @@ impl<'a> ProgramCompiler<'a> {
             instructions: ProgramBuilder::new(),
             next_register: 0,
             locals: HashMap::new(),
-            external_locals: HashMap::new(),
             functions: HashMap::new(),
             loops: Vec::new(),
             returned: false,
@@ -1705,9 +1655,7 @@ impl<'a> ProgramCompiler<'a> {
                 self.compile_spawn(*id, target, delay.as_deref())
             }
             HirExpr::ExternalRef { id, name } => {
-                if let Some(register) = self.external_locals.get(name).copied() {
-                    Ok(register)
-                } else if is_compiler_builtin(name) || self.context.is_runtime_function(name) {
+                if is_compiler_builtin(name) || self.context.is_runtime_function(name) {
                     Err(CompileError::Unsupported {
                         node: *id,
                         span: self.span(*id),
@@ -2585,10 +2533,18 @@ impl<'a> ProgramCompiler<'a> {
                 self.compile_positional_dispatch(id, name, args)
             };
         }
-        if let HirExpr::LocalRef { binding, .. } = callee
-            && let Some(function) = self.functions.get(binding).cloned()
-        {
-            return self.compile_direct_function_call(id, &function, args);
+        if let HirExpr::LocalRef { binding, .. } = callee {
+            let binding_info = &self.semantic.bindings[binding.as_u32() as usize];
+            if binding_info.kind == LocalKind::InstalledParam
+                && (is_compiler_builtin(&binding_info.name)
+                    || self.context.is_runtime_function(&binding_info.name))
+            {
+                let name = binding_info.name.clone();
+                return self.compile_builtin_call(id, &name, args);
+            }
+            if let Some(function) = self.functions.get(binding).cloned() {
+                return self.compile_direct_function_call(id, &function, args);
+            }
         }
         if args.iter().any(|arg| arg.role.is_some()) {
             return Err(
@@ -4713,10 +4669,23 @@ impl<'a> ProgramCompiler<'a> {
     }
 
     fn emit_parameter_check(&mut self, param: &FunctionParamInfo, value: Register) {
-        let Some(expected) = param.declared_kind else {
+        self.emit_declared_parameter_check(param.binding, param.declared_kind, value);
+    }
+
+    fn emit_method_parameter_check(&mut self, param: &HirMethodParam, value: Register) {
+        self.emit_declared_parameter_check(param.binding, param.declared_kind, value);
+    }
+
+    fn emit_declared_parameter_check(
+        &mut self,
+        binding: BindingId,
+        expected: Option<ValueKind>,
+        value: Register,
+    ) {
+        let Some(expected) = expected else {
             return;
         };
-        let subject = &self.semantic.bindings[param.binding.as_u32() as usize].name;
+        let subject = &self.semantic.bindings[binding.as_u32() as usize].name;
         self.emit(Instruction::CheckKind {
             value,
             expected,
@@ -4918,6 +4887,13 @@ mod tests {
                 2,
             ))
             .unwrap();
+    }
+
+    fn assign_test_method_identity(semantic: &mut SemanticProgram, name: &str) {
+        let HirItem::Method { identity, .. } = &mut semantic.hir.items[0] else {
+            panic!("expected method item");
+        };
+        *identity = Some(name.to_owned());
     }
 
     #[test]
@@ -7639,6 +7615,175 @@ mod tests {
             vec![Tuple::from(
                 [Value::identity(coin), Value::identity(alice),]
             )]
+        );
+    }
+
+    #[test]
+    fn installed_verb_contracts_preserve_dispatch_facts_and_check_entry_values() {
+        let method = id(100);
+        let program = id(101);
+        let string = id(200);
+        let identity = id(201);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+        let context = CompileContext::new()
+            .with_method_relations(dispatch_relations())
+            .with_identity("typed_verb", method)
+            .with_program_identity("typed_verb", program)
+            .with_identity("string", string)
+            .with_identity("identity", identity);
+        let mut semantic = parse_semantic(
+            "verb typed(value @ #string: string, target @ #identity: identity) -> string\n\
+               return value + \"\"\n\
+             end",
+        );
+        assign_test_method_identity(&mut semantic, "typed_verb");
+        let mut tx = kernel.begin();
+        let installation = install_methods(semantic, &context, &mut tx).unwrap();
+        tx.commit().unwrap();
+
+        let installed = &installation.methods[0];
+        assert_eq!(
+            installed
+                .params
+                .iter()
+                .map(|param| (param.name.clone(), param.restriction.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("value".to_owned(), Value::identity(string)),
+                ("target".to_owned(), Value::identity(identity)),
+            ]
+        );
+        let mut checks = Vec::new();
+        collect_kind_checks(&installed.compiled.program, &mut checks);
+        assert_eq!(
+            checks,
+            vec![
+                (
+                    ValueKind::String,
+                    KindCheckSite::Parameter,
+                    Symbol::intern("value"),
+                ),
+                (
+                    ValueKind::Identity,
+                    KindCheckSite::Parameter,
+                    Symbol::intern("target"),
+                ),
+            ]
+        );
+        assert!(matches!(
+            installed.compiled.program.instructions().first(),
+            Some(Instruction::CheckKind {
+                expected: ValueKind::String,
+                site: KindCheckSite::Parameter,
+                ..
+            })
+        ));
+        let param_rows = kernel
+            .snapshot()
+            .scan(
+                dispatch_relations().dispatch.param,
+                &[Some(Value::identity(method)), None, None, None],
+            )
+            .unwrap();
+        assert_eq!(param_rows.len(), 2);
+        assert!(param_rows.contains(&Tuple::from([
+            Value::identity(method),
+            Value::symbol(Symbol::intern("value")),
+            Value::identity(string),
+            Value::int(0).unwrap(),
+        ])));
+        assert!(param_rows.contains(&Tuple::from([
+            Value::identity(method),
+            Value::symbol(Symbol::intern("target")),
+            Value::identity(identity),
+            Value::int(1).unwrap(),
+        ])));
+    }
+
+    #[test]
+    fn installed_verb_result_annotations_are_proof_only() {
+        let method = id(100);
+        let program = id(101);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+        let context = CompileContext::new()
+            .with_method_relations(dispatch_relations())
+            .with_identity("typed_verb", method)
+            .with_program_identity("typed_verb", program);
+
+        let mut semantic = parse_semantic(
+            "verb typed(value: int) -> int\n\
+               return value + 1\n\
+             end",
+        );
+        assign_test_method_identity(&mut semantic, "typed_verb");
+        let mut tx = kernel.begin();
+        let installation = install_methods(semantic, &context, &mut tx).unwrap();
+        let instructions = installation.methods[0].compiled.program.instructions();
+        assert!(matches!(instructions[0], Instruction::CheckKind { .. }));
+        let return_index = instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::Return { .. }))
+            .expect("compiled verb returns");
+        assert!(!matches!(
+            instructions.get(return_index.saturating_sub(1)),
+            Some(Instruction::CheckKind { .. })
+        ));
+        assert_eq!(
+            count_kind_checks(&installation.methods[0].compiled.program),
+            1
+        );
+
+        let mut semantic = parse_semantic(
+            "verb typed(value: int) -> string\n\
+               return value\n\
+             end",
+        );
+        assign_test_method_identity(&mut semantic, "typed_verb");
+        let mut tx = kernel.begin();
+        assert!(matches!(
+            install_methods(semantic, &context, &mut tx),
+            Err(CompileError::VerbResultKindMismatch {
+                selector,
+                expected: ValueKind::String,
+                inferred,
+                ..
+            }) if selector == "typed" && inferred == "int"
+        ));
+    }
+
+    #[test]
+    fn installed_parameter_names_do_not_shadow_runtime_calls() {
+        let method = id(100);
+        let program = id(101);
+        let kernel = RelationKernel::new();
+        create_method_relations(&kernel);
+        let context = CompileContext::new()
+            .with_method_relations(dispatch_relations())
+            .with_identity("endpoint_probe", method)
+            .with_program_identity("endpoint_probe", program)
+            .with_runtime_function("endpoint");
+        let mut semantic = parse_semantic(
+            "verb probe(endpoint)\n\
+               return [endpoint, endpoint()]\n\
+             end",
+        );
+        assign_test_method_identity(&mut semantic, "endpoint_probe");
+        let mut tx = kernel.begin();
+        let installation = install_methods(semantic, &context, &mut tx).unwrap();
+
+        assert!(
+            installation.methods[0]
+                .compiled
+                .program
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(
+                    instruction,
+                    Instruction::BuiltinCall { name, .. }
+                        if *name == Symbol::intern("endpoint")
+                ))
         );
     }
 

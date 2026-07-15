@@ -13,9 +13,9 @@
 
 use crate::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, CstElement,
-    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, LoopBinding, MethodKind,
-    MethodParam, NodeId, Param, ParamMode, ParseError, RecoveryClause, ScatterBinding, SyntaxKind,
-    UnaryOp, ValueKindRef, parse,
+    CstNode, CstToken, DispatchRestriction, EffectKind, Expr, FunctionBody, Item, Literal,
+    LoopBinding, MethodKind, MethodParam, NodeId, Param, ParamMode, ParseError, RecoveryClause,
+    ScatterBinding, Span, SyntaxKind, UnaryOp, ValueKindRef, parse,
 };
 use base64::{Engine, engine::general_purpose};
 
@@ -104,18 +104,15 @@ impl<'a> Lower<'a> {
         let header = self
             .node_children(node)
             .find(|child| child.kind == SyntaxKind::MethodHeader);
-        let (identity, selector, header_params) = header
-            .map(|header| match kind {
-                MethodKind::Method => {
-                    let (identity, selector) = self.lower_method_header(header);
-                    (identity, selector, Vec::new())
-                }
-                MethodKind::Verb => self.lower_verb_header(header),
-            })
-            .unwrap_or((None, None, Vec::new()));
-        let clauses = self
+        let verb_header = self
+            .node_children(node)
+            .find(|child| child.kind == SyntaxKind::VerbHeader);
+        let clause_nodes = self
             .node_children(node)
             .filter(|child| child.kind == SyntaxKind::MethodClause)
+            .collect::<Vec<_>>();
+        let clauses = clause_nodes
+            .iter()
             .map(|child| self.text(child.span.clone()).trim().to_owned())
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>();
@@ -125,10 +122,20 @@ impl<'a> Lower<'a> {
                 "value-kind annotations are not supported in method parameters yet; dispatch restrictions use `name @ #prototype`",
             );
         }
-        let params = if matches!(kind, MethodKind::Verb) {
-            header_params
-        } else {
-            lower_method_params(&clauses)
+        let (identity, selector, params, result_kind) = match kind {
+            MethodKind::Method => {
+                let (identity, selector) = header
+                    .map(|header| self.lower_method_header(header))
+                    .unwrap_or((None, None));
+                let params = clause_nodes
+                    .iter()
+                    .flat_map(|clause| self.lower_method_clause_params(clause))
+                    .collect();
+                (identity, selector, params, None)
+            }
+            MethodKind::Verb => verb_header
+                .map(|header| self.lower_verb_header(header))
+                .unwrap_or((None, None, Vec::new(), None)),
         };
         let body = self
             .node_children(node)
@@ -143,6 +150,7 @@ impl<'a> Lower<'a> {
             selector,
             clauses,
             params,
+            result_kind,
             body,
         }
     }
@@ -160,33 +168,83 @@ impl<'a> Lower<'a> {
     fn lower_verb_header(
         &mut self,
         node: &CstNode,
-    ) -> (Option<String>, Option<String>, Vec<MethodParam>) {
-        let raw_text = self.text(node.span.clone());
-        let leading_trim = raw_text.len() - raw_text.trim_start().len();
-        let text = raw_text.trim().to_owned();
-        let selector = text
-            .chars()
-            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '/')
-            .collect::<String>();
-        let selector = (!selector.is_empty()).then_some(selector);
-        let param_text = text
-            .split_once('(')
-            .and_then(|(_, rest)| rest.rsplit_once(')').map(|(params, _)| params));
-        if param_text.is_some_and(|params| params.contains(':')) {
-            self.error(
-                node,
-                "value-kind annotations are not supported in verb parameters yet; dispatch restrictions use `name @ #prototype`",
-            );
-        }
-        let params = param_text
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Vec<MethodParam>,
+        Option<ValueKindRef>,
+    ) {
+        let selector = qualified_name_from_tokens(
+            self.source,
+            &self.token_children(node).collect::<Vec<_>>(),
+            0,
+        );
+        let params = self
+            .node_children(node)
+            .find(|child| child.kind == SyntaxKind::VerbParamList)
             .map(|params| {
-                let params_start = node.span.start
-                    + leading_trim
-                    + text.find('(').map(|offset| offset + 1).unwrap_or(0);
-                parse_method_param_list(params, params_start)
+                self.node_children(params)
+                    .filter(|child| child.kind == SyntaxKind::VerbParam)
+                    .map(|param| self.lower_verb_param(param))
+                    .collect()
             })
             .unwrap_or_default();
-        (None, selector, params)
+        let result_kind = self
+            .node_children(node)
+            .find(|child| child.kind == SyntaxKind::ValueKindRef)
+            .map(|kind| self.lower_kind_ref(kind));
+        (None, selector, params, result_kind)
+    }
+
+    fn lower_verb_param(&mut self, node: &CstNode) -> MethodParam {
+        MethodParam {
+            id: self.node_id(),
+            name: self.first_text(node, SyntaxKind::Ident).unwrap_or_default(),
+            restriction: self
+                .node_children(node)
+                .find(|child| child.kind == SyntaxKind::DispatchRestriction)
+                .map(|restriction| self.lower_dispatch_restriction(restriction)),
+            annotation: self
+                .node_children(node)
+                .find(|child| child.kind == SyntaxKind::ValueKindRef)
+                .map(|kind| self.lower_kind_ref(kind)),
+            span: node.span.clone(),
+        }
+    }
+
+    fn lower_dispatch_restriction(&self, node: &CstNode) -> DispatchRestriction {
+        let tokens = self.token_children(node).collect::<Vec<_>>();
+        DispatchRestriction {
+            prototype: tokens
+                .iter()
+                .position(|token| token.kind == SyntaxKind::Hash)
+                .and_then(|hash| qualified_name_from_tokens(self.source, &tokens, hash + 1))
+                .unwrap_or_default(),
+            frob_only: tokens.iter().any(|token| token.kind == SyntaxKind::Lt),
+            span: node.span.clone(),
+        }
+    }
+
+    fn lower_method_clause_params(&mut self, node: &CstNode) -> Vec<MethodParam> {
+        let raw = self.text(node.span.clone());
+        let leading = raw.len() - raw.trim_start().len();
+        let mut text = raw.trim_start();
+        let mut offset = node.span.start + leading;
+        if let Some(rest) = text.strip_prefix("roles") {
+            let whitespace = rest.len() - rest.trim_start().len();
+            text = rest.trim_start();
+            offset += "roles".len() + whitespace;
+        }
+        parse_method_param_list(text, offset)
+            .into_iter()
+            .map(|param| MethodParam {
+                id: self.node_id(),
+                name: param.name,
+                restriction: param.restriction,
+                annotation: None,
+                span: param.span,
+            })
+            .collect()
     }
 
     fn lower_expr(&mut self, node: &CstNode) -> Expr {
@@ -1397,19 +1455,6 @@ fn decode_bytes_literal(text: &str) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("invalid bytes literal: invalid base64: {error}"))
 }
 
-fn lower_method_params(clauses: &[String]) -> Vec<MethodParam> {
-    let mut params = Vec::new();
-    for clause in clauses {
-        let clause = clause.trim();
-        let clause = clause.strip_prefix("roles").unwrap_or(clause).trim();
-        if clause.is_empty() {
-            continue;
-        }
-        params.extend(parse_method_param_list(clause, 0));
-    }
-    params
-}
-
 fn method_clauses_use_colon_params(clauses: &[String]) -> bool {
     clauses
         .iter()
@@ -1418,7 +1463,14 @@ fn method_clauses_use_colon_params(clauses: &[String]) -> bool {
         .any(|clause| clause.contains(':'))
 }
 
-fn parse_method_param_list(text: &str, base_offset: usize) -> Vec<MethodParam> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ParsedMethodParam {
+    name: String,
+    restriction: Option<DispatchRestriction>,
+    span: Span,
+}
+
+fn parse_method_param_list(text: &str, base_offset: usize) -> Vec<ParsedMethodParam> {
     let mut params = Vec::new();
     let mut start = 0;
     for part in text.split(',') {
@@ -1430,14 +1482,14 @@ fn parse_method_param_list(text: &str, base_offset: usize) -> Vec<MethodParam> {
     params
 }
 
-fn parse_method_param(part: &str, base_offset: usize) -> Option<MethodParam> {
+fn parse_method_param(part: &str, base_offset: usize) -> Option<ParsedMethodParam> {
     let leading_trim = part.len() - part.trim_start().len();
     let part = part.trim();
     let part_offset = base_offset + leading_trim;
     if part.is_empty() || part.contains(':') {
         return None;
     }
-    let (name, restriction, restriction_span) = match part.split_once('@') {
+    let (name, restriction) = match part.split_once('@') {
         Some((name, restriction)) => {
             let restriction_start = part_offset + name.len() + 1;
             let restriction_leading_trim = restriction.len() - restriction.trim_start().len();
@@ -1447,20 +1499,31 @@ fn parse_method_param(part: &str, base_offset: usize) -> Option<MethodParam> {
             if restriction.is_empty() {
                 return None;
             }
-            let restriction_span =
-                restriction_span_start..restriction_span_start + 1 + restriction.len();
-            (name, Some(restriction.to_owned()), Some(restriction_span))
+            let (prototype, frob_only) = restriction
+                .strip_suffix("<_>")
+                .map_or((restriction, false), |prototype| (prototype.trim(), true));
+            if prototype.is_empty() {
+                return None;
+            }
+            (
+                name,
+                Some(DispatchRestriction {
+                    prototype: prototype.to_owned(),
+                    frob_only,
+                    span: restriction_span_start..restriction_span_start + 1 + restriction.len(),
+                }),
+            )
         }
-        None => (part, None, None),
+        None => (part, None),
     };
     let name = name.split_whitespace().last().unwrap_or_default().trim();
     if name.is_empty() {
         return None;
     }
-    Some(MethodParam {
+    Some(ParsedMethodParam {
         name: name.to_owned(),
         restriction,
-        restriction_span,
+        span: part_offset..part_offset + part.len(),
     })
 }
 
@@ -1877,7 +1940,7 @@ mod tests {
             Item::Method { identity, selector, params, body, .. }
                 if identity.as_deref() == Some("ui/examine_method")
                     && selector.as_deref() == Some("ui/examine")
-                    && params[0].restriction.as_deref() == Some("ui/player")
+                    && params[0].restriction.as_ref().map(|restriction| restriction.prototype.as_str()) == Some("ui/player")
                     && matches!(&body[0], Item::Expr { expr: Expr::Return { value: Some(value), .. }, .. }
                         if matches!(&**value, Expr::Symbol { name, .. } if name == "ui/ok"))
         ));
@@ -1885,7 +1948,7 @@ mod tests {
             &ast.items[4],
             Item::Method { kind: MethodKind::Verb, selector, params, .. }
                 if selector.as_deref() == Some("ui/look")
-                    && params[0].restriction.as_deref() == Some("ui/player")
+                    && params[0].restriction.as_ref().map(|restriction| restriction.prototype.as_str()) == Some("ui/player")
         ));
     }
 
@@ -1935,7 +1998,13 @@ mod tests {
         assert_eq!(clauses.len(), 1);
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].name, "actor");
-        assert_eq!(params[0].restriction.as_deref(), Some("player"));
+        assert_eq!(
+            params[0]
+                .restriction
+                .as_ref()
+                .map(|restriction| restriction.prototype.as_str()),
+            Some("player")
+        );
         assert!(matches!(
             &body[0],
             Item::Expr {
@@ -1950,17 +2019,16 @@ mod tests {
 
     #[test]
     fn lowers_verb_header_roles() {
-        let ast = parse_ast(
-            "verb get(actor @ #player, item @ #thing)\n\
-               return true\n\
-             end",
-        );
+        let source =
+            "verb get(actor @ #player: identity, item @ #thing<_>) -> bool\n  return true\nend";
+        let ast = parse_ast(source);
         assert_eq!(ast.errors, vec![]);
         let Item::Method {
             kind,
             identity,
             selector,
             params,
+            result_kind,
             body,
             ..
         } = &ast.items[0]
@@ -1972,9 +2040,36 @@ mod tests {
         assert_eq!(selector.as_deref(), Some("get"));
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].name, "actor");
-        assert_eq!(params[0].restriction.as_deref(), Some("player"));
+        assert_eq!(
+            params[0]
+                .restriction
+                .as_ref()
+                .map(|restriction| restriction.prototype.as_str()),
+            Some("player")
+        );
+        assert_eq!(
+            params[0].annotation.as_ref().map(|kind| kind.name.as_str()),
+            Some("identity")
+        );
         assert_eq!(params[1].name, "item");
-        assert_eq!(params[1].restriction.as_deref(), Some("thing"));
+        assert_eq!(
+            params[1]
+                .restriction
+                .as_ref()
+                .map(|restriction| restriction.prototype.as_str()),
+            Some("thing")
+        );
+        assert!(params[1].restriction.as_ref().unwrap().frob_only);
+        assert_eq!(
+            result_kind.as_ref().map(|kind| kind.name.as_str()),
+            Some("bool")
+        );
+        for kind in [params[0].annotation.as_ref(), result_kind.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            assert_eq!(&source[kind.span.clone()], kind.name);
+        }
         assert_eq!(body.len(), 1);
     }
 
@@ -1990,13 +2085,19 @@ mod tests {
             panic!("expected verb");
         };
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0].restriction.as_deref(), Some("player"));
+        assert_eq!(
+            params[0]
+                .restriction
+                .as_ref()
+                .map(|restriction| restriction.prototype.as_str()),
+            Some("player")
+        );
         assert_eq!(params[1].name, "message");
         assert_eq!(params[1].restriction, None);
     }
 
     #[test]
-    fn rejects_colon_method_param_restrictions() {
+    fn rejects_identity_literals_as_value_kind_annotations() {
         let verb = parse_ast(
             "verb say(actor: #player, message)\n\
                emit(actor, message)\n\
@@ -2005,7 +2106,7 @@ mod tests {
         assert!(
             verb.errors
                 .iter()
-                .any(|error| error.message.contains("name @ #prototype"))
+                .any(|error| error.message.contains("expected value kind"))
         );
 
         let method = parse_ast(
@@ -2237,7 +2338,8 @@ mod tests {
                     collect_expr_ids(expr, ids);
                 }
             }
-            Item::Method { body, .. } => {
+            Item::Method { params, body, .. } => {
+                ids.extend(params.iter().map(|param| param.id));
                 for item in body {
                     collect_item_ids(item, ids);
                 }

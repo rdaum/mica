@@ -2236,6 +2236,19 @@ fn shift_compile_error(error: CompileError, offset: usize) -> CompileError {
             expected,
             inferred,
         },
+        CompileError::VerbResultKindMismatch {
+            node,
+            span,
+            selector,
+            expected,
+            inferred,
+        } => CompileError::VerbResultKindMismatch {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            selector,
+            expected,
+            inferred,
+        },
         CompileError::ParameterKindMismatch {
             node,
             span,

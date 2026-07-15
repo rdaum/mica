@@ -1,7 +1,7 @@
 use super::{
     AuthorityContext, CompileError, Emission, Instruction, Operand, Program, RuntimeError,
     SYSTEM_ENDPOINT, SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind, TaskError,
-    TaskManagerError, TaskOutcome, endpoint_open_relation,
+    TaskManagerError, TaskOutcome, endpoint_open_relation, param_relation,
 };
 use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
 use super::{relation_name_relation, subject_fact_relation};
@@ -778,6 +778,96 @@ fn annotated_scatter_bindings_handle_defaults_and_rest_values() {
                 Value::int(2).unwrap(),
                 Value::list([]),
             ])
+    ));
+}
+
+#[test]
+fn installed_verb_annotations_check_after_dispatch_without_fallback() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source(
+            "verb typed(value)\n\
+               return \"fallback\"\n\
+             end\n\
+             verb typed(value @ #string: int)\n\
+               return \"specific\"\n\
+             end",
+        )
+        .unwrap();
+
+    let report = runner
+        .run_source(
+            "try\n\
+               return :typed(value: \"wrong\")\n\
+             catch E_TYPE as err\n\
+               return [err.message, err.value]\n\
+             end",
+        )
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::string("parameter `value` requires int, got string"),
+                Value::string("wrong"),
+            ])
+    ));
+
+    let report = runner.run_source("return :typed(value: 7)").unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("fallback")
+    ));
+}
+
+#[test]
+fn installed_verb_annotations_preserve_primitive_restriction_facts() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source(
+            "verb echo_text(value @ #string: string) -> string\n\
+               return value\n\
+             end\n\
+             verb echo_identity(value @ #identity: identity) -> identity\n\
+               return value\n\
+             end",
+        )
+        .unwrap();
+
+    let rows = runner
+        .task_manager
+        .kernel()
+        .snapshot()
+        .scan(
+            param_relation(),
+            &[
+                None,
+                Some(Value::symbol(Symbol::intern("value"))),
+                None,
+                None,
+            ],
+        )
+        .unwrap();
+    let string = Value::identity(runner.context.identity("string").unwrap());
+    let identity = Value::identity(runner.context.identity("identity").unwrap());
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().any(|row| row.values()[2] == string));
+    assert!(rows.iter().any(|row| row.values()[2] == identity));
+
+    runner.run_source("make_identity(:typed_target)").unwrap();
+    let text = runner
+        .run_source("return :echo_text(value: \"hello\")")
+        .unwrap();
+    assert!(matches!(
+        text.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("hello")
+    ));
+    let identity = runner
+        .run_source("return :echo_identity(value: #typed_target)")
+        .unwrap();
+    assert!(matches!(
+        identity.outcome,
+        TaskOutcome::Complete { value, .. } if value.as_identity().is_some()
     ));
 }
 

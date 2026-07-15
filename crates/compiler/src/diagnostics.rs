@@ -162,6 +162,20 @@ pub fn compile_error_diagnostics(error: &CompileError) -> Vec<CompileDiagnostic>
                 span.clone(),
             )]
         }
+        CompileError::VerbResultKindMismatch {
+            selector,
+            expected,
+            inferred,
+            span,
+            ..
+        } => vec![span_report(
+            "verb result kind mismatch",
+            &format!(
+                "result of verb `{selector}` requires {}, but its normal exits produce {inferred}",
+                expected.name()
+            ),
+            span.clone(),
+        )],
         CompileError::ParameterKindMismatch {
             parameter,
             expected,

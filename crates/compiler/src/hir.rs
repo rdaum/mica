@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    BinaryOp, BindingId, BindingKind, EffectKind, Literal, LocalKind, MethodKind, MethodParam,
-    NodeId, ParamMode, ResolvedName, ScopeId, Span, UnaryOp,
+    BinaryOp, BindingId, BindingKind, DispatchRestriction, EffectKind, Literal, LocalKind,
+    MethodKind, NodeId, ParamMode, ResolvedName, ScopeId, Span, UnaryOp,
 };
 use mica_var::ValueKind;
 
@@ -39,7 +39,8 @@ pub enum HirItem {
         identity: Option<String>,
         selector: Option<String>,
         clauses: Vec<String>,
-        params: Vec<MethodParam>,
+        params: Vec<HirMethodParam>,
+        result_kind: Option<ValueKind>,
         scope: ScopeId,
         body: Vec<HirItem>,
     },
@@ -269,6 +270,14 @@ pub struct HirParam {
     pub kind: LocalKind,
     pub declared_kind: Option<ValueKind>,
     pub default: Option<HirExpr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirMethodParam {
+    pub id: NodeId,
+    pub binding: BindingId,
+    pub restriction: Option<DispatchRestriction>,
+    pub declared_kind: Option<ValueKind>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

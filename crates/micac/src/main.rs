@@ -430,7 +430,7 @@ mod tests {
         let root = temp_root("diagnostics");
         fs::create_dir_all(&root).unwrap();
         let filein = root.join("bad.mica");
-        fs::write(&filein, "verb\n").unwrap();
+        fs::write(&filein, "verb test()\n").unwrap();
 
         let cli = test_cli(vec![filein], None, true);
         let error = run(&cli).unwrap_err();

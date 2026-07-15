@@ -51,6 +51,7 @@ pub enum Item {
         selector: Option<String>,
         clauses: Vec<String>,
         params: Vec<MethodParam>,
+        result_kind: Option<ValueKindRef>,
         body: Vec<Item>,
     },
 }
@@ -71,9 +72,18 @@ pub enum MethodKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MethodParam {
+    pub id: NodeId,
     pub name: String,
-    pub restriction: Option<String>,
-    pub restriction_span: Option<Span>,
+    pub restriction: Option<DispatchRestriction>,
+    pub annotation: Option<ValueKindRef>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DispatchRestriction {
+    pub prototype: String,
+    pub frob_only: bool,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
