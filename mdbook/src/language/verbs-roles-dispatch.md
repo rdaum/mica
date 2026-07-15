@@ -70,6 +70,19 @@ end
 The exact primitive prototypes are part of the standard environment, not ordinary durable objects
 created by user code.
 
+A verb parameter may also have a [value-kind annotation](./value-kind-annotations.md), written after
+its dispatch restriction when both are present:
+
+```mica
+verb words(text @ #string: string) -> list
+  return [text]
+end
+```
+
+The `@ #string` restriction participates in method selection. The `: string` annotation checks the
+selected method's parameter value and does not make that method more or less applicable. The result
+annotation proves the kind of every normal result; it does not add a dispatch restriction.
+
 The same model works for agent workflows:
 
 ```mica

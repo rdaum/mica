@@ -31,6 +31,10 @@ const limit = 10
 Use `let` for values that are built up over time. Use `const` when a name is a local fact about the
 current body.
 
+Bindings, function boundaries, loop bindings, and scatter bindings may have exact
+[value-kind annotations](./value-kind-annotations.md). An annotation constrains the value stored at
+that boundary; it does not convert the value.
+
 Scatter binding can destructure list-like values:
 
 ```mica

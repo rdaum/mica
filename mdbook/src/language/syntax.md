@@ -24,6 +24,18 @@ fn describe(item)
 end
 ```
 
+Bindings and `fn` parameters and results may name one exact runtime value kind:
+
+```mica
+let count: int = 0
+let [head: string, @tail: list] = values
+
+fn add(left: int, right: int) -> int => left + right
+```
+
+Annotations check kinds without converting values. See
+[Value-Kind Annotations](./value-kind-annotations.md) for the supported boundaries and kinds.
+
 ## Collections
 
 ```mica
@@ -150,6 +162,10 @@ end
 ```mica
 verb get(actor @ #player, item @ #thing)
   return true
+end
+
+verb echo(value @ #string: string) -> string
+  return value
 end
 
 :get(actor: #alice, item: #coin)
