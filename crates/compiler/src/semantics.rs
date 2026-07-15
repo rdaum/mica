@@ -140,6 +140,7 @@ pub enum DiagnosticCode {
     InvalidAssignmentTarget,
     InvalidFactChange,
     InvalidRelationRule,
+    MissingValueKindInitializer,
     UnknownValueKind,
     UnsupportedValueKindAnnotation,
     UnsupportedSyntax,
@@ -958,7 +959,17 @@ impl<'a> Analyzer<'a> {
                 value,
             } => {
                 let declared_kind =
-                    self.resolve_kind_ref(annotation.as_ref(), *id, "ordinary bindings");
+                    self.resolve_kind_ref(annotation.as_ref(), *id, "ordinary bindings", true);
+                if declared_kind.is_some() && value.is_none() {
+                    self.diagnostic(
+                        DiagnosticCode::MissingValueKindInitializer,
+                        *id,
+                        annotation
+                            .as_ref()
+                            .map_or_else(|| span.clone(), |annotation| annotation.span.clone()),
+                        "annotated bindings require an initializer",
+                    );
+                }
                 let hir_value = value
                     .as_ref()
                     .map(|value| Box::new(self.lower_expr(value, scope)));
@@ -1141,7 +1152,7 @@ impl<'a> Analyzer<'a> {
                 body,
             } => {
                 let result_kind =
-                    self.resolve_kind_ref(result_kind.as_ref(), *id, "function results");
+                    self.resolve_kind_ref(result_kind.as_ref(), *id, "function results", false);
                 let name = name.as_ref().map(|name| {
                     self.declare(scope, name.clone(), LocalKind::Function, None, *id, span)
                 });
@@ -1222,7 +1233,7 @@ impl<'a> Analyzer<'a> {
                     ParamMode::Rest => LocalKind::RestParam,
                 };
                 let declared_kind =
-                    self.resolve_kind_ref(param.annotation.as_ref(), param.id, "parameters");
+                    self.resolve_kind_ref(param.annotation.as_ref(), param.id, "parameters", false);
                 let binding = self.declare(
                     scope,
                     param.name.clone(),
@@ -1433,6 +1444,7 @@ impl<'a> Analyzer<'a> {
         annotation: Option<&ValueKindRef>,
         node: NodeId,
         boundary: &str,
+        enforced: bool,
     ) -> Option<ValueKind> {
         let annotation = annotation?;
         let Some(kind) = value_kind_from_name(&annotation.name) else {
@@ -1444,12 +1456,14 @@ impl<'a> Analyzer<'a> {
             );
             return None;
         };
-        self.diagnostic(
-            DiagnosticCode::UnsupportedValueKindAnnotation,
-            node,
-            annotation.span.clone(),
-            format!("value-kind annotations on {boundary} are not yet enforced"),
-        );
+        if !enforced {
+            self.diagnostic(
+                DiagnosticCode::UnsupportedValueKindAnnotation,
+                node,
+                annotation.span.clone(),
+                format!("value-kind annotations on {boundary} are not yet enforced"),
+            );
+        }
         Some(kind)
     }
 
@@ -1760,7 +1774,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_every_runtime_value_kind_annotation() {
+    fn enables_every_runtime_value_kind_on_ordinary_bindings() {
         let source = [
             "let v_bool: bool = nothing",
             "let v_int: int = nothing",
@@ -1807,10 +1821,22 @@ mod tests {
                 ValueKind::Relation,
             ]
         );
-        assert_eq!(program.diagnostics.len(), 16);
-        assert!(program.diagnostics.iter().all(|diagnostic| {
-            diagnostic.code == DiagnosticCode::UnsupportedValueKindAnnotation
-        }));
+        assert_eq!(program.diagnostics, vec![]);
+    }
+
+    #[test]
+    fn annotated_bindings_require_an_initializer() {
+        let program = parse_ok("let count: int");
+
+        assert_eq!(program.diagnostics.len(), 1);
+        assert_eq!(
+            program.diagnostics[0].code,
+            DiagnosticCode::MissingValueKindInitializer
+        );
+        assert_eq!(
+            program.diagnostics[0].message,
+            "annotated bindings require an initializer"
+        );
     }
 
     #[test]

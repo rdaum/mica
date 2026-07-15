@@ -128,6 +128,20 @@ pub fn compile_error_diagnostics(error: &CompileError) -> Vec<CompileDiagnostic>
             &format!("unbound local binding {:?}", binding),
             span.clone(),
         )],
+        CompileError::ValueKindMismatch {
+            subject,
+            expected,
+            inferred,
+            span,
+            ..
+        } => vec![span_report(
+            "value-kind mismatch",
+            &format!(
+                "binding `{subject}` requires {}, but this expression produces {inferred}",
+                expected.name()
+            ),
+            span.clone(),
+        )],
         CompileError::Runtime(error) => {
             vec![message_report("runtime error", &format!("{error:?}"))]
         }

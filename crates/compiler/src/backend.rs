@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::kinds::{KindInference, KindSet};
 use crate::{
     BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCatch, HirCollectionItem, HirExpr,
     HirFunctionBody, HirItem, HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem,
@@ -21,10 +22,11 @@ use mica_relation_kernel::{
     Atom, ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Rule,
     RuleBodyItem, RuleComparisonOp, RuleDefinition, RuleGuard, Term, Transaction, Tuple,
 };
-use mica_var::{Identity, Symbol, Value, ValueError};
+use mica_var::{Identity, Symbol, Value, ValueError, ValueKind};
 use mica_vm::{
-    CatchHandler, ErrorField, Instruction, ListItem, MapItem, Operand, Program, ProgramBuilder,
-    QueryBinding, Register, RelationArg, RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp,
+    CatchHandler, ErrorField, Instruction, KindCheckSite, ListItem, MapItem, Operand, Program,
+    ProgramBuilder, QueryBinding, Register, RelationArg, RuntimeBinaryOp, RuntimeError,
+    RuntimeUnaryOp,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -425,6 +427,13 @@ pub enum CompileError {
         node: NodeId,
         span: Option<Span>,
         binding: BindingId,
+    },
+    ValueKindMismatch {
+        node: NodeId,
+        span: Option<Span>,
+        subject: String,
+        expected: ValueKind,
+        inferred: String,
     },
     Runtime(RuntimeError),
     Kernel(mica_relation_kernel::KernelError),
@@ -1450,6 +1459,7 @@ impl<'a> ProgramCompiler<'a> {
                         self.functions.insert(binding, function.clone());
                     }
                     let dst = self.emit_function_value(*id, function)?;
+                    self.enforce_binding_kind(*id, binding, value, dst)?;
                     self.locals.insert(binding, dst);
                     return Ok(dst);
                 }
@@ -1465,6 +1475,9 @@ impl<'a> ProgramCompiler<'a> {
                     }
                 };
                 if let Some(binding) = binding {
+                    if let Some(value) = value.as_deref() {
+                        self.enforce_binding_kind(*id, *binding, value, dst)?;
+                    }
                     self.locals.insert(*binding, dst);
                 } else {
                     return Err(self.unsupported(
@@ -1475,7 +1488,8 @@ impl<'a> ProgramCompiler<'a> {
                 Ok(dst)
             }
             HirExpr::Assign { id, target, value } => {
-                let value = self.compile_expr_for_value(value)?;
+                let value_expr = value.as_ref();
+                let value = self.compile_expr_for_value(value_expr)?;
                 match target {
                     HirPlace::Local { binding, .. } => {
                         let dst = self.locals.get(binding).copied().ok_or_else(|| {
@@ -1485,6 +1499,7 @@ impl<'a> ProgramCompiler<'a> {
                                 binding: *binding,
                             }
                         })?;
+                        self.enforce_binding_kind(*id, *binding, value_expr, value)?;
                         self.emit(Instruction::Move { dst, src: value });
                         Ok(dst)
                     }
@@ -4435,6 +4450,43 @@ impl<'a> ProgramCompiler<'a> {
             .map_err(internal_bytecode_error)
     }
 
+    fn enforce_binding_kind(
+        &mut self,
+        node: NodeId,
+        binding: BindingId,
+        source: &HirExpr,
+        value: Register,
+    ) -> Result<(), CompileError> {
+        let binding = &self.semantic.bindings[binding.as_u32() as usize];
+        let Some(expected) = binding.declared_kind else {
+            return Ok(());
+        };
+        let inferred = KindInference::new(&self.semantic.bindings).expr(source);
+        let declared = KindSet::exact(expected);
+        if inferred.is_subset(declared) {
+            return Ok(());
+        }
+        if inferred.is_disjoint(declared) {
+            let inferred = inferred
+                .singleton()
+                .map_or_else(|| inferred.names(), |kind| kind.name().to_owned());
+            return Err(CompileError::ValueKindMismatch {
+                node,
+                span: self.span(node),
+                subject: binding.name.clone(),
+                expected,
+                inferred,
+            });
+        }
+        self.emit(Instruction::CheckKind {
+            value,
+            expected,
+            site: KindCheckSite::Binding,
+            subject: Symbol::intern(&binding.name),
+        });
+        Ok(())
+    }
+
     fn unsupported(&self, node: NodeId, message: impl Into<String>) -> CompileError {
         CompileError::Unsupported {
             node,
@@ -4502,6 +4554,20 @@ mod tests {
 
     fn id(raw: u64) -> Identity {
         Identity::new(raw).unwrap()
+    }
+
+    fn count_kind_checks(program: &Program) -> usize {
+        program
+            .instructions()
+            .iter()
+            .map(|instruction| match instruction {
+                Instruction::CheckKind { .. } => 1,
+                Instruction::LoadFunction { program, .. } | Instruction::Call { program, .. } => {
+                    count_kind_checks(program)
+                }
+                _ => 0,
+            })
+            .sum()
     }
 
     fn emitted(value: Value) -> Emission {
@@ -5357,6 +5423,197 @@ mod tests {
                 retries: 0,
             }
         );
+    }
+
+    #[test]
+    fn annotated_bindings_elide_proven_checks_and_reject_mismatches() {
+        let compiled = compile_source(
+            "let count: int = 1\n\
+             count = 2\n\
+             return count",
+            &CompileContext::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            compiled
+                .program
+                .instructions()
+                .iter()
+                .filter(|instruction| matches!(instruction, Instruction::CheckKind { .. }))
+                .count(),
+            0
+        );
+
+        assert!(matches!(
+            compile_source("let count: int = 1.0", &CompileContext::new()),
+            Err(CompileError::ValueKindMismatch {
+                subject,
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if subject == "count" && inferred == "float"
+        ));
+    }
+
+    #[test]
+    fn annotated_bindings_check_each_dynamic_write_once() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let compiled = compile_source(
+            "let count: int = opaque()\n\
+             count = opaque()\n\
+             return count",
+            &context,
+        )
+        .unwrap();
+        let checks = compiled
+            .program
+            .instructions()
+            .into_iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::CheckKind {
+                    expected,
+                    site,
+                    subject,
+                    ..
+                } => Some((expected, site, subject)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            checks,
+            vec![
+                (
+                    ValueKind::Int,
+                    KindCheckSite::Binding,
+                    Symbol::intern("count")
+                ),
+                (
+                    ValueKind::Int,
+                    KindCheckSite::Binding,
+                    Symbol::intern("count")
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn indexed_assignment_expressions_infer_the_updated_collection_kind() {
+        let compiled = compile_source(
+            "let items: list = [1]\n\
+             let updated: list = items[0] = 2\n\
+             return updated",
+            &CompileContext::new(),
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+        assert!(matches!(
+            compile_source(
+                "let items: list = [1]\nlet updated: int = items[0] = 2",
+                &CompileContext::new()
+            ),
+            Err(CompileError::ValueKindMismatch {
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if inferred == "list"
+        ));
+    }
+
+    #[test]
+    fn named_function_declaration_expressions_are_not_proven_function_values() {
+        let compiled = compile_source(
+            "let callback: function = fn inner() => 1\nreturn callback",
+            &CompileContext::new(),
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 1);
+    }
+
+    #[test]
+    fn annotated_bindings_prove_exact_constructed_value_kinds() {
+        let context = CompileContext::new().with_identity("alice", id(1));
+        let compiled = compile_source(
+            "const flag: bool = true
+             let count: int = 1
+             let ratio: float = 1.0
+             let actor: identity = #alice
+             let text: string = \"text\"
+             let data: bytes = b\"3q2-7w==\"
+             let label: symbol = :label
+             let code: error_code = E_TEST
+             let wrapped: frob = #alice<1>
+             let callback: function = fn() => 1
+             let items: list = [1]
+             let options: map = {:key -> 1}
+             let span: range = 1..2
+             let rows: relation = [:item] { [1] }
+             return rows",
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+    }
+
+    #[test]
+    fn annotated_bindings_check_control_flow_and_captured_writes() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let compiled = compile_source(
+            "let count: int = 0
+             if true
+               count = opaque()
+             end
+             while false
+               count = opaque()
+             end
+             let update = fn(value)
+               count = value
+             end
+             return update",
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 3);
+    }
+
+    #[test]
+    fn caught_errors_are_exact_error_values() {
+        let compiled = compile_source(
+            "try
+               raise E_TEST
+             catch E_TEST as err
+               let caught: error = err
+               return caught
+             end",
+            &CompileContext::new(),
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+    }
+
+    #[test]
+    fn capability_annotations_check_dynamic_ingress_without_conversion() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let compiled = compile_source("let grant: capability = opaque()", &context).unwrap();
+
+        assert!(matches!(
+            compiled.program.instructions().as_slice(),
+            [
+                Instruction::BuiltinCall { .. },
+                Instruction::CheckKind {
+                    expected: ValueKind::Capability,
+                    site: KindCheckSite::Binding,
+                    subject,
+                    ..
+                },
+                Instruction::Return { .. }
+            ] if *subject == Symbol::intern("grant")
+        ));
     }
 
     #[test]

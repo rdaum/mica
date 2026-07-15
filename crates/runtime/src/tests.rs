@@ -622,6 +622,80 @@ fn runner_from_literal_parses_to_literal_output() {
 }
 
 #[test]
+fn annotated_bindings_raise_catchable_type_errors_at_dynamic_writes() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "let count: int = 0
+             let update = fn(value)
+               count = value
+               return count
+             end
+             try
+               return update(\"wrong\")
+             catch E_TYPE as err
+               return err.value
+             end",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("wrong")
+    ));
+}
+
+#[test]
+fn annotated_relation_bindings_accept_dynamic_immediate_and_heap_values() {
+    let mut runner = SourceRunner::new_empty();
+
+    assert!(matches!(
+        runner
+            .run_source("let rows: relation = from_literal(\"nothing\")\nreturn rows")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::nothing()
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "let rows: relation = from_literal(\"[:item] {[1]}\")\nreturn rows"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == query_relation(["item"], [[Value::int(1).unwrap()]])
+    ));
+}
+
+#[test]
+fn annotated_integer_bindings_check_division_result_kinds() {
+    let mut runner = SourceRunner::new_empty();
+
+    assert!(matches!(
+        runner
+            .run_source("let quotient: int = 4 / 2\nreturn quotient")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(2).unwrap()
+    ));
+    assert!(matches!(
+        runner
+            .run_source(
+                "try
+                   let quotient: int = 3 / 2
+                   return quotient
+                 catch E_TYPE as err
+                   return err.value
+                 end"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::float(1.5).unwrap()
+    ));
+}
+
+#[test]
 fn relation_literals_construct_dynamic_empty_and_unit_relations() {
     let mut runner = SourceRunner::new_empty();
     let report = runner

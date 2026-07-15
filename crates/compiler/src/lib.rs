@@ -22,6 +22,7 @@ mod ast;
 mod backend;
 mod diagnostics;
 mod hir;
+mod kinds;
 mod lexer;
 mod lower;
 mod parser;
