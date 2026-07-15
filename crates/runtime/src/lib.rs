@@ -2210,6 +2210,19 @@ fn shift_compile_error(error: CompileError, offset: usize) -> CompileError {
             span: span.map(|span| shift_span(span, offset)),
             binding,
         },
+        CompileError::ValueKindMismatch {
+            node,
+            span,
+            subject,
+            expected,
+            inferred,
+        } => CompileError::ValueKindMismatch {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            subject,
+            expected,
+            inferred,
+        },
         CompileError::Runtime(error) => CompileError::Runtime(error),
         CompileError::Kernel(error) => CompileError::Kernel(error),
     }
