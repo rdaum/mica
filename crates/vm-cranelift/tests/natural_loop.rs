@@ -243,7 +243,9 @@ fn numeric_remainder_plan() -> NaturalLoopPlan {
 fn unboxed_integer_accumulator_matches_tagged_execution_without_helpers() {
     let limit = 4_096;
     let tagged = CompiledNaturalLoop::compile(&plan(limit)).unwrap();
-    let unboxed = CompiledNaturalLoop::compile(&unboxed_integer_plan(limit)).unwrap();
+    let unboxed_plan = unboxed_integer_plan(limit);
+    assert_eq!(unboxed_plan.unboxed_boolean_slots(), 1_u32 << CONDITION);
+    let unboxed = CompiledNaturalLoop::compile(&unboxed_plan).unwrap();
     let mut tagged_scratch = scratch(limit);
     let mut unboxed_scratch = tagged_scratch;
     let budget = u64::try_from(limit * 9).unwrap();
@@ -259,6 +261,19 @@ fn unboxed_integer_accumulator_matches_tagged_execution_without_helpers() {
     );
     assert_eq!(unboxed.imported_helper_count(), 0);
     assert!(unboxed.code_size() < tagged.code_size());
+}
+
+#[test]
+fn unboxed_integer_plan_rejects_overlapping_integer_and_boolean_state() {
+    let integer_slots = unboxed_integer_plan(4_096).unboxed_integer_slots();
+    let error = plan(4_096)
+        .with_unboxed_integer_slots(integer_slots | (1_u32 << CONDITION), 1_u32 << CURRENT)
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "natural loop cannot use the unboxed integer representation",
+    );
 }
 
 #[test]

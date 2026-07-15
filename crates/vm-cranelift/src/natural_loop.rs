@@ -281,6 +281,7 @@ pub struct NaturalLoopPlan {
     entry: u16,
     instructions: Box<[NaturalLoopInstruction]>,
     unboxed_integer_slots: u32,
+    unboxed_boolean_slots: u32,
     entry_integer_slots: u32,
 }
 
@@ -356,6 +357,7 @@ impl NaturalLoopPlan {
             entry,
             instructions,
             unboxed_integer_slots: 0,
+            unboxed_boolean_slots: 0,
             entry_integer_slots: 0,
         })
     }
@@ -380,8 +382,9 @@ impl NaturalLoopPlan {
                 "natural loop has an invalid unboxed integer slot layout".to_owned(),
             ));
         }
-        self.validate_unboxed_integer_instructions(slots, entry_slots)?;
+        let boolean_slots = self.validate_unboxed_integer_instructions(slots, entry_slots)?;
         self.unboxed_integer_slots = slots;
+        self.unboxed_boolean_slots = boolean_slots;
         self.entry_integer_slots = entry_slots;
         Ok(self)
     }
@@ -390,8 +393,16 @@ impl NaturalLoopPlan {
         &self,
         integer_slots: u32,
         entry_slots: u32,
-    ) -> Result<(), NaturalLoopError> {
+    ) -> Result<u32, NaturalLoopError> {
         let exit = u16::try_from(self.instructions.len()).expect("plan length is validated");
+        let boolean_slots = self
+            .instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                NaturalLoopInstruction::Compare { dst, .. } => Some(1_u32 << dst),
+                _ => None,
+            })
+            .fold(0_u32, |slots, slot| slots | slot);
         for (index, instruction) in self.instructions.iter().enumerate() {
             let valid = match *instruction {
                 NaturalLoopInstruction::Load { dst, value } => {
@@ -408,7 +419,8 @@ impl NaturalLoopPlan {
                 NaturalLoopInstruction::Compare {
                     dst, left, right, ..
                 } => {
-                    integer_slots & (1_u32 << dst) == 0
+                    boolean_slots & (1_u32 << dst) != 0
+                        && integer_slots & (1_u32 << dst) == 0
                         && integer_slots & (1_u32 << left) != 0
                         && integer_slots & (1_u32 << right) != 0
                 }
@@ -420,7 +432,7 @@ impl NaturalLoopPlan {
                     index.checked_add(1) == Some(usize::from(self.entry))
                         && if_true == self.entry
                         && if_false == exit
-                        && integer_slots & (1_u32 << condition) == 0
+                        && boolean_slots & (1_u32 << condition) != 0
                 }
                 NaturalLoopInstruction::Jump { target } => {
                     index.checked_add(1) == Some(self.instructions.len()) && target == 0
@@ -445,6 +457,7 @@ impl NaturalLoopPlan {
                 | NaturalLoopInstruction::Compare { left, right, .. } => {
                     (1_u32 << left) | (1_u32 << right)
                 }
+                NaturalLoopInstruction::Branch { condition, .. } => 1_u32 << condition,
                 _ => 0,
             };
             if reads & !defined != 0 {
@@ -455,12 +468,13 @@ impl NaturalLoopPlan {
             let write = match instruction {
                 NaturalLoopInstruction::Load { dst, .. }
                 | NaturalLoopInstruction::Move { dst, .. }
-                | NaturalLoopInstruction::Add { dst, .. } => 1_u32 << dst,
+                | NaturalLoopInstruction::Add { dst, .. }
+                | NaturalLoopInstruction::Compare { dst, .. } => 1_u32 << dst,
                 _ => 0,
             };
             defined |= write;
         }
-        Ok(())
+        Ok(boolean_slots)
     }
 
     pub const fn slot_count(&self) -> u16 {
@@ -473,6 +487,10 @@ impl NaturalLoopPlan {
 
     pub const fn unboxed_integer_slots(&self) -> u32 {
         self.unboxed_integer_slots
+    }
+
+    pub const fn unboxed_boolean_slots(&self) -> u32 {
+        self.unboxed_boolean_slots
     }
 
     fn requires_numeric_equal_helper(&self) -> bool {
@@ -939,22 +957,23 @@ impl CompiledNaturalLoop {
             .iter()
             .map(|_| builder.create_block())
             .collect::<Vec<_>>();
-        let branch_dispatch = plan
-            .instructions
-            .iter()
-            .map(|instruction| {
-                matches!(instruction, NaturalLoopInstruction::Branch { .. })
-                    .then(|| builder.create_block())
-            })
-            .collect::<Vec<_>>();
         let integer_slots = (0..plan.slot_count)
             .filter(|slot| plan.unboxed_integer_slots & (1_u32 << slot) != 0)
             .collect::<Vec<_>>();
-        let state_index = |slot: u16| {
+        let boolean_slots = (0..plan.slot_count)
+            .filter(|slot| plan.unboxed_boolean_slots & (1_u32 << slot) != 0)
+            .collect::<Vec<_>>();
+        let integer_index = |slot: u16| {
             integer_slots
                 .iter()
                 .position(|candidate| *candidate == slot)
                 .expect("unboxed instruction references an integer slot")
+        };
+        let boolean_index = |slot: u16| {
+            boolean_slots
+                .iter()
+                .position(|candidate| *candidate == slot)
+                .expect("unboxed instruction references a boolean slot")
         };
 
         builder.append_block_params_for_function_params(entry);
@@ -964,11 +983,17 @@ impl CompiledNaturalLoop {
             for _ in &integer_slots {
                 builder.append_block_param(*block, types::I64);
             }
+            for _ in &boolean_slots {
+                builder.append_block_param(*block, types::I8);
+            }
         }
         builder.append_block_param(complete, types::I64);
         builder.append_block_param(complete, types::I32);
         for _ in &integer_slots {
             builder.append_block_param(complete, types::I64);
+        }
+        for _ in &boolean_slots {
+            builder.append_block_param(complete, types::I8);
         }
         builder.append_block_param(budget_exhausted, types::I64);
         builder.append_block_param(budget_exhausted, types::I32);
@@ -976,13 +1001,8 @@ impl CompiledNaturalLoop {
         for _ in &integer_slots {
             builder.append_block_param(budget_exhausted, types::I64);
         }
-        for block in branch_dispatch.iter().flatten() {
-            builder.append_block_param(*block, types::I64);
-            builder.append_block_param(*block, types::I32);
-            builder.append_block_param(*block, types::I8);
-            for _ in &integer_slots {
-                builder.append_block_param(*block, types::I64);
-            }
+        for _ in &boolean_slots {
+            builder.append_block_param(budget_exhausted, types::I8);
         }
 
         builder.switch_to_block(entry);
@@ -1005,15 +1025,14 @@ impl CompiledNaturalLoop {
                 ValueEmitter::emit_unbox_int(&mut builder, word)
             })
             .collect::<Vec<_>>();
+        let boolean_state = boolean_slots
+            .iter()
+            .map(|_| builder.ins().iconst(types::I8, 0))
+            .collect::<Vec<_>>();
         let zero_instructions = builder.ins().iconst(types::I64, 0);
         let zero_slots = builder.ins().iconst(types::I32, 0);
         let mut entry_args = vec![zero_instructions.into(), zero_slots.into()];
-        entry_args.extend(
-            integer_state
-                .iter()
-                .copied()
-                .map(cranelift_codegen::ir::BlockArg::from),
-        );
+        Self::append_unboxed_state_args(&mut entry_args, &integer_state, &boolean_state);
         builder.ins().brif(
             entry_is_fast,
             instruction_blocks[usize::from(plan.entry)],
@@ -1029,26 +1048,18 @@ impl CompiledNaturalLoop {
             let block_params = builder.block_params(instruction_block).to_vec();
             let instructions = block_params[0];
             let modified_slots = block_params[1];
-            let integer_state = block_params[2..].to_vec();
+            let integer_end = 2 + integer_slots.len();
+            let integer_state = block_params[2..integer_end].to_vec();
+            let boolean_state = block_params[integer_end..].to_vec();
             let has_budget =
                 builder
                     .ins()
                     .icmp(IntCC::UnsignedLessThan, instructions, instruction_budget);
             let resume = builder.ins().iconst(types::I32, index as i64);
             let mut execute_args = vec![instructions.into(), modified_slots.into()];
-            execute_args.extend(
-                integer_state
-                    .iter()
-                    .copied()
-                    .map(cranelift_codegen::ir::BlockArg::from),
-            );
+            Self::append_unboxed_state_args(&mut execute_args, &integer_state, &boolean_state);
             let mut budget_args = vec![instructions.into(), resume.into(), modified_slots.into()];
-            budget_args.extend(
-                integer_state
-                    .iter()
-                    .copied()
-                    .map(cranelift_codegen::ir::BlockArg::from),
-            );
+            Self::append_unboxed_state_args(&mut budget_args, &integer_state, &boolean_state);
             builder.ins().brif(
                 has_budget,
                 execute_block,
@@ -1061,7 +1072,9 @@ impl CompiledNaturalLoop {
             let block_params = builder.block_params(execute_block).to_vec();
             let instructions = block_params[0];
             let modified_slots = block_params[1];
-            let mut integer_state = block_params[2..].to_vec();
+            let integer_end = 2 + integer_slots.len();
+            let mut integer_state = block_params[2..integer_end].to_vec();
+            let mut boolean_state = block_params[integer_end..].to_vec();
             let one = builder.ins().iconst(types::I64, 1);
             let instructions = builder.ins().iadd(instructions, one);
 
@@ -1071,62 +1084,34 @@ impl CompiledNaturalLoop {
                     if_true,
                     if_false,
                 } => {
-                    let condition = Self::load_slot(&mut builder, scratch, condition);
-                    let truth = ValueEmitter::emit_truthy(&mut builder, condition);
-                    let truth_payload = ValueEmitter::emit_payload(&mut builder, truth.word());
-                    let truth_value = builder.ins().icmp_imm(IntCC::NotEqual, truth_payload, 0);
-                    let dispatch = branch_dispatch[index].expect("branch dispatch block");
-                    let mut dispatch_args = vec![
-                        instructions.into(),
-                        modified_slots.into(),
-                        truth_value.into(),
-                    ];
-                    dispatch_args.extend(
-                        integer_state
-                            .iter()
-                            .copied()
-                            .map(cranelift_codegen::ir::BlockArg::from),
-                    );
-                    builder
-                        .ins()
-                        .brif(truth.is_fast(), dispatch, &dispatch_args, side_exit, &[]);
-
-                    builder.switch_to_block(dispatch);
-                    let block_params = builder.block_params(dispatch).to_vec();
-                    let instructions = block_params[0];
-                    let modified_slots = block_params[1];
-                    let truth_value = block_params[2];
-                    let integer_state = &block_params[3..];
                     let mut target_args = vec![instructions.into(), modified_slots.into()];
-                    target_args.extend(
-                        integer_state
-                            .iter()
-                            .copied()
-                            .map(cranelift_codegen::ir::BlockArg::from),
+                    Self::append_unboxed_state_args(
+                        &mut target_args,
+                        &integer_state,
+                        &boolean_state,
                     );
                     let if_true = Self::target_block(&instruction_blocks, complete, if_true);
                     let if_false = Self::target_block(&instruction_blocks, complete, if_false);
-                    builder
-                        .ins()
-                        .brif(truth_value, if_true, &target_args, if_false, &target_args);
+                    builder.ins().brif(
+                        boolean_state[boolean_index(condition)],
+                        if_true,
+                        &target_args,
+                        if_false,
+                        &target_args,
+                    );
                 }
                 NaturalLoopInstruction::Jump { target } => {
                     let target = Self::target_block(&instruction_blocks, complete, target);
                     let mut args = vec![instructions.into(), modified_slots.into()];
-                    args.extend(
-                        integer_state
-                            .iter()
-                            .copied()
-                            .map(cranelift_codegen::ir::BlockArg::from),
-                    );
+                    Self::append_unboxed_state_args(&mut args, &integer_state, &boolean_state);
                     builder.ins().jump(target, &args);
                 }
                 NaturalLoopInstruction::Load { dst, value } => {
                     let word = builder.ins().iconst(types::I64, value as i64);
-                    integer_state[state_index(dst)] =
+                    integer_state[integer_index(dst)] =
                         ValueEmitter::emit_unbox_int(&mut builder, word);
                     let is_fast = builder.ins().iconst(types::I8, 1);
-                    Self::finish_unboxed_integer_instruction(
+                    Self::finish_unboxed_instruction(
                         &mut builder,
                         &instruction_blocks,
                         complete,
@@ -1135,14 +1120,15 @@ impl CompiledNaturalLoop {
                         instructions,
                         modified_slots,
                         &integer_state,
+                        &boolean_state,
                         is_fast,
                         side_exit,
                     );
                 }
                 NaturalLoopInstruction::Move { dst, src } => {
-                    integer_state[state_index(dst)] = integer_state[state_index(src)];
+                    integer_state[integer_index(dst)] = integer_state[integer_index(src)];
                     let is_fast = builder.ins().iconst(types::I8, 1);
-                    Self::finish_unboxed_integer_instruction(
+                    Self::finish_unboxed_instruction(
                         &mut builder,
                         &instruction_blocks,
                         complete,
@@ -1151,14 +1137,15 @@ impl CompiledNaturalLoop {
                         instructions,
                         modified_slots,
                         &integer_state,
+                        &boolean_state,
                         is_fast,
                         side_exit,
                     );
                 }
                 NaturalLoopInstruction::Add { dst, left, right } => {
                     let sum = builder.ins().iadd(
-                        integer_state[state_index(left)],
-                        integer_state[state_index(right)],
+                        integer_state[integer_index(left)],
+                        integer_state[integer_index(right)],
                     );
                     let above_min =
                         builder
@@ -1169,8 +1156,8 @@ impl CompiledNaturalLoop {
                             .ins()
                             .icmp_imm(IntCC::SignedLessThanOrEqual, sum, VALUE_INT_MAX);
                     let in_range = builder.ins().band(above_min, below_max);
-                    integer_state[state_index(dst)] = sum;
-                    Self::finish_unboxed_integer_instruction(
+                    integer_state[integer_index(dst)] = sum;
+                    Self::finish_unboxed_instruction(
                         &mut builder,
                         &instruction_blocks,
                         complete,
@@ -1179,6 +1166,7 @@ impl CompiledNaturalLoop {
                         instructions,
                         modified_slots,
                         &integer_state,
+                        &boolean_state,
                         in_range,
                         side_exit,
                     );
@@ -1198,13 +1186,12 @@ impl CompiledNaturalLoop {
                             ScalarComparison::GreaterThan => IntCC::SignedGreaterThan,
                             ScalarComparison::GreaterThanOrEqual => IntCC::SignedGreaterThanOrEqual,
                         },
-                        integer_state[state_index(left)],
-                        integer_state[state_index(right)],
+                        integer_state[integer_index(left)],
+                        integer_state[integer_index(right)],
                     );
-                    let value = ValueEmitter::emit_bool(&mut builder, predicate);
-                    Self::store_slot(&mut builder, scratch, dst, value);
+                    boolean_state[boolean_index(dst)] = predicate;
                     let is_fast = builder.ins().iconst(types::I8, 1);
-                    Self::finish_unboxed_integer_instruction(
+                    Self::finish_unboxed_instruction(
                         &mut builder,
                         &instruction_blocks,
                         complete,
@@ -1213,6 +1200,7 @@ impl CompiledNaturalLoop {
                         instructions,
                         modified_slots,
                         &integer_state,
+                        &boolean_state,
                         is_fast,
                         side_exit,
                     );
@@ -1224,8 +1212,18 @@ impl CompiledNaturalLoop {
         builder.switch_to_block(complete);
         let instructions = builder.block_params(complete)[0];
         let modified_slots = builder.block_params(complete)[1];
-        let integer_state = builder.block_params(complete)[2..].to_vec();
-        Self::flush_unboxed_integer_state(&mut builder, scratch, &integer_slots, &integer_state);
+        let complete_params = builder.block_params(complete).to_vec();
+        let integer_end = 2 + integer_slots.len();
+        let integer_state = &complete_params[2..integer_end];
+        let boolean_state = &complete_params[integer_end..];
+        Self::flush_unboxed_state(
+            &mut builder,
+            scratch,
+            &integer_slots,
+            integer_state,
+            &boolean_slots,
+            boolean_state,
+        );
         builder
             .ins()
             .store(MemFlagsData::new(), instructions, instructions_out, 0);
@@ -1240,8 +1238,17 @@ impl CompiledNaturalLoop {
         let instructions = block_params[0];
         let resume = block_params[1];
         let modified_slots = block_params[2];
-        let integer_state = &block_params[3..];
-        Self::flush_unboxed_integer_state(&mut builder, scratch, &integer_slots, integer_state);
+        let integer_end = 3 + integer_slots.len();
+        let integer_state = &block_params[3..integer_end];
+        let boolean_state = &block_params[integer_end..];
+        Self::flush_unboxed_state(
+            &mut builder,
+            scratch,
+            &integer_slots,
+            integer_state,
+            &boolean_slots,
+            boolean_state,
+        );
         builder
             .ins()
             .store(MemFlagsData::new(), instructions, instructions_out, 0);
@@ -1267,7 +1274,7 @@ impl CompiledNaturalLoop {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn finish_unboxed_integer_instruction(
+    fn finish_unboxed_instruction(
         builder: &mut FunctionBuilder<'_>,
         instruction_blocks: &[cranelift_codegen::ir::Block],
         complete: cranelift_codegen::ir::Block,
@@ -1276,6 +1283,7 @@ impl CompiledNaturalLoop {
         instructions: cranelift_codegen::ir::Value,
         modified_slots: cranelift_codegen::ir::Value,
         integer_state: &[cranelift_codegen::ir::Value],
+        boolean_state: &[cranelift_codegen::ir::Value],
         is_fast: cranelift_codegen::ir::Value,
         side_exit: cranelift_codegen::ir::Block,
     ) {
@@ -1288,20 +1296,31 @@ impl CompiledNaturalLoop {
             u16::try_from(index + 1).expect("plan length validated"),
         );
         let mut args = vec![instructions.into(), modified_slots.into()];
-        args.extend(
-            integer_state
-                .iter()
-                .copied()
-                .map(cranelift_codegen::ir::BlockArg::from),
-        );
+        Self::append_unboxed_state_args(&mut args, integer_state, boolean_state);
         builder.ins().brif(is_fast, next, &args, side_exit, &[]);
     }
 
-    fn flush_unboxed_integer_state(
+    fn append_unboxed_state_args(
+        args: &mut Vec<cranelift_codegen::ir::BlockArg>,
+        integer_state: &[cranelift_codegen::ir::Value],
+        boolean_state: &[cranelift_codegen::ir::Value],
+    ) {
+        args.extend(
+            integer_state
+                .iter()
+                .chain(boolean_state)
+                .copied()
+                .map(cranelift_codegen::ir::BlockArg::from),
+        );
+    }
+
+    fn flush_unboxed_state(
         builder: &mut FunctionBuilder<'_>,
         scratch: cranelift_codegen::ir::Value,
         integer_slots: &[u16],
         integer_state: &[cranelift_codegen::ir::Value],
+        boolean_slots: &[u16],
+        boolean_state: &[cranelift_codegen::ir::Value],
     ) {
         for (slot, value) in integer_slots
             .iter()
@@ -1309,6 +1328,14 @@ impl CompiledNaturalLoop {
             .zip(integer_state.iter().copied())
         {
             let value = ValueEmitter::emit_pack(builder, VALUE_INT_TAG, value);
+            Self::store_slot(builder, scratch, slot, value);
+        }
+        for (slot, value) in boolean_slots
+            .iter()
+            .copied()
+            .zip(boolean_state.iter().copied())
+        {
+            let value = ValueEmitter::emit_bool(builder, value);
             Self::store_slot(builder, scratch, slot, value);
         }
     }
