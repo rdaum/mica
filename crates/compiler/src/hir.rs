@@ -15,6 +15,7 @@ use crate::{
     BinaryOp, BindingId, BindingKind, EffectKind, Literal, LocalKind, MethodKind, MethodParam,
     NodeId, ParamMode, ResolvedName, ScopeId, Span, UnaryOp,
 };
+use mica_var::ValueKind;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HirProgram {
@@ -216,6 +217,7 @@ pub enum HirExpr {
         name: Option<BindingId>,
         scope: ScopeId,
         params: Vec<HirParam>,
+        result_kind: Option<ValueKind>,
         captures: Vec<BindingId>,
         body: HirFunctionBody,
     },
@@ -265,6 +267,7 @@ pub struct HirParam {
     pub id: NodeId,
     pub binding: BindingId,
     pub kind: LocalKind,
+    pub declared_kind: Option<ValueKind>,
     pub default: Option<HirExpr>,
 }
 

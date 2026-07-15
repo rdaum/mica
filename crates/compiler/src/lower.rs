@@ -14,7 +14,7 @@
 use crate::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, CstElement,
     CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, MethodParam,
-    NodeId, Param, ParamMode, ParseError, RecoveryClause, SyntaxKind, UnaryOp, parse,
+    NodeId, Param, ParamMode, ParseError, RecoveryClause, SyntaxKind, UnaryOp, ValueKindRef, parse,
 };
 use base64::{Engine, engine::general_purpose};
 
@@ -121,7 +121,7 @@ impl<'a> Lower<'a> {
         if matches!(kind, MethodKind::Method) && method_clauses_use_colon_params(&clauses) {
             self.error(
                 node,
-                "method parameters use `name @ #prototype`; use bare `name` for unrestricted parameters",
+                "value-kind annotations are not supported in method parameters yet; dispatch restrictions use `name @ #prototype`",
             );
         }
         let params = if matches!(kind, MethodKind::Verb) {
@@ -174,7 +174,7 @@ impl<'a> Lower<'a> {
         if param_text.is_some_and(|params| params.contains(':')) {
             self.error(
                 node,
-                "method parameters use `name @ #prototype`; use bare `name` for unrestricted parameters",
+                "value-kind annotations are not supported in verb parameters yet; dispatch restrictions use `name @ #prototype`",
             );
         }
         let params = param_text
@@ -772,15 +772,20 @@ impl<'a> Lower<'a> {
             .unwrap_or_else(|| {
                 BindingPattern::Name(self.first_text(node, SyntaxKind::Ident).unwrap_or_default())
             });
+        let annotation = self
+            .node_children(node)
+            .find(|child| child.kind == SyntaxKind::ValueKindRef)
+            .map(|child| self.lower_kind_ref(child));
         let value = self
             .node_children(node)
-            .find(|child| child.kind != SyntaxKind::ParamList)
+            .find(|child| !matches!(child.kind, SyntaxKind::ParamList | SyntaxKind::ValueKindRef))
             .map(|child| Box::new(self.lower_expr(child)));
         Expr::Binding {
             id: self.node_id(),
             span: node.span.clone(),
             kind,
             pattern,
+            annotation,
             value,
         }
     }
@@ -1028,6 +1033,10 @@ impl<'a> Lower<'a> {
             .find(|child| child.kind == SyntaxKind::ParamList)
             .map(|params| self.lower_params(params))
             .unwrap_or_default();
+        let result_kind = self
+            .node_children(node)
+            .find(|child| child.kind == SyntaxKind::ValueKindRef)
+            .map(|child| self.lower_kind_ref(child));
         let body = if let Some(block) = self
             .node_children(node)
             .find(|child| child.kind == SyntaxKind::Block)
@@ -1047,6 +1056,7 @@ impl<'a> Lower<'a> {
             span: node.span.clone(),
             name,
             params,
+            result_kind,
             body,
         }
     }
@@ -1067,6 +1077,7 @@ impl<'a> Lower<'a> {
             span: node.span.clone(),
             name: None,
             params,
+            result_kind: None,
             body: FunctionBody::Expr(Box::new(body)),
         }
     }
@@ -1141,6 +1152,7 @@ impl<'a> Lower<'a> {
                         id: self.node_id(),
                         name: self.text(token.span.clone()).to_owned(),
                         mode: mode.clone(),
+                        annotation: None,
                         default: None,
                     };
                     mode = ParamMode::Required;
@@ -1166,6 +1178,10 @@ impl<'a> Lower<'a> {
             ParamMode::Required
         };
         let name = self.first_text(node, SyntaxKind::Ident).unwrap_or_default();
+        let annotation = self
+            .node_children(node)
+            .find(|child| child.kind == SyntaxKind::ValueKindRef)
+            .map(|child| self.lower_kind_ref(child));
         let default = self
             .node_children(node)
             .find(|child| is_expr_node(child.kind))
@@ -1174,7 +1190,24 @@ impl<'a> Lower<'a> {
             id: self.node_id(),
             name,
             mode,
+            annotation,
             default,
+        }
+    }
+
+    fn lower_kind_ref(&self, node: &CstNode) -> ValueKindRef {
+        let token = self
+            .token_children(node)
+            .find(|token| token.kind == SyntaxKind::Ident);
+        let Some(token) = token else {
+            return ValueKindRef {
+                name: String::new(),
+                span: node.span.clone(),
+            };
+        };
+        ValueKindRef {
+            name: self.text(token.span.clone()).to_owned(),
+            span: token.span.clone(),
         }
     }
 
@@ -1472,6 +1505,48 @@ mod tests {
         Item, Literal, MethodKind, NodeId, Param, ParamMode,
     };
     use std::collections::BTreeSet;
+
+    #[test]
+    fn lowers_value_kind_references_with_exact_spans() {
+        let source = "let count: int = 1\nfn convert(value: float) -> string => value";
+        let ast = parse_ast(source);
+
+        assert_eq!(ast.errors, vec![]);
+        let Item::Expr {
+            expr:
+                Expr::Binding {
+                    annotation: Some(annotation),
+                    ..
+                },
+            ..
+        } = &ast.items[0]
+        else {
+            panic!("expected annotated binding");
+        };
+        assert_eq!(annotation.name, "int");
+        let annotation_start = source.find("int").unwrap();
+        assert_eq!(annotation.span, annotation_start..annotation_start + 3);
+
+        let Item::Expr {
+            expr:
+                Expr::Function {
+                    params,
+                    result_kind,
+                    ..
+                },
+            ..
+        } = &ast.items[1]
+        else {
+            panic!("expected annotated function");
+        };
+        assert_eq!(params[0].annotation.as_ref().unwrap().name, "float");
+        assert_eq!(result_kind.as_ref().unwrap().name, "string");
+        let result_start = source.rfind("string").unwrap();
+        assert_eq!(
+            result_kind.as_ref().unwrap().span,
+            result_start..result_start + 6
+        );
+    }
 
     #[test]
     fn lowers_calls_and_collections() {
