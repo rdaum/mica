@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[cfg(feature = "cranelift")]
-use mica_var::abi::{borrowed_value_bits, value_is_immediate};
+use mica_var::abi::{VALUE_INT_TAG, borrowed_value_bits, value_is_immediate, value_tag};
 #[cfg(feature = "cranelift")]
 use mica_vm_cranelift::{
     CompiledFloatLoop, CompiledIntegerLoop, CompiledNaturalLoop, FloatArithmetic, FloatComparison,
@@ -1252,13 +1252,6 @@ fn recognize_natural_integer_loop(
             )
         })
         .collect::<Option<Vec<_>>>()?;
-    let plan = NaturalLoopPlan::new(
-        u16::try_from(registers.len()).ok()?,
-        u16::try_from(collection_view_registers.len()).ok()?,
-        u16::try_from(body_ip.checked_sub(header_ip)?).ok()?,
-        instructions,
-    )
-    .ok()?;
     let (current, delta, limit, comparison) = recognize_natural_loop_induction(
         opcodes.get(..header_ip)?,
         header,
@@ -1266,6 +1259,27 @@ fn recognize_natural_integer_loop(
         constants,
         *condition,
     )?;
+    let entry = u16::try_from(body_ip.checked_sub(header_ip)?).ok()?;
+    let mut plan = NaturalLoopPlan::new(
+        u16::try_from(registers.len()).ok()?,
+        u16::try_from(collection_view_registers.len()).ok()?,
+        entry,
+        instructions,
+    )
+    .ok()?;
+    if let Some((integer_slots, entry_integer_slots)) = natural_loop_unboxed_integer_slots(
+        &plan,
+        &registers,
+        opcodes.get(..header_ip)?,
+        constants,
+        current,
+        limit,
+    ) && let Ok(specialized) = plan
+        .clone()
+        .with_unboxed_integer_slots(integer_slots, entry_integer_slots)
+    {
+        plan = specialized;
+    }
     Some(NaturalIntegerLoopSite {
         header_ip,
         branch_ip,
@@ -1281,6 +1295,119 @@ fn recognize_natural_integer_loop(
         plan,
         compiled: OnceLock::new(),
     })
+}
+
+#[cfg(feature = "cranelift")]
+fn natural_loop_unboxed_integer_slots(
+    plan: &NaturalLoopPlan,
+    registers: &[Register],
+    preheader: &[Opcode],
+    constants: &[Value],
+    current: Register,
+    limit: Register,
+) -> Option<(u32, u32)> {
+    // These are specialization candidates, not trusted type metadata. The
+    // generated entry guards validate every live candidate before unboxing.
+    let slot = |register: Register| {
+        registers
+            .binary_search(&register)
+            .ok()
+            .and_then(|slot| u16::try_from(slot).ok())
+    };
+    let mut entry_registers = infer_linear_integer_registers(preheader, constants);
+    entry_registers.insert(current);
+    entry_registers.insert(limit);
+    let entry_slots = entry_registers
+        .into_iter()
+        .filter_map(slot)
+        .fold(0_u32, |slots, slot| slots | (1_u32 << slot));
+    let mut integer_slots = entry_slots;
+    loop {
+        let before = integer_slots;
+        for instruction in plan.instructions() {
+            let dst = match *instruction {
+                NaturalLoopInstruction::Load { dst, value }
+                    if value_tag(value) == VALUE_INT_TAG =>
+                {
+                    Some(dst)
+                }
+                NaturalLoopInstruction::Move { dst, src }
+                    if integer_slots & (1_u32 << src) != 0 =>
+                {
+                    Some(dst)
+                }
+                NaturalLoopInstruction::Add { dst, left, right }
+                    if integer_slots & (1_u32 << left) != 0
+                        && integer_slots & (1_u32 << right) != 0 =>
+                {
+                    Some(dst)
+                }
+                _ => None,
+            };
+            if let Some(dst) = dst {
+                integer_slots |= 1_u32 << dst;
+            }
+        }
+        if integer_slots == before {
+            break;
+        }
+    }
+
+    Some((integer_slots, entry_slots))
+}
+
+#[cfg(feature = "cranelift")]
+fn infer_linear_integer_registers(opcodes: &[Opcode], constants: &[Value]) -> BTreeSet<Register> {
+    let mut integers = BTreeSet::new();
+    for opcode in opcodes {
+        match opcode {
+            Opcode::Load { dst, value } => {
+                if constants
+                    .get(value.0 as usize)
+                    .is_some_and(|value| value.kind() == ValueKind::Int)
+                {
+                    integers.insert(*dst);
+                } else {
+                    integers.remove(dst);
+                }
+            }
+            Opcode::Move { dst, src } => {
+                if integers.contains(src) {
+                    integers.insert(*dst);
+                } else {
+                    integers.remove(dst);
+                }
+            }
+            Opcode::CheckKind {
+                value,
+                expected: ValueKind::Int,
+                ..
+            } => {
+                integers.insert(*value);
+            }
+            Opcode::CheckKind { value, .. } => {
+                integers.remove(value);
+            }
+            Opcode::Unary {
+                dst,
+                op: RuntimeUnaryOp::Neg,
+                src,
+            } if integers.contains(src) => {
+                integers.insert(*dst);
+            }
+            Opcode::Binary {
+                dst,
+                op: RuntimeBinaryOp::Add | RuntimeBinaryOp::Sub | RuntimeBinaryOp::Mul,
+                left,
+                right,
+            } if integers.contains(left) && integers.contains(right) => {
+                integers.insert(*dst);
+            }
+            Opcode::Branch { .. } | Opcode::Jump { .. } => integers.clear(),
+            _ => integers.clear(),
+        }
+    }
+    integers
 }
 
 #[cfg(feature = "cranelift")]

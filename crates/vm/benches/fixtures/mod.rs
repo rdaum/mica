@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 pub const INTEGER_LOOP_ITERATIONS: usize = 16_384;
 pub const INTEGER_LOOP_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 3) + 4;
+pub const NATURAL_INTEGER_ACCUMULATOR_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 7) + 7;
 pub const SCALAR_LOOP_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 8) + 7;
 pub const PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS: u64 = (INTEGER_LOOP_ITERATIONS as u64 * 9) + 10;
 pub const ALTERNATING_BRANCH_LOOP_INSTRUCTIONS: u64 =
@@ -51,6 +52,68 @@ pub fn integer_loop_fixture() -> ProgramFixture {
         RuntimeBinaryOp::Lt,
         INTEGER_LOOP_ITERATIONS as u64,
     )
+}
+
+pub fn natural_integer_accumulator_fixture() -> ProgramFixture {
+    let program = Program::new(
+        7,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(0),
+            },
+            Instruction::Load {
+                dst: reg(1),
+                value: int(INTEGER_LOOP_ITERATIONS as i64),
+            },
+            Instruction::Load {
+                dst: reg(2),
+                value: int(1),
+            },
+            Instruction::Load {
+                dst: reg(3),
+                value: int(0),
+            },
+            Instruction::Binary {
+                dst: reg(4),
+                op: RuntimeBinaryOp::Lt,
+                left: reg(0),
+                right: reg(1),
+            },
+            Instruction::Branch {
+                condition: reg(4),
+                if_true: 6,
+                if_false: 11,
+            },
+            Instruction::Binary {
+                dst: reg(5),
+                op: RuntimeBinaryOp::Add,
+                left: reg(3),
+                right: reg(0),
+            },
+            Instruction::Move {
+                dst: reg(3),
+                src: reg(5),
+            },
+            Instruction::Binary {
+                dst: reg(6),
+                op: RuntimeBinaryOp::Add,
+                left: reg(0),
+                right: reg(2),
+            },
+            Instruction::Move {
+                dst: reg(0),
+                src: reg(6),
+            },
+            Instruction::Jump { target: 4 },
+            Instruction::Return { value: r(3) },
+        ],
+    )
+    .unwrap();
+    ProgramFixture {
+        program: Arc::new(program),
+        instruction_count: NATURAL_INTEGER_ACCUMULATOR_INSTRUCTIONS,
+    }
 }
 
 pub fn float_add_loop_fixture() -> ProgramFixture {

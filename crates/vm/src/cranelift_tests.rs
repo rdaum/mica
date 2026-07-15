@@ -12,8 +12,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    AuthorityContext, Instruction, Operand, Program, Register, RegisterVm, RuntimeBinaryOp,
-    RuntimeError, RuntimeUnaryOp, VmHost, VmHostResponse,
+    AuthorityContext, Instruction, KindCheckSite, Operand, Program, Register, RegisterVm,
+    RuntimeBinaryOp, RuntimeError, RuntimeUnaryOp, VmHost, VmHostResponse,
 };
 use mica_relation_kernel::{
     DispatchRead, KernelError, RelationId, RelationRead, RelationWorkspace, Tuple,
@@ -231,6 +231,83 @@ fn natural_accumulator_program_with_limit(total: Value, limit: usize) -> Arc<Pro
                     src: register(7),
                 },
                 Instruction::Jump { target: 3 },
+                Instruction::Return {
+                    value: Operand::Register(register(1)),
+                },
+            ],
+        )
+        .unwrap(),
+    )
+}
+
+fn checked_natural_accumulator_program() -> Arc<Program> {
+    Arc::new(
+        Program::new(
+            8,
+            [
+                Instruction::Load {
+                    dst: register(0),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(1),
+                    value: Value::int(0).unwrap(),
+                },
+                Instruction::Load {
+                    dst: register(2),
+                    value: Value::nothing(),
+                },
+                Instruction::Load {
+                    dst: register(3),
+                    value: Value::int(ITERATIONS as i64).unwrap(),
+                },
+                Instruction::Unary {
+                    dst: register(2),
+                    op: RuntimeUnaryOp::Not,
+                    src: register(2),
+                },
+                Instruction::CheckKind {
+                    value: register(1),
+                    expected: mica_var::ValueKind::Int,
+                    site: KindCheckSite::Binding,
+                    subject: Symbol::intern("total"),
+                },
+                Instruction::Binary {
+                    dst: register(4),
+                    op: RuntimeBinaryOp::Lt,
+                    left: register(0),
+                    right: register(3),
+                },
+                Instruction::Branch {
+                    condition: register(4),
+                    if_true: 8,
+                    if_false: 14,
+                },
+                Instruction::Load {
+                    dst: register(5),
+                    value: Value::int(1).unwrap(),
+                },
+                Instruction::Binary {
+                    dst: register(6),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(0),
+                    right: register(5),
+                },
+                Instruction::Move {
+                    dst: register(0),
+                    src: register(6),
+                },
+                Instruction::Binary {
+                    dst: register(7),
+                    op: RuntimeBinaryOp::Add,
+                    left: register(1),
+                    right: register(0),
+                },
+                Instruction::Move {
+                    dst: register(1),
+                    src: register(7),
+                },
+                Instruction::Jump { target: 6 },
                 Instruction::Return {
                     value: Operand::Register(register(1)),
                 },
@@ -1585,6 +1662,39 @@ fn native_natural_loop_matches_interpreter_completion() {
     );
     assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
     assert_eq!(program.native_compile_attempts(), 1);
+}
+
+#[test]
+fn natural_integer_accumulators_select_unboxed_region_state() {
+    let integer = natural_accumulator_program(Value::int(0).unwrap());
+    let integer_site = integer
+        .natural_integer_loop_site(5)
+        .expect("integer accumulator has a natural loop");
+    assert_ne!(integer_site.plan.unboxed_integer_slots(), 0);
+
+    let float = natural_accumulator_program(Value::float(0.0).unwrap());
+    let float_site = float
+        .natural_integer_loop_site(5)
+        .expect("float accumulator has a natural loop");
+    assert_eq!(float_site.plan.unboxed_integer_slots(), 0);
+}
+
+#[test]
+fn dominating_kind_checks_feed_unboxed_region_planning() {
+    let program = checked_natural_accumulator_program();
+    let site = program
+        .natural_integer_loop_site(7)
+        .expect("checked accumulator has a natural loop");
+    assert_ne!(site.plan.unboxed_integer_slots(), 0);
+
+    let mut interpreted = RegisterVm::new_interpreted(Arc::clone(&program));
+    let mut native = RegisterVm::new(Arc::clone(&program));
+    assert_eq!(
+        run(&mut native, NATURAL_INSTRUCTION_COUNT + 2).unwrap(),
+        run(&mut interpreted, NATURAL_INSTRUCTION_COUNT + 2).unwrap(),
+    );
+    assert_eq!(native.snapshot_state(), interpreted.snapshot_state());
+    assert_eq!(native.native_side_exit_count(), 0);
 }
 
 #[test]
