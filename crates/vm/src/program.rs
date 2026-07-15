@@ -1071,6 +1071,20 @@ pub(crate) const MAX_NATURAL_LOOP_SLOTS: usize = 32;
 pub(crate) const MAX_NATURAL_LOOP_COLLECTION_VIEWS: usize = 32;
 
 #[cfg(feature = "cranelift")]
+struct NaturalLoopCollectionCandidates {
+    keys: Box<[Option<ValueKind>]>,
+    values: Box<[Option<ValueKind>]>,
+}
+
+#[cfg(feature = "cranelift")]
+struct NaturalLoopUnboxedSlots {
+    integers: u32,
+    entry_integers: u32,
+    floats: u32,
+    entry_floats: u32,
+}
+
+#[cfg(feature = "cranelift")]
 pub(crate) struct NaturalIntegerLoopSite {
     pub(crate) header_ip: usize,
     pub(crate) branch_ip: usize,
@@ -1521,17 +1535,25 @@ fn recognize_natural_integer_loop(
         instructions,
     )
     .ok()?;
-    if let Some((integer_slots, entry_integer_slots)) = natural_loop_unboxed_integer_slots(
+    let collection_candidates = natural_loop_collection_candidates(
+        opcodes.get(..header_ip)?,
+        constants,
+        &collection_view_registers,
+    );
+    if let Some(slots) = natural_loop_unboxed_slots(
         &plan,
         &registers,
         opcodes.get(..header_ip)?,
         kind_facts.get(..header_ip)?,
+        &collection_candidates,
         current,
         limit,
-    ) && let Ok(specialized) = plan
-        .clone()
-        .with_unboxed_integer_slots(integer_slots, entry_integer_slots)
-    {
+    ) && let Ok(specialized) = plan.clone().with_unboxed_slots(
+        slots.integers,
+        slots.entry_integers,
+        slots.floats,
+        slots.entry_floats,
+    ) {
         plan = specialized;
     }
     Some(NaturalIntegerLoopSite {
@@ -1552,14 +1574,15 @@ fn recognize_natural_integer_loop(
 }
 
 #[cfg(feature = "cranelift")]
-fn natural_loop_unboxed_integer_slots(
+fn natural_loop_unboxed_slots(
     plan: &NaturalLoopPlan,
     registers: &[Register],
     preheader: &[Opcode],
     preheader_facts: &[Option<ValueKind>],
+    collection_candidates: &NaturalLoopCollectionCandidates,
     current: Register,
     limit: Register,
-) -> Option<(u32, u32)> {
+) -> Option<NaturalLoopUnboxedSlots> {
     // These are specialization candidates, not trusted type metadata. The
     // generated entry guards validate every live candidate before unboxing.
     let slot = |register: Register| {
@@ -1568,67 +1591,201 @@ fn natural_loop_unboxed_integer_slots(
             .ok()
             .and_then(|slot| u16::try_from(slot).ok())
     };
-    let mut entry_registers = linear_integer_registers(preheader, preheader_facts);
-    entry_registers.insert(current);
-    entry_registers.insert(limit);
-    let entry_slots = entry_registers
-        .into_iter()
-        .filter_map(slot)
-        .fold(0_u32, |slots, slot| slots | (1_u32 << slot));
-    let mut integer_slots = entry_slots;
+    let mut entry_registers = linear_numeric_registers(preheader, preheader_facts);
+    entry_registers.insert(current, ValueKind::Int);
+    entry_registers.insert(limit, ValueKind::Int);
+    let mut kinds = [None; MAX_NATURAL_LOOP_SLOTS];
+    let mut entry_integer_slots = 0_u32;
+    let mut entry_float_slots = 0_u32;
+    for (register, kind) in entry_registers {
+        let Some(slot) = slot(register) else {
+            continue;
+        };
+        kinds[usize::from(slot)] = Some(kind);
+        match kind {
+            ValueKind::Int => entry_integer_slots |= 1_u32 << slot,
+            ValueKind::Float => entry_float_slots |= 1_u32 << slot,
+            _ => unreachable!("linear numeric facts contain only int and float"),
+        }
+    }
+    let assign_kind =
+        |kinds: &mut [Option<ValueKind>], slot: u16, kind: ValueKind| -> Option<bool> {
+            let current = kinds.get_mut(usize::from(slot))?;
+            match *current {
+                Some(current) if current != kind => None,
+                Some(_) => Some(false),
+                None => {
+                    *current = Some(kind);
+                    Some(true)
+                }
+            }
+        };
     loop {
-        let before = integer_slots;
+        let mut changed = false;
         for instruction in plan.instructions() {
-            let dst = match *instruction {
-                NaturalLoopInstruction::Load { dst, value }
-                    if value_tag(value) == VALUE_INT_TAG =>
-                {
-                    Some(dst)
-                }
+            let kind = |slot: u16| kinds.get(usize::from(slot)).copied().flatten();
+            let candidate = match *instruction {
+                NaturalLoopInstruction::Load { dst, value } => match value_tag(value) {
+                    VALUE_INT_TAG => Some((dst, ValueKind::Int)),
+                    mica_var::abi::VALUE_FLOAT_TAG => Some((dst, ValueKind::Float)),
+                    _ => None,
+                },
                 NaturalLoopInstruction::Move { dst, src }
-                    if integer_slots & (1_u32 << src) != 0 =>
-                {
-                    Some(dst)
-                }
+                | NaturalLoopInstruction::Negate { dst, src } => kind(src).map(|kind| (dst, kind)),
                 NaturalLoopInstruction::Add { dst, left, right }
-                    if integer_slots & (1_u32 << left) != 0
-                        && integer_slots & (1_u32 << right) != 0 =>
-                {
-                    Some(dst)
+                | NaturalLoopInstruction::Subtract { dst, left, right }
+                | NaturalLoopInstruction::Multiply { dst, left, right } => {
+                    infer_numeric_result_kind(RuntimeBinaryOp::Add, kind(left), kind(right))
+                        .map(|kind| (dst, kind))
                 }
+                NaturalLoopInstruction::Divide { dst, left, right } => {
+                    let result =
+                        infer_numeric_result_kind(RuntimeBinaryOp::Div, kind(left), kind(right));
+                    (result == Some(ValueKind::Float)).then_some((dst, ValueKind::Float))
+                }
+                NaturalLoopInstruction::CheckKind { value, expected } => Some((value, expected)),
+                NaturalLoopInstruction::CollectionValueAt { dst, view, .. } => {
+                    collection_candidates
+                        .values
+                        .get(usize::from(view))
+                        .copied()
+                        .flatten()
+                        .map(|kind| (dst, kind))
+                }
+                NaturalLoopInstruction::CollectionKeyAt { dst, view, .. } => collection_candidates
+                    .keys
+                    .get(usize::from(view))
+                    .copied()
+                    .flatten()
+                    .map(|kind| (dst, kind)),
                 _ => None,
             };
-            if let Some(dst) = dst {
-                integer_slots |= 1_u32 << dst;
+            if let Some((dst, kind)) = candidate {
+                changed |= assign_kind(&mut kinds, dst, kind)?;
             }
         }
-        if integer_slots == before {
+        if !changed {
             break;
         }
     }
 
-    Some((integer_slots, entry_slots))
+    let mut integer_slots = 0_u32;
+    let mut float_slots = 0_u32;
+    for (slot, kind) in kinds.into_iter().enumerate() {
+        let slot = u16::try_from(slot).ok()?;
+        match kind {
+            Some(ValueKind::Int) => integer_slots |= 1_u32 << slot,
+            Some(ValueKind::Float) => float_slots |= 1_u32 << slot,
+            Some(_) | None => {}
+        }
+    }
+    Some(NaturalLoopUnboxedSlots {
+        integers: integer_slots,
+        entry_integers: entry_integer_slots,
+        floats: float_slots,
+        entry_floats: entry_float_slots,
+    })
 }
 
 #[cfg(feature = "cranelift")]
-fn linear_integer_registers(
+fn linear_numeric_registers(
     opcodes: &[Opcode],
     kind_facts: &[Option<ValueKind>],
-) -> BTreeSet<Register> {
-    let mut integers = BTreeSet::new();
+) -> BTreeMap<Register, ValueKind> {
+    let mut numeric = BTreeMap::new();
     for (opcode, fact) in opcodes.iter().zip(kind_facts) {
         if let Some(register) = opcode.kind_fact_register() {
-            if *fact == Some(ValueKind::Int) {
-                integers.insert(register);
-            } else {
-                integers.remove(&register);
+            match fact {
+                Some(kind @ (ValueKind::Int | ValueKind::Float)) => {
+                    numeric.insert(register, *kind);
+                }
+                _ => {
+                    numeric.remove(&register);
+                }
             }
         }
         if matches!(opcode, Opcode::Branch { .. } | Opcode::Jump { .. }) {
-            integers.clear();
+            numeric.clear();
         }
     }
-    integers
+    numeric
+}
+
+#[cfg(feature = "cranelift")]
+fn natural_loop_collection_candidates(
+    preheader: &[Opcode],
+    constants: &[Value],
+    collection_registers: &[Register],
+) -> NaturalLoopCollectionCandidates {
+    // Collection element kinds are guarded at every native load. The first
+    // literal element is only a specialization candidate, so heterogeneous
+    // collections side exit atomically rather than becoming trusted metadata.
+    let mut candidates = BTreeMap::<Register, (Option<ValueKind>, Option<ValueKind>)>::new();
+    for opcode in preheader {
+        match opcode {
+            Opcode::Load { dst, value } => {
+                let candidate = constants
+                    .get(value.0 as usize)
+                    .map(numeric_collection_candidates)
+                    .unwrap_or((None, None));
+                candidates.insert(*dst, candidate);
+            }
+            Opcode::Move { dst, src } => {
+                if let Some(candidate) = candidates.get(src).copied() {
+                    candidates.insert(*dst, candidate);
+                } else {
+                    candidates.remove(dst);
+                }
+            }
+            _ => {
+                if let Some(dst) = opcode.destination() {
+                    candidates.remove(&dst);
+                }
+            }
+        }
+        if matches!(opcode, Opcode::Branch { .. } | Opcode::Jump { .. }) {
+            candidates.clear();
+        }
+    }
+    let mut key_kinds = Vec::with_capacity(collection_registers.len());
+    let mut value_kinds = Vec::with_capacity(collection_registers.len());
+    for register in collection_registers {
+        let (key, value) = candidates.get(register).copied().unwrap_or((None, None));
+        key_kinds.push(key);
+        value_kinds.push(value);
+    }
+    NaturalLoopCollectionCandidates {
+        keys: key_kinds.into_boxed_slice(),
+        values: value_kinds.into_boxed_slice(),
+    }
+}
+
+#[cfg(feature = "cranelift")]
+fn numeric_collection_candidates(value: &Value) -> (Option<ValueKind>, Option<ValueKind>) {
+    let numeric_kind = |value: &Value| match value.kind() {
+        kind @ (ValueKind::Int | ValueKind::Float) => Some(kind),
+        _ => None,
+    };
+    if value.with_range(|_, _| ()).is_some() {
+        return (Some(ValueKind::Int), Some(ValueKind::Int));
+    }
+    if let Some(value_kind) = value
+        .with_list(|values| values.first().and_then(&numeric_kind))
+        .flatten()
+    {
+        return (Some(ValueKind::Int), Some(value_kind));
+    }
+    if let Some((key_kind, value_kind)) = value
+        .with_map(|entries| {
+            entries
+                .first()
+                .map(|(key, value)| (numeric_kind(key), numeric_kind(value)))
+        })
+        .flatten()
+    {
+        return (key_kind, value_kind);
+    }
+    (None, None)
 }
 
 #[cfg(feature = "cranelift")]
@@ -1648,6 +1805,13 @@ fn collect_natural_loop_registers(
         Opcode::Move { dst, src } => {
             registers.insert(*dst);
             registers.insert(*src);
+        }
+        Opcode::CheckKind {
+            value,
+            expected: ValueKind::Int | ValueKind::Float,
+            ..
+        } => {
+            registers.insert(*value);
         }
         Opcode::Unary { dst, src, .. } => {
             registers.insert(*dst);
@@ -1720,6 +1884,14 @@ fn natural_loop_instruction(
             dst: slot(*dst)?,
             src: slot(*src)?,
         }),
+        Opcode::CheckKind {
+            value, expected, ..
+        } if matches!(expected, ValueKind::Int | ValueKind::Float) => {
+            Some(NaturalLoopInstruction::CheckKind {
+                value: slot(*value)?,
+                expected: *expected,
+            })
+        }
         Opcode::Unary {
             dst,
             op: RuntimeUnaryOp::Neg,
