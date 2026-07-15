@@ -84,6 +84,19 @@ fn plan(limit: i64) -> NaturalLoopPlan {
     .unwrap()
 }
 
+fn unboxed_integer_plan(limit: i64) -> NaturalLoopPlan {
+    let integer_slots = (1_u32 << CURRENT)
+        | (1_u32 << TOTAL)
+        | (1_u32 << LIMIT)
+        | (1_u32 << STEP)
+        | (1_u32 << NEXT)
+        | (1_u32 << NEXT_TOTAL);
+    let entry_slots = (1_u32 << CURRENT) | (1_u32 << TOTAL);
+    plan(limit)
+        .with_unboxed_integer_slots(integer_slots, entry_slots)
+        .unwrap()
+}
+
 fn scratch(limit: i64) -> [u64; 7] {
     [
         int_bits(0),
@@ -224,6 +237,56 @@ fn numeric_remainder_plan() -> NaturalLoopPlan {
         }],
     )
     .unwrap()
+}
+
+#[test]
+fn unboxed_integer_accumulator_matches_tagged_execution_without_helpers() {
+    let limit = 4_096;
+    let tagged = CompiledNaturalLoop::compile(&plan(limit)).unwrap();
+    let unboxed = CompiledNaturalLoop::compile(&unboxed_integer_plan(limit)).unwrap();
+    let mut tagged_scratch = scratch(limit);
+    let mut unboxed_scratch = tagged_scratch;
+    let budget = u64::try_from(limit * 9).unwrap();
+
+    assert_eq!(
+        unboxed.run(&mut unboxed_scratch, &[], budget),
+        tagged.run(&mut tagged_scratch, &[], budget),
+    );
+    assert_eq!(unboxed_scratch, tagged_scratch);
+    assert_eq!(
+        value(unboxed_scratch[1]).as_int(),
+        Some((limit * (limit + 1)) / 2),
+    );
+    assert_eq!(unboxed.imported_helper_count(), 0);
+    assert!(unboxed.code_size() < tagged.code_size());
+}
+
+#[test]
+fn unboxed_integer_entry_guards_side_exit_atomically() {
+    let compiled = CompiledNaturalLoop::compile(&unboxed_integer_plan(4_096)).unwrap();
+    let mut values = scratch(4_096);
+    values[TOTAL as usize] = bits(Value::float(0.0).unwrap());
+    let original = values;
+
+    assert_eq!(
+        compiled.run(&mut values, &[], 4_096 * 9),
+        NaturalLoopOutcome::SideExit,
+    );
+    assert_eq!(values, original);
+}
+
+#[test]
+fn unboxed_integer_overflow_side_exits_atomically() {
+    let compiled = CompiledNaturalLoop::compile(&unboxed_integer_plan(4_096)).unwrap();
+    let mut values = scratch(4_096);
+    values[TOTAL as usize] = int_bits(VALUE_INT_MAX);
+    let original = values;
+
+    assert_eq!(
+        compiled.run(&mut values, &[], 4_096 * 9),
+        NaturalLoopOutcome::SideExit,
+    );
+    assert_eq!(values, original);
 }
 
 #[test]

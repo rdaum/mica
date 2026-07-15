@@ -16,16 +16,18 @@ mod fixtures;
 use fixtures::{
     ALTERNATING_BRANCH_LOOP_INSTRUCTIONS, BUILTIN_CALL_INSTRUCTIONS, BenchmarkHost,
     INTEGER_LOOP_INSTRUCTIONS, MAX_CALL_DEPTH, NATURAL_FLOAT_SUM_INSTRUCTIONS,
-    NATURAL_FLOAT_TRANSFORM_INSTRUCTIONS, NATURAL_MIXED_SCALE_INSTRUCTIONS,
-    NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS, PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS, ProgramFixture,
-    SCALAR_LOOP_INSTRUCTIONS, STATIC_CALL_INSTRUCTIONS, alternating_branch_loop_fixture,
-    builtin_call_fixture, float_add_loop_fixture, float_multiply_loop_fixture,
-    integer_loop_fixture, natural_exact_integer_division_fixture, natural_float_remainder_fixture,
+    NATURAL_FLOAT_TRANSFORM_INSTRUCTIONS, NATURAL_INTEGER_ACCUMULATOR_INSTRUCTIONS,
+    NATURAL_MIXED_SCALE_INSTRUCTIONS, NATURAL_NUMERIC_DIV_REM_INSTRUCTIONS,
+    PREDICTABLE_BRANCH_LOOP_INSTRUCTIONS, ProgramFixture, SCALAR_LOOP_INSTRUCTIONS,
+    STATIC_CALL_INSTRUCTIONS, alternating_branch_loop_fixture, builtin_call_fixture,
+    float_add_loop_fixture, float_multiply_loop_fixture, integer_loop_fixture,
+    natural_exact_integer_division_fixture, natural_float_remainder_fixture,
     natural_float_sum_fixture, natural_float_transform_fixture,
-    natural_fractional_integer_division_fixture, natural_mixed_division_fixture,
-    natural_mixed_scale_fixture, predictable_branch_loop_fixture, scalar_symbol_loop_fixture,
-    static_call_fixture,
+    natural_fractional_integer_division_fixture, natural_integer_accumulator_fixture,
+    natural_mixed_division_fixture, natural_mixed_scale_fixture, predictable_branch_loop_fixture,
+    scalar_symbol_loop_fixture, static_call_fixture,
 };
+use mica_var::Value;
 use mica_vm::{RegisterVm, VmHostResponse};
 use micromeasure::{
     BenchContext, BenchmarkMainOptions, ConcurrentBenchContext, ConcurrentBenchControl,
@@ -171,6 +173,39 @@ fn native_integer_loop_cold(_ctx: &mut NoContext, chunk_size: usize, _chunk_num:
     for _ in 0..chunk_size {
         let fixture = integer_loop_fixture();
         black_box(execute_fixture_native(&fixture, &mut host));
+    }
+}
+
+fn interpreter_natural_integer_accumulator_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    measured_loop_cold(chunk_size, false, natural_integer_accumulator_fixture);
+}
+
+fn cranelift_natural_integer_accumulator_cold(
+    _ctx: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    let mut host = BenchmarkHost::default();
+    for _ in 0..chunk_size {
+        let fixture = natural_integer_accumulator_fixture();
+        black_box(execute_fixture_native(&fixture, &mut host));
+    }
+}
+
+fn rust_value_integer_accumulator(_ctx: &mut NoContext, chunk_size: usize, _chunk_num: usize) {
+    for _ in 0..chunk_size {
+        let mut current = Value::int(0).unwrap();
+        let mut total = Value::int(0).unwrap();
+        let step = Value::int(1).unwrap();
+        while current.as_int().unwrap() < fixtures::INTEGER_LOOP_ITERATIONS as i64 {
+            total = total.checked_add(&current).unwrap();
+            current = current.checked_add(&step).unwrap();
+        }
+        black_box(total);
     }
 }
 
@@ -396,6 +431,35 @@ benchmark_main!(
             .bench("cranelift_integer_loop", native_integer_loop);
         });
 
+        runner.group::<MeasuredLoopContext>("natural integer accumulator warm", |group| {
+            for (backend, native) in [("interpreter", false), ("cranelift", true)] {
+                let factory = move || MeasuredLoopContext {
+                    fixture: natural_integer_accumulator_fixture(),
+                    host: BenchmarkHost::default(),
+                    native,
+                };
+                group
+                    .throughput(Throughput::per_operation(
+                        NATURAL_INTEGER_ACCUMULATOR_INSTRUCTIONS,
+                        "bytecode_instruction",
+                    ))
+                    .factory(&factory)
+                    .bench(
+                        &format!("{backend}_natural_integer_accumulator"),
+                        measured_loop,
+                    );
+            }
+        });
+
+        runner.group::<NoContext>("natural integer accumulator control", |group| {
+            group
+                .throughput(Throughput::per_operation(1, "task"))
+                .bench(
+                    "rust_value_natural_integer_accumulator",
+                    rust_value_integer_accumulator,
+                );
+        });
+
         runner.group::<FloatLoopContext>("float", |group| {
             for (interpreter_name, cranelift_name, fixture) in [
                 (
@@ -441,6 +505,14 @@ benchmark_main!(
         runner.group::<NoContext>("integer cold", |g| {
             g.throughput(Throughput::per_operation(1, "task"))
                 .bench("cranelift_integer_loop_cold", native_integer_loop_cold);
+            g.throughput(Throughput::per_operation(1, "task")).bench(
+                "interpreter_natural_integer_accumulator_cold",
+                interpreter_natural_integer_accumulator_cold,
+            );
+            g.throughput(Throughput::per_operation(1, "task")).bench(
+                "cranelift_natural_integer_accumulator_cold",
+                cranelift_natural_integer_accumulator_cold,
+            );
         });
 
         runner.group::<NoContext>("float cold", |group| {
@@ -712,6 +784,36 @@ benchmark_main!(
                 .factory(&native)
                 .bench("cranelift_integer_loop_4_threads", &four_threads);
         });
+
+        runner.concurrent_group::<ConcurrentLoopContext>(
+            "natural integer accumulator concurrent",
+            |group| {
+                for (backend, native) in [("interpreter", false), ("cranelift", true)] {
+                    for (threads, workers) in [
+                        (1, &one_thread[..]),
+                        (CONCURRENT_THREADS, &four_threads[..]),
+                    ] {
+                        let factory = move |_| ConcurrentLoopContext {
+                            fixture: natural_integer_accumulator_fixture(),
+                            native,
+                            instruction_count: NATURAL_INTEGER_ACCUMULATOR_INSTRUCTIONS,
+                        };
+                        group
+                            .sample_duration(Duration::from_millis(50))
+                            .throughput(Throughput::per_operation(1, "bytecode_instruction"))
+                            .metadata("backend", backend)
+                            .metadata("threads", threads.to_string())
+                            .factory(&factory)
+                            .bench(
+                                &format!(
+                                    "{backend}_natural_integer_accumulator_{threads}_threads"
+                                ),
+                                workers,
+                            );
+                    }
+                }
+            },
+        );
 
         runner.concurrent_group::<ConcurrentLoopContext>("float concurrent", |group| {
             for (fixture, interpreter_one, interpreter_four, cranelift_one, cranelift_four) in [

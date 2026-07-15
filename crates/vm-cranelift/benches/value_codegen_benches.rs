@@ -12,10 +12,12 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_var::Value;
+use mica_var::abi::borrowed_value_bits;
 use mica_var::language_cmp;
 use mica_vm_cranelift::{
-    CompiledFloatLoop, CompiledIntegerLoop, FloatArithmetic, FloatComparison, FloatLoopOutcome,
-    FloatLoopPlan, IntegerLoopOutcome,
+    CompiledFloatLoop, CompiledIntegerLoop, CompiledNaturalLoop, FloatArithmetic, FloatComparison,
+    FloatLoopOutcome, FloatLoopPlan, IntegerLoopOutcome, NaturalLoopInstruction,
+    NaturalLoopOutcome, NaturalLoopPlan, ScalarComparison,
 };
 use micromeasure::{
     BenchContext, BenchmarkMainOptions, ConcurrentBenchContext, ConcurrentBenchControl,
@@ -25,7 +27,16 @@ use micromeasure::{
 use std::time::Duration;
 
 const INTEGER_LOOP_ITERATIONS: u64 = 16_384;
+const NATURAL_INTEGER_LOOP_INSTRUCTIONS: u64 = INTEGER_LOOP_ITERATIONS * 9;
 const CONCURRENT_THREADS: usize = 4;
+
+const CURRENT_SLOT: u16 = 0;
+const TOTAL_SLOT: u16 = 1;
+const LIMIT_SLOT: u16 = 2;
+const CONDITION_SLOT: u16 = 3;
+const STEP_SLOT: u16 = 4;
+const NEXT_SLOT: u16 = 5;
+const NEXT_TOTAL_SLOT: u16 = 6;
 
 #[derive(Clone, Copy)]
 enum FloatLoopKind {
@@ -73,6 +84,56 @@ struct FloatValueLoopContext {
     step: Value,
     limit: Value,
     iterations: u64,
+}
+
+struct NaturalIntegerLoopContext {
+    compiled: Box<CompiledNaturalLoop>,
+    initial_scratch: [u64; 7],
+}
+
+impl NaturalIntegerLoopContext {
+    fn unboxed() -> Self {
+        Self::new(true)
+    }
+
+    fn new(unboxed: bool) -> Self {
+        let plan = natural_integer_loop_plan(unboxed);
+        let int_bits = |value| borrowed_value_bits(&Value::int(value).unwrap());
+        Self {
+            compiled: Box::new(CompiledNaturalLoop::compile(&plan).unwrap()),
+            initial_scratch: [
+                int_bits(0),
+                int_bits(0),
+                int_bits(INTEGER_LOOP_ITERATIONS as i64),
+                borrowed_value_bits(&Value::bool(true)),
+                borrowed_value_bits(&Value::nothing()),
+                borrowed_value_bits(&Value::nothing()),
+                borrowed_value_bits(&Value::nothing()),
+            ],
+        }
+    }
+
+    fn run_once(&self) -> u64 {
+        let mut scratch = self.initial_scratch;
+        let NaturalLoopOutcome::Complete { instructions, .. } =
+            self.compiled
+                .run(&mut scratch, &[], NATURAL_INTEGER_LOOP_INSTRUCTIONS)
+        else {
+            panic!("natural integer benchmark left the generated fast path");
+        };
+        debug_assert_eq!(instructions, NATURAL_INTEGER_LOOP_INSTRUCTIONS);
+        debug_assert_eq!(
+            scratch[TOTAL_SLOT as usize],
+            borrowed_value_bits(
+                &Value::int(
+                    ((INTEGER_LOOP_ITERATIONS * (INTEGER_LOOP_ITERATIONS + 1)) / 2) as i64,
+                )
+                .unwrap(),
+            ),
+        );
+        black_box(scratch);
+        instructions
+    }
 }
 
 impl FloatValueLoopContext {
@@ -206,6 +267,18 @@ impl ConcurrentBenchContext for FloatValueLoopContext {
     }
 }
 
+impl BenchContext for NaturalIntegerLoopContext {
+    fn prepare(_num_chunks: usize) -> Self {
+        Self::unboxed()
+    }
+}
+
+impl ConcurrentBenchContext for NaturalIntegerLoopContext {
+    fn prepare(_num_threads: usize) -> Self {
+        Self::unboxed()
+    }
+}
+
 fn interpreted_integer_loop(start: &Value, step: &Value, limit: &Value) -> Value {
     let mut current = start.clone();
     while &current < limit {
@@ -256,6 +329,139 @@ fn compile_float_loops(_context: &mut NoContext, chunk_size: usize, _chunk_num: 
         .unwrap();
         black_box((compiled.code_size(), compiled.imported_helper_count()));
     }
+}
+
+fn natural_integer_loop_plan(unboxed: bool) -> NaturalLoopPlan {
+    let int_bits = |value| borrowed_value_bits(&Value::int(value).unwrap());
+    let integer_slots = (1_u32 << CURRENT_SLOT)
+        | (1_u32 << TOTAL_SLOT)
+        | (1_u32 << LIMIT_SLOT)
+        | (1_u32 << STEP_SLOT)
+        | (1_u32 << NEXT_SLOT)
+        | (1_u32 << NEXT_TOTAL_SLOT);
+    let entry_slots = (1_u32 << CURRENT_SLOT) | (1_u32 << TOTAL_SLOT);
+
+    let plan = NaturalLoopPlan::new(
+        7,
+        0,
+        3,
+        [
+            NaturalLoopInstruction::Load {
+                dst: LIMIT_SLOT,
+                value: int_bits(INTEGER_LOOP_ITERATIONS as i64),
+            },
+            NaturalLoopInstruction::Compare {
+                dst: CONDITION_SLOT,
+                comparison: ScalarComparison::LessThan,
+                left: CURRENT_SLOT,
+                right: LIMIT_SLOT,
+            },
+            NaturalLoopInstruction::Branch {
+                condition: CONDITION_SLOT,
+                if_true: 3,
+                if_false: 9,
+            },
+            NaturalLoopInstruction::Load {
+                dst: STEP_SLOT,
+                value: int_bits(1),
+            },
+            NaturalLoopInstruction::Add {
+                dst: NEXT_SLOT,
+                left: CURRENT_SLOT,
+                right: STEP_SLOT,
+            },
+            NaturalLoopInstruction::Move {
+                dst: CURRENT_SLOT,
+                src: NEXT_SLOT,
+            },
+            NaturalLoopInstruction::Add {
+                dst: NEXT_TOTAL_SLOT,
+                left: TOTAL_SLOT,
+                right: CURRENT_SLOT,
+            },
+            NaturalLoopInstruction::Move {
+                dst: TOTAL_SLOT,
+                src: NEXT_TOTAL_SLOT,
+            },
+            NaturalLoopInstruction::Jump { target: 0 },
+        ],
+    )
+    .unwrap();
+    if unboxed {
+        plan.with_unboxed_integer_slots(integer_slots, entry_slots)
+            .unwrap()
+    } else {
+        plan
+    }
+}
+
+fn compile_natural_integer_loops(
+    _context: &mut NoContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+    unboxed: bool,
+) {
+    for _ in 0..chunk_size {
+        let compiled = CompiledNaturalLoop::compile(&natural_integer_loop_plan(unboxed)).unwrap();
+        black_box((compiled.code_size(), compiled.imported_helper_count()));
+    }
+}
+
+fn compile_tagged_natural_integer_loops(
+    context: &mut NoContext,
+    chunk_size: usize,
+    chunk_num: usize,
+) {
+    compile_natural_integer_loops(context, chunk_size, chunk_num, false);
+}
+
+fn compile_unboxed_natural_integer_loops(
+    context: &mut NoContext,
+    chunk_size: usize,
+    chunk_num: usize,
+) {
+    compile_natural_integer_loops(context, chunk_size, chunk_num, true);
+}
+
+fn run_natural_integer_loops(
+    context: &mut NaturalIntegerLoopContext,
+    chunk_size: usize,
+    _chunk_num: usize,
+) {
+    for _ in 0..chunk_size {
+        black_box(context.run_once());
+    }
+}
+
+fn natural_integer_code_diagnostics(
+    context: &mut NaturalIntegerLoopContext,
+    _chunk_size: usize,
+    _chunk_num: usize,
+) -> Result<DiagnosticResult, DiagnosticError> {
+    Ok(DiagnosticResult::new("generated natural integer code")
+        .push_metric(MetricValue::integer(
+            "code_size",
+            context.compiled.code_size() as i64,
+            "bytes",
+        ))
+        .push_metric(MetricValue::integer(
+            "imported_helpers",
+            context.compiled.imported_helper_count() as i64,
+            "helpers",
+        )))
+}
+
+fn run_concurrent_natural_integer_loops(
+    context: &NaturalIntegerLoopContext,
+    control: &ConcurrentBenchControl,
+) -> ConcurrentWorkerResult {
+    let mut instructions = 0_u64;
+    let mut loops = 0_u64;
+    while !control.should_stop() {
+        instructions = instructions.wrapping_add(context.run_once());
+        loops = loops.wrapping_add(1);
+    }
+    ConcurrentWorkerResult::operations(instructions).with_counter("loops", loops)
 }
 
 fn generated_code_diagnostics(
@@ -423,6 +629,23 @@ benchmark_main!(
             }
         });
 
+        runner.group::<NaturalIntegerLoopContext>("natural integer codegen", |group| {
+            for (name, unboxed) in [
+                ("cranelift_tagged_natural_integer_accumulator", false),
+                ("cranelift_unboxed_natural_integer_accumulator", true),
+            ] {
+                let factory = move || NaturalIntegerLoopContext::new(unboxed);
+                group
+                    .throughput(Throughput::per_operation(
+                        NATURAL_INTEGER_LOOP_INSTRUCTIONS,
+                        "bytecode_instruction",
+                    ))
+                    .factory(&factory)
+                    .diagnostic_pass(natural_integer_code_diagnostics)
+                    .bench(name, run_natural_integer_loops);
+            }
+        });
+
         runner.group::<NoContext>("value codegen compile", |group| {
             group
                 .throughput(Throughput::per_operation(1, "compilation"))
@@ -430,6 +653,18 @@ benchmark_main!(
             group
                 .throughput(Throughput::per_operation(1, "compilation"))
                 .bench("cranelift_compile_float_loop", compile_float_loops);
+            group
+                .throughput(Throughput::per_operation(1, "compilation"))
+                .bench(
+                    "cranelift_compile_tagged_natural_integer_loop",
+                    compile_tagged_natural_integer_loops,
+                );
+            group
+                .throughput(Throughput::per_operation(1, "compilation"))
+                .bench(
+                    "cranelift_compile_unboxed_natural_integer_loop",
+                    compile_unboxed_natural_integer_loops,
+                );
         });
 
         let one_thread = [ConcurrentWorker {
@@ -476,6 +711,42 @@ benchmark_main!(
                 .factory(&cranelift)
                 .bench("cranelift_value_integer_loop_4_threads", &four_threads);
         });
+
+        let one_natural_thread = [ConcurrentWorker {
+            name: "natural integer loop",
+            threads: 1,
+            run: run_concurrent_natural_integer_loops,
+        }];
+        let four_natural_threads = [ConcurrentWorker {
+            name: "natural integer loop",
+            threads: CONCURRENT_THREADS,
+            run: run_concurrent_natural_integer_loops,
+        }];
+        runner.concurrent_group::<NaturalIntegerLoopContext>(
+            "natural integer codegen concurrent",
+            |group| {
+                for (representation, unboxed) in [("tagged", false), ("unboxed", true)] {
+                    for (threads, workers) in [
+                        (1, &one_natural_thread[..]),
+                        (CONCURRENT_THREADS, &four_natural_threads[..]),
+                    ] {
+                        let factory = move |_| NaturalIntegerLoopContext::new(unboxed);
+                        group
+                            .sample_duration(Duration::from_millis(50))
+                            .throughput(Throughput::per_operation(1, "bytecode_instruction"))
+                            .metadata("representation", representation)
+                            .metadata("threads", threads.to_string())
+                            .factory(&factory)
+                            .bench(
+                                &format!(
+                                    "cranelift_{representation}_natural_integer_accumulator_{threads}_threads"
+                                ),
+                                workers,
+                            );
+                    }
+                }
+            },
+        );
 
         let one_float_thread = [ConcurrentWorker {
             name: "float value loop",
