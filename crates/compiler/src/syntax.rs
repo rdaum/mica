@@ -122,6 +122,7 @@ pub enum SyntaxKind {
     LambdaExpr,
     ParamList,
     Param,
+    ValueKindRef,
     ExprStmt,
     AssignExpr,
     BinaryExpr,

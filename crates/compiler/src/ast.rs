@@ -190,6 +190,7 @@ pub enum Expr {
         span: Span,
         kind: BindingKind,
         pattern: BindingPattern,
+        annotation: Option<ValueKindRef>,
         value: Option<Box<Expr>>,
     },
     If {
@@ -262,6 +263,7 @@ pub enum Expr {
         span: Span,
         name: Option<String>,
         params: Vec<Param>,
+        result_kind: Option<ValueKindRef>,
         body: FunctionBody,
     },
     Effect {
@@ -394,10 +396,17 @@ pub enum BindingPattern {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValueKindRef {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Param {
     pub id: NodeId,
     pub name: String,
     pub mode: ParamMode,
+    pub annotation: Option<ValueKindRef>,
     pub default: Option<Expr>,
 }
 

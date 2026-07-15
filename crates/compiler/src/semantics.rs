@@ -15,8 +15,10 @@ use crate::{
     Arg, Ast, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
     FunctionBody, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirParam,
     HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem, HirRuleGuard,
-    HirScatterBinding, Item, NodeId, Param, ParamMode, ParseError, RecoveryClause, Span, parse_ast,
+    HirScatterBinding, Item, NodeId, Param, ParamMode, ParseError, RecoveryClause, Span,
+    ValueKindRef, parse_ast,
 };
+use mica_var::ValueKind;
 use std::collections::{BTreeSet, HashMap};
 
 pub fn parse_semantic(source: &str) -> SemanticProgram {
@@ -78,6 +80,7 @@ pub struct Binding {
     pub name: String,
     pub kind: LocalKind,
     pub mutable: bool,
+    pub declared_kind: Option<ValueKind>,
     pub scope: ScopeId,
     pub declared_at: NodeId,
 }
@@ -137,6 +140,8 @@ pub enum DiagnosticCode {
     InvalidAssignmentTarget,
     InvalidFactChange,
     InvalidRelationRule,
+    UnknownValueKind,
+    UnsupportedValueKindAnnotation,
     UnsupportedSyntax,
 }
 
@@ -209,6 +214,7 @@ impl<'a> Analyzer<'a> {
         scope: ScopeId,
         name: impl Into<String>,
         kind: LocalKind,
+        declared_kind: Option<ValueKind>,
         declared_at: NodeId,
         span: &Span,
     ) -> BindingId {
@@ -227,6 +233,7 @@ impl<'a> Analyzer<'a> {
             name,
             mutable: kind.mutable_by_default(),
             kind,
+            declared_kind,
             scope,
             declared_at,
         };
@@ -947,8 +954,11 @@ impl<'a> Analyzer<'a> {
                 span,
                 kind,
                 pattern,
+                annotation,
                 value,
             } => {
+                let declared_kind =
+                    self.resolve_kind_ref(annotation.as_ref(), *id, "ordinary bindings");
                 let hir_value = value
                     .as_ref()
                     .map(|value| Box::new(self.lower_expr(value, scope)));
@@ -961,6 +971,7 @@ impl<'a> Analyzer<'a> {
                                 BindingKind::Let => LocalKind::Let,
                                 BindingKind::Const => LocalKind::Const,
                             },
+                            declared_kind,
                             *id,
                             span,
                         )),
@@ -979,6 +990,7 @@ impl<'a> Analyzer<'a> {
                                     scope,
                                     param.name.clone(),
                                     local_kind,
+                                    None,
                                     param.id,
                                     span,
                                 );
@@ -1044,9 +1056,9 @@ impl<'a> Analyzer<'a> {
             } => {
                 let iter = self.lower_expr(iter, scope);
                 let loop_scope = self.alloc_scope(Some(scope), Some(*id));
-                let key = self.declare(loop_scope, key.clone(), LocalKind::Loop, *id, span);
+                let key = self.declare(loop_scope, key.clone(), LocalKind::Loop, None, *id, span);
                 let value = value.as_ref().map(|value| {
-                    self.declare(loop_scope, value.clone(), LocalKind::Loop, *id, span)
+                    self.declare(loop_scope, value.clone(), LocalKind::Loop, None, *id, span)
                 });
                 HirExpr::For {
                     id: *id,
@@ -1125,11 +1137,14 @@ impl<'a> Analyzer<'a> {
                 span,
                 name,
                 params,
+                result_kind,
                 body,
             } => {
-                let name = name
-                    .as_ref()
-                    .map(|name| self.declare(scope, name.clone(), LocalKind::Function, *id, span));
+                let result_kind =
+                    self.resolve_kind_ref(result_kind.as_ref(), *id, "function results");
+                let name = name.as_ref().map(|name| {
+                    self.declare(scope, name.clone(), LocalKind::Function, None, *id, span)
+                });
                 let function_scope = self.alloc_scope(Some(scope), Some(*id));
                 self.function_stack.push(FunctionContext {
                     owner: *id,
@@ -1155,6 +1170,7 @@ impl<'a> Analyzer<'a> {
                     name,
                     scope: function_scope,
                     params: hir_params,
+                    result_kind,
                     captures,
                     body,
                 }
@@ -1205,7 +1221,16 @@ impl<'a> Analyzer<'a> {
                     ParamMode::Optional => LocalKind::OptionalParam,
                     ParamMode::Rest => LocalKind::RestParam,
                 };
-                let binding = self.declare(scope, param.name.clone(), kind.clone(), param.id, span);
+                let declared_kind =
+                    self.resolve_kind_ref(param.annotation.as_ref(), param.id, "parameters");
+                let binding = self.declare(
+                    scope,
+                    param.name.clone(),
+                    kind.clone(),
+                    declared_kind,
+                    param.id,
+                    span,
+                );
                 let default = param
                     .default
                     .as_ref()
@@ -1214,6 +1239,7 @@ impl<'a> Analyzer<'a> {
                     id: param.id,
                     binding,
                     kind,
+                    declared_kind,
                     default,
                 }
             })
@@ -1222,10 +1248,16 @@ impl<'a> Analyzer<'a> {
 
     fn lower_catch(&mut self, catch: &CatchClause, parent: ScopeId) -> HirCatch {
         let scope = self.alloc_scope(Some(parent), Some(catch.id));
-        let binding = catch
-            .name
-            .as_ref()
-            .map(|name| self.declare(scope, name.clone(), LocalKind::Catch, catch.id, &(0..0)));
+        let binding = catch.name.as_ref().map(|name| {
+            self.declare(
+                scope,
+                name.clone(),
+                LocalKind::Catch,
+                None,
+                catch.id,
+                &(0..0),
+            )
+        });
         let condition = catch
             .condition
             .as_ref()
@@ -1241,10 +1273,16 @@ impl<'a> Analyzer<'a> {
 
     fn lower_recovery(&mut self, catch: &RecoveryClause, parent: ScopeId) -> HirRecovery {
         let scope = self.alloc_scope(Some(parent), Some(catch.id));
-        let binding = catch
-            .name
-            .as_ref()
-            .map(|name| self.declare(scope, name.clone(), LocalKind::Catch, catch.id, &(0..0)));
+        let binding = catch.name.as_ref().map(|name| {
+            self.declare(
+                scope,
+                name.clone(),
+                LocalKind::Catch,
+                None,
+                catch.id,
+                &(0..0),
+            )
+        });
         let condition = catch
             .condition
             .as_ref()
@@ -1390,6 +1428,31 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn resolve_kind_ref(
+        &mut self,
+        annotation: Option<&ValueKindRef>,
+        node: NodeId,
+        boundary: &str,
+    ) -> Option<ValueKind> {
+        let annotation = annotation?;
+        let Some(kind) = value_kind_from_name(&annotation.name) else {
+            self.diagnostic(
+                DiagnosticCode::UnknownValueKind,
+                node,
+                annotation.span.clone(),
+                format!("unknown value kind `{}`", annotation.name),
+            );
+            return None;
+        };
+        self.diagnostic(
+            DiagnosticCode::UnsupportedValueKindAnnotation,
+            node,
+            annotation.span.clone(),
+            format!("value-kind annotations on {boundary} are not yet enforced"),
+        );
+        Some(kind)
+    }
+
     fn diagnostic(
         &mut self,
         code: DiagnosticCode,
@@ -1408,6 +1471,28 @@ impl<'a> Analyzer<'a> {
     fn unsupported(&mut self, node: NodeId, message: impl Into<String>) {
         let span = self.spans.get(&node).cloned().unwrap_or(0..0);
         self.diagnostic(DiagnosticCode::UnsupportedSyntax, node, span, message);
+    }
+}
+
+fn value_kind_from_name(name: &str) -> Option<ValueKind> {
+    match name {
+        "bool" => Some(ValueKind::Bool),
+        "int" => Some(ValueKind::Int),
+        "float" => Some(ValueKind::Float),
+        "identity" => Some(ValueKind::Identity),
+        "string" => Some(ValueKind::String),
+        "bytes" => Some(ValueKind::Bytes),
+        "symbol" => Some(ValueKind::Symbol),
+        "error_code" => Some(ValueKind::ErrorCode),
+        "error" => Some(ValueKind::Error),
+        "capability" => Some(ValueKind::Capability),
+        "frob" => Some(ValueKind::Frob),
+        "function" => Some(ValueKind::Function),
+        "list" => Some(ValueKind::List),
+        "map" => Some(ValueKind::Map),
+        "range" => Some(ValueKind::Range),
+        "relation" => Some(ValueKind::Relation),
+        _ => None,
     }
 }
 
@@ -1672,6 +1757,99 @@ mod tests {
         let program = parse_semantic(source);
         assert_eq!(program.parse_errors, vec![]);
         program
+    }
+
+    #[test]
+    fn resolves_every_runtime_value_kind_annotation() {
+        let source = [
+            "let v_bool: bool = nothing",
+            "let v_int: int = nothing",
+            "let v_float: float = nothing",
+            "let v_identity: identity = nothing",
+            "let v_string: string = nothing",
+            "let v_bytes: bytes = nothing",
+            "let v_symbol: symbol = nothing",
+            "let v_error_code: error_code = nothing",
+            "let v_error: error = nothing",
+            "let v_capability: capability = nothing",
+            "let v_frob: frob = nothing",
+            "let v_function: function = nothing",
+            "let v_list: list = nothing",
+            "let v_map: map = nothing",
+            "let v_range: range = nothing",
+            "let v_relation: relation = nothing",
+        ]
+        .join("\n");
+        let program = parse_ok(&source);
+
+        assert_eq!(
+            program
+                .bindings
+                .iter()
+                .filter_map(|binding| binding.declared_kind)
+                .collect::<Vec<_>>(),
+            vec![
+                ValueKind::Bool,
+                ValueKind::Int,
+                ValueKind::Float,
+                ValueKind::Identity,
+                ValueKind::String,
+                ValueKind::Bytes,
+                ValueKind::Symbol,
+                ValueKind::ErrorCode,
+                ValueKind::Error,
+                ValueKind::Capability,
+                ValueKind::Frob,
+                ValueKind::Function,
+                ValueKind::List,
+                ValueKind::Map,
+                ValueKind::Range,
+                ValueKind::Relation,
+            ]
+        );
+        assert_eq!(program.diagnostics.len(), 16);
+        assert!(program.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code == DiagnosticCode::UnsupportedValueKindAnnotation
+        }));
+    }
+
+    #[test]
+    fn preserves_parameter_and_result_kind_metadata_while_rejecting_enforcement() {
+        let program = parse_ok("fn convert(value: float) -> string => value");
+
+        let HirItem::Expr {
+            expr:
+                HirExpr::Function {
+                    params,
+                    result_kind,
+                    ..
+                },
+            ..
+        } = &program.hir.items[0]
+        else {
+            panic!("expected function");
+        };
+        assert_eq!(params[0].declared_kind, Some(ValueKind::Float));
+        assert_eq!(*result_kind, Some(ValueKind::String));
+        assert_eq!(program.diagnostics.len(), 2);
+        assert!(program.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code == DiagnosticCode::UnsupportedValueKindAnnotation
+        }));
+    }
+
+    #[test]
+    fn reports_unknown_value_kind_at_the_kind_reference() {
+        let source = "let count: integer = 1";
+        let program = parse_ok(source);
+
+        assert_eq!(program.diagnostics.len(), 1);
+        assert_eq!(
+            program.diagnostics[0].code,
+            DiagnosticCode::UnknownValueKind
+        );
+        let start = source.find("integer").unwrap();
+        assert_eq!(program.diagnostics[0].span, start..start + "integer".len());
+        assert_eq!(program.bindings[0].declared_kind, None);
     }
 
     #[test]
