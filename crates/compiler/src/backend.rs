@@ -5802,6 +5802,65 @@ mod tests {
     }
 
     #[test]
+    fn annotations_and_inference_feed_identical_program_kind_facts() {
+        let unannotated = compile_source(
+            "let total = 0\n\
+             total = total + 1\n\
+             return total",
+            &CompileContext::new(),
+        )
+        .unwrap();
+        let annotated = compile_source(
+            "let total: int = 0\n\
+             total = total + 1\n\
+             return total",
+            &CompileContext::new(),
+        )
+        .unwrap();
+
+        let instructions = unannotated.program.instructions();
+        assert_eq!(annotated.program.instructions(), instructions);
+        for instruction in 0..instructions.len() {
+            assert_eq!(
+                annotated.program.kind_fact_after(instruction),
+                unannotated.program.kind_fact_after(instruction),
+            );
+        }
+
+        let checked = compile_source(
+            "let total: int = opaque()\n\
+             return total + 1",
+            &CompileContext::new().with_runtime_function("opaque"),
+        )
+        .unwrap();
+        let checked_instructions = checked.program.instructions();
+        let check = checked_instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::CheckKind { .. }))
+            .unwrap();
+        let add = checked_instructions
+            .iter()
+            .position(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Binary {
+                        op: RuntimeBinaryOp::Add,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert!(matches!(
+            checked.program.kind_fact_after(check),
+            Some((_, ValueKind::Int))
+        ));
+        assert!(matches!(
+            checked.program.kind_fact_after(add),
+            Some((_, ValueKind::Int))
+        ));
+    }
+
+    #[test]
     fn annotated_bindings_check_control_flow_and_captured_writes() {
         let context = CompileContext::new().with_runtime_function("opaque");
         let compiled = compile_source(
