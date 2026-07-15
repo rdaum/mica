@@ -1,0 +1,21 @@
+[package]
+name = "mica-compiler-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mica-compiler = { path = ".." }
+
+[[bin]]
+name = "value_kind_annotations"
+path = "fuzz_targets/value_kind_annotations.rs"
+test = false
+doc = false
+bench = false

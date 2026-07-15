@@ -23,7 +23,7 @@ members = [
     "crates/web-host",
     "crates/webtransport-host",
 ]
-exclude = ["crates/var/fuzz"]
+exclude = ["crates/compiler/fuzz", "crates/var/fuzz"]
 
 [workspace.package]
 edition = "2024"
