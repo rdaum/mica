@@ -37,7 +37,8 @@ const COMPILER_ARITHMETIC_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 11) +
 const COMPILER_INTEGER_SURFACE_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 19) + 6;
 const RANGE_ADMISSION_ITERATIONS: [u64; 4] = [2_048, 4_096, 8_192, 16_384];
 const RANGE_ADMISSION_CONCURRENT_ITERATIONS: [u64; 2] = [8_192, 16_384];
-const COLLECTION_BINDING_CHECK_ITERATIONS: u64 = 4_096;
+// Keep this above the VM's measured 8,192-element collection-loop JIT threshold.
+const COLLECTION_BINDING_CHECK_ITERATIONS: u64 = 16_384;
 const REPEATED_DISPATCH_ITERATIONS: u64 = 1_024;
 const THREE_SITE_DISPATCH_ROUNDS: u64 = REPEATED_DISPATCH_ITERATIONS / 3;
 const THREE_SITE_DISPATCHES_PER_TASK: u64 = THREE_SITE_DISPATCH_ROUNDS * 3;
@@ -171,7 +172,13 @@ impl ColdLoopBenchContext {
     }
 
     fn accumulator() -> Self {
-        Self::from_task_context(TaskBenchContext::compiler_accumulator_loop())
+        Self::accumulator_with_annotations(false, false)
+    }
+
+    fn accumulator_with_annotations(annotated: bool, interpret_only: bool) -> Self {
+        Self::from_task_context(
+            TaskBenchContext::compiler_accumulator_loop_with_annotations(annotated, interpret_only),
+        )
     }
 
     fn countdown() -> Self {
@@ -354,9 +361,14 @@ impl TaskBenchContext {
     }
 
     fn compiler_accumulator_loop() -> Self {
+        Self::compiler_accumulator_loop_with_annotations(false, false)
+    }
+
+    fn compiler_accumulator_loop_with_annotations(annotated: bool, interpret_only: bool) -> Self {
+        let annotation = if annotated { ": int" } else { "" };
         let source = format!(
-            "let i = 0\n\
-             let total = 0\n\
+            "let i{annotation} = 0\n\
+             let total{annotation} = 0\n\
              while i < {INTEGER_LOOP_ITERATIONS}\n\
                i = i + 1\n\
                total = total + i\n\
@@ -366,17 +378,17 @@ impl TaskBenchContext {
         let program = compile_source(&source, &CompileContext::new())
             .unwrap()
             .program;
-        Self::from_program(
+        let mut context = Self::from_program(
             RelationKernel::new(),
             program,
             Workload::task(COMPILER_ACCUMULATOR_LOOP_BYTECODES),
-        )
+        );
+        context.interpret_only = interpret_only;
+        context
     }
 
     fn interpreted_compiler_accumulator_loop() -> Self {
-        let mut context = Self::compiler_accumulator_loop();
-        context.interpret_only = true;
-        context
+        Self::compiler_accumulator_loop_with_annotations(false, true)
     }
 
     fn compiler_countdown_loop() -> Self {
@@ -1801,7 +1813,7 @@ fn constant_return_program(result: i64) -> Arc<Program> {
 benchmark_main!(
     BenchmarkMainOptions {
         filter_help: Some(
-            "all, minimal, integer, read, write, dispatch, call_path, collection_binding, or a benchmark name substring"
+            "all, minimal, integer, read, write, dispatch, call_path, value_kind, collection_binding, or a benchmark name substring"
                 .to_owned(),
         ),
         runtime: micromeasure::BenchmarkRuntimeOptions {
@@ -2057,8 +2069,10 @@ benchmark_main!(
         });
 
         runner.group::<TaskBenchContext>("collection binding checks warm", |group| {
-            for (backend, interpret_only) in [("interpreter", true), ("native_enabled", false)] {
-                for (shape, annotated) in [("unannotated", false), ("annotated", true)] {
+            for (backend, interpret_only) in [("interpreter", true), ("cranelift", false)] {
+                for (shape, annotated) in
+                    [("dynamic_unannotated", false), ("dynamic_checked", true)]
+                {
                     let factory = move || {
                         TaskBenchContext::compiler_list_binding_loop(annotated, interpret_only)
                     };
@@ -2071,6 +2085,29 @@ benchmark_main!(
                         .factory(&factory)
                         .diagnostic_pass(workload_diagnostics)
                         .bench(&name, run_tasks);
+                }
+            }
+        });
+
+        runner.group::<TaskBenchContext>("value kind facts warm", |group| {
+            for (backend, interpret_only) in [("interpreter", true), ("cranelift", false)] {
+                for (fact_source, annotated) in [("inferred", false), ("annotated_proven", true)] {
+                    let factory = move || {
+                        TaskBenchContext::compiler_accumulator_loop_with_annotations(
+                            annotated,
+                            interpret_only,
+                        )
+                    };
+                    group
+                        .throughput(Throughput::per_operation(
+                            COMPILER_ACCUMULATOR_LOOP_BYTECODES,
+                            "bytecodes",
+                        ))
+                        .factory(&factory)
+                        .bench(
+                            &format!("value_kind_facts_{backend}_{fact_source}_warm"),
+                            run_tasks,
+                        );
                 }
             }
         });
@@ -2165,6 +2202,54 @@ benchmark_main!(
                     "task_cranelift_compiler_integer_surface_loop_cold",
                     run_cold_loop,
                 );
+        });
+
+        runner.group::<ColdLoopBenchContext>("value kind facts cold", |group| {
+            for (backend, interpret_only) in [("interpreter", true), ("cranelift", false)] {
+                for (fact_source, annotated) in [("inferred", false), ("annotated_proven", true)] {
+                    let factory = move || {
+                        ColdLoopBenchContext::accumulator_with_annotations(
+                            annotated,
+                            interpret_only,
+                        )
+                    };
+                    group
+                        .throughput(Throughput::per_operation(1, "task"))
+                        .factory(&factory)
+                        .bench(
+                            &format!("value_kind_facts_{backend}_{fact_source}_cold"),
+                            run_cold_loop,
+                        );
+                }
+            }
+        });
+
+        runner.group::<ColdLoopBenchContext>("collection binding checks cold", |group| {
+            for (backend, interpret_only) in [("interpreter", true), ("cranelift", false)] {
+                for (shape, annotated) in
+                    [("dynamic_unannotated", false), ("dynamic_checked", true)]
+                {
+                    let factory = move || {
+                        ColdLoopBenchContext::collection(
+                            TaskBenchContext::compiler_list_binding_loop(
+                                annotated,
+                                interpret_only,
+                            ),
+                            interpret_only,
+                        )
+                    };
+                    group
+                        .throughput(Throughput::per_operation(
+                            COLLECTION_BINDING_CHECK_ITERATIONS,
+                            "elements",
+                        ))
+                        .factory(&factory)
+                        .bench(
+                            &format!("collection_binding_checks_{backend}_{shape}_cold"),
+                            run_cold_loop,
+                        );
+                }
+            }
         });
 
         runner.group::<ColdLoopBenchContext>("range JIT admission cold", |group| {
@@ -3037,12 +3122,53 @@ benchmark_main!(
         );
 
         runner.concurrent_group::<ConcurrentTaskBenchContext>(
+            "value kind facts concurrent",
+            |group| {
+                for (backend, interpret_only) in [("interpreter", true), ("cranelift", false)] {
+                    for (fact_source, annotated) in
+                        [("inferred", false), ("annotated_proven", true)]
+                    {
+                        let factory = move |_| {
+                            ConcurrentTaskBenchContext::from_task_context(
+                                TaskBenchContext::compiler_accumulator_loop_with_annotations(
+                                    annotated,
+                                    interpret_only,
+                                ),
+                            )
+                        };
+                        for (threads, workers) in [
+                            (1, single_integer_worker.as_slice()),
+                            (
+                                CONCURRENT_DISPATCH_THREADS,
+                                concurrent_integer_workers.as_slice(),
+                            ),
+                        ] {
+                            group
+                                .sample_duration(Duration::from_millis(50))
+                                .throughput(Throughput::per_operation(1, "bytecodes"))
+                                .metadata("backend", backend)
+                                .metadata("fact_source", fact_source)
+                                .metadata("threads", threads.to_string())
+                                .factory(&factory)
+                                .bench(
+                                    &format!(
+                                        "value_kind_facts_{backend}_{fact_source}_{threads}_threads"
+                                    ),
+                                    workers,
+                                );
+                        }
+                    }
+                }
+            },
+        );
+
+        runner.concurrent_group::<ConcurrentTaskBenchContext>(
             "collection binding checks concurrent",
             |group| {
-                for (backend, interpret_only) in
-                    [("interpreter", true), ("native_enabled", false)]
-                {
-                    for (shape, annotated) in [("unannotated", false), ("annotated", true)] {
+                for (backend, interpret_only) in [("interpreter", true), ("cranelift", false)] {
+                    for (shape, annotated) in
+                        [("dynamic_unannotated", false), ("dynamic_checked", true)]
+                    {
                         let factory = move |_| {
                             ConcurrentTaskBenchContext::from_task_context(
                                 TaskBenchContext::compiler_list_binding_loop(
