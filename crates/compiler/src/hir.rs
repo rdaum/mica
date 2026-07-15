@@ -171,8 +171,8 @@ pub enum HirExpr {
     For {
         id: NodeId,
         scope: ScopeId,
-        key: BindingId,
-        value: Option<BindingId>,
+        key: HirLoopBinding,
+        value: Option<HirLoopBinding>,
         iter: Box<HirExpr>,
         body: Vec<HirItem>,
     },
@@ -276,7 +276,15 @@ pub struct HirScatterBinding {
     pub id: NodeId,
     pub binding: BindingId,
     pub mode: ParamMode,
+    pub declared_kind: Option<ValueKind>,
     pub default: Option<HirExpr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HirLoopBinding {
+    pub id: NodeId,
+    pub binding: BindingId,
+    pub declared_kind: Option<ValueKind>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

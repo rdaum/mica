@@ -358,26 +358,25 @@ impl<'a> Parser<'a> {
 
     fn parse_for_expr(&mut self) -> CstNode {
         let mut children = vec![self.bump_element()];
-        children.push(self.expect_token(SyntaxKind::Ident, "expected loop binding"));
-        if self.current_kind() == SyntaxKind::Colon {
-            self.error("value-kind annotations are not supported in loop bindings yet");
-            children.push(self.bump_element());
-            children.push(self.expect_token(SyntaxKind::Ident, "expected value kind"));
-        }
+        children.push(CstElement::Node(self.parse_loop_binding()));
         if self.current_kind() == SyntaxKind::Comma {
             children.push(self.bump_element());
-            children.push(self.expect_token(SyntaxKind::Ident, "expected loop value binding"));
-            if self.current_kind() == SyntaxKind::Colon {
-                self.error("value-kind annotations are not supported in loop bindings yet");
-                children.push(self.bump_element());
-                children.push(self.expect_token(SyntaxKind::Ident, "expected value kind"));
-            }
+            children.push(CstElement::Node(self.parse_loop_binding()));
         }
         children.push(self.expect_token(SyntaxKind::InKw, "expected in in for loop"));
         children.push(CstElement::Node(self.parse_expr(0)));
         children.push(CstElement::Node(self.parse_block(&[SyntaxKind::EndKw])));
         children.push(self.expect_token(SyntaxKind::EndKw, "expected end after for"));
         CstNode::new(SyntaxKind::ForExpr, children)
+    }
+
+    fn parse_loop_binding(&mut self) -> CstNode {
+        let mut children = vec![self.expect_token(SyntaxKind::Ident, "expected loop binding")];
+        if self.current_kind() == SyntaxKind::Colon {
+            children.push(self.bump_element());
+            children.push(CstElement::Node(self.parse_kind_ref()));
+        }
+        CstNode::new(SyntaxKind::LoopBinding, children)
     }
 
     fn parse_while_expr(&mut self) -> CstNode {
@@ -625,32 +624,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_brace_param_list(&mut self) -> CstNode {
-        self.parse_param_list_between(SyntaxKind::LBrace, SyntaxKind::RBrace)
-    }
-
-    fn parse_pattern_brackets(&mut self) -> CstNode {
-        self.parse_param_list_between(SyntaxKind::LBracket, SyntaxKind::RBracket)
-    }
-
-    fn parse_param_list_between(&mut self, open: SyntaxKind, close: SyntaxKind) -> CstNode {
-        let mut children = vec![self.expect_token(open, "expected parameter list")];
-        while !matches!(self.current_kind(), SyntaxKind::Eof) && self.current_kind() != close {
+        let mut children = vec![self.expect_token(SyntaxKind::LBrace, "expected parameter list")];
+        while !matches!(self.current_kind(), SyntaxKind::RBrace | SyntaxKind::Eof) {
             let mut param = Vec::new();
             if matches!(self.current_kind(), SyntaxKind::Question | SyntaxKind::At) {
                 param.push(self.bump_element());
             }
             param.push(self.expect_token(SyntaxKind::Ident, "expected parameter name"));
             if self.current_kind() == SyntaxKind::Colon {
-                let message = match open {
-                    SyntaxKind::LBracket => {
-                        "value-kind annotations are not supported in scatter bindings yet"
-                    }
-                    SyntaxKind::LBrace => {
-                        "value-kind annotations are not supported in brace lambdas yet"
-                    }
-                    _ => "value-kind annotation is not supported here",
-                };
-                self.error(message);
+                self.error("value-kind annotations are not supported in brace lambdas yet");
                 param.push(self.bump_element());
                 param.push(self.expect_token(SyntaxKind::Ident, "expected value kind"));
             }
@@ -664,8 +646,38 @@ impl<'a> Parser<'a> {
             }
             children.push(self.bump_element());
         }
-        children.push(self.expect_token(close, "expected end of parameter list"));
+        children.push(self.expect_token(SyntaxKind::RBrace, "expected end of parameter list"));
         CstNode::new(SyntaxKind::ParamList, children)
+    }
+
+    fn parse_pattern_brackets(&mut self) -> CstNode {
+        let mut children =
+            vec![self.expect_token(SyntaxKind::LBracket, "expected scatter pattern")];
+        while !matches!(self.current_kind(), SyntaxKind::RBracket | SyntaxKind::Eof) {
+            let mut binding = Vec::new();
+            if matches!(self.current_kind(), SyntaxKind::Question | SyntaxKind::At) {
+                binding.push(self.bump_element());
+            }
+            binding.push(self.expect_token(SyntaxKind::Ident, "expected scatter binding name"));
+            if self.current_kind() == SyntaxKind::Colon {
+                binding.push(self.bump_element());
+                binding.push(CstElement::Node(self.parse_kind_ref()));
+            }
+            if self.current_kind() == SyntaxKind::Eq {
+                binding.push(self.bump_element());
+                binding.push(CstElement::Node(self.parse_expr(0)));
+            }
+            children.push(CstElement::Node(CstNode::new(
+                SyntaxKind::ScatterBinding,
+                binding,
+            )));
+            if self.current_kind() != SyntaxKind::Comma {
+                break;
+            }
+            children.push(self.bump_element());
+        }
+        children.push(self.expect_token(SyntaxKind::RBracket, "expected end of scatter pattern"));
+        CstNode::new(SyntaxKind::ScatterPattern, children)
     }
 
     fn parse_identity_expr(&mut self) -> CstNode {
@@ -1465,21 +1477,29 @@ mod tests {
     }
 
     #[test]
-    fn does_not_enable_kind_references_in_shared_pattern_syntax() {
-        for source in [
-            "let [value: int] = values",
-            "{value: int} => value",
-            "for key: int, value: map in values\nend",
-        ] {
-            let parsed = parse(source);
-            assert!(!parsed.errors.is_empty(), "unexpectedly accepted {source}");
-            assert!(parsed.errors.iter().any(|error| {
-                error
-                    .message
-                    .contains("value-kind annotations are not supported")
-            }));
-            assert_eq!(count(&parsed.root, SyntaxKind::ValueKindRef), 0);
-        }
+    fn enables_kind_references_on_collection_bindings() {
+        let parsed = parse(
+            "let [value: int, ?label: string = \"\", @rest: list] = values\n\
+             for key: int, value: map in rows\nend",
+        );
+
+        assert_eq!(parsed.errors, vec![]);
+        assert_eq!(count(&parsed.root, SyntaxKind::LoopBinding), 2);
+        assert_eq!(count(&parsed.root, SyntaxKind::ScatterBinding), 3);
+        assert_eq!(count(&parsed.root, SyntaxKind::ValueKindRef), 5);
+    }
+
+    #[test]
+    fn brace_lambda_parameters_remain_unannotated() {
+        let parsed = parse("{value: int} => value");
+
+        assert!(!parsed.errors.is_empty());
+        assert!(parsed.errors.iter().any(|error| {
+            error
+                .message
+                .contains("value-kind annotations are not supported")
+        }));
+        assert_eq!(count(&parsed.root, SyntaxKind::ValueKindRef), 0);
     }
 
     #[test]
@@ -1524,8 +1544,8 @@ mod tests {
         let parse = parse("let [head, ?middle = 10, @tail] = values");
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::LetExpr));
-        assert!(contains(&parse.root, SyntaxKind::ParamList));
-        assert!(contains(&parse.root, SyntaxKind::Param));
+        assert!(contains(&parse.root, SyntaxKind::ScatterPattern));
+        assert!(contains(&parse.root, SyntaxKind::ScatterBinding));
     }
 
     #[test]

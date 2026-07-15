@@ -11,12 +11,12 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::kinds::{KindInference, KindSet};
+use crate::kinds::{KindInference, KindSet, iteration_binding_kinds};
 use crate::{
     BinaryOp, BindingId, Diagnostic, EffectKind, HirArg, HirCatch, HirCollectionItem, HirExpr,
-    HirFunctionBody, HirItem, HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem,
-    HirRuleGuard, HirScatterBinding, Literal, LocalKind, NodeId, ParamMode, ParseError,
-    SemanticProgram, Span, UnaryOp, parse_semantic,
+    HirFunctionBody, HirItem, HirLoopBinding, HirPlace, HirProgram, HirRecovery, HirRelationAtom,
+    HirRuleBodyItem, HirRuleGuard, HirScatterBinding, Literal, LocalKind, NodeId, ParamMode,
+    ParseError, SemanticProgram, Span, UnaryOp, parse_semantic,
 };
 use mica_relation_kernel::{
     Atom, ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Rule,
@@ -1654,7 +1654,7 @@ impl<'a> ProgramCompiler<'a> {
                 iter,
                 body,
                 ..
-            } => self.compile_for(*id, *key, *value, iter, body),
+            } => self.compile_for(*id, key, value.as_ref(), iter, body),
             HirExpr::Break { id } => self.compile_break(*id),
             HirExpr::Continue { id } => self.compile_continue(*id),
             HirExpr::Try {
@@ -1887,6 +1887,10 @@ impl<'a> ProgramCompiler<'a> {
         scatter: &[HirScatterBinding],
         value: Option<&HirExpr>,
     ) -> Result<Register, CompileError> {
+        for binding in scatter {
+            self.validate_scatter_default_kind(binding)?;
+        }
+
         let source = match value {
             Some(value) => self.compile_expr_for_value(value)?,
             None => self.compile_empty_list(),
@@ -1910,6 +1914,12 @@ impl<'a> ProgramCompiler<'a> {
                 }
                 saw_rest = true;
                 let dst = self.compile_collection_rest(source, len, position, binding.id)?;
+                self.enforce_inferred_binding_kind(
+                    binding.id,
+                    binding.binding,
+                    KindSet::exact(ValueKind::List),
+                    dst,
+                )?;
                 self.locals.insert(binding.binding, dst);
                 last = Some(dst);
             } else {
@@ -1924,6 +1934,7 @@ impl<'a> ProgramCompiler<'a> {
                 } else {
                     self.compile_collection_slot(source, position, binding.id)?
                 };
+                self.enforce_inferred_binding_kind(binding.id, binding.binding, KindSet::ALL, dst)?;
                 self.locals.insert(binding.binding, dst);
                 last = Some(dst);
                 position += 1;
@@ -1938,6 +1949,30 @@ impl<'a> ProgramCompiler<'a> {
             });
             dst
         }))
+    }
+
+    fn validate_scatter_default_kind(
+        &self,
+        binding: &HirScatterBinding,
+    ) -> Result<(), CompileError> {
+        let (Some(default), Some(expected)) = (binding.default.as_ref(), binding.declared_kind)
+        else {
+            return Ok(());
+        };
+        let inferred = self.infer_expr_kinds(default);
+        if !inferred.is_disjoint(KindSet::exact(expected)) {
+            return Ok(());
+        }
+        let subject = self.semantic.bindings[binding.binding.as_u32() as usize]
+            .name
+            .clone();
+        Err(CompileError::ValueKindMismatch {
+            node: expr_id(default),
+            span: self.span(expr_id(default)),
+            subject,
+            expected,
+            inferred: inferred.names(),
+        })
     }
 
     fn compile_collection_slot(
@@ -3493,12 +3528,13 @@ impl<'a> ProgramCompiler<'a> {
     fn compile_for(
         &mut self,
         _id: NodeId,
-        key: BindingId,
-        value: Option<BindingId>,
+        key: &HirLoopBinding,
+        value: Option<&HirLoopBinding>,
         iter: &HirExpr,
         body: &[HirItem],
     ) -> Result<Register, CompileError> {
         let saved_locals = self.locals.clone();
+        let binding_kinds = iteration_binding_kinds(self.infer_expr_kinds(iter), value.is_some());
         let result = self.alloc_register();
         self.emit(Instruction::Load {
             dst: result,
@@ -3527,14 +3563,14 @@ impl<'a> ProgramCompiler<'a> {
             dst: key_register,
             value: Value::nothing(),
         });
-        self.locals.insert(key, key_register);
+        self.locals.insert(key.binding, key_register);
         let value_register = if let Some(value) = value {
             let register = self.alloc_register();
             self.emit(Instruction::Load {
                 dst: register,
                 value: Value::nothing(),
             });
-            self.locals.insert(value, register);
+            self.locals.insert(value.binding, register);
             Some(register)
         } else {
             None
@@ -3562,12 +3598,23 @@ impl<'a> ProgramCompiler<'a> {
                 collection,
                 index,
             });
+            self.enforce_inferred_binding_kind(key.id, key.binding, binding_kinds.0, key_register)?;
+            let value = value.expect("value register requires a loop value binding");
+            self.enforce_inferred_binding_kind(
+                value.id,
+                value.binding,
+                binding_kinds
+                    .1
+                    .expect("two loop bindings require two inferred kinds"),
+                value_register,
+            )?;
         } else {
             self.emit(Instruction::CollectionValueAt {
                 dst: key_register,
                 collection,
                 index,
             });
+            self.enforce_inferred_binding_kind(key.id, key.binding, binding_kinds.0, key_register)?;
         }
 
         self.loops.push(LoopContext {
@@ -4583,11 +4630,21 @@ impl<'a> ProgramCompiler<'a> {
         source: &HirExpr,
         value: Register,
     ) -> Result<(), CompileError> {
+        let inferred = self.infer_expr_kinds(source);
+        self.enforce_inferred_binding_kind(node, binding, inferred, value)
+    }
+
+    fn enforce_inferred_binding_kind(
+        &mut self,
+        node: NodeId,
+        binding: BindingId,
+        inferred: KindSet,
+        value: Register,
+    ) -> Result<(), CompileError> {
         let binding = &self.semantic.bindings[binding.as_u32() as usize];
         let Some(expected) = binding.declared_kind else {
             return Ok(());
         };
-        let inferred = self.infer_expr_kinds(source);
         let declared = KindSet::exact(expected);
         if inferred.is_subset(declared) {
             return Ok(());
@@ -6151,6 +6208,134 @@ mod tests {
         .unwrap();
 
         assert_eq!(count_kind_checks(&compiled.program), 1);
+    }
+
+    #[test]
+    fn range_loop_bindings_are_proven_integers_without_checks() {
+        let compiled = compile_source(
+            "let total: int = 0
+             for value: int in 1..3
+               total = total + value
+             end
+             for index: int, value: int in 4..5
+               total = total + index + value
+             end
+             return total",
+            &CompileContext::new(),
+        )
+        .unwrap();
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+
+        assert!(matches!(
+            compile_source(
+                "for value: string in 1..3\nend",
+                &CompileContext::new()
+            ),
+            Err(CompileError::ValueKindMismatch {
+                subject,
+                expected: ValueKind::String,
+                inferred,
+                ..
+            }) if subject == "value" && inferred == "int"
+        ));
+    }
+
+    #[test]
+    fn collection_loops_check_only_dynamic_yields() {
+        let compiled = compile_source(
+            "for item: int in [1, 2]\nend
+             for index: int, item: int in [1, 2]\nend
+             for key: symbol, item: int in {:entry -> 1}\nend
+             for row: map in [:item] { [1] }\nend
+             for index: int, row: map in [:item] { [1] }\nend",
+            &CompileContext::new(),
+        )
+        .unwrap();
+        let mut checks = Vec::new();
+        collect_kind_checks(&compiled.program, &mut checks);
+
+        assert_eq!(checks.len(), 4);
+        assert!(
+            checks
+                .iter()
+                .all(|(_, site, _)| *site == KindCheckSite::Binding)
+        );
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|(_, _, subject)| *subject == Symbol::intern("index"))
+                .count(),
+            0
+        );
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|(_, _, subject)| *subject == Symbol::intern("row"))
+                .count(),
+            0
+        );
+
+        assert!(matches!(
+            compile_source(
+                "for row: int in [:item] { [1] }\nend",
+                &CompileContext::new()
+            ),
+            Err(CompileError::ValueKindMismatch {
+                subject,
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if subject == "row" && inferred == "map"
+        ));
+    }
+
+    #[test]
+    fn scatter_bindings_check_elements_and_prove_rest_lists() {
+        let compiled = compile_source(
+            "let [head: int, ?middle: int = 2, @tail: list] = [1]
+             return [head, middle, tail]",
+            &CompileContext::new(),
+        )
+        .unwrap();
+        let mut checks = Vec::new();
+        collect_kind_checks(&compiled.program, &mut checks);
+        assert_eq!(
+            checks,
+            vec![
+                (
+                    ValueKind::Int,
+                    KindCheckSite::Binding,
+                    Symbol::intern("head")
+                ),
+                (
+                    ValueKind::Int,
+                    KindCheckSite::Binding,
+                    Symbol::intern("middle")
+                ),
+            ]
+        );
+
+        assert!(matches!(
+            compile_source(
+                "let [?value: int = 1.0] = []",
+                &CompileContext::new()
+            ),
+            Err(CompileError::ValueKindMismatch {
+                subject,
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if subject == "value" && inferred == "float"
+        ));
+        assert!(matches!(
+            compile_source("let [@tail: map] = []", &CompileContext::new()),
+            Err(CompileError::ValueKindMismatch {
+                subject,
+                expected: ValueKind::Map,
+                inferred,
+                ..
+            }) if subject == "tail" && inferred == "list"
+        ));
     }
 
     #[test]

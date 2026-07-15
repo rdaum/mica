@@ -13,8 +13,9 @@
 
 use crate::{
     Arg, Ast, BinaryOp, BindingKind, BindingPattern, CatchClause, CollectionItem, CstElement,
-    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, MethodKind, MethodParam,
-    NodeId, Param, ParamMode, ParseError, RecoveryClause, SyntaxKind, UnaryOp, ValueKindRef, parse,
+    CstNode, CstToken, EffectKind, Expr, FunctionBody, Item, Literal, LoopBinding, MethodKind,
+    MethodParam, NodeId, Param, ParamMode, ParseError, RecoveryClause, ScatterBinding, SyntaxKind,
+    UnaryOp, ValueKindRef, parse,
 };
 use base64::{Engine, engine::general_purpose};
 
@@ -767,8 +768,8 @@ impl<'a> Lower<'a> {
     fn lower_binding(&mut self, node: &CstNode, kind: BindingKind) -> Expr {
         let pattern = self
             .node_children(node)
-            .find(|child| child.kind == SyntaxKind::ParamList)
-            .map(|child| BindingPattern::Scatter(self.lower_params(child)))
+            .find(|child| child.kind == SyntaxKind::ScatterPattern)
+            .map(|child| BindingPattern::Scatter(self.lower_scatter_bindings(child)))
             .unwrap_or_else(|| {
                 BindingPattern::Name(self.first_text(node, SyntaxKind::Ident).unwrap_or_default())
             });
@@ -778,7 +779,12 @@ impl<'a> Lower<'a> {
             .map(|child| self.lower_kind_ref(child));
         let value = self
             .node_children(node)
-            .find(|child| !matches!(child.kind, SyntaxKind::ParamList | SyntaxKind::ValueKindRef))
+            .find(|child| {
+                !matches!(
+                    child.kind,
+                    SyntaxKind::ScatterPattern | SyntaxKind::ValueKindRef
+                )
+            })
             .map(|child| Box::new(self.lower_expr(child)));
         Expr::Binding {
             id: self.node_id(),
@@ -840,11 +846,19 @@ impl<'a> Lower<'a> {
     }
 
     fn lower_for(&mut self, node: &CstNode) -> Expr {
-        let names = self
-            .token_children(node)
-            .filter(|token| token.kind == SyntaxKind::Ident)
-            .map(|token| self.text(token.span.clone()).to_owned())
-            .collect::<Vec<_>>();
+        let mut bindings = self
+            .node_children(node)
+            .filter(|child| child.kind == SyntaxKind::LoopBinding)
+            .map(|binding| self.lower_loop_binding(binding))
+            .collect::<Vec<_>>()
+            .into_iter();
+        let key = bindings.next().unwrap_or_else(|| LoopBinding {
+            id: self.node_id(),
+            name: String::new(),
+            annotation: None,
+            span: node.span.clone(),
+        });
+        let value = bindings.next();
         let iter = self
             .node_children(node)
             .find(|child| is_expr_node(child.kind))
@@ -858,8 +872,8 @@ impl<'a> Lower<'a> {
         Expr::For {
             id: self.node_id(),
             span: node.span.clone(),
-            key: names.first().cloned().unwrap_or_default(),
-            value: names.get(1).cloned(),
+            key,
+            value,
             iter: Box::new(iter),
             body,
         }
@@ -1161,6 +1175,55 @@ impl<'a> Lower<'a> {
                 _ => None,
             })
             .collect()
+    }
+
+    fn lower_loop_binding(&mut self, node: &CstNode) -> LoopBinding {
+        LoopBinding {
+            id: self.node_id(),
+            name: self.first_text(node, SyntaxKind::Ident).unwrap_or_default(),
+            annotation: self
+                .node_children(node)
+                .find(|child| child.kind == SyntaxKind::ValueKindRef)
+                .map(|child| self.lower_kind_ref(child)),
+            span: node.span.clone(),
+        }
+    }
+
+    fn lower_scatter_bindings(&mut self, node: &CstNode) -> Vec<ScatterBinding> {
+        self.node_children(node)
+            .filter(|child| child.kind == SyntaxKind::ScatterBinding)
+            .map(|binding| self.lower_scatter_binding(binding))
+            .collect()
+    }
+
+    fn lower_scatter_binding(&mut self, node: &CstNode) -> ScatterBinding {
+        let mode = if self
+            .token_children(node)
+            .any(|token| token.kind == SyntaxKind::At)
+        {
+            ParamMode::Rest
+        } else if self
+            .token_children(node)
+            .any(|token| token.kind == SyntaxKind::Question)
+        {
+            ParamMode::Optional
+        } else {
+            ParamMode::Required
+        };
+        ScatterBinding {
+            id: self.node_id(),
+            name: self.first_text(node, SyntaxKind::Ident).unwrap_or_default(),
+            mode,
+            annotation: self
+                .node_children(node)
+                .find(|child| child.kind == SyntaxKind::ValueKindRef)
+                .map(|child| self.lower_kind_ref(child)),
+            default: self
+                .node_children(node)
+                .find(|child| is_expr_node(child.kind))
+                .map(|child| self.lower_expr(child)),
+            span: node.span.clone(),
+        }
     }
 
     fn lower_param(&mut self, node: &CstNode) -> Param {
@@ -1546,6 +1609,61 @@ mod tests {
             result_kind.as_ref().unwrap().span,
             result_start..result_start + 6
         );
+    }
+
+    #[test]
+    fn lowers_structured_collection_bindings_with_kind_spans() {
+        let source = "let [head: int, ?label: string = \"\", @tail: list] = values\n\
+                      for index: int, row: map in rows\nend";
+        let ast = parse_ast(source);
+
+        assert_eq!(ast.errors, vec![]);
+        let Item::Expr {
+            expr:
+                Expr::Binding {
+                    pattern: BindingPattern::Scatter(bindings),
+                    ..
+                },
+            ..
+        } = &ast.items[0]
+        else {
+            panic!("expected scatter binding");
+        };
+        assert_eq!(bindings.len(), 3);
+        assert_eq!(bindings[0].name, "head");
+        assert_eq!(bindings[0].annotation.as_ref().unwrap().name, "int");
+        assert_eq!(bindings[1].mode, ParamMode::Optional);
+        assert_eq!(bindings[1].annotation.as_ref().unwrap().name, "string");
+        assert_eq!(bindings[2].mode, ParamMode::Rest);
+        assert_eq!(bindings[2].annotation.as_ref().unwrap().name, "list");
+
+        let Item::Expr {
+            expr:
+                Expr::For {
+                    key,
+                    value: Some(value),
+                    ..
+                },
+            ..
+        } = &ast.items[1]
+        else {
+            panic!("expected two-binding loop");
+        };
+        assert_eq!(key.name, "index");
+        assert_eq!(key.annotation.as_ref().unwrap().name, "int");
+        assert_eq!(value.name, "row");
+        assert_eq!(value.annotation.as_ref().unwrap().name, "map");
+        for annotation in bindings
+            .iter()
+            .filter_map(|binding| binding.annotation.as_ref())
+            .chain(
+                [key, value]
+                    .into_iter()
+                    .filter_map(|binding| binding.annotation.as_ref()),
+            )
+        {
+            assert_eq!(&source[annotation.span.clone()], annotation.name);
+        }
     }
 
     #[test]
@@ -1954,7 +2072,7 @@ mod tests {
         assert!(matches!(
             &ast.items[1],
             Item::Expr { expr: Expr::Block { items, .. }, .. }
-                if matches!(&items[0], Item::Expr { expr: Expr::For { key, value: Some(value), .. }, .. } if key == "key" && value == "value")
+                if matches!(&items[0], Item::Expr { expr: Expr::For { key, value: Some(value), .. }, .. } if key.name == "key" && value.name == "value")
         ));
         assert!(matches!(
             &ast.items[2],
@@ -2193,8 +2311,13 @@ mod tests {
             }
             Expr::Field { base, .. } => collect_expr_ids(base, ids),
             Expr::Binding { pattern, value, .. } => {
-                if let BindingPattern::Scatter(params) = pattern {
-                    collect_param_ids(params, ids);
+                if let BindingPattern::Scatter(bindings) = pattern {
+                    for binding in bindings {
+                        ids.push(binding.id);
+                        if let Some(default) = &binding.default {
+                            collect_expr_ids(default, ids);
+                        }
+                    }
                 }
                 if let Some(value) = value {
                     collect_expr_ids(value, ids);
@@ -2226,7 +2349,17 @@ mod tests {
                     collect_item_ids(item, ids);
                 }
             }
-            Expr::For { iter, body, .. } => {
+            Expr::For {
+                key,
+                value,
+                iter,
+                body,
+                ..
+            } => {
+                ids.push(key.id);
+                if let Some(value) = value {
+                    ids.push(value.id);
+                }
                 collect_expr_ids(iter, ids);
                 for item in body {
                     collect_item_ids(item, ids);

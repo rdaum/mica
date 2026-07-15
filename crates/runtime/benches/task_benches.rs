@@ -37,6 +37,7 @@ const COMPILER_ARITHMETIC_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 11) +
 const COMPILER_INTEGER_SURFACE_LOOP_BYTECODES: u64 = (INTEGER_LOOP_ITERATIONS * 19) + 6;
 const RANGE_ADMISSION_ITERATIONS: [u64; 4] = [2_048, 4_096, 8_192, 16_384];
 const RANGE_ADMISSION_CONCURRENT_ITERATIONS: [u64; 2] = [8_192, 16_384];
+const COLLECTION_BINDING_CHECK_ITERATIONS: u64 = 4_096;
 const REPEATED_DISPATCH_ITERATIONS: u64 = 1_024;
 const THREE_SITE_DISPATCH_ROUNDS: u64 = REPEATED_DISPATCH_ITERATIONS / 3;
 const THREE_SITE_DISPATCHES_PER_TASK: u64 = THREE_SITE_DISPATCH_ROUNDS * 3;
@@ -521,6 +522,33 @@ impl TaskBenchContext {
     fn interpreted_compiler_indexed_range_loop() -> Self {
         let mut context = Self::compiler_indexed_range_loop();
         context.interpret_only = true;
+        context
+    }
+
+    fn compiler_list_binding_loop(annotated: bool, interpret_only: bool) -> Self {
+        let values = (1..=COLLECTION_BINDING_CHECK_ITERATIONS)
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let annotation = if annotated { ": int" } else { "" };
+        let source = format!(
+            "let values = [{values}]\n\
+             let total = 0\n\
+             for value{annotation} in values\n\
+               total = total + value\n\
+             end\n\
+             return total",
+        );
+        let program = compile_source(&source, &CompileContext::new())
+            .unwrap()
+            .program;
+        let per_iteration = if annotated { 9 } else { 8 };
+        let mut context = Self::from_program(
+            RelationKernel::new(),
+            program,
+            Workload::task((COLLECTION_BINDING_CHECK_ITERATIONS * per_iteration) + 10),
+        );
+        context.interpret_only = interpret_only;
         context
     }
 
@@ -1587,6 +1615,22 @@ fn run_concurrent_relation_scans(
     ConcurrentWorkerResult::operations(rows).with_counter("tasks", tasks)
 }
 
+fn run_concurrent_collection_binding_tasks(
+    context: &ConcurrentTaskBenchContext,
+    control: &ConcurrentBenchControl,
+) -> ConcurrentWorkerResult {
+    let mut task_id = ((control.thread_index() as u64) + 1) << 48;
+    let mut tasks = 0_u64;
+    let mut elements = 0_u64;
+    while !control.should_stop() {
+        context.run_one(task_id);
+        task_id = task_id.wrapping_add(1);
+        tasks = tasks.wrapping_add(1);
+        elements = elements.wrapping_add(COLLECTION_BINDING_CHECK_ITERATIONS);
+    }
+    ConcurrentWorkerResult::operations(elements).with_counter("tasks", tasks)
+}
+
 fn workload_diagnostics(
     context: &mut TaskBenchContext,
     _chunk_size: usize,
@@ -1757,7 +1801,7 @@ fn constant_return_program(result: i64) -> Arc<Program> {
 benchmark_main!(
     BenchmarkMainOptions {
         filter_help: Some(
-            "all, minimal, integer, read, write, dispatch, call_path, or a benchmark name substring"
+            "all, minimal, integer, read, write, dispatch, call_path, collection_binding, or a benchmark name substring"
                 .to_owned(),
         ),
         runtime: micromeasure::BenchmarkRuntimeOptions {
@@ -2010,6 +2054,25 @@ benchmark_main!(
                 .factory(&three_site_dispatch)
                 .diagnostic_pass(workload_diagnostics)
                 .bench("task_three_site_positional_dispatch", run_tasks);
+        });
+
+        runner.group::<TaskBenchContext>("collection binding checks warm", |group| {
+            for (backend, interpret_only) in [("interpreter", true), ("native_enabled", false)] {
+                for (shape, annotated) in [("unannotated", false), ("annotated", true)] {
+                    let factory = move || {
+                        TaskBenchContext::compiler_list_binding_loop(annotated, interpret_only)
+                    };
+                    let name = format!("collection_binding_checks_{backend}_{shape}");
+                    group
+                        .throughput(Throughput::per_operation(
+                            COLLECTION_BINDING_CHECK_ITERATIONS,
+                            "elements",
+                        ))
+                        .factory(&factory)
+                        .diagnostic_pass(workload_diagnostics)
+                        .bench(&name, run_tasks);
+                }
+            }
         });
 
         runner.group::<TaskBenchContext>("verb call path experiment warm", |group| {
@@ -2269,6 +2332,16 @@ benchmark_main!(
             name: "relation scan",
             threads: CONCURRENT_DISPATCH_THREADS,
             run: run_concurrent_relation_scans,
+        }];
+        let single_collection_binding_worker = [ConcurrentWorker {
+            name: "collection binding",
+            threads: 1,
+            run: run_concurrent_collection_binding_tasks,
+        }];
+        let concurrent_collection_binding_workers = [ConcurrentWorker {
+            name: "collection binding",
+            threads: CONCURRENT_DISPATCH_THREADS,
+            run: run_concurrent_collection_binding_tasks,
         }];
         let interpreted_integer = |_| {
             ConcurrentTaskBenchContext::from_task_context(
@@ -2959,6 +3032,45 @@ benchmark_main!(
                         .metadata("threads", CONCURRENT_DISPATCH_THREADS.to_string())
                         .factory(&native)
                         .bench(&native_four, &concurrent_integer_workers);
+                }
+            },
+        );
+
+        runner.concurrent_group::<ConcurrentTaskBenchContext>(
+            "collection binding checks concurrent",
+            |group| {
+                for (backend, interpret_only) in
+                    [("interpreter", true), ("native_enabled", false)]
+                {
+                    for (shape, annotated) in [("unannotated", false), ("annotated", true)] {
+                        let factory = move |_| {
+                            ConcurrentTaskBenchContext::from_task_context(
+                                TaskBenchContext::compiler_list_binding_loop(
+                                    annotated,
+                                    interpret_only,
+                                ),
+                            )
+                        };
+                        for (threads, workers) in [
+                            (1, single_collection_binding_worker.as_slice()),
+                            (
+                                CONCURRENT_DISPATCH_THREADS,
+                                concurrent_collection_binding_workers.as_slice(),
+                            ),
+                        ] {
+                            let name = format!(
+                                "collection_binding_checks_{backend}_{shape}_{threads}_threads"
+                            );
+                            group
+                                .sample_duration(Duration::from_millis(50))
+                                .throughput(Throughput::per_operation(1, "elements"))
+                                .metadata("backend", backend)
+                                .metadata("binding", shape)
+                                .metadata("threads", threads.to_string())
+                                .factory(&factory)
+                                .bench(&name, workers);
+                        }
+                    }
                 }
             },
         );
