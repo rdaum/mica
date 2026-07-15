@@ -4527,6 +4527,38 @@ fn runner_filein_unit_fileout_round_trips_readable_source() {
 }
 
 #[test]
+fn runner_fileout_round_trips_value_kind_annotations() {
+    let mut runner = SourceRunner::new_empty();
+    let unit = Symbol::intern("typed_verbs");
+    runner
+        .run_filein_with_unit(
+            unit,
+            "verb typed_echo(value @ #string: string) -> string\n\
+               let copy: string = value\n\
+               return copy\n\
+             end\n",
+            FileinMode::Add,
+        )
+        .unwrap();
+
+    let source = runner.fileout_unit(unit).unwrap();
+    assert!(source.contains("verb typed_echo(value @ #string: string) -> string"));
+    assert!(source.contains("let copy: string = value"));
+
+    let mut imported = SourceRunner::new_empty();
+    imported
+        .run_filein_with_unit(unit, &source, FileinMode::Add)
+        .unwrap();
+    let report = imported
+        .run_source("return :typed_echo(value: \"round trip\")")
+        .unwrap();
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("round trip")
+    ));
+}
+
+#[test]
 fn runner_fileout_preserves_frob_fact_literals() {
     let mut runner = SourceRunner::new_empty();
     let unit = Symbol::intern("events");

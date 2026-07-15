@@ -147,6 +147,22 @@ pub enum DiagnosticCode {
     UnsupportedSyntax,
 }
 
+impl DiagnosticCode {
+    pub const fn title(&self) -> &'static str {
+        match self {
+            Self::DuplicateBinding => "duplicate binding",
+            Self::AssignToConst => "assignment to const",
+            Self::InvalidAssignmentTarget => "invalid assignment target",
+            Self::InvalidFactChange => "invalid fact change",
+            Self::InvalidRelationRule => "invalid relation rule",
+            Self::MissingValueKindInitializer => "missing value-kind initializer",
+            Self::UnknownValueKind => "unknown value kind",
+            Self::UnsupportedValueKindAnnotation => "unsupported value-kind annotation",
+            Self::UnsupportedSyntax => "unsupported syntax",
+        }
+    }
+}
+
 struct Analyzer<'a> {
     ast: &'a Ast,
     spans: HashMap<NodeId, Span>,
@@ -2055,6 +2071,37 @@ mod tests {
         let start = source.find("integer").unwrap();
         assert_eq!(program.diagnostics[0].span, start..start + "integer".len());
         assert_eq!(program.bindings[0].declared_kind, None);
+    }
+
+    #[test]
+    fn resolves_every_runtime_value_kind_from_its_canonical_source_name() {
+        let kinds = [
+            ValueKind::Bool,
+            ValueKind::Int,
+            ValueKind::Float,
+            ValueKind::Identity,
+            ValueKind::String,
+            ValueKind::Bytes,
+            ValueKind::Symbol,
+            ValueKind::ErrorCode,
+            ValueKind::Error,
+            ValueKind::Capability,
+            ValueKind::Frob,
+            ValueKind::Function,
+            ValueKind::List,
+            ValueKind::Map,
+            ValueKind::Range,
+            ValueKind::Relation,
+        ];
+
+        for kind in kinds {
+            let source = format!("let value: {} = dynamic()", kind.name());
+            let program = parse_ok(&source);
+            assert_eq!(program.diagnostics, vec![], "source: {source}");
+            assert_eq!(program.bindings[0].declared_kind, Some(kind));
+            assert_eq!(value_kind_from_name(kind.name()), Some(kind));
+        }
+        assert_eq!(value_kind_from_name("integer"), None);
     }
 
     #[test]

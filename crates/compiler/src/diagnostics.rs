@@ -246,7 +246,7 @@ fn parse_error_reports(errors: &[ParseError]) -> Vec<CompileDiagnostic> {
 
 fn semantic_diagnostic_report(diagnostic: &Diagnostic) -> CompileDiagnostic {
     CompileDiagnostic {
-        title: format!("{:?}", diagnostic.code),
+        title: diagnostic.code.title().to_owned(),
         message: diagnostic.message.clone(),
         span: Some(diagnostic.span.clone()),
     }
@@ -359,6 +359,7 @@ fn ariadne_span(span: &Range<usize>, source: &str) -> Range<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{DiagnosticCode, NodeId};
 
     #[test]
     fn source_context_uses_ariadne_report_for_parse_errors() {
@@ -392,5 +393,29 @@ mod tests {
             format_compile_error(&error, None, DiagnosticRenderOptions::default()),
             "compile error: parse error: expected end at bytes 12..12"
         );
+    }
+
+    #[test]
+    fn source_context_renders_value_kind_diagnostics_with_human_titles() {
+        let source = "let count: integer = 1";
+        let start = source.find("integer").unwrap();
+        let error = CompileError::SemanticDiagnostic {
+            diagnostic: Diagnostic {
+                code: DiagnosticCode::UnknownValueKind,
+                node: NodeId(0),
+                span: start..start + "integer".len(),
+                message: "unknown value kind `integer`".to_owned(),
+            },
+        };
+        let rendered = format_compile_error(
+            &error,
+            Some(DiagnosticSource::new(Some("kinds.mica"), source)),
+            DiagnosticRenderOptions::source_context(),
+        );
+
+        assert!(rendered.contains("Error: unknown value kind: unknown value kind `integer`"));
+        assert!(rendered.contains("kinds.mica"));
+        assert!(rendered.contains("let count: integer = 1"));
+        assert!(!rendered.contains("UnknownValueKind"));
     }
 }
