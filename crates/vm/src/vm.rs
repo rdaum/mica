@@ -18,9 +18,9 @@ use crate::program::{CompactListItem, CompactMapItem, CompactRelationArg, Opcode
 use crate::program::{MAX_NATURAL_LOOP_COLLECTION_VIEWS, MAX_NATURAL_LOOP_SLOTS};
 use crate::{
     AuthorityContext, BuiltinRegistry, CatchHandler, ClientBuiltinContext, ClientBuiltinRegistry,
-    Emission, ErrorField, ExternalRequest, MailboxRecvRequest, Program, ProgramResolver,
-    QueryBinding, Register, RuntimeBinaryOp, RuntimeContext, RuntimeError, RuntimeUnaryOp,
-    SpawnRequest, SpawnTarget, SuspendKind,
+    Emission, ErrorField, ExternalRequest, KindCheckSite, MailboxRecvRequest, Program,
+    ProgramResolver, QueryBinding, Register, RuntimeBinaryOp, RuntimeContext, RuntimeError,
+    RuntimeUnaryOp, SpawnRequest, SpawnTarget, SuspendKind,
 };
 use mica_relation_kernel::{
     ApplicableMethodCall, DispatchRead, DispatchRelations, RelationId, RelationMetadata,
@@ -930,6 +930,7 @@ fn opcode_name(opcode: &Opcode) -> &'static str {
     match opcode {
         Opcode::Load { .. } => "Load",
         Opcode::Move { .. } => "Move",
+        Opcode::CheckKind { .. } => "CheckKind",
         Opcode::Unary { .. } => "Unary",
         Opcode::Binary { .. } => "Binary",
         Opcode::BuildList { .. } => "BuildList",
@@ -1201,6 +1202,21 @@ impl RegisterVm {
         match opcode {
             Opcode::Load { dst, value } => {
                 self.write_register_unchecked(*dst, program.constant(*value).clone());
+                self.advance_ip_unchecked();
+                Ok(VmStep::single(VmHostResponse::Continue))
+            }
+            Opcode::CheckKind {
+                value,
+                expected,
+                site,
+                subject,
+            } => {
+                let value = self.read_register_unchecked(*value);
+                let actual = value.kind();
+                if actual != *expected {
+                    let error = kind_check_error(*site, *subject, *expected, actual, value.clone());
+                    return self.begin_raise(error).map(VmStep::single);
+                }
                 self.advance_ip_unchecked();
                 Ok(VmStep::single(VmHostResponse::Continue))
             }
@@ -1528,6 +1544,7 @@ impl RegisterVm {
     ) -> Result<VmHostResponse, RuntimeError> {
         match opcode {
             Opcode::Load { .. }
+            | Opcode::CheckKind { .. }
             | Opcode::Binary { .. }
             | Opcode::Branch { .. }
             | Opcode::Call { .. }
@@ -3493,6 +3510,31 @@ fn matching_handler<'a>(catches: &'a [CatchHandler], error: &Value) -> Option<&'
         Some(code) => code.error_code_symbol().is_some() && code.error_code_symbol() == error_code,
         None => true,
     })
+}
+
+fn kind_check_error(
+    site: KindCheckSite,
+    subject: Symbol,
+    expected: ValueKind,
+    actual: ValueKind,
+    value: Value,
+) -> Value {
+    let boundary = match site {
+        KindCheckSite::Binding => "binding",
+        KindCheckSite::Parameter => "parameter",
+    };
+    let subject = subject
+        .name()
+        .expect("validated kind check subjects are named");
+    Value::error(
+        Symbol::intern("E_TYPE"),
+        Some(format!(
+            "{boundary} `{subject}` requires {}, got {}",
+            expected.name(),
+            actual.name()
+        )),
+        Some(value),
+    )
 }
 
 fn normalize_raised_error(

@@ -14,7 +14,7 @@
 use crate::RuntimeError;
 use arc_swap::ArcSwap;
 use mica_relation_kernel::{DispatchRelations, RelationId, RelationRead};
-use mica_var::{Identity, Symbol, Value};
+use mica_var::{Identity, Symbol, Value, ValueKind};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -118,6 +118,12 @@ pub enum ErrorField {
     Value,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KindCheckSite {
+    Binding,
+    Parameter,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpawnRequest {
     pub selector: Symbol,
@@ -170,6 +176,12 @@ pub enum Instruction {
     Move {
         dst: Register,
         src: Register,
+    },
+    CheckKind {
+        value: Register,
+        expected: ValueKind,
+        site: KindCheckSite,
+        subject: Symbol,
     },
     Unary {
         dst: Register,
@@ -504,6 +516,12 @@ pub(crate) enum Opcode {
     Move {
         dst: Register,
         src: Register,
+    },
+    CheckKind {
+        value: Register,
+        expected: ValueKind,
+        site: KindCheckSite,
+        subject: Symbol,
     },
     Unary {
         dst: Register,
@@ -1845,7 +1863,7 @@ impl Program {
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Vec::new();
-        out.extend_from_slice(b"MICAPRG1");
+        out.extend_from_slice(b"MICAPRG2");
         write_u32(&mut out, self.register_count as u32);
         write_u32(&mut out, self.opcodes.len() as u32);
         for instruction in self.instructions() {
@@ -1856,7 +1874,7 @@ impl Program {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, RuntimeError> {
         let mut input = ByteReader::new(bytes);
-        input.expect_magic(b"MICAPRG1")?;
+        input.expect_magic(b"MICAPRG2")?;
         let register_count = input.read_u32()? as usize;
         let instruction_count = input.read_u32()? as usize;
         let mut instructions = Vec::with_capacity(instruction_count);
@@ -1923,6 +1941,17 @@ impl Program {
             Opcode::Move { dst, src } => Instruction::Move {
                 dst: *dst,
                 src: *src,
+            },
+            Opcode::CheckKind {
+                value,
+                expected,
+                site,
+                subject,
+            } => Instruction::CheckKind {
+                value: *value,
+                expected: *expected,
+                site: *site,
+                subject: *subject,
             },
             Opcode::Unary { dst, op, src } => Instruction::Unary {
                 dst: *dst,
@@ -2565,6 +2594,17 @@ impl ProgramBuilder {
                 value: self.constant(value)?,
             },
             Instruction::Move { dst, src } => Opcode::Move { dst, src },
+            Instruction::CheckKind {
+                value,
+                expected,
+                site,
+                subject,
+            } => Opcode::CheckKind {
+                value,
+                expected,
+                site,
+                subject,
+            },
             Instruction::Unary { dst, op, src } => Opcode::Unary { dst, op, src },
             Instruction::Binary {
                 dst,
@@ -3203,6 +3243,13 @@ fn validate_instruction(
             validate_register(register_count, *dst)?;
             validate_register(register_count, *src)
         }
+        Instruction::CheckKind { value, subject, .. } => {
+            validate_register(register_count, *value)?;
+            if subject.name().is_none() {
+                return Err(artifact_error("kind check subject must be a named symbol"));
+            }
+            Ok(())
+        }
         Instruction::Unary { dst, src, .. } => {
             validate_register(register_count, *dst)?;
             validate_register(register_count, *src)
@@ -3631,6 +3678,7 @@ const INST_BUILD_MAP_DYNAMIC: u8 = 53;
 const INST_SPAWN_DISPATCH_DYNAMIC: u8 = 54;
 const INST_EXTERNAL_REQUEST: u8 = 55;
 const INST_BUILD_RELATION: u8 = 56;
+const INST_CHECK_KIND: u8 = 57;
 
 const UNARY_NOT: u8 = 0;
 const UNARY_NEG: u8 = 1;
@@ -3638,6 +3686,26 @@ const UNARY_NEG: u8 = 1;
 const ERROR_FIELD_CODE: u8 = 0;
 const ERROR_FIELD_MESSAGE: u8 = 1;
 const ERROR_FIELD_VALUE: u8 = 2;
+
+const KIND_BOOL: u8 = 0;
+const KIND_INT: u8 = 1;
+const KIND_FLOAT: u8 = 2;
+const KIND_IDENTITY: u8 = 3;
+const KIND_STRING: u8 = 4;
+const KIND_BYTES: u8 = 5;
+const KIND_SYMBOL: u8 = 6;
+const KIND_ERROR_CODE: u8 = 7;
+const KIND_ERROR: u8 = 8;
+const KIND_CAPABILITY: u8 = 9;
+const KIND_FROB: u8 = 10;
+const KIND_FUNCTION: u8 = 11;
+const KIND_LIST: u8 = 12;
+const KIND_MAP: u8 = 13;
+const KIND_RANGE: u8 = 14;
+const KIND_RELATION: u8 = 15;
+
+const KIND_CHECK_BINDING: u8 = 0;
+const KIND_CHECK_PARAMETER: u8 = 1;
 
 const BINARY_EQ: u8 = 0;
 const BINARY_NE: u8 = 1;
@@ -3681,6 +3749,24 @@ fn write_instruction(out: &mut Vec<u8>, instruction: &Instruction) -> Result<(),
             out.push(INST_MOVE);
             write_register(out, *dst);
             write_register(out, *src);
+            Ok(())
+        }
+        Instruction::CheckKind {
+            value,
+            expected,
+            site,
+            subject,
+        } => {
+            let Some(subject) = subject.name() else {
+                return Err(artifact_error(
+                    "cannot serialize unnamed kind check subject",
+                ));
+            };
+            out.push(INST_CHECK_KIND);
+            write_register(out, *value);
+            write_value_kind(out, *expected);
+            write_kind_check_site(out, *site);
+            write_str(out, subject);
             Ok(())
         }
         Instruction::Unary { dst, op, src } => {
@@ -4213,6 +4299,34 @@ fn write_error_field(out: &mut Vec<u8>, field: ErrorField) {
     });
 }
 
+fn write_value_kind(out: &mut Vec<u8>, kind: ValueKind) {
+    out.push(match kind {
+        ValueKind::Bool => KIND_BOOL,
+        ValueKind::Int => KIND_INT,
+        ValueKind::Float => KIND_FLOAT,
+        ValueKind::Identity => KIND_IDENTITY,
+        ValueKind::String => KIND_STRING,
+        ValueKind::Bytes => KIND_BYTES,
+        ValueKind::Symbol => KIND_SYMBOL,
+        ValueKind::ErrorCode => KIND_ERROR_CODE,
+        ValueKind::Error => KIND_ERROR,
+        ValueKind::Capability => KIND_CAPABILITY,
+        ValueKind::Frob => KIND_FROB,
+        ValueKind::Function => KIND_FUNCTION,
+        ValueKind::List => KIND_LIST,
+        ValueKind::Map => KIND_MAP,
+        ValueKind::Range => KIND_RANGE,
+        ValueKind::Relation => KIND_RELATION,
+    });
+}
+
+fn write_kind_check_site(out: &mut Vec<u8>, site: KindCheckSite) {
+    out.push(match site {
+        KindCheckSite::Binding => KIND_CHECK_BINDING,
+        KindCheckSite::Parameter => KIND_CHECK_PARAMETER,
+    });
+}
+
 fn write_operands(out: &mut Vec<u8>, operands: &[Operand]) -> Result<(), RuntimeError> {
     write_u32(out, operands.len() as u32);
     for operand in operands {
@@ -4510,6 +4624,12 @@ impl<'a> ByteReader<'a> {
             INST_MOVE => Instruction::Move {
                 dst: self.read_register()?,
                 src: self.read_register()?,
+            },
+            INST_CHECK_KIND => Instruction::CheckKind {
+                value: self.read_register()?,
+                expected: self.read_value_kind()?,
+                site: self.read_kind_check_site()?,
+                subject: Symbol::intern(&self.read_string()?),
             },
             INST_UNARY => Instruction::Unary {
                 dst: self.read_register()?,
@@ -4996,6 +5116,36 @@ impl<'a> ByteReader<'a> {
             ERROR_FIELD_MESSAGE => Ok(ErrorField::Message),
             ERROR_FIELD_VALUE => Ok(ErrorField::Value),
             _ => Err(artifact_error("unknown error field tag")),
+        }
+    }
+
+    fn read_value_kind(&mut self) -> Result<ValueKind, RuntimeError> {
+        match self.read_u8()? {
+            KIND_BOOL => Ok(ValueKind::Bool),
+            KIND_INT => Ok(ValueKind::Int),
+            KIND_FLOAT => Ok(ValueKind::Float),
+            KIND_IDENTITY => Ok(ValueKind::Identity),
+            KIND_STRING => Ok(ValueKind::String),
+            KIND_BYTES => Ok(ValueKind::Bytes),
+            KIND_SYMBOL => Ok(ValueKind::Symbol),
+            KIND_ERROR_CODE => Ok(ValueKind::ErrorCode),
+            KIND_ERROR => Ok(ValueKind::Error),
+            KIND_CAPABILITY => Ok(ValueKind::Capability),
+            KIND_FROB => Ok(ValueKind::Frob),
+            KIND_FUNCTION => Ok(ValueKind::Function),
+            KIND_LIST => Ok(ValueKind::List),
+            KIND_MAP => Ok(ValueKind::Map),
+            KIND_RANGE => Ok(ValueKind::Range),
+            KIND_RELATION => Ok(ValueKind::Relation),
+            _ => Err(artifact_error("unknown value kind tag")),
+        }
+    }
+
+    fn read_kind_check_site(&mut self) -> Result<KindCheckSite, RuntimeError> {
+        match self.read_u8()? {
+            KIND_CHECK_BINDING => Ok(KindCheckSite::Binding),
+            KIND_CHECK_PARAMETER => Ok(KindCheckSite::Parameter),
+            _ => Err(artifact_error("unknown kind check site tag")),
         }
     }
 

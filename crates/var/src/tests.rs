@@ -264,6 +264,26 @@ fn immediate_constructors_round_trip() {
 }
 
 #[test]
+fn value_kinds_have_canonical_names() {
+    assert_eq!(ValueKind::Bool.name(), "bool");
+    assert_eq!(ValueKind::Int.name(), "int");
+    assert_eq!(ValueKind::Float.name(), "float");
+    assert_eq!(ValueKind::Identity.name(), "identity");
+    assert_eq!(ValueKind::Symbol.name(), "symbol");
+    assert_eq!(ValueKind::ErrorCode.name(), "error_code");
+    assert_eq!(ValueKind::String.name(), "string");
+    assert_eq!(ValueKind::Bytes.name(), "bytes");
+    assert_eq!(ValueKind::List.name(), "list");
+    assert_eq!(ValueKind::Map.name(), "map");
+    assert_eq!(ValueKind::Range.name(), "range");
+    assert_eq!(ValueKind::Error.name(), "error");
+    assert_eq!(ValueKind::Capability.name(), "capability");
+    assert_eq!(ValueKind::Frob.name(), "frob");
+    assert_eq!(ValueKind::Function.name(), "function");
+    assert_eq!(ValueKind::Relation.name(), "relation");
+}
+
+#[test]
 fn capability_values_are_ephemeral() {
     let cap = Value::capability_raw(1).unwrap();
     assert_eq!(cap.kind(), ValueKind::Capability);
