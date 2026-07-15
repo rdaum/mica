@@ -14,9 +14,9 @@
 use crate::{
     Arg, Ast, BindingKind, BindingPattern, CatchClause, CollectionItem, EffectKind, Expr,
     FunctionBody, HirArg, HirCatch, HirCollectionItem, HirExpr, HirFunctionBody, HirItem,
-    HirLoopBinding, HirParam, HirPlace, HirProgram, HirRecovery, HirRelationAtom, HirRuleBodyItem,
-    HirRuleGuard, HirScatterBinding, Item, NodeId, Param, ParamMode, ParseError, RecoveryClause,
-    Span, ValueKindRef, parse_ast,
+    HirLoopBinding, HirMethodParam, HirParam, HirPlace, HirProgram, HirRecovery, HirRelationAtom,
+    HirRuleBodyItem, HirRuleGuard, HirScatterBinding, Item, NodeId, Param, ParamMode, ParseError,
+    RecoveryClause, Span, ValueKindRef, parse_ast,
 };
 use mica_var::ValueKind;
 use std::collections::{BTreeSet, HashMap};
@@ -92,6 +92,7 @@ pub enum LocalKind {
     Param,
     OptionalParam,
     RestParam,
+    InstalledParam,
     Loop,
     Catch,
     Function,
@@ -723,10 +724,41 @@ impl<'a> Analyzer<'a> {
                 selector,
                 clauses,
                 params,
+                result_kind,
                 body,
                 ..
             } => {
                 let method_scope = self.alloc_scope(Some(scope), Some(*id));
+                let params = params
+                    .iter()
+                    .map(|param| {
+                        let declared_kind = self.resolve_kind_ref(
+                            param.annotation.as_ref(),
+                            param.id,
+                            "installed verb parameters",
+                            true,
+                        );
+                        HirMethodParam {
+                            id: param.id,
+                            binding: self.declare(
+                                method_scope,
+                                param.name.clone(),
+                                LocalKind::InstalledParam,
+                                declared_kind,
+                                param.id,
+                                &param.span,
+                            ),
+                            restriction: param.restriction.clone(),
+                            declared_kind,
+                        }
+                    })
+                    .collect();
+                let result_kind = self.resolve_kind_ref(
+                    result_kind.as_ref(),
+                    *id,
+                    "installed verb results",
+                    true,
+                );
                 self.function_stack.push(FunctionContext {
                     owner: *id,
                     scope: method_scope,
@@ -739,7 +771,8 @@ impl<'a> Analyzer<'a> {
                     identity: identity.clone(),
                     selector: selector.clone(),
                     clauses: clauses.clone(),
-                    params: params.clone(),
+                    params,
+                    result_kind,
                     scope: method_scope,
                     body,
                 }
@@ -1573,8 +1606,17 @@ fn collect_item_spans(items: &[Item], spans: &mut HashMap<NodeId, Span>) {
                 collect_expr_span(head, spans);
                 collect_expr_spans(body, spans);
             }
-            Item::Method { id, span, body, .. } => {
+            Item::Method {
+                id,
+                span,
+                params,
+                body,
+                ..
+            } => {
                 spans.insert(*id, span.clone());
+                for param in params {
+                    spans.insert(param.id, param.span.clone());
+                }
                 collect_item_spans(body, spans);
             }
         }
@@ -1960,6 +2002,47 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_installed_verb_contracts_into_bindings() {
+        let program = parse_ok(
+            "verb echo(value @ #string: string) -> string\n\
+               return value\n\
+             end",
+        );
+
+        assert_eq!(program.diagnostics, vec![]);
+        let HirItem::Method {
+            params,
+            result_kind,
+            body,
+            ..
+        } = &program.hir.items[0]
+        else {
+            panic!("expected installed verb");
+        };
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].declared_kind, Some(ValueKind::String));
+        assert_eq!(*result_kind, Some(ValueKind::String));
+        assert_eq!(
+            program.bindings[params[0].binding.as_u32() as usize].name,
+            "value"
+        );
+        assert_eq!(
+            program.bindings[params[0].binding.as_u32() as usize].kind,
+            LocalKind::InstalledParam
+        );
+        assert!(matches!(
+            &body[0],
+            HirItem::Expr {
+                expr: HirExpr::Return {
+                    value: Some(value),
+                    ..
+                },
+                ..
+            } if matches!(&**value, HirExpr::LocalRef { binding, .. } if *binding == params[0].binding)
+        ));
+    }
+
+    #[test]
     fn reports_unknown_value_kind_at_the_kind_reference() {
         let source = "let count: integer = 1";
         let program = parse_ok(source);
@@ -1972,6 +2055,19 @@ mod tests {
         let start = source.find("integer").unwrap();
         assert_eq!(program.diagnostics[0].span, start..start + "integer".len());
         assert_eq!(program.bindings[0].declared_kind, None);
+    }
+
+    #[test]
+    fn reports_unknown_installed_verb_kinds_at_exact_references() {
+        let source = "verb typed(value: scalarish) -> answer\n  return value\nend";
+        let program = parse_ok(source);
+
+        assert_eq!(program.diagnostics.len(), 2);
+        for (diagnostic, name) in program.diagnostics.iter().zip(["scalarish", "answer"]) {
+            assert_eq!(diagnostic.code, DiagnosticCode::UnknownValueKind);
+            let start = source.find(name).unwrap();
+            assert_eq!(diagnostic.span, start..start + name.len());
+        }
     }
 
     #[test]

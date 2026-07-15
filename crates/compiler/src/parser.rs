@@ -94,11 +94,66 @@ impl<'a> Parser<'a> {
     fn parse_verb_item(&mut self) -> CstNode {
         let children = vec![
             self.bump_element(),
-            CstElement::Node(self.parse_method_header()),
+            CstElement::Node(self.parse_verb_header()),
             CstElement::Node(self.parse_block(&[SyntaxKind::EndKw])),
             self.expect_token(SyntaxKind::EndKw, "expected end after verb body"),
         ];
         CstNode::new(SyntaxKind::VerbItem, children)
+    }
+
+    fn parse_verb_header(&mut self) -> CstNode {
+        let mut children = self.parse_qualified_ident_or_missing("expected selector after verb");
+        children.push(CstElement::Node(self.parse_verb_param_list()));
+        if self.current_kind() == SyntaxKind::Arrow {
+            children.push(self.bump_element());
+            children.push(CstElement::Node(self.parse_kind_ref()));
+        }
+        CstNode::new(SyntaxKind::VerbHeader, children)
+    }
+
+    fn parse_verb_param_list(&mut self) -> CstNode {
+        let mut children = vec![self.expect_token(SyntaxKind::LParen, "expected '('")];
+        while !matches!(self.current_kind(), SyntaxKind::RParen | SyntaxKind::Eof) {
+            children.push(CstElement::Node(self.parse_verb_param()));
+            if self.current_kind() != SyntaxKind::Comma {
+                break;
+            }
+            children.push(self.bump_element());
+        }
+        children.push(self.expect_token(SyntaxKind::RParen, "expected ')'"));
+        CstNode::new(SyntaxKind::VerbParamList, children)
+    }
+
+    fn parse_verb_param(&mut self) -> CstNode {
+        let mut children = vec![self.expect_token(SyntaxKind::Ident, "expected verb parameter")];
+        if self.current_kind() == SyntaxKind::At {
+            children.push(self.bump_element());
+            children.push(CstElement::Node(self.parse_dispatch_restriction()));
+        }
+        if self.current_kind() == SyntaxKind::Colon {
+            children.push(self.bump_element());
+            children.push(CstElement::Node(self.parse_kind_ref()));
+        }
+        CstNode::new(SyntaxKind::VerbParam, children)
+    }
+
+    fn parse_dispatch_restriction(&mut self) -> CstNode {
+        let mut children =
+            vec![self.expect_token(SyntaxKind::Hash, "expected prototype identity after '@'")];
+        children
+            .extend(self.parse_qualified_ident_or_missing("expected prototype identity after '#'"));
+        if self.current_kind() == SyntaxKind::Lt {
+            children.push(self.bump_element());
+            children.push(self.expect_token(
+                SyntaxKind::Underscore,
+                "expected '_' in frob dispatch restriction",
+            ));
+            children.push(self.expect_token(
+                SyntaxKind::Gt,
+                "expected '>' after frob dispatch restriction",
+            ));
+        }
+        CstNode::new(SyntaxKind::DispatchRestriction, children)
     }
 
     fn parse_method_header(&mut self) -> CstNode {
@@ -1721,6 +1776,22 @@ mod tests {
         assert_eq!(parse.errors, vec![]);
         assert!(contains(&parse.root, SyntaxKind::VerbItem));
         assert!(contains(&parse.root, SyntaxKind::IfExpr));
+    }
+
+    #[test]
+    fn parses_structured_verb_value_contracts() {
+        let parse = parse(
+            "verb send(actor @ #player: identity, message: string) -> bool\n\
+               return true\n\
+             end",
+        );
+
+        assert_eq!(parse.errors, vec![]);
+        assert_eq!(count(&parse.root, SyntaxKind::VerbHeader), 1);
+        assert_eq!(count(&parse.root, SyntaxKind::VerbParam), 2);
+        assert_eq!(count(&parse.root, SyntaxKind::DispatchRestriction), 1);
+        assert_eq!(count(&parse.root, SyntaxKind::ValueKindRef), 3);
+        assert_eq!(count(&parse.root, SyntaxKind::MethodHeader), 0);
     }
 
     #[test]
