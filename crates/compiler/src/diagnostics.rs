@@ -142,6 +142,26 @@ pub fn compile_error_diagnostics(error: &CompileError) -> Vec<CompileDiagnostic>
             ),
             span.clone(),
         )],
+        CompileError::FunctionResultKindMismatch {
+            function,
+            expected,
+            inferred,
+            span,
+            ..
+        } => {
+            let boundary = function.as_ref().map_or_else(
+                || "function result".to_owned(),
+                |function| format!("result of function `{function}`"),
+            );
+            vec![span_report(
+                "function result kind mismatch",
+                &format!(
+                    "{boundary} requires {}, but its normal exits produce {inferred}",
+                    expected.name()
+                ),
+                span.clone(),
+            )]
+        }
         CompileError::Runtime(error) => {
             vec![message_report("runtime error", &format!("{error:?}"))]
         }

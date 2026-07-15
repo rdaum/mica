@@ -11,7 +11,10 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{BinaryOp, Binding, HirExpr, HirItem, HirPlace, Literal, LocalKind, UnaryOp};
+use crate::{
+    BinaryOp, Binding, BindingId, HirCollectionItem, HirExpr, HirFunctionBody, HirItem, HirPlace,
+    Literal, LocalKind, UnaryOp,
+};
 use mica_var::ValueKind;
 
 const KIND_COUNT: u32 = 16;
@@ -72,114 +75,338 @@ impl KindSet {
 
 pub(crate) struct KindInference<'a> {
     bindings: &'a [Binding],
+    direct_result: &'a dyn Fn(BindingId) -> Option<KindSet>,
 }
 
 impl<'a> KindInference<'a> {
-    pub(crate) const fn new(bindings: &'a [Binding]) -> Self {
-        Self { bindings }
+    pub(crate) const fn new(
+        bindings: &'a [Binding],
+        direct_result: &'a dyn Fn(BindingId) -> Option<KindSet>,
+    ) -> Self {
+        Self {
+            bindings,
+            direct_result,
+        }
     }
 
     pub(crate) fn expr(&self, expr: &HirExpr) -> KindSet {
+        self.flow(expr).normal
+    }
+
+    pub(crate) fn function_result(&self, body: &HirFunctionBody) -> KindSet {
+        let flow = match body {
+            HirFunctionBody::Expr(expr) => self.flow(expr),
+            HirFunctionBody::Block(items) => self.items(items),
+        };
+        flow.normal.union(flow.returns)
+    }
+
+    fn flow(&self, expr: &HirExpr) -> KindFlow {
         match expr {
-            HirExpr::Literal { value, .. } => KindSet::exact(literal_kind(value)),
-            HirExpr::LocalRef { binding, .. } => self
-                .binding(*binding)
-                .map(|binding| {
-                    binding.declared_kind.map_or_else(
-                        || match binding.kind {
-                            LocalKind::Catch => KindSet::exact(ValueKind::Error),
-                            _ => KindSet::ALL,
-                        },
-                        KindSet::exact,
-                    )
-                })
-                .unwrap_or(KindSet::ALL),
-            HirExpr::Identity { .. } => KindSet::exact(ValueKind::Identity),
-            HirExpr::Frob { .. } => KindSet::exact(ValueKind::Frob),
-            HirExpr::Symbol { .. } => KindSet::exact(ValueKind::Symbol),
-            HirExpr::List { .. } => KindSet::exact(ValueKind::List),
-            HirExpr::Relation { .. } => KindSet::exact(ValueKind::Relation),
-            HirExpr::Map { .. } => KindSet::exact(ValueKind::Map),
-            HirExpr::Unary { op, expr, .. } => self.unary(*op, self.expr(expr)),
+            HirExpr::Literal { value, .. } => KindFlow::value(KindSet::exact(literal_kind(value))),
+            HirExpr::LocalRef { binding, .. } => KindFlow::value(self.binding_kind(*binding)),
+            HirExpr::Identity { .. } => KindFlow::value(KindSet::exact(ValueKind::Identity)),
+            HirExpr::Frob { value, .. } => self
+                .flow(value)
+                .with_normal(KindSet::exact(ValueKind::Frob)),
+            HirExpr::Symbol { .. } => KindFlow::value(KindSet::exact(ValueKind::Symbol)),
+            HirExpr::List { items, .. } => {
+                let mut flow = KindFlow::reachable();
+                for item in items {
+                    let expr = match item {
+                        HirCollectionItem::Expr(expr) | HirCollectionItem::Splice(expr) => expr,
+                    };
+                    flow = flow.then(self.flow(expr));
+                }
+                flow.with_normal(KindSet::exact(ValueKind::List))
+            }
+            HirExpr::Relation { rows, .. } => {
+                let mut flow = KindFlow::reachable();
+                for expr in rows.iter().flatten() {
+                    flow = flow.then(self.flow(expr));
+                }
+                flow.with_normal(KindSet::exact(ValueKind::Relation))
+            }
+            HirExpr::Map { entries, .. } => {
+                let mut flow = KindFlow::reachable();
+                for (key, value) in entries {
+                    flow = flow.then(self.flow(key)).then(self.flow(value));
+                }
+                flow.with_normal(KindSet::exact(ValueKind::Map))
+            }
+            HirExpr::Unary { op, expr, .. } => {
+                let operand = self.flow(expr);
+                operand.with_normal(self.unary(*op, operand.normal))
+            }
             HirExpr::Binary {
                 op, left, right, ..
-            } => self.binary(*op, self.expr(left), self.expr(right)),
-            HirExpr::Assign { target, value, .. } => match target {
-                HirPlace::Local { .. } | HirPlace::Dot { .. } => self.expr(value),
-                HirPlace::Index { collection, .. } => self.expr(collection),
-                HirPlace::Invalid { .. } => KindSet::ALL,
-            },
-            HirExpr::RelationAtom(atom) => {
-                if atom
-                    .args
-                    .iter()
-                    .any(|arg| matches!(arg.value, HirExpr::QueryVar { .. } | HirExpr::Hole { .. }))
-                {
-                    KindSet::exact(ValueKind::Relation)
+            } => {
+                let left = self.flow(left);
+                let right = self.flow(right);
+                let returns = if left.normal.is_empty() {
+                    left.returns
                 } else {
-                    KindSet::exact(ValueKind::Bool)
+                    left.returns.union(right.returns)
+                };
+                KindFlow {
+                    normal: self.binary(*op, left.normal, right.normal),
+                    returns,
                 }
             }
-            HirExpr::FactChange { .. } | HirExpr::For { .. } | HirExpr::While { .. } => {
-                KindSet::exact(ValueKind::Relation)
+            HirExpr::Assign { target, value, .. } => match target {
+                HirPlace::Local { .. } => self.flow(value),
+                HirPlace::Dot { base, .. } => {
+                    let value = self.flow(value);
+                    let normal = value.normal;
+                    value.then(self.flow(base)).with_normal(normal)
+                }
+                HirPlace::Index {
+                    collection, index, ..
+                } => {
+                    let mut flow = self.flow(value);
+                    if let Some(index) = index {
+                        flow = flow.then(self.flow(index));
+                    }
+                    flow.with_normal(self.expr(collection))
+                }
+                HirPlace::Invalid { .. } => self.flow(value).with_normal(KindSet::ALL),
+            },
+            HirExpr::RelationAtom(atom) => {
+                let normal =
+                    if atom.args.iter().any(|arg| {
+                        matches!(arg.value, HirExpr::QueryVar { .. } | HirExpr::Hole { .. })
+                    }) {
+                        KindSet::exact(ValueKind::Relation)
+                    } else {
+                        KindSet::exact(ValueKind::Bool)
+                    };
+                self.args(&atom.args).with_normal(normal)
             }
-            HirExpr::Require { .. } => KindSet::exact(ValueKind::Bool),
-            HirExpr::Binding { value, .. } => value
-                .as_deref()
-                .map_or(KindSet::exact(ValueKind::Relation), |value| {
-                    self.expr(value)
-                }),
+            HirExpr::FactChange { atom, .. } => self
+                .args(&atom.args)
+                .with_normal(KindSet::exact(ValueKind::Relation)),
+            HirExpr::Require { condition, .. } => self
+                .flow(condition)
+                .with_normal(KindSet::exact(ValueKind::Bool)),
+            HirExpr::Binding { value, .. } => match value {
+                Some(value) => self.flow(value),
+                None => KindFlow::value(KindSet::exact(ValueKind::Relation)),
+            },
             HirExpr::If {
+                condition,
                 then_items,
                 elseif,
                 else_items,
                 ..
             } => {
-                let mut result = self.items(then_items);
-                for (_, items) in elseif {
-                    result = result.union(self.items(items));
+                let mut fallback = self.items(else_items);
+                for (condition, items) in elseif.iter().rev() {
+                    fallback = self.conditional(condition, items, fallback);
                 }
-                result.union(self.items(else_items))
+                self.conditional(condition, then_items, fallback)
             }
             HirExpr::Block { items, .. } => self.items(items),
-            HirExpr::Recover { expr, catches, .. } => {
-                catches.iter().fold(self.expr(expr), |kinds, catch| {
-                    kinds.union(self.expr(&catch.value))
-                })
+            HirExpr::For { iter, body, .. } => {
+                let iter = self.flow(iter);
+                if iter.normal.is_empty() {
+                    return iter;
+                }
+                let body = self.items(body);
+                KindFlow {
+                    normal: KindSet::exact(ValueKind::Relation),
+                    returns: iter.returns.union(body.returns),
+                }
             }
-            HirExpr::Function { name: None, .. } => KindSet::exact(ValueKind::Function),
-            HirExpr::Return { .. }
-            | HirExpr::Raise { .. }
-            | HirExpr::Break { .. }
-            | HirExpr::Continue { .. }
-            | HirExpr::Error { .. } => KindSet::EMPTY,
+            HirExpr::While {
+                condition, body, ..
+            } => {
+                let condition = self.flow(condition);
+                if condition.normal.is_empty() {
+                    return condition;
+                }
+                let body = self.items(body);
+                KindFlow {
+                    normal: KindSet::exact(ValueKind::Relation),
+                    returns: condition.returns.union(body.returns),
+                }
+            }
+            HirExpr::Return { value, .. } => {
+                let value = value.as_deref().map_or_else(
+                    || KindFlow::value(KindSet::exact(ValueKind::Relation)),
+                    |value| self.flow(value),
+                );
+                KindFlow {
+                    normal: KindSet::EMPTY,
+                    returns: value.returns.union(value.normal),
+                }
+            }
+            HirExpr::Raise {
+                error,
+                message,
+                value,
+                ..
+            } => {
+                let mut flow = self.flow(error);
+                if let Some(message) = message {
+                    flow = flow.then(self.flow(message));
+                }
+                if let Some(value) = value {
+                    flow = flow.then(self.flow(value));
+                }
+                KindFlow {
+                    normal: KindSet::EMPTY,
+                    returns: flow.returns,
+                }
+            }
+            HirExpr::Recover { expr, catches, .. } => {
+                let mut result = self.flow(expr);
+                for catch in catches {
+                    let mut flow = KindFlow::reachable();
+                    if let Some(condition) = &catch.condition {
+                        flow = flow.then(self.flow(condition));
+                    }
+                    flow = flow.then(self.flow(&catch.value));
+                    result = result.union(flow);
+                }
+                result
+            }
+            HirExpr::One { expr, .. } => self.flow(expr).with_normal(KindSet::ALL),
+            HirExpr::Break { .. } | HirExpr::Continue { .. } | HirExpr::Error { .. } => {
+                KindFlow::unreachable()
+            }
+            HirExpr::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => {
+                let mut result = self.items(body);
+                for catch in catches {
+                    let mut flow = KindFlow::reachable();
+                    if let Some(condition) = &catch.condition {
+                        flow = flow.then(self.flow(condition));
+                    }
+                    flow = flow.then(self.items(&catch.body));
+                    result = result.union(flow);
+                }
+                if finally.is_empty() {
+                    return result;
+                }
+                let finally = self.items(finally);
+                let preceding = if finally.normal.is_empty() {
+                    KindFlow::unreachable()
+                } else {
+                    result
+                };
+                KindFlow {
+                    normal: preceding.normal,
+                    returns: preceding.returns.union(finally.returns),
+                }
+            }
+            HirExpr::Function { name: None, .. } => {
+                KindFlow::value(KindSet::exact(ValueKind::Function))
+            }
+            HirExpr::Call { callee, args, .. } => {
+                let mut flow = self.flow(callee);
+                for arg in args {
+                    flow = flow.then(self.flow(&arg.value));
+                }
+                flow.with_normal(self.direct_call_result(callee))
+            }
+            HirExpr::RoleDispatch { selector, args, .. } => self
+                .flow(selector)
+                .then(self.args(args))
+                .with_normal(KindSet::ALL),
+            HirExpr::ReceiverDispatch {
+                receiver,
+                selector,
+                args,
+                ..
+            } => self
+                .flow(receiver)
+                .then(self.flow(selector))
+                .then(self.args(args))
+                .with_normal(KindSet::ALL),
+            HirExpr::Spawn { target, delay, .. } => {
+                let mut flow = self.flow(target);
+                if let Some(delay) = delay {
+                    flow = flow.then(self.flow(delay));
+                }
+                flow.with_normal(KindSet::ALL)
+            }
+            HirExpr::Index {
+                collection, index, ..
+            } => {
+                let mut flow = self.flow(collection);
+                if let Some(index) = index {
+                    flow = flow.then(self.flow(index));
+                }
+                flow.with_normal(KindSet::ALL)
+            }
+            HirExpr::Field { base, .. } => self.flow(base).with_normal(KindSet::ALL),
             HirExpr::ExternalRef { .. }
             | HirExpr::QueryVar { .. }
             | HirExpr::Hole { .. }
-            | HirExpr::Call { .. }
-            | HirExpr::RoleDispatch { .. }
-            | HirExpr::ReceiverDispatch { .. }
-            | HirExpr::Spawn { .. }
-            | HirExpr::Index { .. }
-            | HirExpr::Field { .. }
-            | HirExpr::One { .. }
-            | HirExpr::Try { .. }
-            | HirExpr::Function { name: Some(_), .. } => KindSet::ALL,
+            | HirExpr::Function { name: Some(_), .. } => KindFlow::value(KindSet::ALL),
         }
     }
 
-    fn items(&self, items: &[HirItem]) -> KindSet {
-        let mut result = KindSet::exact(ValueKind::Relation);
+    fn items(&self, items: &[HirItem]) -> KindFlow {
+        let mut result = KindFlow::reachable();
         for item in items {
             let HirItem::Expr { expr, .. } = item else {
-                return KindSet::ALL;
+                return result.then(KindFlow::value(KindSet::ALL));
             };
-            result = self.expr(expr);
-            if result.is_empty() {
+            result = result.then(self.flow(expr));
+            if result.normal.is_empty() {
                 return result;
             }
         }
         result
+    }
+
+    fn args(&self, args: &[crate::HirArg]) -> KindFlow {
+        args.iter().fold(KindFlow::reachable(), |flow, arg| {
+            flow.then(self.flow(&arg.value))
+        })
+    }
+
+    fn conditional(
+        &self,
+        condition: &HirExpr,
+        then_items: &[HirItem],
+        fallback: KindFlow,
+    ) -> KindFlow {
+        let condition = self.flow(condition);
+        if condition.normal.is_empty() {
+            return condition;
+        }
+        let branches = self.items(then_items).union(fallback);
+        KindFlow {
+            normal: branches.normal,
+            returns: condition.returns.union(branches.returns),
+        }
+    }
+
+    fn binding_kind(&self, id: BindingId) -> KindSet {
+        self.binding(id)
+            .map(|binding| {
+                binding.declared_kind.map_or_else(
+                    || match binding.kind {
+                        LocalKind::Catch => KindSet::exact(ValueKind::Error),
+                        _ => KindSet::ALL,
+                    },
+                    KindSet::exact,
+                )
+            })
+            .unwrap_or(KindSet::ALL)
+    }
+
+    fn direct_call_result(&self, callee: &HirExpr) -> KindSet {
+        let HirExpr::LocalRef { binding, .. } = callee else {
+            return KindSet::ALL;
+        };
+        (self.direct_result)(*binding).unwrap_or(KindSet::ALL)
     }
 
     fn unary(&self, op: UnaryOp, operand: KindSet) -> KindSet {
@@ -190,6 +417,12 @@ impl<'a> KindInference<'a> {
     }
 
     fn binary(&self, op: BinaryOp, left: KindSet, right: KindSet) -> KindSet {
+        if left.is_empty() {
+            return KindSet::EMPTY;
+        }
+        if right.is_empty() && !matches!(op, BinaryOp::And | BinaryOp::Or) {
+            return KindSet::EMPTY;
+        }
         match op {
             BinaryOp::Eq
             | BinaryOp::Ne
@@ -208,6 +441,56 @@ impl<'a> KindInference<'a> {
 
     fn binding(&self, id: crate::BindingId) -> Option<&Binding> {
         self.bindings.get(id.as_u32() as usize)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KindFlow {
+    normal: KindSet,
+    returns: KindSet,
+}
+
+impl KindFlow {
+    const fn value(normal: KindSet) -> Self {
+        Self {
+            normal,
+            returns: KindSet::EMPTY,
+        }
+    }
+
+    const fn reachable() -> Self {
+        Self::value(KindSet::exact(ValueKind::Relation))
+    }
+
+    const fn unreachable() -> Self {
+        Self::value(KindSet::EMPTY)
+    }
+
+    fn then(self, next: Self) -> Self {
+        if self.normal.is_empty() {
+            return self;
+        }
+        Self {
+            normal: next.normal,
+            returns: self.returns.union(next.returns),
+        }
+    }
+
+    const fn union(self, other: Self) -> Self {
+        Self {
+            normal: self.normal.union(other.normal),
+            returns: self.returns.union(other.returns),
+        }
+    }
+
+    const fn with_normal(self, normal: KindSet) -> Self {
+        if self.normal.is_empty() {
+            return self;
+        }
+        Self {
+            normal,
+            returns: self.returns,
+        }
     }
 }
 

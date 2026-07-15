@@ -6,7 +6,7 @@ use super::{
 use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
 use super::{relation_name_relation, subject_fact_relation};
 use mica_relation_kernel::RelationDurability;
-use mica_var::{Identity, Symbol, Tuple, Value};
+use mica_var::{Identity, Symbol, Tuple, Value, ValueKind};
 use std::sync::{Arc, Mutex, OnceLock};
 
 // Tests that mutate process-global environment variables (MICA_SOURCE_ROOT)
@@ -692,6 +692,29 @@ fn annotated_integer_bindings_check_division_result_kinds() {
             .unwrap()
             .outcome,
         TaskOutcome::Complete { value, .. } if value == Value::float(1.5).unwrap()
+    ));
+}
+
+#[test]
+fn annotated_function_results_are_proven_before_execution() {
+    let mut runner = SourceRunner::new_empty();
+
+    assert!(matches!(
+        runner
+            .run_source("fn answer() -> int => 42\nreturn answer()")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::int(42).unwrap()
+    ));
+    assert!(matches!(
+        runner
+            .run_source("fn wrong() -> int => 1.0\nreturn wrong()")
+            .unwrap_err(),
+        SourceTaskError::Compile(CompileError::FunctionResultKindMismatch {
+            expected: ValueKind::Int,
+            inferred,
+            ..
+        }) if inferred == "float"
     ));
 }
 

@@ -1152,7 +1152,7 @@ impl<'a> Analyzer<'a> {
                 body,
             } => {
                 let result_kind =
-                    self.resolve_kind_ref(result_kind.as_ref(), *id, "function results", false);
+                    self.resolve_kind_ref(result_kind.as_ref(), *id, "function results", true);
                 let name = name.as_ref().map(|name| {
                     self.declare(scope, name.clone(), LocalKind::Function, None, *id, span)
                 });
@@ -1840,7 +1840,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_parameter_and_result_kind_metadata_while_rejecting_enforcement() {
+    fn enables_result_kind_metadata_while_parameters_remain_unsupported() {
         let program = parse_ok("fn convert(value: float) -> string => value");
 
         let HirItem::Expr {
@@ -1857,10 +1857,15 @@ mod tests {
         };
         assert_eq!(params[0].declared_kind, Some(ValueKind::Float));
         assert_eq!(*result_kind, Some(ValueKind::String));
-        assert_eq!(program.diagnostics.len(), 2);
-        assert!(program.diagnostics.iter().all(|diagnostic| {
-            diagnostic.code == DiagnosticCode::UnsupportedValueKindAnnotation
-        }));
+        assert_eq!(program.diagnostics.len(), 1);
+        assert_eq!(
+            program.diagnostics[0].code,
+            DiagnosticCode::UnsupportedValueKindAnnotation
+        );
+        assert_eq!(
+            program.diagnostics[0].message,
+            "value-kind annotations on parameters are not yet enforced"
+        );
     }
 
     #[test]
