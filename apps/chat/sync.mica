@@ -84,7 +84,7 @@ verb chat_post(endpoint: identity, room: int, actor: string, text: string) -> bo
   return true
 end
 
-verb sync_event(endpoint: identity, session: identity, view: int, event: string, target: string, action: string, fields: map) -> bool
+verb sync_event(endpoint: identity, session: int, view: int, event: string, target: string, action: string, fields: map) -> bool
   if event == "submit" && target == "chat-composer" && action == "chat_post"
     let room: int = one ChatView(view, ?room)
     let posted: bool = chat_post(endpoint, room, fields[:actor], fields[:text])

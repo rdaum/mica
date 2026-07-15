@@ -85,7 +85,7 @@ pub enum RuntimeError {
         count: usize,
     },
     Kernel(KernelError),
-    Aborted(Value),
+    Raised(Value),
 }
 
 impl From<KernelError> for RuntimeError {

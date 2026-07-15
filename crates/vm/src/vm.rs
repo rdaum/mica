@@ -1294,7 +1294,13 @@ impl RegisterVm {
             }
             Opcode::BuiltinCall { dst, name, args } => {
                 let args = self.resolve_operands(program, program.operands(*args));
-                let value = host.call_builtin(*name, &args)?;
+                let value = match host.call_builtin(*name, &args) {
+                    Ok(value) => value,
+                    Err(RuntimeError::Raised(error)) => {
+                        return self.begin_raise(error).map(VmStep::single);
+                    }
+                    Err(error) => return Err(error),
+                };
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmStep::single(VmHostResponse::Continue))
@@ -1931,7 +1937,11 @@ impl RegisterVm {
             }
             Opcode::BuiltinCallDynamic { dst, name, args } => {
                 let args = self.resolve_list_items(program, program.list_items(*args))?;
-                let value = host.call_builtin(*name, &args)?;
+                let value = match host.call_builtin(*name, &args) {
+                    Ok(value) => value,
+                    Err(RuntimeError::Raised(error)) => return self.begin_raise(error),
+                    Err(error) => return Err(error),
+                };
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)

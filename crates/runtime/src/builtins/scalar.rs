@@ -1,6 +1,6 @@
 use crate::{
     BuiltinContext, BuiltinRegistry, RuntimeError, builtin_char_list_arg, builtin_string_arg,
-    builtin_usize_arg, invalid_builtin_call,
+    builtin_usize_arg, invalid_builtin_call, raised_builtin_error,
 };
 use mica_var::Value;
 
@@ -69,9 +69,17 @@ fn string_slice_builtin(
     let value = builtin_string_arg("string_slice", args, 0)?;
     let start = builtin_usize_arg("string_slice", args, 1)?;
     let end = builtin_usize_arg("string_slice", args, 2)?;
-    Ok(string_slice_chars(&value, start, end)
-        .map(Value::string)
-        .unwrap_or_else(Value::nothing))
+    let char_len = value.chars().count();
+    if start > end || end > char_len {
+        return Err(raised_builtin_error(
+            "E_INDEX",
+            format!(
+                "string_slice bounds {start}..{end} are invalid for a string of length {char_len}"
+            ),
+            Some(Value::list(args.iter().cloned())),
+        ));
+    }
+    Ok(Value::string(string_slice_chars(&value, start, end)))
 }
 
 fn string_from_chars_builtin(
@@ -461,14 +469,7 @@ fn simple_ordinal_value(value: &str) -> Option<i64> {
     }
 }
 
-fn string_slice_chars(value: &str, start: usize, end: usize) -> Option<&str> {
-    if start > end {
-        return None;
-    }
-    let char_len = value.chars().count();
-    if end > char_len {
-        return None;
-    }
+fn string_slice_chars(value: &str, start: usize, end: usize) -> &str {
     let start_byte = value
         .char_indices()
         .nth(start)
@@ -479,7 +480,7 @@ fn string_slice_chars(value: &str, start: usize, end: usize) -> Option<&str> {
         .nth(end)
         .map(|(index, _)| index)
         .unwrap_or(value.len());
-    Some(&value[start_byte..end_byte])
+    &value[start_byte..end_byte]
 }
 
 fn hex_digit(nibble: u8) -> char {
