@@ -198,6 +198,29 @@ pub enum ValueKind {
     Relation = TAG_RELATION,
 }
 
+impl ValueKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Identity => "identity",
+            Self::Symbol => "symbol",
+            Self::ErrorCode => "error_code",
+            Self::String => "string",
+            Self::Bytes => "bytes",
+            Self::List => "list",
+            Self::Map => "map",
+            Self::Range => "range",
+            Self::Error => "error",
+            Self::Capability => "capability",
+            Self::Frob => "frob",
+            Self::Function => "function",
+            Self::Relation => "relation",
+        }
+    }
+}
+
 pub const BOOL_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0002);
 pub const INTEGER_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0003);
 pub const FLOAT_PROTOTYPE: Identity = primitive_identity(0x00c0_0000_0000_0004);

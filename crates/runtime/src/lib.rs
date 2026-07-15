@@ -34,10 +34,10 @@ pub use mica_vm::metrics as vm_metrics;
 pub use mica_vm::{
     AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
     CapabilityScope, CatchHandler, Emission, ErrorField, ExternalRequest, Frame, Instruction,
-    ListItem, MailboxRecvRequest, MailboxSend, MapItem, Operand, Program, ProgramResolver,
-    QueryBinding, Register, RegisterVm, RelationArg, RuntimeBinaryOp, RuntimeContext, RuntimeError,
-    RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget, SuspendKind, VmHostContext,
-    VmHostResponse, VmState,
+    KindCheckSite, ListItem, MailboxRecvRequest, MailboxSend, MapItem, Operand, Program,
+    ProgramResolver, QueryBinding, Register, RegisterVm, RelationArg, RuntimeBinaryOp,
+    RuntimeContext, RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget,
+    SuspendKind, VmHostContext, VmHostResponse, VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
 pub use task_manager::{

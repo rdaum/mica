@@ -13,15 +13,16 @@
 
 use crate::{
     AuthorityContext, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp, Effect,
-    ErrorField, Instruction, ListItem, MapItem, Operand, Program, ProgramResolver, QueryBinding,
-    Register, RelationArg, RuntimeBinaryOp, RuntimeError, SpawnTarget, SuspendKind, Task,
-    TaskError, TaskLimits, TaskManager, TaskManagerError, TaskOutcome,
+    ErrorField, Instruction, KindCheckSite, ListItem, MapItem, Operand, Program, ProgramResolver,
+    QueryBinding, Register, RelationArg, RuntimeBinaryOp, RuntimeError, SpawnTarget, SuspendKind,
+    Task, TaskError, TaskLimits, TaskManager, TaskManagerError, TaskOutcome,
 };
 use mica_compiler::{CompileContext, compile_source};
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, RelationId, RelationKernel, RelationMetadata, Tuple,
 };
-use mica_var::{Identity, Symbol, Value};
+use mica_var::abi::borrowed_value_bits;
+use mica_var::{CapabilityId, FunctionId, Identity, Symbol, Value, ValueKind};
 use std::sync::Arc;
 
 fn rel(id: u64) -> RelationId {
@@ -84,6 +85,44 @@ fn map_entry(key: Operand, value: Operand) -> MapItem {
 
 fn map_splice(value: Operand) -> MapItem {
     MapItem::Splice(value)
+}
+
+fn representative_kind_values() -> Vec<(ValueKind, Value)> {
+    vec![
+        (ValueKind::Bool, Value::bool(true)),
+        (ValueKind::Int, int(7)),
+        (ValueKind::Float, Value::float(1.5).unwrap()),
+        (ValueKind::Identity, ident(7)),
+        (ValueKind::String, strv("text")),
+        (ValueKind::Bytes, Value::bytes([1, 2, 3])),
+        (ValueKind::Symbol, sym("symbol")),
+        (ValueKind::ErrorCode, err("E_TEST")),
+        (ValueKind::Error, error("E_TEST", None, Some(int(7)))),
+        (
+            ValueKind::Capability,
+            Value::capability(CapabilityId::new(1).unwrap()),
+        ),
+        (
+            ValueKind::Frob,
+            Value::frob(Identity::new(8).unwrap(), strv("payload")),
+        ),
+        (
+            ValueKind::Function,
+            Value::function(FunctionId::new(1).unwrap()),
+        ),
+        (ValueKind::List, Value::list([int(1), int(2)])),
+        (ValueKind::Map, Value::map([(sym("key"), int(1))])),
+        (ValueKind::Range, Value::range(int(1), Some(int(3)))),
+        (ValueKind::Relation, Value::nothing()),
+        (
+            ValueKind::Relation,
+            Value::relation(
+                [Symbol::intern("item")],
+                [Tuple::from([strv("heap relation")])],
+            )
+            .unwrap(),
+        ),
+    ]
 }
 
 fn kernel_with_world_relations() -> RelationKernel {
@@ -345,6 +384,203 @@ fn instruction_budget_exhaustion_reports_runtime_error() {
     assert_eq!(budget, 3);
     assert!(current_stack.iter().any(|frame| frame.contains("Jump")));
     assert!(hot_spots.iter().any(|frame| frame.contains("Jump")));
+}
+
+#[test]
+fn kind_checks_accept_every_value_kind_without_changing_the_value_word() {
+    let kernel = RelationKernel::new();
+
+    for (kind, value) in representative_kind_values() {
+        let expected_bits = borrowed_value_bits(&value);
+        let program = Program::new(
+            1,
+            [
+                Instruction::Load { dst: reg(0), value },
+                Instruction::CheckKind {
+                    value: reg(0),
+                    expected: kind,
+                    site: KindCheckSite::Binding,
+                    subject: Symbol::intern("item"),
+                },
+                Instruction::Return { value: r(0) },
+            ],
+        )
+        .unwrap();
+
+        let TaskOutcome::Complete { value, .. } = run_program(&kernel, program, 3).unwrap() else {
+            panic!("kind check did not complete for {}", kind.name());
+        };
+        assert_eq!(
+            borrowed_value_bits(&value),
+            expected_bits,
+            "{}",
+            kind.name()
+        );
+    }
+}
+
+#[test]
+fn kind_check_failures_are_catchable_for_every_expected_kind() {
+    let kernel = RelationKernel::new();
+
+    for expected in representative_kind_values()
+        .into_iter()
+        .map(|(kind, _)| kind)
+    {
+        let value = if expected == ValueKind::Int {
+            strv("wrong")
+        } else {
+            int(7)
+        };
+        let actual = value.kind();
+        let expected_payload_bits = borrowed_value_bits(&value);
+        let program = Program::new(
+            2,
+            [
+                Instruction::Load {
+                    dst: reg(0),
+                    value: value.clone(),
+                },
+                Instruction::EnterTry {
+                    catches: vec![crate::CatchHandler {
+                        code: Some(err("E_TYPE")),
+                        binding: Some(reg(1)),
+                        target: 4,
+                    }],
+                    finally: None,
+                    end: 5,
+                },
+                Instruction::CheckKind {
+                    value: reg(0),
+                    expected,
+                    site: KindCheckSite::Binding,
+                    subject: Symbol::intern("item"),
+                },
+                Instruction::ExitTry,
+                Instruction::Return { value: r(1) },
+                Instruction::Return {
+                    value: v(Value::nothing()),
+                },
+            ],
+        )
+        .unwrap();
+
+        let outcome = run_program(&kernel, program, 4).unwrap();
+        let TaskOutcome::Complete {
+            value: raised,
+            effects,
+            mailbox_sends,
+            retries,
+        } = outcome
+        else {
+            panic!("kind check did not raise for {}", expected.name());
+        };
+        assert_eq!(effects, vec![]);
+        assert_eq!(mailbox_sends, vec![]);
+        assert_eq!(retries, 0);
+        let payload_bits = raised
+            .with_error(|error| error.value().map(borrowed_value_bits))
+            .flatten()
+            .expect("E_TYPE has the offending value payload");
+        assert_eq!(payload_bits, expected_payload_bits, "{}", expected.name());
+        assert_eq!(
+            raised,
+            error(
+                "E_TYPE",
+                Some(&format!(
+                    "binding `item` requires {}, got {}",
+                    expected.name(),
+                    actual.name()
+                )),
+                Some(value)
+            ),
+            "{}",
+            expected.name()
+        );
+    }
+}
+
+#[test]
+fn kind_checks_consume_exactly_one_instruction_on_success_and_failure() {
+    let kernel = RelationKernel::new();
+    let success = Program::new(
+        1,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(7),
+            },
+            Instruction::CheckKind {
+                value: reg(0),
+                expected: ValueKind::Int,
+                site: KindCheckSite::Binding,
+                subject: Symbol::intern("count"),
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    assert!(matches!(
+        run_program(&kernel, success.clone(), 2),
+        Err(TaskError::Runtime(
+            RuntimeError::InstructionBudgetExceeded { budget: 2, .. }
+        ))
+    ));
+    assert!(matches!(
+        run_program(&kernel, success, 3).unwrap(),
+        TaskOutcome::Complete { value, .. } if value == int(7)
+    ));
+
+    let program = Program::new(
+        2,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(7),
+            },
+            Instruction::EnterTry {
+                catches: vec![crate::CatchHandler {
+                    code: Some(err("E_TYPE")),
+                    binding: Some(reg(1)),
+                    target: 4,
+                }],
+                finally: None,
+                end: 5,
+            },
+            Instruction::CheckKind {
+                value: reg(0),
+                expected: ValueKind::String,
+                site: KindCheckSite::Parameter,
+                subject: Symbol::intern("name"),
+            },
+            Instruction::ExitTry,
+            Instruction::Return { value: r(1) },
+            Instruction::Return {
+                value: v(Value::nothing()),
+            },
+        ],
+    )
+    .unwrap();
+
+    assert!(matches!(
+        run_program(&kernel, program.clone(), 3),
+        Err(TaskError::Runtime(
+            RuntimeError::InstructionBudgetExceeded { budget: 3, .. }
+        ))
+    ));
+    assert_eq!(
+        run_program(&kernel, program, 4).unwrap(),
+        TaskOutcome::Complete {
+            value: error(
+                "E_TYPE",
+                Some("parameter `name` requires string, got int"),
+                Some(int(7))
+            ),
+            effects: vec![],
+            mailbox_sends: vec![],
+            retries: 0,
+        }
+    );
 }
 
 #[test]
@@ -882,6 +1118,76 @@ fn program_artifact_round_trips_float_constants() {
             retries: 0,
         }
     );
+}
+
+#[test]
+fn program_artifact_round_trips_kind_checks_and_rejects_stale_magic() {
+    let program = Program::new(
+        1,
+        [
+            Instruction::CheckKind {
+                value: reg(0),
+                expected: ValueKind::Relation,
+                site: KindCheckSite::Parameter,
+                subject: Symbol::intern("rows"),
+            },
+            Instruction::Return { value: r(0) },
+        ],
+    )
+    .unwrap();
+    let bytes = program.to_bytes().unwrap();
+
+    assert_eq!(&bytes[..8], b"MICAPRG2");
+    assert_eq!(Program::from_bytes(&bytes).unwrap(), program);
+
+    let mut stale = bytes;
+    stale[..8].copy_from_slice(b"MICAPRG1");
+    assert!(matches!(
+        Program::from_bytes(&stale),
+        Err(RuntimeError::ProgramArtifact(message))
+            if message == "invalid program artifact magic"
+    ));
+}
+
+#[test]
+fn program_artifact_rejects_invalid_kind_check_fields() {
+    let program = Program::new(
+        1,
+        [Instruction::CheckKind {
+            value: reg(0),
+            expected: ValueKind::Int,
+            site: KindCheckSite::Binding,
+            subject: Symbol::intern("count"),
+        }],
+    )
+    .unwrap();
+    let bytes = program.to_bytes().unwrap();
+
+    // Header (16 bytes), opcode (1), register (2), then kind and site bytes.
+    let mut invalid_kind = bytes.clone();
+    invalid_kind[19] = u8::MAX;
+    assert!(Program::from_bytes(&invalid_kind).is_err());
+
+    let mut invalid_site = bytes;
+    invalid_site[20] = u8::MAX;
+    assert!(Program::from_bytes(&invalid_site).is_err());
+}
+
+#[test]
+fn programs_reject_unnamed_kind_check_subjects() {
+    assert!(matches!(
+        Program::new(
+            1,
+            [Instruction::CheckKind {
+                value: reg(0),
+                expected: ValueKind::Int,
+                site: KindCheckSite::Binding,
+                subject: Symbol::from_id(u32::MAX),
+            }]
+        ),
+        Err(RuntimeError::ProgramArtifact(message))
+            if message == "kind check subject must be a named symbol"
+    ));
 }
 
 #[test]
