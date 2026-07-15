@@ -31,8 +31,9 @@ mod cranelift_tests;
 
 pub use authority::{AuthorityContext, CapabilityGrant, CapabilityOp, CapabilityScope};
 pub use builtin::{
-    Builtin, BuiltinContext, BuiltinRegistry, ClientBuiltin, ClientBuiltinContext,
-    ClientBuiltinRegistry, MailboxRuntime, RuntimeContext, RuntimePorts, SYSTEM_ENDPOINT,
+    Builtin, BuiltinContext, BuiltinRegistry, BuiltinResultKind, ClientBuiltin,
+    ClientBuiltinContext, ClientBuiltinRegistry, MailboxRuntime, RuntimeContext, RuntimePorts,
+    SYSTEM_ENDPOINT,
 };
 pub use effect::Emission;
 pub use error::RuntimeError;

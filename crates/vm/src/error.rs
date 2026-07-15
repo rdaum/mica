@@ -12,7 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use mica_relation_kernel::KernelError;
-use mica_var::{Symbol, Value};
+use mica_var::{Symbol, Value, ValueKind};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeError {
@@ -55,6 +55,11 @@ pub enum RuntimeError {
     InvalidBuiltinCall {
         name: Symbol,
         message: String,
+    },
+    BuiltinResultKindMismatch {
+        name: Symbol,
+        expected: ValueKind,
+        actual: ValueKind,
     },
     PermissionDenied {
         operation: &'static str,

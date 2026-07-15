@@ -1292,7 +1292,12 @@ impl RegisterVm {
                     .push(Frame::new(callee_id, register_count, Some(*dst), args)?);
                 Ok(VmStep::single(VmHostResponse::Continue))
             }
-            Opcode::BuiltinCall { dst, name, args } => {
+            Opcode::BuiltinCall {
+                dst,
+                name,
+                result_kind,
+                args,
+            } => {
                 let args = self.resolve_operands(program, program.operands(*args));
                 let value = match host.call_builtin(*name, &args) {
                     Ok(value) => value,
@@ -1301,6 +1306,7 @@ impl RegisterVm {
                     }
                     Err(error) => return Err(error),
                 };
+                let value = validate_builtin_result(*name, *result_kind, value)?;
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmStep::single(VmHostResponse::Continue))
@@ -1935,13 +1941,19 @@ impl RegisterVm {
                 self.call_function_value(*dst, callee, user_args, max_call_depth)?;
                 Ok(VmHostResponse::Continue)
             }
-            Opcode::BuiltinCallDynamic { dst, name, args } => {
+            Opcode::BuiltinCallDynamic {
+                dst,
+                name,
+                result_kind,
+                args,
+            } => {
                 let args = self.resolve_list_items(program, program.list_items(*args))?;
                 let value = match host.call_builtin(*name, &args) {
                     Ok(value) => value,
                     Err(RuntimeError::Raised(error)) => return self.begin_raise(error),
                     Err(error) => return Err(error),
                 };
+                let value = validate_builtin_result(*name, *result_kind, value)?;
                 self.write_register_unchecked(*dst, value);
                 self.advance_ip_unchecked();
                 Ok(VmHostResponse::Continue)
@@ -3545,6 +3557,25 @@ fn kind_check_error(
         )),
         Some(value),
     )
+}
+
+fn validate_builtin_result(
+    name: Symbol,
+    expected: Option<ValueKind>,
+    value: Value,
+) -> Result<Value, RuntimeError> {
+    let Some(expected) = expected else {
+        return Ok(value);
+    };
+    let actual = value.kind();
+    if actual != expected {
+        return Err(RuntimeError::BuiltinResultKindMismatch {
+            name,
+            expected,
+            actual,
+        });
+    }
+    Ok(value)
 }
 
 fn normalize_raised_error(

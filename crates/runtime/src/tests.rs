@@ -1,7 +1,7 @@
 use super::{
-    AuthorityContext, CompileError, Emission, Instruction, Operand, Program, RuntimeError,
-    SYSTEM_ENDPOINT, SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind, TaskError,
-    TaskManagerError, TaskOutcome, endpoint_open_relation, param_relation,
+    AuthorityContext, BuiltinResultKind, CompileError, Emission, Instruction, Operand, Program,
+    RuntimeError, SYSTEM_ENDPOINT, SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind,
+    TaskError, TaskManagerError, TaskOutcome, endpoint_open_relation, param_relation,
 };
 use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
 use super::{relation_name_relation, subject_fact_relation};
@@ -284,6 +284,67 @@ fn runner_string_primitives_support_character_level_munging() {
             .outcome,
         TaskOutcome::Complete { value, .. } if value == Value::nothing()
     ));
+}
+
+#[test]
+fn installed_builtin_result_contracts_reach_source_compilation() {
+    let mut runner = SourceRunner::new_empty();
+
+    assert!(matches!(
+        runner
+            .run_source("let value: string = string_slice(\"abc\", 0, 1)\nreturn value")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::string("a")
+    ));
+    assert!(matches!(
+        runner.run_source("let value: int = string_slice(\"abc\", 0, 1)"),
+        Err(SourceTaskError::Compile(CompileError::ValueKindMismatch {
+            expected: ValueKind::Int,
+            inferred,
+            ..
+        })) if inferred == "string"
+    ));
+}
+
+#[test]
+fn default_builtin_result_contracts_classify_exact_and_dynamic_calls() {
+    let runner = SourceRunner::new_empty();
+
+    for (name, kind) in [
+        ("string_slice", ValueKind::String),
+        ("string_len", ValueKind::Int),
+        ("is_frob", ValueKind::Bool),
+        ("project", ValueKind::Relation),
+        ("make_identity", ValueKind::Identity),
+    ] {
+        assert_eq!(
+            runner.context.runtime_function_result(name),
+            Some(BuiltinResultKind::Exact(kind)),
+            "unexpected result contract for {name}"
+        );
+    }
+
+    for name in [
+        "json_decode",
+        "from_literal",
+        "frob_value",
+        "emit",
+        "mailbox_send",
+        "index_or",
+        "parse_ordinal",
+        "os_getenv",
+        "frob_delegate",
+        "actor",
+        "principal",
+        "openai_chat_completion",
+    ] {
+        assert_eq!(
+            runner.context.runtime_function_result(name),
+            Some(BuiltinResultKind::Dynamic),
+            "unexpected result contract for {name}"
+        );
+    }
 }
 
 #[test]

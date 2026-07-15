@@ -120,16 +120,19 @@ pub(crate) fn iteration_binding_kinds(
 pub(crate) struct KindInference<'a> {
     bindings: &'a [Binding],
     direct_result: &'a dyn Fn(BindingId) -> Option<KindSet>,
+    runtime_result: &'a dyn Fn(&str) -> Option<KindSet>,
 }
 
 impl<'a> KindInference<'a> {
     pub(crate) const fn new(
         bindings: &'a [Binding],
         direct_result: &'a dyn Fn(BindingId) -> Option<KindSet>,
+        runtime_result: &'a dyn Fn(&str) -> Option<KindSet>,
     ) -> Self {
         Self {
             bindings,
             direct_result,
+            runtime_result,
         }
     }
 
@@ -452,10 +455,20 @@ impl<'a> KindInference<'a> {
     }
 
     fn direct_call_result(&self, callee: &HirExpr) -> KindSet {
-        let HirExpr::LocalRef { binding, .. } = callee else {
-            return KindSet::ALL;
-        };
-        (self.direct_result)(*binding).unwrap_or(KindSet::ALL)
+        match callee {
+            HirExpr::LocalRef { binding, .. } => (self.direct_result)(*binding)
+                .or_else(|| {
+                    let binding = self.binding(*binding)?;
+                    (binding.kind == LocalKind::InstalledParam)
+                        .then(|| (self.runtime_result)(&binding.name))
+                        .flatten()
+                })
+                .unwrap_or(KindSet::ALL),
+            HirExpr::ExternalRef { name, .. } => {
+                (self.runtime_result)(name).unwrap_or(KindSet::ALL)
+            }
+            _ => KindSet::ALL,
+        }
     }
 
     fn unary(&self, op: UnaryOp, operand: KindSet) -> KindSet {

@@ -12,10 +12,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    AuthorityContext, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp, Effect,
-    ErrorField, Instruction, KindCheckSite, ListItem, MapItem, Operand, Program, ProgramResolver,
-    QueryBinding, Register, RelationArg, RuntimeBinaryOp, RuntimeError, SpawnTarget, SuspendKind,
-    Task, TaskError, TaskLimits, TaskManager, TaskManagerError, TaskOutcome,
+    AuthorityContext, BuiltinContext, BuiltinRegistry, BuiltinResultKind, CapabilityGrant,
+    CapabilityOp, Effect, ErrorField, Instruction, KindCheckSite, ListItem, MapItem, Operand,
+    Program, ProgramResolver, QueryBinding, Register, RelationArg, RuntimeBinaryOp, RuntimeError,
+    SpawnTarget, SuspendKind, Task, TaskError, TaskLimits, TaskManager, TaskManagerError,
+    TaskOutcome,
 };
 use mica_compiler::{CompileContext, compile_source};
 use mica_relation_kernel::{
@@ -774,13 +775,18 @@ fn builtin_can_return_ephemeral_capability_value() {
             Instruction::BuiltinCall {
                 dst: reg(0),
                 name: Symbol::intern("mint_read_located"),
+                result_kind: None,
                 args: vec![],
             },
             Instruction::Return { value: r(0) },
         ],
     )
     .unwrap();
-    let builtins = BuiltinRegistry::new().with_builtin("mint_read_located", mint_read_located);
+    let builtins = BuiltinRegistry::new().with_builtin(
+        "mint_read_located",
+        BuiltinResultKind::Dynamic,
+        mint_read_located,
+    );
 
     let outcome = run_program_with_builtins(&kernel, program, builtins).unwrap();
     let TaskOutcome::Complete { value, .. } = outcome else {
@@ -1137,7 +1143,7 @@ fn program_artifact_round_trips_kind_checks_and_rejects_stale_magic() {
     .unwrap();
     let bytes = program.to_bytes().unwrap();
 
-    assert_eq!(&bytes[..8], b"MICAPRG3");
+    assert_eq!(&bytes[..8], b"MICAPRG4");
     assert_eq!(
         program.kind_fact_after(0),
         Some((reg(0), ValueKind::Relation)),
@@ -1154,7 +1160,7 @@ fn program_artifact_round_trips_kind_checks_and_rejects_stale_magic() {
     ));
 
     let mut stale = bytes;
-    stale[..8].copy_from_slice(b"MICAPRG2");
+    stale[..8].copy_from_slice(b"MICAPRG3");
     assert!(matches!(
         Program::from_bytes(&stale),
         Err(RuntimeError::ProgramArtifact(message))
@@ -2206,13 +2212,18 @@ fn direct_program_call_returns_into_caller_register() {
 #[test]
 fn builtin_call_invokes_registered_host_function() {
     let kernel = kernel_with_world_relations();
-    let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
+    let builtins = BuiltinRegistry::new().with_builtin(
+        "emit_first_arg",
+        BuiltinResultKind::Dynamic,
+        emit_first_arg,
+    );
     let program = Program::new(
         1,
         [
             Instruction::BuiltinCall {
                 dst: reg(0),
                 name: Symbol::intern("emit_first_arg"),
+                result_kind: None,
                 args: vec![v(ident(EFFECT_TARGET)), v(strv("hello"))],
             },
             Instruction::Return { value: r(0) },
@@ -2236,7 +2247,11 @@ fn builtin_call_invokes_registered_host_function() {
 #[test]
 fn dynamic_builtin_call_expands_argument_splices() {
     let kernel = kernel_with_world_relations();
-    let builtins = BuiltinRegistry::new().with_builtin("emit_first_arg", emit_first_arg);
+    let builtins = BuiltinRegistry::new().with_builtin(
+        "emit_first_arg",
+        BuiltinResultKind::Dynamic,
+        emit_first_arg,
+    );
     let program = Program::new(
         2,
         [
@@ -2247,6 +2262,7 @@ fn dynamic_builtin_call_expands_argument_splices() {
             Instruction::BuiltinCallDynamic {
                 dst: reg(1),
                 name: Symbol::intern("emit_first_arg"),
+                result_kind: None,
                 args: vec![splice(r(0))],
             },
             Instruction::Return { value: r(1) },
@@ -2265,6 +2281,44 @@ fn dynamic_builtin_call_expands_argument_splices() {
             retries: 0,
         }
     );
+}
+
+#[test]
+fn builtin_calls_reject_results_that_violate_the_compiled_contract() {
+    let kernel = kernel_with_world_relations();
+    for instruction in [
+        Instruction::BuiltinCall {
+            dst: reg(0),
+            name: Symbol::intern("wrong_result"),
+            result_kind: Some(ValueKind::String),
+            args: Vec::new(),
+        },
+        Instruction::BuiltinCallDynamic {
+            dst: reg(0),
+            name: Symbol::intern("wrong_result"),
+            result_kind: Some(ValueKind::String),
+            args: Vec::new(),
+        },
+    ] {
+        let program = Program::new(1, [instruction, Instruction::Return { value: r(0) }]).unwrap();
+        let program = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+        let builtins = BuiltinRegistry::new().with_builtin(
+            "wrong_result",
+            BuiltinResultKind::Exact(ValueKind::String),
+            |_context: &mut BuiltinContext<'_, '_>, _args: &[Value]| Ok(int(1)),
+        );
+
+        assert_eq!(
+            run_program_with_builtins(&kernel, program, builtins),
+            Err(TaskError::Runtime(
+                RuntimeError::BuiltinResultKindMismatch {
+                    name: Symbol::intern("wrong_result"),
+                    expected: ValueKind::String,
+                    actual: ValueKind::Int,
+                }
+            ))
+        );
+    }
 }
 
 #[test]
@@ -2383,6 +2437,7 @@ fn missing_builtin_call_is_runtime_error() {
             Instruction::BuiltinCall {
                 dst: reg(0),
                 name: Symbol::intern("missing_builtin"),
+                result_kind: None,
                 args: vec![],
             },
             Instruction::Return { value: r(0) },

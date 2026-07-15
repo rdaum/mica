@@ -32,10 +32,10 @@ pub use mica_relation_kernel::{
 };
 pub use mica_vm::metrics as vm_metrics;
 pub use mica_vm::{
-    AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, CapabilityGrant, CapabilityOp,
-    CapabilityScope, CatchHandler, Emission, ErrorField, ExternalRequest, Frame, Instruction,
-    KindCheckSite, ListItem, MailboxRecvRequest, MailboxSend, MapItem, Operand, Program,
-    ProgramResolver, QueryBinding, Register, RegisterVm, RelationArg, RuntimeBinaryOp,
+    AuthorityContext, Builtin, BuiltinContext, BuiltinRegistry, BuiltinResultKind, CapabilityGrant,
+    CapabilityOp, CapabilityScope, CatchHandler, Emission, ErrorField, ExternalRequest, Frame,
+    Instruction, KindCheckSite, ListItem, MailboxRecvRequest, MailboxSend, MapItem, Operand,
+    Program, ProgramResolver, QueryBinding, Register, RegisterVm, RelationArg, RuntimeBinaryOp,
     RuntimeContext, RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget,
     SuspendKind, VmHostContext, VmHostResponse, VmState,
 };
@@ -111,79 +111,6 @@ const SUBJECT_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe3;
 const MENTIONED_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe2;
 const EXTENSIONAL_MENTIONED_FACT_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe1;
 const RELATION_DURABILITY_RELATION_ID: u64 = 0x00df_ffff_ffff_ffe0;
-
-const DEFAULT_BUILTIN_NAMES: &[&str] = &[
-    "emit",
-    "log",
-    "commit",
-    "suspend",
-    "read",
-    "external_request",
-    "invoke",
-    "mailbox",
-    "mailbox_send",
-    "mailbox_recv",
-    "make_relation",
-    "make_functional_relation",
-    "make_identity",
-    "rules",
-    "describe_rule",
-    "disable_rule",
-    "fileout",
-    "fileout_rules",
-    "tasks",
-    "actor",
-    "principal",
-    "endpoint",
-    "assume_actor",
-    "destroy_identity",
-    "frob",
-    "frob_delegate",
-    "frob_value",
-    "is_frob",
-    "to_literal",
-    "from_literal",
-    "to_symbol",
-    "json_encode",
-    "json_decode",
-    "dom_text",
-    "dom_raw",
-    "dom_element",
-    "dom_html",
-    "to_xml",
-    "from_xml",
-    "dom_diff",
-    "dom_snapshot_payload",
-    "sync_signature",
-    "string_len",
-    "string_chars",
-    "string_slice",
-    "string_from_chars",
-    "string_concat",
-    "string_join",
-    "url_encode_component",
-    "url_decode_component",
-    "sort",
-    "words",
-    "string_starts_with",
-    "string_contains",
-    "string_equal_fold",
-    "edit_distance",
-    "parse_ordinal",
-    "lower",
-    "embed_text",
-    "mica_query",
-    "openai_chat_completion",
-    "openai_chat_completion_with_options",
-    "llm_chat_stream",
-    "map_pairs",
-    "index_or",
-    "project",
-    "union",
-    "difference",
-    "natural_join",
-    "os_getenv",
-];
 
 impl SourceRunner {
     pub fn new_empty() -> Self {
@@ -1194,7 +1121,8 @@ impl SourceRunner {
     }
 
     fn refresh_context_from_catalog(&mut self) {
-        self.context = compile_context_from_catalog(self.task_manager.kernel());
+        self.context =
+            compile_context_from_catalog(self.task_manager.kernel(), self.task_manager.builtins());
         apply_host_request_functions(&mut self.context, &self.host_request_functions);
     }
 
@@ -1757,7 +1685,8 @@ impl SharedSourceRunner {
         actor: Option<Identity>,
         endpoint: Identity,
     ) -> CompileContext {
-        let mut context = compile_context_from_catalog(self.task_manager.kernel());
+        let mut context =
+            compile_context_from_catalog(self.task_manager.kernel(), self.task_manager.builtins());
         apply_host_request_functions(&mut context, &self.host_request_functions);
         if let Some(principal) = principal {
             context.define_identity("principal", principal);
@@ -1775,7 +1704,8 @@ impl SharedSourceRunner {
         actor: Option<Identity>,
         endpoint: Identity,
     ) -> CompileContext {
-        let mut context = compile_context_from_catalog(self.task_manager.kernel());
+        let mut context =
+            compile_context_from_catalog(self.task_manager.kernel(), self.task_manager.builtins());
         if let Some(principal) = principal {
             context.define_identity("principal", principal);
         }
@@ -2477,11 +2407,16 @@ fn root_source_needs_install_chunking(source: &str) -> bool {
     (has_method || has_rule) && (has_executable || (has_method && has_rule))
 }
 
-fn compile_context_from_catalog(kernel: &RelationKernel) -> CompileContext {
+fn compile_context_from_catalog(
+    kernel: &RelationKernel,
+    builtins: &BuiltinRegistry,
+) -> CompileContext {
     let snapshot = kernel.snapshot();
     let mut context = CompileContext::new().with_method_relations(method_relations());
-    for name in DEFAULT_BUILTIN_NAMES {
-        context.define_runtime_function(*name);
+    for (name, result) in builtins.result_kinds() {
+        if let Some(name) = name.name() {
+            context.define_runtime_function(name, result);
+        }
     }
     for metadata in snapshot.relation_metadata() {
         context.define_relation_metadata(metadata.clone());
@@ -3747,53 +3682,195 @@ fn system_relation_metadata() -> Vec<RelationMetadata> {
 
 fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -> BuiltinRegistry {
     let registry = BuiltinRegistry::new()
-        .with_builtin("emit", emit_builtin)
-        .with_builtin("log", log_builtin)
-        .with_builtin("mailbox", mailbox_builtin)
-        .with_builtin("mailbox_send", mailbox_send_builtin)
-        .with_builtin("make_relation", MakeRelationBuiltin::new())
+        .with_builtin("emit", BuiltinResultKind::Dynamic, emit_builtin)
+        .with_builtin(
+            "log",
+            BuiltinResultKind::Exact(ValueKind::Relation),
+            log_builtin,
+        )
+        .with_builtin(
+            "mailbox",
+            BuiltinResultKind::Exact(ValueKind::List),
+            mailbox_builtin,
+        )
+        .with_builtin(
+            "mailbox_send",
+            BuiltinResultKind::Dynamic,
+            mailbox_send_builtin,
+        )
+        .with_builtin(
+            "make_relation",
+            BuiltinResultKind::Exact(ValueKind::Identity),
+            MakeRelationBuiltin::new(),
+        )
         .with_builtin(
             "make_functional_relation",
+            BuiltinResultKind::Exact(ValueKind::Identity),
             MakeFunctionalRelationBuiltin::new(),
         )
-        .with_builtin("make_identity", MakeIdentityBuiltin::new())
-        .with_builtin("rules", rules_builtin)
-        .with_builtin("describe_rule", describe_rule_builtin)
-        .with_builtin("disable_rule", disable_rule_builtin)
-        .with_builtin("fileout", fileout_builtin)
-        .with_builtin("fileout_rules", fileout_rules_builtin)
-        .with_builtin("tasks", tasks_builtin)
-        .with_builtin("actor", actor_builtin)
-        .with_builtin("principal", principal_builtin)
-        .with_builtin("endpoint", endpoint_builtin)
-        .with_builtin("assume_actor", assume_actor_builtin)
-        .with_builtin("destroy_identity", destroy_identity_builtin)
-        .with_builtin("frob", frob_builtin)
-        .with_builtin("frob_delegate", frob_delegate_builtin)
-        .with_builtin("frob_value", frob_value_builtin)
-        .with_builtin("is_frob", is_frob_builtin)
-        .with_builtin("to_literal", to_literal_builtin)
-        .with_builtin("from_literal", from_literal_builtin)
-        .with_builtin("to_symbol", to_symbol_builtin)
-        .with_builtin("map_pairs", map_pairs_builtin)
-        .with_builtin("index_or", index_or_builtin)
-        .with_builtin("project", project_builtin)
-        .with_builtin("union", union_builtin)
-        .with_builtin("difference", difference_builtin)
-        .with_builtin("natural_join", natural_join_builtin)
-        .with_builtin("json_encode", json_encode_builtin)
-        .with_builtin("json_decode", json_decode_builtin)
-        .with_builtin("dom_text", dom_text_builtin)
-        .with_builtin("dom_raw", dom_raw_builtin)
-        .with_builtin("dom_element", dom_element_builtin)
-        .with_builtin("dom_html", dom_html_builtin)
-        .with_builtin("to_xml", to_xml_builtin)
-        .with_builtin("from_xml", from_xml_builtin)
-        .with_builtin("dom_diff", dom_diff_builtin)
-        .with_builtin("dom_snapshot_payload", dom_snapshot_payload_builtin)
-        .with_builtin("sync_signature", sync_signature_builtin);
+        .with_builtin(
+            "make_identity",
+            BuiltinResultKind::Exact(ValueKind::Identity),
+            MakeIdentityBuiltin::new(),
+        )
+        .with_builtin(
+            "rules",
+            BuiltinResultKind::Exact(ValueKind::List),
+            rules_builtin,
+        )
+        .with_builtin(
+            "describe_rule",
+            BuiltinResultKind::Exact(ValueKind::String),
+            describe_rule_builtin,
+        )
+        .with_builtin(
+            "disable_rule",
+            BuiltinResultKind::Exact(ValueKind::Relation),
+            disable_rule_builtin,
+        )
+        .with_builtin(
+            "fileout",
+            BuiltinResultKind::Exact(ValueKind::String),
+            fileout_builtin,
+        )
+        .with_builtin(
+            "fileout_rules",
+            BuiltinResultKind::Exact(ValueKind::String),
+            fileout_rules_builtin,
+        )
+        .with_builtin(
+            "tasks",
+            BuiltinResultKind::Exact(ValueKind::List),
+            tasks_builtin,
+        )
+        .with_builtin("actor", BuiltinResultKind::Dynamic, actor_builtin)
+        .with_builtin("principal", BuiltinResultKind::Dynamic, principal_builtin)
+        .with_builtin(
+            "endpoint",
+            BuiltinResultKind::Exact(ValueKind::Identity),
+            endpoint_builtin,
+        )
+        .with_builtin(
+            "assume_actor",
+            BuiltinResultKind::Exact(ValueKind::Identity),
+            assume_actor_builtin,
+        )
+        .with_builtin(
+            "destroy_identity",
+            BuiltinResultKind::Exact(ValueKind::Int),
+            destroy_identity_builtin,
+        )
+        .with_builtin(
+            "frob",
+            BuiltinResultKind::Exact(ValueKind::Frob),
+            frob_builtin,
+        )
+        .with_builtin(
+            "frob_delegate",
+            BuiltinResultKind::Dynamic,
+            frob_delegate_builtin,
+        )
+        .with_builtin("frob_value", BuiltinResultKind::Dynamic, frob_value_builtin)
+        .with_builtin(
+            "is_frob",
+            BuiltinResultKind::Exact(ValueKind::Bool),
+            is_frob_builtin,
+        )
+        .with_builtin(
+            "to_literal",
+            BuiltinResultKind::Exact(ValueKind::String),
+            to_literal_builtin,
+        )
+        .with_builtin(
+            "from_literal",
+            BuiltinResultKind::Dynamic,
+            from_literal_builtin,
+        )
+        .with_builtin(
+            "to_symbol",
+            BuiltinResultKind::Exact(ValueKind::Symbol),
+            to_symbol_builtin,
+        )
+        .with_builtin(
+            "map_pairs",
+            BuiltinResultKind::Exact(ValueKind::List),
+            map_pairs_builtin,
+        )
+        .with_builtin("index_or", BuiltinResultKind::Dynamic, index_or_builtin)
+        .with_builtin(
+            "project",
+            BuiltinResultKind::Exact(ValueKind::Relation),
+            project_builtin,
+        )
+        .with_builtin(
+            "union",
+            BuiltinResultKind::Exact(ValueKind::Relation),
+            union_builtin,
+        )
+        .with_builtin(
+            "difference",
+            BuiltinResultKind::Exact(ValueKind::Relation),
+            difference_builtin,
+        )
+        .with_builtin(
+            "natural_join",
+            BuiltinResultKind::Exact(ValueKind::Relation),
+            natural_join_builtin,
+        )
+        .with_builtin(
+            "json_encode",
+            BuiltinResultKind::Exact(ValueKind::String),
+            json_encode_builtin,
+        )
+        .with_builtin(
+            "json_decode",
+            BuiltinResultKind::Dynamic,
+            json_decode_builtin,
+        )
+        .with_builtin(
+            "dom_text",
+            BuiltinResultKind::Exact(ValueKind::Map),
+            dom_text_builtin,
+        )
+        .with_builtin(
+            "dom_raw",
+            BuiltinResultKind::Exact(ValueKind::Map),
+            dom_raw_builtin,
+        )
+        .with_builtin(
+            "dom_element",
+            BuiltinResultKind::Exact(ValueKind::Map),
+            dom_element_builtin,
+        )
+        .with_builtin(
+            "dom_html",
+            BuiltinResultKind::Exact(ValueKind::String),
+            dom_html_builtin,
+        )
+        .with_builtin(
+            "to_xml",
+            BuiltinResultKind::Exact(ValueKind::String),
+            to_xml_builtin,
+        )
+        .with_builtin("from_xml", BuiltinResultKind::Dynamic, from_xml_builtin)
+        .with_builtin(
+            "dom_diff",
+            BuiltinResultKind::Exact(ValueKind::List),
+            dom_diff_builtin,
+        )
+        .with_builtin(
+            "dom_snapshot_payload",
+            BuiltinResultKind::Exact(ValueKind::String),
+            dom_snapshot_payload_builtin,
+        )
+        .with_builtin(
+            "sync_signature",
+            BuiltinResultKind::Exact(ValueKind::Int),
+            sync_signature_builtin,
+        );
     builtins::install_scalar_builtins(registry).with_builtin(
         "embed_text",
+        BuiltinResultKind::Exact(ValueKind::List),
         embedding::EmbedTextBuiltin::new(embedding_provider),
     )
 }

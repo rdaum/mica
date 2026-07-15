@@ -732,6 +732,10 @@ impl SharedTaskManager {
         &self.kernel
     }
 
+    pub fn builtins(&self) -> &Arc<BuiltinRegistry> {
+        &self.builtins
+    }
+
     pub fn submit_with_context(
         &self,
         program: Arc<Program>,
