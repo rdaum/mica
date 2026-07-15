@@ -687,7 +687,9 @@ impl<'a> Parser<'a> {
             }
             param.push(self.expect_token(SyntaxKind::Ident, "expected parameter name"));
             if self.current_kind() == SyntaxKind::Colon {
-                self.error("value-kind annotations are not supported in brace lambdas yet");
+                self.error(
+                    "value-kind annotations are not supported in brace lambdas; use `fn(...)` for annotated parameters",
+                );
                 param.push(self.bump_element());
                 param.push(self.expect_token(SyntaxKind::Ident, "expected value kind"));
             }
