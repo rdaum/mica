@@ -143,7 +143,6 @@ pub enum DiagnosticCode {
     InvalidRelationRule,
     MissingValueKindInitializer,
     UnknownValueKind,
-    UnsupportedValueKindAnnotation,
     UnsupportedSyntax,
 }
 
@@ -157,7 +156,6 @@ impl DiagnosticCode {
             Self::InvalidRelationRule => "invalid relation rule",
             Self::MissingValueKindInitializer => "missing value-kind initializer",
             Self::UnknownValueKind => "unknown value kind",
-            Self::UnsupportedValueKindAnnotation => "unsupported value-kind annotation",
             Self::UnsupportedSyntax => "unsupported syntax",
         }
     }
@@ -748,12 +746,8 @@ impl<'a> Analyzer<'a> {
                 let params = params
                     .iter()
                     .map(|param| {
-                        let declared_kind = self.resolve_kind_ref(
-                            param.annotation.as_ref(),
-                            param.id,
-                            "installed verb parameters",
-                            true,
-                        );
+                        let declared_kind =
+                            self.resolve_kind_ref(param.annotation.as_ref(), param.id);
                         HirMethodParam {
                             id: param.id,
                             binding: self.declare(
@@ -769,12 +763,7 @@ impl<'a> Analyzer<'a> {
                         }
                     })
                     .collect();
-                let result_kind = self.resolve_kind_ref(
-                    result_kind.as_ref(),
-                    *id,
-                    "installed verb results",
-                    true,
-                );
+                let result_kind = self.resolve_kind_ref(result_kind.as_ref(), *id);
                 self.function_stack.push(FunctionContext {
                     owner: *id,
                     scope: method_scope,
@@ -1007,8 +996,7 @@ impl<'a> Analyzer<'a> {
                 annotation,
                 value,
             } => {
-                let declared_kind =
-                    self.resolve_kind_ref(annotation.as_ref(), *id, "ordinary bindings", true);
+                let declared_kind = self.resolve_kind_ref(annotation.as_ref(), *id);
                 if declared_kind.is_some() && value.is_none() {
                     self.diagnostic(
                         DiagnosticCode::MissingValueKindInitializer,
@@ -1042,12 +1030,8 @@ impl<'a> Analyzer<'a> {
                         bindings
                             .iter()
                             .map(|param| {
-                                let declared_kind = self.resolve_kind_ref(
-                                    param.annotation.as_ref(),
-                                    param.id,
-                                    "scatter bindings",
-                                    true,
-                                );
+                                let declared_kind =
+                                    self.resolve_kind_ref(param.annotation.as_ref(), param.id);
                                 let local_kind = match kind {
                                     BindingKind::Let => LocalKind::Let,
                                     BindingKind::Const => LocalKind::Const,
@@ -1123,8 +1107,7 @@ impl<'a> Analyzer<'a> {
             } => {
                 let iter = self.lower_expr(iter, scope);
                 let loop_scope = self.alloc_scope(Some(scope), Some(*id));
-                let key_kind =
-                    self.resolve_kind_ref(key.annotation.as_ref(), key.id, "loop bindings", true);
+                let key_kind = self.resolve_kind_ref(key.annotation.as_ref(), key.id);
                 let key = HirLoopBinding {
                     id: key.id,
                     binding: self.declare(
@@ -1138,12 +1121,7 @@ impl<'a> Analyzer<'a> {
                     declared_kind: key_kind,
                 };
                 let value = value.as_ref().map(|value| {
-                    let declared_kind = self.resolve_kind_ref(
-                        value.annotation.as_ref(),
-                        value.id,
-                        "loop bindings",
-                        true,
-                    );
+                    let declared_kind = self.resolve_kind_ref(value.annotation.as_ref(), value.id);
                     HirLoopBinding {
                         id: value.id,
                         binding: self.declare(
@@ -1237,8 +1215,7 @@ impl<'a> Analyzer<'a> {
                 result_kind,
                 body,
             } => {
-                let result_kind =
-                    self.resolve_kind_ref(result_kind.as_ref(), *id, "function results", true);
+                let result_kind = self.resolve_kind_ref(result_kind.as_ref(), *id);
                 let name = name.as_ref().map(|name| {
                     self.declare(scope, name.clone(), LocalKind::Function, None, *id, span)
                 });
@@ -1318,8 +1295,7 @@ impl<'a> Analyzer<'a> {
                     ParamMode::Optional => LocalKind::OptionalParam,
                     ParamMode::Rest => LocalKind::RestParam,
                 };
-                let declared_kind =
-                    self.resolve_kind_ref(param.annotation.as_ref(), param.id, "parameters", true);
+                let declared_kind = self.resolve_kind_ref(param.annotation.as_ref(), param.id);
                 let binding = self.declare(
                     scope,
                     param.name.clone(),
@@ -1529,8 +1505,6 @@ impl<'a> Analyzer<'a> {
         &mut self,
         annotation: Option<&ValueKindRef>,
         node: NodeId,
-        boundary: &str,
-        enforced: bool,
     ) -> Option<ValueKind> {
         let annotation = annotation?;
         let Some(kind) = value_kind_from_name(&annotation.name) else {
@@ -1542,14 +1516,6 @@ impl<'a> Analyzer<'a> {
             );
             return None;
         };
-        if !enforced {
-            self.diagnostic(
-                DiagnosticCode::UnsupportedValueKindAnnotation,
-                node,
-                annotation.span.clone(),
-                format!("value-kind annotations on {boundary} are not yet enforced"),
-            );
-        }
         Some(kind)
     }
 

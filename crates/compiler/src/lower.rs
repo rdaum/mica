@@ -119,7 +119,7 @@ impl<'a> Lower<'a> {
         if matches!(kind, MethodKind::Method) && method_clauses_use_colon_params(&clauses) {
             self.error(
                 node,
-                "value-kind annotations are not supported in method parameters yet; dispatch restrictions use `name @ #prototype`",
+                "value-kind annotations are only supported on verb parameters; method dispatch restrictions use `name @ #prototype`",
             );
         }
         let (identity, selector, params, result_kind) = match kind {
