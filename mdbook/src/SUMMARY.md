@@ -9,6 +9,7 @@
 - [Syntax Quick Reference](./language/syntax.md)
 - [Values](./language/values.md)
 - [Expressions and Bindings](./language/expressions-and-bindings.md)
+- [Value-Kind Annotations](./language/value-kind-annotations.md)
 - [DOM Markup](./language/dom-markup.md)
 - [Control Flow](./language/control-flow.md)
 - [Errors and Recovery](./language/errors-and-recovery.md)
