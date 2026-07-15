@@ -101,6 +101,56 @@ fn runner_string_primitives_support_character_level_munging() {
             .outcome,
         TaskOutcome::Complete { value, .. } if value == Value::string("éll")
     ));
+    for (source, message, payload) in [
+        (
+            "string_slice(\"abc\", 2, 1)",
+            "string_slice bounds 2..1 are invalid for a string of length 3",
+            Value::list([
+                Value::string("abc"),
+                Value::int(2).unwrap(),
+                Value::int(1).unwrap(),
+            ]),
+        ),
+        (
+            "string_slice(\"abc\", 0, 4)",
+            "string_slice bounds 0..4 are invalid for a string of length 3",
+            Value::list([
+                Value::string("abc"),
+                Value::int(0).unwrap(),
+                Value::int(4).unwrap(),
+            ]),
+        ),
+    ] {
+        let report = runner
+            .run_source(&format!(
+                "try\n  return {source}\ncatch E_INDEX as err\n  return [err.message, err.value]\nend"
+            ))
+            .unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([Value::string(message), payload])
+        ));
+    }
+    assert!(matches!(
+        runner
+            .run_source(
+                "let args = [\"abc\", 0, 4]
+                 try
+                   return string_slice(@args)
+                 catch E_INDEX as err
+                   return err.value
+                 end"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::string("abc"),
+                Value::int(0).unwrap(),
+                Value::int(4).unwrap(),
+            ])
+    ));
     assert!(matches!(
         runner
             .run_source("return string_from_chars([\"h\", \"é\"])")
@@ -482,7 +532,7 @@ fn runner_chat_filein_enforces_value_kind_contracts() {
     assert!(matches!(
         runner
             .run_source(
-                "return sync_event(#chat_endpoint, #chat_endpoint, 11, \"submit\", \"chat-composer\", \"chat_post\", {:actor -> \"bob\", :text -> \"hello\"})"
+                "return sync_event(#chat_endpoint, 7, 11, \"submit\", \"chat-composer\", \"chat_post\", {:actor -> \"bob\", :text -> \"hello\"})"
             )
             .unwrap()
             .outcome,
@@ -496,7 +546,7 @@ fn runner_chat_filein_enforces_value_kind_contracts() {
         runner
             .run_source(
                 "try
-                   return sync_event(#chat_endpoint, #chat_endpoint, 11, \"submit\", \"chat-composer\", \"chat_post\", {:actor -> 7, :text -> \"hello\"})
+                   return sync_event(#chat_endpoint, 7, 11, \"submit\", \"chat-composer\", \"chat_post\", {:actor -> 7, :text -> \"hello\"})
                  catch E_TYPE as err
                    return [err.message, err.value]
                  end"
@@ -4413,6 +4463,43 @@ fn runner_inspects_and_disables_rules() {
     );
     assert_eq!(disabled.render(), "task 11 complete: nothing (retries: 0)");
     assert_eq!(query.render(), "task 12 complete: [:obj] {} (retries: 0)");
+
+    let unknown_relation = runner
+        .run_source(
+            "try
+               return rules(:Missing)
+             catch E_INVARG as err
+               return [err.message, err.value]
+             end",
+        )
+        .unwrap();
+    assert!(matches!(
+        unknown_relation.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::string("unknown relation :Missing"),
+                Value::symbol(Symbol::intern("Missing")),
+            ])
+    ));
+    runner.run_source("make_identity(:not_a_rule)").unwrap();
+    let unknown_rule = runner
+        .run_source(
+            "try
+               return describe_rule(#not_a_rule)
+             catch E_INVARG as err
+               return [err.message, err.value]
+             end",
+        )
+        .unwrap();
+    let not_a_rule = runner.named_identity(Symbol::intern("not_a_rule")).unwrap();
+    assert!(matches!(
+        unknown_rule.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::string("rule does not exist"),
+                Value::identity(not_a_rule),
+            ])
+    ));
 }
 
 #[test]
@@ -4442,6 +4529,24 @@ fn runner_fileouts_active_rules() {
     imported.run_source("make_relation(:VisibleTo, 2)").unwrap();
     let installed = imported.run_source(&source).unwrap();
     assert_eq!(installed.render(), "task 3 complete: #rule1 (retries: 0)");
+
+    let unknown_relation = runner
+        .run_source(
+            "try
+               return fileout_rules(:Missing)
+             catch E_INVARG as err
+               return [err.message, err.value]
+             end",
+        )
+        .unwrap();
+    assert!(matches!(
+        unknown_relation.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::string("unknown relation :Missing"),
+                Value::symbol(Symbol::intern("Missing")),
+            ])
+    ));
 }
 
 #[test]

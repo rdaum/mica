@@ -5048,9 +5048,13 @@ fn rules_builtin(
         return Err(invalid_builtin_call("rules", "expected rules(:Relation)"));
     }
     let name = builtin_symbol_arg("rules", args, 0)?;
-    let Some((relation, _)) = relation_named(context.kernel(), name) else {
-        return Ok(Value::list([]));
-    };
+    let (relation, _) = relation_named(context.kernel(), name).ok_or_else(|| {
+        raised_builtin_error(
+            "E_INVARG",
+            format!("unknown relation :{}", name.name().unwrap_or("<unnamed>")),
+            Some(Value::symbol(name)),
+        )
+    })?;
     let rules = context
         .kernel()
         .snapshot()
@@ -5080,7 +5084,13 @@ fn describe_rule_builtin(
         .iter()
         .find(|rule| rule.id() == rule_id)
         .map(|rule| Value::string(rule.source()))
-        .unwrap_or_else(Value::nothing);
+        .ok_or_else(|| {
+            raised_builtin_error(
+                "E_INVARG",
+                "rule does not exist",
+                Some(Value::identity(rule_id)),
+            )
+        })?;
     Ok(source)
 }
 
@@ -5110,7 +5120,17 @@ fn fileout_rules_builtin(
         None
     } else {
         let name = builtin_symbol_arg("fileout_rules", args, 0)?;
-        relation_named(context.kernel(), name).map(|(relation, _)| relation)
+        Some(
+            relation_named(context.kernel(), name)
+                .map(|(relation, _)| relation)
+                .ok_or_else(|| {
+                    raised_builtin_error(
+                        "E_INVARG",
+                        format!("unknown relation :{}", name.name().unwrap_or("<unnamed>")),
+                        Some(Value::symbol(name)),
+                    )
+                })?,
+        )
     };
     let snapshot = context.kernel().snapshot();
     let sources = snapshot
@@ -6484,6 +6504,18 @@ pub(crate) fn invalid_builtin_call(name: &str, message: impl Into<String>) -> Ru
     }
 }
 
+pub(crate) fn raised_builtin_error(
+    code: &str,
+    message: impl Into<String>,
+    value: Option<Value>,
+) -> RuntimeError {
+    RuntimeError::Raised(Value::error(
+        Symbol::intern(code),
+        Some(message.into()),
+        value,
+    ))
+}
+
 impl RunReport {
     pub fn render(&self) -> String {
         match &self.outcome {
@@ -6698,9 +6730,9 @@ fn render_runtime_error(
             "invalid relation splice {}",
             render_value(value, identity_names, relation_names)
         ),
-        RuntimeError::Aborted(value) => {
+        RuntimeError::Raised(value) => {
             format!(
-                "aborted with {}",
+                "raised {}",
                 render_value(value, identity_names, relation_names)
             )
         }
