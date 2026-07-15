@@ -646,6 +646,62 @@ fn annotated_bindings_raise_catchable_type_errors_at_dynamic_writes() {
 }
 
 #[test]
+fn annotated_parameters_raise_catchable_type_errors_at_each_call_boundary() {
+    let mut runner = SourceRunner::new_empty();
+    for source in [
+        "fn accept(value: int) -> int => value
+         try
+           return accept(from_literal(\"\\\"wrong\\\"\"))
+         catch E_TYPE as err
+           return [err.message, err.value]
+         end",
+        "let offset: int = 0
+         let typed = fn(value: int) -> int => value + offset
+         let accept = typed
+         try
+           return accept(from_literal(\"\\\"wrong\\\"\"))
+         catch E_TYPE as err
+           return [err.message, err.value]
+         end",
+    ] {
+        let report = runner.run_source(source).unwrap();
+        assert!(matches!(
+            report.outcome,
+            TaskOutcome::Complete { value, .. }
+                if value == Value::list([
+                    Value::string("parameter `value` requires int, got string"),
+                    Value::string("wrong"),
+                ])
+        ));
+    }
+}
+
+#[test]
+fn annotated_optional_and_rest_parameters_bind_function_value_arguments() {
+    let mut runner = SourceRunner::new_empty();
+    let report = runner
+        .run_source(
+            "let typed = fn(?value: int = 1, @rest: list) -> list => [value, @rest]
+             let alias = typed
+             return [alias(), alias(2, 3, 4)]",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        report.outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::list([Value::int(1).unwrap()]),
+                Value::list([
+                    Value::int(2).unwrap(),
+                    Value::int(3).unwrap(),
+                    Value::int(4).unwrap(),
+                ]),
+            ])
+    ));
+}
+
+#[test]
 fn annotated_relation_bindings_accept_dynamic_immediate_and_heap_values() {
     let mut runner = SourceRunner::new_empty();
 

@@ -2236,6 +2236,52 @@ fn shift_compile_error(error: CompileError, offset: usize) -> CompileError {
             expected,
             inferred,
         },
+        CompileError::ParameterKindMismatch {
+            node,
+            span,
+            parameter,
+            expected,
+            inferred,
+        } => CompileError::ParameterKindMismatch {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            parameter,
+            expected,
+            inferred,
+        },
+        CompileError::ParameterDefaultKindMismatch {
+            node,
+            span,
+            parameter,
+            expected,
+            inferred,
+        } => CompileError::ParameterDefaultKindMismatch {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            parameter,
+            expected,
+            inferred,
+        },
+        CompileError::MissingOptionalParameterDefault {
+            node,
+            span,
+            parameter,
+        } => CompileError::MissingOptionalParameterDefault {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            parameter,
+        },
+        CompileError::InvalidRestParameterKind {
+            node,
+            span,
+            parameter,
+            declared,
+        } => CompileError::InvalidRestParameterKind {
+            node,
+            span: span.map(|span| shift_span(span, offset)),
+            parameter,
+            declared,
+        },
         CompileError::Runtime(error) => CompileError::Runtime(error),
         CompileError::Kernel(error) => CompileError::Kernel(error),
     }

@@ -162,6 +162,54 @@ pub fn compile_error_diagnostics(error: &CompileError) -> Vec<CompileDiagnostic>
                 span.clone(),
             )]
         }
+        CompileError::ParameterKindMismatch {
+            parameter,
+            expected,
+            inferred,
+            span,
+            ..
+        } => vec![span_report(
+            "parameter kind mismatch",
+            &format!(
+                "parameter `{parameter}` requires {}, but this argument produces {inferred}",
+                expected.name()
+            ),
+            span.clone(),
+        )],
+        CompileError::ParameterDefaultKindMismatch {
+            parameter,
+            expected,
+            inferred,
+            span,
+            ..
+        } => vec![span_report(
+            "parameter default kind mismatch",
+            &format!(
+                "default for parameter `{parameter}` requires {}, but this expression produces {inferred}",
+                expected.name()
+            ),
+            span.clone(),
+        )],
+        CompileError::MissingOptionalParameterDefault {
+            parameter, span, ..
+        } => vec![span_report(
+            "missing optional parameter default",
+            &format!("optional parameter `{parameter}` requires an explicit default"),
+            span.clone(),
+        )],
+        CompileError::InvalidRestParameterKind {
+            parameter,
+            declared,
+            span,
+            ..
+        } => vec![span_report(
+            "invalid rest parameter kind",
+            &format!(
+                "rest parameter `{parameter}` is constructed as list, not {}",
+                declared.name()
+            ),
+            span.clone(),
+        )],
         CompileError::Runtime(error) => {
             vec![message_report("runtime error", &format!("{error:?}"))]
         }

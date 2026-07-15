@@ -442,6 +442,31 @@ pub enum CompileError {
         expected: ValueKind,
         inferred: String,
     },
+    ParameterKindMismatch {
+        node: NodeId,
+        span: Option<Span>,
+        parameter: String,
+        expected: ValueKind,
+        inferred: String,
+    },
+    ParameterDefaultKindMismatch {
+        node: NodeId,
+        span: Option<Span>,
+        parameter: String,
+        expected: ValueKind,
+        inferred: String,
+    },
+    MissingOptionalParameterDefault {
+        node: NodeId,
+        span: Option<Span>,
+        parameter: String,
+    },
+    InvalidRestParameterKind {
+        node: NodeId,
+        span: Option<Span>,
+        parameter: String,
+        declared: ValueKind,
+    },
     Runtime(RuntimeError),
     Kernel(mica_relation_kernel::KernelError),
 }
@@ -1333,6 +1358,7 @@ struct FunctionParamInfo {
     id: NodeId,
     binding: BindingId,
     kind: LocalKind,
+    declared_kind: Option<ValueKind>,
     default: Option<HirExpr>,
 }
 
@@ -2241,6 +2267,9 @@ impl<'a> ProgramCompiler<'a> {
         let mut saw_optional = false;
         let mut saw_rest = false;
         for param in params {
+            let parameter = self.semantic.bindings[param.binding.as_u32() as usize]
+                .name
+                .clone();
             match param.kind {
                 LocalKind::Param => {
                     if saw_optional || saw_rest {
@@ -2257,6 +2286,13 @@ impl<'a> ProgramCompiler<'a> {
                             "optional function parameters must precede rest parameters",
                         ));
                     }
+                    if param.default.is_none() {
+                        return Err(CompileError::MissingOptionalParameterDefault {
+                            node: param.id,
+                            span: self.span(param.id),
+                            parameter,
+                        });
+                    }
                     saw_optional = true;
                 }
                 LocalKind::RestParam => {
@@ -2266,6 +2302,16 @@ impl<'a> ProgramCompiler<'a> {
                             "function signatures support only one rest parameter",
                         ));
                     }
+                    if let Some(declared) = param.declared_kind
+                        && declared != ValueKind::List
+                    {
+                        return Err(CompileError::InvalidRestParameterKind {
+                            node: param.id,
+                            span: self.span(param.id),
+                            parameter,
+                            declared,
+                        });
+                    }
                     saw_rest = true;
                 }
                 _ => {
@@ -2273,6 +2319,24 @@ impl<'a> ProgramCompiler<'a> {
                         param.id,
                         "unsupported function parameter kind in compiled function",
                     ));
+                }
+            }
+
+            if param.kind == LocalKind::OptionalParam
+                && let (Some(expected), Some(default)) =
+                    (param.declared_kind, param.default.as_ref())
+            {
+                let no_direct_result = |_| None;
+                let inferred =
+                    KindInference::new(&self.semantic.bindings, &no_direct_result).expr(default);
+                if inferred.is_disjoint(KindSet::exact(expected)) {
+                    return Err(CompileError::ParameterDefaultKindMismatch {
+                        node: expr_id(default),
+                        span: self.span(expr_id(default)),
+                        parameter,
+                        expected,
+                        inferred: inferred.names(),
+                    });
                 }
             }
         }
@@ -2318,6 +2382,7 @@ impl<'a> ProgramCompiler<'a> {
                 id: param.id,
                 binding: param.binding,
                 kind: param.kind.clone(),
+                declared_kind: param.declared_kind,
                 default: param.default.clone(),
             })
             .collect::<Vec<_>>();
@@ -2437,6 +2502,9 @@ impl<'a> ProgramCompiler<'a> {
                         .unsupported(id, "unsupported function parameter kind in function value"));
                 }
             };
+            if param.kind != LocalKind::RestParam {
+                compiler.enforce_compiled_parameter(param, None, value)?;
+            }
             compiler.locals.insert(param.binding, value);
             operands.push(Operand::Register(value));
         }
@@ -2537,9 +2605,7 @@ impl<'a> ProgramCompiler<'a> {
             .all(|param| param.kind == LocalKind::Param)
             && !has_splice
         {
-            args.iter()
-                .map(|arg| self.compile_arg_operand(arg))
-                .collect::<Result<Vec<_>, _>>()?
+            self.compile_direct_required_args(function, args)?
         } else {
             self.compile_bound_function_args(id, function, args)?
         };
@@ -3133,6 +3199,7 @@ impl<'a> ProgramCompiler<'a> {
         function: &FunctionInfo,
         args: &[HirArg],
     ) -> Result<Vec<Operand>, CompileError> {
+        let has_splice = args.iter().any(|arg| arg.splice);
         let items = self.compile_arg_items(args)?;
         let actuals = self.alloc_register();
         self.emit(Instruction::BuildList {
@@ -3148,38 +3215,66 @@ impl<'a> ProgramCompiler<'a> {
         let mut operands = Vec::with_capacity(function.params.len());
         let mut position = 0usize;
         for param in &function.params {
-            match param.kind {
+            let value = match param.kind {
                 LocalKind::Param => {
-                    operands.push(Operand::Register(
-                        self.compile_collection_slot(actuals, position, param.id)?,
-                    ));
+                    let value = self.compile_collection_slot(actuals, position, param.id)?;
+                    let source = (!has_splice).then(|| &args[position].value);
                     position += 1;
+                    self.enforce_compiled_parameter(param, source, value)?;
+                    value
                 }
                 LocalKind::OptionalParam => {
-                    operands.push(Operand::Register(
-                        self.compile_collection_slot_with_optional_default(
-                            actuals,
-                            len,
-                            position,
-                            param.id,
-                            param.default.as_ref(),
-                        )?,
-                    ));
+                    let value = self.compile_collection_slot_with_optional_default(
+                        actuals,
+                        len,
+                        position,
+                        param.id,
+                        param.default.as_ref(),
+                    )?;
+                    let source = if has_splice {
+                        None
+                    } else {
+                        args.get(position)
+                            .map(|arg| &arg.value)
+                            .or(param.default.as_ref())
+                    };
                     position += 1;
+                    self.enforce_compiled_parameter(param, source, value)?;
+                    value
                 }
                 LocalKind::RestParam => {
-                    operands.push(Operand::Register(
-                        self.compile_collection_rest(actuals, len, position, param.id)?,
-                    ));
+                    self.compile_collection_rest(actuals, len, position, param.id)?
                 }
                 _ => {
                     return Err(
                         self.unsupported(id, "unsupported function parameter kind in call binding")
                     );
                 }
-            }
+            };
+            operands.push(Operand::Register(value));
         }
         Ok(operands)
+    }
+
+    fn compile_direct_required_args(
+        &mut self,
+        function: &FunctionInfo,
+        args: &[HirArg],
+    ) -> Result<Vec<Operand>, CompileError> {
+        function
+            .params
+            .iter()
+            .zip(args)
+            .map(|(param, arg)| {
+                let inferred = self.infer_expr_kinds(&arg.value);
+                if !self.parameter_needs_check(param, inferred, arg.id)? {
+                    return self.compile_arg_operand(arg);
+                }
+                let value = self.compile_expr_for_value(&arg.value)?;
+                self.emit_parameter_check(param, value);
+                Ok(Operand::Register(value))
+            })
+            .collect()
     }
 
     fn compile_arg_items(&mut self, args: &[HirArg]) -> Result<Vec<ListItem>, CompileError> {
@@ -4492,12 +4587,7 @@ impl<'a> ProgramCompiler<'a> {
         let Some(expected) = binding.declared_kind else {
             return Ok(());
         };
-        let direct_result = |binding| {
-            self.functions
-                .get(&binding)
-                .map(|function| function.result_kinds)
-        };
-        let inferred = KindInference::new(&self.semantic.bindings, &direct_result).expr(source);
+        let inferred = self.infer_expr_kinds(source);
         let declared = KindSet::exact(expected);
         if inferred.is_subset(declared) {
             return Ok(());
@@ -4521,6 +4611,70 @@ impl<'a> ProgramCompiler<'a> {
             subject: Symbol::intern(&binding.name),
         });
         Ok(())
+    }
+
+    fn enforce_compiled_parameter(
+        &mut self,
+        param: &FunctionParamInfo,
+        source: Option<&HirExpr>,
+        value: Register,
+    ) -> Result<(), CompileError> {
+        let inferred = source.map_or(KindSet::ALL, |source| self.infer_expr_kinds(source));
+        let node = source.map_or(param.id, expr_id);
+        if self.parameter_needs_check(param, inferred, node)? {
+            self.emit_parameter_check(param, value);
+        }
+        Ok(())
+    }
+
+    fn parameter_needs_check(
+        &self,
+        param: &FunctionParamInfo,
+        inferred: KindSet,
+        node: NodeId,
+    ) -> Result<bool, CompileError> {
+        let Some(expected) = param.declared_kind else {
+            return Ok(false);
+        };
+        let declared = KindSet::exact(expected);
+        if inferred.is_subset(declared) {
+            return Ok(false);
+        }
+        if inferred.is_disjoint(declared) {
+            let parameter = self.semantic.bindings[param.binding.as_u32() as usize]
+                .name
+                .clone();
+            return Err(CompileError::ParameterKindMismatch {
+                node,
+                span: self.span(node),
+                parameter,
+                expected,
+                inferred: inferred.names(),
+            });
+        }
+        Ok(true)
+    }
+
+    fn emit_parameter_check(&mut self, param: &FunctionParamInfo, value: Register) {
+        let Some(expected) = param.declared_kind else {
+            return;
+        };
+        let subject = &self.semantic.bindings[param.binding.as_u32() as usize].name;
+        self.emit(Instruction::CheckKind {
+            value,
+            expected,
+            site: KindCheckSite::Parameter,
+            subject: Symbol::intern(subject),
+        });
+    }
+
+    fn infer_expr_kinds(&self, source: &HirExpr) -> KindSet {
+        let direct_result = |binding| {
+            self.functions
+                .get(&binding)
+                .map(|function| function.result_kinds)
+        };
+        KindInference::new(&self.semantic.bindings, &direct_result).expr(source)
     }
 
     fn unsupported(&self, node: NodeId, message: impl Into<String>) -> CompileError {
@@ -4604,6 +4758,26 @@ mod tests {
                 _ => 0,
             })
             .sum()
+    }
+
+    fn collect_kind_checks(
+        program: &Program,
+        checks: &mut Vec<(ValueKind, KindCheckSite, Symbol)>,
+    ) {
+        for instruction in program.instructions() {
+            match instruction {
+                Instruction::CheckKind {
+                    expected,
+                    site,
+                    subject,
+                    ..
+                } => checks.push((expected, site, subject)),
+                Instruction::LoadFunction { program, .. } | Instruction::Call { program, .. } => {
+                    collect_kind_checks(&program, checks);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn emitted(value: Value) -> Emission {
@@ -5837,6 +6011,146 @@ mod tests {
             Err(CompileError::FunctionResultKindMismatch { inferred, .. })
                 if inferred == "any value kind"
         ));
+    }
+
+    #[test]
+    fn direct_calls_prove_reject_and_check_annotated_parameters() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let compiled = compile_source(
+            "fn accept(value: int) -> int => value
+             let exact = accept(1)
+             let dynamic = accept(opaque())
+             return exact + dynamic",
+            &context,
+        )
+        .unwrap();
+        let mut checks = Vec::new();
+        collect_kind_checks(&compiled.program, &mut checks);
+        assert_eq!(
+            checks,
+            vec![(
+                ValueKind::Int,
+                KindCheckSite::Parameter,
+                Symbol::intern("value")
+            )]
+        );
+
+        assert!(matches!(
+            compile_source(
+                "fn accept(value: int) -> int => value\nreturn accept(1.0)",
+                &context
+            ),
+            Err(CompileError::ParameterKindMismatch {
+                parameter,
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if parameter == "value" && inferred == "float"
+        ));
+    }
+
+    #[test]
+    fn function_value_wrappers_check_annotated_parameters_once() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let compiled = compile_source(
+            "let base: int = 1
+             let typed = fn(value: int) -> int => value + base
+             let alias = typed
+             return alias(opaque())",
+            &context,
+        )
+        .unwrap();
+        let mut checks = Vec::new();
+        collect_kind_checks(&compiled.program, &mut checks);
+
+        assert_eq!(
+            checks,
+            vec![(
+                ValueKind::Int,
+                KindCheckSite::Parameter,
+                Symbol::intern("value")
+            )]
+        );
+    }
+
+    #[test]
+    fn optional_parameter_defaults_are_explicit_and_kind_checked() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let exact = compile_source(
+            "fn pick(?value: int = 1) -> int => value
+             let supplied = pick(2)
+             let defaulted = pick()
+             return supplied + defaulted",
+            &context,
+        )
+        .unwrap();
+        assert_eq!(count_kind_checks(&exact.program), 0);
+
+        let dynamic = compile_source(
+            "fn pick(?value: int = opaque()) -> int => value
+             return pick()",
+            &context,
+        )
+        .unwrap();
+        assert_eq!(count_kind_checks(&dynamic.program), 1);
+
+        let dynamic = compile_source(
+            "fn pick(?value: int = 1) -> int => value
+             return pick(opaque())",
+            &context,
+        )
+        .unwrap();
+        assert_eq!(count_kind_checks(&dynamic.program), 1);
+
+        assert!(matches!(
+            compile_source("fn missing(?value: int) => value", &context),
+            Err(CompileError::MissingOptionalParameterDefault { parameter, .. })
+                if parameter == "value"
+        ));
+        assert!(matches!(
+            compile_source("fn wrong(?value: int = 1.0) => value", &context),
+            Err(CompileError::ParameterDefaultKindMismatch {
+                parameter,
+                expected: ValueKind::Int,
+                inferred,
+                ..
+            }) if parameter == "value" && inferred == "float"
+        ));
+    }
+
+    #[test]
+    fn rest_parameters_are_proven_lists_without_checks() {
+        let compiled = compile_source(
+            "let collect = fn(@items: list) -> list => items
+             let alias = collect
+             return alias(1, 2, 3)",
+            &CompileContext::new(),
+        )
+        .unwrap();
+        assert_eq!(count_kind_checks(&compiled.program), 0);
+
+        assert!(matches!(
+            compile_source("fn invalid(@items: int) => items", &CompileContext::new()),
+            Err(CompileError::InvalidRestParameterKind {
+                parameter,
+                declared: ValueKind::Int,
+                ..
+            }) if parameter == "items"
+        ));
+    }
+
+    #[test]
+    fn direct_spliced_arguments_receive_one_parameter_check() {
+        let context = CompileContext::new().with_runtime_function("opaque");
+        let compiled = compile_source(
+            "fn accept(value: int) -> int => value
+             let values = [opaque()]
+             return accept(@values)",
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(count_kind_checks(&compiled.program), 1);
     }
 
     #[test]
