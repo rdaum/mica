@@ -1137,16 +1137,111 @@ fn program_artifact_round_trips_kind_checks_and_rejects_stale_magic() {
     .unwrap();
     let bytes = program.to_bytes().unwrap();
 
-    assert_eq!(&bytes[..8], b"MICAPRG2");
+    assert_eq!(&bytes[..8], b"MICAPRG3");
+    assert_eq!(
+        program.kind_fact_after(0),
+        Some((reg(0), ValueKind::Relation)),
+    );
     assert_eq!(Program::from_bytes(&bytes).unwrap(), program);
 
+    let mut invalid_facts = bytes.clone();
+    let fact = invalid_facts.len() - 2;
+    invalid_facts[fact] = 1;
+    assert!(matches!(
+        Program::from_bytes(&invalid_facts),
+        Err(RuntimeError::ProgramArtifact(message))
+            if message == "program kind facts do not match instructions"
+    ));
+
     let mut stale = bytes;
-    stale[..8].copy_from_slice(b"MICAPRG1");
+    stale[..8].copy_from_slice(b"MICAPRG2");
     assert!(matches!(
         Program::from_bytes(&stale),
         Err(RuntimeError::ProgramArtifact(message))
             if message == "invalid program artifact magic"
     ));
+}
+
+#[test]
+fn program_kind_facts_propagate_exact_instruction_results() {
+    let program = Program::new(
+        7,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(2),
+            },
+            Instruction::Move {
+                dst: reg(1),
+                src: reg(0),
+            },
+            Instruction::Binary {
+                dst: reg(2),
+                op: RuntimeBinaryOp::Add,
+                left: reg(0),
+                right: reg(1),
+            },
+            Instruction::Binary {
+                dst: reg(3),
+                op: RuntimeBinaryOp::Div,
+                left: reg(0),
+                right: reg(1),
+            },
+            Instruction::Load {
+                dst: reg(4),
+                value: Value::float(0.5).unwrap(),
+            },
+            Instruction::Binary {
+                dst: reg(5),
+                op: RuntimeBinaryOp::Add,
+                left: reg(2),
+                right: reg(4),
+            },
+            Instruction::CheckKind {
+                value: reg(6),
+                expected: ValueKind::String,
+                site: KindCheckSite::Parameter,
+                subject: Symbol::intern("name"),
+            },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(program.kind_fact_after(0), Some((reg(0), ValueKind::Int)));
+    assert_eq!(program.kind_fact_after(1), Some((reg(1), ValueKind::Int)));
+    assert_eq!(program.kind_fact_after(2), Some((reg(2), ValueKind::Int)));
+    assert_eq!(program.kind_fact_after(3), None);
+    assert_eq!(program.kind_fact_after(4), Some((reg(4), ValueKind::Float)),);
+    assert_eq!(program.kind_fact_after(5), Some((reg(5), ValueKind::Float)),);
+    assert_eq!(
+        program.kind_fact_after(6),
+        Some((reg(6), ValueKind::String)),
+    );
+
+    let restored = Program::from_bytes(&program.to_bytes().unwrap()).unwrap();
+    assert_eq!(restored, program);
+
+    let branched = Program::new(
+        3,
+        [
+            Instruction::Load {
+                dst: reg(0),
+                value: int(1),
+            },
+            Instruction::Branch {
+                condition: reg(2),
+                if_true: 2,
+                if_false: 3,
+            },
+            Instruction::Move {
+                dst: reg(1),
+                src: reg(0),
+            },
+            Instruction::Return { value: r(1) },
+        ],
+    )
+    .unwrap();
+    assert_eq!(branched.kind_fact_after(2), None);
 }
 
 #[test]

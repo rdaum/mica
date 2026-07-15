@@ -775,6 +775,253 @@ pub(crate) enum Opcode {
     },
 }
 
+impl Opcode {
+    fn destination(&self) -> Option<Register> {
+        match self {
+            Self::Load { dst, .. }
+            | Self::Move { dst, .. }
+            | Self::Unary { dst, .. }
+            | Self::Binary { dst, .. }
+            | Self::BuildList { dst, .. }
+            | Self::BuildRelation { dst, .. }
+            | Self::BuildMap { dst, .. }
+            | Self::BuildMapDynamic { dst, .. }
+            | Self::BuildRange { dst, .. }
+            | Self::Index { dst, .. }
+            | Self::SetIndex { dst, .. }
+            | Self::ErrorField { dst, .. }
+            | Self::One { dst, .. }
+            | Self::CollectionLen { dst, .. }
+            | Self::CollectionKeyAt { dst, .. }
+            | Self::CollectionValueAt { dst, .. }
+            | Self::ScanExists { dst, .. }
+            | Self::ScanBindings { dst, .. }
+            | Self::ScanValue { dst, .. }
+            | Self::ScanDynamic { dst, .. }
+            | Self::LoadFunction { dst, .. }
+            | Self::CallValue { dst, .. }
+            | Self::CallValueDynamic { dst, .. }
+            | Self::Call { dst, .. }
+            | Self::BuiltinCall { dst, .. }
+            | Self::BuiltinCallDynamic { dst, .. }
+            | Self::Dispatch { dst, .. }
+            | Self::DynamicDispatch { dst, .. }
+            | Self::PositionalDispatch { dst, .. }
+            | Self::PositionalDispatchDynamic { dst, .. }
+            | Self::SpawnDispatch { dst, .. }
+            | Self::SpawnDispatchDynamic { dst, .. }
+            | Self::SpawnPositionalDispatch { dst, .. }
+            | Self::SpawnPositionalDispatchDynamic { dst, .. }
+            | Self::SuspendValue { dst, .. }
+            | Self::CommitValue { dst }
+            | Self::Read { dst, .. }
+            | Self::MailboxRecv { dst, .. }
+            | Self::ExternalRequest { dst, .. } => Some(*dst),
+            Self::CheckKind { .. }
+            | Self::Assert { .. }
+            | Self::Retract { .. }
+            | Self::RetractWhere { .. }
+            | Self::AssertDynamic { .. }
+            | Self::RetractDynamic { .. }
+            | Self::ReplaceFunctional { .. }
+            | Self::Branch { .. }
+            | Self::Jump { .. }
+            | Self::EnterTry { .. }
+            | Self::ExitTry
+            | Self::EndFinally
+            | Self::Emit { .. }
+            | Self::Commit
+            | Self::Suspend { .. }
+            | Self::RollbackRetry
+            | Self::Return { .. }
+            | Self::Abort { .. }
+            | Self::Raise { .. } => None,
+        }
+    }
+
+    fn kind_fact_register(&self) -> Option<Register> {
+        match self {
+            Self::CheckKind { value, .. } => Some(*value),
+            _ => self.destination(),
+        }
+    }
+}
+
+fn infer_kind_facts(
+    register_count: usize,
+    opcodes: &[Opcode],
+    constants: &[Value],
+    catches: &[CompactCatchHandler],
+) -> Box<[Option<ValueKind>]> {
+    let mut block_entries = vec![false; opcodes.len()];
+    if let Some(entry) = block_entries.first_mut() {
+        *entry = true;
+    }
+    let mut mark_target = |target: Target| {
+        if let Some(entry) = block_entries.get_mut(target.0 as usize) {
+            *entry = true;
+        }
+    };
+    for opcode in opcodes {
+        match opcode {
+            Opcode::Branch {
+                if_true, if_false, ..
+            } => {
+                mark_target(*if_true);
+                mark_target(*if_false);
+            }
+            Opcode::Jump { target } => mark_target(*target),
+            Opcode::EnterTry {
+                catches: handlers,
+                finally,
+                end,
+            } => {
+                for handler in table_range(catches, *handlers) {
+                    mark_target(handler.target);
+                }
+                if let Some(finally) = finally {
+                    mark_target(*finally);
+                }
+                mark_target(*end);
+            }
+            _ => {}
+        }
+    }
+
+    let mut registers = vec![None; register_count];
+    let mut facts = Vec::with_capacity(opcodes.len());
+    for (instruction, opcode) in opcodes.iter().enumerate() {
+        if block_entries[instruction] {
+            registers.fill(None);
+        }
+        let fact = infer_opcode_kind(opcode, constants, &registers);
+        if let Some(register) = opcode.kind_fact_register()
+            && let Some(slot) = registers.get_mut(register.0 as usize)
+        {
+            *slot = fact;
+        }
+        facts.push(fact);
+        if matches!(
+            opcode,
+            Opcode::Branch { .. }
+                | Opcode::Jump { .. }
+                | Opcode::ExitTry
+                | Opcode::EndFinally
+                | Opcode::Return { .. }
+                | Opcode::Abort { .. }
+                | Opcode::Raise { .. }
+        ) {
+            registers.fill(None);
+        }
+    }
+    facts.into_boxed_slice()
+}
+
+fn infer_opcode_kind(
+    opcode: &Opcode,
+    constants: &[Value],
+    registers: &[Option<ValueKind>],
+) -> Option<ValueKind> {
+    let register_kind = |register: Register| registers.get(register.0 as usize).copied().flatten();
+    match opcode {
+        Opcode::Load { value, .. } => constants.get(value.0 as usize).map(Value::kind),
+        Opcode::Move { src, .. } => register_kind(*src),
+        Opcode::CheckKind { expected, .. } => Some(*expected),
+        Opcode::Unary {
+            op: RuntimeUnaryOp::Not,
+            ..
+        } => Some(ValueKind::Bool),
+        Opcode::Unary {
+            op: RuntimeUnaryOp::Neg,
+            src,
+            ..
+        } => match register_kind(*src) {
+            Some(kind @ (ValueKind::Int | ValueKind::Float)) => Some(kind),
+            _ => None,
+        },
+        Opcode::Binary {
+            op:
+                RuntimeBinaryOp::Eq
+                | RuntimeBinaryOp::Ne
+                | RuntimeBinaryOp::Lt
+                | RuntimeBinaryOp::Le
+                | RuntimeBinaryOp::Gt
+                | RuntimeBinaryOp::Ge,
+            ..
+        }
+        | Opcode::ScanExists { .. } => Some(ValueKind::Bool),
+        Opcode::Binary {
+            op, left, right, ..
+        } => infer_numeric_result_kind(*op, register_kind(*left), register_kind(*right)),
+        Opcode::BuildList { .. } => Some(ValueKind::List),
+        Opcode::BuildRelation { .. } | Opcode::ScanBindings { .. } => Some(ValueKind::Relation),
+        Opcode::BuildMap { .. } | Opcode::BuildMapDynamic { .. } => Some(ValueKind::Map),
+        Opcode::BuildRange { .. } => Some(ValueKind::Range),
+        Opcode::SetIndex { collection, .. } => match register_kind(*collection) {
+            Some(kind @ (ValueKind::List | ValueKind::Map)) => Some(kind),
+            _ => None,
+        },
+        Opcode::ErrorField {
+            error,
+            field: ErrorField::Code,
+            ..
+        } if matches!(
+            register_kind(*error),
+            Some(ValueKind::Error | ValueKind::ErrorCode)
+        ) =>
+        {
+            Some(ValueKind::ErrorCode)
+        }
+        Opcode::CollectionLen { .. } => Some(ValueKind::Int),
+        Opcode::LoadFunction { .. } => Some(ValueKind::Function),
+        _ => None,
+    }
+}
+
+fn infer_numeric_result_kind(
+    op: RuntimeBinaryOp,
+    left: Option<ValueKind>,
+    right: Option<ValueKind>,
+) -> Option<ValueKind> {
+    let (Some(left), Some(right)) = (left, right) else {
+        return None;
+    };
+    let both_numeric = matches!(left, ValueKind::Int | ValueKind::Float)
+        && matches!(right, ValueKind::Int | ValueKind::Float);
+    if !both_numeric {
+        return None;
+    }
+    match op {
+        RuntimeBinaryOp::Add | RuntimeBinaryOp::Sub | RuntimeBinaryOp::Mul => {
+            if left == ValueKind::Int && right == ValueKind::Int {
+                Some(ValueKind::Int)
+            } else {
+                Some(ValueKind::Float)
+            }
+        }
+        RuntimeBinaryOp::Div => {
+            if left == ValueKind::Int && right == ValueKind::Int {
+                None
+            } else {
+                Some(ValueKind::Float)
+            }
+        }
+        RuntimeBinaryOp::Rem => {
+            if left == ValueKind::Int && right == ValueKind::Int {
+                Some(ValueKind::Int)
+            } else {
+                Some(ValueKind::Float)
+            }
+        }
+        RuntimeBinaryOp::Eq
+        | RuntimeBinaryOp::Ne
+        | RuntimeBinaryOp::Lt
+        | RuntimeBinaryOp::Le
+        | RuntimeBinaryOp::Gt
+        | RuntimeBinaryOp::Ge => Some(ValueKind::Bool),
+    }
+}
+
 #[cfg(feature = "cranelift")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntegerLoopSite {
@@ -877,7 +1124,11 @@ struct NativeProgramCache(Arc<NativeProgramCacheState>);
 
 #[cfg(feature = "cranelift")]
 impl NativeProgramCache {
-    fn recognize(opcodes: &[Opcode], constants: &[Value]) -> Option<Self> {
+    fn recognize(
+        opcodes: &[Opcode],
+        constants: &[Value],
+        kind_facts: &[Option<ValueKind>],
+    ) -> Option<Self> {
         let integer_loop_sites = (2..opcodes.len())
             .filter_map(|branch_ip| recognize_integer_loop(opcodes, branch_ip))
             .collect::<Vec<_>>()
@@ -887,7 +1138,9 @@ impl NativeProgramCache {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let natural_integer_loop_sites = (0..opcodes.len())
-            .filter_map(|branch_ip| recognize_natural_integer_loop(opcodes, constants, branch_ip))
+            .filter_map(|branch_ip| {
+                recognize_natural_integer_loop(opcodes, constants, kind_facts, branch_ip)
+            })
             .collect::<Vec<_>>()
             .into_boxed_slice();
         if integer_loop_sites.is_empty()
@@ -1170,6 +1423,7 @@ fn recognize_float_loop(opcodes: &[Opcode], branch_ip: usize) -> Option<FloatLoo
 fn recognize_natural_integer_loop(
     opcodes: &[Opcode],
     constants: &[Value],
+    kind_facts: &[Option<ValueKind>],
     branch_ip: usize,
 ) -> Option<NaturalIntegerLoopSite> {
     let Opcode::Branch {
@@ -1271,7 +1525,7 @@ fn recognize_natural_integer_loop(
         &plan,
         &registers,
         opcodes.get(..header_ip)?,
-        constants,
+        kind_facts.get(..header_ip)?,
         current,
         limit,
     ) && let Ok(specialized) = plan
@@ -1302,7 +1556,7 @@ fn natural_loop_unboxed_integer_slots(
     plan: &NaturalLoopPlan,
     registers: &[Register],
     preheader: &[Opcode],
-    constants: &[Value],
+    preheader_facts: &[Option<ValueKind>],
     current: Register,
     limit: Register,
 ) -> Option<(u32, u32)> {
@@ -1314,7 +1568,7 @@ fn natural_loop_unboxed_integer_slots(
             .ok()
             .and_then(|slot| u16::try_from(slot).ok())
     };
-    let mut entry_registers = infer_linear_integer_registers(preheader, constants);
+    let mut entry_registers = linear_integer_registers(preheader, preheader_facts);
     entry_registers.insert(current);
     entry_registers.insert(limit);
     let entry_slots = entry_registers
@@ -1357,54 +1611,21 @@ fn natural_loop_unboxed_integer_slots(
 }
 
 #[cfg(feature = "cranelift")]
-fn infer_linear_integer_registers(opcodes: &[Opcode], constants: &[Value]) -> BTreeSet<Register> {
+fn linear_integer_registers(
+    opcodes: &[Opcode],
+    kind_facts: &[Option<ValueKind>],
+) -> BTreeSet<Register> {
     let mut integers = BTreeSet::new();
-    for opcode in opcodes {
-        match opcode {
-            Opcode::Load { dst, value } => {
-                if constants
-                    .get(value.0 as usize)
-                    .is_some_and(|value| value.kind() == ValueKind::Int)
-                {
-                    integers.insert(*dst);
-                } else {
-                    integers.remove(dst);
-                }
+    for (opcode, fact) in opcodes.iter().zip(kind_facts) {
+        if let Some(register) = opcode.kind_fact_register() {
+            if *fact == Some(ValueKind::Int) {
+                integers.insert(register);
+            } else {
+                integers.remove(&register);
             }
-            Opcode::Move { dst, src } => {
-                if integers.contains(src) {
-                    integers.insert(*dst);
-                } else {
-                    integers.remove(dst);
-                }
-            }
-            Opcode::CheckKind {
-                value,
-                expected: ValueKind::Int,
-                ..
-            } => {
-                integers.insert(*value);
-            }
-            Opcode::CheckKind { value, .. } => {
-                integers.remove(value);
-            }
-            Opcode::Unary {
-                dst,
-                op: RuntimeUnaryOp::Neg,
-                src,
-            } if integers.contains(src) => {
-                integers.insert(*dst);
-            }
-            Opcode::Binary {
-                dst,
-                op: RuntimeBinaryOp::Add | RuntimeBinaryOp::Sub | RuntimeBinaryOp::Mul,
-                left,
-                right,
-            } if integers.contains(left) && integers.contains(right) => {
-                integers.insert(*dst);
-            }
-            Opcode::Branch { .. } | Opcode::Jump { .. } => integers.clear(),
-            _ => integers.clear(),
+        }
+        if matches!(opcode, Opcode::Branch { .. } | Opcode::Jump { .. }) {
+            integers.clear();
         }
     }
     integers
@@ -1780,16 +2001,7 @@ fn scalar_comparison(operation: RuntimeBinaryOp) -> Option<ScalarComparison> {
 
 #[cfg(feature = "cranelift")]
 fn opcode_writes(opcode: &Opcode, register: Register) -> bool {
-    match opcode {
-        Opcode::Load { dst, .. }
-        | Opcode::Move { dst, .. }
-        | Opcode::Unary { dst, .. }
-        | Opcode::Binary { dst, .. }
-        | Opcode::Index { dst, .. }
-        | Opcode::CollectionKeyAt { dst, .. }
-        | Opcode::CollectionValueAt { dst, .. } => *dst == register,
-        _ => false,
-    }
+    opcode.destination() == Some(register)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1817,6 +2029,7 @@ pub enum RuntimeBinaryOp {
 pub struct Program {
     register_count: usize,
     opcodes: Arc<[Opcode]>,
+    kind_facts: Arc<[Option<ValueKind>]>,
     constants: Arc<[Value]>,
     list_items: Arc<[CompactListItem]>,
     map_items: Arc<[CompactMapItem]>,
@@ -1862,6 +2075,14 @@ impl Program {
     #[inline]
     pub(crate) fn opcodes(&self) -> &[Opcode] {
         &self.opcodes
+    }
+
+    /// Returns the exact kind established by an instruction on normal
+    /// fallthrough, together with the affected register.
+    pub fn kind_fact_after(&self, instruction: usize) -> Option<(Register, ValueKind)> {
+        let kind = self.kind_facts.get(instruction).copied().flatten()?;
+        let register = self.opcodes.get(instruction)?.kind_fact_register()?;
+        Some((register, kind))
     }
 
     #[inline]
@@ -1990,28 +2211,41 @@ impl Program {
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, RuntimeError> {
         let mut out = Vec::new();
-        out.extend_from_slice(b"MICAPRG2");
+        out.extend_from_slice(b"MICAPRG3");
         write_u32(&mut out, self.register_count as u32);
         write_u32(&mut out, self.opcodes.len() as u32);
         for instruction in self.instructions() {
             write_instruction(&mut out, &instruction)?;
+        }
+        for fact in self.kind_facts.iter().copied() {
+            write_optional_value_kind(&mut out, fact);
         }
         Ok(out)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, RuntimeError> {
         let mut input = ByteReader::new(bytes);
-        input.expect_magic(b"MICAPRG2")?;
+        input.expect_magic(b"MICAPRG3")?;
         let register_count = input.read_u32()? as usize;
         let instruction_count = input.read_u32()? as usize;
         let mut instructions = Vec::with_capacity(instruction_count);
         for _ in 0..instruction_count {
             instructions.push(input.read_instruction()?);
         }
+        let mut encoded_kind_facts = Vec::with_capacity(instruction_count);
+        for _ in 0..instruction_count {
+            encoded_kind_facts.push(input.read_optional_value_kind()?);
+        }
         if !input.is_empty() {
             return Err(artifact_error("trailing program artifact bytes"));
         }
-        Self::new(register_count, instructions)
+        let program = Self::new(register_count, instructions)?;
+        if program.kind_facts.as_ref() != encoded_kind_facts {
+            return Err(artifact_error(
+                "program kind facts do not match instructions",
+            ));
+        }
+        Ok(program)
     }
 
     fn decode_operand(&self, operand: OperandRef) -> Operand {
@@ -2685,11 +2919,19 @@ impl ProgramBuilder {
     }
 
     pub fn finish(self, register_count: usize) -> Result<Program, RuntimeError> {
+        let kind_facts = infer_kind_facts(
+            register_count,
+            &self.opcodes,
+            &self.constants,
+            &self.catches,
+        );
         #[cfg(feature = "cranelift")]
-        let native_cache = NativeProgramCache::recognize(&self.opcodes, &self.constants);
+        let native_cache =
+            NativeProgramCache::recognize(&self.opcodes, &self.constants, &kind_facts);
         let program = Program {
             register_count,
             opcodes: self.opcodes.into(),
+            kind_facts: kind_facts.into(),
             constants: self.constants.into(),
             list_items: self.list_items.into(),
             map_items: self.map_items.into(),
@@ -3830,6 +4072,7 @@ const KIND_LIST: u8 = 12;
 const KIND_MAP: u8 = 13;
 const KIND_RANGE: u8 = 14;
 const KIND_RELATION: u8 = 15;
+const KIND_FACT_UNKNOWN: u8 = u8::MAX;
 
 const KIND_CHECK_BINDING: u8 = 0;
 const KIND_CHECK_PARAMETER: u8 = 1;
@@ -4427,7 +4670,15 @@ fn write_error_field(out: &mut Vec<u8>, field: ErrorField) {
 }
 
 fn write_value_kind(out: &mut Vec<u8>, kind: ValueKind) {
-    out.push(match kind {
+    out.push(value_kind_tag(kind));
+}
+
+fn write_optional_value_kind(out: &mut Vec<u8>, kind: Option<ValueKind>) {
+    out.push(kind.map_or(KIND_FACT_UNKNOWN, value_kind_tag));
+}
+
+const fn value_kind_tag(kind: ValueKind) -> u8 {
+    match kind {
         ValueKind::Bool => KIND_BOOL,
         ValueKind::Int => KIND_INT,
         ValueKind::Float => KIND_FLOAT,
@@ -4444,7 +4695,7 @@ fn write_value_kind(out: &mut Vec<u8>, kind: ValueKind) {
         ValueKind::Map => KIND_MAP,
         ValueKind::Range => KIND_RANGE,
         ValueKind::Relation => KIND_RELATION,
-    });
+    }
 }
 
 fn write_kind_check_site(out: &mut Vec<u8>, site: KindCheckSite) {
@@ -5247,25 +5498,15 @@ impl<'a> ByteReader<'a> {
     }
 
     fn read_value_kind(&mut self) -> Result<ValueKind, RuntimeError> {
-        match self.read_u8()? {
-            KIND_BOOL => Ok(ValueKind::Bool),
-            KIND_INT => Ok(ValueKind::Int),
-            KIND_FLOAT => Ok(ValueKind::Float),
-            KIND_IDENTITY => Ok(ValueKind::Identity),
-            KIND_STRING => Ok(ValueKind::String),
-            KIND_BYTES => Ok(ValueKind::Bytes),
-            KIND_SYMBOL => Ok(ValueKind::Symbol),
-            KIND_ERROR_CODE => Ok(ValueKind::ErrorCode),
-            KIND_ERROR => Ok(ValueKind::Error),
-            KIND_CAPABILITY => Ok(ValueKind::Capability),
-            KIND_FROB => Ok(ValueKind::Frob),
-            KIND_FUNCTION => Ok(ValueKind::Function),
-            KIND_LIST => Ok(ValueKind::List),
-            KIND_MAP => Ok(ValueKind::Map),
-            KIND_RANGE => Ok(ValueKind::Range),
-            KIND_RELATION => Ok(ValueKind::Relation),
-            _ => Err(artifact_error("unknown value kind tag")),
+        decode_value_kind(self.read_u8()?)
+    }
+
+    fn read_optional_value_kind(&mut self) -> Result<Option<ValueKind>, RuntimeError> {
+        let tag = self.read_u8()?;
+        if tag == KIND_FACT_UNKNOWN {
+            return Ok(None);
         }
+        decode_value_kind(tag).map(Some)
     }
 
     fn read_kind_check_site(&mut self) -> Result<KindCheckSite, RuntimeError> {
@@ -5335,6 +5576,28 @@ impl<'a> ByteReader<'a> {
             .ok_or_else(|| artifact_error("truncated program artifact"))?;
         self.offset = end;
         Ok(bytes)
+    }
+}
+
+fn decode_value_kind(tag: u8) -> Result<ValueKind, RuntimeError> {
+    match tag {
+        KIND_BOOL => Ok(ValueKind::Bool),
+        KIND_INT => Ok(ValueKind::Int),
+        KIND_FLOAT => Ok(ValueKind::Float),
+        KIND_IDENTITY => Ok(ValueKind::Identity),
+        KIND_STRING => Ok(ValueKind::String),
+        KIND_BYTES => Ok(ValueKind::Bytes),
+        KIND_SYMBOL => Ok(ValueKind::Symbol),
+        KIND_ERROR_CODE => Ok(ValueKind::ErrorCode),
+        KIND_ERROR => Ok(ValueKind::Error),
+        KIND_CAPABILITY => Ok(ValueKind::Capability),
+        KIND_FROB => Ok(ValueKind::Frob),
+        KIND_FUNCTION => Ok(ValueKind::Function),
+        KIND_LIST => Ok(ValueKind::List),
+        KIND_MAP => Ok(ValueKind::Map),
+        KIND_RANGE => Ok(ValueKind::Range),
+        KIND_RELATION => Ok(ValueKind::Relation),
+        _ => Err(artifact_error("unknown value kind tag")),
     }
 }
 
