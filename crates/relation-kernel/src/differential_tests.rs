@@ -957,7 +957,7 @@ fn unsupported_programs_and_dirty_transactions_use_complete_fallback() {
     tx.commit().unwrap();
     let snapshot = negated.snapshot();
     assert_eq!(snapshot.scan(rel(432), &[None]).unwrap().len(), 1);
-    assert!(snapshot.maintained_state().is_none());
+    assert!(snapshot.maintained_state().is_some());
 
     let computed = RelationKernel::with_provider_and_computed_relations(
         Arc::new(InMemoryCommitProvider::new()),
@@ -1029,4 +1029,186 @@ fn unsupported_programs_and_dirty_transactions_use_complete_fallback() {
         vec![Tuple::from([int(11)])]
     );
     assert_maintained_matches_complete(&eligible.snapshot(), &[(rel(451), 1)]);
+}
+
+#[test]
+fn stratified_negation_tracks_right_zero_crossings_and_duplicate_left_proofs() {
+    let kernel = RelationKernel::new();
+    create_relations(
+        &kernel,
+        &[
+            (490, "LeftA", 2),
+            (491, "LeftB", 2),
+            (492, "BlockOne", 1),
+            (493, "BlockTwo", 1),
+            (494, "Blocked", 1),
+            (495, "Hidden", 1),
+            (496, "Visible", 1),
+        ],
+    );
+    for (source, name) in [(rel(492), "BlockOne"), (rel(493), "BlockTwo")] {
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(494),
+                    [var("key")],
+                    [Atom::positive(source, [var("key")])],
+                ),
+                format!("Blocked(key) :- {name}(key)"),
+            )
+            .unwrap();
+    }
+    for (left, name) in [(rel(490), "LeftA"), (rel(491), "LeftB")] {
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(496),
+                    [var("item")],
+                    [
+                        Atom::positive(left, [var("item"), var("key")]),
+                        Atom::negated(rel(494), [var("key")]),
+                        Atom::negated(rel(495), [var("item")]),
+                    ],
+                ),
+                format!("Visible(item) :- {name}(item, key), !Blocked(key), !Hidden(item)"),
+            )
+            .unwrap();
+    }
+    let mut seed = kernel.begin();
+    seed.assert(rel(490), Tuple::from([int(1), int(10)]))
+        .unwrap();
+    seed.assert(rel(491), Tuple::from([int(1), int(10)]))
+        .unwrap();
+    seed.assert(rel(492), Tuple::from([int(10)])).unwrap();
+    seed.assert(rel(493), Tuple::from([int(10)])).unwrap();
+    seed.commit().unwrap();
+
+    let snapshot = kernel.snapshot();
+    assert!(snapshot.scan(rel(496), &[None]).unwrap().is_empty());
+    assert_maintained_matches_complete(&snapshot, &[(rel(494), 1), (rel(496), 1)]);
+
+    let apply = |relation: RelationId, tuple: Tuple, retract: bool| {
+        let mut tx = kernel.begin();
+        if retract {
+            tx.retract(relation, tuple).unwrap();
+        } else {
+            tx.assert(relation, tuple).unwrap();
+        }
+        tx.commit().unwrap();
+        let snapshot = kernel.snapshot();
+        assert_maintained_matches_complete(&snapshot, &[(rel(494), 1), (rel(496), 1)]);
+        snapshot
+    };
+
+    let snapshot = apply(rel(492), Tuple::from([int(10)]), true);
+    assert!(snapshot.scan(rel(496), &[None]).unwrap().is_empty());
+    assert!(
+        !snapshot
+            .maintained_state()
+            .unwrap()
+            .visible_changes()
+            .iter()
+            .any(|change| change.relation == rel(494) || change.relation == rel(496))
+    );
+
+    let snapshot = apply(rel(493), Tuple::from([int(10)]), true);
+    assert_eq!(
+        snapshot.scan(rel(496), &[None]).unwrap(),
+        vec![Tuple::from([int(1)])]
+    );
+    assert_eq!(
+        snapshot
+            .maintained_state()
+            .unwrap()
+            .visible_changes()
+            .iter()
+            .filter(|change| change.relation == rel(496))
+            .count(),
+        1
+    );
+
+    let snapshot = apply(rel(495), Tuple::from([int(1)]), false);
+    assert!(snapshot.scan(rel(496), &[None]).unwrap().is_empty());
+    let snapshot = apply(rel(494), Tuple::from([int(10)]), false);
+    assert!(snapshot.scan(rel(496), &[None]).unwrap().is_empty());
+    let snapshot = apply(rel(495), Tuple::from([int(1)]), true);
+    assert!(snapshot.scan(rel(496), &[None]).unwrap().is_empty());
+    let snapshot = apply(rel(492), Tuple::from([int(10)]), false);
+    assert!(snapshot.scan(rel(496), &[None]).unwrap().is_empty());
+    let snapshot = apply(rel(494), Tuple::from([int(10)]), true);
+    assert!(snapshot.scan(rel(496), &[None]).unwrap().is_empty());
+    let snapshot = apply(rel(492), Tuple::from([int(10)]), true);
+    assert_eq!(
+        snapshot.scan(rel(496), &[None]).unwrap(),
+        vec![Tuple::from([int(1)])]
+    );
+    let snapshot = apply(rel(490), Tuple::from([int(1), int(10)]), true);
+    assert_eq!(
+        snapshot.scan(rel(496), &[None]).unwrap(),
+        vec![Tuple::from([int(1)])]
+    );
+    let snapshot = apply(rel(491), Tuple::from([int(1), int(10)]), true);
+    assert!(snapshot.scan(rel(496), &[None]).unwrap().is_empty());
+}
+
+#[test]
+fn stratified_negation_matches_randomized_positive_and_negative_changes() {
+    let kernel = RelationKernel::new();
+    create_relations(
+        &kernel,
+        &[
+            (500, "Node", 1),
+            (501, "Blocked", 1),
+            (502, "Hidden", 1),
+            (503, "Visible", 1),
+        ],
+    );
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(503),
+                [var("node")],
+                [
+                    Atom::positive(rel(500), [var("node")]),
+                    Atom::negated(rel(501), [var("node")]),
+                    Atom::negated(rel(502), [var("node")]),
+                ],
+            ),
+            "Visible(node) :- Node(node), !Blocked(node), !Hidden(node)",
+        )
+        .unwrap();
+
+    let mut sets = [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()];
+    let relation_arities = [(rel(500), 1), (rel(501), 1), (rel(502), 1), (rel(503), 1)];
+    let mut previous = kernel.snapshot();
+    assert!(previous.scan(rel(503), &[None]).unwrap().is_empty());
+    let mut random = 0xd1b5_4a32_d192_ed03_u64;
+    for _ in 0..256 {
+        random = random
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let input = (random as usize) % sets.len();
+        let value = ((random >> 16) % 16) as i64;
+        let relation = rel(500 + input as u64);
+        let tuple = Tuple::from([int(value)]);
+        let mut tx = kernel.begin();
+        if sets[input].remove(&value) {
+            tx.retract(relation, tuple).unwrap();
+        } else {
+            sets[input].insert(value);
+            tx.assert(relation, tuple).unwrap();
+        }
+        tx.commit().unwrap();
+
+        let next = kernel.snapshot();
+        assert_maintained_matches_complete(&next, &[(rel(503), 1)]);
+        assert_eq!(
+            apply_visible_changes(
+                visible_rows(&previous, &relation_arities),
+                next.maintained_state().unwrap().visible_changes(),
+            ),
+            visible_rows(&next, &relation_arities),
+        );
+        previous = next;
+    }
 }

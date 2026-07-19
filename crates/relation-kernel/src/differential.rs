@@ -211,12 +211,20 @@ impl Trace {
 }
 
 #[derive(Clone, Debug)]
+struct NegatedRuleState {
+    positive_bindings: WeightedBindings,
+    left_by_negative_key: Vec<BTreeMap<Tuple, BTreeSet<Binding>>>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct MaintainedState {
     version: Version,
     program: Arc<MaintainedProgram>,
     requested_targets: BTreeSet<RelationId>,
     collections: BTreeMap<RelationId, BTreeSet<Tuple>>,
     derived_support: BTreeMap<RelationId, WeightedRows>,
+    negated_rules: BTreeMap<(usize, usize), NegatedRuleState>,
+    negative_key_counts: BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
     arrangements: BTreeMap<ArrangementSpec, Arc<Arrangement>>,
     traces: BTreeMap<RelationId, Trace>,
     #[cfg(test)]
@@ -239,15 +247,19 @@ impl MaintainedState {
             collections.insert(*relation, extensional_rows(snapshot, *relation)?);
         }
         let mut derived_support = BTreeMap::new();
-        for component in &program.components {
+        let mut negated_rules = BTreeMap::new();
+        for (component_index, component) in program.components.iter().enumerate() {
             let mut support = WeightedRows::new();
-            for rule in &component.rules {
-                let contribution = evaluate_rule_full(
+            for (rule_index, rule) in component.rules.iter().enumerate() {
+                let (contribution, negated) = evaluate_rule_full(
                     rule,
                     &collections,
                     snapshot.version(),
                     &mut MaintenanceWork::default(),
                 )?;
+                if let Some(negated) = negated {
+                    negated_rules.insert((component_index, rule_index), negated);
+                }
                 accumulate_rows(
                     &mut support,
                     contribution,
@@ -270,6 +282,18 @@ impl MaintainedState {
             return Ok(None);
         }
         let arrangements = build_arrangements(&program.arrangement_specs, &collections);
+        let negative_key_counts = program
+            .negative_relations
+            .iter()
+            .map(|relation| {
+                let counts = collections[relation]
+                    .iter()
+                    .cloned()
+                    .map(|tuple| (tuple, 1))
+                    .collect();
+                (*relation, counts)
+            })
+            .collect();
         let traces = collections
             .iter()
             .map(|(relation, rows)| (*relation, Trace::initialize(snapshot.version(), rows)))
@@ -280,6 +304,8 @@ impl MaintainedState {
             requested_targets,
             collections,
             derived_support,
+            negated_rules,
+            negative_key_counts,
             arrangements,
             traces,
             #[cfg(test)]
@@ -302,6 +328,8 @@ impl MaintainedState {
         };
         let mut collections = self.collections.clone();
         let mut derived_support = self.derived_support.clone();
+        let mut negated_rules = self.negated_rules.clone();
+        let mut negative_key_counts = self.negative_key_counts.clone();
         let mut arrangements = self.arrangements.clone();
         let mut relation_deltas = BTreeMap::<RelationId, WeightedRows>::new();
         let changed_by_relation = group_fact_changes(fact_changes);
@@ -326,9 +354,15 @@ impl MaintainedState {
                 );
             }
             update_arrangements(&mut arrangements, *relation, deltas);
+            refresh_negative_key_counts(
+                &mut negative_key_counts,
+                &self.negative_key_counts,
+                *relation,
+                deltas,
+            );
         }
 
-        for component in &self.program.components {
+        for (component_index, component) in self.program.components.iter().enumerate() {
             let body_changed = component.rules.iter().any(|rule| {
                 rule_atoms(rule).any(|atom| {
                     relation_deltas
@@ -353,8 +387,22 @@ impl MaintainedState {
                     target: component.target,
                     version,
                 };
-                for rule in &component.rules {
-                    let contribution = evaluate_rule_delta(rule, &evaluation, &mut work)?;
+                for (rule_index, rule) in component.rules.iter().enumerate() {
+                    let contribution = if has_negation(rule) {
+                        let state = negated_rules
+                            .get_mut(&(component_index, rule_index))
+                            .expect("negated rule should retain its left state");
+                        evaluate_negated_rule_delta(
+                            rule,
+                            state,
+                            &evaluation,
+                            &self.negative_key_counts,
+                            &negative_key_counts,
+                            &mut work,
+                        )?
+                    } else {
+                        evaluate_rule_delta(rule, &evaluation, &mut work)?
+                    };
                     accumulate_rows(
                         &mut support_delta,
                         contribution,
@@ -395,6 +443,12 @@ impl MaintainedState {
                 set_presence_delta(collection, deltas, tuple, old_visible, new_visible);
             }
             update_arrangements(&mut arrangements, component.target, deltas);
+            refresh_negative_key_counts(
+                &mut negative_key_counts,
+                &self.negative_key_counts,
+                component.target,
+                deltas,
+            );
         }
 
         let mut traces = self.traces.clone();
@@ -442,6 +496,8 @@ impl MaintainedState {
             requested_targets: self.requested_targets.clone(),
             collections,
             derived_support,
+            negated_rules,
+            negative_key_counts,
             arrangements,
             traces,
             #[cfg(test)]
@@ -500,6 +556,7 @@ struct MaintainedProgram {
     components: Vec<MaintainedComponent>,
     relations: BTreeSet<RelationId>,
     targets: BTreeSet<RelationId>,
+    negative_relations: BTreeSet<RelationId>,
     arrangement_specs: BTreeSet<ArrangementSpec>,
 }
 
@@ -548,6 +605,7 @@ impl MaintainedProgram {
             }
         }
         let mut relations = BTreeSet::new();
+        let mut negative_relations = BTreeSet::new();
         let mut components = Vec::new();
         for stratum in &compiled.strata {
             for component in &stratum.components {
@@ -564,15 +622,14 @@ impl MaintainedProgram {
                     .iter()
                     .map(|index| stratum.rules[*index].clone())
                     .collect::<Vec<_>>();
-                if rules
-                    .iter()
-                    .flat_map(|rule| &rule.body)
-                    .any(|item| matches!(item, CompiledBodyItem::Atom(atom) if atom.negated))
-                {
-                    return Ok(None);
-                }
                 relations.insert(target);
                 relations.extend(rules.iter().flat_map(rule_atoms).map(|atom| atom.relation));
+                negative_relations.extend(
+                    rules
+                        .iter()
+                        .flat_map(negated_rule_atoms)
+                        .map(|atom| atom.relation),
+                );
                 components.push(MaintainedComponent { target, rules });
             }
         }
@@ -598,6 +655,7 @@ impl MaintainedProgram {
             components,
             relations,
             targets: required_targets,
+            negative_relations,
             arrangement_specs,
         }))
     }
@@ -611,7 +669,7 @@ struct MaintainedComponent {
 
 fn required_arrangements(rule: &CompiledRule) -> BTreeSet<ArrangementSpec> {
     let mut arrangements = BTreeSet::new();
-    let atoms = rule_atoms(rule).collect::<Vec<_>>();
+    let atoms = positive_rule_atoms(rule).collect::<Vec<_>>();
     for first in 0..atoms.len().max(1) {
         let mut bound_slots = BTreeSet::new();
         let order = std::iter::once(first).chain((0..atoms.len()).filter(|index| *index != first));
@@ -696,20 +754,47 @@ fn rule_atoms(rule: &CompiledRule) -> impl Iterator<Item = &CompiledAtom> {
     })
 }
 
+fn positive_rule_atoms(rule: &CompiledRule) -> impl Iterator<Item = &CompiledAtom> {
+    rule_atoms(rule).filter(|atom| !atom.negated)
+}
+
+fn negated_rule_atoms(rule: &CompiledRule) -> impl Iterator<Item = &CompiledAtom> {
+    rule_atoms(rule).filter(|atom| atom.negated)
+}
+
+fn has_negation(rule: &CompiledRule) -> bool {
+    negated_rule_atoms(rule).next().is_some()
+}
+
 fn evaluate_rule_full(
     rule: &CompiledRule,
     collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
     version: Version,
     work: &mut MaintenanceWork,
-) -> Result<WeightedRows, KernelError> {
+) -> Result<(WeightedRows, Option<NegatedRuleState>), KernelError> {
     let mut bindings = unit_binding(rule.slot_count);
-    for atom in rule_atoms(rule) {
+    for atom in positive_rule_atoms(rule) {
         let rows = collections
             .get(&atom.relation)
             .expect("compiled relation should have a maintained collection");
         bindings = join_full(bindings, atom, rows, rule.head_relation, version)?;
     }
-    finish_rule(rule, bindings, version, work)
+    bindings = filter_guards(rule, bindings);
+    if !has_negation(rule) {
+        return Ok((project_rule(rule, bindings, version, work)?, None));
+    }
+    let contribution = project_active_negated_bindings(
+        rule,
+        &bindings,
+        |relation, tuple| collections[&relation].contains(tuple),
+        version,
+        work,
+    )?;
+    let state = NegatedRuleState {
+        left_by_negative_key: build_negative_left_indexes(rule, &bindings)?,
+        positive_bindings: bindings,
+    };
+    Ok((contribution, Some(state)))
 }
 
 struct DeltaEvaluation<'a> {
@@ -727,8 +812,17 @@ fn evaluate_rule_delta(
     evaluation: &DeltaEvaluation<'_>,
     work: &mut MaintenanceWork,
 ) -> Result<WeightedRows, KernelError> {
-    let mut output = WeightedRows::new();
-    let mut atoms = rule_atoms(rule).collect::<Vec<_>>();
+    let bindings = evaluate_positive_binding_delta(rule, evaluation, work)?;
+    project_rule(rule, bindings, evaluation.version, work)
+}
+
+fn evaluate_positive_binding_delta(
+    rule: &CompiledRule,
+    evaluation: &DeltaEvaluation<'_>,
+    work: &mut MaintenanceWork,
+) -> Result<WeightedBindings, KernelError> {
+    let mut output = WeightedBindings::new();
+    let mut atoms = positive_rule_atoms(rule).collect::<Vec<_>>();
     if let Some((first, _)) = atoms.iter().enumerate().min_by_key(|(_, atom)| {
         evaluation
             .relation_deltas
@@ -789,16 +883,165 @@ fn evaluate_rule_delta(
                 break;
             }
         }
-        let contribution = finish_rule(rule, bindings, evaluation.version, work)?;
-        accumulate_rows(
-            &mut output,
-            contribution,
-            evaluation.target,
-            "delta union",
+        bindings = filter_guards(rule, bindings);
+        for (binding, difference) in bindings {
+            checked_accumulate(
+                &mut output,
+                binding,
+                difference,
+                evaluation.target,
+                "delta union",
+                evaluation.version,
+            )?;
+        }
+    }
+    Ok(output)
+}
+
+fn evaluate_negated_rule_delta(
+    rule: &CompiledRule,
+    state: &mut NegatedRuleState,
+    evaluation: &DeltaEvaluation<'_>,
+    old_right_counts: &BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
+    new_right_counts: &BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
+    work: &mut MaintenanceWork,
+) -> Result<WeightedRows, KernelError> {
+    let positive_changed = positive_rule_atoms(rule).any(|atom| {
+        evaluation
+            .relation_deltas
+            .get(&atom.relation)
+            .is_some_and(|delta| !delta.is_empty())
+    });
+    let positive_delta = if positive_changed {
+        evaluate_positive_binding_delta(rule, evaluation, work)?
+    } else {
+        WeightedBindings::new()
+    };
+    let mut next_bindings = state.positive_bindings.clone();
+    for (binding, difference) in &positive_delta {
+        checked_accumulate(
+            &mut next_bindings,
+            binding.clone(),
+            *difference,
+            rule.head_relation,
+            "anti-join left input",
             evaluation.version,
         )?;
     }
+    if let Some((binding, difference)) = next_bindings
+        .iter()
+        .find(|(_, difference)| **difference < 0)
+    {
+        return Err(KernelError::NegativeDifferentialSupport {
+            relation: rule.head_relation,
+            tuple: instantiate_head(rule, binding)?,
+            version: evaluation.version,
+            support: *difference,
+        });
+    }
+
+    let mut touched = positive_delta.keys().cloned().collect::<BTreeSet<_>>();
+    for (negative_index, atom) in negated_rule_atoms(rule).enumerate() {
+        let Some(changes) = evaluation.relation_deltas.get(&atom.relation) else {
+            continue;
+        };
+        for tuple in changes.keys() {
+            if let Some(bindings) = state.left_by_negative_key[negative_index].get(tuple) {
+                touched.extend(bindings.iter().cloned());
+            }
+        }
+    }
+
+    let mut output = WeightedRows::new();
+    for binding in touched {
+        let old_weight = state.positive_bindings.get(&binding).copied().unwrap_or(0);
+        let new_weight = next_bindings.get(&binding).copied().unwrap_or(0);
+        let old_active = negated_binding_is_active(rule, &binding, &|relation, tuple| {
+            right_key_is_present(old_right_counts, relation, tuple)
+        })?;
+        let new_active = negated_binding_is_active(rule, &binding, &|relation, tuple| {
+            right_key_is_present(new_right_counts, relation, tuple)
+        })?;
+        let old_contribution = if old_active { old_weight } else { 0 };
+        let new_contribution = if new_active { new_weight } else { 0 };
+        let difference = new_contribution.checked_sub(old_contribution).ok_or(
+            KernelError::DifferentialWeightOverflow {
+                relation: rule.head_relation,
+                operation: "anti-join transition",
+                version: evaluation.version,
+                left: new_contribution,
+                right: old_contribution,
+            },
+        )?;
+        if difference == 0 {
+            continue;
+        }
+        work.candidate_changes += 1;
+        checked_accumulate(
+            &mut output,
+            instantiate_head(rule, &binding)?,
+            difference,
+            rule.head_relation,
+            "anti-join projection",
+            evaluation.version,
+        )?;
+    }
+
+    for binding in positive_delta.keys() {
+        let old_present = state
+            .positive_bindings
+            .get(binding)
+            .is_some_and(|weight| *weight > 0);
+        let new_present = next_bindings.get(binding).is_some_and(|weight| *weight > 0);
+        if old_present == new_present {
+            continue;
+        }
+        for (negative_index, atom) in negated_rule_atoms(rule).enumerate() {
+            let key = instantiate_atom(atom, binding)?;
+            let index = &mut state.left_by_negative_key[negative_index];
+            if new_present {
+                index.entry(key).or_default().insert(binding.clone());
+            } else if let Some(bindings) = index.get_mut(&key) {
+                bindings.remove(binding);
+                if bindings.is_empty() {
+                    index.remove(&key);
+                }
+            }
+        }
+    }
+    state.positive_bindings = next_bindings;
     Ok(output)
+}
+
+fn refresh_negative_key_counts(
+    counts: &mut BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
+    old_counts: &BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
+    relation: RelationId,
+    changes: &WeightedRows,
+) {
+    let Some(old) = old_counts.get(&relation) else {
+        return;
+    };
+    let mut next = old.clone();
+    for (tuple, difference) in changes {
+        if *difference > 0 {
+            next.insert(tuple.clone(), 1);
+        } else if *difference < 0 {
+            next.remove(tuple);
+        }
+    }
+    counts.insert(relation, next);
+}
+
+fn right_key_is_present(
+    counts: &BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
+    relation: RelationId,
+    tuple: &Tuple,
+) -> bool {
+    counts
+        .get(&relation)
+        .and_then(|counts| counts.get(tuple))
+        .is_some_and(|count| *count > 0)
 }
 
 fn unit_binding(slot_count: usize) -> WeightedBindings {
@@ -978,7 +1221,17 @@ fn unify(atom: &CompiledAtom, binding: &Binding, tuple: &Tuple) -> Option<Bindin
     Some(next)
 }
 
-fn finish_rule(
+fn filter_guards(rule: &CompiledRule, mut bindings: WeightedBindings) -> WeightedBindings {
+    bindings.retain(|binding, _| {
+        rule.body.iter().all(|item| match item {
+            CompiledBodyItem::Atom(_) => true,
+            CompiledBodyItem::Guard(guard) => guard_matches(guard, binding),
+        })
+    });
+    bindings
+}
+
+fn project_rule(
     rule: &CompiledRule,
     bindings: WeightedBindings,
     version: Version,
@@ -986,13 +1239,6 @@ fn finish_rule(
 ) -> Result<WeightedRows, KernelError> {
     let mut output = WeightedRows::new();
     for (binding, difference) in bindings {
-        let guards_match = rule.body.iter().all(|item| match item {
-            CompiledBodyItem::Atom(_) => true,
-            CompiledBodyItem::Guard(guard) => guard_matches(guard, &binding),
-        });
-        if !guards_match {
-            continue;
-        }
         let tuple = instantiate_head(rule, &binding)?;
         work.candidate_changes += 1;
         checked_accumulate(
@@ -1005,6 +1251,81 @@ fn finish_rule(
         )?;
     }
     Ok(output)
+}
+
+fn project_active_negated_bindings(
+    rule: &CompiledRule,
+    bindings: &WeightedBindings,
+    right_contains: impl Fn(RelationId, &Tuple) -> bool,
+    version: Version,
+    work: &mut MaintenanceWork,
+) -> Result<WeightedRows, KernelError> {
+    let mut output = WeightedRows::new();
+    for (binding, difference) in bindings {
+        if !negated_binding_is_active(rule, binding, &right_contains)? {
+            continue;
+        }
+        work.candidate_changes += 1;
+        checked_accumulate(
+            &mut output,
+            instantiate_head(rule, binding)?,
+            *difference,
+            rule.head_relation,
+            "anti-join projection",
+            version,
+        )?;
+    }
+    Ok(output)
+}
+
+fn negated_binding_is_active(
+    rule: &CompiledRule,
+    binding: &Binding,
+    right_contains: &impl Fn(RelationId, &Tuple) -> bool,
+) -> Result<bool, KernelError> {
+    for atom in negated_rule_atoms(rule) {
+        let tuple = instantiate_atom(atom, binding)?;
+        if right_contains(atom.relation, &tuple) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn instantiate_atom(atom: &CompiledAtom, binding: &Binding) -> Result<Tuple, KernelError> {
+    let mut values = Vec::with_capacity(atom.terms.len());
+    for term in &atom.terms {
+        match term {
+            CompiledTerm::Value(value) => values.push(value.clone()),
+            CompiledTerm::Var { slot, .. } => {
+                let value = binding[*slot].clone().ok_or(KernelError::Rule(
+                    crate::RuleError::UnsafeNegation {
+                        relation: atom.relation,
+                    },
+                ))?;
+                values.push(value);
+            }
+        }
+    }
+    Ok(Tuple::new(values))
+}
+
+fn build_negative_left_indexes(
+    rule: &CompiledRule,
+    bindings: &WeightedBindings,
+) -> Result<Vec<BTreeMap<Tuple, BTreeSet<Binding>>>, KernelError> {
+    negated_rule_atoms(rule)
+        .map(|atom| {
+            let mut index = BTreeMap::<Tuple, BTreeSet<Binding>>::new();
+            for binding in bindings.keys() {
+                index
+                    .entry(instantiate_atom(atom, binding)?)
+                    .or_default()
+                    .insert(binding.clone());
+            }
+            Ok(index)
+        })
+        .collect()
 }
 
 fn guard_matches(guard: &CompiledGuard, binding: &Binding) -> bool {
