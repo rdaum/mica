@@ -953,9 +953,19 @@ The runtime subscription service should accept:
 - an initial-delivery mode; and
 - an optional subscription cursor for resumption.
 
-The exact Mica builtin syntax is deliberately unspecified until the runtime API is implemented. The
-subscription object is runtime state, not a durable fact and not an annotation on a relation or
-rule.
+The initial Mica API is:
+
+```mica
+subscribe_changes(sender, subject, relation, bindings, initial [, cursor [, queue_budget]])
+cancel_subscription(subscription)
+```
+
+`subject` is `:catalogue`, `:facts`, or `:relation`; `initial` is `:changes` or `:snapshot`.
+Catalogue subscriptions use `nothing` for the relation and an empty binding list. Fact and relation
+subscriptions accept a relation identity or name and one binding entry per column, with `nothing`
+for an unbound column. The returned subscription capability is ephemeral runtime state, not a
+durable fact or an annotation on a relation or rule. Equivalent host registration and cancellation
+APIs use the same request model and an explicit publication boundary.
 
 Registration and cancellation requested by a Mica task must be transactional task effects. They
 become active only after the requesting boundary commits and are discarded on retry or abort, just
@@ -1043,7 +1053,8 @@ Current Mica mailboxes are in-memory runtime queues. Subscriptions therefore can
 or exactly-once delivery across process failure. Recovery-critical commands, audit history, and
 external-effect outboxes must remain committed relation facts or use another durable log.
 
-Each subscription needs an explicit queue or byte budget. When a subscriber falls behind, the
+Each subscription has an explicit queue budget. The initial implementation applies it both to the
+number of undrained version batches and to the number of entries in one batch. When a subscriber falls behind, the
 runtime should replace undelivered incremental batches with a single resynchronization marker
 containing the latest safe cursor. Silently dropping a change or allowing unbounded mailbox growth
 is not acceptable. Coalescing across versions is valid only for a separately specified

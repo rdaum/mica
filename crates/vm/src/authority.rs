@@ -160,6 +160,10 @@ impl AuthorityContext {
         }
     }
 
+    pub fn is_root(&self) -> bool {
+        self.root
+    }
+
     pub fn mint(&mut self, grant: CapabilityGrant) -> Value {
         let id = self.allocate_id();
         self.capabilities.insert(id, grant);

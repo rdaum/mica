@@ -1,7 +1,8 @@
 use super::{
     AuthorityContext, BuiltinResultKind, CompileError, Emission, Instruction, Operand, Program,
-    RuntimeError, SYSTEM_ENDPOINT, SourceTaskError, SpawnRequest, SpawnTarget, SuspendKind,
-    TaskError, TaskManagerError, TaskOutcome, endpoint_open_relation, param_relation,
+    RuntimeError, SYSTEM_ENDPOINT, SourceTaskError, SpawnRequest, SpawnTarget,
+    SubscriptionInitialDelivery, SubscriptionRequest, SubscriptionSubject, SuspendKind, TaskError,
+    TaskManagerError, TaskOutcome, endpoint_open_relation, param_relation,
 };
 use super::{FileinMode, SourceRunner, TaskInput, TaskRequest};
 use super::{relation_name_relation, subject_fact_relation};
@@ -5226,6 +5227,474 @@ fn runner_mailbox_recv_expands_argument_splices() {
     runner
         .mailbox_for_receiver(&request.receivers[0])
         .expect("spliced receiver should be a valid receive cap");
+}
+
+#[test]
+fn runner_relation_subscription_delivers_snapshot_then_ordered_settled_changes() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Base, 1)").unwrap();
+    runner.run_source("make_relation(:Derived, 1)").unwrap();
+    runner
+        .run_source("Derived(value) :-\n  Base(value)")
+        .unwrap();
+    runner.run_source("assert Base(1)").unwrap();
+
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "let caps = mailbox()\n\
+                 let subscription = subscribe_changes(caps[1], :relation, :Derived, [nothing], :snapshot)\n\
+                 commit()\n\
+                 assert Base(2)\n\
+                 commit()\n\
+                 return caps[0]"
+                    .to_owned(),
+            ),
+        })
+        .unwrap();
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Commit,
+            ..
+        }
+    ));
+    let second = runner
+        .resume_task(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Continuation {
+                task_id: submitted.task_id,
+                value: Value::nothing(),
+            },
+        })
+        .unwrap();
+    assert!(matches!(
+        second,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Commit,
+            ..
+        }
+    ));
+    let completed = runner
+        .resume_task(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Continuation {
+                task_id: submitted.task_id,
+                value: Value::nothing(),
+            },
+        })
+        .unwrap();
+    let TaskOutcome::Complete {
+        value: receiver, ..
+    } = completed
+    else {
+        panic!("subscription task did not complete");
+    };
+
+    let messages = runner.drain_mailbox(receiver).unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(
+        subscription_message_symbol(&messages[0], "subject"),
+        "snapshot"
+    );
+    assert_eq!(
+        subscription_message_symbol(&messages[1], "subject"),
+        "relation"
+    );
+    let first_cursor = subscription_message_int(&messages[0], "cursor");
+    let second_cursor = subscription_message_int(&messages[1], "cursor");
+    assert!(first_cursor < second_cursor);
+    assert_eq!(
+        subscription_message_rows(&messages[0], "assertions"),
+        vec![vec![1]]
+    );
+    assert_eq!(
+        subscription_message_rows(&messages[1], "assertions"),
+        vec![vec![2]]
+    );
+    assert!(subscription_message_rows(&messages[1], "retractions").is_empty());
+}
+
+#[test]
+fn runner_subscription_overflow_replaces_incremental_batches_with_resynchronization() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Observed, 1)").unwrap();
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "let caps = mailbox()\n\
+                 let subscription = subscribe_changes(caps[1], :facts, :Observed, [nothing], :changes, nothing, 1)\n\
+                 commit()\n\
+                 assert Observed(1)\n\
+                 commit()\n\
+                 assert Observed(2)\n\
+                 commit()\n\
+                 return caps[0]"
+                    .to_owned(),
+            ),
+        })
+        .unwrap();
+    let mut outcome = submitted.outcome;
+    for _ in 0..3 {
+        assert!(matches!(
+            outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Commit,
+                ..
+            }
+        ));
+        outcome = runner
+            .resume_task(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: SYSTEM_ENDPOINT,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Continuation {
+                    task_id: submitted.task_id,
+                    value: Value::nothing(),
+                },
+            })
+            .unwrap();
+    }
+    let TaskOutcome::Complete {
+        value: receiver, ..
+    } = outcome
+    else {
+        panic!("overflow subscription task did not complete");
+    };
+    let messages = runner.drain_mailbox(receiver).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        subscription_message_symbol(&messages[0], "kind"),
+        "resynchronize"
+    );
+}
+
+#[test]
+fn runner_subscription_refreshes_authority_before_filtering_values() {
+    let mut runner = SourceRunner::new_empty();
+    runner
+        .run_source(
+            "make_identity(:alice)\n\
+             make_relation(:Observed, 1)\n\
+             make_relation(:CanRead, 2)\n\
+             assert CanRead(#alice, :Observed)",
+        )
+        .unwrap();
+    let alice = runner.actor_identity(Symbol::intern("alice")).unwrap();
+    let submitted = runner
+        .submit_source_as(
+            alice,
+            SYSTEM_ENDPOINT,
+            "let caps = mailbox()\n\
+             let subscription = subscribe_changes(caps[1], :relation, :Observed, [nothing], :changes)\n\
+             commit()\n\
+             return caps[0]",
+        )
+        .unwrap();
+    assert!(matches!(
+        submitted.outcome,
+        TaskOutcome::Suspended {
+            kind: SuspendKind::Commit,
+            ..
+        }
+    ));
+    let completed = runner
+        .resume_as(Symbol::intern("alice"), submitted.task_id)
+        .unwrap();
+    let TaskOutcome::Complete {
+        value: receiver, ..
+    } = completed.outcome
+    else {
+        panic!("authorized subscription task did not complete");
+    };
+
+    runner
+        .run_source("retract CanRead(#alice, :Observed)\nassert Observed(42)")
+        .unwrap();
+    let messages = runner.drain_mailbox(receiver).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(subscription_message_symbol(&messages[0], "kind"), "revoked");
+    assert!(
+        messages[0]
+            .map_get(&Value::symbol(Symbol::intern("assertions")))
+            .is_none()
+    );
+}
+
+#[test]
+fn runner_subscription_cancellation_takes_effect_at_its_commit_boundary() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Observed, 1)").unwrap();
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "let caps = mailbox()\n\
+                 let subscription = subscribe_changes(caps[1], :facts, :Observed, [nothing], :changes)\n\
+                 commit()\n\
+                 cancel_subscription(subscription)\n\
+                 commit()\n\
+                 assert Observed(1)\n\
+                 commit()\n\
+                 return caps[0]"
+                    .to_owned(),
+            ),
+        })
+        .unwrap();
+    let mut outcome = submitted.outcome;
+    for _ in 0..3 {
+        outcome = runner
+            .resume_task(TaskRequest {
+                principal: None,
+                actor: None,
+                endpoint: SYSTEM_ENDPOINT,
+                authority: AuthorityContext::root(),
+                input: TaskInput::Continuation {
+                    task_id: submitted.task_id,
+                    value: Value::nothing(),
+                },
+            })
+            .unwrap();
+    }
+    let TaskOutcome::Complete {
+        value: receiver, ..
+    } = outcome
+    else {
+        panic!("cancelled subscription task did not complete");
+    };
+    assert!(runner.drain_mailbox(receiver).unwrap().is_empty());
+}
+
+#[test]
+fn runner_catalogue_subscription_receives_non_task_catalogue_commits() {
+    let mut runner = SourceRunner::new_empty();
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "let caps = mailbox()\n\
+                 let subscription = subscribe_changes(caps[1], :catalogue, nothing, [], :changes)\n\
+                 commit()\n\
+                 return caps[0]"
+                    .to_owned(),
+            ),
+        })
+        .unwrap();
+    let completed = runner
+        .resume_task(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Continuation {
+                task_id: submitted.task_id,
+                value: Value::nothing(),
+            },
+        })
+        .unwrap();
+    let TaskOutcome::Complete {
+        value: receiver, ..
+    } = completed
+    else {
+        panic!("catalogue subscription task did not complete");
+    };
+    runner.run_source("make_relation(:Later, 1)").unwrap();
+    let messages = runner.drain_mailbox(receiver).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        subscription_message_symbol(&messages[0], "subject"),
+        "catalogue"
+    );
+}
+
+#[test]
+fn runner_relation_subscription_rebuilds_after_rule_catalogue_change() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Base, 1)").unwrap();
+    runner.run_source("make_relation(:Derived, 1)").unwrap();
+    runner.run_source("assert Base(7)").unwrap();
+    let submitted = runner
+        .submit_source(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Source(
+                "let caps = mailbox()\n\
+                 let subscription = subscribe_changes(caps[1], :relation, :Derived, [nothing], :changes)\n\
+                 commit()\n\
+                 return caps[0]"
+                    .to_owned(),
+            ),
+        })
+        .unwrap();
+    let completed = runner
+        .resume_task(TaskRequest {
+            principal: None,
+            actor: None,
+            endpoint: SYSTEM_ENDPOINT,
+            authority: AuthorityContext::root(),
+            input: TaskInput::Continuation {
+                task_id: submitted.task_id,
+                value: Value::nothing(),
+            },
+        })
+        .unwrap();
+    let TaskOutcome::Complete {
+        value: receiver, ..
+    } = completed
+    else {
+        panic!("relation subscription task did not complete");
+    };
+
+    runner
+        .run_source("Derived(value) :-\n  Base(value)")
+        .unwrap();
+    let messages = runner.drain_mailbox(receiver).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        subscription_message_symbol(&messages[0], "subject"),
+        "relation"
+    );
+    assert_eq!(
+        subscription_message_rows(&messages[0], "assertions"),
+        vec![vec![7]]
+    );
+}
+
+#[test]
+fn runner_discards_subscription_registration_when_task_aborts() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Observed, 1)").unwrap();
+    let report = runner
+        .run_source(
+            "let caps = mailbox()\n\
+             let subscription = subscribe_changes(caps[1], :facts, :Observed, [nothing], :changes)\n\
+             raise E_INVARG, \"abort registration\"",
+        )
+        .unwrap();
+    assert!(matches!(report.outcome, TaskOutcome::Aborted { .. }));
+    assert_eq!(runner.task_manager.subscription_count(), 0);
+}
+
+#[test]
+fn runner_host_subscription_replays_retained_fact_changes_from_cursor() {
+    let mut runner = SourceRunner::new_empty();
+    runner.run_source("make_relation(:Observed, 1)").unwrap();
+    let relation = runner
+        .task_manager
+        .kernel()
+        .snapshot()
+        .relation_metadata()
+        .find(|metadata| metadata.name().name() == Some("Observed"))
+        .unwrap()
+        .id();
+    let (first_receiver, first_sender) = runner.create_mailbox().unwrap();
+    let first_subscription = runner
+        .register_subscription(
+            SubscriptionRequest {
+                sender: first_sender,
+                subject: SubscriptionSubject::Facts {
+                    relation,
+                    bindings: vec![None],
+                },
+                initial_delivery: SubscriptionInitialDelivery::ChangesOnly,
+                cursor: None,
+                queue_budget: 8,
+            },
+            super::RuntimeContext::default(),
+            &AuthorityContext::root(),
+        )
+        .unwrap();
+    runner.run_source("assert Observed(1)").unwrap();
+    let first = runner.drain_mailbox(first_receiver).unwrap();
+    let cursor = u64::try_from(subscription_message_int(&first[0], "cursor")).unwrap();
+    runner.cancel_subscription(first_subscription).unwrap();
+
+    runner.run_source("assert Observed(2)").unwrap();
+    let (resumed_receiver, resumed_sender) = runner.create_mailbox().unwrap();
+    runner
+        .register_subscription(
+            SubscriptionRequest {
+                sender: resumed_sender,
+                subject: SubscriptionSubject::Facts {
+                    relation,
+                    bindings: vec![None],
+                },
+                initial_delivery: SubscriptionInitialDelivery::ChangesOnly,
+                cursor: Some(cursor),
+                queue_budget: 8,
+            },
+            super::RuntimeContext::default(),
+            &AuthorityContext::root(),
+        )
+        .unwrap();
+    let replayed = runner.drain_mailbox(resumed_receiver).unwrap();
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(
+        subscription_message_rows(&replayed[0], "assertions"),
+        vec![vec![2]]
+    );
+}
+
+fn subscription_message_value(message: &Value, key: &str) -> Value {
+    message
+        .map_get(&Value::symbol(Symbol::intern(key)))
+        .unwrap_or_else(|| panic!("subscription message is missing :{key}"))
+}
+
+fn subscription_message_symbol(message: &Value, key: &str) -> &'static str {
+    subscription_message_value(message, key)
+        .as_symbol()
+        .and_then(Symbol::name)
+        .unwrap_or_else(|| panic!("subscription message :{key} is not a named symbol"))
+}
+
+fn subscription_message_int(message: &Value, key: &str) -> i64 {
+    subscription_message_value(message, key)
+        .as_int()
+        .unwrap_or_else(|| panic!("subscription message :{key} is not an integer"))
+}
+
+fn subscription_message_rows(message: &Value, key: &str) -> Vec<Vec<i64>> {
+    subscription_message_value(message, key)
+        .with_list(|rows| {
+            rows.iter()
+                .map(|row| {
+                    row.with_list(|values| {
+                        values
+                            .iter()
+                            .map(|value| {
+                                value.as_int().expect("test row value should be an integer")
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .expect("subscription row should be a list")
+                })
+                .collect::<Vec<_>>()
+        })
+        .expect("subscription message rows should be a list")
 }
 
 #[test]

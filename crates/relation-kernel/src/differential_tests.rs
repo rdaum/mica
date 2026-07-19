@@ -1109,7 +1109,7 @@ fn unsupported_programs_and_dirty_transactions_use_complete_fallback() {
             "Copy(value) :- Base(value)",
         )
         .unwrap();
-    assert!(eligible.snapshot().maintained_state().is_none());
+    assert!(eligible.snapshot().maintained_state().is_some());
     assert_eq!(
         eligible.snapshot().scan(rel(451), &[None]).unwrap(),
         vec![Tuple::from([int(11)])]
@@ -1117,7 +1117,7 @@ fn unsupported_programs_and_dirty_transactions_use_complete_fallback() {
     assert_maintained_matches_complete(&eligible.snapshot(), &[(rel(451), 1)]);
 
     eligible.disable_rule(added.id()).unwrap();
-    assert!(eligible.snapshot().maintained_state().is_none());
+    assert!(eligible.snapshot().maintained_state().is_some());
     assert_eq!(
         eligible.snapshot().scan(rel(451), &[None]).unwrap(),
         vec![Tuple::from([int(11)])]

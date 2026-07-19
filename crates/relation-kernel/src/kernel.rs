@@ -333,6 +333,8 @@ impl RelationKernel {
             version: next.version,
             catalog_changes: Arc::from([CatalogChange::RelationCreated(metadata.clone())]),
             changes: Arc::from([]),
+            relation_changes: Arc::from([]),
+            settled_relation_changes_available: true,
         };
         next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
@@ -374,10 +376,13 @@ impl RelationKernel {
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
         next.version += 1;
+        let relation_changes = settled_catalog_relation_changes(&current, &next)?;
         let commit = Commit {
             version: next.version,
             catalog_changes: Arc::from([CatalogChange::RuleInstalled(definition.clone())]),
             changes: Arc::from([]),
+            relation_changes: relation_changes.into(),
+            settled_relation_changes_available: true,
         };
         next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
@@ -411,10 +416,13 @@ impl RelationKernel {
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
         next.version += 1;
+        let relation_changes = settled_catalog_relation_changes(&current, &next)?;
         let commit = Commit {
             version: next.version,
             catalog_changes: Arc::from([CatalogChange::RuleDisabled(rule_id)]),
             changes: Arc::from([]),
+            relation_changes: relation_changes.into(),
+            settled_relation_changes_available: true,
         };
         next.commits = current.commits.append(commit.clone());
         let next = Arc::new(next);
@@ -434,6 +442,11 @@ impl RelationKernel {
     pub fn begin(&self) -> Transaction<'_> {
         crate::metrics::metrics().transactions_started.inc();
         Transaction::new(self, self.snapshot(), self.execution_context.clone())
+    }
+
+    pub fn at_publication_boundary<T>(&self, action: impl FnOnce(&Arc<Snapshot>) -> T) -> T {
+        let _guard = self.commit_guard();
+        action(&self.snapshot())
     }
 
     pub(crate) fn try_publish(&self, expected_version: u64, next: Arc<Snapshot>) -> bool {
@@ -479,6 +492,8 @@ impl RelationKernel {
             version: commit.version(),
             catalog_changes: commit.catalog_changes.clone(),
             changes: changes.into(),
+            relation_changes: Arc::from([]),
+            settled_relation_changes_available: false,
         };
         self.provider
             .persist_commit(&persistent_commit)
@@ -488,6 +503,53 @@ impl RelationKernel {
     pub(crate) fn commit_guard(&self) -> MutexGuard<'_, ()> {
         self.commit_lock.lock().unwrap()
     }
+}
+
+fn settled_catalog_relation_changes(
+    current: &Snapshot,
+    next: &Snapshot,
+) -> Result<Vec<crate::FactChange>, KernelError> {
+    let Some(maintained) = current.maintained_state() else {
+        return Ok(Vec::new());
+    };
+    let mut changes = Vec::new();
+    for relation in maintained.requested_targets() {
+        let arity = current.relation(*relation)?.metadata().arity() as usize;
+        let bindings = vec![None; arity];
+        let before = current.scan(*relation, &bindings)?;
+        next.warm_maintained_relation_result(*relation)?;
+        let after = next.scan(*relation, &bindings)?;
+        let before = before
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let after = after.into_iter().collect::<std::collections::BTreeSet<_>>();
+        changes.extend(
+            before
+                .difference(&after)
+                .cloned()
+                .map(|tuple| crate::FactChange {
+                    relation: *relation,
+                    tuple,
+                    kind: FactChangeKind::Retract,
+                }),
+        );
+        changes.extend(
+            after
+                .difference(&before)
+                .cloned()
+                .map(|tuple| crate::FactChange {
+                    relation: *relation,
+                    tuple,
+                    kind: FactChangeKind::Assert,
+                }),
+        );
+    }
+    changes.sort_by(|left, right| {
+        left.relation
+            .cmp(&right.relation)
+            .then_with(|| left.tuple.cmp(&right.tuple))
+    });
+    Ok(changes)
 }
 
 fn validate_rule_definition_against_relations(

@@ -11,6 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::subscription::SubscriptionRuntimeHandle;
 use crate::task_manager::MailboxRuntimeHandle;
 use mica_relation_kernel::{Conflict, KernelError, RelationKernel, Transaction};
 use mica_var::Value;
@@ -97,7 +98,9 @@ pub struct Task<'a> {
     committed_effects: Vec<Emission>,
     pending_mailbox_sends: Vec<MailboxSend>,
     committed_mailbox_sends: Vec<MailboxSend>,
+    pending_subscriptions: Vec<mica_vm::SubscriptionOperation>,
     mailbox_runtime: Option<MailboxRuntimeHandle>,
+    subscription_runtime: Option<SubscriptionRuntimeHandle>,
     task_snapshot: Vec<Value>,
     runtime_context: RuntimeContext,
     retries: u8,
@@ -166,7 +169,9 @@ impl<'a> Task<'a> {
             committed_effects: Vec::new(),
             pending_mailbox_sends: Vec::new(),
             committed_mailbox_sends: Vec::new(),
+            pending_subscriptions: Vec::new(),
             mailbox_runtime: None,
+            subscription_runtime: None,
             task_snapshot: Vec::new(),
             runtime_context: RuntimeContext::default(),
             retries: 0,
@@ -196,7 +201,9 @@ impl<'a> Task<'a> {
             committed_effects: Vec::new(),
             pending_mailbox_sends: Vec::new(),
             committed_mailbox_sends: Vec::new(),
+            pending_subscriptions: Vec::new(),
             mailbox_runtime: None,
+            subscription_runtime: None,
             task_snapshot: Vec::new(),
             runtime_context: RuntimeContext::default(),
             retries: state.retries,
@@ -218,6 +225,13 @@ impl<'a> Task<'a> {
 
     pub(crate) fn set_mailbox_runtime(&mut self, mailbox_runtime: MailboxRuntimeHandle) {
         self.mailbox_runtime = Some(mailbox_runtime);
+    }
+
+    pub(crate) fn set_subscription_runtime(
+        &mut self,
+        subscription_runtime: SubscriptionRuntimeHandle,
+    ) {
+        self.subscription_runtime = Some(subscription_runtime);
     }
 
     pub fn retries(&self) -> u8 {
@@ -263,6 +277,7 @@ impl<'a> Task<'a> {
                     RuntimePorts {
                         pending_effects: &mut self.pending_effects,
                         pending_mailbox_sends: &mut self.pending_mailbox_sends,
+                        pending_subscriptions: &mut self.pending_subscriptions,
                         mailbox_runtime: mailbox_runtime
                             .as_ref()
                             .map(|runtime| runtime as &dyn MailboxRuntime),
@@ -348,6 +363,7 @@ impl<'a> Task<'a> {
             VmHostResponse::Abort(error) => {
                 self.pending_effects.clear();
                 self.pending_mailbox_sends.clear();
+                self.discard_pending_subscriptions();
                 self.tx.take();
                 Ok(Some(TaskOutcome::Aborted {
                     error,
@@ -378,12 +394,37 @@ impl<'a> Task<'a> {
         let start = tracing::enabled!(tracing::Level::TRACE).then(Instant::now);
         let tx = self.tx.take().ok_or(TaskError::MissingTransaction)?;
         if tx.is_read_only() {
+            if let Some(subscription_runtime) = &self.subscription_runtime {
+                self.kernel.at_publication_boundary(|snapshot| {
+                    subscription_runtime.apply_boundary(
+                        self.kernel,
+                        snapshot,
+                        &mut self.pending_subscriptions,
+                    )
+                })?;
+            } else {
+                self.discard_pending_subscriptions();
+            }
             self.finish_successful_boundary(disposition);
             self.trace_successful_boundary(start, true, disposition);
             return Ok(BoundaryResult::Committed);
         }
-        match tx.commit() {
+        let subscription_runtime = self.subscription_runtime.clone();
+        let mut subscription_result = Ok(Vec::new());
+        let result = tx.commit_with_post_publish(|result| {
+            if let Some(subscription_runtime) = &subscription_runtime {
+                subscription_result = subscription_runtime.apply_boundary(
+                    self.kernel,
+                    result.snapshot(),
+                    &mut self.pending_subscriptions,
+                );
+            } else {
+                self.discard_pending_subscriptions();
+            }
+        });
+        match result {
             Ok(_) => {
+                let _ = subscription_result?;
                 self.finish_successful_boundary(disposition);
                 self.trace_successful_boundary(start, false, disposition);
                 Ok(BoundaryResult::Committed)
@@ -394,6 +435,7 @@ impl<'a> Task<'a> {
                 Ok(BoundaryResult::Retried)
             }
             Err(error) => {
+                self.discard_pending_subscriptions();
                 self.tx = Some(self.kernel.begin());
                 Err(error.into())
             }
@@ -458,6 +500,7 @@ impl<'a> Task<'a> {
         }
         self.pending_effects.clear();
         self.pending_mailbox_sends.clear();
+        self.discard_pending_subscriptions();
         self.vm.restore_state(&self.retry_state);
         self.tx = Some(self.kernel.begin());
         self.retries += 1;
@@ -470,6 +513,13 @@ impl<'a> Task<'a> {
 
     fn take_committed_mailbox_sends(&mut self) -> Vec<MailboxSend> {
         std::mem::take(&mut self.committed_mailbox_sends)
+    }
+
+    fn discard_pending_subscriptions(&mut self) {
+        if let Some(mailbox_runtime) = &self.mailbox_runtime {
+            mailbox_runtime.discard_pending_subscriptions(&self.pending_subscriptions);
+        }
+        self.pending_subscriptions.clear();
     }
 }
 

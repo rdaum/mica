@@ -831,8 +831,15 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn commit(self) -> Result<CommitResult, KernelError> {
+        self.commit_with_post_publish(|_| {})
+    }
+
+    pub fn commit_with_post_publish(
+        self,
+        post_publish: impl FnOnce(&CommitResult),
+    ) -> Result<CommitResult, KernelError> {
         let start = Instant::now();
-        let result = self.commit_inner();
+        let result = self.commit_inner(post_publish);
         let elapsed = start.elapsed();
         let elapsed_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
         crate::metrics::metrics()
@@ -863,7 +870,10 @@ impl<'a> Transaction<'a> {
         result
     }
 
-    fn commit_inner(self) -> Result<CommitResult, KernelError> {
+    fn commit_inner(
+        self,
+        post_publish: impl FnOnce(&CommitResult),
+    ) -> Result<CommitResult, KernelError> {
         let _guard = self.kernel.commit_guard();
         let current = self.kernel.snapshot();
         if current.version() != self.base.version() {
@@ -876,10 +886,12 @@ impl<'a> Transaction<'a> {
                 "commit publish failed after serialized persistence".to_owned(),
             ));
         }
-        Ok(CommitResult {
+        let result = CommitResult {
             snapshot: next,
             commit,
-        })
+        };
+        post_publish(&result);
+        Ok(result)
     }
 
     fn visible_tuple_for_key(
@@ -1100,6 +1112,7 @@ impl<'a> Transaction<'a> {
         next.packed_cache = empty_packed_cache();
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
+        let mut relation_changes = public_fact_changes(current, &next, &changes)?;
         if let Some(maintained) = current.maintained_state() {
             let maintenance_start = Instant::now();
             let maintained =
@@ -1110,16 +1123,69 @@ impl<'a> Transaction<'a> {
                 maintained.work(),
             );
             next.derived_cache = derived_cache_with(derived);
+            merge_fact_changes(&mut relation_changes, maintained.visible_changes());
             next.maintained_cache = maintained_cache_with(maintained);
         }
         let commit = Commit {
             version: next.version,
             catalog_changes: Arc::from([]),
             changes: changes.into(),
+            relation_changes: relation_changes.into(),
+            settled_relation_changes_available: true,
         };
         next.commits = current.commits.append(commit.clone());
         Ok((Arc::new(next), commit))
     }
+}
+
+fn public_fact_changes(
+    current: &Snapshot,
+    next: &Snapshot,
+    changes: &[FactChange],
+) -> Result<Vec<FactChange>, KernelError> {
+    let mut visible = Vec::new();
+    for change in changes {
+        if relation_has_active_rule_head(current.rules(), change.relation)
+            && current
+                .maintained_state()
+                .is_none_or(|maintained| !maintained.serves(change.relation))
+        {
+            continue;
+        }
+        let before = current.contains(change.relation, &change.tuple)?;
+        let after = next.contains(change.relation, &change.tuple)?;
+        if before == after {
+            continue;
+        }
+        visible.push(FactChange {
+            relation: change.relation,
+            tuple: change.tuple.clone(),
+            kind: if after {
+                FactChangeKind::Assert
+            } else {
+                FactChangeKind::Retract
+            },
+        });
+    }
+    Ok(visible)
+}
+
+fn merge_fact_changes(changes: &mut Vec<FactChange>, additional: &[FactChange]) {
+    for change in additional {
+        if let Some(existing) = changes
+            .iter_mut()
+            .find(|existing| existing.relation == change.relation && existing.tuple == change.tuple)
+        {
+            existing.kind = change.kind;
+        } else {
+            changes.push(change.clone());
+        }
+    }
+    changes.sort_by(|left, right| {
+        left.relation
+            .cmp(&right.relation)
+            .then_with(|| left.tuple.cmp(&right.tuple))
+    });
 }
 
 impl RelationWorkspace for Transaction<'_> {

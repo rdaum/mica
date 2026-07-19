@@ -695,15 +695,16 @@ impl CompioTaskDriver {
             | TaskOutcome::Suspended { mailbox_sends, .. }
             | TaskOutcome::Aborted { mailbox_sends, .. } => mailbox_sends,
         };
-        mailbox_sends
+        let mut mailboxes = self.inner.runner.take_subscription_deliveries();
+        for mailbox in mailbox_sends
             .iter()
             .filter_map(|send| self.inner.runner.mailbox_for_sender(&send.sender).ok())
-            .fold(Vec::new(), |mut mailboxes, mailbox| {
-                if !mailboxes.contains(&mailbox) {
-                    mailboxes.push(mailbox);
-                }
-                mailboxes
-            })
+        {
+            if !mailboxes.contains(&mailbox) {
+                mailboxes.push(mailbox);
+            }
+        }
+        mailboxes
     }
 
     async fn handle_mailbox_recv(

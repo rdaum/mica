@@ -102,6 +102,8 @@ pub(super) fn decode_commit(bytes: &[u8]) -> Result<Commit, String> {
         version,
         catalog_changes: catalog_changes.into(),
         changes: changes.into(),
+        relation_changes: [].into(),
+        settled_relation_changes_available: false,
     })
 }
 

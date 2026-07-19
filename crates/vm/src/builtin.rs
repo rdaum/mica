@@ -71,7 +71,58 @@ pub struct BuiltinContext<'ctx, 'kernel> {
 pub struct RuntimePorts<'ctx> {
     pub pending_effects: &'ctx mut Vec<Emission>,
     pub pending_mailbox_sends: &'ctx mut Vec<MailboxSend>,
+    pub pending_subscriptions: &'ctx mut Vec<SubscriptionOperation>,
     pub mailbox_runtime: Option<&'ctx dyn MailboxRuntime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SubscriptionSubject {
+    Catalogue,
+    Facts {
+        relation: RelationId,
+        bindings: Vec<Option<Value>>,
+    },
+    Relation {
+        relation: RelationId,
+        bindings: Vec<Option<Value>>,
+    },
+}
+
+impl SubscriptionSubject {
+    pub fn relation(&self) -> Option<RelationId> {
+        match self {
+            Self::Catalogue => None,
+            Self::Facts { relation, .. } | Self::Relation { relation, .. } => Some(*relation),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SubscriptionInitialDelivery {
+    ChangesOnly,
+    SnapshotThenChanges,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscriptionRequest {
+    pub sender: Value,
+    pub subject: SubscriptionSubject,
+    pub initial_delivery: SubscriptionInitialDelivery,
+    pub cursor: Option<u64>,
+    pub queue_budget: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SubscriptionOperation {
+    Register {
+        subscription: Value,
+        request: SubscriptionRequest,
+        runtime_context: RuntimeContext,
+        root_authority: bool,
+    },
+    Cancel {
+        subscription: Value,
+    },
 }
 
 pub trait MailboxRuntime {
@@ -80,6 +131,10 @@ pub trait MailboxRuntime {
     fn validate_mailbox_sender(&self, sender: &Value) -> Result<(), RuntimeError>;
 
     fn validate_mailbox_receiver(&self, receiver: &Value) -> Result<(), RuntimeError>;
+
+    fn allocate_subscription(&self, sender: &Value) -> Result<Value, RuntimeError>;
+
+    fn validate_subscription(&self, subscription: &Value) -> Result<(), RuntimeError>;
 }
 
 impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
@@ -163,6 +218,74 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
         self.ports
             .pending_mailbox_sends
             .push(MailboxSend { sender, value });
+        Ok(())
+    }
+
+    pub fn subscribe_changes(
+        &mut self,
+        request: SubscriptionRequest,
+    ) -> Result<Value, RuntimeError> {
+        if !self.authority.is_root()
+            && self.runtime_context.actor().is_none()
+            && self.runtime_context.principal().is_none()
+        {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("subscribe_changes"),
+                message: "non-root subscriptions require a refreshable actor or principal context"
+                    .to_owned(),
+            });
+        }
+        if let Some(relation) = request.subject.relation()
+            && !self.authority.can_read_relation(relation)
+        {
+            return Err(RuntimeError::PermissionDenied {
+                operation: "subscribe",
+                target: Value::identity(relation),
+            });
+        }
+        if request.queue_budget == 0 {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("subscribe_changes"),
+                message: "queue budget must be positive".to_owned(),
+            });
+        }
+        if request.initial_delivery == SubscriptionInitialDelivery::SnapshotThenChanges
+            && request.cursor.is_some()
+        {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("subscribe_changes"),
+                message: "snapshot delivery cannot be combined with a resume cursor".to_owned(),
+            });
+        }
+        let Some(mailbox_runtime) = self.ports.mailbox_runtime.as_ref() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("subscribe_changes"),
+                message: "mailbox runtime is not available".to_owned(),
+            });
+        };
+        let subscription = mailbox_runtime.allocate_subscription(&request.sender)?;
+        self.ports
+            .pending_subscriptions
+            .push(SubscriptionOperation::Register {
+                subscription: subscription.clone(),
+                request,
+                runtime_context: self.runtime_context,
+                root_authority: self.authority.is_root(),
+            });
+        Ok(subscription)
+    }
+
+    pub fn cancel_subscription(&mut self, subscription: Value) -> Result<(), RuntimeError> {
+        let Some(mailbox_runtime) = self.ports.mailbox_runtime.as_ref() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("cancel_subscription"),
+                message: "mailbox runtime is not available".to_owned(),
+            });
+        };
+        mailbox_runtime.validate_subscription(&subscription)?;
+        self.ports
+            .pending_subscriptions
+            .push(SubscriptionOperation::Cancel { subscription });
         Ok(())
     }
 }

@@ -43,6 +43,8 @@ pub struct Commit {
     pub(crate) version: Version,
     pub(crate) catalog_changes: Arc<[CatalogChange]>,
     pub(crate) changes: Arc<[FactChange]>,
+    pub(crate) relation_changes: Arc<[FactChange]>,
+    pub(crate) settled_relation_changes_available: bool,
 }
 
 impl Commit {
@@ -56,6 +58,14 @@ impl Commit {
 
     pub fn changes(&self) -> &[FactChange] {
         &self.changes
+    }
+
+    pub fn relation_changes(&self) -> &[FactChange] {
+        &self.relation_changes
+    }
+
+    pub fn settled_relation_changes_available(&self) -> bool {
+        self.settled_relation_changes_available
     }
 }
 
@@ -187,6 +197,14 @@ impl Snapshot {
             visible = union_ordered_tuple_rows(visible, rows.scan(bindings)?);
         }
         Ok(visible)
+    }
+
+    pub fn scan_facts(
+        &self,
+        relation: RelationId,
+        bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        self.scan_extensional(relation, bindings)
     }
 
     pub fn visit(

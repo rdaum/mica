@@ -17,6 +17,7 @@ pub mod json;
 pub mod metrics;
 mod openai;
 mod retrieval;
+mod subscription;
 mod task;
 mod task_manager;
 mod types;
@@ -37,6 +38,7 @@ pub use mica_vm::{
     Instruction, KindCheckSite, ListItem, MailboxRecvRequest, MailboxSend, MapItem, Operand,
     Program, ProgramResolver, QueryBinding, Register, RegisterVm, RelationArg, RuntimeBinaryOp,
     RuntimeContext, RuntimeError, RuntimeUnaryOp, SYSTEM_ENDPOINT, SpawnRequest, SpawnTarget,
+    SubscriptionInitialDelivery, SubscriptionOperation, SubscriptionRequest, SubscriptionSubject,
     SuspendKind, VmHostContext, VmHostResponse, VmState,
 };
 pub use task::{Task, TaskError, TaskId, TaskLimits, TaskOutcome};
@@ -65,7 +67,7 @@ use mica_host_protocol::{
 };
 use mica_relation_kernel::{
     ConflictPolicy, DispatchRelations, FjallDurabilityMode, FjallStateProvider, KernelError,
-    RelationDurability, RelationId, RelationKernel, RelationMetadata, RelationRead,
+    RelationDurability, RelationId, RelationKernel, RelationMetadata, RelationRead, RelationSource,
     relation_algebra,
 };
 use mica_var::{Identity, PRIMITIVE_PROTOTYPES, RelationValue, Symbol, Value, ValueKind};
@@ -550,12 +552,34 @@ impl SourceRunner {
         self.task_manager.drain_mailbox(receiver)
     }
 
+    pub fn create_mailbox(&self) -> Result<(Value, Value), RuntimeError> {
+        self.task_manager.create_mailbox()
+    }
+
     pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
         self.task_manager.mailbox_for_receiver(receiver)
     }
 
     pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
         self.task_manager.mailbox_for_sender(sender)
+    }
+
+    pub fn take_subscription_deliveries(&self) -> Vec<u64> {
+        self.task_manager.take_subscription_deliveries()
+    }
+
+    pub fn register_subscription(
+        &self,
+        request: SubscriptionRequest,
+        runtime_context: RuntimeContext,
+        authority: &AuthorityContext,
+    ) -> Result<Value, RuntimeError> {
+        self.task_manager
+            .register_subscription(request, runtime_context, authority)
+    }
+
+    pub fn cancel_subscription(&self, subscription: Value) -> Result<(), RuntimeError> {
+        self.task_manager.cancel_subscription(subscription)
     }
 
     pub fn open_endpoint(
@@ -1589,12 +1613,34 @@ impl SharedSourceRunner {
         self.task_manager.drain_mailbox(receiver)
     }
 
+    pub fn create_mailbox(&self) -> Result<(Value, Value), RuntimeError> {
+        self.task_manager.create_mailbox()
+    }
+
     pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
         self.task_manager.mailbox_for_receiver(receiver)
     }
 
     pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
         self.task_manager.mailbox_for_sender(sender)
+    }
+
+    pub fn take_subscription_deliveries(&self) -> Vec<u64> {
+        self.task_manager.take_subscription_deliveries()
+    }
+
+    pub fn register_subscription(
+        &self,
+        request: SubscriptionRequest,
+        runtime_context: RuntimeContext,
+        authority: &AuthorityContext,
+    ) -> Result<Value, RuntimeError> {
+        self.task_manager
+            .register_subscription(request, runtime_context, authority)
+    }
+
+    pub fn cancel_subscription(&self, subscription: Value) -> Result<(), RuntimeError> {
+        self.task_manager.cancel_subscription(subscription)
     }
 
     pub fn drain_routed_emissions(&self) -> Vec<Effect> {
@@ -3699,6 +3745,16 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
             mailbox_send_builtin,
         )
         .with_builtin(
+            "subscribe_changes",
+            BuiltinResultKind::Exact(ValueKind::Capability),
+            subscribe_changes_builtin,
+        )
+        .with_builtin(
+            "cancel_subscription",
+            BuiltinResultKind::Exact(ValueKind::Relation),
+            cancel_subscription_builtin,
+        )
+        .with_builtin(
             "make_relation",
             BuiltinResultKind::Exact(ValueKind::Identity),
             MakeRelationBuiltin::new(),
@@ -3998,6 +4054,147 @@ fn mailbox_send_builtin(
     let value = args[1].clone();
     context.send_mailbox(sender, value.clone())?;
     Ok(value)
+}
+
+fn subscribe_changes_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if !(5..=7).contains(&args.len()) {
+        return Err(invalid_builtin_call(
+            "subscribe_changes",
+            "expected subscribe_changes(sender, subject, relation, bindings, initial[, cursor[, queue_budget]])",
+        ));
+    }
+    let subject_name = args[1]
+        .as_symbol()
+        .and_then(Symbol::name)
+        .ok_or_else(|| invalid_builtin_call("subscribe_changes", "subject must be a symbol"))?;
+    let bindings = args[3]
+        .with_list(|values| {
+            values
+                .iter()
+                .map(|value| (!value.is_empty_relation()).then(|| value.clone()))
+                .collect::<Vec<_>>()
+        })
+        .ok_or_else(|| invalid_builtin_call("subscribe_changes", "bindings must be a list"))?;
+    let subject = match subject_name {
+        "catalogue" => {
+            if !args[2].is_empty_relation()
+                || !bindings.is_empty()
+                || !context.authority().is_root()
+            {
+                return Err(invalid_builtin_call(
+                    "subscribe_changes",
+                    "catalogue subscriptions require root authority, nothing for relation, and empty bindings",
+                ));
+            }
+            SubscriptionSubject::Catalogue
+        }
+        "facts" | "relation" => {
+            let relation = args[2]
+                .as_identity()
+                .or_else(|| {
+                    args[2]
+                        .as_symbol()
+                        .and_then(|name| relation_named(context.kernel(), name))
+                        .map(|(relation, _)| relation)
+                })
+                .ok_or_else(|| {
+                    invalid_builtin_call(
+                        "subscribe_changes",
+                        "relation must be an identity or a known relation name",
+                    )
+                })?;
+            let arity = context
+                .kernel()
+                .snapshot()
+                .relation_metadata()
+                .find(|metadata| metadata.id() == relation)
+                .map(|metadata| metadata.arity() as usize)
+                .ok_or(RuntimeError::Kernel(KernelError::UnknownRelation(relation)))?;
+            if bindings.len() != arity {
+                return Err(invalid_builtin_call(
+                    "subscribe_changes",
+                    format!("bindings must contain exactly {arity} entries"),
+                ));
+            }
+            if subject_name == "facts" {
+                if context
+                    .kernel()
+                    .snapshot()
+                    .relation_capabilities(relation)?
+                    .source
+                    == RelationSource::Computed
+                {
+                    return Err(invalid_builtin_call(
+                        "subscribe_changes",
+                        "fact subscriptions require a stored relation",
+                    ));
+                }
+                SubscriptionSubject::Facts { relation, bindings }
+            } else {
+                SubscriptionSubject::Relation { relation, bindings }
+            }
+        }
+        _ => {
+            return Err(invalid_builtin_call(
+                "subscribe_changes",
+                "subject must be :catalogue, :facts, or :relation",
+            ));
+        }
+    };
+    let initial_delivery = match args[4].as_symbol().and_then(Symbol::name) {
+        Some("changes") => SubscriptionInitialDelivery::ChangesOnly,
+        Some("snapshot") => SubscriptionInitialDelivery::SnapshotThenChanges,
+        _ => {
+            return Err(invalid_builtin_call(
+                "subscribe_changes",
+                "initial delivery must be :changes or :snapshot",
+            ));
+        }
+    };
+    let cursor = match args.get(5) {
+        None => None,
+        Some(value) if value.is_empty_relation() => None,
+        Some(value) => Some(
+            value
+                .as_int()
+                .and_then(|cursor| u64::try_from(cursor).ok())
+                .ok_or_else(|| {
+                    invalid_builtin_call(
+                        "subscribe_changes",
+                        "cursor must be a non-negative integer or nothing",
+                    )
+                })?,
+        ),
+    };
+    let queue_budget = args
+        .get(6)
+        .map(|_| builtin_usize_arg("subscribe_changes", args, 6))
+        .transpose()?
+        .unwrap_or(64);
+    context.subscribe_changes(SubscriptionRequest {
+        sender: args[0].clone(),
+        subject,
+        initial_delivery,
+        cursor,
+        queue_budget,
+    })
+}
+
+fn cancel_subscription_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "cancel_subscription",
+            "expected cancel_subscription(subscription)",
+        ));
+    }
+    context.cancel_subscription(args[0].clone())?;
+    Ok(Value::nothing())
 }
 
 fn tasks_builtin(

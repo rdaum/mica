@@ -948,6 +948,53 @@ fn mailbox_recv_waits_until_sender_commits() {
 }
 
 #[test]
+fn relation_subscription_delivery_wakes_mailbox_receiver_after_publication() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner.run_source("make_relation(:Observed, 1)").unwrap();
+        let driver = CompioTaskDriver::spawn(runner).unwrap();
+        let subscriber = driver
+            .submit_source(
+                endpoint(35),
+                root_source(
+                    "let caps = mailbox()\n\
+                     let subscription = subscribe_changes(caps[1], :relation, :Observed, [nothing], :changes)\n\
+                     commit()\n\
+                     return mailbox_recv([caps[0]], 1)",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            subscriber.outcome,
+            TaskOutcome::Suspended {
+                kind: SuspendKind::Commit,
+                ..
+            }
+        ));
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        let writer = driver
+            .submit_source(endpoint(36), root_source("assert Observed(1)"))
+            .await
+            .unwrap();
+        assert!(matches!(writer.outcome, TaskOutcome::Complete { .. }));
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == subscriber.task_id
+                    && value.with_list(|groups| groups.len()) == Some(1)
+                    && value.with_list(|groups| groups[0].with_list(|group| {
+                        group.len() == 2
+                            && group[1].with_list(|messages| messages.len()) == Some(1)
+                    })) == Some(Some(true))
+        )));
+    });
+}
+
+#[test]
 fn mailbox_recv_zero_timeout_returns_empty_list() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
         let driver = CompioTaskDriver::spawn_empty().unwrap();

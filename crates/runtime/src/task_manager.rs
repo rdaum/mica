@@ -11,18 +11,21 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::subscription::SubscriptionRuntimeHandle;
 use crate::{
     Task, TaskError, TaskId, TaskLimits, TaskOutcome, endpoint_actor_relation,
     endpoint_open_relation, endpoint_principal_relation, endpoint_protocol_relation,
     endpoint_relation,
 };
 use mica_relation_kernel::{
-    ExecutionContext, KernelError, RelationId, RelationKernel, RelationRead, Transaction, Tuple,
+    ExecutionContext, KernelError, RelationId, RelationKernel, RelationRead, RelationSource,
+    Transaction, Tuple,
 };
 use mica_var::{CapabilityId, Identity, Symbol, Value};
 use mica_vm::{
     AuthorityContext, BuiltinRegistry, Emission, MailboxRuntime, MailboxSend, Program,
-    ProgramResolver, RuntimeContext, RuntimeError, SuspendKind,
+    ProgramResolver, RuntimeContext, RuntimeError, SubscriptionInitialDelivery,
+    SubscriptionOperation, SubscriptionRequest, SubscriptionSubject, SuspendKind,
 };
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,17 +53,24 @@ enum MailboxCapKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct MailboxCap {
-    mailbox: u64,
-    kind: MailboxCapKind,
+enum RuntimeCap {
+    Mailbox { mailbox: u64, kind: MailboxCapKind },
+    Subscription { mailbox: u64 },
+}
+
+#[derive(Debug)]
+struct MailboxEntry {
+    value: Value,
+    subscription: Option<CapabilityId>,
 }
 
 #[derive(Debug)]
 struct MailboxStore {
     next_mailbox_id: u64,
     next_cap_id: u64,
-    caps: HashMap<CapabilityId, MailboxCap>,
-    queues: HashMap<u64, VecDeque<Value>>,
+    caps: HashMap<CapabilityId, RuntimeCap>,
+    queues: HashMap<u64, VecDeque<MailboxEntry>>,
+    subscription_deliveries: HashSet<u64>,
 }
 
 impl MailboxRuntimeHandle {
@@ -85,6 +95,56 @@ impl MailboxRuntimeHandle {
     fn deliver(&self, sends: &[MailboxSend]) -> Vec<u64> {
         self.store.lock().unwrap().deliver(sends)
     }
+
+    pub(crate) fn take_subscription_deliveries(&self) -> Vec<u64> {
+        let mut store = self.store.lock().unwrap();
+        let mut mailboxes = store.subscription_deliveries.drain().collect::<Vec<_>>();
+        mailboxes.sort_unstable();
+        mailboxes
+    }
+
+    pub(crate) fn discard_pending_subscriptions(&self, operations: &[SubscriptionOperation]) {
+        let mut store = self.store.lock().unwrap();
+        for operation in operations {
+            let SubscriptionOperation::Register { subscription, .. } = operation else {
+                continue;
+            };
+            store.release_subscription(subscription);
+        }
+    }
+
+    pub(crate) fn release_subscription(&self, subscription: &Value) {
+        self.store
+            .lock()
+            .unwrap()
+            .release_subscription(subscription);
+    }
+
+    pub(crate) fn deliver_subscription(
+        &self,
+        subscription: &Value,
+        value: Value,
+        resynchronization: Value,
+        queue_budget: usize,
+    ) -> Result<(u64, bool), RuntimeError> {
+        self.store.lock().unwrap().deliver_subscription(
+            subscription,
+            value,
+            resynchronization,
+            queue_budget,
+        )
+    }
+
+    pub(crate) fn replace_subscription_message(
+        &self,
+        subscription: &Value,
+        value: Value,
+    ) -> Result<u64, RuntimeError> {
+        self.store
+            .lock()
+            .unwrap()
+            .replace_subscription_message(subscription, value)
+    }
 }
 
 impl MailboxRuntime for MailboxRuntimeHandle {
@@ -107,6 +167,18 @@ impl MailboxRuntime for MailboxRuntimeHandle {
             .mailbox_for_receiver(receiver)
             .map(|_| ())
     }
+
+    fn allocate_subscription(&self, sender: &Value) -> Result<Value, RuntimeError> {
+        self.store.lock().unwrap().allocate_subscription(sender)
+    }
+
+    fn validate_subscription(&self, subscription: &Value) -> Result<(), RuntimeError> {
+        self.store
+            .lock()
+            .unwrap()
+            .subscription_mailbox(subscription)
+            .map(|_| ())
+    }
 }
 
 impl MailboxStore {
@@ -116,6 +188,7 @@ impl MailboxStore {
             next_cap_id: MAILBOX_CAP_BASE,
             caps: HashMap::new(),
             queues: HashMap::new(),
+            subscription_deliveries: HashSet::new(),
         }
     }
 
@@ -143,7 +216,26 @@ impl MailboxStore {
             if self.caps.contains_key(&id) {
                 continue;
             }
-            self.caps.insert(id, MailboxCap { mailbox, kind });
+            self.caps.insert(id, RuntimeCap::Mailbox { mailbox, kind });
+            return Ok(Value::capability(id));
+        }
+    }
+
+    fn allocate_subscription(&mut self, sender: &Value) -> Result<Value, RuntimeError> {
+        let mailbox = self.mailbox_for_sender(sender)?;
+        loop {
+            let raw = self.next_cap_id;
+            self.next_cap_id += 1;
+            let Some(id) = CapabilityId::new(raw) else {
+                return Err(RuntimeError::InvalidBuiltinCall {
+                    name: Symbol::intern("subscribe_changes"),
+                    message: "subscription capability id space exhausted".to_owned(),
+                });
+            };
+            if self.caps.contains_key(&id) {
+                continue;
+            }
+            self.caps.insert(id, RuntimeCap::Subscription { mailbox });
             return Ok(Value::capability(id));
         }
     }
@@ -168,19 +260,44 @@ impl MailboxStore {
                 capability: value.clone(),
             });
         };
-        let Some(cap) = self.caps.get(&id) else {
+        let Some(RuntimeCap::Mailbox { mailbox, kind }) = self.caps.get(&id) else {
             return Err(RuntimeError::InvalidMailboxCapability {
                 operation,
                 capability: value.clone(),
             });
         };
-        if cap.kind != expected_kind {
+        if *kind != expected_kind {
             return Err(RuntimeError::InvalidMailboxCapability {
                 operation,
                 capability: value.clone(),
             });
         }
-        Ok(cap.mailbox)
+        Ok(*mailbox)
+    }
+
+    fn subscription_mailbox(&self, subscription: &Value) -> Result<u64, RuntimeError> {
+        let Some(id) = subscription.as_capability() else {
+            return Err(RuntimeError::InvalidMailboxCapability {
+                operation: "subscription",
+                capability: subscription.clone(),
+            });
+        };
+        let Some(RuntimeCap::Subscription { mailbox }) = self.caps.get(&id) else {
+            return Err(RuntimeError::InvalidMailboxCapability {
+                operation: "subscription",
+                capability: subscription.clone(),
+            });
+        };
+        Ok(*mailbox)
+    }
+
+    fn release_subscription(&mut self, subscription: &Value) {
+        let Some(id) = subscription.as_capability() else {
+            return;
+        };
+        if matches!(self.caps.get(&id), Some(RuntimeCap::Subscription { .. })) {
+            self.caps.remove(&id);
+        }
     }
 
     fn drain_receiver(&mut self, receiver: Value) -> Result<Vec<Value>, RuntimeError> {
@@ -190,6 +307,7 @@ impl MailboxStore {
             .entry(mailbox)
             .or_default()
             .drain(..)
+            .map(|entry| entry.value)
             .collect::<Vec<_>>();
         crate::metrics::metrics().mailbox_drains.inc();
         crate::metrics::metrics()
@@ -208,7 +326,10 @@ impl MailboxStore {
             self.queues
                 .entry(mailbox)
                 .or_default()
-                .push_back(send.value.clone());
+                .push_back(MailboxEntry {
+                    value: send.value.clone(),
+                    subscription: None,
+                });
             delivered.push(mailbox);
         }
         crate::metrics::metrics()
@@ -216,6 +337,56 @@ impl MailboxStore {
             .add(delivered.len() as isize);
         self.record_queue_metrics();
         delivered
+    }
+
+    fn deliver_subscription(
+        &mut self,
+        subscription: &Value,
+        value: Value,
+        resynchronization: Value,
+        queue_budget: usize,
+    ) -> Result<(u64, bool), RuntimeError> {
+        let mailbox = self.subscription_mailbox(subscription)?;
+        let subscription_id = subscription
+            .as_capability()
+            .expect("validated subscription is a capability");
+        let queue = self.queues.entry(mailbox).or_default();
+        let queued = queue
+            .iter()
+            .filter(|entry| entry.subscription == Some(subscription_id))
+            .count();
+        let overflow = queued >= queue_budget;
+        if overflow {
+            queue.retain(|entry| entry.subscription != Some(subscription_id));
+        }
+        queue.push_back(MailboxEntry {
+            value: if overflow { resynchronization } else { value },
+            subscription: Some(subscription_id),
+        });
+        crate::metrics::metrics().mailbox_messages_delivered.inc();
+        self.subscription_deliveries.insert(mailbox);
+        self.record_queue_metrics();
+        Ok((mailbox, overflow))
+    }
+
+    fn replace_subscription_message(
+        &mut self,
+        subscription: &Value,
+        value: Value,
+    ) -> Result<u64, RuntimeError> {
+        let mailbox = self.subscription_mailbox(subscription)?;
+        let subscription_id = subscription
+            .as_capability()
+            .expect("validated subscription is a capability");
+        let queue = self.queues.entry(mailbox).or_default();
+        queue.retain(|entry| entry.subscription != Some(subscription_id));
+        queue.push_back(MailboxEntry {
+            value,
+            subscription: Some(subscription_id),
+        });
+        self.subscription_deliveries.insert(mailbox);
+        self.record_queue_metrics();
+        Ok(mailbox)
     }
 
     fn record_queue_metrics(&self) {
@@ -237,6 +408,69 @@ impl From<TaskError> for TaskManagerError {
 impl From<KernelError> for TaskManagerError {
     fn from(value: KernelError) -> Self {
         Self::Task(TaskError::from(value))
+    }
+}
+
+fn validate_subscription_request(
+    kernel: &RelationKernel,
+    request: &SubscriptionRequest,
+    authority: &AuthorityContext,
+) -> Result<(), RuntimeError> {
+    if request.queue_budget == 0 {
+        return Err(RuntimeError::InvalidBuiltinCall {
+            name: Symbol::intern("subscribe_changes"),
+            message: "queue budget must be positive".to_owned(),
+        });
+    }
+    if request.initial_delivery == SubscriptionInitialDelivery::SnapshotThenChanges
+        && request.cursor.is_some()
+    {
+        return Err(RuntimeError::InvalidBuiltinCall {
+            name: Symbol::intern("subscribe_changes"),
+            message: "snapshot delivery cannot be combined with a resume cursor".to_owned(),
+        });
+    }
+    match &request.subject {
+        SubscriptionSubject::Catalogue if !authority.is_root() => {
+            Err(RuntimeError::PermissionDenied {
+                operation: "subscribe",
+                target: Value::symbol(Symbol::intern("catalogue")),
+            })
+        }
+        SubscriptionSubject::Catalogue => Ok(()),
+        SubscriptionSubject::Facts { relation, bindings }
+        | SubscriptionSubject::Relation { relation, bindings } => {
+            if !authority.can_read_relation(*relation) {
+                return Err(RuntimeError::PermissionDenied {
+                    operation: "subscribe",
+                    target: Value::identity(*relation),
+                });
+            }
+            let arity = kernel
+                .snapshot()
+                .relation_metadata()
+                .find(|metadata| metadata.id() == *relation)
+                .map(|metadata| metadata.arity() as usize)
+                .ok_or(RuntimeError::Kernel(KernelError::UnknownRelation(
+                    *relation,
+                )))?;
+            if bindings.len() != arity {
+                return Err(RuntimeError::InvalidBuiltinCall {
+                    name: Symbol::intern("subscribe_changes"),
+                    message: format!("bindings must contain exactly {arity} entries"),
+                });
+            }
+            if matches!(request.subject, SubscriptionSubject::Facts { .. })
+                && kernel.snapshot().relation_capabilities(*relation)?.source
+                    == RelationSource::Computed
+            {
+                return Err(RuntimeError::InvalidBuiltinCall {
+                    name: Symbol::intern("subscribe_changes"),
+                    message: "fact subscriptions require a stored relation".to_owned(),
+                });
+            }
+            Ok(())
+        }
     }
 }
 
@@ -286,6 +520,7 @@ pub struct TaskManager {
     completed: HashMap<TaskId, TaskOutcome>,
     effects: EffectLog,
     mailboxes: MailboxRuntimeHandle,
+    subscriptions: SubscriptionRuntimeHandle,
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
@@ -296,6 +531,7 @@ pub struct SharedTaskManager {
     next_task_id: AtomicU64,
     state: Mutex<SharedTaskState>,
     mailboxes: MailboxRuntimeHandle,
+    subscriptions: SubscriptionRuntimeHandle,
     limits: TaskLimits,
     resolver: Arc<ProgramResolver>,
     builtins: Arc<BuiltinRegistry>,
@@ -310,13 +546,15 @@ struct SharedTaskState {
 
 impl TaskManager {
     pub fn new(kernel: RelationKernel) -> Self {
+        let mailboxes = MailboxRuntimeHandle::new();
         Self {
             kernel,
             next_task_id: 1,
             suspended: HashMap::new(),
             completed: HashMap::new(),
             effects: EffectLog::default(),
-            mailboxes: MailboxRuntimeHandle::new(),
+            subscriptions: SubscriptionRuntimeHandle::new(mailboxes.clone()),
+            mailboxes,
             limits: TaskLimits::default(),
             resolver: Arc::new(ProgramResolver::new()),
             builtins: Arc::new(BuiltinRegistry::new()),
@@ -347,6 +585,11 @@ impl TaskManager {
         &self.kernel
     }
 
+    #[cfg(test)]
+    pub(crate) fn subscription_count(&self) -> usize {
+        self.subscriptions.len()
+    }
+
     pub fn effects(&self) -> &EffectLog {
         &self.effects
     }
@@ -359,12 +602,69 @@ impl TaskManager {
         self.mailboxes.drain_receiver(receiver)
     }
 
+    pub fn create_mailbox(&self) -> Result<(Value, Value), RuntimeError> {
+        self.mailboxes.create_mailbox()
+    }
+
     pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
         self.mailboxes.mailbox_for_receiver(receiver)
     }
 
     pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
         self.mailboxes.mailbox_for_sender(sender)
+    }
+
+    pub fn take_subscription_deliveries(&self) -> Vec<u64> {
+        self.mailboxes.take_subscription_deliveries()
+    }
+
+    pub fn dispatch_subscriptions(&self) -> Result<Vec<u64>, RuntimeError> {
+        let mut operations = Vec::new();
+        self.kernel.at_publication_boundary(|snapshot| {
+            self.subscriptions
+                .apply_boundary(&self.kernel, snapshot, &mut operations)
+        })
+    }
+
+    pub fn register_subscription(
+        &self,
+        request: SubscriptionRequest,
+        runtime_context: RuntimeContext,
+        authority: &AuthorityContext,
+    ) -> Result<Value, RuntimeError> {
+        if !authority.is_root()
+            && runtime_context.actor().is_none()
+            && runtime_context.principal().is_none()
+        {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("subscribe_changes"),
+                message: "non-root subscriptions require a refreshable actor or principal context"
+                    .to_owned(),
+            });
+        }
+        validate_subscription_request(&self.kernel, &request, authority)?;
+        let subscription = self.mailboxes.allocate_subscription(&request.sender)?;
+        let mut operations = vec![SubscriptionOperation::Register {
+            subscription: subscription.clone(),
+            request,
+            runtime_context,
+            root_authority: authority.is_root(),
+        }];
+        self.kernel.at_publication_boundary(|snapshot| {
+            self.subscriptions
+                .apply_boundary(&self.kernel, snapshot, &mut operations)
+        })?;
+        Ok(subscription)
+    }
+
+    pub fn cancel_subscription(&self, subscription: Value) -> Result<(), RuntimeError> {
+        self.mailboxes.validate_subscription(&subscription)?;
+        let mut operations = vec![SubscriptionOperation::Cancel { subscription }];
+        self.kernel.at_publication_boundary(|snapshot| {
+            self.subscriptions
+                .apply_boundary(&self.kernel, snapshot, &mut operations)
+        })?;
+        Ok(())
     }
 
     pub fn drain_emissions(&mut self) -> Vec<Effect> {
@@ -491,6 +791,7 @@ impl TaskManager {
                 effects: self.effects,
             }),
             mailboxes: self.mailboxes,
+            subscriptions: self.subscriptions,
             limits: self.limits,
             resolver: self.resolver,
             builtins: self.builtins,
@@ -542,6 +843,7 @@ impl TaskManager {
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
         task.set_mailbox_runtime(self.mailboxes.clone());
+        task.set_subscription_runtime(self.subscriptions.clone());
         let start = Instant::now();
         let result = task.run();
         crate::metrics::record_task_result(
@@ -557,6 +859,9 @@ impl TaskManager {
     }
 
     pub fn complete_immediate(&mut self, value: Value) -> (TaskId, TaskOutcome) {
+        if let Err(error) = self.dispatch_subscriptions() {
+            tracing::error!(?error, "failed to dispatch settled subscription batches");
+        }
         let task_id = self.allocate_task_id();
         let outcome = TaskOutcome::Complete {
             value,
@@ -617,6 +922,7 @@ impl TaskManager {
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
         task.set_mailbox_runtime(self.mailboxes.clone());
+        task.set_subscription_runtime(self.subscriptions.clone());
         task.resume_with(value)?;
         let start = Instant::now();
         let result = task.run();
@@ -766,6 +1072,7 @@ impl SharedTaskManager {
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
         task.set_mailbox_runtime(self.mailboxes.clone());
+        task.set_subscription_runtime(self.subscriptions.clone());
         let start = Instant::now();
         let result = task.run();
         crate::metrics::record_task_result(
@@ -817,6 +1124,7 @@ impl SharedTaskManager {
         task.set_task_snapshot(task_snapshot);
         task.set_runtime_context(runtime_context);
         task.set_mailbox_runtime(self.mailboxes.clone());
+        task.set_subscription_runtime(self.subscriptions.clone());
         task.resume_with(value)?;
         let start = Instant::now();
         let result = task.run();
@@ -842,12 +1150,61 @@ impl SharedTaskManager {
         self.mailboxes.drain_receiver(receiver)
     }
 
+    pub fn create_mailbox(&self) -> Result<(Value, Value), RuntimeError> {
+        self.mailboxes.create_mailbox()
+    }
+
     pub fn mailbox_for_receiver(&self, receiver: &Value) -> Result<u64, RuntimeError> {
         self.mailboxes.mailbox_for_receiver(receiver)
     }
 
     pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
         self.mailboxes.mailbox_for_sender(sender)
+    }
+
+    pub fn take_subscription_deliveries(&self) -> Vec<u64> {
+        self.mailboxes.take_subscription_deliveries()
+    }
+
+    pub fn register_subscription(
+        &self,
+        request: SubscriptionRequest,
+        runtime_context: RuntimeContext,
+        authority: &AuthorityContext,
+    ) -> Result<Value, RuntimeError> {
+        if !authority.is_root()
+            && runtime_context.actor().is_none()
+            && runtime_context.principal().is_none()
+        {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("subscribe_changes"),
+                message: "non-root subscriptions require a refreshable actor or principal context"
+                    .to_owned(),
+            });
+        }
+        validate_subscription_request(&self.kernel, &request, authority)?;
+        let subscription = self.mailboxes.allocate_subscription(&request.sender)?;
+        let mut operations = vec![SubscriptionOperation::Register {
+            subscription: subscription.clone(),
+            request,
+            runtime_context,
+            root_authority: authority.is_root(),
+        }];
+        self.kernel.at_publication_boundary(|snapshot| {
+            self.subscriptions
+                .apply_boundary(&self.kernel, snapshot, &mut operations)
+        })?;
+        Ok(subscription)
+    }
+
+    pub fn cancel_subscription(&self, subscription: Value) -> Result<(), RuntimeError> {
+        self.mailboxes.validate_subscription(&subscription)?;
+        let mut operations = vec![SubscriptionOperation::Cancel { subscription }];
+        self.kernel.at_publication_boundary(|snapshot| {
+            self.subscriptions
+                .apply_boundary(&self.kernel, snapshot, &mut operations)
+        })?;
+        Ok(())
     }
 
     pub fn drain_routed_emissions(&self) -> Vec<Effect> {

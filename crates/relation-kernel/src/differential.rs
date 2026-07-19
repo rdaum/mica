@@ -260,7 +260,6 @@ pub(crate) struct MaintainedState {
     negative_key_counts: BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
     arrangements: BTreeMap<ArrangementSpec, Arc<Arrangement>>,
     traces: BTreeMap<RelationId, Trace>,
-    #[cfg(test)]
     visible_changes: Arc<[FactChange]>,
     work: MaintenanceWork,
 }
@@ -363,7 +362,6 @@ impl MaintainedState {
             negative_key_counts,
             arrangements,
             traces,
-            #[cfg(test)]
             visible_changes: Arc::from([]),
             work: MaintenanceWork::default(),
         })))
@@ -589,7 +587,6 @@ impl MaintainedState {
             negative_key_counts,
             arrangements,
             traces,
-            #[cfg(test)]
             visible_changes: visible_changes.into(),
             work,
         }))
@@ -612,7 +609,6 @@ impl MaintainedState {
         self.version
     }
 
-    #[cfg(test)]
     pub(crate) fn visible_changes(&self) -> &[FactChange] {
         &self.visible_changes
     }

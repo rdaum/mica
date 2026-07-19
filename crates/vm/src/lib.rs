@@ -33,7 +33,8 @@ pub use authority::{AuthorityContext, CapabilityGrant, CapabilityOp, CapabilityS
 pub use builtin::{
     Builtin, BuiltinContext, BuiltinRegistry, BuiltinResultKind, ClientBuiltin,
     ClientBuiltinContext, ClientBuiltinRegistry, MailboxRuntime, RuntimeContext, RuntimePorts,
-    SYSTEM_ENDPOINT,
+    SYSTEM_ENDPOINT, SubscriptionInitialDelivery, SubscriptionOperation, SubscriptionRequest,
+    SubscriptionSubject,
 };
 pub use effect::Emission;
 pub use error::RuntimeError;

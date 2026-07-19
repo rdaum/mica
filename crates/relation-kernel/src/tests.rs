@@ -1474,6 +1474,63 @@ fn commit_result_records_semantic_fact_changes() {
 }
 
 #[test]
+fn settled_relation_changes_report_only_public_zero_crossings() {
+    let kernel = RelationKernel::new();
+    kernel
+        .create_relation(RelationMetadata::new(rel(1), Symbol::intern("Public"), 1))
+        .unwrap();
+    kernel
+        .create_relation(RelationMetadata::new(rel(2), Symbol::intern("Source"), 1))
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(1),
+                [var("value")],
+                [Atom::positive(rel(2), [var("value")])],
+            ),
+            "Public(value) :- Source(value)",
+        )
+        .unwrap();
+    let tuple = Tuple::from([int(1)]);
+    let mut seed = kernel.begin();
+    seed.assert(rel(2), tuple.clone()).unwrap();
+    seed.commit().unwrap();
+    assert_eq!(
+        kernel.snapshot().scan(rel(1), &[None]).unwrap(),
+        vec![tuple.clone()]
+    );
+
+    let mut add_second_proof = kernel.begin();
+    add_second_proof.assert(rel(1), tuple.clone()).unwrap();
+    let result = add_second_proof.commit().unwrap();
+    assert!(result.commit().relation_changes().is_empty());
+
+    let mut remove_rule_proof = kernel.begin();
+    remove_rule_proof.retract(rel(2), tuple.clone()).unwrap();
+    let result = remove_rule_proof.commit().unwrap();
+    assert!(
+        result
+            .commit()
+            .relation_changes()
+            .iter()
+            .all(|change| change.relation != rel(1))
+    );
+
+    let mut remove_last_proof = kernel.begin();
+    remove_last_proof.retract(rel(1), tuple.clone()).unwrap();
+    let result = remove_last_proof.commit().unwrap();
+    assert_eq!(
+        result.commit().relation_changes(),
+        &[FactChange {
+            relation: rel(1),
+            tuple,
+            kind: FactChangeKind::Retract,
+        }]
+    );
+}
+
+#[test]
 fn successful_commits_are_persisted_as_fact_change_batches() {
     let provider = Arc::new(InMemoryCommitProvider::new());
     let kernel = RelationKernel::with_provider(provider.clone());

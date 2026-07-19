@@ -773,6 +773,7 @@ impl VmHost for VmHostContext<'_, '_> {
             RuntimePorts {
                 pending_effects: self.ports.pending_effects,
                 pending_mailbox_sends: self.ports.pending_mailbox_sends,
+                pending_subscriptions: self.ports.pending_subscriptions,
                 mailbox_runtime: self.ports.mailbox_runtime,
             },
             self.task_snapshot,
