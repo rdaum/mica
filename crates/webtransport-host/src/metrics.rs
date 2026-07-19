@@ -47,7 +47,6 @@ pub enum SyncEnvelopeKind {
 #[derive(Copy, Clone, Debug, DeriveLabel)]
 #[label_name = "operation"]
 pub enum RenderOperation {
-    Revision,
     View,
     Refresh,
 }
@@ -55,7 +54,6 @@ pub enum RenderOperation {
 #[derive(Copy, Clone, Debug, DeriveLabel)]
 #[label_name = "phase"]
 pub enum SyncRenderPhase {
-    Revision,
     Tree,
     DecodeTree,
     SnapshotPayload,

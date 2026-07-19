@@ -13,14 +13,14 @@
 
 use crate::task_manager::MailboxRuntimeHandle;
 use mica_relation_kernel::{
-    CatalogChange, Commit, FactChange, FactChangeKind, RelationKernel, Snapshot, Tuple,
+    CatalogChange, Commit, FactChange, FactChangeKind, RelationId, RelationKernel, Snapshot, Tuple,
 };
 use mica_var::{CapabilityId, Symbol, Value};
 use mica_vm::{
     AuthorityContext, RuntimeContext, RuntimeError, SubscriptionInitialDelivery,
     SubscriptionOperation, SubscriptionRequest, SubscriptionSubject,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -32,6 +32,10 @@ pub(crate) struct SubscriptionRuntimeHandle {
 #[derive(Debug, Default)]
 struct SubscriptionStore {
     subscriptions: HashMap<CapabilityId, ActiveSubscription>,
+    subscriptions_by_relation: HashMap<RelationId, HashSet<CapabilityId>>,
+    catalogue_subscriptions: HashSet<CapabilityId>,
+    read_authority_policy_relations: HashSet<RelationId>,
+    policy_index_initialized: bool,
     dispatched_cursor: Option<u64>,
 }
 
@@ -106,9 +110,20 @@ impl SubscriptionRuntimeHandle {
                         active.revoked = true;
                         delivered.push(mailbox);
                     } else {
-                        match scan_subject(snapshot, &active.request.subject) {
+                        // Direct fact changes can be filtered from each commit without retaining a
+                        // copy of the subscribed rows. Relation-result subscriptions need a
+                        // baseline to rebuild across catalogue changes.
+                        let needs_baseline =
+                            !matches!(active.request.subject, SubscriptionSubject::Facts { .. })
+                                || active.request.cursor.is_some()
+                                || active.request.initial_delivery
+                                    != SubscriptionInitialDelivery::ChangesOnly;
+                        match needs_baseline
+                            .then(|| scan_subject(snapshot, &active.request.subject))
+                            .transpose()
+                        {
                             Ok(baseline) => {
-                                active.baseline = baseline;
+                                active.baseline = baseline.unwrap_or_default();
                                 delivered.extend(self.deliver_initial(
                                     kernel,
                                     snapshot,
@@ -119,11 +134,14 @@ impl SubscriptionRuntimeHandle {
                                 .extend(self.resynchronize(&mut active, snapshot.version())?),
                         }
                     }
+                    state.index_subscription(capability, &active.request.subject);
                     state.subscriptions.insert(capability, active);
                 }
                 SubscriptionOperation::Cancel { subscription } => {
-                    if let Some(capability) = subscription.as_capability() {
-                        state.subscriptions.remove(&capability);
+                    if let Some(capability) = subscription.as_capability()
+                        && let Some(active) = state.subscriptions.remove(&capability)
+                    {
+                        state.remove_subscription_index(capability, &active.request.subject);
                     }
                     self.mailboxes.release_subscription(&subscription);
                 }
@@ -156,9 +174,19 @@ impl SubscriptionRuntimeHandle {
             && commits
                 .iter()
                 .any(|commit| !commit.catalog_changes().is_empty());
+        if !state.policy_index_initialized {
+            state.refresh_read_authority_policy_relations(kernel);
+        }
         let mut delivered = Vec::new();
         for commit in &commits {
-            for subscription in state.subscriptions.values_mut() {
+            if !commit.catalog_changes().is_empty() {
+                state.refresh_read_authority_policy_relations(kernel);
+            }
+            let candidates = state.candidates_for_commit(commit);
+            for capability in candidates {
+                let Some(subscription) = state.subscriptions.get_mut(&capability) else {
+                    continue;
+                };
                 if multiple_catalogue_commits
                     && matches!(
                         subscription.request.subject,
@@ -382,6 +410,95 @@ impl SubscriptionRuntimeHandle {
             delivered.extend(self.resynchronize(subscription, cursor)?);
         }
         Ok(delivered)
+    }
+}
+
+impl SubscriptionStore {
+    fn index_subscription(&mut self, capability: CapabilityId, subject: &SubscriptionSubject) {
+        match subject {
+            SubscriptionSubject::Catalogue => {
+                self.catalogue_subscriptions.insert(capability);
+            }
+            SubscriptionSubject::Facts { relation, .. } => {
+                self.subscriptions_by_relation
+                    .entry(*relation)
+                    .or_default()
+                    .insert(capability);
+            }
+            SubscriptionSubject::Relation { relation, .. } => {
+                self.subscriptions_by_relation
+                    .entry(*relation)
+                    .or_default()
+                    .insert(capability);
+            }
+        }
+    }
+
+    fn remove_subscription_index(
+        &mut self,
+        capability: CapabilityId,
+        subject: &SubscriptionSubject,
+    ) {
+        match subject {
+            SubscriptionSubject::Catalogue => {
+                self.catalogue_subscriptions.remove(&capability);
+            }
+            SubscriptionSubject::Facts { relation, .. }
+            | SubscriptionSubject::Relation { relation, .. } => {
+                if let Some(subscriptions) = self.subscriptions_by_relation.get_mut(relation) {
+                    subscriptions.remove(&capability);
+                    if subscriptions.is_empty() {
+                        self.subscriptions_by_relation.remove(relation);
+                    }
+                }
+            }
+        }
+    }
+
+    fn candidates_for_commit(&self, commit: &Commit) -> Vec<CapabilityId> {
+        let mut candidates = HashSet::new();
+        for change in commit.changes().iter().chain(commit.relation_changes()) {
+            if let Some(subscriptions) = self.subscriptions_by_relation.get(&change.relation) {
+                candidates.extend(subscriptions.iter().copied());
+            }
+        }
+        if !commit.catalog_changes().is_empty() {
+            candidates.extend(self.catalogue_subscriptions.iter().copied());
+            candidates.extend(self.subscriptions.keys().copied());
+        } else if commit
+            .changes()
+            .iter()
+            .chain(commit.relation_changes())
+            .any(|change| {
+                self.read_authority_policy_relations
+                    .contains(&change.relation)
+            })
+        {
+            candidates.extend(
+                self.subscriptions
+                    .iter()
+                    .filter_map(|(capability, active)| {
+                        (!active.root_authority).then_some(*capability)
+                    }),
+            );
+        }
+        candidates.into_iter().collect()
+    }
+
+    fn refresh_read_authority_policy_relations(&mut self, kernel: &RelationKernel) {
+        const POLICY_NAMES: [&str; 4] = ["CanRead", "GrantRead", "RoleCanRead", "Delegates"];
+        self.read_authority_policy_relations = kernel
+            .snapshot()
+            .relation_metadata()
+            .filter_map(|metadata| {
+                metadata
+                    .name()
+                    .name()
+                    .is_some_and(|name| POLICY_NAMES.contains(&name))
+                    .then_some(metadata.id())
+            })
+            .collect();
+        self.policy_index_initialized = true;
     }
 }
 

@@ -314,6 +314,16 @@ impl SourceRunner {
         })
     }
 
+    pub fn named_relation(&self, name: Symbol) -> Result<(Identity, u16), SourceTaskError> {
+        relation_named(self.task_manager.kernel(), name).ok_or_else(|| {
+            unsupported_runner_error(
+                NodeId(0),
+                None,
+                format!("unknown relation :{}", name.name().unwrap_or("<unnamed>")),
+            )
+        })
+    }
+
     pub fn submit_source(
         &mut self,
         request: TaskRequest,
@@ -576,6 +586,20 @@ impl SourceRunner {
     ) -> Result<Value, RuntimeError> {
         self.task_manager
             .register_subscription(request, runtime_context, authority)
+    }
+
+    pub fn register_subscription_for_endpoint(
+        &self,
+        endpoint: Identity,
+        request: SubscriptionRequest,
+    ) -> Result<Value, SourceTaskError> {
+        let runtime_context = self.endpoint_runtime_context(endpoint)?;
+        let authority = authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?;
+        self.task_manager
+            .register_subscription(request, runtime_context, &authority)
+            .map_err(|error| {
+                SourceTaskError::TaskManager(TaskManagerError::Task(TaskError::Runtime(error)))
+            })
     }
 
     pub fn cancel_subscription(&self, subscription: Value) -> Result<(), RuntimeError> {
@@ -1277,6 +1301,16 @@ impl SharedSourceRunner {
         })
     }
 
+    pub fn named_relation(&self, name: Symbol) -> Result<(Identity, u16), SourceTaskError> {
+        relation_named(self.task_manager.kernel(), name).ok_or_else(|| {
+            unsupported_runner_error(
+                NodeId(0),
+                None,
+                format!("unknown relation :{}", name.name().unwrap_or("<unnamed>")),
+            )
+        })
+    }
+
     pub fn source_request_for_endpoint(
         &self,
         endpoint: Identity,
@@ -1637,6 +1671,20 @@ impl SharedSourceRunner {
     ) -> Result<Value, RuntimeError> {
         self.task_manager
             .register_subscription(request, runtime_context, authority)
+    }
+
+    pub fn register_subscription_for_endpoint(
+        &self,
+        endpoint: Identity,
+        request: SubscriptionRequest,
+    ) -> Result<Value, SourceTaskError> {
+        let runtime_context = self.endpoint_runtime_context(endpoint)?;
+        let authority = authority_for_runtime_context(self.task_manager.kernel(), runtime_context)?;
+        self.task_manager
+            .register_subscription(request, runtime_context, &authority)
+            .map_err(|error| {
+                SourceTaskError::TaskManager(TaskManagerError::Task(TaskError::Runtime(error)))
+            })
     }
 
     pub fn cancel_subscription(&self, subscription: Value) -> Result<(), RuntimeError> {

@@ -15,7 +15,9 @@ use mica_runtime::ExternalRequest;
 use mica_runtime::SourceTaskError;
 use mica_runtime::TaskRequest;
 use mica_runtime::format_source_task_error;
-use mica_runtime::{AuthorityContext, Effect, SuspendKind, TaskId};
+use mica_runtime::{
+    AuthorityContext, Effect, SubscriptionInitialDelivery, SubscriptionSubject, SuspendKind, TaskId,
+};
 use mica_var::{Identity, Value};
 use std::fmt::{Display, Formatter};
 use std::future::Future;
@@ -35,11 +37,33 @@ pub struct TaskContext {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DriverSubscriptionRequest {
+    pub subject: SubscriptionSubject,
+    pub initial_delivery: SubscriptionInitialDelivery,
+    pub cursor: Option<u64>,
+    pub queue_budget: usize,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct DriverSubscriptionMailbox {
+    pub(crate) mailbox: u64,
+    pub(crate) receiver: Value,
+    pub(crate) sender: Value,
+}
+
+impl DriverSubscriptionMailbox {
+    pub fn id(&self) -> u64 {
+        self.mailbox
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DriverEvent {
     TaskCompleted { task_id: TaskId, value: Value },
     TaskAborted { task_id: TaskId, error: Value },
     TaskFailed { task_id: TaskId, error: String },
     TaskSuspended { task_id: TaskId, kind: SuspendKind },
+    SubscriptionReady { mailbox: u64 },
     Effect(Effect),
 }
 

@@ -30,4 +30,7 @@ pub use affinity::{
     DispatcherAffinity, DispatcherConfig, DispatcherPlacement, configure_dispatcher,
 };
 pub use pool::CompioTaskDriver;
-pub use types::{DriverError, DriverEvent, ExternalRequestHandler, TaskContext};
+pub use types::{
+    DriverError, DriverEvent, DriverSubscriptionMailbox, DriverSubscriptionRequest,
+    ExternalRequestHandler, TaskContext,
+};

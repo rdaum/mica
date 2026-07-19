@@ -83,6 +83,7 @@ assert Description(#agent/default, "default")
 assert AgentModel(#agent/default, "deepseek/deepseek-v4-pro")
 assert AgentMaxToolRounds(#agent/default, 4)
 assert Delegates(#agent/default, #agent, 0)
+assert Delegates(#agent/default, #operator, 0)
 assert Delegates(#operator, #agent, 0)
 
 verb workspace/active(agent @ #agent)

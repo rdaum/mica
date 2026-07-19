@@ -11,10 +11,10 @@ command grammar, event delivery, and UI session state are relations and verbs, n
 runtime records.
 
 Likewise, the UI itself is ordinary Mica source rather than a separate client application. UI verbs
-query world, session, and event relations, then return DOM node values. Mica exposes a view revision
-and tree to the host; the host diffs that tree and sends patches to the browser. Browser
-interactions come back as declared sync events, which Mica handlers turn into relation updates and
-the next rendered revision.
+query world, session, and event relations, declare which of those relations affect each view, and
+return DOM node values. When a dependency changes, the host renders and diffs the tree, then sends
+patches to the browser. Browser interactions come back as declared sync events, which Mica handlers
+turn into relation updates.
 
 Together, the world model, command surface, event log, authority policy, and browser UI demonstrate
 a unified declarative, data-oriented application design.
@@ -28,7 +28,7 @@ a unified declarative, data-oriented application design.
 - A parser-backed command surface for text commands such as `look`, `north`, `get coin`,
   `drop coin`, `put coin box`, `push button`, and `say hello`.
 - Transactional command execution and routed effects over telnet endpoints.
-- Server-owned DOM rendering through `sync_view_revision`, `sync_view_tree`, and `sync_event`.
+- Server-owned DOM rendering through `sync_view_dependencies`, `sync_view_tree`, and `sync_event`.
 - Browser UI composition written mostly in Mica, with live DOM sync applying server-rendered updates
   in the browser.
 - Browser-originated actions routed through generic sync events, then dispatched inside Mica through

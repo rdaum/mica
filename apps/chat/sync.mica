@@ -6,6 +6,7 @@ make_relation(:MessageSeq, 2)
 make_relation(:MessageAuthor, 2)
 make_relation(:MessageText, 2)
 make_relation(:ChatView, 2)
+make_relation(:ChatRenderedMessage, 5)
 
 make_identity(:msg_1)
 make_identity(:chat_message)
@@ -18,13 +19,14 @@ grant #web
     :MessageAuthor
     :MessageText
     :ChatView
+    :ChatRenderedMessage
   write:
     :ChatMessage
     :MessageSeq
     :MessageAuthor
     :MessageText
   invoke:
-    :sync_view_revision
+    :sync_view_dependencies
     :sync_view_tree
     :chat_message_node
     :chat_composer_node
@@ -39,6 +41,12 @@ assert ChatMessage(1, #msg_1)
 assert MessageSeq(#msg_1, 1)
 assert MessageAuthor(#msg_1, "alice")
 assert MessageText(#msg_1, "hello")
+
+ChatRenderedMessage(room, message, seq, author, text) :-
+  ChatMessage(room, message),
+  MessageSeq(message, seq),
+  MessageAuthor(message, author),
+  MessageText(message, text)
 
 verb chat_room_revision(room: int) -> int
   let revision: int = 0
@@ -94,20 +102,16 @@ verb sync_event(endpoint: identity, session: int, view: int, event: string, targ
   return false
 end
 
-verb sync_view_revision(view: int) -> int
+verb sync_view_dependencies(view: int) -> list
   let room: int = one ChatView(view, ?room)
-  let revision: int = chat_room_revision(room)
-  return revision
+  return [{:subject -> :relation, :relation -> :ChatRenderedMessage, :bindings -> [room, nothing, nothing, nothing, nothing]}]
 end
 
-verb sync_view_tree(view: int, revision: int) -> map
+verb sync_view_tree(view: int) -> map
   let room: int = one ChatView(view, ?room)
   let messages = []
   for found in ChatMessage(room, ?message)
-    let seq: int = one MessageSeq(found[:message], ?seq)
-    if seq <= revision
-      messages = [@messages, chat_message_node(found[:message])]
-    end
+    messages = [@messages, chat_message_node(found[:message])]
   end
 
   let tree: map = dom <main id="chat-root">

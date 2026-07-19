@@ -18,7 +18,7 @@ history as computed relations for future tools.
 - Prototype/delegation dispatch through `Delegates`, including UI sync action frobs and
   role-dispatched message rendering.
 - Recursive and derived relations for transcript membership and message order.
-- Server-owned DOM rendering through `sync_view_revision`, `sync_view_tree`, and `sync_event`,
+- Server-owned DOM rendering through `sync_view_dependencies`, `sync_view_tree`, and `sync_event`,
   reusing the same sync contract as the MUD app.
 - Browser UI composition written mostly in Mica, with a small JavaScript bootstrap handling the
   column splitter and tool-window close affordances.
@@ -42,7 +42,7 @@ history as computed relations for future tools.
   opt-in scrollback loading, tool-call and tool-result rendering, and a typing indicator while the
   agent loop is running.
 - `ui-session.mica`: sync view selection, session facts (including `session/IsStreaming`), agent
-  sync action declarations, authority grants, and `sync_view_revision` / `sync_view_tree`.
+  sync action declarations, authority grants, and `sync_view_dependencies` / `sync_view_tree`.
 - `ui-compose.mica`: workspace panel, object browser, inspector, command strip with streaming
   indicator, and shell DOM composition.
 - `ui-actions.mica`: browser sync event routing and delegated sync action handlers. The

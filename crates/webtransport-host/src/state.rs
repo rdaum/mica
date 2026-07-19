@@ -14,12 +14,12 @@
 use crate::sync::{send_sync_envelope_to, start_event_pump, store_rendered_sync_view_in};
 use crate::{DAEMON_ENDPOINT_ID_START, ENDPOINT_OUTPUT_HIGH_WATER_DATAGRAMS};
 use bytes::Bytes;
-use mica_driver::CompioTaskDriver;
+use mica_driver::{CompioTaskDriver, DriverSubscriptionMailbox};
 use mica_host_protocol::{DomNode, SyncEnvelope, SyncMessageKind};
 use mica_runtime::TaskId;
-use mica_var::Identity;
+use mica_var::{CapabilityId, Identity, Value};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::future::Future;
 use std::io::BufReader;
@@ -43,6 +43,8 @@ pub struct WebTransportTlsConfig {
 pub struct InProcessWebTransportHost {
     pub(crate) driver: Arc<CompioTaskDriver>,
     pub(crate) sessions: Arc<Mutex<HashMap<Identity, Arc<SessionState>>>>,
+    pub(crate) subscription_mailbox: Arc<DriverSubscriptionMailbox>,
+    pub(crate) subscription_views: Arc<Mutex<HashMap<CapabilityId, SyncViewKey>>>,
     pub(crate) stop_events: Arc<AtomicBool>,
     pub(crate) next_endpoint: AtomicU64,
 }
@@ -56,7 +58,7 @@ pub(crate) struct SessionState {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SessionSyncState {
     pub(crate) sessions: HashMap<u64, HashMap<u64, ActiveViewState>>,
-    pub(crate) pending_tasks: HashSet<TaskId>,
+    pub(crate) pending_tasks: HashMap<TaskId, PendingSyncTask>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -66,6 +68,24 @@ pub(crate) struct ActiveViewState {
     pub(crate) server_revision: u64,
     pub(crate) server_signature: u64,
     pub(crate) last_tree: Option<DomNode>,
+    pub(crate) subscriptions: Vec<Value>,
+    pub(crate) subscriptions_initialized: bool,
+    pub(crate) subscriptions_initializing: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingSyncTask {
+    pub(crate) session_id: u64,
+    pub(crate) view_id: u64,
+    pub(crate) refresh: bool,
+    pub(crate) action: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct SyncViewKey {
+    pub(crate) endpoint: Identity,
+    pub(crate) session_id: u64,
+    pub(crate) view_id: u64,
 }
 
 #[derive(Default)]
@@ -226,11 +246,25 @@ impl InProcessWebTransportHost {
     pub fn new(driver: CompioTaskDriver) -> Self {
         let driver = Arc::new(driver);
         let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let subscription_mailbox = Arc::new(
+            driver
+                .create_subscription_mailbox()
+                .expect("WebTransport sync subscription mailbox creation must succeed"),
+        );
+        let subscription_views = Arc::new(Mutex::new(HashMap::new()));
         let stop_events = Arc::new(AtomicBool::new(false));
-        start_event_pump(driver.clone(), sessions.clone(), stop_events.clone());
+        start_event_pump(
+            driver.clone(),
+            sessions.clone(),
+            subscription_mailbox.clone(),
+            subscription_views.clone(),
+            stop_events.clone(),
+        );
         Self {
             driver,
             sessions,
+            subscription_mailbox,
+            subscription_views,
             stop_events,
             next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
         }
@@ -238,9 +272,16 @@ impl InProcessWebTransportHost {
 
     #[cfg(test)]
     pub(crate) fn new_without_event_pump(driver: CompioTaskDriver) -> Self {
+        let driver = Arc::new(driver);
         Self {
-            driver: Arc::new(driver),
+            subscription_mailbox: Arc::new(
+                driver
+                    .create_subscription_mailbox()
+                    .expect("WebTransport sync subscription mailbox creation must succeed"),
+            ),
+            driver,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            subscription_views: Arc::new(Mutex::new(HashMap::new())),
             stop_events: Arc::new(AtomicBool::new(false)),
             next_endpoint: AtomicU64::new(DAEMON_ENDPOINT_ID_START),
         }
@@ -290,11 +331,33 @@ impl InProcessWebTransportHost {
             .get(&view_id)
             .cloned()
     }
+
+    pub(crate) fn cancel_session_subscriptions(&self, state: &Arc<SessionState>) {
+        let subscriptions = state
+            .sync
+            .lock()
+            .unwrap()
+            .sessions
+            .values_mut()
+            .flat_map(HashMap::values_mut)
+            .flat_map(|view| std::mem::take(&mut view.subscriptions))
+            .collect::<Vec<_>>();
+        let mut subscription_views = self.subscription_views.lock().unwrap();
+        for subscription in subscriptions {
+            if let Some(capability) = subscription.as_capability() {
+                subscription_views.remove(&capability);
+            }
+            let _ = self.driver.cancel_subscription(subscription);
+        }
+    }
 }
 
 impl Drop for InProcessWebTransportHost {
     fn drop(&mut self) {
         self.stop_events.store(true, Ordering::Relaxed);
+        for state in self.sessions.lock().unwrap().values() {
+            self.cancel_session_subscriptions(state);
+        }
     }
 }
 

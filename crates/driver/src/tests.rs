@@ -11,10 +11,11 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{CompioTaskDriver, DriverEvent};
+use crate::{CompioTaskDriver, DriverEvent, DriverSubscriptionRequest};
 use mica_runtime::{
     AuthorityContext, EmbeddingProviderKind, ReadOnlySourceQueryOptions, ReadOnlySourceQueryStatus,
-    RuntimeError, SourceTaskError, TaskError, TaskInput, TaskManagerError, TaskRequest,
+    RuntimeError, SourceTaskError, SubscriptionInitialDelivery, SubscriptionSubject, TaskError,
+    TaskInput, TaskManagerError, TaskRequest,
 };
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
@@ -426,8 +427,18 @@ fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
         }
 
         let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let agent = runner
+            .named_identity(Symbol::intern("agent/default"))
+            .unwrap();
         let ep = endpoint(40);
-        runner.open_endpoint(ep, Some(web), Symbol::intern("web")).unwrap();
+        runner
+            .open_endpoint_with_context(
+                ep,
+                Some(web),
+                Some(agent),
+                Symbol::intern("web"),
+            )
+            .unwrap();
 
         let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
 
@@ -991,6 +1002,80 @@ fn relation_subscription_delivery_wakes_mailbox_receiver_after_publication() {
                             && group[1].with_list(|messages| messages.len()) == Some(1)
                     })) == Some(Some(true))
         )));
+    });
+}
+
+#[test]
+fn relation_subscription_delivery_notifies_external_driver_mailbox() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut runner = SourceRunner::new_empty();
+        runner
+            .run_source(
+                "make_identity(:observer)\n\
+                 make_relation(:Observed, 1)\n\
+                 make_relation(:CanRead, 2)\n\
+                 assert CanRead(#observer, :Observed)",
+            )
+            .unwrap();
+        let observer = runner.named_identity(Symbol::intern("observer")).unwrap();
+        let observed = runner.named_relation(Symbol::intern("Observed")).unwrap().0;
+        let observer_endpoint = endpoint(37);
+        runner
+            .open_endpoint(observer_endpoint, Some(observer), Symbol::intern("test"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn(runner).unwrap();
+        let mailbox = driver.create_subscription_mailbox().unwrap();
+        let subscription = driver
+            .register_subscription_for_endpoint(
+                observer_endpoint,
+                &mailbox,
+                DriverSubscriptionRequest {
+                    subject: SubscriptionSubject::Relation {
+                        relation: observed,
+                        bindings: vec![None],
+                    },
+                    initial_delivery: SubscriptionInitialDelivery::ChangesOnly,
+                    cursor: None,
+                    queue_budget: 64,
+                },
+            )
+            .await
+            .unwrap();
+
+        driver
+            .submit_source(endpoint(38), root_source("assert Observed(1)"))
+            .await
+            .unwrap();
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::SubscriptionReady { mailbox: ready } if *ready == mailbox.id()
+        )));
+        let messages = driver.drain_subscription_mailbox(&mailbox).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].with_map(|message| {
+                message.iter().find_map(|(key, value)| {
+                    (key == &Value::symbol(Symbol::intern("kind"))).then(|| value.clone())
+                })
+            }),
+            Some(Some(Value::symbol(Symbol::intern("changes"))))
+        );
+
+        driver.cancel_subscription(subscription).unwrap();
+        driver
+            .submit_source(endpoint(39), root_source("assert Observed(2)"))
+            .await
+            .unwrap();
+        assert!(!driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::SubscriptionReady { mailbox: ready } if *ready == mailbox.id()
+        )));
+        assert!(
+            driver
+                .drain_subscription_mailbox(&mailbox)
+                .unwrap()
+                .is_empty()
+        );
     });
 }
 

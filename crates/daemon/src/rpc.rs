@@ -374,6 +374,7 @@ impl RpcHandler {
                 .into_iter()
                 .collect(),
             DriverEvent::TaskSuspended { .. } => Vec::new(),
+            DriverEvent::SubscriptionReady { .. } => Vec::new(),
             DriverEvent::Effect(effect) => {
                 let targets = self.effect_targets(effect.target);
                 let mut messages = Vec::with_capacity(targets.len());

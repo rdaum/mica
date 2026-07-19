@@ -52,7 +52,6 @@ pub enum HttpStatusClass {
 #[derive(Copy, Clone, Debug, DeriveLabel)]
 #[label_name = "phase"]
 pub enum SyncRenderPhase {
-    Revision,
     Tree,
     DecodeTree,
     SnapshotPayload,

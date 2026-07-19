@@ -328,6 +328,7 @@ async fn write_datagram_loop(
 
 pub(crate) fn drop_session_writer(host: &InProcessWebTransportHost, endpoint: Identity) {
     if let Some(state) = host.sessions.lock().unwrap().remove(&endpoint) {
+        host.cancel_session_subscriptions(&state);
         state.output.close();
     }
     crate::metrics::metrics()

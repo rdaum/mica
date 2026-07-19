@@ -13,8 +13,8 @@
 
 use crate::execution::CpuAdmission;
 use crate::{
-    DispatcherConfig, DriverError, DriverEvent, ExternalRequestHandler, TaskContext,
-    configure_dispatcher,
+    DispatcherConfig, DriverError, DriverEvent, DriverSubscriptionMailbox,
+    DriverSubscriptionRequest, ExternalRequestHandler, TaskContext, configure_dispatcher,
     metrics::{self, AsyncWorkerKind, DispatchOperation, WorkerOutcome},
 };
 use compio::dispatcher::Dispatcher;
@@ -22,11 +22,12 @@ use mica_relation_wgpu::{WgpuAccelerator, WgpuAcceleratorOptions};
 use mica_runtime::{
     AuthorityContext, ExecutionContext, MailboxRecvRequest, ReadOnlySourceQueryOptions,
     ReadOnlySourceQueryReport, ReadOnlySourceQueryStatus, RunReport, RuntimeError, SYSTEM_ENDPOINT,
-    SharedSourceRunner, SourceRunner, SourceTaskError, SpawnRequest, SubmittedTask, SuspendKind,
-    TaskError, TaskId, TaskInput, TaskManagerError, TaskOutcome, TaskRequest, Tuple,
+    SharedSourceRunner, SourceRunner, SourceTaskError, SpawnRequest, SubmittedTask,
+    SubscriptionRequest, SuspendKind, TaskError, TaskId, TaskInput, TaskManagerError, TaskOutcome,
+    TaskRequest, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -78,6 +79,7 @@ struct PoolState {
     contexts: BTreeMap<TaskId, TaskContext>,
     input_waiters: BTreeMap<Identity, Vec<TaskId>>,
     mailbox_waiters: BTreeMap<u64, VecDeque<MailboxWaiter>>,
+    external_subscription_mailboxes: HashSet<u64>,
     events: Vec<DriverEvent>,
     event_wakers: Vec<Waker>,
 }
@@ -210,6 +212,13 @@ impl CompioTaskDriver {
         self.inner
             .runner
             .named_identity(name)
+            .map_err(DriverError::Source)
+    }
+
+    pub fn named_relation(&self, name: Symbol) -> Result<(Identity, u16), DriverError> {
+        self.inner
+            .runner
+            .named_relation(name)
             .map_err(DriverError::Source)
     }
 
@@ -517,6 +526,74 @@ impl CompioTaskDriver {
             .map_err(DriverError::Source)
     }
 
+    pub fn create_subscription_mailbox(&self) -> Result<DriverSubscriptionMailbox, DriverError> {
+        let (receiver, sender) = self
+            .inner
+            .runner
+            .create_mailbox()
+            .map_err(runtime_driver_error)?;
+        let mailbox = self
+            .inner
+            .runner
+            .mailbox_for_receiver(&receiver)
+            .map_err(runtime_driver_error)?;
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .external_subscription_mailboxes
+            .insert(mailbox);
+        Ok(DriverSubscriptionMailbox {
+            mailbox,
+            receiver,
+            sender,
+        })
+    }
+
+    pub async fn register_subscription_for_endpoint(
+        &self,
+        endpoint: Identity,
+        mailbox: &DriverSubscriptionMailbox,
+        request: DriverSubscriptionRequest,
+    ) -> Result<Value, DriverError> {
+        let subscription = self
+            .inner
+            .runner
+            .register_subscription_for_endpoint(
+                endpoint,
+                SubscriptionRequest {
+                    sender: mailbox.sender.clone(),
+                    subject: request.subject,
+                    initial_delivery: request.initial_delivery,
+                    cursor: request.cursor,
+                    queue_budget: request.queue_budget,
+                },
+            )
+            .map_err(DriverError::Source)?;
+        let delivered = self.inner.runner.take_subscription_deliveries();
+        let mut queue = VecDeque::new();
+        self.route_mailbox_deliveries(delivered, &mut queue).await?;
+        self.process_outcome_queue(&mut queue).await?;
+        Ok(subscription)
+    }
+
+    pub fn cancel_subscription(&self, subscription: Value) -> Result<(), DriverError> {
+        self.inner
+            .runner
+            .cancel_subscription(subscription)
+            .map_err(runtime_driver_error)
+    }
+
+    pub fn drain_subscription_mailbox(
+        &self,
+        mailbox: &DriverSubscriptionMailbox,
+    ) -> Result<Vec<Value>, DriverError> {
+        self.inner
+            .runner
+            .drain_mailbox(mailbox.receiver.clone())
+            .map_err(runtime_driver_error)
+    }
+
     pub fn drain_events(&self) -> Vec<DriverEvent> {
         let mut state = self.inner.state.lock().unwrap();
         state.drain_effects_into_events(&self.inner.runner);
@@ -676,7 +753,7 @@ impl CompioTaskDriver {
             if let Some(request) = mailbox_recv {
                 self.handle_mailbox_recv(task_id, request, queue).await?;
             }
-            self.wake_mailbox_waiters(delivered_mailboxes, queue)
+            self.route_mailbox_deliveries(delivered_mailboxes, queue)
                 .await?;
             if let Some(request) = spawn {
                 self.spawn_child_and_resume(task_id, context, request, queue)
@@ -882,6 +959,42 @@ impl CompioTaskDriver {
             start.elapsed(),
         );
         result
+    }
+
+    async fn route_mailbox_deliveries(
+        &self,
+        mailboxes: Vec<u64>,
+        queue: &mut VecDeque<(TaskId, TaskContext, TaskOutcome)>,
+    ) -> Result<(), DriverError> {
+        if mailboxes.is_empty() {
+            return Ok(());
+        }
+        let (task_mailboxes, event_wakers) = {
+            let mut state = self.inner.state.lock().unwrap();
+            let mut task_mailboxes = Vec::new();
+            let mut external_ready = false;
+            for mailbox in mailboxes {
+                if state.external_subscription_mailboxes.contains(&mailbox) {
+                    state
+                        .events
+                        .push(DriverEvent::SubscriptionReady { mailbox });
+                    external_ready = true;
+                } else {
+                    task_mailboxes.push(mailbox);
+                }
+            }
+            let event_wakers = if external_ready {
+                std::mem::take(&mut state.event_wakers)
+            } else {
+                Vec::new()
+            };
+            state.record_metrics();
+            (task_mailboxes, event_wakers)
+        };
+        for waker in event_wakers {
+            waker.wake();
+        }
+        self.wake_mailbox_waiters(task_mailboxes, queue).await
     }
 
     async fn spawn_child_and_resume(

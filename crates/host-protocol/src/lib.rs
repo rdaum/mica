@@ -19,6 +19,7 @@ mod frame;
 mod message;
 mod payload;
 mod sync;
+mod view_dependency;
 
 pub use dom_sync::{
     DOM_EVENT_PAYLOAD_TYPE, DOM_PATCH_PAYLOAD_TYPE, DomEventPayload, DomNode, DomPatch,
@@ -41,6 +42,9 @@ pub use sync::{
     encode_sync_envelope, encoded_sync_envelope, sync_emission_value, sync_envelope_from_value,
     sync_invocation_roles, sync_invocation_selector, sync_u64_from_value, sync_u64_value,
     sync_value_kind_symbol,
+};
+pub use view_dependency::{
+    SyncViewDependency, SyncViewDependencySubject, SyncViewRelation, decode_sync_view_dependencies,
 };
 
 pub const MAGIC: [u8; 4] = *b"MHP1";

@@ -11,20 +11,20 @@ grant #web
 end
 
 verb sync_snapshot(view)
-  return {:view -> view, :revision -> sync_view_revision(view)}
+  return {:view -> view, :revision -> 1}
 end
 
 verb sync_snapshot_payload(view)
   let snapshot = sync_snapshot(view)
-  return dom_snapshot_payload(view, snapshot[:revision], sync_view_tree(view, snapshot[:revision]))
+  return dom_snapshot_payload(view, snapshot[:revision], sync_view_tree(view))
 end
 
 verb sync_snapshot_tree(view)
-  return sync_view_tree(view, sync_view_revision(view))
+  return sync_view_tree(view)
 end
 
 verb sync_snapshot_signature(view, payload)
-  return sync_signature(sync_view_revision(view), payload)
+  return sync_signature(1, payload)
 end
 
 verb sync_mount_node(view, revision, signature, root)

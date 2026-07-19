@@ -165,7 +165,6 @@ verb ui/retrieval_query_selected(actor @ #player, endpoint, selected)
   let retrieval = retrieve_context(actor, ui/retrieval_index(), ui/retrieval_text(selected), 5, ui/retrieval_model())
   endpoint().session/retrievalPlan = retrieval[:plan]
   endpoint.session/retrievalPlan = retrieval[:plan]
-  ui/bump_revision(endpoint)
   return retrieval[:plan]
 end
 

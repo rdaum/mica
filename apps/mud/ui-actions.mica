@@ -68,7 +68,6 @@ verb ui/handle_sync_action(source @ #ui/load_older_events_action<_>, endpoint, s
   end
   let new_limit = current_limit + 40
   endpoint.session/narrativeLimit = new_limit
-  ui/bump_revision(endpoint())
   return true
 end
 
@@ -97,7 +96,6 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
   end
   endpoint().session/inspectPulse = pulse
   endpoint.session/inspectPulse = pulse
-  ui/bump_revision(endpoint())
   return true
 end
 
@@ -121,7 +119,6 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
   endpoint().session/commandSuggestIndex = suggest_index
   endpoint.session/commandSuggestIndex = suggest_index
   if event == "input"
-    ui/bump_revision(endpoint())
     return true
   end
 
@@ -159,7 +156,6 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
   endpoint.session/commandSuggest = false
   endpoint().session/commandSuggestIndex = 0
   endpoint.session/commandSuggestIndex = 0
-  ui/bump_revision(endpoint())
   return handled
 end
 
@@ -197,7 +193,6 @@ verb ui/handle_sync_action(source @ #ui/build_room_action<_>, endpoint, session,
       create_passage(current, source_room, built, direction, return_direction)
     end
   end
-  ui/bump_revision(endpoint())
   return built != false
 end
 
@@ -228,7 +223,6 @@ verb ui/handle_sync_action(source @ #ui/create_passage_action<_>, endpoint, sess
     source_room = builder/room_named_in_area(area, source_name)
     if source_room == nothing
       event/notify(current, "No source room by that name exists in this area.")
-      ui/bump_revision(endpoint())
       return false
     end
   end
@@ -236,7 +230,6 @@ verb ui/handle_sync_action(source @ #ui/create_passage_action<_>, endpoint, sess
   let target_room = builder/room_named_in_area(area, target_name)
   if target_room == nothing
     event/notify(current, "No room by that name exists in this area.")
-    ui/bump_revision(endpoint())
     return false
   end
 
@@ -246,7 +239,6 @@ verb ui/handle_sync_action(source @ #ui/create_passage_action<_>, endpoint, sess
   end
 
   let passage = create_passage(current, source_room, target_room, direction, return_direction)
-  ui/bump_revision(endpoint())
   return passage != false
 end
 
@@ -281,13 +273,11 @@ verb ui/handle_sync_action(source @ #ui/describe_passage_action<_>, endpoint, se
   end
   if passage == nothing
     event/notify(current, "No passage matches that direction.")
-    ui/bump_revision(endpoint())
     return false
   end
 
   let ambient = index_or(fields, :ambient, nothing) == "true"
   let updated = set_passage_side(current, passage, room, direction, description, ambient)
-  ui/bump_revision(endpoint())
   return updated
 end
 
@@ -316,7 +306,6 @@ verb ui/handle_sync_action(source @ #ui/edit_entity_action<_>, endpoint, session
     endpoint().session/inspect = entity
     endpoint.session/inspect = entity
   end
-  ui/bump_revision(endpoint())
   return updated
 end
 
@@ -337,7 +326,6 @@ verb ui/handle_sync_action(source @ #ui/object_browser_search_action<_>, endpoin
     endpoint().session/objectBrowserQuery = query
     endpoint.session/objectBrowserQuery = query
   end
-  ui/bump_revision(endpoint())
   return true
 end
 

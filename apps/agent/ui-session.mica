@@ -6,7 +6,6 @@ make_functional_relation(:session/Actor, 2, [0], :volatile)
 make_functional_relation(:session/Inspect, 2, [0], :volatile)
 make_functional_relation(:session/InspectPulse, 2, [0], :volatile)
 make_functional_relation(:session/TranscriptLimit, 2, [0], :volatile)
-make_functional_relation(:session/Revision, 2, [0], :volatile)
 make_functional_relation(:session/CommandDraft, 2, [0], :volatile)
 make_functional_relation(:session/ObjectBrowserQuery, 2, [0], :volatile)
 
@@ -37,7 +36,6 @@ grant #web
     :session/Inspect
     :session/InspectPulse
     :session/TranscriptLimit
-    :session/Revision
     :session/CommandDraft
     :session/ObjectBrowserQuery
     :session/IsStreaming
@@ -71,7 +69,6 @@ grant #web
     :session/Inspect
     :session/InspectPulse
     :session/TranscriptLimit
-    :session/Revision
     :session/CommandDraft
     :session/ObjectBrowserQuery
     :session/IsStreaming
@@ -88,10 +85,11 @@ grant #web
     :MessageContent
   invoke:
     :sync_event
-    :sync_view_revision
+    :sync_view_dependencies
     :sync_view_tree
     :ui/auth_required_node
-    :ui/status_revision
+    :ui/fact_dependency
+    :ui/transcript_cutoff
     :ui/current_agent
     :ui/entity_from_literal
     :agent/name
@@ -115,10 +113,10 @@ CanEffect(#web) :-
 
 grant role #operator
   read:
+    :session/Actor
     :session/Inspect
     :session/InspectPulse
     :session/TranscriptLimit
-    :session/Revision
     :session/CommandDraft
     :session/ObjectBrowserQuery
     :session/IsStreaming
@@ -127,6 +125,8 @@ grant role #operator
     :session/FollowUpQueue
     :ui/View
     :ui/SyncAction
+    :Delegates
+    :Name
     :Agent
     :AgentWorkspace
     :AgentModel
@@ -194,7 +194,6 @@ grant role #operator
     :session/Inspect
     :session/InspectPulse
     :session/TranscriptLimit
-    :session/Revision
     :session/CommandDraft
     :session/ObjectBrowserQuery
     :session/IsStreaming
@@ -228,10 +227,10 @@ grant role #operator
     :sync_snapshot_tree
     :sync_snapshot_signature
     :sync_mount_node
-    :sync_view_revision
+    :sync_view_dependencies
     :sync_view_tree
-    :ui/status_revision
-    :ui/bump_revision
+    :ui/fact_dependency
+    :ui/transcript_cutoff
     :ui/flush
     :ui/current_agent
     :ui/entity_from_literal
@@ -412,7 +411,7 @@ verb ui/can_inspect_entity(agent @ #agent, entity)
   return true
 end
 
-verb ui/status_revision()
+verb ui/transcript_cutoff()
   let current = ui/current_agent()
   let revision = 1
   let transcript = agent/transcript(current)
@@ -424,57 +423,80 @@ verb ui/status_revision()
       end
     end
   end
-  revision = revision * 2
-
-  let ui_revision = endpoint().session/revision
-  if ui_revision != nothing && ui_revision > revision
-    revision = ui_revision
-  end
-
   return revision
 end
 
-verb ui/bump_revision(endpoint)
-  let current = ui/current_agent()
-  let revision = 1
-  let transcript = agent/transcript(current)
-  if transcript != nothing
-    for message in agent/messages(transcript)
-      let seq = message.messageSeq
-      if seq > revision || seq == revision
-        revision = seq + 1
-      end
-    end
-  end
-  revision = revision * 2
-
-  let ui_revision = endpoint.session/revision
-  if ui_revision != nothing && ui_revision > revision
-    revision = ui_revision
-  end
-  revision = revision + 1
-
-  endpoint.session/revision = revision
-  return revision
+verb ui/fact_dependency(relation, bindings)
+  return {:subject -> :facts, :relation -> relation, :bindings -> bindings}
 end
 
-// Bump revision and commit the transaction so the sync host pushes a
-// view delta to the client. Without the commit, the client sees no
-// updates until the entire sync_event task completes.
+// Commit partial tool-loop progress so relation subscriptions can push it while
+// the sync_event task remains active.
 verb ui/flush(endpoint)
-  ui/bump_revision(endpoint)
   commit()
   return nothing
 end
 
-verb sync_view_revision(view)
-  if ui/View(view) == false
-    return 0
-  end
-  return ui/status_revision()
+verb sync_view_dependencies(view)
+  let endpoint = endpoint()
+  let dependencies = []
+  dependencies = [@dependencies, ui/fact_dependency(:ui/View, [view])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/Actor, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/Inspect, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/InspectPulse, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/TranscriptLimit, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/CommandDraft, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/ObjectBrowserQuery, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/IsStreaming, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/LoopPhase, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/SteeringQueue, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/FollowUpQueue, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Delegates, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Name, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Description, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Agent, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:AgentWorkspace, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:AgentModel, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Workspace, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:WorkspaceRoot, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:WorkspaceProvider, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:WorkspaceRevision, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Transcript, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:TranscriptAgent, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:TranscriptWorkspace, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Message, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:MessageTranscript, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:MessageSeq, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:MessageRole, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:MessageContent, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Tool, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolName, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolDescription, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolParameters, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolEnabled, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolCall, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolCallMessage, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolCallId, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolCallName, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolCallArguments, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolCallStatus, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolResult, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolResultCall, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolResultContent, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolResultIsError, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ToolResultDetails, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:source/Repository, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:source/RepositoryName, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:source/RepositoryRoot, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:source/RepositoryProvider, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:source/Revision, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:source/RevisionOf, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:source/RevisionKind, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:source/RevisionLabel, [nothing, nothing])]
+  return dependencies
 end
 
-verb sync_view_tree(view, revision)
+verb sync_view_tree(view)
   let current = ui/current_agent()
   if ui/View(view) == false || current == nothing
     return ui/auth_required_node()
@@ -483,5 +505,6 @@ verb sync_view_tree(view, revision)
   if limit == nothing
     limit = 40
   end
+  let revision = ui/transcript_cutoff()
   return ui/world_view_node(current, revision, limit)
 end

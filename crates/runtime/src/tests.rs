@@ -578,15 +578,21 @@ fn runner_chat_filein_enforces_value_kind_contracts() {
 
     assert!(matches!(
         runner
-            .run_source("return [chat_room_revision(1), sync_view_revision(11)]")
+            .run_source("return chat_room_revision(1)")
             .unwrap()
             .outcome,
-        TaskOutcome::Complete { value, .. }
-            if value == Value::list([Value::int(1).unwrap(), Value::int(1).unwrap()])
+        TaskOutcome::Complete { value, .. } if value == Value::int(1).unwrap()
     ));
     assert!(matches!(
         runner
-            .run_source("return sync_view_tree(11, 1)")
+            .run_source("return sync_view_dependencies(11)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value.kind() == ValueKind::List
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return sync_view_tree(11)")
             .unwrap()
             .outcome,
         TaskOutcome::Complete { value, .. } if value.kind() == ValueKind::Map
@@ -2935,7 +2941,7 @@ fn runner_mud_auth_sync_view_tree_renders() {
     let report = runner
         .run_source_as(
             Symbol::intern("web"),
-            "return to_literal(sync_view_tree(21, 0))",
+            "return to_literal(sync_view_tree(21))",
         )
         .unwrap();
     assert!(matches!(
@@ -2953,7 +2959,7 @@ fn runner_mud_auth_sync_view_tree_renders() {
         .open_endpoint_with_context(endpoint, Some(web), Some(alice), Symbol::intern("http"))
         .unwrap();
     let request = runner
-        .source_request_for_endpoint(endpoint, "return to_literal(sync_view_tree(21, 0))")
+        .source_request_for_endpoint(endpoint, "return to_literal(sync_view_tree(21))")
         .unwrap();
     let report = runner.submit_source(request).unwrap();
     assert!(
@@ -5424,7 +5430,7 @@ fn runner_subscription_refreshes_authority_before_filtering_values() {
     };
 
     runner
-        .run_source("retract CanRead(#alice, :Observed)\nassert Observed(42)")
+        .run_source("retract CanRead(#alice, :Observed)")
         .unwrap();
     let messages = runner.drain_mailbox(receiver).unwrap();
     assert_eq!(messages.len(), 1);

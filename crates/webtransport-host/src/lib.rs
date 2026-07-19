@@ -40,7 +40,7 @@ mod tests {
     use crate::state::*;
     use crate::sync::*;
     use bytes::Bytes;
-    use mica_driver::{CompioTaskDriver, DriverEvent};
+    use mica_driver::CompioTaskDriver;
     use mica_host_protocol::dom_event_payload_json;
     use mica_host_protocol::{
         DomEventPayload, SUPPORTED_DOM_ATTRIBUTES, SUPPORTED_DOM_TAGS, SyncEnvelope,
@@ -48,7 +48,7 @@ mod tests {
     };
     use mica_runtime::SourceRunner;
     use mica_var::{Identity, Symbol, Value};
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap};
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
@@ -289,13 +289,13 @@ mod tests {
             }),
         );
 
-        route_driver_event(
+        route_driver_effect(
             &sessions,
-            DriverEvent::Effect(mica_runtime::Effect {
+            mica_runtime::Effect {
                 task_id: 1,
                 target: endpoint,
                 value: Value::string("hello"),
-            }),
+            },
         );
 
         assert_eq!(output.try_recv().unwrap().as_ref(), b"hello");
@@ -306,21 +306,23 @@ mod tests {
         let endpoint = Identity::new(DAEMON_ENDPOINT_ID_START).unwrap();
         let output = SessionOutput::new();
         let sync = Mutex::new(SessionSyncState::default());
-        sync.lock().unwrap().pending_tasks.insert(11);
+        sync.lock().unwrap().pending_tasks.insert(
+            11,
+            PendingSyncTask {
+                session_id: 7,
+                view_id: 9,
+                refresh: true,
+                action: "look".to_owned(),
+            },
+        );
         let sessions = Arc::new(Mutex::new(HashMap::from([(
             endpoint,
             Arc::new(SessionState { output, sync }),
         )])));
 
-        let routed = route_driver_event(
-            &sessions,
-            DriverEvent::TaskCompleted {
-                task_id: 12,
-                value: Value::int(22).unwrap(),
-            },
-        );
+        let routed = take_pending_sync_task(&sessions, 12);
 
-        assert!(!routed);
+        assert!(routed.is_none());
         assert_eq!(
             sessions
                 .lock()
@@ -331,7 +333,15 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pending_tasks,
-            HashSet::from([11])
+            HashMap::from([(
+                11,
+                PendingSyncTask {
+                    session_id: 7,
+                    view_id: 9,
+                    refresh: true,
+                    action: "look".to_owned(),
+                },
+            )])
         );
     }
 
@@ -391,14 +401,14 @@ mod tests {
             assert_eq!(envelope.view_id, 11);
             assert_eq!(envelope.client_revision, 13);
             assert_eq!(envelope.client_signature, 17);
-            assert_eq!(envelope.server_revision, 1);
+            assert_eq!(envelope.server_revision, 14);
             assert_eq!(
                 envelope.server_signature,
                 sync_payload_signature(envelope.server_revision, &envelope.payload)
             );
             let payload: serde_json::Value = serde_json::from_slice(&envelope.payload).unwrap();
             assert_eq!(payload["view"], 11);
-            assert_eq!(payload["revision"], 1);
+            assert_eq!(payload["revision"], 14);
             assert_eq!(payload["root"]["tag"], "main");
             assert_eq!(payload["root"]["attrs"]["id"], "chat-root");
             assert_eq!(
@@ -547,7 +557,7 @@ mod tests {
             server_endpoint.close(0u32.into(), b"test complete");
             client.join().unwrap();
             assert_eq!(delta.kind, SyncMessageKind::ViewDelta);
-            assert_eq!(delta.client_revision, 1);
+            assert!(delta.client_revision < delta.server_revision);
             assert!(delta.server_revision > 1);
             let payload: serde_json::Value = serde_json::from_slice(&delta.payload).unwrap();
             let payload_text = serde_json::to_string(&payload).unwrap();

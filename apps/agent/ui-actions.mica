@@ -47,7 +47,6 @@ verb ui/handle_sync_action(source @ #ui/load_older_messages_action<_>, endpoint,
   end
   let new_limit = current_limit + 40
   endpoint.session/transcriptLimit = new_limit
-  ui/bump_revision(endpoint())
   return true
 end
 
@@ -76,7 +75,6 @@ verb ui/handle_sync_action(source @ #ui/inspect_action<_>, endpoint, session, vi
   end
   endpoint().session/inspectPulse = pulse
   endpoint.session/inspectPulse = pulse
-  ui/bump_revision(endpoint())
   return true
 end
 
@@ -96,7 +94,6 @@ verb ui/handle_sync_action(source @ #ui/select_workspace_action<_>, endpoint, se
   end
 
   current.agentWorkspace = workspace
-  ui/bump_revision(endpoint())
   return true
 end
 
@@ -114,7 +111,6 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
   endpoint().session/commandDraft = line
   endpoint.session/commandDraft = line
   if event == "input"
-    ui/bump_revision(endpoint())
     return true
   end
 
@@ -135,7 +131,6 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
     end
     endpoint().session/commandDraft = ""
     endpoint.session/commandDraft = ""
-    ui/bump_revision(endpoint())
     return true
   end
 
@@ -154,7 +149,6 @@ verb ui/handle_sync_action(source @ #ui/command_action<_>, endpoint, session, vi
     agent/run_loop(current, transcript)
   end
 
-  ui/bump_revision(endpoint())
   return true
 end
 
@@ -175,7 +169,6 @@ verb ui/handle_sync_action(source @ #ui/object_browser_search_action<_>, endpoin
     endpoint().session/objectBrowserQuery = query
     endpoint.session/objectBrowserQuery = query
   end
-  ui/bump_revision(endpoint())
   return true
 end
 

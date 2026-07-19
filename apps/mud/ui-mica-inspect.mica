@@ -45,7 +45,6 @@ grant role #programmer
     :ui/MicaMethodMode
     :ui/MicaMethodLimit
     :ui/MicaBrowserQuery
-    :session/Revision
     :ui/MicaPrototype
     :Relation
     :RelationName
@@ -82,7 +81,6 @@ grant role #programmer
     :ui/MicaMethodMode
     :ui/MicaMethodLimit
     :ui/MicaBrowserQuery
-    :session/Revision
   invoke:
     :ui/mica_inspect_selected
     :ui/mica_inspect_expanded
@@ -116,7 +114,6 @@ grant role #programmer
     :ui/mica_browser_method_row_node
     :ui/mica_browser_rule_row_node
     :ui/mica_inspect_set_selected
-    :ui/mica_inspect_bump_revision
 end
 
 ui/MicaPrototype(obj, proto) :-
@@ -626,11 +623,6 @@ verb ui/mica_inspect_set_selected(endpoint, selected)
   end
   endpoint().ui/micaInspect = selected
   endpoint.ui/micaInspect = selected
-  ui/mica_inspect_bump_revision(endpoint)
-end
-
-verb ui/mica_inspect_bump_revision(endpoint)
-  return ui/bump_revision(endpoint)
 end
 
 verb ui/try_mica_inspect_command(current @ #player, endpoint, line @ #string)
@@ -683,7 +675,6 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_close_action<_>, endpoint, 
   retract ui/MicaInspectBack(endpoint, _)
   retract ui/MicaInspectLayout(endpoint(), _)
   retract ui/MicaInspectLayout(endpoint, _)
-  ui/mica_inspect_bump_revision(endpoint)
   return true
 end
 
@@ -711,7 +702,6 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_back_action<_>, endpoint, s
     endpoint().ui/micaInspectBack = selected
     endpoint.ui/micaInspectBack = selected
   end
-  ui/mica_inspect_bump_revision(endpoint)
   return true
 end
 
@@ -736,7 +726,6 @@ verb ui/handle_sync_action(source @ #ui/mica_inspect_layout_action<_>, endpoint,
     endpoint().ui/micaInspectLayout = mode
     endpoint.ui/micaInspectLayout = mode
   end
-  ui/mica_inspect_bump_revision(endpoint)
   return true
 end
 
@@ -757,7 +746,6 @@ verb ui/handle_sync_action(source @ #ui/mica_method_mode_action<_>, endpoint, se
 
   endpoint().ui/micaMethodMode = mode
   endpoint.ui/micaMethodMode = mode
-  ui/mica_inspect_bump_revision(endpoint)
   return true
 end
 
@@ -782,7 +770,6 @@ verb ui/handle_sync_action(source @ #ui/mica_method_limit_action<_>, endpoint, s
     endpoint().ui/micaMethodLimit = mode
     endpoint.ui/micaMethodLimit = mode
   end
-  ui/mica_inspect_bump_revision(endpoint)
   return true
 end
 
@@ -803,6 +790,5 @@ verb ui/handle_sync_action(source @ #ui/mica_browser_search_action<_>, endpoint,
     endpoint().ui/micaBrowserQuery = query
     endpoint.ui/micaBrowserQuery = query
   end
-  ui/mica_inspect_bump_revision(endpoint)
   return true
 end

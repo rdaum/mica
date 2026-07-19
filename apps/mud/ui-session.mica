@@ -6,7 +6,6 @@ make_functional_relation(:session/Actor, 2, [0], :volatile)
 make_functional_relation(:session/Inspect, 2, [0], :volatile)
 make_functional_relation(:session/InspectPulse, 2, [0], :volatile)
 make_functional_relation(:session/NarrativeLimit, 2, [0], :volatile)
-make_functional_relation(:session/Revision, 2, [0], :volatile)
 make_functional_relation(:session/CommandDraft, 2, [0], :volatile)
 make_functional_relation(:session/CommandSuggest, 2, [0], :volatile)
 make_functional_relation(:session/CommandSuggestIndex, 2, [0], :volatile)
@@ -48,7 +47,6 @@ grant #web
     :session/Inspect
     :session/InspectPulse
     :session/NarrativeLimit
-    :session/Revision
     :session/CommandDraft
     :session/CommandSuggest
     :session/CommandSuggestIndex
@@ -67,17 +65,18 @@ grant #web
     :session/Inspect
     :session/InspectPulse
     :session/NarrativeLimit
-    :session/Revision
     :session/CommandDraft
     :session/CommandSuggest
     :session/CommandSuggestIndex
     :session/ObjectBrowserQuery
   invoke:
     :sync_event
-    :sync_view_revision
+    :sync_view_dependencies
     :sync_view_tree
     :ui/auth_required_node
-    :ui/status_revision
+    :ui/view_dependency
+    :ui/fact_dependency
+    :ui/narrative_cutoff
     :ui/current_actor
     :ui/entity_from_literal
     :ui/actor_name
@@ -103,11 +102,11 @@ CanEffect(#web) :-
 
 grant role #player
   read:
+    :session/Actor
     :session/Inspect
     :session/InspectPulse
     :event/Source
     :session/NarrativeLimit
-    :session/Revision
     :session/CommandDraft
     :session/CommandSuggest
     :session/CommandSuggestIndex
@@ -127,7 +126,6 @@ grant role #player
     :session/Inspect
     :session/InspectPulse
     :session/NarrativeLimit
-    :session/Revision
     :session/CommandDraft
     :session/CommandSuggest
     :session/CommandSuggestIndex
@@ -139,10 +137,11 @@ grant role #player
     :sync_snapshot_tree
     :sync_snapshot_signature
     :sync_mount_node
-    :sync_view_revision
+    :sync_view_dependencies
     :sync_view_tree
-    :ui/status_revision
-    :ui/bump_revision
+    :ui/view_dependency
+    :ui/fact_dependency
+    :ui/narrative_cutoff
     :ui/current_actor
     :ui/ensure_actor_location
     :ui/entity_from_literal
@@ -418,7 +417,7 @@ verb ui/can_program(actor @ #player)
   return Delegates(actor, #programmer, 0)
 end
 
-verb ui/status_revision()
+verb ui/narrative_cutoff()
   let current = ui/current_actor()
   if current == nothing
     return 0
@@ -431,49 +430,72 @@ verb ui/status_revision()
       revision = seq + 1
     end
   end
-  revision = revision * 2
-
-  let ui_revision = endpoint().session/revision
-  if ui_revision != nothing && ui_revision > revision
-    revision = ui_revision
-  end
-
   return revision
 end
 
-verb ui/bump_revision(endpoint)
+verb ui/view_dependency(relation, bindings)
+  return {:subject -> :relation, :relation -> relation, :bindings -> bindings}
+end
+
+verb ui/fact_dependency(relation, bindings)
+  return {:subject -> :facts, :relation -> relation, :bindings -> bindings}
+end
+
+verb sync_view_dependencies(view)
+  let endpoint = endpoint()
   let current = ui/current_actor()
-  let revision = 1
-  if current != nothing
-    for found in event/Delivery(current, ?event)
-      let seq = found[:event].event/seq
-      if seq > revision || seq == revision
-        revision = seq + 1
-      end
-    end
+  let dependencies = []
+  dependencies = [@dependencies, ui/fact_dependency(:ui/View, [view])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/Actor, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/Inspect, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/InspectPulse, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/NarrativeLimit, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/CommandDraft, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/CommandSuggest, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/CommandSuggestIndex, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/ObjectBrowserQuery, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:session/RetrievalPlan, [endpoint, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:Delegates, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:Name, [nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:Description, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:LocatedIn, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:RoomInArea, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Portable, [nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:PassageInArea, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:PassageSide, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:PassageLabel, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:PassageAlias, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:PassageDescription, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:PassageAmbient, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:PassageOpen, [nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:Exit, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:ReachableRoom, [nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:Builder, [nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:CanSee, [nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:Carrying, [nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:PresentActor, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:event/Delivery, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:event/Seq, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:event/Text, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:event/Source, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ContextForPlan, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ContextSubject, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ContextScore, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:ContextReason, [nothing, nothing])]
+  dependencies = [@dependencies, ui/fact_dependency(:IndexEntryStatus, [nothing, nothing, nothing, nothing])]
+  if current != nothing && ui/can_program(current)
+    dependencies = [@dependencies, ui/fact_dependency(:ui/MicaInspect, [endpoint, nothing])]
+    dependencies = [@dependencies, ui/fact_dependency(:ui/MicaInspectBack, [endpoint, nothing])]
+    dependencies = [@dependencies, ui/fact_dependency(:ui/MicaInspectLayout, [endpoint, nothing])]
+    dependencies = [@dependencies, ui/fact_dependency(:ui/MicaMethodMode, [endpoint, nothing])]
+    dependencies = [@dependencies, ui/fact_dependency(:ui/MicaMethodLimit, [endpoint, nothing])]
+    dependencies = [@dependencies, ui/fact_dependency(:ui/MicaBrowserQuery, [endpoint, nothing])]
+    dependencies = [@dependencies, ui/view_dependency(:Relation, [nothing])]
   end
-
-  revision = revision * 2
-
-  let ui_revision = endpoint.session/revision
-  if ui_revision != nothing && ui_revision > revision
-    revision = ui_revision
-  end
-  revision = revision + 1
-
-  endpoint.session/revision = revision
-  return revision
+  return dependencies
 end
 
-verb sync_view_revision(view)
-  if ui/View(view) == false
-    return 0
-  end
-
-  return ui/status_revision()
-end
-
-verb sync_view_tree(view, revision)
+verb sync_view_tree(view)
   let current = ui/current_actor()
   if ui/View(view) == false || current == nothing
     return ui/auth_required_node()
@@ -484,5 +506,6 @@ verb sync_view_tree(view, revision)
   if limit == nothing
     limit = 40
   end
+  let revision = ui/narrative_cutoff()
   return ui/world_view_node(current, revision, limit)
 end
