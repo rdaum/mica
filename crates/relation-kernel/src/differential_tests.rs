@@ -660,6 +660,223 @@ fn nonrecursive_maintenance_preserves_multiple_and_extensional_supports() {
     );
 }
 
+#[test]
+fn warm_state_is_scoped_to_requested_dependency_components() {
+    let kernel = RelationKernel::new();
+    create_relations(
+        &kernel,
+        &[
+            (460, "BaseA", 1),
+            (461, "OutputA", 1),
+            (462, "BaseB", 1),
+            (463, "OutputB", 1),
+        ],
+    );
+    for (base, output, name) in [
+        (rel(460), rel(461), "OutputA"),
+        (rel(462), rel(463), "OutputB"),
+    ] {
+        kernel
+            .install_rule(
+                Rule::new(
+                    output,
+                    [var("value")],
+                    [Atom::positive(base, [var("value")])],
+                ),
+                format!("{name}(value) :- Base(value)"),
+            )
+            .unwrap();
+    }
+    let mut seed = kernel.begin();
+    seed.assert(rel(460), Tuple::from([int(1)])).unwrap();
+    seed.assert(rel(462), Tuple::from([int(2)])).unwrap();
+    seed.commit().unwrap();
+
+    let snapshot = kernel.snapshot();
+    assert_eq!(
+        snapshot.scan(rel(461), &[None]).unwrap(),
+        vec![Tuple::from([int(1)])]
+    );
+    let maintained = snapshot.maintained_state().unwrap();
+    assert!(maintained.serves(rel(461)));
+    assert!(!maintained.serves(rel(463)));
+    assert_eq!(maintained.requested_targets(), &BTreeSet::from([rel(461)]));
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(462), Tuple::from([int(3)])).unwrap();
+    tx.commit().unwrap();
+    let snapshot = kernel.snapshot();
+    assert_eq!(
+        snapshot
+            .maintained_state()
+            .unwrap()
+            .work()
+            .affected_components,
+        0
+    );
+    assert_eq!(
+        snapshot.scan(rel(461), &[None]).unwrap(),
+        vec![Tuple::from([int(1)])]
+    );
+    assert!(!snapshot.maintained_state().unwrap().serves(rel(463)));
+
+    assert_eq!(
+        snapshot.scan(rel(463), &[None]).unwrap(),
+        vec![Tuple::from([int(2)]), Tuple::from([int(3)])]
+    );
+    let maintained = snapshot.maintained_state().unwrap();
+    assert!(maintained.serves(rel(461)));
+    assert!(maintained.serves(rel(463)));
+    assert_eq!(
+        maintained.requested_targets(),
+        &BTreeSet::from([rel(461), rel(463)])
+    );
+}
+
+#[test]
+fn repeated_small_commits_reuse_shared_join_arrangements() {
+    let kernel = RelationKernel::new();
+    create_relations(
+        &kernel,
+        &[
+            (470, "Left", 2),
+            (471, "Right", 2),
+            (472, "OutputA", 2),
+            (473, "OutputB", 2),
+        ],
+    );
+    for (output, name) in [(rel(472), "OutputA"), (rel(473), "OutputB")] {
+        kernel
+            .install_rule(
+                Rule::new(
+                    output,
+                    [var("from"), var("to")],
+                    [
+                        Atom::positive(rel(470), [var("from"), var("key")]),
+                        Atom::positive(rel(471), [var("key"), var("to")]),
+                    ],
+                ),
+                format!("{name}(from, to) :- Left(from, key), Right(key, to)"),
+            )
+            .unwrap();
+    }
+    let row_count = 256_i64;
+    let mut seed = kernel.begin();
+    for key in 0..row_count {
+        seed.assert(rel(470), Tuple::from([int(key), int(key)]))
+            .unwrap();
+        seed.assert(rel(471), Tuple::from([int(key), int(key + 10_000)]))
+            .unwrap();
+    }
+    seed.commit().unwrap();
+
+    let snapshot = kernel.snapshot();
+    assert_eq!(snapshot.scan(rel(472), &[None, None]).unwrap().len(), 256);
+    assert_eq!(snapshot.scan(rel(473), &[None, None]).unwrap().len(), 256);
+    assert_eq!(snapshot.maintained_state().unwrap().arrangement_count(), 2);
+
+    let mut total_rows_visited = 0;
+    let mut total_complete_input_rows = 0;
+    for commit_index in 0..32 {
+        let mut tx = kernel.begin();
+        let tuple = Tuple::from([int(0), int(10_000)]);
+        if commit_index % 2 == 0 {
+            tx.retract(rel(471), tuple).unwrap();
+        } else {
+            tx.assert(rel(471), tuple).unwrap();
+        }
+        tx.commit().unwrap();
+        let snapshot = kernel.snapshot();
+        let maintained = snapshot.maintained_state().unwrap();
+        let work = maintained.work();
+        assert_eq!(work.arrangement_lookups, 2);
+        assert_eq!(work.rows_visited, 4);
+        total_rows_visited += work.rows_visited;
+        total_complete_input_rows += 2 * (256 + if commit_index % 2 == 0 { 255 } else { 256 });
+    }
+
+    assert!(total_rows_visited < total_complete_input_rows / 100);
+    let snapshot = kernel.snapshot();
+    assert_maintained_matches_complete(&snapshot, &[(rel(472), 2), (rel(473), 2)]);
+}
+
+#[test]
+fn immutable_trace_batches_compact_without_changing_old_snapshots() {
+    let kernel = RelationKernel::new();
+    create_relations(&kernel, &[(480, "Base", 1), (481, "Copy", 1)]);
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(481),
+                [var("value")],
+                [Atom::positive(rel(480), [var("value")])],
+            ),
+            "Copy(value) :- Base(value)",
+        )
+        .unwrap();
+    let mut seed = kernel.begin();
+    for value in 0..1_000 {
+        seed.assert(rel(480), Tuple::from([int(value)])).unwrap();
+    }
+    seed.commit().unwrap();
+
+    let retained = kernel.snapshot();
+    assert_eq!(retained.scan(rel(481), &[None]).unwrap().len(), 1_000);
+    assert_eq!(
+        retained
+            .maintained_state()
+            .unwrap()
+            .trace_batch_count(rel(480)),
+        Some(1)
+    );
+
+    for offset in 0..7 {
+        let mut tx = kernel.begin();
+        tx.assert(rel(480), Tuple::from([int(2_000 + offset)]))
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    let before_compaction = kernel.snapshot();
+    assert_eq!(
+        before_compaction
+            .maintained_state()
+            .unwrap()
+            .trace_batch_count(rel(480)),
+        Some(8)
+    );
+
+    let mut tx = kernel.begin();
+    tx.assert(rel(480), Tuple::from([int(2_007)])).unwrap();
+    tx.commit().unwrap();
+    let after_batch_compaction = kernel.snapshot();
+    let maintained = after_batch_compaction.maintained_state().unwrap();
+    assert_eq!(maintained.trace_batch_count(rel(480)), Some(1));
+    assert!(maintained.work().compaction_rows >= 2_016);
+
+    let mut tx = kernel.begin();
+    for value in 3_000..3_252 {
+        tx.assert(rel(480), Tuple::from([int(value)])).unwrap();
+    }
+    tx.commit().unwrap();
+    let after_size_compaction = kernel.snapshot();
+    let maintained = after_size_compaction.maintained_state().unwrap();
+    assert_eq!(maintained.trace_batch_count(rel(480)), Some(1));
+    assert!(maintained.work().compaction_rows >= 2_520);
+
+    assert_eq!(retained.scan(rel(481), &[None]).unwrap().len(), 1_000);
+    assert_eq!(
+        retained
+            .maintained_state()
+            .unwrap()
+            .trace_batch_count(rel(480)),
+        Some(1)
+    );
+    assert_eq!(
+        before_compaction.scan(rel(481), &[None]).unwrap().len(),
+        1_007
+    );
+}
+
 struct ConstantComputed;
 
 impl ComputedRelation for ConstantComputed {

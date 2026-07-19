@@ -198,6 +198,21 @@ pub struct RelationKernelMetrics {
     #[help = "Visible zero-crossings per differential maintenance pass"]
     pub differential_visible_changes: Histogram,
 
+    #[help = "Arrangement lookups per differential maintenance pass"]
+    pub differential_arrangement_lookups: Histogram,
+
+    #[help = "Rows visited by differential operators per maintenance pass"]
+    pub differential_rows_visited: Histogram,
+
+    #[help = "Immutable trace batches retained after a differential maintenance pass"]
+    pub differential_trace_batches: Histogram,
+
+    #[help = "Approximate trace bytes retained after a differential maintenance pass"]
+    pub differential_trace_bytes: Histogram,
+
+    #[help = "Rows rewritten by differential trace compaction per maintenance pass"]
+    pub differential_compaction_rows: Histogram,
+
     #[help = "Packed union execution placement decisions"]
     pub parallel_union_placements: LabeledCounter<ParallelUnionPlacement>,
 
@@ -285,6 +300,11 @@ impl RelationKernelMetrics {
             differential_candidate_changes: Histogram::new(COUNT_BUCKETS, shard_count),
             differential_consolidated_changes: Histogram::new(COUNT_BUCKETS, shard_count),
             differential_visible_changes: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_arrangement_lookups: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_rows_visited: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_trace_batches: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_trace_bytes: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
+            differential_compaction_rows: Histogram::new(COUNT_BUCKETS, shard_count),
             parallel_union_placements: LabeledCounter::new(shard_count),
             parallel_union_input_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
             parallel_union_duration_us: Histogram::with_latency_buckets(shard_count),
@@ -477,6 +497,21 @@ pub(crate) fn record_differential_maintenance(
     metrics
         .differential_visible_changes
         .record(work.visible_changes as u64);
+    metrics
+        .differential_arrangement_lookups
+        .record(work.arrangement_lookups as u64);
+    metrics
+        .differential_rows_visited
+        .record(work.rows_visited as u64);
+    metrics
+        .differential_trace_batches
+        .record(work.trace_batches as u64);
+    metrics
+        .differential_trace_bytes
+        .record(work.trace_bytes as u64);
+    metrics
+        .differential_compaction_rows
+        .record(work.compaction_rows as u64);
 }
 
 pub fn derived_relation_summaries(limit: usize) -> Vec<DerivedRelationSummary> {

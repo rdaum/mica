@@ -27,6 +27,7 @@ pub(crate) type Diff = i64;
 type WeightedRows = BTreeMap<Tuple, Diff>;
 type Binding = Vec<Option<Value>>;
 type WeightedBindings = BTreeMap<Binding, Diff>;
+const TRACE_COMPACTION_BATCHES: usize = 8;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct MaintenanceWork {
@@ -35,14 +36,189 @@ pub(crate) struct MaintenanceWork {
     pub(crate) candidate_changes: usize,
     pub(crate) consolidated_changes: usize,
     pub(crate) visible_changes: usize,
+    pub(crate) arrangement_lookups: usize,
+    pub(crate) rows_visited: usize,
+    pub(crate) trace_batches: usize,
+    pub(crate) trace_bytes: usize,
+    pub(crate) compaction_rows: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ArrangementSpec {
+    relation: RelationId,
+    positions: Vec<u16>,
+}
+
+#[derive(Clone, Debug)]
+struct Arrangement {
+    spec: ArrangementSpec,
+    rows_by_key: BTreeMap<Vec<Value>, Arc<[Tuple]>>,
+}
+
+impl Arrangement {
+    fn build(spec: ArrangementSpec, rows: &BTreeSet<Tuple>) -> Self {
+        let mut grouped = BTreeMap::<Vec<Value>, Vec<Tuple>>::new();
+        for tuple in rows {
+            grouped
+                .entry(arrangement_tuple_key(tuple, &spec.positions))
+                .or_default()
+                .push(tuple.clone());
+        }
+        Self {
+            spec,
+            rows_by_key: grouped
+                .into_iter()
+                .map(|(key, rows)| (key, Arc::from(rows)))
+                .collect(),
+        }
+    }
+
+    fn apply(&self, changes: &WeightedRows) -> Self {
+        let mut rows_by_key = self.rows_by_key.clone();
+        for (tuple, difference) in changes {
+            let key = arrangement_tuple_key(tuple, &self.spec.positions);
+            let mut rows = rows_by_key
+                .get(&key)
+                .map(|rows| rows.to_vec())
+                .unwrap_or_default();
+            match difference.cmp(&0) {
+                std::cmp::Ordering::Greater => {
+                    if let Err(position) = rows.binary_search(tuple) {
+                        rows.insert(position, tuple.clone());
+                    }
+                }
+                std::cmp::Ordering::Less => {
+                    if let Ok(position) = rows.binary_search(tuple) {
+                        rows.remove(position);
+                    }
+                }
+                std::cmp::Ordering::Equal => {}
+            }
+            if rows.is_empty() {
+                rows_by_key.remove(&key);
+            } else {
+                rows_by_key.insert(key, Arc::from(rows));
+            }
+        }
+        Self {
+            spec: self.spec.clone(),
+            rows_by_key,
+        }
+    }
+
+    fn lookup(&self, key: &[Value]) -> &[Tuple] {
+        self.rows_by_key.get(key).map_or(&[], AsRef::as_ref)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TraceBatch {
+    epoch: Version,
+    rows: Arc<[Tuple]>,
+    differences: Arc<[Diff]>,
+    retained_bytes: usize,
+}
+
+impl TraceBatch {
+    fn from_rows(epoch: Version, rows: impl IntoIterator<Item = (Tuple, Diff)>) -> Self {
+        let (rows, differences): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .filter(|(_, difference)| *difference != 0)
+            .unzip();
+        let retained_bytes = rows
+            .iter()
+            .map(|tuple| {
+                std::mem::size_of::<Tuple>()
+                    + tuple.arity() * std::mem::size_of::<Value>()
+                    + std::mem::size_of::<Diff>()
+            })
+            .sum();
+        Self {
+            epoch,
+            rows: rows.into(),
+            differences: differences.into(),
+            retained_bytes,
+        }
+    }
+
+    fn from_set(epoch: Version, rows: &BTreeSet<Tuple>) -> Self {
+        Self::from_rows(epoch, rows.iter().cloned().map(|tuple| (tuple, 1)))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Trace {
+    base: Arc<TraceBatch>,
+    batches: Arc<[Arc<TraceBatch>]>,
+}
+
+impl Trace {
+    fn initialize(epoch: Version, rows: &BTreeSet<Tuple>) -> Self {
+        Self {
+            base: Arc::new(TraceBatch::from_set(epoch, rows)),
+            batches: Arc::from([]),
+        }
+    }
+
+    fn append(
+        &self,
+        epoch: Version,
+        changes: &WeightedRows,
+        current: &BTreeSet<Tuple>,
+    ) -> (Self, usize) {
+        debug_assert!(epoch > self.base.epoch);
+        let batch = Arc::new(TraceBatch::from_rows(
+            epoch,
+            changes
+                .iter()
+                .map(|(tuple, difference)| (tuple.clone(), *difference)),
+        ));
+        let mut batches = self.batches.to_vec();
+        batches.push(batch);
+        let delta_bytes = batches
+            .iter()
+            .map(|batch| batch.retained_bytes)
+            .sum::<usize>();
+        let should_compact = batches.len() >= TRACE_COMPACTION_BATCHES
+            || delta_bytes.saturating_mul(4) >= self.base.retained_bytes.max(1);
+        if should_compact {
+            return (Self::initialize(epoch, current), current.len());
+        }
+        (
+            Self {
+                base: Arc::clone(&self.base),
+                batches: batches.into(),
+            },
+            0,
+        )
+    }
+
+    fn batch_count(&self) -> usize {
+        1 + self.batches.len()
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.base.retained_bytes
+            + self
+                .batches
+                .iter()
+                .map(|batch| {
+                    debug_assert_eq!(batch.rows.len(), batch.differences.len());
+                    batch.retained_bytes
+                })
+                .sum::<usize>()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct MaintainedState {
     version: Version,
     program: Arc<MaintainedProgram>,
+    requested_targets: BTreeSet<RelationId>,
     collections: BTreeMap<RelationId, BTreeSet<Tuple>>,
     derived_support: BTreeMap<RelationId, WeightedRows>,
+    arrangements: BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    traces: BTreeMap<RelationId, Trace>,
     #[cfg(test)]
     visible_changes: Arc<[FactChange]>,
     work: MaintenanceWork,
@@ -52,8 +228,9 @@ impl MaintainedState {
     pub(crate) fn initialize(
         snapshot: &Snapshot,
         complete: &BTreeMap<RelationId, RelationState>,
+        requested_targets: BTreeSet<RelationId>,
     ) -> Result<Option<Arc<Self>>, KernelError> {
-        let Some(program) = MaintainedProgram::compile(snapshot)? else {
+        let Some(program) = MaintainedProgram::compile(snapshot, &requested_targets)? else {
             return Ok(None);
         };
         let program = Arc::new(program);
@@ -92,11 +269,19 @@ impl MaintainedState {
         if !matches_complete_output(&program, &derived_support, complete) {
             return Ok(None);
         }
+        let arrangements = build_arrangements(&program.arrangement_specs, &collections);
+        let traces = collections
+            .iter()
+            .map(|(relation, rows)| (*relation, Trace::initialize(snapshot.version(), rows)))
+            .collect();
         Ok(Some(Arc::new(Self {
             version: snapshot.version(),
             program,
+            requested_targets,
             collections,
             derived_support,
+            arrangements,
+            traces,
             #[cfg(test)]
             visible_changes: Arc::from([]),
             work: MaintenanceWork::default(),
@@ -117,6 +302,7 @@ impl MaintainedState {
         };
         let mut collections = self.collections.clone();
         let mut derived_support = self.derived_support.clone();
+        let mut arrangements = self.arrangements.clone();
         let mut relation_deltas = BTreeMap::<RelationId, WeightedRows>::new();
         let changed_by_relation = group_fact_changes(fact_changes);
 
@@ -139,6 +325,7 @@ impl MaintainedState {
                     new_visible,
                 );
             }
+            update_arrangements(&mut arrangements, *relation, deltas);
         }
 
         for component in &self.program.components {
@@ -157,16 +344,17 @@ impl MaintainedState {
 
             let mut support_delta = WeightedRows::new();
             if body_changed {
+                let evaluation = DeltaEvaluation {
+                    old_collections: &self.collections,
+                    new_collections: &collections,
+                    relation_deltas: &relation_deltas,
+                    old_arrangements: &self.arrangements,
+                    new_arrangements: &arrangements,
+                    target: component.target,
+                    version,
+                };
                 for rule in &component.rules {
-                    let contribution = evaluate_rule_delta(
-                        rule,
-                        &self.collections,
-                        &collections,
-                        &relation_deltas,
-                        component.target,
-                        version,
-                        &mut work,
-                    )?;
+                    let contribution = evaluate_rule_delta(rule, &evaluation, &mut work)?;
                     accumulate_rows(
                         &mut support_delta,
                         contribution,
@@ -206,7 +394,29 @@ impl MaintainedState {
                     || support_is_positive(Some(support), &tuple);
                 set_presence_delta(collection, deltas, tuple, old_visible, new_visible);
             }
+            update_arrangements(&mut arrangements, component.target, deltas);
         }
+
+        let mut traces = self.traces.clone();
+        for (relation, changes) in &relation_deltas {
+            if changes.is_empty() {
+                continue;
+            }
+            let trace = traces
+                .get(relation)
+                .expect("maintained relation should have a trace");
+            let (next_trace, compacted_rows) = trace.append(
+                version,
+                changes,
+                collections
+                    .get(relation)
+                    .expect("maintained relation should have current rows"),
+            );
+            work.compaction_rows += compacted_rows;
+            traces.insert(*relation, next_trace);
+        }
+        work.trace_batches = traces.values().map(Trace::batch_count).sum();
+        work.trace_bytes = traces.values().map(Trace::retained_bytes).sum();
 
         let visible_changes = relation_deltas
             .into_iter()
@@ -229,8 +439,11 @@ impl MaintainedState {
         Ok(Arc::new(Self {
             version,
             program: Arc::clone(&self.program),
+            requested_targets: self.requested_targets.clone(),
             collections,
             derived_support,
+            arrangements,
+            traces,
             #[cfg(test)]
             visible_changes: visible_changes.into(),
             work,
@@ -262,26 +475,85 @@ impl MaintainedState {
     pub(crate) fn work(&self) -> &MaintenanceWork {
         &self.work
     }
+
+    pub(crate) fn serves(&self, relation: RelationId) -> bool {
+        self.program.targets.contains(&relation)
+    }
+
+    pub(crate) fn requested_targets(&self) -> &BTreeSet<RelationId> {
+        &self.requested_targets
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trace_batch_count(&self, relation: RelationId) -> Option<usize> {
+        self.traces.get(&relation).map(Trace::batch_count)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arrangement_count(&self) -> usize {
+        self.arrangements.len()
+    }
 }
 
 #[derive(Clone, Debug)]
 struct MaintainedProgram {
     components: Vec<MaintainedComponent>,
     relations: BTreeSet<RelationId>,
+    targets: BTreeSet<RelationId>,
+    arrangement_specs: BTreeSet<ArrangementSpec>,
 }
 
 impl MaintainedProgram {
-    fn compile(snapshot: &Snapshot) -> Result<Option<Self>, KernelError> {
+    fn compile(
+        snapshot: &Snapshot,
+        requested_targets: &BTreeSet<RelationId>,
+    ) -> Result<Option<Self>, KernelError> {
         let rules = active_rules(snapshot.rules());
         if rules.is_empty() {
             return Ok(None);
         }
         let rules = RuleSet::new(rules);
         let compiled = rules.compile().map_err(KernelError::Rule)?;
+        let all_targets = compiled
+            .strata
+            .iter()
+            .flat_map(|stratum| &stratum.components)
+            .flat_map(|component| component.target_relations.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let mut required_targets = requested_targets
+            .intersection(&all_targets)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if required_targets.is_empty() {
+            return Ok(None);
+        }
+        loop {
+            let before = required_targets.len();
+            for stratum in &compiled.strata {
+                for component in &stratum.components {
+                    if component.target_relations.is_disjoint(&required_targets) {
+                        continue;
+                    }
+                    for rule_index in &component.rule_indices {
+                        required_targets.extend(
+                            rule_atoms(&stratum.rules[*rule_index])
+                                .map(|atom| atom.relation)
+                                .filter(|relation| all_targets.contains(relation)),
+                        );
+                    }
+                }
+            }
+            if required_targets.len() == before {
+                break;
+            }
+        }
         let mut relations = BTreeSet::new();
         let mut components = Vec::new();
         for stratum in &compiled.strata {
             for component in &stratum.components {
+                if component.target_relations.is_disjoint(&required_targets) {
+                    continue;
+                }
                 if !component.recursive_variants.is_empty() || component.target_relations.len() != 1
                 {
                     return Ok(None);
@@ -316,10 +588,17 @@ impl MaintainedProgram {
                 return Ok(None);
             }
         }
+        let arrangement_specs = components
+            .iter()
+            .flat_map(|component| &component.rules)
+            .flat_map(required_arrangements)
+            .collect();
 
         Ok(Some(Self {
             components,
             relations,
+            targets: required_targets,
+            arrangement_specs,
         }))
     }
 }
@@ -328,6 +607,86 @@ impl MaintainedProgram {
 struct MaintainedComponent {
     target: RelationId,
     rules: Vec<CompiledRule>,
+}
+
+fn required_arrangements(rule: &CompiledRule) -> BTreeSet<ArrangementSpec> {
+    let mut arrangements = BTreeSet::new();
+    let atoms = rule_atoms(rule).collect::<Vec<_>>();
+    for first in 0..atoms.len().max(1) {
+        let mut bound_slots = BTreeSet::new();
+        let order = std::iter::once(first).chain((0..atoms.len()).filter(|index| *index != first));
+        for index in order {
+            let Some(atom) = atoms.get(index) else {
+                continue;
+            };
+            let positions = atom
+                .terms
+                .iter()
+                .enumerate()
+                .filter_map(|(position, term)| match term {
+                    CompiledTerm::Value(_) => Some(position as u16),
+                    CompiledTerm::Var { slot, .. } if bound_slots.contains(slot) => {
+                        Some(position as u16)
+                    }
+                    CompiledTerm::Var { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            if !positions.is_empty() {
+                arrangements.insert(ArrangementSpec {
+                    relation: atom.relation,
+                    positions,
+                });
+            }
+            bound_slots.extend(atom.terms.iter().filter_map(|term| match term {
+                CompiledTerm::Var { slot, .. } => Some(*slot),
+                CompiledTerm::Value(_) => None,
+            }));
+        }
+    }
+    arrangements
+}
+
+fn build_arrangements(
+    specs: &BTreeSet<ArrangementSpec>,
+    collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+) -> BTreeMap<ArrangementSpec, Arc<Arrangement>> {
+    specs
+        .iter()
+        .cloned()
+        .map(|spec| {
+            let rows = collections
+                .get(&spec.relation)
+                .expect("arranged relation should have a maintained collection");
+            let arrangement = Arc::new(Arrangement::build(spec.clone(), rows));
+            (spec, arrangement)
+        })
+        .collect()
+}
+
+fn update_arrangements(
+    arrangements: &mut BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    relation: RelationId,
+    changes: &WeightedRows,
+) {
+    if changes.is_empty() {
+        return;
+    }
+    let specs = arrangements
+        .keys()
+        .filter(|spec| spec.relation == relation)
+        .cloned()
+        .collect::<Vec<_>>();
+    for spec in specs {
+        let next = arrangements[&spec].apply(changes);
+        arrangements.insert(spec, Arc::new(next));
+    }
+}
+
+fn arrangement_tuple_key(tuple: &Tuple, positions: &[u16]) -> Vec<Value> {
+    positions
+        .iter()
+        .map(|position| tuple.values()[*position as usize].clone())
+        .collect()
 }
 
 fn rule_atoms(rule: &CompiledRule) -> impl Iterator<Item = &CompiledAtom> {
@@ -353,55 +712,91 @@ fn evaluate_rule_full(
     finish_rule(rule, bindings, version, work)
 }
 
-fn evaluate_rule_delta(
-    rule: &CompiledRule,
-    old_collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
-    new_collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
-    relation_deltas: &BTreeMap<RelationId, WeightedRows>,
+struct DeltaEvaluation<'a> {
+    old_collections: &'a BTreeMap<RelationId, BTreeSet<Tuple>>,
+    new_collections: &'a BTreeMap<RelationId, BTreeSet<Tuple>>,
+    relation_deltas: &'a BTreeMap<RelationId, WeightedRows>,
+    old_arrangements: &'a BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    new_arrangements: &'a BTreeMap<ArrangementSpec, Arc<Arrangement>>,
     target: RelationId,
     version: Version,
+}
+
+fn evaluate_rule_delta(
+    rule: &CompiledRule,
+    evaluation: &DeltaEvaluation<'_>,
     work: &mut MaintenanceWork,
 ) -> Result<WeightedRows, KernelError> {
     let mut output = WeightedRows::new();
-    let atoms = rule_atoms(rule).collect::<Vec<_>>();
+    let mut atoms = rule_atoms(rule).collect::<Vec<_>>();
+    if let Some((first, _)) = atoms.iter().enumerate().min_by_key(|(_, atom)| {
+        evaluation
+            .relation_deltas
+            .get(&atom.relation)
+            .map_or(usize::MAX, BTreeMap::len)
+    }) && evaluation
+        .relation_deltas
+        .get(&atoms[first].relation)
+        .is_some_and(|delta| !delta.is_empty())
+    {
+        let first = atoms.remove(first);
+        atoms.insert(0, first);
+    }
     // Expanding one changed atom at a time as NEW * DELTA * OLD accounts for every term in
     // the product exactly once, including commits that change more than one input relation.
     for pivot in 0..atoms.len() {
-        let delta = relation_deltas.get(&atoms[pivot].relation);
+        let delta = evaluation.relation_deltas.get(&atoms[pivot].relation);
         if delta.is_none_or(BTreeMap::is_empty) {
             continue;
         }
         let mut bindings = unit_binding(rule.slot_count);
         for (index, atom) in atoms.iter().enumerate() {
             bindings = match index.cmp(&pivot) {
-                std::cmp::Ordering::Less => join_full(
+                std::cmp::Ordering::Less => join_arranged(
                     bindings,
                     atom,
-                    new_collections
+                    evaluation
+                        .new_collections
                         .get(&atom.relation)
                         .expect("compiled relation should have a maintained collection"),
-                    target,
-                    version,
+                    evaluation.new_arrangements,
+                    evaluation.target,
+                    evaluation.version,
+                    work,
                 )?,
-                std::cmp::Ordering::Equal => {
-                    join_weighted(bindings, atom, delta.unwrap(), target, version)?
-                }
-                std::cmp::Ordering::Greater => join_full(
+                std::cmp::Ordering::Equal => join_weighted(
                     bindings,
                     atom,
-                    old_collections
+                    delta.unwrap(),
+                    evaluation.target,
+                    evaluation.version,
+                    work,
+                )?,
+                std::cmp::Ordering::Greater => join_arranged(
+                    bindings,
+                    atom,
+                    evaluation
+                        .old_collections
                         .get(&atom.relation)
                         .expect("compiled relation should have a maintained collection"),
-                    target,
-                    version,
+                    evaluation.old_arrangements,
+                    evaluation.target,
+                    evaluation.version,
+                    work,
                 )?,
             };
             if bindings.is_empty() {
                 break;
             }
         }
-        let contribution = finish_rule(rule, bindings, version, work)?;
-        accumulate_rows(&mut output, contribution, target, "delta union", version)?;
+        let contribution = finish_rule(rule, bindings, evaluation.version, work)?;
+        accumulate_rows(
+            &mut output,
+            contribution,
+            evaluation.target,
+            "delta union",
+            evaluation.version,
+        )?;
     }
     Ok(output)
 }
@@ -427,7 +822,11 @@ fn join_weighted(
     rows: &WeightedRows,
     target: RelationId,
     version: Version,
+    work: &mut MaintenanceWork,
 ) -> Result<WeightedBindings, KernelError> {
+    work.rows_visited = work
+        .rows_visited
+        .saturating_add(bindings.len().saturating_mul(rows.len()));
     join_rows(
         bindings,
         atom,
@@ -435,6 +834,102 @@ fn join_weighted(
         target,
         version,
     )
+}
+
+fn join_arranged(
+    bindings: WeightedBindings,
+    atom: &CompiledAtom,
+    rows: &BTreeSet<Tuple>,
+    arrangements: &BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    target: RelationId,
+    version: Version,
+    work: &mut MaintenanceWork,
+) -> Result<WeightedBindings, KernelError> {
+    let mut output = WeightedBindings::new();
+    for (binding, binding_difference) in bindings {
+        let key = arrangement_binding_key(atom, &binding);
+        let arranged = key.as_ref().and_then(|(positions, key)| {
+            let spec = ArrangementSpec {
+                relation: atom.relation,
+                positions: positions.clone(),
+            };
+            arrangements
+                .get(&spec)
+                .map(|arrangement| arrangement.lookup(key))
+        });
+        if let Some(candidates) = arranged {
+            work.arrangement_lookups += 1;
+            work.rows_visited = work.rows_visited.saturating_add(candidates.len());
+            join_candidates(
+                &mut output,
+                atom,
+                &binding,
+                binding_difference,
+                candidates.iter(),
+                target,
+                version,
+            )?;
+        } else {
+            work.rows_visited = work.rows_visited.saturating_add(rows.len());
+            join_candidates(
+                &mut output,
+                atom,
+                &binding,
+                binding_difference,
+                rows.iter(),
+                target,
+                version,
+            )?;
+        }
+    }
+    Ok(output)
+}
+
+fn join_candidates<'a>(
+    output: &mut WeightedBindings,
+    atom: &CompiledAtom,
+    binding: &Binding,
+    binding_difference: Diff,
+    candidates: impl IntoIterator<Item = &'a Tuple>,
+    target: RelationId,
+    version: Version,
+) -> Result<(), KernelError> {
+    for tuple in candidates {
+        let Some(next) = unify(atom, binding, tuple) else {
+            continue;
+        };
+        checked_accumulate(
+            output,
+            next,
+            binding_difference,
+            target,
+            "arranged join",
+            version,
+        )?;
+    }
+    Ok(())
+}
+
+fn arrangement_binding_key(
+    atom: &CompiledAtom,
+    binding: &Binding,
+) -> Option<(Vec<u16>, Vec<Value>)> {
+    let mut positions = Vec::new();
+    let mut key = Vec::new();
+    for (position, term) in atom.terms.iter().enumerate() {
+        match term {
+            CompiledTerm::Value(value) => {
+                positions.push(position as u16);
+                key.push(value.clone());
+            }
+            CompiledTerm::Var { slot, .. } if let Some(value) = &binding[*slot] => {
+                positions.push(position as u16);
+                key.push(value.clone());
+            }
+            CompiledTerm::Var { .. } => {}
+        }
+    }
+    (!positions.is_empty()).then_some((positions, key))
 }
 
 fn join_rows<'a>(

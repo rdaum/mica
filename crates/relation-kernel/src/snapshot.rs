@@ -25,11 +25,16 @@ use crate::{
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
-pub(crate) type DerivedCache =
-    Arc<OnceLock<Result<BTreeMap<RelationId, RelationState>, KernelError>>>;
-pub(crate) type MaintainedCache = Arc<OnceLock<Arc<MaintainedState>>>;
+#[derive(Clone, Debug)]
+pub(crate) struct DerivedCacheEntry {
+    complete: bool,
+    relations: Result<Arc<BTreeMap<RelationId, RelationState>>, KernelError>,
+}
+
+pub(crate) type DerivedCache = Arc<Mutex<Option<DerivedCacheEntry>>>;
+pub(crate) type MaintainedCache = Arc<Mutex<Option<Arc<MaintainedState>>>>;
 pub(crate) type PackedCache =
     Arc<Mutex<BTreeMap<(RelationId, Vec<Option<Value>>), Arc<PackedRelation>>>>;
 
@@ -177,7 +182,7 @@ impl Snapshot {
             return Ok(visible);
         }
 
-        let derived = self.derived_relations()?;
+        let derived = self.derived_relations(relation)?;
         if let Some(rows) = derived.get(&relation) {
             visible = union_ordered_tuple_rows(visible, rows.scan(bindings)?);
         }
@@ -323,7 +328,7 @@ impl Snapshot {
     ) -> Result<usize, KernelError> {
         let mut estimate = self.relation(relation)?.estimate_scan_count(bindings)?;
         if relation_has_active_rule_head(&self.rules, relation)
-            && let Some(rows) = self.derived_relations()?.get(&relation)
+            && let Some(rows) = self.derived_relations(relation)?.get(&relation)
         {
             estimate += rows.estimate_scan_count(bindings)?;
         }
@@ -403,40 +408,82 @@ impl Snapshot {
             .ok_or(KernelError::UnknownRelation(relation))
     }
 
-    fn derived_relations(&self) -> Result<&BTreeMap<RelationId, RelationState>, KernelError> {
-        self.derived_cache
-            .get_or_init(|| {
-                let start = std::time::Instant::now();
-                let derived = RuleSet::new(active_rules(&self.rules))
-                    .evaluate_fixpoint(
-                        &ExtensionalSnapshotReader { snapshot: self },
-                        &crate::ExecutionContext::serial(),
-                    )
-                    .map_err(KernelError::from)?;
-                let derived = build_derived_relations(&self.relations, derived)?;
-                if let Some(maintained) = MaintainedState::initialize(self, &derived)? {
-                    let _ = self.maintained_cache.set(maintained);
+    fn derived_relations(
+        &self,
+        relation: RelationId,
+    ) -> Result<Arc<BTreeMap<RelationId, RelationState>>, KernelError> {
+        let cached = self.derived_cache.lock().unwrap().clone();
+        if let Some(cached) = cached {
+            if cached.complete {
+                if let Ok(relations) = &cached.relations {
+                    self.warm_maintained_relation(relation, relations)?;
                 }
-                crate::metrics::record_derived_materialization(
-                    start.elapsed(),
-                    derived.iter().map(|(relation, state)| {
-                        let name = self
-                            .relation(*relation)
-                            .ok()
-                            .and_then(|relation| relation.metadata().name().name())
-                            .unwrap_or("<unknown>")
-                            .to_owned();
-                        (*relation, name, state.cardinality())
-                    }),
-                );
-                Ok(derived)
-            })
-            .as_ref()
-            .map_err(Clone::clone)
+                return cached.relations;
+            }
+            if self.maintained_serves(relation) {
+                return cached.relations;
+            }
+        }
+
+        let start = std::time::Instant::now();
+        let derived = RuleSet::new(active_rules(&self.rules))
+            .evaluate_fixpoint(
+                &ExtensionalSnapshotReader { snapshot: self },
+                &crate::ExecutionContext::serial(),
+            )
+            .map_err(KernelError::from)
+            .and_then(|derived| build_derived_relations(&self.relations, derived))
+            .map(Arc::new);
+        if let Ok(derived) = &derived {
+            self.warm_maintained_relation(relation, derived)?;
+            crate::metrics::record_derived_materialization(
+                start.elapsed(),
+                derived.iter().map(|(relation, state)| {
+                    let name = self
+                        .relation(*relation)
+                        .ok()
+                        .and_then(|relation| relation.metadata().name().name())
+                        .unwrap_or("<unknown>")
+                        .to_owned();
+                    (*relation, name, state.cardinality())
+                }),
+            );
+        }
+        *self.derived_cache.lock().unwrap() = Some(DerivedCacheEntry {
+            complete: true,
+            relations: derived.clone(),
+        });
+        derived
     }
 
-    pub(crate) fn maintained_state(&self) -> Option<&Arc<MaintainedState>> {
-        self.maintained_cache.get()
+    fn warm_maintained_relation(
+        &self,
+        relation: RelationId,
+        complete: &BTreeMap<RelationId, RelationState>,
+    ) -> Result<(), KernelError> {
+        let current = self.maintained_state();
+        if current.as_ref().is_some_and(|state| state.serves(relation)) {
+            return Ok(());
+        }
+        let mut targets = current
+            .as_ref()
+            .map(|state| state.requested_targets().clone())
+            .unwrap_or_default();
+        targets.insert(relation);
+        let Some(maintained) = MaintainedState::initialize(self, complete, targets)? else {
+            return Ok(());
+        };
+        *self.maintained_cache.lock().unwrap() = Some(maintained);
+        Ok(())
+    }
+
+    fn maintained_serves(&self, relation: RelationId) -> bool {
+        self.maintained_state()
+            .is_some_and(|state| state.serves(relation))
+    }
+
+    pub(crate) fn maintained_state(&self) -> Option<Arc<MaintainedState>> {
+        self.maintained_cache.lock().unwrap().clone()
     }
 
     pub(crate) fn cached_applicable_method_calls(
@@ -537,27 +584,22 @@ pub(crate) fn build_derived_relations(
 }
 
 pub(crate) fn empty_derived_cache() -> DerivedCache {
-    Arc::new(OnceLock::new())
+    Arc::new(Mutex::new(None))
 }
 
 pub(crate) fn derived_cache_with(derived: BTreeMap<RelationId, RelationState>) -> DerivedCache {
-    let cache = OnceLock::new();
-    cache
-        .set(Ok(derived))
-        .expect("new derived cache should be empty");
-    Arc::new(cache)
+    Arc::new(Mutex::new(Some(DerivedCacheEntry {
+        complete: false,
+        relations: Ok(Arc::new(derived)),
+    })))
 }
 
 pub(crate) fn empty_maintained_cache() -> MaintainedCache {
-    Arc::new(OnceLock::new())
+    Arc::new(Mutex::new(None))
 }
 
 pub(crate) fn maintained_cache_with(state: Arc<MaintainedState>) -> MaintainedCache {
-    let cache = OnceLock::new();
-    cache
-        .set(state)
-        .expect("new maintained cache should be empty");
-    Arc::new(cache)
+    Arc::new(Mutex::new(Some(state)))
 }
 
 pub(crate) fn empty_packed_cache() -> PackedCache {
@@ -674,7 +716,7 @@ impl RelationRead for Snapshot {
         {
             return Ok(capabilities);
         }
-        if let Some(derived) = self.derived_relations()?.get(&relation) {
+        if let Some(derived) = self.derived_relations(relation)?.get(&relation) {
             let base_rows = capabilities.cardinality.unwrap_or(0);
             capabilities.cardinality = Some(base_rows.saturating_add(derived.cardinality()));
             capabilities.value_domains = combine_value_domains(
