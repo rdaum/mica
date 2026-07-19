@@ -191,9 +191,18 @@ reachability, or delegation closure in the same relational language as the rest 
 Negation is more restricted: Mica supports stratified negation, not arbitrary recursion through
 `not`.
 
-The current implementation evaluates rules in the relation kernel and exposes derived tuples through
-ordinary relation reads. More complete rule planning and incremental evaluation remain active areas
-of work.
+Rules in Mica stay live. Suppose a rule says that Alice can see every item inside a container she is
+holding. Putting a coin into that container automatically makes `CanSee(#alice, #coin)` true. Taking
+the coin out makes it false again. These rule-produced facts are called derived facts.
+
+Application code does not have to find and update every conclusion affected by a change. Mica
+follows the consequences through chains of rules, including relationships such as rooms reachable
+through other rooms, and finishes the whole update before anyone can observe it. Other tasks see the
+world either before or after the change, never halfway through.
+
+Applications can also ask to be notified when a stored or derived fact becomes true or false. This
+makes rule-driven views, simulations, agents, and user interfaces able to react as the shared world
+changes.
 
 ## Express
 
