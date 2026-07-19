@@ -20,6 +20,7 @@ use crate::{
 use mica_var::{Identity, Symbol, Value, language_cmp};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Term {
@@ -291,12 +292,32 @@ impl RuleSet {
         reader: &impl RelationRead,
         execution_context: &ExecutionContext,
     ) -> Result<BTreeMap<RelationId, Vec<Tuple>>, RuleEvalError> {
+        let evaluation = self.evaluate_fixpoint_with_stats(reader, execution_context)?;
+        let stats = &evaluation.stats;
+        record_rule_fixpoint(
+            stats.rounds,
+            stats.rule_evaluations,
+            stats.variant_evaluations,
+            stats.candidate_rows,
+            stats.novel_rows,
+            &stats.frontier_rows,
+        );
+        Ok(evaluation.derived)
+    }
+
+    pub(crate) fn evaluate_fixpoint_with_stats(
+        &self,
+        reader: &impl RelationRead,
+        execution_context: &ExecutionContext,
+    ) -> Result<CompleteRuleEvaluation, RuleEvalError> {
+        let start = Instant::now();
         let program = self.compile()?;
         let mut derived: BTreeMap<RelationId, BTreeSet<Tuple>> = BTreeMap::new();
         let mut stats = RuleEvaluationStats::default();
 
         for stratum in &program.strata {
             for component in &stratum.components {
+                stats.component_evaluations += 1;
                 evaluate_component(
                     reader,
                     &stratum.rules,
@@ -308,19 +329,45 @@ impl RuleSet {
             }
         }
 
-        record_rule_fixpoint(
-            stats.rounds,
-            stats.rule_evaluations,
-            stats.variant_evaluations,
-            stats.candidate_rows,
-            stats.novel_rows,
-            &stats.frontier_rows,
-        );
+        stats.elapsed = start.elapsed();
+        Ok(CompleteRuleEvaluation {
+            derived: derived
+                .into_iter()
+                .map(|(relation, tuples)| (relation, tuples.into_iter().collect()))
+                .collect(),
+            stats,
+        })
+    }
 
-        Ok(derived
-            .into_iter()
-            .map(|(relation, tuples)| (relation, tuples.into_iter().collect()))
-            .collect())
+    #[cfg(test)]
+    pub(crate) fn affected_component_count(
+        &self,
+        changed_relations: impl IntoIterator<Item = RelationId>,
+    ) -> Result<usize, RuleError> {
+        let program = self.compile()?;
+        let mut changed_relations = changed_relations.into_iter().collect::<BTreeSet<_>>();
+        let mut affected = 0;
+        for stratum in &program.strata {
+            for component in &stratum.components {
+                let body_changed = component.rule_indices.iter().any(|rule_index| {
+                    stratum.rules[*rule_index]
+                        .body
+                        .iter()
+                        .any(|item| match item {
+                            CompiledBodyItem::Atom(atom) => {
+                                changed_relations.contains(&atom.relation)
+                            }
+                            CompiledBodyItem::Guard(_) => false,
+                        })
+                });
+                if !body_changed && component.target_relations.is_disjoint(&changed_relations) {
+                    continue;
+                }
+                affected += 1;
+                changed_relations.extend(component.target_relations.iter().copied());
+            }
+        }
+        Ok(affected)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Rule> {
@@ -458,14 +505,22 @@ struct CompiledRuleVariant {
     delta_body_index: usize,
 }
 
-#[derive(Default)]
-struct RuleEvaluationStats {
-    rounds: usize,
-    rule_evaluations: usize,
-    variant_evaluations: usize,
-    candidate_rows: usize,
-    novel_rows: usize,
-    frontier_rows: Vec<usize>,
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RuleEvaluationStats {
+    pub(crate) component_evaluations: usize,
+    pub(crate) rounds: usize,
+    pub(crate) rule_evaluations: usize,
+    pub(crate) variant_evaluations: usize,
+    pub(crate) candidate_rows: usize,
+    pub(crate) novel_rows: usize,
+    pub(crate) frontier_rows: Vec<usize>,
+    pub(crate) elapsed: Duration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CompleteRuleEvaluation {
+    pub(crate) derived: BTreeMap<RelationId, Vec<Tuple>>,
+    pub(crate) stats: RuleEvaluationStats,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

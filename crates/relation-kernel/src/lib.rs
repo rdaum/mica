@@ -48,6 +48,8 @@ mod tuple;
 mod workspace;
 
 #[cfg(test)]
+mod differential_tests;
+#[cfg(test)]
 mod tests;
 
 use mica_var::Identity;

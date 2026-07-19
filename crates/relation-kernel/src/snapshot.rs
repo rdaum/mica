@@ -241,6 +241,19 @@ impl Snapshot {
         &self.rules
     }
 
+    #[cfg(test)]
+    pub(crate) fn evaluate_complete_rules(
+        &self,
+        execution_context: &crate::ExecutionContext,
+    ) -> Result<crate::rules::CompleteRuleEvaluation, KernelError> {
+        RuleSet::new(active_rules(&self.rules))
+            .evaluate_fixpoint_with_stats(
+                &ExtensionalSnapshotReader { snapshot: self },
+                execution_context,
+            )
+            .map_err(KernelError::from)
+    }
+
     pub(crate) fn scan_extensional(
         &self,
         relation: RelationId,
