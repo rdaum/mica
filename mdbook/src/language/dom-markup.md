@@ -135,3 +135,7 @@ adding a second set of template rules.
 Because `dom <...>` lowers to `dom_element` and `dom_text`, it uses the same authority surface as
 calling those functions directly. Code that returns DOM from a web view still needs permission to
 invoke the DOM constructors and any helpers used inside `{...}` expressions.
+
+DOM markup defines a tree; it does not decide when the browser should receive a new version. A
+synchronized view declares the relations that can change its tree, as described in
+[Differential Datalog and Live Updates](./differential-updates.md#differential-dom-updates).

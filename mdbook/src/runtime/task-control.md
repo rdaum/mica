@@ -71,3 +71,7 @@ let ready = mailbox_recv([rx], 10)
 Mailbox values are capabilities, not durable relation facts. They are used to coordinate live tasks,
 while durable progress should still be written as facts such as `ToolResult`, `Observation`, or
 `Completed`.
+
+Relation subscriptions deliver their settled changes through the same mailbox mechanism. See
+[Differential Datalog and Live Updates](../language/differential-updates.md#listening-for-changes)
+for `subscribe_changes`, bounded delivery, and resynchronization.
