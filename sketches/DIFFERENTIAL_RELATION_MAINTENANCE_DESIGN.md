@@ -2,7 +2,8 @@
 
 Date: 2026-07-18
 
-Status: proposed architecture and staged implementation plan. This is not implemented behaviour.
+Status: implemented staged architecture. Stages 0 through 7 are complete; Stage 8 records the
+measured resident-GPU work and the explicit deferral criteria for its independent optional items.
 
 This document is based on Mica commit `4e5e796f227fb05fe08f1f42c4c80b2fcceee1cd`.
 
@@ -265,7 +266,7 @@ recursive rules semi-naively within one snapshot. The missing capability is reus
 each new snapshot currently discards its derived cache and recomputes all active rules on the next
 derived read.
 
-The proposed division of responsibility is:
+The division of responsibility is:
 
 - the relation kernel owns versions, signed changes, arrangements, fixpoint progress, consolidation,
   snapshot publication, and CPU fallback;
@@ -575,7 +576,7 @@ P(x) :- P(x)
 After removing `Seed(x)`, the second rule must not allow `P(x)` to support itself forever. Similar
 cycles occur naturally in reachability over cyclic graphs.
 
-The implementation must use a proven incremental fixpoint formulation. The proposed formulation is
+The implementation uses a proven incremental fixpoint formulation. The formulation is
 differential iteration:
 
 - retain signed changes by epoch and iteration;
@@ -590,7 +591,7 @@ deletion sequences demonstrate equivalence. If a native differential iteration p
 or memory-heavy, a deletion algorithm such as DRed is a valid alternative, but the two approaches
 must not be mixed informally.
 
-## Proposed Kernel Architecture
+## Kernel Architecture
 
 ### Compiled maintained program
 
@@ -914,11 +915,11 @@ Differential maintenance makes efficient subscriptions to rule-derived results p
 not required for every kind of change feed, however, and the public semantics must distinguish
 three sources:
 
-| Subscription subject | Existing or proposed source | Meaning |
+| Subscription subject | Source | Meaning |
 | --- | --- | --- |
 | Authoritative fact changes | Existing `Commit::changes` | Effective committed assertions and retractions of stored facts |
 | Catalogue changes | Existing `Commit::catalog_changes` | Relation creation, rule installation, and rule disabling |
-| Public relation-result changes | Proposed settled visible-change batch | Tuples whose public set membership became true or false after all affected rules settled |
+| Public relation-result changes | Settled visible-change batch | Tuples whose public set membership became true or false after all affected rules settled |
 
 "Changes to a rule" can therefore mean two different things. A consumer interested in rule
 definitions subscribes to catalogue changes. A consumer interested in conclusions produced by
@@ -1155,8 +1156,9 @@ One- and two-column workloads with 4,096- and 65,536-row deltas were either slow
 or effectively tied. The current delivery therefore keeps arranged differential probing native by
 default. Weighted packed acceleration remains an explicit execution-context opt-in so its
 correctness and hardware path stay testable. The end-to-end performance part of this exit criterion
-is deferred to Stage 8, where resident device state and GPU-side consolidation can change the cost
-boundary rather than merely moving an already indexed probe to the GPU.
+was deferred to Stage 8, where resident device state could change the cost boundary rather than
+merely moving an already indexed probe to the GPU. The Stage 8 measurements below retain native
+placement after testing that resident path.
 
 ### Stage 6: transaction-local incremental overlays
 
